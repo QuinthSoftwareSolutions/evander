@@ -407,6 +407,32 @@ class TeamChatCommandService(TeamCommandExecutor):
                         "operator_user_ids": operator_user_ids,
                     },
                 )
+            dispatch = state.dispatches.get(resolved.dispatch_id or "")
+            if not normalized_source_message_ids and dispatch is not None:
+                batch_ids = list(dispatch.chat_message_ids)
+                if not batch_ids and dispatch.cause_kind == "team_chat" and dispatch.cause_id:
+                    batch_ids = [dispatch.cause_id]
+                outstanding = any(
+                    (source := state.conversation_messages.get(source_id)) is not None
+                    and source.conversation_id == conversation.id
+                    and source.sender == "operator"
+                    and source.status not in {"replied", "acknowledged"}
+                    for source_id in batch_ids
+                )
+                if dispatch.cause_kind == "team_chat" and outstanding:
+                    raise TeamCommandValidationError(
+                        code="chat_reply_required",
+                        message=(
+                            "The current Team Chat batch is awaiting your reply. Use "
+                            "team_reply_to_chat with the supplied conversation_id and message_ids."
+                        ),
+                        correction_context={
+                            "tool_name": "team_reply_to_chat",
+                            "conversation_id": conversation.id,
+                            "message_ids": batch_ids,
+                            "active_dispatch_id": dispatch.id,
+                        },
+                    )
             source_messages = _require_active_delivery_source_messages(
                 state,
                 conversation_id=conversation.id,

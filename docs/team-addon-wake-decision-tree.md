@@ -79,6 +79,16 @@ allowlist when enabled. A queued external message otherwise follows the same
 Chat claim, lease, and `team_reply_to_chat` rules as a built-in operator
 message.
 
+Text messages delivered during an active dispatch include bounded earlier exchanges and reply
+links from that conversation, both in MCP attention results and relay steering notes. Follow-ups
+such as "that" should be resolved from the conversation; agents can read more history with
+`team_list_conversation_messages` when needed.
+
+An unlinked `team_send_operator_chat_message` to the operator awaiting the current Chat batch's
+reply is rejected before posting. The error supplies `team_reply_to_chat`, the conversation ID,
+and the batch message IDs. Replies to separately injected messages continue to use exact
+`source_message_ids`; ordinary proactive messages remain available outside an outstanding batch.
+
 Only a successfully resumed mutation-enabled Chat dispatch can seed ordinary
 Team context and consume a pending ordinary rotation. A reply-only dispatch
 stays exact to the claimed message and leaves that ordinary reset pending, even

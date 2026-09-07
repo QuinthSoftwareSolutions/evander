@@ -93,6 +93,7 @@ from evander_team_addon.models import (
     TeamBlockerRoute,
     TeamBlockerState,
     TeamChatMutationAuthorization,
+    TeamConversationMessage,
     TeamDispatch,
     TeamDispatchStatus,
     TeamInboxItemState,
@@ -953,6 +954,80 @@ def test_active_team_mcp_result_repeats_plain_operator_attention_without_consumi
     )
     assert reply["success"] is True
     assert repo.read().conversation_messages[message.id].status == "replied"
+
+
+@pytest.mark.parametrize("delivery_channel", ["mcp_result", "relay"])
+def test_injected_followup_includes_prior_conversation_and_reply_links(
+    tmp_path: Path,
+    delivery_channel: str,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(context, session_id="session-backend", allowed_tools=[TEAM_LIST_TASKS_TOOL])
+    _lease_agent(repo, agent_id="backend", dispatch_id="dispatch-stop-management")
+    chat = TeamChatService(repo)
+    state, conversation, _ = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        expected_revision=repo.read().revision,
+    )
+
+    def _seed_history(state):
+        now = datetime.now(UTC) - timedelta(minutes=1)
+        question = TeamConversationMessage(
+            id="pilot-question",
+            conversation_id=conversation.id,
+            sender="operator",
+            body="Can we build a sub-order pilot?",
+            created_at=now,
+        )
+        proposal = TeamConversationMessage(
+            id="pilot-proposal",
+            conversation_id=conversation.id,
+            sender="agent",
+            body="We can implement a configuration-driven pilot.",
+            source_message_ids=[question.id],
+            created_at=now + timedelta(seconds=1),
+        )
+        state.conversation_messages.update({question.id: question, proposal.id: proposal})
+        return state
+
+    state = repo.update(_seed_history)
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Did you proceed with that?",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(message_id=message.id, dispatch_id=f"team-chat:{message.id}")
+    if delivery_channel == "mcp_result":
+        result = _call_tool(
+            create_server(context), TEAM_LIST_TASKS_TOOL, {"session_id": "session-backend"}
+        )
+        attention = result["attention"]
+        history = attention["messages"][0]["recent_conversation"]
+        assert "not the current work task" in attention["context_guidance"]
+        assert attention["messages"][0]["body"] == message.body
+    else:
+        model_usage_store(context.config.runtime_dir).upsert_correlation_context(
+            ModelUsageCorrelationContext(
+                session_id="session-backend",
+                dispatch_id="dispatch-stop-management",
+                agent_harness="codex",
+                expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            )
+        )
+        _, _, link = queue_operator_chat_steering(repo, message_id=message.id)
+        assert link is not None
+        history = (
+            operator_steering_note_store(context.config.runtime_dir)
+            .get_note(link["note_id"])
+            .message
+        )
+        assert "not the current work task" in history
+        assert message.body in history
+    assert "configuration-driven pilot" in history
+    assert "reply to pilot-question" in history
 
 
 def test_active_team_mcp_result_leaves_operator_attachment_for_chat_dispatch(

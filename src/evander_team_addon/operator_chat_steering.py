@@ -11,6 +11,10 @@ from evander.operator_steering import (
 )
 
 from .models import TeamConversationMessage, TeamDispatchStatus, TeamState
+from .operator_chat_context import (
+    OPERATOR_CHAT_CONTEXT_GUIDANCE,
+    operator_chat_conversation_context,
+)
 from .repository import TeamStateRepository
 from .services.chat_service import team_chat_in_dispatch_delivery_allowed
 from .services.domain.common import _ensure_utc, _optional_text
@@ -296,7 +300,7 @@ def _steering_prompt(
         f"Conversation ID: {conversation.id}\n"
         f"Source message ID: {message.id}\n"
         f"Current dispatch ID: {dispatch_id}\n"
-        "Message:\n"
+        f"{OPERATOR_CHAT_CONTEXT_GUIDANCE}\n"
     )
     suffix = (
         "\n\nIf you reply, call team_send_operator_chat_message with "
@@ -305,10 +309,26 @@ def _steering_prompt(
         "is needed, call team_acknowledge_operator_chat_messages with "
         f"message_ids={[message.id]!r}, disposition='acted_no_reply', and a short summary."
     )
-    available = max(0, OPERATOR_STEERING_NOTE_MAX_LENGTH - len(prefix) - len(suffix))
-    if len(body) > available:
-        body = f"{body[: max(0, available - 3)].rstrip()}..."
-    return f"{prefix}{body}{suffix}"
+    history_heading = "Recent conversation:\n"
+    message_heading = "\n\nCurrent message:\n"
+    available = max(
+        0,
+        OPERATOR_STEERING_NOTE_MAX_LENGTH
+        - len(prefix)
+        - len(suffix)
+        - len(history_heading)
+        - len(message_heading),
+    )
+    history = operator_chat_conversation_context(state, message)
+    body_budget = available // 2 if history else available
+    if len(body) > body_budget:
+        body = f"{body[: max(0, body_budget - 3)].rstrip()}..."[:body_budget]
+    history = operator_chat_conversation_context(
+        state,
+        message,
+        max_chars=available - len(body),
+    )
+    return f"{prefix}{history_heading}{history}{message_heading}{body}{suffix}"
 
 
 __all__ = [

@@ -7,6 +7,9 @@
 - Route child acceptance to the producer's superior while a parent is queued,
   retain uncertain delivery claims across retries, and select peers whose wake interval is due.
 - Show role targets and queue reasons in Team task views; retain all existing concrete-owner assignments.
+- Include bounded conversation history and reply links when operator follow-ups interrupt ongoing work.
+- Reject unlinked notifications to an operator awaiting an active Team Chat reply, returning the
+  correct reply tool and message IDs before posting.
 
 ## 2026-09-07 - ADO Markdown image access (0.25.2)
 
