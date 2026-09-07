@@ -117,7 +117,7 @@ from evander.models import (
 )
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.repositories.skills_library import SkillLibraryRepository
-from evander.triggers.queue import TriggerQueueRecord
+from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
 
 
 class _ResolverStub:
@@ -4887,6 +4887,7 @@ def test_context_exhausted_container_completion_does_not_retry_after_limit(
     store = Store()
     worker = SimpleNamespace(
         config=config,
+        event_queue=SqliteTriggerEventQueue(tmp_path / "orchestration.db"),
         execution_store=store,
         provider_factory=SimpleNamespace(admin_service=SimpleNamespace(runtime=None)),
         _update_event_delivery_state=lambda event_id: None,

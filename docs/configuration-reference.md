@@ -2456,6 +2456,14 @@ of `session_id` or `vm_name`. Completion is correlated to the prompt's dispatch 
 polling trigger is required. Connect an agent prompt's `started` output to this gate when downstream
 work must wait for completion.
 
+Existing `trigger:agent:run:completed` nodes receive events published by prompt reconciliation
+or the wake monitor. The effect worker forwards each completed dispatch once per enabled trigger,
+preserving its payload and trace. A trigger uses its explicit `directory_path` or its workflow
+graph's directory; `root` receives all directories, while other paths match exactly. Optional
+`vm_name`, `session_id`, and `vm_user` selectors continue to apply (`vm_user` defaults to `agent`).
+These subscriptions do not poll host VM inventory. Forwarded events are durable and deduplicated
+when completion publication is retried or the worker restarts.
+
 ## Communication Trigger Provider Coverage
 
 `trigger:communication:new-message` accepts declared, read-capable Teams channel/chat, Discord

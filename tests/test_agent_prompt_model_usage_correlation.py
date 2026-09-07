@@ -21,7 +21,7 @@ from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     QueuedAgentPromptRecord,
 )
-from evander.triggers.queue import TriggerQueueRecord
+from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
 
 
 def _session_repository(config: GatewayConfig, *, vm_provider: str = "libvirt_vm") -> object:
@@ -142,6 +142,7 @@ def _finalize_waiting_record(
 ) -> None:
     worker = SimpleNamespace(
         config=SimpleNamespace(runtime_dir=runtime_dir),
+        event_queue=SqliteTriggerEventQueue(runtime_dir / "orchestration.db"),
         execution_store=SimpleNamespace(put=lambda record: None),
         _publish_completion_event_from_record=lambda **kwargs: "published-event",
         _update_event_delivery_state=lambda event_id: None,

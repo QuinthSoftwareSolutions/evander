@@ -6,6 +6,8 @@
 - Show partial journal-entry outcomes, attachment counts, and the scope of evidence retries.
 - Replace host-wide completion polling with events from the prompt effect or wake monitor;
   route ephemeral cleanup from prompt completion and preserve legacy transform names as no-ops.
+- Deliver those events to existing completion-trigger nodes within their configured scope,
+  including reconciled runs, with durable duplicate suppression across retries and restarts.
 - Add the permission-gated `update_ado_backlog_state` MCP tool for updating a work item's
   state through the host-owned ADO connection, with an optional atomic expected-state guard.
 - Expose the tool in Admin Web permission controls; existing sessions require an explicit grant.
