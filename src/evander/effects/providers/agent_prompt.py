@@ -17,7 +17,7 @@ from evander.agent_context_retry import (
 )
 from evander.config import GatewayConfig
 from evander.codex_auth import CodexSubscriptionDeferral
-from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY
+from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY, TriggerEvent
 from evander.events.provider_models import AgentPromptEffectDefinition
 from evander.execution import (
     ExecutionBackendKind,
@@ -1682,6 +1682,23 @@ class AgentPromptEffectProvider(EffectProviderBase):
             return
         if "context_retry_in_progress" in merged_outputs:
             merged_outputs["context_retry_in_progress"] = False
+        # Reconciliation may construct a completion without a wake monitor ever
+        # publishing it. Persist it before finalizing the waiting execution so
+        # configured completion triggers also receive it, including after a crash.
+        # A monitor event already in the queue is deduplicated by dispatch ID.
+        worker.event_queue.publish(
+            TriggerEvent(
+                event_id=queue_record.event_id,
+                trigger_id=queue_record.trigger_id,
+                trigger_type=queue_record.trigger_type,
+                occurred_at=queue_record.occurred_at,
+                trace_id=queue_record.trace_id,
+                payload=queue_record.payload,
+            ),
+            idempotency_key=queue_record.idempotency_key,
+            config_revision=queue_record.config_revision,
+            directory_path=queue_record.directory_path,
+        )
         branch_port = (
             AGENT_PROMPT_COMPLETED_PORT
             if record.effect_type in {cls.node_type(), AGENT_ENQUEUE_PROMPT_EFFECT_TYPE}

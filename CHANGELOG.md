@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-09-07 - Team, ADO and runtime improvements (0.26.0)
+
+- Explain Bokio validation failures with upstream field details and retain structured audit data.
+- Show partial journal-entry outcomes, attachment counts, and the scope of evidence retries.
+- Replace host-wide completion polling with events from the prompt effect or wake monitor;
+  route ephemeral cleanup from prompt completion and preserve legacy transform names as no-ops.
+- Deliver those events to existing completion-trigger nodes within their configured scope,
+  including reconciled runs, with durable duplicate suppression across retries and restarts.
+- Add the permission-gated `update_ado_backlog_state` MCP tool for updating a work item's
+  state through the host-owned ADO connection, with an optional atomic expected-state guard.
+- Expose the tool in Admin Web permission controls; existing sessions require an explicit grant.
+
+- Give accepted dependency merge recoveries distinct, retry-stable Git branches and worktrees,
+  preserving checkouts left by failed preparation; reject preparation reuse with a changed path.
+- Preserve accepted dependency recovery provenance across role claims and releases before execution.
+- Retain accepted recovery worktrees across task execution transitions while rejecting changed
+  provenance; cover fresh preparation after accepted child inputs become an explicit contract.
+- Route reassigned child blockers through the new owner's superior when their parent is unclaimed.
+- Queue new role-based tasks until their dependencies are ready and an eligible agent has capacity.
+- Reserve one new role task per agent atomically with its dispatch, preserving ownership after execution starts.
+- Route child acceptance to the producer's superior while a parent is queued,
+  retain uncertain delivery claims across retries, and select peers whose wake interval is due.
+- Show role targets and queue reasons in Team task views; retain all existing concrete-owner assignments.
+- Update runtime regression expectations for supervision scope validation and release publication context.
+- Include bounded conversation history and reply links when operator follow-ups interrupt ongoing work.
+- Reject unlinked notifications to an operator awaiting an active Team Chat reply, returning the
+  correct reply tool and message IDs before posting.
+- Expose description and acceptance criteria in ADO queries, detail reads, and batch summaries,
+  preserving raw fields and supplying empty strings for absent optional content.
+- Keep matching-work-item trigger content bindings valid when descriptions or criteria are absent.
+
 ## 2026-09-07 - ADO Markdown image access (0.25.2)
 
 - Recognize Markdown images in Azure DevOps work-item fields and comments, including

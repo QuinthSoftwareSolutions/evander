@@ -8414,6 +8414,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     published_events: list[tuple[str | None, dict[str, object]]] = []
     worker = SimpleNamespace(
         config=config,
+        event_queue=SqliteTriggerEventQueue(tmp_path / "orchestration.db"),
         execution_store=execution_store,
         queued_agent_prompt_store=queue_store,
         agent_prompt_dispatch_port=object(),
@@ -8562,6 +8563,7 @@ def test_container_prompt_completion_without_agent_output_fails_without_persisti
     execution_store.put(record)
     worker = SimpleNamespace(
         config=config,
+        event_queue=SqliteTriggerEventQueue(tmp_path / "orchestration.db"),
         execution_store=execution_store,
         provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
         provider_factory=SimpleNamespace(
@@ -8977,6 +8979,7 @@ def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_di
     worker = SimpleNamespace(
         config=GatewayConfig(runtime_dir=runtime_dir),
         runtime=SimpleNamespace(wake_store=wake_store),
+        event_queue=SqliteTriggerEventQueue(runtime_dir / "orchestration.db"),
         execution_store=SimpleNamespace(put=lambda record: None),
         _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
             published_events.append((branch_port, outputs)) or "effect-completed"

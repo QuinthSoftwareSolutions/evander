@@ -18,6 +18,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-chat-message-queued",
                 "team-external-chat-reply-requested",
                 "team-agent-wake-requested",
+                "team-role-queue-wake-requested",
+                "team-wake-role-queue",
                 "team-governance-wake-requested",
                 "team-wake-due-agents",
                 "team-wake-queued-chat-message",
@@ -30,16 +32,12 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-publish-outbox-events",
                 "team-outbox-publish-requested",
                 "team-publish-outbox-on-request",
-                "team-publish-outbox-after-dispatch",
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
                 "team-mark-ephemeral-spawned",
                 "team-ephemeral-spawned",
                 "team-prompt-ephemeral-agent",
-                "team-agent-run-completed",
                 "team-route-completed-session",
-                "team-completed-persistent",
-                "team-finalize-persistent-dispatch",
                 "team-completed-ephemeral",
                 "team-destroy-ephemeral-agent",
                 "team-mark-ephemeral-cleaned-up",
@@ -91,14 +89,6 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             },
             {
                 "node": {
-                    "id": "team-agent-run-completed",
-                    "display_name": "Team agent run completed",
-                    "type": "trigger:agent:run:completed",
-                    "config": {},
-                }
-            },
-            {
-                "node": {
                     "id": "team-chat-message-queued",
                     "display_name": "Team chat message queued",
                     "type": "trigger:event",
@@ -111,6 +101,28 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "display_name": "Team external chat reply requested",
                     "type": "trigger:event",
                     "config": {"event_type": "team.chat.external_reply_requested"},
+                }
+            },
+            {
+                "node": {
+                    "id": "team-role-queue-wake-requested",
+                    "display_name": "Team role queue capacity requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.role_queue.wake_requested"},
+                }
+            },
+            {
+                "node": {
+                    "id": "team-wake-role-queue",
+                    "display_name": "Dispatch ready role tasks",
+                    "type": "effect:team:wake-due-agents",
+                    "config": {
+                        "team_id": "${{team-role-queue-wake-requested.payload.team_id}}",
+                        "project_id": "${{team-role-queue-wake-requested.payload.project_id}}",
+                        "limit": 10,
+                        "respect_wake_interval": False,
+                        "run_global_maintenance": False,
+                    },
                 }
             },
             {
@@ -182,26 +194,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "id": "team-deliverable-acceptance-verification-requested",
                     "display_name": "Team deliverable acceptance verification requested",
                     "type": "trigger:event",
-                    "config": {
-                        "event_type": "team.deliverable.acceptance_verification_requested"
-                    },
-                }
-            },
-            {
-                "node": {
-                    "id": "team-completed-persistent",
-                    "display_name": "Persistent team session completed",
-                    "type": "gate:filter",
-                    "config": {
-                        "when": {
-                            "all": [
-                                {
-                                    "equals": True,
-                                    "left": "${{team-route-completed-session.persistent}}",
-                                }
-                            ]
-                        }
-                    },
+                    "config": {"event_type": "team.deliverable.acceptance_verification_requested"},
                 }
             },
             {
@@ -326,8 +319,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "display_name": "Route completed team session",
                     "type": "query:team:session-routing",
                     "config": {
-                        "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
-                        "dispatch_id": "${{team-agent-run-completed.dispatch_id ?? null}}",
+                        "session_id": "${{team-prompt-ephemeral-agent.session_id ?? null}}",
+                        "dispatch_id": "${{team-prompt-ephemeral-agent.dispatch_id ?? null}}",
                     },
                 }
             },
@@ -466,25 +459,11 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "config": {
                         "limit": 25,
                         "outbox_record_ids": (
-                            "${{team-outbox-publish-requested.payload."
-                            "outbox_record_ids ?? null}}"
+                            "${{team-outbox-publish-requested.payload.outbox_record_ids ?? null}}"
                         ),
                         "claim_ttl_seconds": 300,
                         "retry_after_seconds": 60,
                         "worker_id": "team-outbox-immediate-publisher",
-                    },
-                }
-            },
-            {
-                "node": {
-                    "id": "team-publish-outbox-after-dispatch",
-                    "display_name": "Publish Team outbox after dispatch",
-                    "type": "effect:team:publish-outbox-events",
-                    "config": {
-                        "limit": 25,
-                        "claim_ttl_seconds": 300,
-                        "retry_after_seconds": 60,
-                        "worker_id": "team-outbox-after-dispatch",
                     },
                 }
             },
@@ -539,18 +518,6 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "config": {
                         "session_id": "${{team-ephemeral-requested.payload.session_id}}",
                         "prompt": "${{team-ephemeral-requested.payload.prompt}}",
-                    },
-                }
-            },
-            {
-                "node": {
-                    "id": "team-finalize-persistent-dispatch",
-                    "display_name": "Finalize persistent Team dispatch",
-                    "type": "effect:team:finalize-agent-dispatch",
-                    "config": {
-                        "session_id": "${{team-route-completed-session.session_id}}",
-                        "dispatch_id": "${{team-route-completed-session.dispatch_id}}",
-                        "agent_id": "${{team-route-completed-session.agent_id ?? null}}",
                     },
                 }
             },
@@ -1040,7 +1007,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                         "payload": {
                             "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha}}",
                             "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
-                            "directory_path": "${{team-git-promotion-requested.payload.directory_path ?? \"root\"}}",
+                            "directory_path": '${{team-git-promotion-requested.payload.directory_path ?? "root"}}',
                             "expected_commit_sha": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
                             "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
                             "project_id": "${{team-git-promotion-requested.payload.project_id}}",
@@ -1073,6 +1040,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "target_id": "team-record-external-chat-delivery-failure",
             },
             {"source_id": "team-agent-wake-requested", "target_id": "team-wake-requested-agent"},
+            {"source_id": "team-role-queue-wake-requested", "target_id": "team-wake-role-queue"},
             {
                 "source_id": "team-governance-wake-requested",
                 "target_id": "team-wake-requested-governance",
@@ -1090,15 +1058,10 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             },
             {"source_id": "team-mark-ephemeral-spawned", "target_id": "team-ephemeral-spawned"},
             {"source_id": "team-ephemeral-spawned", "target_id": "team-prompt-ephemeral-agent"},
-            {"source_id": "team-agent-run-completed", "target_id": "team-route-completed-session"},
-            {"source_id": "team-route-completed-session", "target_id": "team-completed-persistent"},
             {
-                "source_id": "team-completed-persistent",
-                "target_id": "team-finalize-persistent-dispatch",
-            },
-            {
-                "source_id": "team-finalize-persistent-dispatch",
-                "target_id": "team-publish-outbox-after-dispatch",
+                "source_id": "team-prompt-ephemeral-agent",
+                "source_port": "completed",
+                "target_id": "team-route-completed-session",
             },
             {"source_id": "team-route-completed-session", "target_id": "team-completed-ephemeral"},
             {"source_id": "team-completed-ephemeral", "target_id": "team-destroy-ephemeral-agent"},
@@ -1216,11 +1179,11 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
 
 
 _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
-    ("team-agent-run-completed", 0.0, -80.0),
     ("team-agent-wake-requested", 0.0, 520.0),
+    ("team-role-queue-wake-requested", 0.0, 2320.0),
+    ("team-wake-role-queue", 360.0, 2320.0),
     ("team-chat-message-queued", 0.0, 180.0),
     ("team-completed-ephemeral", 720.0, 20.0),
-    ("team-completed-persistent", 720.0, -140.0),
     ("team-consolidate-correction-branches", 720.0, 1360.0),
     ("team-consolidate-feature-branches", 720.0, 1240.0),
     ("team-consolidate-release-branches", 720.0, 1480.0),
@@ -1230,7 +1193,6 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-ephemeral-requested", 0.0, 820.0),
     ("team-ephemeral-spawned", 1080.0, 820.0),
     ("team-external-chat-reply-requested", 0.0, 340.0),
-    ("team-finalize-persistent-dispatch", 1080.0, -140.0),
     ("team-git-promote-review-branch", 720.0, 1120.0),
     ("team-git-promotion-canonical", 360.0, 1600.0),
     ("team-git-promotion-correction-aggregate", 360.0, 1360.0),
@@ -1254,7 +1216,6 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-outbox-publish-requested", 0.0, 40.0),
     ("team-promote-release-recovery-branch", 360.0, 1940.0),
     ("team-prompt-ephemeral-agent", 1440.0, 820.0),
-    ("team-publish-outbox-after-dispatch", 1440.0, -140.0),
     ("team-publish-outbox-events", 360.0, -240.0),
     ("team-publish-outbox-on-request", 360.0, 40.0),
     ("team-push-canonical-branch", 720.0, 1600.0),
@@ -1268,7 +1229,7 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-record-review-promotion", 1080.0, 1120.0),
     ("team-release-verification-requested", 0.0, 1800.0),
     ("team-deliverable-acceptance-verification-requested", 0.0, 2200.0),
-    ("team-route-completed-session", 360.0, -80.0),
+    ("team-route-completed-session", 1800.0, 820.0),
     ("team-send-external-chat-reply", 360.0, 340.0),
     ("team-verify-release-candidate", 360.0, 1800.0),
     ("team-verify-deliverable-acceptance", 360.0, 2200.0),

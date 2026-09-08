@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from evander.admin.composition import build_admin_runtime
 from evander.admin.tool_visibility import (
     ToolVisibilityBindingState,
@@ -188,8 +190,12 @@ def test_admin_service_tool_visibility_classifies_delete_ado_backlog_item(
     assert delete_row.approval_locked is True
 
 
-def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
+@pytest.mark.parametrize(
+    "tool", [ToolName.UPDATE_ADO_BACKLOG_TITLE, ToolName.UPDATE_ADO_BACKLOG_STATE]
+)
+def test_admin_service_tool_visibility_payload_classifies_ado_update_tool(
     tmp_path: Path,
+    tool: ToolName,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -197,7 +203,7 @@ def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
             session_id="session-1",
             vm_id="vm-1",
             vm_provider="libvirt",
-            allowed_tools=[ToolName.UPDATE_ADO_BACKLOG_TITLE],
+            allowed_tools=[tool],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
@@ -205,12 +211,12 @@ def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
     payload = service.approval_audit_admin.tool_visibility_payload(target="session-1")
     rows = _tool_rows(payload)
 
-    visible = rows[ToolName.UPDATE_ADO_BACKLOG_TITLE.value]
+    visible = rows[tool.value]
     assert visible.visibility_state is ToolVisibilityState.VISIBLE
     assert visible.source == "session.allowed_tools"
     assert visible.category == "Azure DevOps"
     assert visible.provider == "azure_devops"
-    assert visible.label == "update ado backlog title"
+    assert visible.label == tool.value.replace("_", " ")
 
 
 def test_admin_service_tool_visibility_payload_classifies_update_pull_request_tool(

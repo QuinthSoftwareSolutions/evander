@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from evander.effects.providers.lifecycle_hooks import build_effect_lifecycle_hooks
+from .agent_completion import publish_configured_agent_completions
 from ..effect_extensions import (
     CompletionDispatchHook,
     LifecycleReconciliationHook,
@@ -53,6 +54,9 @@ class AgentCompletionSpecialEventHandler:
         )
         if not should_run:
             return SpecialEventResult(consume_event=not source_node_exists)
+        publish_configured_agent_completions(
+            queue=worker.event_queue, record=queue_record, graph=graph
+        )
         for hook in self._lifecycle_hooks:
             hook.on_completion_fan_out(worker=worker, queue_record=queue_record, graph=graph)
         worker._handle_gate_completion_event(queue_record=queue_record, graph=graph)

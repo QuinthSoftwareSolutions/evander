@@ -78,6 +78,7 @@ def select_role_task_owner(
     role_id: str,
     candidate_authorization_error: Callable[[PersistentAgent], str | None],
     now: datetime | None = None,
+    allow_unavailable: bool = False,
 ) -> RoleTaskOwnerSelection:
     project = state.projects.get(project_id)
     if project is None:
@@ -138,10 +139,12 @@ def select_role_task_owner(
         ):
             exclusion_counts["role_not_effective_for_project"] += 1
             continue
-        if candidate.status != AgentStatus.ACTIVE:
+        if candidate.status == AgentStatus.ARCHIVED or (
+            not allow_unavailable and candidate.status != AgentStatus.ACTIVE
+        ):
             exclusion_counts["agent_not_active"] += 1
             continue
-        if _active_stand_downs_for_agent(state, candidate.id):
+        if not allow_unavailable and _active_stand_downs_for_agent(state, candidate.id):
             exclusion_counts["agent_stood_down"] += 1
             continue
         authorization_error = candidate_authorization_error(candidate)

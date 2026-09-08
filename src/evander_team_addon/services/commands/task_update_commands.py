@@ -133,6 +133,8 @@ def _apply_task_owner_reassignment(
         now=now,
     )
     task.owner_agent_id = new_owner_id
+    task.assignment_mode = "agent"
+    task.assignment_role_id = None
     reconcile_task_blockers_after_reassignment(
         state,
         task_id=task.id,
@@ -523,6 +525,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             )
             authorized = (
                 task.owner_agent_id == actor.id
+                or (task.owner_agent_id is None and task.created_by_agent_id == actor.id)
                 or (parent is not None and parent.owner_agent_id == actor.id)
                 or _is_project_lead_for(state_model, actor.id, task.project_id)
                 or team_manager_allowed
@@ -1427,7 +1430,19 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 and agent.team_id == project.team_id
                 and _is_team_manager(state_model, agent)
             )
+            from ..domain.role_task_queue import can_manage_unclaimed_role_task
+
+            queue_manager = can_manage_unclaimed_role_task(state_model, task, agent.id)
             raw_state = normalized_updates.get("state")
+            if task.owner_agent_id is None and raw_state in {
+                "in_progress",
+                "waiting_for_review",
+                "finished",
+            }:
+                raise TeamCommandValidationError(
+                    code="role_task_not_assigned",
+                    message="role task must be assigned before execution or completion",
+                )
             has_state = "state" in normalized_updates
             has_priority = "priority" in normalized_updates
             has_title = "title" in normalized_updates
@@ -1536,10 +1551,15 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             )
             if (
                 (
-                    has_state or has_priority or has_title or has_description
-                    or has_completion or has_authored_by
+                    has_state
+                    or has_priority
+                    or has_title
+                    or has_description
+                    or has_completion
+                    or has_authored_by
                 )
                 and not is_owner
+                and not queue_manager
                 and not subordinate_finish_allowed
             ):
                 raise TeamCommandValidationError(
@@ -1642,6 +1662,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             if has_git_base_edit:
                 git_base_permitted = (
                     is_owner
+                    or queue_manager
                     or _supervises(state_model, agent.id, task.owner_agent_id)
                     or _is_project_lead_for(state_model, agent.id, task.project_id)
                     or is_same_team_manager
@@ -1659,6 +1680,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             if has_dependency_edit or has_deliverable_policy_edit:
                 graph_permitted = (
                     is_owner
+                    or queue_manager
                     or _supervises(state_model, agent.id, task.owner_agent_id)
                     or _is_project_lead_for(state_model, agent.id, task.project_id)
                     or is_same_team_manager
@@ -1861,6 +1883,15 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         sender_agent_id=agent.id,
                         now=now,
                     )
+            if changed and task.assignment_mode == "role" and task.owner_agent_id is None:
+                from ..domain.role_task_queue import append_role_queue_wake_events
+
+                append_role_queue_wake_events(
+                    state_model,
+                    result=reconciliation_result,
+                    now=now,
+                    project_id=task.project_id,
+                )
             response_payload = {
                 "task_id": task.id,
                 "updated_task_ids": [task.id] if changed else [],

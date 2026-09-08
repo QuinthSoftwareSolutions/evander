@@ -443,7 +443,7 @@ def test_get_latest_detects_hidden_system_workflow_pack_change(tmp_path: Path) -
     assert enqueue_effect.display_name == "Enqueue updated chat assistant prompt"
 
 
-def test_load_config_compiles_await_agent_templates_to_explicit_triggers(tmp_path: Path) -> None:
+def test_load_config_accepts_legacy_await_agent_completion_as_noop(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path
     path = _config_path(project_dir)
@@ -491,9 +491,10 @@ def test_load_config_compiles_await_agent_templates_to_explicit_triggers(tmp_pat
         project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
     )
 
-    assert any(trigger.type == "trigger:agent:run:completed" for trigger in config.triggers)
+    assert "cron-1" in {trigger.id for trigger in config.triggers}
+    assert all(trigger.type != "trigger:agent:run:completed" for trigger in config.triggers)
     await_gate = next(gate for gate in config.gates if gate.type == "gate:await-agent")
-    assert await_gate.completion_trigger_id == "__await-agent-completion__"
+    assert "completion_trigger_id" not in await_gate.config
 
 
 def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:

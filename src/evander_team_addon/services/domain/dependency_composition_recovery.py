@@ -27,7 +27,7 @@ from ...models import (
 from .agent_access import _supervises
 from .blockers import append_blocker_event, resolve_blocker
 from .common import _optional_text, _required_text
-from .preparation_failures import task_preparation_generation
+from .preparation_failures import task_git_work_context_generation, task_preparation_generation
 from .review_handoff import queue_actionable_inbox_item
 from .work_due import _mark_agent_work_due
 from .work_lineage import ensure_task_work_lineage
@@ -201,6 +201,23 @@ def accepted_recovery_for_target(
         else DependencyGitSource.model_validate(source).model_dump(mode="json")
         for source in dependency_git_sources
     ]
+    task = state.tasks.get(target_task_id)
+    if task is None:
+        return None
+    generation = task_preparation_generation(state, target_task_id)
+    work_context_generation = task_git_work_context_generation(state, target_task_id)
+    # A completed dispatch abandons its context, but the retained checkout still
+    # attests the accepted recovery. Its generation normalizes ordinary task
+    # lifecycle changes while continuing to reject changed instructions or inputs.
+    retained_recoveries = {
+        (context.dependency_composition_recovery_id, context.base_commit, context.base_branch)
+        for context in state.git_work_contexts.values()
+        if context.task_id == target_task_id
+        and context.agent_id == task.owner_agent_id
+        and context.preparation_generation == work_context_generation
+        and [source.model_dump(mode="json") for source in context.dependency_git_sources]
+        == expected_sources
+    }
     candidates = [
         recovery
         for recovery in state.dependency_composition_recoveries.values()
@@ -208,7 +225,11 @@ def accepted_recovery_for_target(
         and recovery.state == DependencyCompositionRecoveryState.ACCEPTED
         and [source.model_dump(mode="json") for source in recovery.dependency_git_sources]
         == expected_sources
-        and recovery.preparation_generation == task_preparation_generation(state, target_task_id)
+        and (
+            recovery.preparation_generation == generation
+            or (recovery.id, recovery.resolved_commit_sha, recovery.base_branch)
+            in retained_recoveries
+        )
     ]
     if len(candidates) > 1:
         raise ValueError(f"task {target_task_id} has multiple accepted dependency recoveries")

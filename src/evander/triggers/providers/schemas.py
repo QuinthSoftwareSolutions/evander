@@ -907,8 +907,10 @@ class GitPushTriggerDefinition(TriggerDefinition):
 
 
 class AgentRunCompletedTriggerDefinition(TriggerDefinition):
+    """Completion event subscription retained for existing workflow packs."""
+
     type: Literal["trigger:agent:run:completed"]
-    vm_user: str | None = "agent"
+    vm_user: str = Field(default="agent", min_length=1)
 
 
 class AgentPromptNewTriggerDefinition(TriggerDefinition):

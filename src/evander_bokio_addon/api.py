@@ -19,6 +19,7 @@ from .evidence import (
 from .operations import (
     BokioOperationStore,
     bokio_error_payload,
+    bokio_operator_error_message,
     bokio_write_failure_is_uncertain,
 )
 from .state import PreparedActionStore, upload_staging_dir
@@ -266,6 +267,7 @@ def _execute_prepared_action(
                 error["evidence_operation"] = current_operation
                 if str(current_operation.get("journal_entry_id") or "").strip():
                     error["journal_entry_created"] = True
+                    error["operator_message"] = bokio_operator_error_message(error)
                     store.mark_failed(
                         action_id,
                         error=error,
@@ -327,7 +329,7 @@ def _error_response(exc: Exception) -> JSONResponse:
 
 def _exception_payload(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, BokioApiError):
-        return exc.to_payload()
+        return bokio_error_payload(exc)
     return {"error": str(exc), "error_class": exc.__class__.__name__}
 
 

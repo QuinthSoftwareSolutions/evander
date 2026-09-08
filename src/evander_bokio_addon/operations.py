@@ -295,6 +295,11 @@ def _required_text(value: Any, field_name: str) -> str:
     return normalized
 
 
+def _optional_text(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 def _json_object(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise BokioOperationError("payload must be a JSON object")
@@ -351,5 +356,74 @@ def bokio_write_failure_is_uncertain(exc: Exception) -> bool:
 
 def bokio_error_payload(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, BokioApiError):
-        return {**exc.to_payload(), "error_class": exc.__class__.__name__}
+        payload = {**exc.to_payload(), "error_class": exc.__class__.__name__}
+        payload["operator_message"] = bokio_operator_error_message(payload)
+        return payload
     return {"error": str(exc), "error_class": exc.__class__.__name__}
+
+
+def bokio_operator_error_message(error: Mapping[str, Any]) -> str:
+    """Turn a structured Bokio failure into concise operator-facing guidance."""
+
+    upstream_payload = error.get("payload")
+    upstream = upstream_payload if isinstance(upstream_payload, Mapping) else {}
+    validation_errors = upstream.get("errors")
+    details: list[str] = []
+    if isinstance(validation_errors, list):
+        for item in validation_errors:
+            if not isinstance(item, Mapping):
+                continue
+            field = _optional_text(item.get("field"))
+            message = _optional_text(item.get("message"))
+            if field and message:
+                details.append(f"{field} - {message}")
+            elif field or message:
+                details.append(field or message or "")
+
+    upstream_message = _optional_text(error.get("error")) or "Bokio request failed"
+    status_code = error.get("status_code")
+    status_text = f" (HTTP {status_code})" if isinstance(status_code, int) else ""
+    if details:
+        message = f"Bokio validation failed{status_text}: {'; '.join(details)}."
+    else:
+        message = f"{upstream_message}{status_text}."
+
+    evidence_operation = error.get("evidence_operation")
+    operation = evidence_operation if isinstance(evidence_operation, Mapping) else {}
+    journal_entry_id = _optional_text(operation.get("journal_entry_id"))
+    if not journal_entry_id and not bool(error.get("journal_entry_created")):
+        return message
+
+    result = operation.get("result")
+    result_mapping = result if isinstance(result, Mapping) else {}
+    entry_number = _optional_text(result_mapping.get("journalEntryNumber"))
+    identifier = (
+        f"journal entry {entry_number} ({journal_entry_id})"
+        if entry_number
+        else f"journal entry {journal_entry_id}"
+        if journal_entry_id
+        else "the journal entry"
+    )
+    associations = operation.get("associations")
+    association_rows = associations if isinstance(associations, list) else []
+    attached_count = sum(
+        1
+        for item in association_rows
+        if isinstance(item, Mapping) and item.get("status") == "attached"
+    )
+    failed_count = sum(
+        1
+        for item in association_rows
+        if isinstance(item, Mapping) and item.get("status") == "failed"
+    )
+    attachment_status = ""
+    if attached_count or failed_count:
+        attachment_status = (
+            f" {attached_count} evidence file{' was' if attached_count == 1 else 's were'} "
+            f"attached and {failed_count} failed."
+        )
+    return (
+        f"{message} {identifier[:1].upper() + identifier[1:]} was created; only evidence attachment failed."
+        f"{attachment_status} A retry resumes evidence attachment and will not create another "
+        "journal entry."
+    )

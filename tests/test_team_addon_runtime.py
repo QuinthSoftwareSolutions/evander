@@ -472,9 +472,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
 
     assert _node_ids(config.triggers) == [
         "team-cron",
-        "team-agent-run-completed",
         "team-chat-message-queued",
         "team-external-chat-reply-requested",
+        "team-role-queue-wake-requested",
         "team-agent-wake-requested",
         "team-governance-wake-requested",
         "team-outbox-publish-requested",
@@ -508,12 +508,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     }
     assert document.output_schemas["team-route-completed-session"]["ignored"] == {"type": "boolean"}
     assert "team-read-persistent-action" not in document.output_schemas
-    assert document.output_schemas["team-finalize-persistent-dispatch"]["finalized"] == {
-        "type": "boolean"
-    }
-    assert document.output_schemas["team-finalize-persistent-dispatch"]["progress_made"] == {
-        "type": "boolean"
-    }
+    assert "team-finalize-persistent-dispatch" not in document.output_schemas
     assert document.output_schemas["team-record-external-chat-delivery"]["status"] == {
         "type": "string"
     }
@@ -2570,12 +2565,16 @@ def test_manager_fallback_scopes_unattended_support_task_for_supervision(
     assert lease["dispatch"]["task_ids"] == ["support-task"]
     assert lease["dispatch"]["project_ids"] == []
     assert lease["dispatch"]["wake_work_record_fingerprints"]["open_work:support-task"]
+    # Losing the supervision fingerprint invalidates both task ownership and project scope.
     unfingerprinted = repo.read().dispatches[dispatch_id].model_copy(deep=True)
     unfingerprinted.wake_work_record_fingerprints = {}
     assert _dispatch_staleness_errors(
         repo.read(),
         dispatch=unfingerprinted,
-    ) == ["task support-task is now assigned to support"]
+    ) == [
+        "task support-task is now assigned to support",
+        "project scope changed during dispatch preparation",
+    ]
 
     activated, _activation = runtime.activate_delivered_agent_dispatch(
         dispatch_id=dispatch_id,
@@ -14375,7 +14374,7 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert "team-apply-ephemeral-action" not in effects
     assert queries["team-route-completed-session"]["type"] == "query:team:session-routing"
     assert queries["team-route-completed-session"]["dispatch_id"] == (
-        "${{team-agent-run-completed.dispatch_id ?? null}}"
+        "${{team-prompt-ephemeral-agent.dispatch_id ?? null}}"
     )
     assert gates["team-completed-ephemeral"]["when"]["all"][0] == {
         "equals": True,
@@ -14390,12 +14389,13 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert ("team-mark-ephemeral-spawned", "team-ephemeral-spawned") in edges
     assert ("team-ephemeral-spawned", "team-prompt-ephemeral-agent") in edges
     assert ("team-mark-ephemeral-spawned", "team-prompt-ephemeral-agent") not in edges
+    assert ("team-prompt-ephemeral-agent", "team-route-completed-session") in edges
     assert ("team-completed-ephemeral", "team-destroy-ephemeral-agent") in edges
     assert ("team-read-ephemeral-action", "team-apply-ephemeral-action") not in edges
     assert ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up") in edges
 
 
-def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
+def test_team_runtime_pack_uses_event_and_scheduled_outbox_publishers() -> None:
     pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
@@ -14413,10 +14413,8 @@ def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
     assert effects["team-publish-outbox-on-request"]["outbox_record_ids"] == (
         "${{team-outbox-publish-requested.payload.outbox_record_ids ?? null}}"
     )
-    assert (
-        "team-finalize-persistent-dispatch",
-        "team-publish-outbox-after-dispatch",
-    ) in edges
+    assert "team-finalize-persistent-dispatch" not in effects
+    assert "team-publish-outbox-after-dispatch" not in effects
 
 
 def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None:
@@ -14767,6 +14765,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
         "project_id": "${{team-git-promotion-requested.payload.project_id}}",
         "publication_revision": "${{team-mark-release-published.revision}}",
+        "publication_context_id": "${{team-mark-release-published.publication_context_id ?? null}}",
         "published_commit_sha": "${{team-push-canonical-branch.commit_sha}}",
         "release_package_id": "${{team-git-promotion-requested.payload.release_package_id}}",
         "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",

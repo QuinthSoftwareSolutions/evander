@@ -323,7 +323,7 @@ class BokioEvidenceStore:
             self._operation_ledger.begin_immediate(connection)
             row = self._operation_ledger.fetch_row(connection, (normalized_key,))
             if row is not None:
-                operation = _operation_from_row(row)
+                operation = self._operation_with_connection(connection, normalized_key)
                 if (
                     operation["payload"] != normalized_payload
                     or operation["evidence_ids"] != normalized_evidence_ids
@@ -614,7 +614,25 @@ class BokioEvidenceStore:
         row = self._operation_ledger.fetch_row(connection, (operation_key,))
         if row is None:
             raise BokioEvidenceError("Bokio journal-entry operation was not recorded")
-        return _operation_from_row(row)
+        operation = _operation_from_row(row)
+        journal_entry_id = str(operation.get("journal_entry_id") or "").strip()
+        evidence_ids = operation.get("evidence_ids")
+        if not journal_entry_id or not isinstance(evidence_ids, list):
+            operation["associations"] = []
+            return operation
+        associations = []
+        for evidence_id in evidence_ids:
+            row = connection.execute(
+                """
+                SELECT * FROM evidence_associations
+                WHERE evidence_id = ? AND journal_entry_id = ?
+                """,
+                (evidence_id, journal_entry_id),
+            ).fetchone()
+            if row is not None:
+                associations.append(_association_from_row(row))
+        operation["associations"] = associations
+        return operation
 
     @staticmethod
     def _refresh_evidence_status(connection: sqlite3.Connection, evidence_id: str) -> None:

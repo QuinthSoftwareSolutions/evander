@@ -391,6 +391,9 @@ def test_bokio_admin_prepared_journal_attaches_evidence_without_recreating_entry
     assert failed["status"] == "failed"
     assert failed["error"]["journal_entry_created"] is True
     assert failed["error"]["evidence_operation"]["journal_entry_id"] == "journal-entry-1"
+    assert failed["error"]["evidence_operation"]["associations"][0]["status"] == "failed"
+    assert "Journal entry journal-entry-1 was created" in failed["error"]["operator_message"]
+    assert "will not create another journal entry" in failed["error"]["operator_message"]
 
     retried = client.post(
         f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}/retry",
@@ -573,7 +576,18 @@ def test_bokio_admin_keeps_definite_prepared_journal_rejections_failed_and_retry
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(400, json={"message": "invalid journal entry"})
+        return httpx.Response(
+            400,
+            json={
+                "message": "Validation failed with 1 error",
+                "errors": [
+                    {
+                        "field": "#/items/0/account",
+                        "message": "Account is not valid",
+                    }
+                ],
+            },
+        )
 
     real_client = httpx.Client
     transport = httpx.MockTransport(handler)
@@ -598,10 +612,14 @@ def test_bokio_admin_keeps_definite_prepared_journal_rejections_failed_and_retry
     first = client.post(f"{action_url}/approve-and-execute")
 
     assert first.status_code == 400
+    assert first.json()["operator_message"] == (
+        "Bokio validation failed (HTTP 400): #/items/0/account - Account is not valid."
+    )
     failed = PreparedActionStore(tmp_path / "runtime").get_action(created["action_id"])
     assert failed is not None
     assert failed["status"] == "failed"
     assert failed["error"]["evidence_operation"]["status"] == "failed"
+    assert "#/items/0/account - Account is not valid" in failed["error"]["operator_message"]
 
     retried = client.post(f"{action_url}/retry", json={})
 

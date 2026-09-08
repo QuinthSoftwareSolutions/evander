@@ -534,12 +534,24 @@ def _append_newly_ready_task_owner_wake_requested_events(
 ) -> None:
     """Wake only owners whose existing dependency-gated task just became ready."""
 
+    from .role_task_queue import append_role_queue_wake_events
+
+    if any(
+        previous != "satisfied"
+        and task_id in state.tasks
+        and state.tasks[task_id].assignment_mode == "role"
+        and state.tasks[task_id].owner_agent_id is None
+        and state.dependency_status(task_id) == "satisfied"
+        for task_id, previous in dependency_statuses_before.items()
+    ):
+        append_role_queue_wake_events(state, result=result, now=now)
     newly_ready_owner_ids = {
         task.owner_agent_id
         for task_id, previous_status in dependency_statuses_before.items()
         if previous_status != "satisfied"
         and (task := state.tasks.get(task_id)) is not None
         and state.dependency_status(task.id) == "satisfied"
+        and task.owner_agent_id is not None
         and _task_can_wake_owner_for_work(state, task)
     }
     for agent_id in sorted(newly_ready_owner_ids):

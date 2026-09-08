@@ -1671,6 +1671,7 @@ def reconcile_task_blockers_after_reassignment(
         parent_task = parent_task_for_child(state, task)
         if (
             parent_task is not None
+            and parent_task.owner_agent_id is not None
             and parent_task.owner_agent_id != new_owner.id
             and parent_task.owner_agent_id != blocker.reporter_agent_id
         ):

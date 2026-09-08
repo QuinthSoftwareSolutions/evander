@@ -212,7 +212,7 @@ def test_reassigned_rework_starts_from_immutable_rejected_deliverable(
                 "composed_tree_hash": composed_tree,
             }
         )
-        return "/home/agent/worktrees/repo/rework-task-continuation", composed_commit
+        return f"/home/agent/worktrees/repo/{kwargs['worktree_name']}", composed_commit
 
     monkeypatch.setattr(
         "evander_team_addon.providers._prepare_project_repo_task_worktree",
@@ -1166,7 +1166,7 @@ def test_correction_git_context_records_manifest_and_reuses_composed_base(
                 "composed_tree_hash": fix_tree,
             }
         )
-        return "/home/agent/worktrees/repo/correction-task", fix_commit
+        return f"/home/agent/worktrees/repo/{kwargs['worktree_name']}", fix_commit
 
     monkeypatch.setattr(
         "evander_team_addon.providers._prepare_project_repo_task_worktree",

@@ -43,6 +43,7 @@ _ADO_PROXY_SYNC_FIELDS = (
     "System.Id",
     "System.Title",
     "System.Description",
+    "Microsoft.VSTS.Common.AcceptanceCriteria",
     "System.State",
     "System.WorkItemType",
     "System.AreaPath",
@@ -973,6 +974,7 @@ class AzureDevOpsIssueAdapter:
             "rev": payload.get("rev"),
             "title": str(fields.get("System.Title") or ""),
             "description": str(fields.get("System.Description") or ""),
+            "acceptance_criteria": str(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""),
             "state": str(fields.get("System.State") or ""),
             "url": web_url or api_url,
             "web_url": web_url or None,
@@ -998,6 +1000,9 @@ class AzureDevOpsIssueAdapter:
             "id": remote_id,
             "title": str(fields.get("System.Title") or "").strip(),
             "description": str(fields.get("System.Description") or "").strip(),
+            "acceptance_criteria": str(
+                fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""
+            ).strip(),
             "state": str(fields.get("System.State") or "").strip() or None,
             "type": str(fields.get("System.WorkItemType") or "").strip() or None,
             "area": str(fields.get("System.AreaPath") or "").strip() or None,
@@ -2326,6 +2331,10 @@ class AzureDevOpsIssueAdapter:
                     item = {
                         "id": str(raw_item.get("id") or "").strip(),
                         "title": str(raw_fields.get("System.Title") or "").strip(),
+                        "description": str(raw_fields.get("System.Description") or "").strip(),
+                        "acceptance_criteria": str(
+                            raw_fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""
+                        ).strip(),
                         "state": str(raw_fields.get("System.State") or "").strip() or None,
                         "type": str(raw_fields.get("System.WorkItemType") or "").strip() or None,
                         "iteration": str(raw_fields.get("System.IterationPath") or "").strip()
@@ -2411,6 +2420,10 @@ class AzureDevOpsIssueAdapter:
                 ).strip()
                 or None,
                 "title": str(fields.get("System.Title") or "").strip() or None,
+                "description": str(fields.get("System.Description") or "").strip(),
+                "acceptance_criteria": str(
+                    fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""
+                ).strip(),
                 "state": str(fields.get("System.State") or "").strip() or None,
                 "type": str(fields.get("System.WorkItemType") or "").strip() or None,
                 "created_at": self._normalize_datetime(

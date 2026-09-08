@@ -103,6 +103,7 @@ from evander.models import (
     AdoBacklogGetResponse,
     AdoBacklogQueryRequest,
     AdoBacklogQueryResponse,
+    AdoBacklogStateUpdateRequest,
     AdoBacklogTagsUpdateRequest,
     AdoBacklogTextUpdateRequest,
     AdoBacklogTitleUpdateRequest,

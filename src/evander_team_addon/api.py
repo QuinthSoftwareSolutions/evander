@@ -527,7 +527,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         status_code: int = 200,
         rebased_from_revision: int | None = None,
         extra: Mapping[str, Any] | None = None,
+        publish_role_queue: bool = False,
     ) -> JSONResponse:
+        if publish_role_queue:
+            publication = request_team_outbox_publication_for_records(
+                context,
+                outbox_record_ids=[
+                    record.id
+                    for record in repository.list_outbox_records(
+                        status="pending",
+                        intent_type="team.role_queue.wake_requested",
+                    )
+                ],
+            )
+            if publication:
+                extra = {**dict(extra or {}), "role_queue_outbox_publication": publication}
         if _request_wants_view_scoped_response(request):
             response_payload = _mutation_view_response_payload(
                 state,
@@ -1223,7 +1237,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="roles",
             target_id=role_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        return _state_response(
+            request, state, rebased_from_revision=rebased_from_revision, publish_role_queue=True
+        )
 
     async def list_roles(_request: Request) -> JSONResponse:
         state = repository.read()
@@ -1268,6 +1284,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return _state_response(
             request,
             state,
+            publish_role_queue=True,
             status_code=201,
             rebased_from_revision=rebased_from_revision,
         )
@@ -1343,6 +1360,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return _state_response(
             request,
             state,
+            publish_role_queue=True,
             rebased_from_revision=rebased_from_revision,
             extra=({"published_event_ids": published_event_ids} if published_event_ids else None),
         )
@@ -2550,6 +2568,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return _state_response(
             request,
             state,
+            publish_role_queue=True,
             rebased_from_revision=rebased_from_revision,
             extra=(
                 _idle_context_rotation_outbox_publication_extra(

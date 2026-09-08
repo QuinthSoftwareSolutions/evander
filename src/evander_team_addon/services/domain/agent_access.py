@@ -237,6 +237,9 @@ def _team_ids_with_open_work(state: TeamState) -> set[str]:
             or task.state == TeamTaskState.WAITING_FOR_INPUT
         ):
             continue
+        project = state.projects.get(task.project_id)
+        if task.assignment_mode == "role" and project is not None:
+            team_ids.add(project.team_id)
         owner = state.agents.get(task.owner_agent_id)
         if owner is not None and owner.team_id is not None:
             team_ids.add(owner.team_id)

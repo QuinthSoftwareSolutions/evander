@@ -177,7 +177,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file. The retired plural `directory_paths` field is rejected. |
-| `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
+| `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names supplied by installed add-ons and applied after structural compile/validation. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator definition list; event envelopes live in `src/evander/events/models.py`, while trigger-specific schemas and implementations live under `src/evander/triggers/`. |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
 | `gate_lock_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator single-instance lock file path. |
@@ -1148,6 +1148,14 @@ remains available as an ADO compatibility alias.
 For ADO work-item discovery, `query_mode=structured_filters` uses the structured filter fields,
 while `query_mode=manual_wiql` uses the explicit WIQL text and ignores structured filters. Omitted
 `query_mode` preserves legacy behavior by inferring Manual WIQL when `wiql` is set.
+
+The session-scoped `update_ado_backlog_state` MCP tool accepts `id`, `state`, optional `project`,
+and optional `expected_state`. It updates only `System.State` using the caller's directory-owned
+ADO connection. State names must be non-empty and valid for the item's ADO process. A supplied
+`expected_state` is checked atomically by ADO before updating; mismatches fail without an
+unconditional retry. Omitting it sends an unconditional update. Grant the tool explicitly in
+`allowed_tools`; normal `approval_required_tools`, `mcp_tool_policies`, and tool-argument policies
+apply. Existing sessions and provisioning defaults are not automatically granted this tool.
 
 The session-scoped `update_pull_request` MCP tool exposes Azure DevOps PR title, description,
 status, and tag updates to explicitly authorized agents. It accepts `azure_devops`,
@@ -2444,8 +2452,17 @@ The following environment variables are consumed directly by scripts as runtime 
 ## Workflow Completion Gate
 
 `gate:await-agent` pauses a workflow until the selected agent run completes. Configure at least one
-of `session_id` or `vm_name`; `completion_trigger_id` may select the completion trigger explicitly.
-Connect an agent prompt's `started` output to this gate when downstream work must wait for completion.
+of `session_id` or `vm_name`. Completion is correlated to the prompt's dispatch ID internally; no
+polling trigger is required. Connect an agent prompt's `started` output to this gate when downstream
+work must wait for completion.
+
+Existing `trigger:agent:run:completed` nodes receive events published by prompt reconciliation
+or the wake monitor. The effect worker forwards each completed dispatch once per enabled trigger,
+preserving its payload and trace. A trigger uses its explicit `directory_path` or its workflow
+graph's directory; `root` receives all directories, while other paths match exactly. Optional
+`vm_name`, `session_id`, and `vm_user` selectors continue to apply (`vm_user` defaults to `agent`).
+These subscriptions do not poll host VM inventory. Forwarded events are durable and deduplicated
+when completion publication is retried or the worker restarts.
 
 ## Communication Trigger Provider Coverage
 

@@ -2334,6 +2334,16 @@ def _team_internal_event(
 
 _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
     _team_internal_event(
+        "team.role_queue.wake_requested",
+        "Team role queue wake requested",
+        "Ready role work or available capacity should trigger a project-scoped dispatch scan.",
+    ),
+    _team_internal_event(
+        "team.task.role_assigned",
+        "Team role task assigned",
+        "A role task and its concrete owner were reserved atomically with a dispatch and candidate scores.",
+    ),
+    _team_internal_event(
         CHAT_MESSAGE_QUEUED_EVENT_TYPE,
         "Team chat message queued",
         "Published when an operator chat message is queued for a Team agent.",
@@ -2825,6 +2835,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         preparation_blocker_ids: list[str] = []
         for lease_index, lease in enumerate(leases):
             agent = lease["agent"]
+            prompt_submission_attempted = False
             try:
                 lease = {
                     **lease,
@@ -3021,6 +3032,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 )
                 resume_thread_id = work_lineage_resume_thread_id(lease)
                 try:
+                    prompt_submission_attempted = True
                     result = _enqueue_team_agent_prompt(
                         resumer,
                         target=agent["session_id"],
@@ -3076,7 +3088,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         result_payload = _coerce_mapping(result)
                 if _result_reports_failure(result_payload):
                     error = _resume_failure_message(result_payload)
-                    state = _record_wake_failure(repo, lease=lease, error=error)
+                    state = _record_wake_failure(
+                        repo,
+                        lease=lease,
+                        error=error,
+                        delivery_not_started=not prompt_submission_attempted,
+                    )
                     errors.append(f"{agent['id']}: {error}")
                     continue
                 if bool(result_payload.get("queued")):
@@ -3191,7 +3208,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             except Exception as exc:  # pragma: no cover - exercised by provider tests with fakes
                 error = str(exc)
                 try:
-                    state = _record_wake_failure(repo, lease=lease, error=error)
+                    state = _record_wake_failure(
+                        repo,
+                        lease=lease,
+                        error=error,
+                        delivery_not_started=not prompt_submission_attempted,
+                    )
                     if isinstance(exc, DependencyGitPreparationError):
                         state = _record_dependency_git_preparation_blocker(
                             repo,
@@ -5435,11 +5457,9 @@ class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
 class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
     """Renew and finalize Team leases for standalone prompt executions.
 
-    Team wakes are dispatched through standalone admin prompt effects in some
-    paths, so their completion does not always flow through the Team runtime
-    pack's trigger:agent:run:completed node. This hook keeps the lease lifecycle
-    owned by the add-on, extends it only while the exact execution is active,
-    and reuses the same repository finalizer.
+    Team wakes are dispatched through standalone admin prompt effects. This hook
+    keeps the lease lifecycle owned by the add-on, extends it only while the
+    exact execution is active, and reuses the same repository finalizer.
     """
 
     _LEASE_RENEWAL_SECONDS = MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS
@@ -9526,6 +9546,7 @@ def _ensure_project_repo_git_preparation_attempt(
             "managed_repo_id",
             "directory_path",
             "execution_backend",
+            "worktree_path",
             "branch",
             "base_ref",
             "preparation_generation",
@@ -9842,17 +9863,22 @@ def _create_project_repo_git_work_contexts(
             task_id=task_id,
             effective_base_branch=effective_base_branch,
         )
+        # A failed automatic composition may already own a worktree and branch,
+        # even though it never produced a preparation receipt. Give the reviewed
+        # recovery its own stable identity on both backends, preserving that
+        # checkout and keeping retries of the same recovery on the same branch.
+        candidate_identity_commit = (
+            continuation_identity_commit
+            if continuation_identity_commit is not None
+            else correction_source.candidate_commit_sha
+            if correction_source is not None
+            else resolved_dependency_commit_sha
+        )
         agent_branch = _project_repo_agent_branch(
             session_id,
             task_id=task_id,
             preparation_generation=preparation_generation,
-            candidate_commit_sha=(
-                continuation_identity_commit
-                if continuation_identity_commit is not None
-                else correction_source.candidate_commit_sha
-                if correction_source is not None
-                else None
-            ),
+            candidate_commit_sha=candidate_identity_commit,
         )
         try:
             if dependency_recovery is None:
@@ -9883,7 +9909,7 @@ def _create_project_repo_git_work_contexts(
         worktree_name = _project_repo_task_worktree_name(
             task_id=task_id,
             preparation_generation=preparation_generation,
-            identity_commit=(continuation_identity_commit or pinned_base_commit),
+            identity_commit=(candidate_identity_commit or pinned_base_commit),
         )
         directory_path = (
             _optional_text(
@@ -9937,6 +9963,11 @@ def _create_project_repo_git_work_contexts(
             and prior_base_commit is None
         ):
             prior_base_commit = preparation_attempt.base_commit_sha
+        recovery_already_committed = (
+            dependency_composition_mode == "adopt_resolved"
+            and preparation_attempt.state == TeamGitPreparationAttemptState.COMMITTED
+            and prior_base_commit == resolved_dependency_commit_sha
+        )
         with team_task_worktree_cleanup_lock(
             runtime_dir=_runtime_dir(context),
             session_id=session_id,
@@ -9956,16 +9987,28 @@ def _create_project_repo_git_work_contexts(
                     preparation_attempt_id=(
                         preparation_attempt_id if use_preparation_receipt else None
                     ),
-                    worktree_identity_commit=(continuation_identity_commit),
+                    worktree_identity_commit=candidate_identity_commit,
                     preparation_generation=preparation_generation,
                     prior_base_commit=prior_base_commit,
                     pinned_base_commit=pinned_base_commit,
                     pinned_base_tree=pinned_base_tree,
                     dependency_git_sources=composition_git_sources,
-                    dependency_composition_mode=dependency_composition_mode,
-                    dependency_composition_recovery_id=(dependency_composition_recovery_id),
-                    resolved_dependency_branch=resolved_dependency_branch,
-                    resolved_dependency_commit_sha=resolved_dependency_commit_sha,
+                    # After adoption has committed, validate the retained task
+                    # checkout normally so later agent work is never reset to
+                    # the recovery candidate. Keep the recovery on the Team
+                    # context below, where it remains part of the provenance.
+                    dependency_composition_mode=(
+                        "automatic" if recovery_already_committed else dependency_composition_mode
+                    ),
+                    dependency_composition_recovery_id=(
+                        None if recovery_already_committed else dependency_composition_recovery_id
+                    ),
+                    resolved_dependency_branch=(
+                        None if recovery_already_committed else resolved_dependency_branch
+                    ),
+                    resolved_dependency_commit_sha=(
+                        None if recovery_already_committed else resolved_dependency_commit_sha
+                    ),
                     dependency_merge_author_identity=task_author,
                     task_author_identity=task_author,
                     composition_result=composition_result,
@@ -11174,7 +11217,15 @@ def _prepare_project_repo_task_worktree(
     )
     execution_backend = _optional_text(project_repo.get("execution_backend")) or selected_backend
     if execution_backend == "container_worker_vm":
-        expected_base_commit = prior_base_commit or pinned_base_commit
+        # An uncommitted adoption retries the original worker request. Its
+        # receipt supplies the composed base after validating the pinned root;
+        # sending that composed base here would change the receipt fingerprint.
+        expected_base_commit = (
+            pinned_base_commit
+            if dependency_composition_mode == "adopt_resolved"
+            and preparation_attempt_id is not None
+            else prior_base_commit or pinned_base_commit
+        )
         # A composed retained base has a different tree from its pinned root.
         # The worker validates that root through its composition record below.
         expected_base_tree = (
@@ -13041,6 +13092,7 @@ def _record_wake_failure(
     *,
     lease: Mapping[str, Any],
     error: str,
+    delivery_not_started: bool = False,
 ) -> Any:
     agent_id = _required_text(lease["agent"].get("id"), "agent_id")
     dispatch_id = _required_text(lease.get("dispatch_id"), "dispatch_id")
@@ -13050,12 +13102,14 @@ def _record_wake_failure(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
             error=error,
+            delivery_not_started=delivery_not_started,
         )
     if current_dispatch is not None and current_dispatch.status.value == "preparing":
         return TeamRuntimeService(repo).fail_agent_dispatch(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
             error=error,
+            delivery_not_started=delivery_not_started,
         )
     state, _result = TeamAgentActionService(repo).apply_agent_action(
         action={},
@@ -13069,6 +13123,7 @@ def _record_wake_failure(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
             error=error,
+            delivery_not_started=delivery_not_started,
         )
     return state
 

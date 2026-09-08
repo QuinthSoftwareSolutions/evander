@@ -385,6 +385,11 @@ class TeamCommandExecutor:
             dispatch=dispatch,
             task_ids=targets["task_ids"],
             require_actionable=(resolved.context.tool_name not in _DELIVERABLE_SUBMISSION_TOOLS),
+            allow_role_queue_management=resolved.context.tool_name
+            in {
+                "team_update_task",
+                "team_reassign_task_for_role",
+            },
         )
         _validate_dispatch_blocker_scope(
             state,
@@ -1194,6 +1199,12 @@ def _validate_cancel_task_dispatch_scope(
     task = state.tasks.get(task_id)
     if task is None:
         return
+    from ..domain.role_task_queue import can_manage_unclaimed_role_task
+
+    if task.project_id in dispatch.project_ids and can_manage_unclaimed_role_task(
+        state, task, dispatch.agent_id
+    ):
+        return
     if task_id in dispatch.task_ids:
         _validate_dispatch_task_scope(
             state,
@@ -1817,6 +1828,7 @@ def _validate_dispatch_task_scope(
     dispatch: TeamDispatch,
     task_ids: set[str],
     require_actionable: bool = True,
+    allow_role_queue_management: bool = False,
 ) -> None:
     role_bounded_chat_task_ids = {
         task_id
@@ -1827,7 +1839,19 @@ def _validate_dispatch_task_scope(
             and task.project_id in dispatch.project_ids
         )
     }
-    missing = sorted(task_ids - set(dispatch.task_ids) - role_bounded_chat_task_ids)
+    from ..domain.role_task_queue import can_manage_unclaimed_role_task
+
+    queued_management_ids = {
+        task_id
+        for task_id in task_ids
+        if allow_role_queue_management
+        and (task := state.tasks.get(task_id)) is not None
+        and task.project_id in dispatch.project_ids
+        and can_manage_unclaimed_role_task(state, task, dispatch.agent_id)
+    }
+    missing = sorted(
+        task_ids - set(dispatch.task_ids) - role_bounded_chat_task_ids - queued_management_ids
+    )
     if missing:
         raise _dispatch_scope_error(
             dispatch,
@@ -1843,7 +1867,7 @@ def _validate_dispatch_task_scope(
                 code="dispatch_scope_stale",
                 message=f"scoped task {task_id} no longer exists",
             )
-        if task_id in role_bounded_chat_task_ids:
+        if task_id in role_bounded_chat_task_ids or task_id in queued_management_ids:
             # Operator chat freezes the actor's role-visible projects rather
             # than attempting to predict the exact object IDs named in prose.
             # The command's domain policy validates current ownership,
