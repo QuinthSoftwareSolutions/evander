@@ -10011,14 +10011,12 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator(".task-board-lane-reviewing").getByText("Await review").waitFor({
     state: "visible",
   });
-  await page.locator(".task-board-lane-done").getByText("1 completed task hidden.").waitFor({
-    state: "visible",
-  });
+  assert.equal(await page.locator(".task-board-lane-done").count(), 0);
   assert.equal(
     await page.locator(".task-board-lane-done").getByText("Ship accepted delivery").count(),
     0,
   );
-  await page.locator(".task-board-lane-done").getByRole("button", { name: "Show completed" }).click();
+  await page.getByRole("checkbox", { name: "Show completed (1)" }).check();
   await page.locator(".task-board-lane-done").getByText("Ship accepted delivery").waitFor({
     state: "visible",
   });
@@ -11348,7 +11346,8 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     await boardPanel.getByRole("tab", { name: "Board" }).getAttribute("aria-selected"),
     "true",
   );
-  await boardPanel.getByText("25 completed tasks hidden.").waitFor({ state: "visible" });
+  await boardPanel.getByRole("checkbox", { name: "Show completed (25)" }).waitFor({ state: "visible" });
+  assert.equal(await boardPanel.locator(".task-board-lane-done").count(), 0);
   assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 0);
   await boardPanel
     .locator(".task-board-context")
@@ -11369,7 +11368,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   );
   assert.equal(await dependencyWaitCard.getByText("Blocked", { exact: true }).count(), 0);
 
-  await boardPanel.getByRole("button", { name: "Show completed" }).click();
+  await boardPanel.getByRole("checkbox", { name: "Show completed (25)" }).check();
   assert.equal(await boardPanel.locator(".task-board-lane-done .task-board-card").count(), 20);
   await boardPanel
     .locator(".task-board-lane-done")
@@ -11427,7 +11426,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   );
 
   await boardPanel.getByRole("button", { name: "Clear filters" }).click();
-  await boardPanel.getByRole("button", { name: "Show completed" }).click();
+  await boardPanel.getByRole("checkbox", { name: "Show completed (25)" }).check();
   await boardPanel
     .locator('[data-task-board-filter="completed-since"]')
     .fill("2026-06-12");
@@ -13284,8 +13283,8 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
   await page.locator("#task-board-project-select").selectOption("alpha-project");
   await page
     .locator("#team-task-board-page")
-    .getByRole("button", { name: "Show completed" })
-    .click();
+    .getByRole("checkbox", { name: /Show completed/ })
+    .check();
   const terminalCancel = page
     .locator('.task-board-card[data-task-board-task-id="task-successor"]')
     .getByRole("button", { name: "Cancel task" });

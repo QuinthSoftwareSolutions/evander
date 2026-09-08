@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-08 - Task board column layout (0.28.2)
+
+- Hide the Done column until Show completed is enabled, giving active tasks more room
+  while retaining access to completed history and pagination.
+- Adapt the number of columns to the available space and wrap long task titles, briefs,
+  links, and worktree paths inside their cards.
+
 ## 2026-09-08 - Release history visibility (0.28.1)
 
 - Keep recent accepted and rejected releases in the history window, with active releases
