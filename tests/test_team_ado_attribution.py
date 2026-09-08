@@ -199,3 +199,4 @@ def test_release_creator_includes_nested_contributions(tmp_path, second_owner, e
     assert captured["fallback_reason"] == expected_reason
     assert captured["identity_id"] == ("alice" if expected_reason is None else None)
     assert captured["commit_sha"] == "1" * 40
+    assert captured["work_item_ids"] == (["123", "456"] if second_owner else [])

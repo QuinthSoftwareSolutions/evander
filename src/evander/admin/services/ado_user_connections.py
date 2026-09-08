@@ -121,6 +121,8 @@ class AdoUserConnectionService:
                 fallback_reason TEXT, source_ref TEXT NOT NULL, created_at TEXT NOT NULL)""")
             db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS publications_source
                 ON publications(managed_repo_id, commit_sha, directory_path, source_ref)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS publication_work_items (
+                context_id TEXT PRIMARY KEY, work_item_ids_json TEXT NOT NULL)""")
             db.execute("""CREATE TABLE IF NOT EXISTS pr_attempts (
                 attempt_key TEXT PRIMARY KEY, attempted_at TEXT NOT NULL)""")
             db.execute("""CREATE TABLE IF NOT EXISTS publication_results (
@@ -474,12 +476,16 @@ class AdoUserConnectionService:
         identity_id: str | None,
         source_ref: str,
         fallback_reason: str | None = None,
+        work_item_ids: list[str] | None = None,
     ) -> str:
         """Called only by trusted release services, never exposed as a guest operation."""
         context_id = str(uuid4())
         organization = normalize_organization(organization)
         directory_path = normalize_scope(directory_path)
         identity_id = identity_id.lower() if identity_id else None
+        item_ids = sorted(set(work_item_ids or []))
+        if any(not re.fullmatch(r"[1-9][0-9]*", item_id) for item_id in item_ids):
+            raise AdoConnectionError("Publication work item IDs must be positive numeric IDs")
         with self._database() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute(
@@ -498,6 +504,13 @@ class AdoUserConnectionService:
                     fallback_reason,
                 ):
                     raise AdoConnectionError("Published release attribution is immutable")
+                linked_items = db.execute(
+                    "SELECT work_item_ids_json FROM publication_work_items WHERE context_id=?",
+                    (existing["id"],),
+                ).fetchone()
+                if linked_items is not None and json.loads(linked_items[0]) != item_ids:
+                    raise AdoConnectionError("Published release work items are immutable")
+                # Older contexts have no captured IDs. Do not infer or backfill their links.
                 return existing["id"]
             db.execute(
                 "INSERT INTO publications VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -512,6 +525,10 @@ class AdoUserConnectionService:
                     source_ref,
                     datetime.now(UTC).isoformat(),
                 ),
+            )
+            db.execute(
+                "INSERT INTO publication_work_items VALUES (?, ?)",
+                (context_id, json.dumps(item_ids)),
             )
         return context_id
 
@@ -540,6 +557,11 @@ class AdoUserConnectionService:
                     "Publication attribution does not match this repository and commit"
                 )
             context = dict(row)
+            linked_items = db.execute(
+                "SELECT work_item_ids_json FROM publication_work_items WHERE context_id=?",
+                (context_id,),
+            ).fetchone()
+            context["work_item_ids"] = json.loads(linked_items[0]) if linked_items else []
             candidates = db.execute(
                 "SELECT * FROM connections WHERE organization=? AND identity_id=?",
                 (row["organization"], row["identity_id"]),

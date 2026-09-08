@@ -33,6 +33,8 @@ def publisher(tmp_path, monkeypatch, *, identity="alice", reason=None, save_pat=
     }
     monkeypatch.setattr(service, "_require_scoped_record", lambda *a, **k: record)
     state = SimpleNamespace(calls=[], existing=[], post_error=None, reject=None, created_by="alice")
+    state.work_items = {}
+    state.link_writes = []
 
     def request(url, *, auth, payload=None, method=None, **kwargs):
         caller = (
@@ -44,6 +46,13 @@ def publisher(tmp_path, monkeypatch, *, identity="alice", reason=None, save_pat=
         state.calls.append((method, caller))
         if state.reject and state.reject[0] == method:
             raise AzurePrRequestError(state.reject[1])
+        if "/_apis/wit/workitems/" in url:
+            item_id = url.split("/workitems/", 1)[1].split("?", 1)[0]
+            item = state.work_items.setdefault(item_id, {"id": int(item_id), "relations": []})
+            if method == "PATCH":
+                state.link_writes.append(item_id)
+                item["relations"].extend(operation["value"] for operation in payload)
+            return item
         if method == "GET":
             return {"value": list(state.existing)}
         if method == "PATCH":
@@ -52,6 +61,7 @@ def publisher(tmp_path, monkeypatch, *, identity="alice", reason=None, save_pat=
             "pullRequestId": 42,
             "lastMergeSourceCommit": {"commitId": "1" * 40},
             "createdBy": {"id": state.created_by, "displayName": state.created_by},
+            "repository": {"id": "repo-id", "project": {"id": "project-id"}},
         }
         if state.post_error != "unknown":
             state.existing.append(pr)

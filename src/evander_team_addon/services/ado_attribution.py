@@ -87,4 +87,8 @@ def release_publication_context(state, *, release_package_id: str, managed_git_a
         identity_id=identity_id,
         fallback_reason=reason,
         source_ref=release.id,
+        work_item_ids=sorted({
+            item.work_item_id for item in (attributions or [])
+            if item.organization == organization.lower()
+        }),
     )

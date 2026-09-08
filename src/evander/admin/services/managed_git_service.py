@@ -2904,6 +2904,8 @@ class ManagedGitAdminService:
             if publication_context_id:
                 context, personal_auth = self.ado_user_connections.resolve_publication(
                     publication_context_id, **binding, excluded_methods=frozenset(excluded))
+                if context.get("work_item_ids"):
+                    arguments["work_item_ids"] = context["work_item_ids"]
             reason = context.get("fallback_reason") if publication_context_id else "publication_context_missing"
             if reason and reason not in reasons:
                 reasons.append(reason)
@@ -2961,6 +2963,7 @@ class ManagedGitAdminService:
         draft: bool,
         title_explicit: bool = True,
         work_item_id: str = "",
+        work_item_ids: list[str] | None = None,
         required_creator_id: str | None = None,
         preflight_only: bool = False,
     ) -> dict[str, Any]:
@@ -3010,11 +3013,12 @@ class ManagedGitAdminService:
                 method="PATCH",
             )
             item = {**dict(item), **updated_item}
-            link_result = self._ensure_azure_work_item_link(
+            link_result = self._ensure_azure_work_item_links(
                 item,
                 organization=organization,
                 project=project,
                 work_item_id=work_item_id,
+                work_item_ids=work_item_ids,
                 auth=auth,
             )
             return {
@@ -3082,11 +3086,12 @@ class ManagedGitAdminService:
             raise
         if required_creator_id:
             require_pr_creator(created, required_creator_id, existing=False)
-        link_result = self._ensure_azure_work_item_link(
+        link_result = self._ensure_azure_work_item_links(
             created,
             organization=organization,
             project=project,
             work_item_id=work_item_id,
+            work_item_ids=work_item_ids,
             auth=auth,
         )
         return {
@@ -3212,6 +3217,34 @@ class ManagedGitAdminService:
             if match:
                 return match.group(1)
         return ""
+
+    def _ensure_azure_work_item_links(
+        self,
+        pr: Mapping[str, Any],
+        *,
+        organization: str,
+        project: str,
+        work_item_id: str,
+        work_item_ids: list[str] | None,
+        auth: str,
+    ) -> dict[str, Any]:
+        item_ids = sorted(set(work_item_ids or []) | ({work_item_id} if work_item_id else set()))
+        linked = []
+        warnings = []
+        for item_id in item_ids:
+            result = self._ensure_azure_work_item_link(
+                pr, organization=organization, project=project, work_item_id=item_id, auth=auth,
+            )
+            if result["work_item_linked"]:
+                linked.append(item_id)
+            else:
+                warnings.append(f"Work item {item_id}: {result.get('work_item_link_warning', 'Link failed')}")
+        return {
+            "work_item_linked": bool(item_ids) and len(linked) == len(item_ids),
+            "work_item_ids": item_ids,
+            "linked_work_item_ids": linked,
+            **({"work_item_link_warning": "; ".join(warnings)} if warnings else {}),
+        }
 
     def _ensure_azure_work_item_link(
         self,

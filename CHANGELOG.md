@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-08 - Release PR work-item links (0.29.0)
+
+- Capture originating ADO work-item IDs with the immutable release publication context and
+  link them to newly created or reused pull requests, including nested release contributions.
+- Preserve personal creator policy, avoid duplicate links on retries, and report which items
+  linked successfully when Azure DevOps rejects an association. Legacy publication contexts
+  retain their existing attribution without inferring missing work-item IDs.
+
 ## 2026-09-08 - Required personal PR creators (0.28.0)
 
 - Add an optional `require_personal` policy to PR publication. Require captured ADO assignee
