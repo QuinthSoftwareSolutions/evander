@@ -2531,7 +2531,7 @@ deliverable, and checks for an existing
 direct successor before task readiness so interrupted completion resolves the
 blocker without creating another package.
 
-Only timeouts and infrastructure failures leave verification retryable, and only
+For agents, only timeouts and infrastructure failures leave verification retryable, and only
 a review recorded as process-blocked may be replaced. Release-review decisions
 are immutable: use `rejected` for a candidate defect and reserve `blocked` for a
 non-candidate process or evidence-access blocker with a concrete finding.
@@ -2544,7 +2544,20 @@ without that evidence it must escalate the blocker. The agent-side retry budget
 for an unchanged candidate is one: if an agent-requested replacement
 verification attempt also fails, no agent may schedule another retry. The
 current run and concrete recovery requirement must be escalated to an operator,
-who may authorize a later attempt after an independently verified intervention.
+who may authorize a later attempt.
+Admin Web also offers **Retry verification gate** on a release rejected by
+candidate verification, under **Projects → your project → Releases** and
+**Delivery → Release history**. Select **Show rejected** in the project's release
+list if needed. An operator supplies a comment; no separate evidence
+form or failure reclassification is required. The API uses
+`allow_rejected_verification_retry: true` with the current gate ID and revision.
+It preserves the original failed result, pins the replacement attempt to the
+same commit and frozen commands, and cancels an unused generated verification
+correction task with the operator's comment. It refuses a release with a
+successor or correction work with submitted deliverables, linked tasks, or an
+active dispatch/worker. All verification and review gates still apply. Agents
+cannot request this operator-only retry.
+The verification history displays the retry comment and requester.
 `team_recover_release` remains limited to failed Git feature/release promotions
 and is not a release-gate retry mechanism.
 

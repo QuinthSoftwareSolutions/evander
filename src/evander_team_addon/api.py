@@ -3828,6 +3828,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             allow_rejected_review_exception=(
                 _optional_bool(payload, "allow_rejected_review_exception") or False
             ),
+            allow_rejected_verification_retry=(
+                _optional_bool(payload, "allow_rejected_verification_retry") or False
+            ),
             expected_revision=_expected_revision(payload),
         )
         published_event_ids = _publish_team_events(context, result.get("events"))

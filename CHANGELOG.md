@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-08 - Operator verification recovery (0.27.0)
+
+- Let operators retry candidate-failed release verification from Admin Web with a comment.
+  Preserve the failed attempt and pinned candidate, retire unused generated correction work,
+  and retain all release gates; refuse retries that conflict with a successor or active work.
+
 ## 2026-09-07 - Team, ADO and runtime improvements (0.26.0)
 
 - Explain Bokio validation failures with upstream field details and retain structured audit data.

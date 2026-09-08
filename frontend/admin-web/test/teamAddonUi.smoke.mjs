@@ -3974,7 +3974,7 @@ test("team add-on Cases defaults to active work and pages durable case history",
   assert.equal(await casesPage.locator('[data-case-id="case-closed-01"]').count(), 0);
 });
 
-test("team add-on UI retries only a typed retryable release gate with an audited reason", async (t) => {
+test("team add-on UI retries verification failures with an operator comment", async (t) => {
   const initialState = seededGitState();
   initialState.release_packages["release-transient"] = {
     id: "release-transient",
@@ -4010,7 +4010,7 @@ test("team add-on UI retries only a typed retryable release gate with an audited
     created_at: "2026-06-09T15:50:00Z",
     updated_at: "2026-06-09T15:55:00Z",
   };
-  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const { port, requests, state: serverState } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
@@ -4023,11 +4023,6 @@ test("team add-on UI retries only a typed retryable release gate with an audited
   await transient.locator("summary.compact-record-summary").click();
   const retry = transient.getByRole("button", { name: "Retry verification gate" });
   await retry.waitFor({ state: "visible" });
-  assert.equal(
-    await releases.locator('li.release-card[data-release-id="release-code-failure"]')
-      .getByRole("button", { name: /Retry .* gate/ }).count(),
-    0,
-  );
 
   page.once("dialog", (dialog) => dialog.accept("Worker host was repaired by release-admin."));
   await retry.click();
@@ -4045,6 +4040,43 @@ test("team add-on UI retries only a typed retryable release gate with an audited
     expected_revision: 4,
   });
 
+  await releases.getByRole("button", { name: "Show rejected" }).click();
+  const failed = releases.locator('li.release-card[data-release-id="release-code-failure"]');
+  await failed.locator("summary.compact-record-summary").click();
+  const operatorRetry = failed.getByRole("button", { name: "Retry verification gate" });
+  await operatorRetry.waitFor({ state: "visible" });
+  page.once("dialog", (dialog) => {
+    assert.match(dialog.message(), /Add a comment/);
+    return dialog.dismiss();
+  });
+  await operatorRetry.click();
+  page.once("dialog", (dialog) => dialog.accept("   "));
+  await operatorRetry.click();
+  assert.equal(requests.filter((item) => item.pathname.endsWith("release-code-failure/retry-gate")).length, 0);
+  page.once("dialog", (dialog) => dialog.accept("Retry after repairing the toolchain."));
+  await operatorRetry.click();
+  await waitForRevision(page, 6);
+  const candidateRequest = requests.find((item) => item.method === "POST" &&
+    item.pathname.endsWith("release-code-failure/retry-gate"));
+  assert.deepEqual(candidateRequest?.payload, {
+    gate_kind: "verification",
+    gate_id: "candidate-attempt-1",
+    reason: "Retry after repairing the toolchain.",
+    allow_rejected_verification_retry: true,
+    expected_revision: 5,
+  });
+  serverState.release_packages["release-code-failure"].verification_runs = [{
+    id: "candidate-attempt-2", attempt_number: 2, state: "pending",
+    candidate_commit_sha: "candidate-sha",
+    retry_reason: candidateRequest.payload.reason,
+    retry_requested_by: "operator:jonathan",
+  }];
+  await failed.getByRole("button", { name: "Open release detail" }).click();
+  const detail = failed.locator(".release-review-detail");
+  await detail.getByText("Retry comment: Retry after repairing the toolchain.", { exact: true })
+    .waitFor({ state: "visible" });
+  await detail.getByText("Requested by operator:jonathan", { exact: true })
+    .waitFor({ state: "visible" });
 });
 
 test("team add-on UI submits an explicit rejected-review exception", async (t) => {

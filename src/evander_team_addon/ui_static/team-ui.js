@@ -1817,10 +1817,13 @@ function bindForms() {
       return;
     }
     const rejectedReviewException = button.dataset.rejectedReviewException === "true";
+    const rejectedVerificationRetry = button.dataset.rejectedVerificationRetry === "true";
     const reason = window.prompt(
-      rejectedReviewException
-        ? "Why is an operator exception justified for this rejected review on the unchanged candidate?"
-        : "What concrete recovery occurred since this gate failed? Cancel and escalate if none.",
+      rejectedVerificationRetry
+        ? "Add a comment for retrying verification on this candidate. Its unused generated correction task will be cancelled."
+        : rejectedReviewException
+          ? "Why is an operator exception justified for this rejected review on the unchanged candidate?"
+          : "What concrete recovery occurred since this gate failed? Cancel and escalate if none.",
       "",
     );
     if (!text(reason)) {
@@ -18014,6 +18017,8 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
+              ${run.retry_reason ? `<div class="meta-line"><strong>Retry comment:</strong> ${escapeHtml(run.retry_reason)}</div>` : ""}
+              ${run.retry_requested_by ? `<div class="meta-line">Requested by ${escapeHtml(run.retry_requested_by)}</div>` : ""}
               ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
@@ -18859,15 +18864,22 @@ function renderReleaseGateAction(release) {
     release.state === "blocked" &&
     failure?.stage === "review" &&
     failure?.kind === "blocked";
+  const rejectedVerificationRetry =
+    release.state === "rejected" &&
+    failure?.stage === "verification" &&
+    failure?.kind === "candidate" &&
+    !releaseHasSuccessor(release.id);
   const rejectedReviewException =
     release.state === "rejected" &&
     failure?.stage === "review" &&
     failure?.kind === "rejected" &&
     !releaseHasSuccessor(release.id);
-  if (!gateId || (!retryableVerification && !retryableReview && !rejectedReviewException)) {
+  if (!gateId || !(
+    retryableVerification || retryableReview || rejectedReviewException || rejectedVerificationRetry
+  )) {
     return "";
   }
-  const gateKind = retryableVerification ? "verification" : "review";
+  const gateKind = retryableVerification || rejectedVerificationRetry ? "verification" : "review";
   const label = rejectedReviewException
     ? "Retry rejected review by exception"
     : `Retry ${gateKind} gate`;
@@ -18881,6 +18893,7 @@ function renderReleaseGateAction(release) {
         data-gate-kind="${escapeAttr(gateKind)}"
         data-gate-id="${escapeAttr(gateId)}"
         data-rejected-review-exception="${rejectedReviewException ? "true" : "false"}"
+        data-rejected-verification-retry="${rejectedVerificationRetry ? "true" : "false"}"
       >${escapeHtml(label)}</button>
     </div>
   `;
@@ -18891,6 +18904,7 @@ async function retryReleaseGate(button, reason) {
   const gateKind = text(button?.dataset?.gateKind);
   const gateId = text(button?.dataset?.gateId);
   const rejectedReviewException = button?.dataset?.rejectedReviewException === "true";
+  const rejectedVerificationRetry = button?.dataset?.rejectedVerificationRetry === "true";
   if (!releaseId || !gateKind || !gateId) {
     setStatus("Release gate retry context is incomplete.", "error");
     return;
@@ -18912,6 +18926,7 @@ async function retryReleaseGate(button, reason) {
           gate_id: gateId,
           reason,
           ...(rejectedReviewException ? { allow_rejected_review_exception: true } : {}),
+          ...(rejectedVerificationRetry ? { allow_rejected_verification_retry: true } : {}),
           expected_revision: state.revision,
         }),
       },

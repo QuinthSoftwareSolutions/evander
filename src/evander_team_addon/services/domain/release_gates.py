@@ -24,6 +24,7 @@ from ...models import (
     HumanReviewRequirementSnapshot,
     HumanReviewFindingSnapshot,
     TeamBlockerSourceKind,
+    TeamDispatchStatus,
     TeamInboxItemState,
     TeamInboxPriority,
     TeamRecordState,
@@ -1834,15 +1835,31 @@ def retry_release_gate(
     requested_by: str,
     result: dict[str, Any],
     allow_rejected_review_exception: bool = False,
+    allow_rejected_verification_retry: bool = False,
 ) -> None:
+    if allow_rejected_verification_retry and not requested_by.startswith("operator:"):
+        raise ValueError("retrying rejected verification requires an operator")
+    rejected_verification_retry = (
+        allow_rejected_verification_retry
+        and gate_kind == "verification"
+        and release.state == TeamRecordState.REJECTED
+        and release.gate_failure is not None
+        and release.gate_failure.stage == "verification"
+        and release.gate_failure.kind == "candidate"
+        and release.gate_failure.source_id == gate_id
+    )
+    if allow_rejected_verification_retry and not rejected_verification_retry:
+        raise ValueError("operator verification retry must target a candidate verification failure")
     rejected_review_exception = (
         allow_rejected_review_exception
         and gate_kind == "review"
         and release.state == TeamRecordState.REJECTED
     )
-    if release.state != TeamRecordState.BLOCKED and not rejected_review_exception:
+    if release.state != TeamRecordState.BLOCKED and not (
+        rejected_review_exception or rejected_verification_retry
+    ):
         raise ValueError(f"release {release.id} is not blocked")
-    if rejected_review_exception:
+    if rejected_review_exception or rejected_verification_retry:
         successor_ids = sorted(
             candidate.id
             for candidate in state.release_packages.values()
@@ -1862,7 +1879,12 @@ def retry_release_gate(
         current = _current_verification_run(state, release)
         if current is None or current.id != gate_id:
             raise ValueError("verification retry must target the current verification run")
-        if current.state not in {"failed", "timed_out"} or current.failure_kind not in {
+        if current.candidate_commit_sha != candidate or current.release_package_id != release.id:
+            raise ValueError("verification retry does not match the pinned release candidate")
+        if rejected_verification_retry:
+            if current.state != "failed" or current.failure_kind != "candidate":
+                raise ValueError("operator verification retry requires a failed candidate run")
+        elif current.state not in {"failed", "timed_out"} or current.failure_kind not in {
             "infrastructure",
             "timeout",
         }:
@@ -1909,6 +1931,15 @@ def retry_release_gate(
                 for command in verification_commands
             ],
         )
+        if rejected_verification_retry:
+            _retire_verification_correction_for_retry(
+                state,
+                release=release,
+                run=current,
+                requested_by=normalized_requested_by,
+                reason=normalized_reason,
+                result=result,
+            )
         current.superseded_by_verification_run_id = run.id
         state.release_verification_runs[run.id] = run
         release.verification_run_ids = _append_unique(release.verification_run_ids, run.id)
@@ -1929,6 +1960,8 @@ def retry_release_gate(
         result["replacement_gate_id"] = run.id
         result["retry_reason"] = normalized_reason
         result["retry_requested_by"] = normalized_requested_by
+        if rejected_verification_retry:
+            result["rejected_verification_retry"] = True
         return
     if gate_kind != "review":
         raise ValueError("gate_kind must be verification or review")
@@ -2061,6 +2094,83 @@ def retry_release_gate(
     result["retry_requested_by"] = normalized_requested_by
     if current.state == TeamRecordState.REJECTED:
         result["rejected_review_exception"] = True
+
+
+def _retire_verification_correction_for_retry(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    run: ReleaseVerificationRun,
+    requested_by: str,
+    reason: str,
+    result: dict[str, Any],
+) -> None:
+    """Retire unused generated work while retaining the failed run and its task link."""
+
+    if run.correction_task_id is None:
+        return
+    task = state.tasks.get(run.correction_task_id)
+    if task is None or (
+        task.project_id != release.project_id
+        or task.release_base_package_id != release.id
+        or task.created_by_actor != "system:release-verification-correction"
+    ):
+        raise ValueError("verification correction task is missing or belongs to another release")
+    if any(deliverable.task_id == task.id for deliverable in state.deliverables.values()):
+        raise ValueError(
+            "verification correction has submitted work; resolve that work before retrying"
+        )
+    if any(
+        other.parent_task_id == task.id or task.id in other.dependency_task_ids
+        for other in state.tasks.values()
+    ):
+        raise ValueError(
+            "verification correction has linked tasks; resolve those tasks before retrying"
+        )
+    task_inbox_ids = {item.id for item in state.inbox.values() if item.task_id == task.id}
+    if any(
+        dispatch.status in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
+        and (task.id in dispatch.task_ids or task_inbox_ids.intersection(dispatch.inbox_item_ids))
+        for dispatch in state.dispatches.values()
+    ):
+        raise ValueError(
+            "verification correction is being worked on; wait for its dispatch to finish"
+        )
+    if any(
+        assignment.task_id == task.id
+        and assignment.state.value in {"requested", "spawn_pending", "running"}
+        for assignment in state.ephemeral_assignments.values()
+    ):
+        raise ValueError("verification correction has an active worker; wait for it to finish")
+    if task.state in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED, TeamTaskState.REJECTED}:
+        raise ValueError("verification correction is already resolved; use its release recovery")
+    now = utc_now()
+    if task.state != TeamTaskState.CANCELLED:
+        task.cancellation = TaskCancellation(
+            reason_code="operator_verification_retry",
+            reason=f"Operator retried verification {run.id} on the unchanged candidate: {reason}",
+            actor_kind="operator",
+            actor_id=requested_by,
+            cancelled_at=now,
+        )
+        _set_task_state(task, TeamTaskState.CANCELLED, now=now)
+        task.updated_at = now
+        result.setdefault("cancelled_task_ids", []).append(task.id)
+        result.setdefault("git_context_finalization", {})[task.id] = (
+            finalize_active_git_work_contexts_for_task(state, task_id=task.id, now=now)
+        )
+        reconcile_task_blockers_after_cancellation(
+            state, task_id=task.id, actor_agent_id=None, dispatch_id=None, result=result, now=now
+        )
+    for item in state.inbox.values():
+        if (
+            item.task_id == task.id
+            and item.state == TeamInboxItemState.PENDING
+            and item.payload.get("kind") == "release_verification_correction_work"
+        ):
+            item.state = TeamInboxItemState.HANDLED
+            item.updated_at = now
+            result.setdefault("handled_correction_inbox_item_ids", []).append(item.id)
 
 
 def _candidate_manifest(
