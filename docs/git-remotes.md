@@ -342,8 +342,11 @@ Team releases may pass `publication_context_id` to `effect:pr:create` to use the
 ADO work-item assignee's Microsoft OAuth connection or personal PAT. Registered users manage these connections through
 **My ADO connection** in Admin Web. The context is bound to the repository, directory, and
 approved commit; task Git author metadata cannot select credentials. OAuth is preferred, with
-the same account's saved PAT as fallback. Mixed-owner releases and
-missing or rejected personal credentials use the configured bot. Publication reports the
+the same account's saved PAT as fallback. With the default `allow_bot_fallback` publication
+policy, mixed-owner releases and missing or rejected personal credentials use the configured bot.
+Set `publication_policy: require_personal` to require the captured assignee's personal connection
+and reject missing attribution or an existing PR with another creator before pushing. It also
+prevents bot fallback during uncertain-creation reconciliation. Publication reports the
 intended and actual creator and any fallback reason; existing PR creators remain unchanged.
 See [Personal Azure DevOps PR connections](operations.md#personal-azure-devops-pr-connections)
 for storage, rotation, and reconciliation behavior.

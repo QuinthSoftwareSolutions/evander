@@ -796,7 +796,7 @@ Type-specific keys:
 | `effect:git:ensure-managed-repo` | `directory_path`, `repo_source` | `outputs` |
 | `effect:git:promote-agent-branch` | `managed_repo_id`, `agent_branch`, `target_branch`, `expected_commit_sha` | `outputs` |
 | `effect:git:push-branch` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `outputs` |
-| `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `base_branch`, `session_id`, `work_item_id`, `title`, `fallback_title`, `body`, `draft`, `fill`, `outputs` |
+| `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` | `base_branch`, `session_id`, `work_item_id`, `publication_context_id`, `publication_policy`, `title`, `fallback_title`, `body`, `draft`, `fill`, `outputs` |
 
 `effect:git:ensure-managed-repo` is the only managed workflow surface that accepts a transient
 repository source. It registers or refreshes that source inside `directory_path` and returns a
@@ -805,6 +805,12 @@ and Team nodes do not accept host checkout or bare-repository paths and do not e
 temporary paths.
 
 Promotion and publication must receive the exact SHA from the triggering/reviewed event.
+For Azure DevOps, `publication_policy` is a static enum: `allow_bot_fallback` (default) or
+`require_personal`. The latter requires a commit-bound `publication_context_id`, a captured
+assignee and a usable personal OAuth/PAT connection; it rejects existing PRs with a different
+or unknown creator. Missing context after binding resolution also fails. The policy is
+enforced by the host publication service before pushing and when creating or reusing the PR.
+Bot fallback remains available to other workflows and always records its reason.
 `effect:git:promote-agent-branch` returns `source_ref_moved` when a later push has replaced the
 source ref before it could be pinned. `effect:git:push-branch` and `effect:pr:create` publish only
 `expected_commit_sha` and use an explicit destination lease.
