@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-08 - Operator verification recovery and live logs (0.27.0)
+
+- Let operators retry candidate-failed release verification from Admin Web with a comment.
+  Preserve the failed attempt and pinned candidate, retire unused generated correction work,
+  and retain all release gates; refuse retries that conflict with a successor or active work.
+- Reject verification retries when a cancelled correction task links to a replacement task,
+  including replacements with preparing or leased dispatches.
+- Open live release-verification logs at their newest output, continue following while the viewer
+  remains near the bottom, and preserve manual log and page scrolling across live updates.
+
 ## 2026-09-07 - Team, ADO and runtime improvements (0.26.0)
 
 - Explain Bokio validation failures with upstream field details and retain structured audit data.

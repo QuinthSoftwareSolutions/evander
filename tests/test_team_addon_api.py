@@ -761,9 +761,20 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
     }
 
 
-def test_team_addon_retry_gate_api_routes_rejected_review_exception_flag(
+@pytest.mark.parametrize(
+    "gate_kind,flag",
+    [
+        ("review", "allow_rejected_review_exception"),
+        ("verification", "allow_rejected_verification_retry"),
+    ],
+)
+@pytest.mark.parametrize("unlock_privileged", [True, False])
+def test_team_addon_retry_gate_api_routes_operator_retry_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    gate_kind: str,
+    flag: str,
+    unlock_privileged: bool,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -779,23 +790,28 @@ def test_team_addon_retry_gate_api_routes_rejected_review_exception_flag(
         "retry_release_gate_with_result",
         _retry_release_gate_with_result,
     )
-    client = _client(tmp_path)
+    client = _client(tmp_path, unlock_privileged=unlock_privileged)
 
     response = client.post(
         "/api/addons/team-addon/release-packages/release-rejected/retry-gate",
         json={
-            "gate_kind": "review",
+            "gate_kind": gate_kind,
             "gate_id": "review-rejected",
             "reason": "The immutable inherited metadata is excepted.",
-            "allow_rejected_review_exception": True,
+            flag: True,
             "expected_revision": 0,
         },
     )
 
+    if not unlock_privileged:
+        assert response.status_code == 403, response.text
+        assert captured == {}
+        return
     assert response.status_code == 200, response.text
     assert captured["release_package_id"] == "release-rejected"
     assert captured["gate_id"] == "review-rejected"
-    assert captured["allow_rejected_review_exception"] is True
+    assert captured[flag] is True
+    assert captured["operator_actor_id"].startswith("operator:")
 
 
 def test_team_addon_owner_can_requeue_operator_action_cleanup_candidate(

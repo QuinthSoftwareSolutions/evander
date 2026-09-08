@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import timedelta
+from pathlib import Path
+
 import pytest
 
 from evander_team_addon.models import (
@@ -29,6 +32,7 @@ from evander_team_addon.models import (
     ReviewProfile,
     ReviewRequest,
     TeamRecordState,
+    TeamDispatch,
     TeamState,
     Team,
     TeamInboxItemState,
@@ -58,6 +62,8 @@ from evander_team_addon.services.domain.task_assessment import (
 )
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.repository import TeamStateConflictError
+from evander_team_addon.services.admin_service import TeamAdminService
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
@@ -1798,6 +1804,291 @@ def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:
     assert [item.name for item in replacement.command_results] == [frozen_command.name]
     assert replacement.verifier_settings_snapshotted is True
     assert release.state == TeamRecordState.PENDING
+
+
+def _candidate_verification_retry_fixture():
+    state, release, promotion, _reviews = _release_review_cohort_fixture()
+    state.review_requests.clear()
+    state.inbox.clear()
+    release.review_request_ids = []
+    release.review_cohort_id = None
+    release.review_cohort_sealed_at = None
+    command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
+    release.manifest.verification_commands = [command]
+    state.projects["project"].release_policy.verification_commands = [command]
+    run = ReleaseVerificationRun(
+        id="failed-verification",
+        release_package_id=release.id,
+        candidate_commit_sha=release.candidate_commit_sha,
+        session_id="verifier",
+    )
+    state.release_verification_runs[run.id] = run
+    release.verification_run_ids = [run.id]
+    record_release_verification_result(
+        state,
+        release_package_id=release.id,
+        verification_run_id=run.id,
+        candidate_commit_sha=release.candidate_commit_sha,
+        verification_state="failed",
+        failure_kind="candidate",
+        error="Missing toolchain manifest",
+        command_results=[
+            ReleaseVerificationCommandResult(
+                name="tests",
+                state="failed",
+                failure_kind="candidate",
+                exit_code=1,
+                log_excerpt="NETSDK1042: Could not load PlatformManifest",
+            )
+        ],
+        result=_result(),
+    )
+    assert run.correction_task_id is not None
+    return state, release, run
+
+
+@pytest.mark.parametrize("already_cancelled", [False, True])
+def test_operator_verification_retry_preserves_evidence_and_persists_recovery(
+    tmp_path: Path, already_cancelled: bool
+):
+    state, release, run = _candidate_verification_retry_fixture()
+    original_run = run.model_dump(mode="json")
+    original_manifest = release.manifest.model_dump(mode="json")
+    task_id = run.correction_task_id
+    repository = TeamStateRepository(tmp_path)
+    saved = repository.update(lambda _state: state)
+    admin = TeamAdminService(repository)
+    if already_cancelled:
+        saved = admin.cancel_task(
+            task_id=task_id,
+            reason_code="no_longer_required",
+            reason="The toolchain was repaired; correction work is no longer needed.",
+            actor_id="operator:jonathan",
+            expected_revision=saved.revision,
+        )
+    arguments = dict(
+        release_package_id=release.id,
+        gate_kind="verification",
+        gate_id=run.id,
+        reason="Retry after the toolchain was repaired.",
+        operator_actor_id="operator:jonathan",
+        allow_rejected_verification_retry=True,
+    )
+    with pytest.raises(TeamStateConflictError):
+        admin.retry_release_gate_with_result(**arguments, expected_revision=saved.revision - 1)
+    assert repository.read().release_packages[release.id].state == TeamRecordState.REJECTED
+    _after, result = admin.retry_release_gate_with_result(
+        **arguments, expected_revision=saved.revision
+    )
+    after = repository.read()
+    replacement_id = result["replacement_gate_id"]
+    assert after.release_verification_runs[run.id].model_dump(mode="json") == {
+        **original_run,
+        "superseded_by_verification_run_id": replacement_id,
+    }
+    replacement = after.release_verification_runs[replacement_id]
+    assert replacement.candidate_commit_sha == run.candidate_commit_sha
+    assert replacement.state == "pending"
+    assert replacement.attempt_number == 2
+    assert replacement.retry_reason == arguments["reason"]
+    assert replacement.retry_requested_by == "operator:jonathan"
+    assert replacement.supersedes_verification_run_id == run.id
+    assert [command.name for command in replacement.command_results] == ["tests"]
+    recovered_release = after.release_packages[release.id]
+    assert recovered_release.state == TeamRecordState.PENDING
+    assert recovered_release.manifest.model_dump(mode="json") == original_manifest
+    assert recovered_release.approved_commit_sha is None
+    assert after.tasks[task_id].state == TeamTaskState.CANCELLED
+    if already_cancelled:
+        assert after.tasks[task_id].cancellation == saved.tasks[task_id].cancellation
+    else:
+        assert after.tasks[task_id].cancellation.reason_code == "operator_verification_retry"
+        assert arguments["reason"] in after.tasks[task_id].cancellation.reason
+    assert all(item.state == TeamInboxItemState.HANDLED for item in after.inbox.values())
+    events = repository.list_outbox_records()
+    assert any(event.intent_type == "team.release.verification_requested" for event in events)
+    with pytest.raises(ValueError):
+        admin.retry_release_gate_with_result(**arguments, expected_revision=after.revision)
+    assert len(repository.read().release_verification_runs) == 2
+
+
+@pytest.mark.parametrize("successor_dispatch_status", [None, "preparing", "leased"])
+def test_operator_verification_retry_refuses_cancelled_correction_successor(
+    tmp_path: Path, successor_dispatch_status: str | None
+) -> None:
+    state, release, run = _candidate_verification_retry_fixture()
+    successor = AgentTask(
+        id="correction-successor",
+        owner_agent_id="lead",
+        project_id=release.project_id,
+        title="Replacement correction",
+        description="Continue the correction in a replacement task.",
+        priority=0,
+        created_by_agent_id="lead",
+    )
+    state.tasks[successor.id] = successor
+    if successor_dispatch_status is not None:
+        state.dispatches["successor-work"] = TeamDispatch(
+            id="successor-work",
+            agent_id="lead",
+            session_id="session-lead",
+            cause_kind="task",
+            task_ids=[successor.id],
+            status=successor_dispatch_status,
+            leased_at=successor.created_at if successor_dispatch_status == "leased" else None,
+            lease_expires_at=(
+                successor.created_at + timedelta(minutes=5)
+                if successor_dispatch_status == "leased"
+                else None
+            ),
+        )
+    repository = TeamStateRepository(tmp_path)
+    saved = repository.update(lambda _state: state)
+    admin = TeamAdminService(repository)
+    cancelled = admin.cancel_task(
+        task_id=run.correction_task_id,
+        reason_code="superseded",
+        reason="Continue correction work in the replacement task.",
+        actor_id="operator:jonathan",
+        successor_task_id=successor.id,
+        expected_revision=saved.revision,
+    )
+    assert cancelled.tasks[run.correction_task_id].state == TeamTaskState.CANCELLED
+    assert cancelled.tasks[run.correction_task_id].cancellation.successor_task_id == successor.id
+    before = repository.read().model_dump(mode="json")
+    outbox_before = repository.list_outbox_records()
+
+    with pytest.raises(ValueError, match="verification correction has linked tasks"):
+        admin.retry_release_gate_with_result(
+            release_package_id=release.id,
+            gate_kind="verification",
+            gate_id=run.id,
+            reason="Retry after the toolchain was repaired.",
+            operator_actor_id="operator:jonathan",
+            allow_rejected_verification_retry=True,
+            expected_revision=cancelled.revision,
+        )
+
+    assert repository.read().model_dump(mode="json") == before
+    assert repository.list_outbox_records() == outbox_before
+
+
+@pytest.mark.parametrize(
+    "obstacle",
+    [
+        "agent",
+        "missing_comment",
+        "successor",
+        "stale_gate",
+        "submitted_work",
+        "active_dispatch",
+        "dependent_task",
+        "wrong_candidate",
+        "wrong_task",
+        "not_authorized",
+    ],
+)
+def test_operator_verification_retry_refuses_unsafe_recovery_without_mutation(obstacle):
+    state, release, run = _candidate_verification_retry_fixture()
+    task_id = run.correction_task_id
+    kwargs = dict(
+        gate_kind="verification",
+        gate_id=run.id,
+        reason="Retry after repair.",
+        requested_by="operator:jonathan",
+        allow_rejected_verification_retry=True,
+    )
+    if obstacle == "agent":
+        kwargs["requested_by"] = "agent:lead"
+    elif obstacle == "not_authorized":
+        kwargs["allow_rejected_verification_retry"] = False
+    elif obstacle == "missing_comment":
+        kwargs["reason"] = "   "
+    elif obstacle == "successor":
+        state.release_packages["successor"] = ReleasePackage(
+            id="successor",
+            project_id="project",
+            supersedes_release_package_id=release.id,
+        )
+    elif obstacle == "stale_gate":
+        kwargs["gate_id"] = "old-run"
+    elif obstacle == "submitted_work":
+        state.deliverables["correction"] = Deliverable(
+            id="correction",
+            task_id=task_id,
+            producer_agent_id="lead",
+            summary="Correction work",
+        )
+    elif obstacle == "active_dispatch":
+        state.dispatches["working"] = TeamDispatch(
+            id="working",
+            agent_id="lead",
+            session_id="session-lead",
+            cause_kind="task",
+            task_ids=[task_id],
+            status="preparing",
+        )
+    elif obstacle == "dependent_task":
+        state.tasks["dependent"] = AgentTask(
+            id="dependent",
+            owner_agent_id="lead",
+            project_id="project",
+            title="Dependent",
+            description="Needs correction",
+            priority=0,
+            dependency_task_ids=[task_id],
+            created_by_agent_id="lead",
+        )
+    elif obstacle == "wrong_candidate":
+        run.candidate_commit_sha = "another-candidate"
+    elif obstacle == "wrong_task":
+        state.tasks[task_id].release_base_package_id = "another-release"
+    before = state.model_dump(mode="json")
+    with pytest.raises(ValueError):
+        retry_release_gate(state, release=release, result={}, **kwargs)
+    assert state.model_dump(mode="json") == before
+
+
+@pytest.mark.parametrize("outcome", ["passed", "failed"])
+def test_operator_verification_retry_keeps_normal_review_and_correction_gates(outcome):
+    state, release, run = _candidate_verification_retry_fixture()
+    original_task_id = run.correction_task_id
+    result = {}
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="verification",
+        gate_id=run.id,
+        reason="Try verification again.",
+        requested_by="operator:jonathan",
+        result=result,
+        allow_rejected_verification_retry=True,
+    )
+    replacement_id = result["replacement_gate_id"]
+    record_release_verification_result(
+        state,
+        release_package_id=release.id,
+        verification_run_id=replacement_id,
+        candidate_commit_sha=release.candidate_commit_sha,
+        verification_state=outcome,
+        failure_kind="candidate" if outcome == "failed" else None,
+        error="Still failing" if outcome == "failed" else None,
+        command_results=[ReleaseVerificationCommandResult(name="tests", state=outcome)],
+        result=_result(),
+    )
+    assert state.tasks[original_task_id].state == TeamTaskState.CANCELLED
+    assert release.approved_commit_sha is None
+    if outcome == "failed":
+        assert release.state == TeamRecordState.REJECTED
+        new_task_id = state.release_verification_runs[replacement_id].correction_task_id
+        assert new_task_id and new_task_id != original_task_id
+        assert state.tasks[new_task_id].state == TeamTaskState.PENDING
+    else:
+        assert release.state == TeamRecordState.PENDING
+        assert len(release.review_request_ids) == 2
+        assert all(
+            review.state == TeamRecordState.PENDING for review in state.review_requests.values()
+        )
 
 
 def test_agent_verification_retry_escalates_after_agent_requested_retry_fails() -> None:

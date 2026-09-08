@@ -1506,6 +1506,7 @@ async function createTeamAddonServer(
     coreAgentItems = null,
     communicationTargets = null,
     initialState = null,
+    releaseVerificationLivePayloads = null,
     timelinePayload = null,
   } = {},
 ) {
@@ -1519,6 +1520,7 @@ async function createTeamAddonServer(
   let conflictSent = false;
   let agentRegistrationConflictSent = false;
   let governanceGroupUpdateConflictSent = false;
+  let releaseVerificationLiveRequestCount = 0;
   const template = autoDevSquadTemplate();
   const coreAgents = coreAgentItems ?? [
     {
@@ -1637,6 +1639,23 @@ async function createTeamAddonServer(
           return;
         }
         jsonResponse(response, release.detail || release);
+        return;
+      }
+      const releaseVerificationLiveMatch = pathname.match(
+        /^\/api\/addons\/team-addon\/release-packages\/([^/]+)\/verification-live$/,
+      );
+      if (request.method === "GET" && releaseVerificationLiveMatch) {
+        requests.push({ method: request.method, pathname, search: url.search });
+        if (!releaseVerificationLivePayloads?.length) {
+          jsonResponse(response, { error: "live verification output not configured" }, 404);
+          return;
+        }
+        const payloadIndex = Math.min(
+          releaseVerificationLiveRequestCount,
+          releaseVerificationLivePayloads.length - 1,
+        );
+        releaseVerificationLiveRequestCount += 1;
+        jsonResponse(response, releaseVerificationLivePayloads[payloadIndex]);
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/inbox") {
@@ -2269,6 +2288,7 @@ async function createTeamAddonServer(
     chatRequests,
     emitChatSnapshots,
     emitStateSnapshot,
+    releaseVerificationLiveRequestCount: () => releaseVerificationLiveRequestCount,
     stateStreamCount: () => openStateStreams.size,
   };
 }
@@ -3823,6 +3843,144 @@ test("team add-on delivery records lead with human subjects and progressive tech
   );
 });
 
+test("team add-on live verification logs follow the tail without overriding manual scrolling", async (t) => {
+  const initialState = seededGitState();
+  const releaseId = "release-live-verification";
+  const verificationRunId = "verification-live-1";
+  const release = {
+    id: releaseId,
+    project_id: "alpha-project",
+    summary: "Run the live release verification checks.",
+    deliverable_ids: ["deliverable-accepted"],
+    state: "pending",
+    base_commit_sha: "base-live",
+    candidate_commit_sha: "candidate-live",
+    candidate_tree_hash: "tree-live",
+    manifest: {
+      candidate_commit_sha: "candidate-live",
+      candidate_tree_hash: "tree-live",
+      deliverables: [{ deliverable_id: "deliverable-accepted" }],
+      verification_commands: [{ name: "client-tests" }],
+    },
+    verification_runs: [
+      {
+        id: verificationRunId,
+        state: "running",
+        attempt_number: 1,
+        candidate_commit_sha: "candidate-live",
+        command_results: [{ name: "client-tests", state: "running" }],
+      },
+    ],
+    created_at: "2026-09-08T08:00:00Z",
+    updated_at: "2026-09-08T08:00:00Z",
+  };
+  initialState.release_packages = {
+    [releaseId]: { ...release, detail: release },
+  };
+  const liveLog = (lastLine) => Array.from(
+    { length: lastLine },
+    (_, index) => `live verifier line ${String(index + 1).padStart(3, "0")}`,
+  ).join("\n");
+  const releaseVerificationLivePayloads = [80, 81, 82].map((lastLine) => ({
+    release_package_id: releaseId,
+    run: {
+      id: verificationRunId,
+      state: "running",
+      current_command: { index: 0, name: "client-tests" },
+    },
+    log: {
+      text: liveLog(lastLine),
+      has_more_before: true,
+    },
+  }));
+  const {
+    port,
+    requests,
+    releaseVerificationLiveRequestCount,
+  } = await createTeamAddonServer(t, {
+    initialState,
+    releaseVerificationLivePayloads,
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  const releaseCard = page.locator(
+    `#team-delivery-page li.release-card[data-release-id="${releaseId}"]`,
+  );
+  await releaseCard.locator("summary.compact-record-summary").click();
+  await releaseCard.getByRole("button", { name: "Open release detail" }).click();
+  const logSelector = [
+    "pre[data-release-verification-live-log]",
+    `[data-release-id="${releaseId}"]`,
+    `[data-verification-run-id="${verificationRunId}"]`,
+    '[data-command-index="0"]',
+  ].join("");
+  const liveLogElement = releaseCard.locator(logSelector);
+  await page.waitForFunction(
+    (selector) => document.querySelector(selector)?.textContent?.includes("live verifier line 080"),
+    logSelector,
+  );
+  assert.equal(releaseVerificationLiveRequestCount(), 1);
+  assert.equal(
+    new URLSearchParams(
+      requests.find((request) => request.pathname.endsWith("/verification-live"))?.search || "",
+    ).get("limit"),
+    "160",
+  );
+  const initialLogScroll = await liveLogElement.evaluate((element) => ({
+    scrollTop: element.scrollTop,
+    maxScrollTop: element.scrollHeight - element.clientHeight,
+  }));
+  assert.ok(initialLogScroll.maxScrollTop > 0);
+  assert.ok(
+    Math.abs(initialLogScroll.maxScrollTop - initialLogScroll.scrollTop) <= 1,
+    `expected the live log to open at its tail; scroll=${JSON.stringify(initialLogScroll)}`,
+  );
+
+  const manualLogScrollTop = await liveLogElement.evaluate((element) => {
+    const maxScrollTop = element.scrollHeight - element.clientHeight;
+    element.scrollTop = Math.max(1, Math.min(96, Math.floor(maxScrollTop / 2)));
+    return element.scrollTop;
+  });
+  assert.ok(manualLogScrollTop > 0);
+  const pageScrollBeforeUpdate = await page.evaluate((selector) => {
+    document.querySelector(selector)?.scrollIntoView({ block: "end" });
+    return window.scrollY;
+  }, logSelector);
+  assert.ok(pageScrollBeforeUpdate > 0);
+
+  await page.waitForFunction(
+    (selector) => document.querySelector(selector)?.textContent?.includes("live verifier line 081"),
+    logSelector,
+  );
+  const preservedScroll = await liveLogElement.evaluate((element) => element.scrollTop);
+  assert.ok(
+    Math.abs(preservedScroll - manualLogScrollTop) <= 1,
+    `expected manual log scrolling to survive an update; before=${manualLogScrollTop} after=${preservedScroll}`,
+  );
+  assert.ok(
+    Math.abs((await page.evaluate(() => window.scrollY)) - pageScrollBeforeUpdate) <= 1,
+    "expected the page scroll position to survive a live-log update",
+  );
+
+  await liveLogElement.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await page.waitForFunction(
+    (selector) => document.querySelector(selector)?.textContent?.includes("live verifier line 082"),
+    logSelector,
+  );
+  const followedLogScroll = await liveLogElement.evaluate((element) => ({
+    scrollTop: element.scrollTop,
+    maxScrollTop: element.scrollHeight - element.clientHeight,
+  }));
+  assert.ok(
+    Math.abs(followedLogScroll.maxScrollTop - followedLogScroll.scrollTop) <= 1,
+    `expected a tailed live log to follow new output; scroll=${JSON.stringify(followedLogScroll)}`,
+  );
+});
+
 test("team add-on Cases defaults to active work and pages durable case history", async (t) => {
   const initialState = seededOrgChartState();
   const activeStatuses = ["open", "triage", "in_progress", "waiting"];
@@ -3974,7 +4132,7 @@ test("team add-on Cases defaults to active work and pages durable case history",
   assert.equal(await casesPage.locator('[data-case-id="case-closed-01"]').count(), 0);
 });
 
-test("team add-on UI retries only a typed retryable release gate with an audited reason", async (t) => {
+test("team add-on UI retries verification failures with an operator comment", async (t) => {
   const initialState = seededGitState();
   initialState.release_packages["release-transient"] = {
     id: "release-transient",
@@ -4010,7 +4168,7 @@ test("team add-on UI retries only a typed retryable release gate with an audited
     created_at: "2026-06-09T15:50:00Z",
     updated_at: "2026-06-09T15:55:00Z",
   };
-  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const { port, requests, state: serverState } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
@@ -4023,11 +4181,6 @@ test("team add-on UI retries only a typed retryable release gate with an audited
   await transient.locator("summary.compact-record-summary").click();
   const retry = transient.getByRole("button", { name: "Retry verification gate" });
   await retry.waitFor({ state: "visible" });
-  assert.equal(
-    await releases.locator('li.release-card[data-release-id="release-code-failure"]')
-      .getByRole("button", { name: /Retry .* gate/ }).count(),
-    0,
-  );
 
   page.once("dialog", (dialog) => dialog.accept("Worker host was repaired by release-admin."));
   await retry.click();
@@ -4045,6 +4198,43 @@ test("team add-on UI retries only a typed retryable release gate with an audited
     expected_revision: 4,
   });
 
+  await releases.getByRole("button", { name: "Show rejected" }).click();
+  const failed = releases.locator('li.release-card[data-release-id="release-code-failure"]');
+  await failed.locator("summary.compact-record-summary").click();
+  const operatorRetry = failed.getByRole("button", { name: "Retry verification gate" });
+  await operatorRetry.waitFor({ state: "visible" });
+  page.once("dialog", (dialog) => {
+    assert.match(dialog.message(), /Add a comment/);
+    return dialog.dismiss();
+  });
+  await operatorRetry.click();
+  page.once("dialog", (dialog) => dialog.accept("   "));
+  await operatorRetry.click();
+  assert.equal(requests.filter((item) => item.pathname.endsWith("release-code-failure/retry-gate")).length, 0);
+  page.once("dialog", (dialog) => dialog.accept("Retry after repairing the toolchain."));
+  await operatorRetry.click();
+  await waitForRevision(page, 6);
+  const candidateRequest = requests.find((item) => item.method === "POST" &&
+    item.pathname.endsWith("release-code-failure/retry-gate"));
+  assert.deepEqual(candidateRequest?.payload, {
+    gate_kind: "verification",
+    gate_id: "candidate-attempt-1",
+    reason: "Retry after repairing the toolchain.",
+    allow_rejected_verification_retry: true,
+    expected_revision: 5,
+  });
+  serverState.release_packages["release-code-failure"].verification_runs = [{
+    id: "candidate-attempt-2", attempt_number: 2, state: "pending",
+    candidate_commit_sha: "candidate-sha",
+    retry_reason: candidateRequest.payload.reason,
+    retry_requested_by: "operator:jonathan",
+  }];
+  await failed.getByRole("button", { name: "Open release detail" }).click();
+  const detail = failed.locator(".release-review-detail");
+  await detail.getByText("Retry comment: Retry after repairing the toolchain.", { exact: true })
+    .waitFor({ state: "visible" });
+  await detail.getByText("Requested by operator:jonathan", { exact: true })
+    .waitFor({ state: "visible" });
 });
 
 test("team add-on UI submits an explicit rejected-review exception", async (t) => {

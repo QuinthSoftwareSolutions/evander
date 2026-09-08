@@ -461,6 +461,7 @@ const expandedReleaseDetailIds = new Set();
 const releaseVerificationLiveCache = new Map();
 const releaseVerificationLivePollTimers = new Map();
 const RELEASE_VERIFICATION_LIVE_POLL_MS = 2000;
+const RELEASE_VERIFICATION_LIVE_FOLLOW_THRESHOLD_PX = 48;
 const postReleaseReportResults = new Map();
 const runtimeAttentionFilters = {
   kind: "all",
@@ -1817,10 +1818,13 @@ function bindForms() {
       return;
     }
     const rejectedReviewException = button.dataset.rejectedReviewException === "true";
+    const rejectedVerificationRetry = button.dataset.rejectedVerificationRetry === "true";
     const reason = window.prompt(
-      rejectedReviewException
-        ? "Why is an operator exception justified for this rejected review on the unchanged candidate?"
-        : "What concrete recovery occurred since this gate failed? Cancel and escalate if none.",
+      rejectedVerificationRetry
+        ? "Add a comment for retrying verification on this candidate. Its unused generated correction task will be cancelled."
+        : rejectedReviewException
+          ? "Why is an operator exception justified for this rejected review on the unchanged candidate?"
+          : "What concrete recovery occurred since this gate failed? Cancel and escalate if none.",
       "",
     );
     if (!text(reason)) {
@@ -5124,9 +5128,11 @@ function renderShell() {
 }
 
 function render() {
+  const releaseVerificationScrollState = captureReleaseVerificationScrollState();
   rememberOpenTeamDisclosures();
   renderShell();
   renderActiveView(activeTeamView);
+  restoreReleaseVerificationScrollState(releaseVerificationScrollState);
 }
 
 function renderActiveView(view = activeTeamView) {
@@ -17565,9 +17571,58 @@ async function toggleReleaseDetail(releaseId) {
 }
 
 function renderReleaseDetailSurfaces() {
+  const releaseVerificationScrollState = captureReleaseVerificationScrollState();
   renderReleases();
   renderProjectFocus();
   renderReviewDeliveryWorkspace();
+  restoreReleaseVerificationScrollState(releaseVerificationScrollState);
+}
+
+function releaseVerificationLiveLogScrollKey(element) {
+  return [
+    text(element?.dataset?.releaseId),
+    text(element?.dataset?.verificationRunId),
+    text(element?.dataset?.commandIndex),
+  ].join(":");
+}
+
+function captureReleaseVerificationScrollState() {
+  const logs = new Map();
+  document.querySelectorAll("pre[data-release-verification-live-log]").forEach((element) => {
+    const key = releaseVerificationLiveLogScrollKey(element);
+    const snapshots = logs.get(key) || [];
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    snapshots.push({
+      scrollTop: element.scrollTop,
+      followsTail:
+        maxScrollTop - element.scrollTop <= RELEASE_VERIFICATION_LIVE_FOLLOW_THRESHOLD_PX,
+    });
+    logs.set(key, snapshots);
+  });
+  return {
+    view: activeTeamView,
+    windowScrollX: window.scrollX,
+    windowScrollY: window.scrollY,
+    logs,
+  };
+}
+
+function restoreReleaseVerificationScrollState(snapshot) {
+  if (!snapshot || snapshot.view !== activeTeamView) {
+    return;
+  }
+  const restoredCounts = new Map();
+  document.querySelectorAll("pre[data-release-verification-live-log]").forEach((element) => {
+    const key = releaseVerificationLiveLogScrollKey(element);
+    const index = restoredCounts.get(key) || 0;
+    const previous = snapshot.logs.get(key)?.[index];
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = !previous || previous.followsTail
+      ? maxScrollTop
+      : Math.min(previous.scrollTop, maxScrollTop);
+    restoredCounts.set(key, index + 1);
+  });
+  window.scrollTo(snapshot.windowScrollX, snapshot.windowScrollY);
 }
 
 async function loadReleaseDetail(releaseId) {
@@ -17979,7 +18034,12 @@ function renderReleaseVerificationLiveOutput(run, result, index, releaseId) {
       <details class="release-verification-log" open>
         <summary>Live verifier output · updates every 2 seconds</summary>
         ${log?.has_more_before ? `<p class="meta-line">Earlier log lines are omitted from this bounded tail.</p>` : ""}
-        ${logText ? `<pre>${escapeHtml(logText)}</pre>` : `<p class="empty-state">${escapeHtml(message)}</p>`}
+        ${logText ? `<pre
+          data-release-verification-live-log
+          data-release-id="${escapeAttr(releaseId)}"
+          data-verification-run-id="${escapeAttr(run.id)}"
+          data-command-index="${Number(index)}"
+        >${escapeHtml(logText)}</pre>` : `<p class="empty-state">${escapeHtml(message)}</p>`}
       </details>
     </li>
   `;
@@ -18014,6 +18074,8 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
+              ${run.retry_reason ? `<div class="meta-line"><strong>Retry comment:</strong> ${escapeHtml(run.retry_reason)}</div>` : ""}
+              ${run.retry_requested_by ? `<div class="meta-line">Requested by ${escapeHtml(run.retry_requested_by)}</div>` : ""}
               ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
@@ -18859,15 +18921,22 @@ function renderReleaseGateAction(release) {
     release.state === "blocked" &&
     failure?.stage === "review" &&
     failure?.kind === "blocked";
+  const rejectedVerificationRetry =
+    release.state === "rejected" &&
+    failure?.stage === "verification" &&
+    failure?.kind === "candidate" &&
+    !releaseHasSuccessor(release.id);
   const rejectedReviewException =
     release.state === "rejected" &&
     failure?.stage === "review" &&
     failure?.kind === "rejected" &&
     !releaseHasSuccessor(release.id);
-  if (!gateId || (!retryableVerification && !retryableReview && !rejectedReviewException)) {
+  if (!gateId || !(
+    retryableVerification || retryableReview || rejectedReviewException || rejectedVerificationRetry
+  )) {
     return "";
   }
-  const gateKind = retryableVerification ? "verification" : "review";
+  const gateKind = retryableVerification || rejectedVerificationRetry ? "verification" : "review";
   const label = rejectedReviewException
     ? "Retry rejected review by exception"
     : `Retry ${gateKind} gate`;
@@ -18881,6 +18950,7 @@ function renderReleaseGateAction(release) {
         data-gate-kind="${escapeAttr(gateKind)}"
         data-gate-id="${escapeAttr(gateId)}"
         data-rejected-review-exception="${rejectedReviewException ? "true" : "false"}"
+        data-rejected-verification-retry="${rejectedVerificationRetry ? "true" : "false"}"
       >${escapeHtml(label)}</button>
     </div>
   `;
@@ -18891,6 +18961,7 @@ async function retryReleaseGate(button, reason) {
   const gateKind = text(button?.dataset?.gateKind);
   const gateId = text(button?.dataset?.gateId);
   const rejectedReviewException = button?.dataset?.rejectedReviewException === "true";
+  const rejectedVerificationRetry = button?.dataset?.rejectedVerificationRetry === "true";
   if (!releaseId || !gateKind || !gateId) {
     setStatus("Release gate retry context is incomplete.", "error");
     return;
@@ -18912,6 +18983,7 @@ async function retryReleaseGate(button, reason) {
           gate_id: gateId,
           reason,
           ...(rejectedReviewException ? { allow_rejected_review_exception: true } : {}),
+          ...(rejectedVerificationRetry ? { allow_rejected_verification_retry: true } : {}),
           expected_revision: state.revision,
         }),
       },
