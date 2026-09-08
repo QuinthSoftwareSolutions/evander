@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-08 - Live release log scrolling (0.26.1)
+
+- Open live release-verification logs at their newest output, continue following while the viewer
+  remains near the bottom, and preserve manual log and page scrolling across live updates.
+
 ## 2026-09-07 - Team, ADO and runtime improvements (0.26.0)
 
 - Explain Bokio validation failures with upstream field details and retain structured audit data.

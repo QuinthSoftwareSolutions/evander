@@ -461,6 +461,7 @@ const expandedReleaseDetailIds = new Set();
 const releaseVerificationLiveCache = new Map();
 const releaseVerificationLivePollTimers = new Map();
 const RELEASE_VERIFICATION_LIVE_POLL_MS = 2000;
+const RELEASE_VERIFICATION_LIVE_FOLLOW_THRESHOLD_PX = 48;
 const postReleaseReportResults = new Map();
 const runtimeAttentionFilters = {
   kind: "all",
@@ -5124,9 +5125,11 @@ function renderShell() {
 }
 
 function render() {
+  const releaseVerificationScrollState = captureReleaseVerificationScrollState();
   rememberOpenTeamDisclosures();
   renderShell();
   renderActiveView(activeTeamView);
+  restoreReleaseVerificationScrollState(releaseVerificationScrollState);
 }
 
 function renderActiveView(view = activeTeamView) {
@@ -17565,9 +17568,58 @@ async function toggleReleaseDetail(releaseId) {
 }
 
 function renderReleaseDetailSurfaces() {
+  const releaseVerificationScrollState = captureReleaseVerificationScrollState();
   renderReleases();
   renderProjectFocus();
   renderReviewDeliveryWorkspace();
+  restoreReleaseVerificationScrollState(releaseVerificationScrollState);
+}
+
+function releaseVerificationLiveLogScrollKey(element) {
+  return [
+    text(element?.dataset?.releaseId),
+    text(element?.dataset?.verificationRunId),
+    text(element?.dataset?.commandIndex),
+  ].join(":");
+}
+
+function captureReleaseVerificationScrollState() {
+  const logs = new Map();
+  document.querySelectorAll("pre[data-release-verification-live-log]").forEach((element) => {
+    const key = releaseVerificationLiveLogScrollKey(element);
+    const snapshots = logs.get(key) || [];
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    snapshots.push({
+      scrollTop: element.scrollTop,
+      followsTail:
+        maxScrollTop - element.scrollTop <= RELEASE_VERIFICATION_LIVE_FOLLOW_THRESHOLD_PX,
+    });
+    logs.set(key, snapshots);
+  });
+  return {
+    view: activeTeamView,
+    windowScrollX: window.scrollX,
+    windowScrollY: window.scrollY,
+    logs,
+  };
+}
+
+function restoreReleaseVerificationScrollState(snapshot) {
+  if (!snapshot || snapshot.view !== activeTeamView) {
+    return;
+  }
+  const restoredCounts = new Map();
+  document.querySelectorAll("pre[data-release-verification-live-log]").forEach((element) => {
+    const key = releaseVerificationLiveLogScrollKey(element);
+    const index = restoredCounts.get(key) || 0;
+    const previous = snapshot.logs.get(key)?.[index];
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = !previous || previous.followsTail
+      ? maxScrollTop
+      : Math.min(previous.scrollTop, maxScrollTop);
+    restoredCounts.set(key, index + 1);
+  });
+  window.scrollTo(snapshot.windowScrollX, snapshot.windowScrollY);
 }
 
 async function loadReleaseDetail(releaseId) {
@@ -17979,7 +18031,12 @@ function renderReleaseVerificationLiveOutput(run, result, index, releaseId) {
       <details class="release-verification-log" open>
         <summary>Live verifier output · updates every 2 seconds</summary>
         ${log?.has_more_before ? `<p class="meta-line">Earlier log lines are omitted from this bounded tail.</p>` : ""}
-        ${logText ? `<pre>${escapeHtml(logText)}</pre>` : `<p class="empty-state">${escapeHtml(message)}</p>`}
+        ${logText ? `<pre
+          data-release-verification-live-log
+          data-release-id="${escapeAttr(releaseId)}"
+          data-verification-run-id="${escapeAttr(run.id)}"
+          data-command-index="${Number(index)}"
+        >${escapeHtml(logText)}</pre>` : `<p class="empty-state">${escapeHtml(message)}</p>`}
       </details>
     </li>
   `;
