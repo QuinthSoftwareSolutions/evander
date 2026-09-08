@@ -5889,7 +5889,12 @@ def _state_history_keep_ids(
         )
     ]
     keep_ids = set(current_ids)
-    remaining_slots = max(0, history_limit - len(keep_ids))
+    # Release history has its own allowance so active work cannot hide publications.
+    remaining_slots = (
+        history_limit
+        if collection == "release_packages"
+        else max(0, history_limit - len(keep_ids))
+    )
     keep_ids.update(newest_ids[:remaining_slots])
     return keep_ids
 
@@ -5898,7 +5903,10 @@ def _state_history_item_is_current(collection: str, item: Any) -> bool:
     if collection == "inbox":
         return _record_state_value(item) != TeamInboxItemState.HANDLED.value
     if collection == "release_packages":
-        return _record_state_value(item) != TeamRecordState.ACCEPTED.value
+        return _record_state_value(item) not in {
+            TeamRecordState.ACCEPTED.value,
+            TeamRecordState.REJECTED.value,
+        }
     if collection == "blockers":
         return _record_state_value(item) == "open"
     if collection == "dependency_composition_recoveries":
