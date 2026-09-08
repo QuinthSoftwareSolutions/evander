@@ -3459,7 +3459,7 @@ test("team add-on Projects tab collapses, filters, sorts, and pages delivery rec
   );
 });
 
-test("team add-on release history filters by state and activity date", async (t) => {
+async function checkReleaseHistoryFilters(t, { windowed = false } = {}) {
   const initialState = seededGitState();
   initialState.release_packages["release-pending-filter"] = {
     id: "release-pending-filter",
@@ -3479,6 +3479,14 @@ test("team add-on release history filters by state and activity date", async (t)
     created_at: "2026-06-05T12:00:00Z",
     updated_at: "2026-06-05T12:00:00Z",
   };
+  initialState.history_windows = {
+    release_packages: {
+      total_count: windowed ? 150 : 3,
+      returned_count: 3,
+      limit: 100,
+      windowed,
+    },
+  };
   const { port } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port);
 
@@ -3493,6 +3501,22 @@ test("team add-on release history filters by state and activity date", async (t)
   const stateFilter = filters.locator('[data-release-history-filter="state"]');
 
   assert.equal(await releaseHistory.locator(".release-card").count(), 3);
+  const historySummary = releaseHistory.locator(".release-history-filter-summary");
+  const unfilteredSummary = windowed
+    ? /^3 of 150 release packages loaded\. Filters apply to the loaded releases\./
+    : /^3 release packages in history\./;
+  assert.match(await historySummary.innerText(), unfilteredSummary);
+  await stateFilter.selectOption("accepted");
+  await releaseHistory
+    .locator('li.release-card[data-release-id="release-accepted"]')
+    .waitFor({ state: "visible" });
+  assert.equal(await releaseHistory.locator(".release-card").count(), 1);
+  assert.match(
+    await historySummary.innerText(),
+    windowed
+      ? /^1 of 3 loaded release packages shown \(150 in history\)\. Filters apply to the loaded releases\./
+      : /^1 of 3 release packages shown\./,
+  );
   await stateFilter.selectOption("rejected");
   await releaseHistory
     .locator('li.release-card[data-release-id="release-rejected-filter"]')
@@ -3530,6 +3554,15 @@ test("team add-on release history filters by state and activity date", async (t)
   assert.equal(await dateFrom.inputValue(), "");
   assert.equal(await dateThrough.inputValue(), "");
   assert.equal(await releaseHistory.locator(".release-card").count(), 3);
+  assert.match(await historySummary.innerText(), unfilteredSummary);
+}
+
+test("team add-on release history filters by state and activity date", async (t) => {
+  await checkReleaseHistoryFilters(t);
+});
+
+test("team add-on release history filters explain partial history counts", async (t) => {
+  await checkReleaseHistoryFilters(t, { windowed: true });
 });
 
 test("team add-on delivery records lead with human subjects and progressive technical detail", async (t) => {
