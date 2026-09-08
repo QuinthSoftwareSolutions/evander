@@ -5201,6 +5201,97 @@ def test_team_addon_state_payload_windows_history_but_keeps_current_records(
     assert set(payload["resource_tokens"]["action_records"]) == {"action-1"}
 
 
+@pytest.mark.parametrize("view", ["state", "delivery", "projects", "operations"])
+@pytest.mark.parametrize("older_state", ["rejected", "pending", "in_progress", "blocked"])
+def test_team_addon_release_history_keeps_recent_completed_releases(
+    tmp_path: Path, view: str, older_state: str
+) -> None:
+    state = _seed_runtime_operations_state(tmp_path / "runtime").read()
+    now = datetime(2026, 9, 8, 9, 10, tzinfo=UTC)
+    state.release_packages = {
+        f"older-{index}": ReleasePackage(
+            id=f"older-{index}",
+            project_id="project",
+            state=TeamRecordState(older_state),
+            created_at=now - timedelta(days=index + 1),
+        )
+        for index in range(102)
+    }
+    for index in range(48):
+        release_id = f"accepted-{index}"
+        state.release_packages[release_id] = ReleasePackage(
+            id=release_id,
+            project_id="project",
+            state=TeamRecordState.ACCEPTED,
+            created_at=now - timedelta(days=200),
+            published_at=now - timedelta(minutes=index),
+            published_commit_sha=f"{index:040x}",
+        )
+    request = Request({"type": "http", "query_string": b"", "headers": []})
+
+    if view == "state":
+        payload = _team_state_payload_for_request(None, request, state)
+    else:
+        payload = team_addon_api._view_payload_for_request(None, request, state, view=view)[
+            "data"
+        ]["state"]
+
+    releases = payload["release_packages"]
+    assert {f"accepted-{index}" for index in range(48)} <= set(releases)
+    if older_state == "rejected":
+        assert {key for key in releases if key.startswith("older-")} == {
+            f"older-{index}" for index in range(52)
+        }
+    else:
+        assert {f"older-{index}" for index in range(102)} <= set(releases)
+    returned_count = 100 if older_state == "rejected" else 150
+    assert len(releases) == returned_count
+    assert payload["history_windows"]["release_packages"] == {
+        "total_count": 150,
+        "returned_count": returned_count,
+        "limit": 100,
+        "windowed": returned_count < 150,
+    }
+    assert set(payload["resource_tokens"]["release_packages"]) == set(releases)
+
+
+def test_team_addon_release_history_preserves_scope_and_requested_limit(tmp_path: Path) -> None:
+    state = _seed_runtime_operations_state(tmp_path / "runtime").read()
+    now = datetime(2026, 9, 8, tzinfo=UTC)
+    state.release_packages = {
+        release_id: ReleasePackage(
+            id=release_id,
+            project_id="project",
+            state=release_state,
+            created_at=now - timedelta(days=age),
+        )
+        for release_id, release_state, age in (
+            ("pending", TeamRecordState.PENDING, 10),
+            ("rejected", TeamRecordState.REJECTED, 5),
+            ("accepted", TeamRecordState.ACCEPTED, 1),
+            ("outside-scope", TeamRecordState.ACCEPTED, 0),
+        )
+    }
+    request = Request({"type": "http", "query_string": b"history_limit=1", "headers": []})
+
+    payload = team_addon_api._state_slice_payload_for_request(
+        None,
+        request,
+        state,
+        collections={"release_packages"},
+        ids_by_collection={"release_packages": {"pending", "rejected", "accepted"}},
+    )
+
+    assert set(payload["release_packages"]) == {"pending", "accepted"}
+    assert set(payload["resource_tokens"]["release_packages"]) == {"pending", "accepted"}
+    assert payload["history_windows"]["release_packages"] == {
+        "total_count": 3,
+        "returned_count": 2,
+        "limit": 1,
+        "windowed": True,
+    }
+
+
 def test_team_addon_state_payload_adds_release_outbox_metadata(tmp_path: Path) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     repo.enqueue_outbox_record(

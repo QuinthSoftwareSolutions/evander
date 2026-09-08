@@ -17373,6 +17373,12 @@ function renderReleaseHistoryFilters({ visibleCount, scopedCount }) {
   const summary = hasFilters
     ? `${visibleCount} of ${scopedCount} release package${scopedCount === 1 ? "" : "s"} shown`
     : `${scopedCount} release package${scopedCount === 1 ? "" : "s"} in history`;
+  const historyWindow = !myHumanReviewsOnly && state.history_windows?.release_packages;
+  const historySummary = historyWindow?.windowed
+    ? hasFilters
+      ? `${visibleCount} of ${scopedCount} loaded release packages shown (${historyWindow.total_count} in history). Filters apply to the loaded releases`
+      : `${scopedCount} of ${historyWindow.total_count} release packages loaded. Filters apply to the loaded releases`
+    : summary;
   return `
     <div class="release-history-filters" data-release-history-filters role="group" aria-label="Release history filters">
       <label>
@@ -17395,7 +17401,7 @@ function renderReleaseHistoryFilters({ visibleCount, scopedCount }) {
       <button type="button" class="secondary release-history-clear-filters" data-clear-release-history-filters>
         Clear filters
       </button>
-      <p class="release-history-filter-summary">${escapeHtml(summary)}. Activity date is published when available; otherwise prepared.</p>
+      <p class="release-history-filter-summary">${escapeHtml(historySummary)}. Activity date is published when available; otherwise prepared.</p>
     </div>
   `;
 }

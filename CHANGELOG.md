@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-08 - Release history visibility (0.28.1)
+
+- Keep recent accepted and rejected releases in the history window, with active releases
+  retained separately so an older backlog cannot hide newly published releases.
+- Show the loaded and total release counts when history is partial, and clarify that state
+  and activity-date filters apply to the loaded releases.
+
 ## 2026-09-08 - Required personal PR creators (0.28.0)
 
 - Add an optional `require_personal` policy to PR publication. Require captured ADO assignee
