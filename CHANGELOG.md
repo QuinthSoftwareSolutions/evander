@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-08 - Required personal PR creators (0.28.0)
+
+- Add an optional `require_personal` policy to PR publication. Require captured ADO assignee
+  attribution and a usable personal connection before pushing; reject an existing PR owned
+  by another identity and verify the creator returned by ADO before reporting success.
+- Keep same-account OAuth-to-PAT fallback and duplicate-creation guards while preventing bot
+  fallback under this policy. Record explicit reasons for missing context, creator mismatches,
+  and bot reconciliation when fallback is allowed.
+- Let the APP attribution migration enable the policy on both PR paths after deployment.
+  Use configured pack references, create valid intake tasks, and preserve existing validation
+  warnings during repair.
+
 ## 2026-09-08 - Operator verification recovery and live logs (0.27.0)
 
 - Let operators retry candidate-failed release verification from Admin Web with a comment.

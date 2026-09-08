@@ -1348,8 +1348,15 @@ class PrCreateEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     work_item_id: ConfigValue | None = None
     publication_context_id: ConfigValue | None = None
+    publication_policy: Literal["allow_bot_fallback", "require_personal"] = "allow_bot_fallback"
     title: ConfigValue | None = None
     fallback_title: ConfigValue | None = None
     body: ConfigValue | None = None
     draft: ConfigValue | None = None
     fill: ConfigValue | None = True
+
+    @model_validator(mode="after")
+    def validate_publication_policy(self):
+        if self.publication_policy == "require_personal" and not self.publication_context_id:
+            raise ValueError("require_personal needs publication_context_id")
+        return self

@@ -4117,6 +4117,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("work_item_id", "Work item ID", "string", bindable=True),
             _field("publication_context_id", "Release publishing identity", "string", bindable=True),
+            _field(
+                "publication_policy", "PR creator policy", "enum",
+                default_value="allow_bot_fallback",
+                description="Require the captured assignee's personal ADO connection, or allow bot fallback with a recorded reason.",
+                options=[
+                    _field_option("allow_bot_fallback", "Allow bot fallback"),
+                    _field_option("require_personal", "Require personal creator"),
+                ],
+            ),
             _field("title", "Title", "string", bindable=True),
             _field("fallback_title", "Fallback title", "string", bindable=True),
             _field("body", "Body", "string", bindable=True, multiline=True),

@@ -191,7 +191,7 @@ def test_personal_pr_creation_fallback_and_uncertain_reconciliation(tmp_path, mo
     assert result["actual_creator"]["id"] == expected
     assert result["intended_creator_id"] == "alice"
     assert sum(method == "POST" for method, _ in calls) == 1
-    assert bool(result["fallback_reason"]) == (failure in {401, 403, "missing"})
+    assert bool(result["fallback_reason"]) == (failure in {401, 403, "missing", "timeout"})
     again = publish()
     assert again["actual_creator"]["id"] == expected
     assert sum(method == "POST" for method, _ in calls) == 1

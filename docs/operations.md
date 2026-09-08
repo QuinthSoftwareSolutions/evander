@@ -13,6 +13,22 @@ connections affect PR publication; existing host Git push and issue-intake crede
 continue to serve those operations. The Work Items permission lets issue-driven PR publication
 associate the PR with its source work item through the same personal credential.
 
+In the PR create workflow node, **PR creator policy** defaults to **Allow bot fallback**
+(`publication_policy: allow_bot_fallback`). Select **Require personal creator**
+(`require_personal`) for releases that must be published as their captured ADO assignee.
+This requires `publication_context_id`, one known assignee across the release contributions,
+and an available personal connection. Missing context, mixed or missing assignees, or rejected
+personal credentials stop publication. Same-account OAuth-to-PAT fallback remains available.
+The host checks credentials and any existing PR's creator before pushing; it rechecks at PR
+creation to account for concurrent changes. A later failure can leave the branch published,
+but does not authorize a bot-created PR. An existing PR owned by another identity is left
+for operator recovery; changing this policy does not change its creator.
+
+With bot fallback allowed, audit records explain missing publication context
+(`publication_context_missing`), credential fallback, uncertain-creation reconciliation,
+and reuse of a PR whose creator differs from the intended assignee. Requiring a personal
+creator keeps reconciliation on that person's connection and retains the duplicate-POST guard.
+
 The host stores encrypted PATs and publication audit records in
 `runtime/ado-user-connections/connections.db`, with a separate encryption key in
 `runtime/secrets/ado-user-connections.key`. Both files are restricted to the service user.
@@ -73,8 +89,20 @@ Add `--apply` to save through the Admin workflow service. The script validates c
 documents, honors revisions and locks, preserves deduplication state, and reads back each
 saved revision. It links the ADO directive to a deterministic intake task, preserves the
 planning handoff's origin, and carries publication context through both PR paths.
+Existing validation warnings are retained; new diagnostics and validation errors block a save.
 It does not backfill tasks or change previously created commits and PRs. Check the trigger
 orchestrator's successful configuration reload after saving.
+
+After deploying 0.28.0 or later, preview the required personal creator policy with:
+
+```bash
+./.venv/bin/python scripts/update_app_ado_attribution_workflow.py --runtime-dir runtime --require-personal
+```
+
+Add `--apply` after reviewing the preview. The flag sets `require_personal` on both the normal
+and artifact-repair PR paths. Without the flag, existing creator policies are preserved.
+Use the configured pack references (normally `team-runtime.v1.json` and
+`app-dev-team-lifecycle.v1.json`), and run as the service user to preserve file ownership.
 
 ## Host Packages
 
