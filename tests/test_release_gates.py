@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -1846,7 +1847,10 @@ def _candidate_verification_retry_fixture():
     return state, release, run
 
 
-def test_operator_verification_retry_preserves_evidence_and_persists_recovery(tmp_path: Path):
+@pytest.mark.parametrize("already_cancelled", [False, True])
+def test_operator_verification_retry_preserves_evidence_and_persists_recovery(
+    tmp_path: Path, already_cancelled: bool
+):
     state, release, run = _candidate_verification_retry_fixture()
     original_run = run.model_dump(mode="json")
     original_manifest = release.manifest.model_dump(mode="json")
@@ -1854,6 +1858,14 @@ def test_operator_verification_retry_preserves_evidence_and_persists_recovery(tm
     repository = TeamStateRepository(tmp_path)
     saved = repository.update(lambda _state: state)
     admin = TeamAdminService(repository)
+    if already_cancelled:
+        saved = admin.cancel_task(
+            task_id=task_id,
+            reason_code="no_longer_required",
+            reason="The toolchain was repaired; correction work is no longer needed.",
+            actor_id="operator:jonathan",
+            expected_revision=saved.revision,
+        )
     arguments = dict(
         release_package_id=release.id,
         gate_kind="verification",
@@ -1887,14 +1899,78 @@ def test_operator_verification_retry_preserves_evidence_and_persists_recovery(tm
     assert recovered_release.manifest.model_dump(mode="json") == original_manifest
     assert recovered_release.approved_commit_sha is None
     assert after.tasks[task_id].state == TeamTaskState.CANCELLED
-    assert after.tasks[task_id].cancellation.reason_code == "operator_verification_retry"
-    assert arguments["reason"] in after.tasks[task_id].cancellation.reason
+    if already_cancelled:
+        assert after.tasks[task_id].cancellation == saved.tasks[task_id].cancellation
+    else:
+        assert after.tasks[task_id].cancellation.reason_code == "operator_verification_retry"
+        assert arguments["reason"] in after.tasks[task_id].cancellation.reason
     assert all(item.state == TeamInboxItemState.HANDLED for item in after.inbox.values())
     events = repository.list_outbox_records()
     assert any(event.intent_type == "team.release.verification_requested" for event in events)
     with pytest.raises(ValueError):
         admin.retry_release_gate_with_result(**arguments, expected_revision=after.revision)
     assert len(repository.read().release_verification_runs) == 2
+
+
+@pytest.mark.parametrize("successor_dispatch_status", [None, "preparing", "leased"])
+def test_operator_verification_retry_refuses_cancelled_correction_successor(
+    tmp_path: Path, successor_dispatch_status: str | None
+) -> None:
+    state, release, run = _candidate_verification_retry_fixture()
+    successor = AgentTask(
+        id="correction-successor",
+        owner_agent_id="lead",
+        project_id=release.project_id,
+        title="Replacement correction",
+        description="Continue the correction in a replacement task.",
+        priority=0,
+        created_by_agent_id="lead",
+    )
+    state.tasks[successor.id] = successor
+    if successor_dispatch_status is not None:
+        state.dispatches["successor-work"] = TeamDispatch(
+            id="successor-work",
+            agent_id="lead",
+            session_id="session-lead",
+            cause_kind="task",
+            task_ids=[successor.id],
+            status=successor_dispatch_status,
+            leased_at=successor.created_at if successor_dispatch_status == "leased" else None,
+            lease_expires_at=(
+                successor.created_at + timedelta(minutes=5)
+                if successor_dispatch_status == "leased"
+                else None
+            ),
+        )
+    repository = TeamStateRepository(tmp_path)
+    saved = repository.update(lambda _state: state)
+    admin = TeamAdminService(repository)
+    cancelled = admin.cancel_task(
+        task_id=run.correction_task_id,
+        reason_code="superseded",
+        reason="Continue correction work in the replacement task.",
+        actor_id="operator:jonathan",
+        successor_task_id=successor.id,
+        expected_revision=saved.revision,
+    )
+    assert cancelled.tasks[run.correction_task_id].state == TeamTaskState.CANCELLED
+    assert cancelled.tasks[run.correction_task_id].cancellation.successor_task_id == successor.id
+    before = repository.read().model_dump(mode="json")
+    outbox_before = repository.list_outbox_records()
+
+    with pytest.raises(ValueError, match="verification correction has linked tasks"):
+        admin.retry_release_gate_with_result(
+            release_package_id=release.id,
+            gate_kind="verification",
+            gate_id=run.id,
+            reason="Retry after the toolchain was repaired.",
+            operator_actor_id="operator:jonathan",
+            allow_rejected_verification_retry=True,
+            expected_revision=cancelled.revision,
+        )
+
+    assert repository.read().model_dump(mode="json") == before
+    assert repository.list_outbox_records() == outbox_before
 
 
 @pytest.mark.parametrize(

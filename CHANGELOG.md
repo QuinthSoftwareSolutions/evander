@@ -5,6 +5,8 @@
 - Let operators retry candidate-failed release verification from Admin Web with a comment.
   Preserve the failed attempt and pinned candidate, retire unused generated correction work,
   and retain all release gates; refuse retries that conflict with a successor or active work.
+- Reject verification retries when a cancelled correction task links to a replacement task,
+  including replacements with preparing or leased dispatches.
 - Open live release-verification logs at their newest output, continue following while the viewer
   remains near the bottom, and preserve manual log and page scrolling across live updates.
 

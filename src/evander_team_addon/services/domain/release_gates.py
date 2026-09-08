@@ -2120,7 +2120,7 @@ def _retire_verification_correction_for_retry(
         raise ValueError(
             "verification correction has submitted work; resolve that work before retrying"
         )
-    if any(
+    if (task.cancellation is not None and task.cancellation.successor_task_id is not None) or any(
         other.parent_task_id == task.id or task.id in other.dependency_task_ids
         for other in state.tasks.values()
     ):
