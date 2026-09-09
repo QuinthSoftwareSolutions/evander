@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-09 - Bounded Team thread reconciliation (0.33.1)
+
+- Reconcile at most 32 eligible native-thread receipts in one state transaction per
+  maintenance pass, prioritizing active dispatches and current lineage owners so
+  historical backfills cannot monopolize workflow dispatch.
+- Skip unrecordable and already handled history before opening a transaction;
+  retain timestamp and ownership checks under the write lock. Resume backfills
+  from durable receipts after restart and defer completion until its receipt is saved.
+- Capture the finalizing dispatch's durable receipt in the same transaction as
+  lease release, including independent completion workflows and missing-thread
+  failures, so batch boundaries cannot lose same-lineage resume context.
+
 ## 2026-09-09 - Configurable Team release gates (0.33.0)
 
 - Let projects enable or disable automated verification, agent review, and human review

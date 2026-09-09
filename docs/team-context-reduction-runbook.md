@@ -55,7 +55,19 @@ family, mixed/partly unbound releases receive a release lineage, and successors
 inherit that release lineage. Existing unbound tasks run fresh without backfill.
 The existing missing-thread path retries once with fresh context.
 
-### Native thread recovery (0.32.1)
+### Native thread recovery (0.33.1)
+
+Native-thread backfill is incremental: each post-completion maintenance pass applies
+at most 32 eligible receipts in one Team-state transaction. Active dispatches and
+current lineage owners take priority over historical receipts. Dispatches whose
+receipt is deferred keep their completion pending until a later pass saves it.
+The independent completion workflow reads only its target dispatch's durable
+execution receipt and applies it inside the lease-release transaction, so it can
+finalize safely without waiting for the historical backfill batch.
+Already recorded or unrecordable history does not open a write transaction, and
+restarts resume from persisted receipts without replaying the whole backfill.
+Deploy 0.33.1 or later for this behavior; 0.32.1 and 0.33.0 can block workflow dispatch while
+performing one full-state transaction per historical receipt.
 
 Asynchronous container dispatch returns no native thread until the provider reports
 one. `dispatch_id` and `execution_id` remain correlation IDs. Reconciliation reads

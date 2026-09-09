@@ -17,6 +17,7 @@ from evander.repositories.orchestration import (
     JsonEffectCursorRepository,
     JsonGateCursorRepository,
     SqliteWorkflowConfigSnapshotRepository,
+    read_latest_agent_prompt_execution,
 )
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
@@ -45,6 +46,40 @@ def _effect_record(
         input_payload={"x": 1},
         outputs={},
     )
+
+
+@pytest.mark.parametrize("session_location", ["outputs", "scope", "resolved_config"])
+def test_latest_agent_prompt_receipt_is_scoped_and_ignores_queue_markers(tmp_path, session_location):
+    store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    for index, (execution_id, session_id, dispatch_id, queued, node_type) in enumerate([
+        ("old", "session", "dispatch", False, "effect:agent:enqueue-prompt"),
+        ("wanted", "session", "dispatch", False, "effect:agent:enqueue-prompt"),
+        ("queue-marker", "session", "dispatch", True, "effect:agent:enqueue-prompt"),
+        ("other-session", "other", "dispatch", False, "effect:agent:enqueue-prompt"),
+        ("other-dispatch", "session", "other", False, "effect:agent:enqueue-prompt"),
+        ("other-effect", "session", "dispatch", False, "effect:other"),
+    ]):
+        record = _effect_record(execution_id=execution_id, idempotency_key=execution_id)
+        record.effect_type = node_type
+        record.status = "waiting" if execution_id == "wanted" else "succeeded"
+        record.finished_at = datetime(2026, 4, 23, 12, index, tzinfo=UTC)
+        record.outputs = {"dispatch_id": dispatch_id, "queued": queued, "thread_id": execution_id}
+        if session_location == "outputs":
+            record.outputs["session_id"] = session_id
+        elif session_location == "scope":
+            record.outputs["scope"] = {"session_id": session_id}
+        else:
+            record.resolved_config["session_id"] = session_id
+        store.put(record)
+    result = read_latest_agent_prompt_execution(store.path, session_id="session", dispatch_id="dispatch")
+    assert result["execution_id"] == "wanted"
+    assert read_latest_agent_prompt_execution(store.path, session_id="absent", dispatch_id="dispatch") is None
+
+
+def test_latest_agent_prompt_receipt_does_not_create_missing_database(tmp_path):
+    path = tmp_path / "absent.db"
+    assert read_latest_agent_prompt_execution(path, session_id="session", dispatch_id="dispatch") is None
+    assert not path.exists()
 
 
 def _gate_record(
