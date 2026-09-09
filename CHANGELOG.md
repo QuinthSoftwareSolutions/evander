@@ -27,6 +27,13 @@
 - Include synthetic offline comparisons that count additional retrieval and guidance
   overhead, plus a deployment, pilot-measurement, and rollback runbook.
 
+## 2026-09-09 - Task board column layout (0.31.1)
+
+- Hide the Done column until Show completed is enabled, giving active tasks more room
+  while retaining access to completed history and pagination.
+- Adapt the number of columns to the available space and wrap long task titles, briefs,
+  links, and worktree paths inside their cards.
+
 ## 2026-09-09 - Managed website sessions (0.31.0)
 
 - Add generic, directory-scoped JSON login profiles with host-held credential references
