@@ -7723,6 +7723,17 @@ select {
   gap: 0.85rem;
 }
 
+.website-login-fields { border: 0; padding: 0; min-width: 0; margin-top: 1.4rem; }
+.website-login-fields legend { font-weight: 650; font-size: 1.15rem; margin-bottom: 1rem; }
+.website-login-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; align-items: end; }
+.website-login-row { padding: 1rem 0; border-bottom: 1px solid var(--border-color, #dce2df); margin-bottom: 1rem; }
+.website-login-list { display: grid; gap: .75rem; margin-top: 1rem; }
+.website-login-summary { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem 1.2rem; padding: .85rem; background: rgba(140, 170, 160, .08); border-radius: .5rem; overflow-wrap: anywhere; }
+.website-login-summary span { min-width: 0; }
+.website-login-actions { margin-top: 1.4rem; flex-wrap: wrap; }
+.website-login-fields details { margin-top: 1rem; }
+.website-login-fields textarea { width: 100%; }
+
 .structured-input-description {
   color: rgba(61, 77, 68, 0.82);
   font-size: 0.92rem;
@@ -9019,6 +9030,7 @@ select {
 .agent-log-search button,
 .agent-log-controls button,
 .action-cluster button,
+.website-logins-panel button,
 .inline-actions button,
 .admin-toolbar button {
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
@@ -9080,6 +9092,7 @@ select {
 .admin-action-button,
 .admin-icon-button,
 .admin-toolbar button,
+.website-logins-panel button,
 .inline-actions button,
 .action-cluster button,
 .feature-toolbar-actions button,
@@ -9110,6 +9123,7 @@ select {
 .admin-action-button:hover,
 .admin-icon-button:hover,
 .admin-toolbar button:hover,
+.website-logins-panel button:hover,
 .inline-actions button:hover,
 .action-cluster button:hover,
 .feature-toolbar-actions button:hover,
@@ -9125,6 +9139,7 @@ select {
 .admin-action-button.primary,
 .admin-icon-button.primary,
 .admin-toolbar button.primary,
+.website-logins-panel button.primary,
 .inline-actions button.primary,
 .action-cluster button.primary,
 .feature-toolbar-actions button.primary,
@@ -9140,6 +9155,7 @@ select {
 .admin-action-button.danger,
 .admin-icon-button.danger,
 .admin-toolbar button.danger,
+.website-logins-panel button.danger,
 .inline-actions button.danger,
 .action-cluster button.danger,
 .feature-toolbar-actions button.danger,
@@ -9155,6 +9171,7 @@ select {
 .admin-action-button:disabled,
 .admin-icon-button:disabled,
 .admin-toolbar button:disabled,
+.website-logins-panel button:disabled,
 .inline-actions button:disabled,
 .action-cluster button:disabled,
 .feature-toolbar-actions button:disabled,
@@ -11891,6 +11908,7 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .admin-action-button,
 :root[data-theme="dark"] .admin-icon-button,
 :root[data-theme="dark"] .admin-toolbar button,
+:root[data-theme="dark"] .website-logins-panel button,
 :root[data-theme="dark"] .inline-actions button,
 :root[data-theme="dark"] .action-cluster button,
 :root[data-theme="dark"] .feature-toolbar-actions button,
@@ -11907,6 +11925,7 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .admin-action-button:hover,
 :root[data-theme="dark"] .admin-icon-button:hover,
 :root[data-theme="dark"] .admin-toolbar button:hover,
+:root[data-theme="dark"] .website-logins-panel button:hover,
 :root[data-theme="dark"] .inline-actions button:hover,
 :root[data-theme="dark"] .action-cluster button:hover,
 :root[data-theme="dark"] .feature-toolbar-actions button:hover,
@@ -11923,6 +11942,7 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .admin-action-button.primary,
 :root[data-theme="dark"] .admin-icon-button.primary,
 :root[data-theme="dark"] .admin-toolbar button.primary,
+:root[data-theme="dark"] .website-logins-panel button.primary,
 :root[data-theme="dark"] .inline-actions button.primary,
 :root[data-theme="dark"] .action-cluster button.primary,
 :root[data-theme="dark"] .feature-toolbar-actions button.primary,
@@ -11938,6 +11958,7 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .admin-action-button.danger,
 :root[data-theme="dark"] .admin-icon-button.danger,
 :root[data-theme="dark"] .admin-toolbar button.danger,
+:root[data-theme="dark"] .website-logins-panel button.danger,
 :root[data-theme="dark"] .inline-actions button.danger,
 :root[data-theme="dark"] .action-cluster button.danger,
 :root[data-theme="dark"] .feature-toolbar-actions button.danger,

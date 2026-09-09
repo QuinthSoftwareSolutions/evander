@@ -5,6 +5,7 @@ export type HttpTargetDraftEntry = {
   alias: string;
   baseUrl: string;
   metadata: Record<string, unknown>;
+  managedWebsiteSession?: string;
 };
 
 export type HttpTargetsDraft = {
@@ -99,6 +100,8 @@ export function httpTargetsDraftFromMetadata(
       alias,
       baseUrl: typeof rawBaseUrl === "string" ? rawBaseUrl : "",
       metadata: isRecord(rawTarget.metadata) ? { ...rawTarget.metadata } : {},
+      ...(typeof rawTarget.managed_website_session === "string"
+        ? { managedWebsiteSession: rawTarget.managed_website_session } : {}),
     };
   });
 
@@ -141,6 +144,7 @@ export function httpTargetsPayload(
     const metadata = { ...entry.metadata };
     targets[entry.alias.trim()] = {
       base_url: entry.baseUrl.trim().replace(/\/+$/, ""),
+      ...(entry.managedWebsiteSession ? { managed_website_session: entry.managedWebsiteSession } : {}),
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
   }

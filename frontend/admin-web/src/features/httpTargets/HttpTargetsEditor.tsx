@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { fetchJson } from "../admin/api";
 
 import {
   createHttpTargetDraftEntry,
@@ -14,6 +15,7 @@ type HttpTargetsEditorProps = {
   legacyFallback?: boolean;
   sourceError?: string | null;
   sessionId?: string | null;
+  directoryPath?: string;
 };
 
 export function HttpTargetsEditor({
@@ -24,8 +26,22 @@ export function HttpTargetsEditor({
   legacyFallback = false,
   sourceError = null,
   sessionId = null,
+  directoryPath,
 }: HttpTargetsEditorProps) {
   const validationError = httpTargetsValidationError(entries, sourceError);
+  const [profiles, setProfiles] = useState<Array<{id: string; profile: {browser_origin: string; enabled: boolean}}>>([]);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  useEffect(() => {
+    setProfiles([]);
+    setProfileError(null);
+    if (!directoryPath) return;
+    const controller = new AbortController();
+    fetchJson<{profiles: Array<{id: string; profile: {browser_origin: string; enabled: boolean}}>}>(
+      `/api/managed-website-sessions?directory_path=${encodeURIComponent(directoryPath)}`, {signal: controller.signal})
+      .then(data => { if (!controller.signal.aborted) setProfiles(data.profiles ?? []); })
+      .catch(() => { if (!controller.signal.aborted) setProfileError("Managed login profiles are unavailable. Existing bindings are preserved."); });
+    return () => controller.abort();
+  }, [directoryPath]);
 
   useEffect(() => {
     onValidationChange?.(validationError);
@@ -39,7 +55,7 @@ export function HttpTargetsEditor({
     <div className="structured-input-editor http-targets-editor">
       <p className="field-description">
         Allow this session to reach specific HTTP(S) base URLs through the session relay. This is
-        separate from Web search, and the agent supplies the target application credentials.
+        separate from Web search. Select a managed login profile to let the host authenticate the browser.
         Existing workflow metadata is preserved while an alias remains unchanged.
       </p>
       {legacyFallback ? (
@@ -49,6 +65,7 @@ export function HttpTargetsEditor({
         </div>
       ) : null}
       {validationError ? <div className="callout error-callout">{validationError}</div> : null}
+      {profileError ? <div className="callout">{profileError}</div> : null}
       <div className="inline-actions compact-actions">
         <button
           type="button"
@@ -105,6 +122,23 @@ export function HttpTargetsEditor({
                 </button>
               </div>
             </div>
+            <label className="field-stack">
+              <span>Managed website login</span>
+              <select aria-label="Managed website login" value={entry.managedWebsiteSession ?? ""} disabled={disabled}
+                onChange={event => updateEntry(entry.id, {managedWebsiteSession: event.target.value})}>
+                <option value="">None — application authentication supplied by the agent</option>
+                {entry.managedWebsiteSession && !profiles.some(p => p.id === entry.managedWebsiteSession) ?
+                  <option value={entry.managedWebsiteSession}>{entry.managedWebsiteSession} (unavailable; retained)</option> : null}
+                {profiles.map(profile => {
+                  let sameOrigin = false;
+                  try { sameOrigin = new URL(entry.baseUrl).origin === profile.profile.browser_origin; } catch { /* incomplete URL */ }
+                  return <option key={profile.id} value={profile.id} disabled={!profile.profile.enabled || !sameOrigin}>
+                    {profile.id}{!profile.profile.enabled ? " (disabled)" : !sameOrigin ? " (different website origin)" : ""}
+                  </option>;
+                })}
+              </select>
+              <span className="field-description">Profiles are managed in Configuration → Access, approvals &amp; audit → Website logins. The website origin must match this target.</span>
+            </label>
             {relayPath ? (
               <div className="field-description">
                 Agent relay path: <code>{relayPath}</code>

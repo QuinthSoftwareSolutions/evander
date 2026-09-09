@@ -3100,6 +3100,23 @@ sudo systemctl status evander-trigger-orchestrator.service
 sudo journalctl -u evander-trigger-orchestrator.service -f
 ```
 
+### Managed website authentication
+
+Use [managed website sessions](managed-website-sessions.md) for an assistant that
+needs repeatable website login. In Admin Web's Website logins configuration, create
+a directory profile, enter encrypted host credentials, and run **Test saved login**.
+Select the profile in the assistant's HTTP targets using **Managed website login**. Reconcile
+Playwright bootstrap files for existing guests so they receive
+`createManagedWebsiteContext`. Newly provisioned Playwright sessions get it automatically.
+Profile, grant, and UI-stored credential changes are read on each request. Legacy
+environment-backed credentials require a relay restart after the host environment
+changes. Verify a new managed browser context can
+open the intended page and produce an artifact without printing authentication state.
+
+Renewal runs on the next context request when state is near expiry, including after
+an idle period longer than the site's lifetime. Existing open contexts retain the
+site's expiry. No scheduled job or additional firewall rule is required.
+
 ### APP demo provisioning workflow
 
 - `trigger:script-run-request` is wired to accept exactly one host-approved provisioning wrapper:

@@ -13,6 +13,13 @@ Guest and worker-container networking is default-deny. Reachability is limited t
   list/import/delete grants, descriptor-relative traversal, artifact-backed imports, and
   recoverable quarantine deletes. Agent and trigger payloads never expose configured roots.
 - OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
+- Managed website sessions: the existing HTTP target relay issues temporary browser
+  state only for explicitly bound session targets. Admin Web manages directory-scoped
+  login profiles, encrypted host credentials, and sanitized login tests through a
+  narrow admin service. Both processes resolve the same host credential store on each
+  request, so credential rotation and removal invalidate cached access without a restart.
+  Login destinations are public HTTPS with pinned DNS; the browser continues through
+  the existing origin-restricted proxy.
 - Codex subscription egress proxy: a control-plane CONNECT proxy that accepts only configured
   worker source CIDRs and forwards only to the configured OpenAI/ChatGPT hosts on port 443.
 - Container-worker subscription registry: worker-owned named ChatGPT profiles, per-profile Codex

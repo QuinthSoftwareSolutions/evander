@@ -5,13 +5,13 @@ import json
 import ipaddress
 import socket
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from fnmatch import fnmatchcase
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import httpx
-import httpcore
+from evander.http_transport import _PinnedAddressHTTPTransport
 
 from .base import EffectProviderBase, EffectProviderExecutionError
 
@@ -30,73 +30,6 @@ _LOCALHOST_NAMES = {"localhost", "ip6-localhost", "ip6-loopback"}
 @dataclass(frozen=True)
 class _ApprovedDestination:
     transport: httpx.BaseTransport | None = None
-
-
-class _PinnedAddressNetworkBackend(httpcore.SyncBackend):
-    def __init__(
-        self,
-        *,
-        allowed_host: str,
-        approved_addresses: Iterable[ipaddress.IPv4Address | ipaddress.IPv6Address],
-    ) -> None:
-        self.allowed_host = allowed_host.rstrip(".").casefold()
-        self.approved_addresses = tuple(approved_addresses)
-        if not self.approved_addresses:
-            raise ValueError("approved_addresses cannot be empty")
-        self.approved_address = self.approved_addresses[0]
-
-    def connect_tcp(
-        self,
-        host: str,
-        port: int,
-        timeout: float | None = None,
-        local_address: str | None = None,
-        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
-    ) -> httpcore.NetworkStream:
-        normalized_host = host.rstrip(".").casefold()
-        if normalized_host != self.allowed_host:
-            raise httpcore.ConnectError(
-                f"{NODE_TYPE} attempted to connect to unapproved host: {host}"
-            )
-        last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
-        for approved_address in self.approved_addresses:
-            try:
-                return super().connect_tcp(
-                    str(approved_address),
-                    port,
-                    timeout=timeout,
-                    local_address=local_address,
-                    socket_options=socket_options,
-                )
-            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
-                last_error = exc
-        if last_error is not None:
-            raise last_error
-        raise httpcore.ConnectError(f"{NODE_TYPE} has no approved addresses for host: {host}")
-
-
-class _PinnedAddressHTTPTransport(httpx.HTTPTransport):
-    def __init__(
-        self,
-        *,
-        allowed_host: str,
-        approved_addresses: Iterable[ipaddress.IPv4Address | ipaddress.IPv6Address],
-    ) -> None:
-        super().__init__(limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))
-        self.pinned_backend = _PinnedAddressNetworkBackend(
-            allowed_host=allowed_host,
-            approved_addresses=approved_addresses,
-        )
-        self._pool = httpcore.ConnectionPool(
-            ssl_context=httpcore.default_ssl_context(),
-            max_connections=1,
-            max_keepalive_connections=0,
-            keepalive_expiry=None,
-            http1=True,
-            http2=False,
-            retries=0,
-            network_backend=self.pinned_backend,
-        )
 
 
 class HttpRequestEffectProvider(EffectProviderBase):

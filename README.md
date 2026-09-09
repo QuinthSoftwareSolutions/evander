@@ -124,6 +124,8 @@ Directory-scoped config is rooted at `root`:
    `11881`, `8081`, and `3142`. Port `11778` is the authenticated browser forward proxy: seeded
    browsers can reach only real origins registered as session HTTP targets while preserving
    application CORS, cookies, and root-relative assets.
+   [Managed website sessions](docs/managed-website-sessions.md) add explicitly granted
+   browser login and renewal through the existing relay, with passwords held on the host.
 
 6. Start the host-side services:
 

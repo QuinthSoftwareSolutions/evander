@@ -810,10 +810,11 @@ export function AgentCreateDialog({
               />
             </div>
             <div className="field-stack wide-field">
-              <CreateFieldLabel tooltip="Named HTTP(S) base URLs this session may reach through the host HTTP target relay. Target authentication remains agent-managed.">
+              <CreateFieldLabel tooltip="Named HTTP(S) base URLs this session may reach through the host HTTP target relay. Optionally grant a managed website login profile for host-owned authentication.">
                 HTTP targets
               </CreateFieldLabel>
               <HttpTargetsEditor
+                directoryPath={directoryPath}
                 entries={createForm.initialPolicy.httpTargets}
                 onChange={(nextEntries) =>
                   setCreateForm((current) => ({

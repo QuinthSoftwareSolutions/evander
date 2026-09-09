@@ -165,6 +165,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "npm_audit_facade_package_registry_url",
             "npm_audit_facade_timeout_seconds",
             "http_target_relay_timeout_seconds",
+            "managed_website_sessions",
             "openai_api_base_url",
             "openai_api_key_env",
             "model_provider_mode",
