@@ -31,7 +31,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 75
+SQLITE_SCHEMA_VERSION = 76
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1788,6 +1788,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_release_packages",
                     column_name="verification_waivers_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="gate_obligation_waivers_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 _ensure_column(
@@ -4538,6 +4544,7 @@ class TeamStateSqliteStore:
                 "error": row["error"],
                 "policy_version": row["policy_version"],
                 "verification_waivers": _json_loads(row["verification_waivers_json"]),
+                "gate_obligation_waivers": _json_loads(row["gate_obligation_waivers_json"]),
                 "scope_validation": (
                     _json_loads(row["scope_validation_json"])
                     if row["scope_validation_json"] is not None
@@ -4564,9 +4571,10 @@ class TeamStateSqliteStore:
                     review_cohort_id, review_cohort_sealed_at,
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
-                    verification_waivers_json, scope_validation_json, created_at, updated_at
+                    verification_waivers_json, gate_obligation_waivers_json,
+                    scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -4602,6 +4610,7 @@ class TeamStateSqliteStore:
                     package.get("error"),
                     package.get("policy_version", 1),
                     _json_dumps(package.get("verification_waivers", [])),
+                    _json_dumps(package.get("gate_obligation_waivers", [])),
                     (
                         _json_dumps(package.get("scope_validation"))
                         if package.get("scope_validation") is not None
@@ -9148,6 +9157,7 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     error TEXT,
     policy_version INTEGER NOT NULL DEFAULT 1,
     verification_waivers_json TEXT NOT NULL DEFAULT '[]',
+    gate_obligation_waivers_json TEXT NOT NULL DEFAULT '[]',
     scope_validation_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT

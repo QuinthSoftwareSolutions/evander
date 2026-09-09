@@ -6787,6 +6787,10 @@ class TeamAdminService:
             "release_verification_run_ids": [],
             "operator_actor_id": normalized_actor_id,
         }
+        if self._human_review_eligibility_resolver is not None:
+            result[HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY] = (
+                self._human_review_eligibility_resolver
+            )
 
         def _mutate(state_model: TeamState) -> TeamState:
             release = _require_present(
@@ -6813,6 +6817,7 @@ class TeamAdminService:
             outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
             expected_revision=expected_revision,
         )
+        result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
         result["revision"] = state.revision
         result["release_package"] = release_package_payload_with_derived(
             state,

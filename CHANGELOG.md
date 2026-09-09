@@ -9,6 +9,9 @@
   historical verification, agent-review, human-review order when loading older policies.
 - Require a directory owner to record an audited, candidate-bound waiver when a correction
   successor omits the gate that rejected its predecessor.
+- Honor the frozen human-gate setting and applicable waivers when recording publication,
+  persist waiver audit records across state updates, and resolve current reviewer eligibility
+  when a waiver advances into human review.
 
 ## 2026-09-09 - Native Team thread resumption (0.32.1)
 

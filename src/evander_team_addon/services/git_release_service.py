@@ -6,6 +6,7 @@ from typing import Any
 
 from ..repository import TeamStateRepository
 from ..models import (
+    ReleaseGateKind,
     ReleasePackage,
     TeamBlockerSourceKind,
     TeamInboxItemState,
@@ -33,6 +34,7 @@ from .domain.git_promotion import (
     _is_safe_synthetic_feature_deliverable,
 )
 from .domain.project_status import _recalculate_project_status
+from .domain.release_gates import _pending_predecessor_gate_obligation
 from .domain.release_packages import (
     _normalized_release_deliverable_set,
     _repair_release_review_manifests_from_promotion_evidence,
@@ -600,6 +602,22 @@ def _human_review_publication_validation_error(
     has_human_obligation = (
         human_requirement is not None or bool(carried_findings) or bool(linked_requests)
     )
+    gate_sequence = getattr(manifest, "gate_sequence", None)
+    if gate_sequence is not None:
+        has_human_obligation = any(
+            stage.kind == ReleaseGateKind.HUMAN_REVIEW and stage.enabled
+            for stage in gate_sequence
+        )
+        if not has_human_obligation:
+            pending_obligation = _pending_predecessor_gate_obligation(state, release)
+            if (
+                pending_obligation is not None
+                and pending_obligation[0] == ReleaseGateKind.HUMAN_REVIEW
+            ):
+                return (
+                    f"release {release.id} requires a candidate-bound waiver for its "
+                    "predecessor's human review obligation"
+                )
     if not has_human_obligation:
         return None
     if len(linked_requests) != 1:
