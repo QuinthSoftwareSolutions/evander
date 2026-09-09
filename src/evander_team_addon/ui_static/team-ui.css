@@ -2021,7 +2021,7 @@ button.team-record-kind-tab strong {
 
 .task-board-lanes {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
   gap: 0.75rem;
   align-items: start;
 }
@@ -2029,6 +2029,7 @@ button.team-record-kind-tab strong {
 .task-board-lane {
   --lane-color: var(--accent);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 0.55rem;
   min-width: 0;
@@ -2082,6 +2083,7 @@ button.team-record-kind-tab strong {
 
 .task-board-card-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.5rem;
   margin: 0;
   padding: 0;
@@ -2090,12 +2092,18 @@ button.team-record-kind-tab strong {
 
 .task-board-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.28rem;
   min-width: 0;
+  overflow-wrap: anywhere;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.62rem;
   background: var(--panel);
+}
+
+.task-board-card > * {
+  min-width: 0;
 }
 
 .task-board-card.task-board-task-selected,
@@ -2273,25 +2281,6 @@ button.task-board-task-title {
   display: grid;
   gap: 0.25rem;
   color: var(--red);
-}
-
-.task-board-completed-hidden {
-  display: grid;
-  gap: 0.5rem;
-  border: 1px dashed var(--line);
-  border-radius: 7px;
-  padding: 0.65rem;
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
-.task-board-completed-hidden p {
-  margin: 0;
-}
-
-.task-board-completed-hidden button {
-  width: fit-content;
 }
 
 .task-board-lane-pagination {
@@ -7177,10 +7166,6 @@ label textarea {
   .timeline-change-flow > span {
     transform: rotate(90deg);
     justify-self: center;
-  }
-
-  .task-board-lanes {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .review-delivery-header,
