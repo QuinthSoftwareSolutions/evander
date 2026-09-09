@@ -376,7 +376,7 @@ class VmAgentGitAccessMixin:
             key_name=key_name,
             alias_is_exact=True,
         )
-        config = self._deps.runtime.provider_config.resolve_for_directory(session.directory_path)
+        config = self._deps.runtime.provider_config.resolve_for_session_id(session.session_id)
         allowed_from = self._container_git_allowed_from(config)
         common_args = {
             "public_key": str(key_record.public_key),

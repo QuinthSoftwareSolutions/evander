@@ -528,13 +528,32 @@ catalog before writing and writes atomically to either
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.
 
+## Changing the Default Container Worker
+
+Admin provider-configuration saves preserve existing agents by pinning their current worker
+before changing the default. New agents use the new worker; existing agents and their resumed
+jobs continue on the original worker with its saved connection settings. Deploy assignment-aware
+code to all control-plane processes before cutover.
+
+When managing configuration outside Admin, run `evander-cli execution pin-worker-assignments
+--runtime-dir runtime` to preview, then repeat with `--apply` while the original configuration
+is still active. Retain both workers' token environment variables and include
+`container-worker-assignments.db` in runtime backups. See
+[the complete worker cutover procedure](container-worker-backend.md#changing-the-default-worker).
+
+For individual new agents, configure named `container_workers` entries in provider
+configuration and choose **Worker** in Admin Web or Team. Workflow agent-creation
+effects and the manual creation APIs accept `worker_id` to override the directory
+default. The assignment remains fixed for that session. See
+[worker selection](container-worker-backend.md#selecting-a-worker-when-creating-an-agent).
+
 ## Switching Container Codex Usage Source
 
 Container-worker Codex sessions can use either `metered_api` or
 `chatgpt_subscription`. `container_worker_codex_auth_mode` remains an inherited compatibility
 default in directory provider configuration, but directory configuration never selects, grants,
-or restricts subscription profiles. The directory's `container_worker_base_url` determines which
-worker supplies the profile catalog.
+or restricts subscription profiles. The selected worker supplies the profile catalog;
+creation uses the directory's `container_worker_base_url` when no worker override is provided.
 
 New subscription agents created in Admin Web must select an enabled named profile. The selection
 is persisted on the session and is write-once: an unbound metered session may receive its first

@@ -9215,3 +9215,149 @@ def test_agent_copy_files_explicit_vm_ip_bypasses_admin_copy_helper(
     assert output["session_id"] == "session-vm-standalone"
     assert output["vm_name"] == "vm-standalone"
     assert output["vm_ip"] == "192.168.250.161"
+
+
+def test_agent_create_keeps_existing_worker_bootstrap_after_default_changes(tmp_path, monkeypatch):
+    from evander.admin.services.container_worker_assignment_service import (
+        ContainerWorkerAssignmentService,
+    )
+
+    old = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://old.test",
+        container_worker_token_env="OLD_TOKEN",
+        container_worker_guest_gateway_url="http://old-gateway.test:8000/mcp",
+    )
+    sessions = JsonSessionManifestRepository(old.session_store_path)
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="existing",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    ContainerWorkerAssignmentService(old).resolve("existing")
+    new = old.model_copy(
+        update={
+            "container_worker_base_url": "http://new.test",
+            "container_worker_token_env": "NEW_TOKEN",
+            "container_worker_guest_gateway_url": "http://new-gateway.test:8000/mcp",
+        }
+    )
+    selected = []
+
+    def make_backend(context, config):
+        backend = _FakeContainerBackend()
+        backend.config = config
+        backend.client = SimpleNamespace(base_url=config.container_worker_base_url)
+        selected.append(backend)
+        return backend
+
+    monkeypatch.setattr("evander.effects.providers.agent_create.container_backend", make_backend)
+    resolver = _ContainerResolverStub(new)
+    factory = EffectProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=SimpleNamespace(
+            runtime=SimpleNamespace(session_repository=sessions, provider_config=resolver)
+        ),
+    )
+    for session_id in ("existing", "fresh"):
+        output = factory.build(
+            AgentCreateEffectDefinition(
+                id=f"create-{session_id}",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id=session_id,
+            )
+        ).execute()
+        assert output["success"]
+    assert [backend.config.container_worker_token_env for backend in selected] == [
+        "OLD_TOKEN",
+        "NEW_TOKEN",
+    ]
+    for backend, worker in zip(selected, ("old", "new"), strict=True):
+        files = backend.written_files[0]["files"]
+        env = next(
+            entry["content"]
+            for entry in files
+            if entry["destination_path"] == "/home/agent/.evander/session.env"
+        )
+        assert f"{worker}-gateway.test" in env
+    assert sessions.get_session("existing").metadata["worker_url"] == "http://old.test"
+    assert sessions.get_session("fresh").metadata["worker_url"] == "http://new.test"
+
+
+def test_agent_create_worker_override_is_resolved_and_immutable(tmp_path, monkeypatch):
+    from evander.execution.worker_assignments import ContainerWorkerAssignmentRepository
+
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://default.test",
+        container_worker_token_env="DEFAULT_TOKEN",
+        container_workers={
+            "fast": {
+                "base_url": "http://fast.test",
+                "token_env": "FAST_TOKEN",
+                "default_image": "fast:latest",
+                "images": {"special": "fast:special"},
+                "guest_gateway_url": "http://vpn.test:8000/mcp",
+            }
+        },
+    )
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    selected = []
+
+    def make_backend(context, config):
+        backend = _FakeContainerBackend()
+        backend.config = config
+        backend.client = SimpleNamespace(base_url=config.container_worker_base_url)
+        selected.append(backend)
+        return backend
+
+    monkeypatch.setattr("evander.effects.providers.agent_create.container_backend", make_backend)
+    resolver = _ContainerResolverStub(config)
+    factory = EffectProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=SimpleNamespace(
+            runtime=SimpleNamespace(session_repository=sessions, provider_config=resolver)
+        ),
+    )
+    effect = AgentCreateEffectDefinition(
+        id="create",
+        display_name="Create",
+        type="effect:agent:create",
+        session_id="chosen",
+        execution_backend="container_worker_vm",
+        worker_id="fast",
+        container_image="special",
+    )
+    output = factory.build(effect).execute()
+    assert output["container_image"] == "fast:special"
+    assert selected[0].config.container_worker_token_env == "FAST_TOKEN"
+    assert sessions.get_session("chosen").metadata["worker_url"] == "http://fast.test"
+    assert ContainerWorkerAssignmentRepository(tmp_path).get("chosen").worker_id == "fast"
+    assert "http://vpn.test:8000/mcp" in next(
+        file["content"]
+        for file in selected[0].written_files[0]["files"]
+        if file["destination_path"] == "/home/agent/.evander/session.env"
+    )
+    # Runtime bindings use the same validation as a literal worker choice.
+    output = factory.build(effect).execute(resolved_config={"worker_id": "fast"})
+    assert output["success"]
+    for behavior in ("upsert", "noop"):
+        with pytest.raises(ValueError, match="different worker assignment"):
+            factory.build(effect).execute(
+                resolved_config={
+                    "worker_id": "other",
+                    "existing_agent_behavior": behavior,
+                }
+            )
+    with pytest.raises(ValueError, match="Unknown configured worker_id"):
+        factory.build(effect).execute(resolved_config={"session_id": "fresh", "worker_id": "other"})
+    with pytest.raises(ValueError, match="worker_id is supported only"):
+        factory.build(effect).execute(resolved_config={"execution_backend": "libvirt_vm"})
+    assert len(selected) == 2

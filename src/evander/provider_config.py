@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import AliasChoices, BaseModel, Field
 
 from evander.config import GatewayConfig
+from evander.container_workers import ContainerWorkerProfile
 from evander.contact_allowlists import resolve_effective_contact_directory
 from evander.connectors.models import ConnectorDirectoryConfig
 from evander.directory_config import (
@@ -70,6 +71,7 @@ class EffectProviderConfig(BaseModel):
     agent_consultation_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
     execution_backend: str = "libvirt_vm"
     container_worker_base_url: str | None = None
+    container_workers: dict[str, ContainerWorkerProfile] = Field(default_factory=dict)
     container_worker_token_env: str = "EVANDER_WORKER_TOKEN"
     container_worker_default_image: str = "evander-runner:latest"
     container_worker_images: dict[str, str] = Field(default_factory=dict)
@@ -157,6 +159,8 @@ class GateProviderConfig(BaseModel):
 class ProviderSessionManifest(BaseModel):
     session_id: str
     directory_path: str = "root"
+    vm_provider: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
     allowed_contact_ids: list[str] | None = None
     web_search_enabled: bool = False
     image_generation_enabled: bool = False
@@ -312,6 +316,17 @@ class ProviderConfigResolver:
             directory_path=session.directory_path,
         )
         resolved = self.resolve_for_directory(normalized_path)
+        if (
+            session.vm_provider == "container_worker_vm"
+            or session.metadata.get("execution_backend") == "container_worker_vm"
+        ):
+            from evander.admin.services.container_worker_assignment_service import (
+                ContainerWorkerAssignmentService,
+            )
+
+            resolved = ContainerWorkerAssignmentService(resolved).resolve(
+                session.session_id, session=session, directory_path=normalized_path
+            )
         if isinstance(session, SessionManifest):
             metadata = session.metadata if isinstance(session.metadata, dict) else {}
             requested_mode = normalize_model_provider_mode_override(

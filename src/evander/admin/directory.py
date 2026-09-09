@@ -238,6 +238,21 @@ class DirectoryAdminService:
                         target_ids=normalized_payload.get("approval_notification_target_ids"),
                     )
                 )
+            if domain == "providers":
+                from evander.admin.services.container_worker_assignment_service import (
+                    ContainerWorkerAssignmentService,
+                    WORKER_CONNECTION_FIELDS,
+                )
+
+                self._config_store.validate_domain_payload(domain, normalized_payload)
+                previous = self._config_store.read(directory.id, domain=domain) or {}
+                worker_fields = WORKER_CONNECTION_FIELDS | {"execution_backend"}
+                if any(previous.get(key) != normalized_payload.get(key) for key in worker_fields):
+                    ContainerWorkerAssignmentService(self._gateway_config).pin_existing_sessions(
+                        directory_path=directory.path,
+                        persist=True,
+                        directory_store=self._directory_store,
+                    )
             written = self._config_store.write(
                 directory.id, domain=domain, payload=normalized_payload
             )

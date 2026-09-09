@@ -2117,6 +2117,10 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         session: Any,
         session_id: str,
     ) -> Any | None:
+        from evander.admin.services.container_worker_assignment_service import (
+            ContainerWorkerAssignmentError,
+        )
+
         resolver = getattr(worker, "provider_config_resolver", None)
         for method_name, argument in (
             ("resolve_for_session_id", session_id),
@@ -2127,6 +2131,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 continue
             try:
                 return resolver_method(argument)
+            except ContainerWorkerAssignmentError:
+                raise
             except Exception:
                 continue
         return getattr(worker, "config", None)

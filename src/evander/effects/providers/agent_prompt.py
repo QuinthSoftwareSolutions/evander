@@ -1550,12 +1550,18 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
     @classmethod
     def _container_backend_for_worker(cls, *, worker: Any, session_id: str) -> Any | None:
+        from evander.admin.services.container_worker_assignment_service import (
+            ContainerWorkerAssignmentError,
+        )
+
         config: GatewayConfig | None = None
         resolver = getattr(worker, "provider_config_resolver", None)
         resolve_for_session_id = getattr(resolver, "resolve_for_session_id", None)
         if callable(resolve_for_session_id):
             try:
                 config = resolve_for_session_id(session_id)
+            except ContainerWorkerAssignmentError:
+                raise
             except Exception:
                 config = None
         if config is None:

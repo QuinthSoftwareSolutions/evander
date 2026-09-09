@@ -106,6 +106,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "azure_devops_pr_pat_env",
             "azure_devops_project",
             "container_worker_base_url",
+            "container_workers",
             "container_worker_default_image",
             "container_worker_images",
             "container_worker_active_tool_timeout_seconds",

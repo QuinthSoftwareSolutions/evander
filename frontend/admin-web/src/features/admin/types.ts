@@ -265,6 +265,7 @@ export type AgentCreateRequest = {
   codex_skills?: string[];
   target_name?: string | null;
   container_image?: string | null;
+  worker_id?: string | null;
   agent_provider?: string | null;
   model_provider_mode?: string | null;
   codex_auth_mode?: "metered_api" | "chatgpt_subscription" | null;
@@ -376,6 +377,8 @@ export type AgentCreateOptionsResponse = {
     templates: AgentCreateImageOption[];
   };
   container_worker: {
+    workers?: { worker_id: string; display_name: string }[];
+    selected_worker_id?: string | null;
     default_image: string | null;
     images: AgentCreateImageOption[];
     codex_auth_mode: "metered_api" | "chatgpt_subscription";

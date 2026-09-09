@@ -2618,6 +2618,18 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 metadata={"execution_backends": ["container_worker_vm"]},
             ),
             _field(
+                "worker_id",
+                "Worker",
+                "enum",
+                bindable=True,
+                description=(
+                    "Optional configured worker for new agents. Leave blank to use the directory "
+                    "default. Existing sessions retain their saved worker assignment."
+                ),
+                options=[],
+                metadata={"execution_backends": ["container_worker_vm"], "selection_only": True},
+            ),
+            _field(
                 "directory_path",
                 "Directory path",
                 "string",

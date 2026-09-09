@@ -248,7 +248,7 @@ class VmAgentMutationMixin:
             if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
                 raise ValueError("chatgpt_subscription is supported only for Codex agents")
             backend_config = self.container_worker_backend(
-                directory_path=session.directory_path
+                directory_path=session.directory_path, session_id=session.session_id
             ).config
             current_effective_auth_mode = effective_codex_auth_mode(
                 session=session,
@@ -297,7 +297,8 @@ class VmAgentMutationMixin:
                     "codex_auth_mode to chatgpt_subscription"
                 )
             backend_client = self.container_worker_backend(
-                directory_path=session.directory_path
+                directory_path=session.directory_path,
+                session_id=session.session_id,
             ).client
             profile_status = backend_client.codex_auth_profile_status(str(profile_id))
             if not bool(profile_status.get("enabled")):

@@ -240,6 +240,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     provider: ConfigValue | None = None
     agent_provider: ConfigValue | None = None
     execution_backend: ConfigValue | None = None
+    worker_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     session_id: ConfigValue | None = None
     existing_agent_behavior: ConfigValue | None = None

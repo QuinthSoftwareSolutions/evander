@@ -66,6 +66,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "provider": effect.provider,
             "agent_provider": effect.agent_provider,
             "execution_backend": effect.execution_backend,
+            "worker_id": effect.worker_id,
             "vm_name": effect.vm_name,
             "session_id": effect.session_id,
             "existing_agent_behavior": effect.existing_agent_behavior,
@@ -133,6 +134,13 @@ class AgentCreateEffectProvider(EffectProviderBase):
         execution_backend, config = selected_execution_backend(
             context, payload, directory_path=directory_path
         )
+        if (
+            normalize_optional_string(payload.get("worker_id"))
+            and execution_backend != "container_worker_vm"
+        ):
+            raise ValueError(
+                "worker_id is supported only with execution_backend='container_worker_vm'"
+            )
         if (
             normalize_subscription_profile_id(payload.get("subscription_profile_id")) is not None
             and execution_backend != "container_worker_vm"
@@ -362,11 +370,33 @@ class AgentCreateEffectProvider(EffectProviderBase):
             if existing_contact_ids is not None:
                 resolved_contact_ids = list(existing_contact_ids)
         if existing_agent_behavior == "noop" and existing_session is not None:
+            worker_id = normalize_optional_string(payload.get("worker_id"))
+            if worker_id:
+                from evander.admin.services.container_worker_assignment_service import (
+                    ContainerWorkerAssignmentService,
+                )
+
+                ContainerWorkerAssignmentService(config).resolve(
+                    session_id,
+                    session=existing_session,
+                    directory_path=directory_path,
+                    worker_id=worker_id,
+                )
             return _existing_agent_noop_result(
                 session_id=session_id,
                 execution_backend="container_worker_vm",
                 vm_name=None,
             )
+        from evander.admin.services.container_worker_assignment_service import (
+            ContainerWorkerAssignmentService,
+        )
+
+        config = ContainerWorkerAssignmentService(config).resolve(
+            session_id,
+            session=existing_session,
+            directory_path=directory_path,
+            worker_id=normalize_optional_string(payload.get("worker_id")),
+        )
         if bool(payload.get("mssql", False)) or normalize_optional_string(
             payload.get("mssql_init_root")
         ):
@@ -504,6 +534,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
         if worker_url:
             metadata["worker_url"] = worker_url
         metadata = _deep_merge_metadata(metadata, _metadata_patch(payload.get("metadata")))
+        if worker_url:
+            metadata["worker_url"] = worker_url
         metadata["container_worker"] = container_image_selection
         metadata["playwright"] = bool(payload.get("playwright", False))
         requested_web_search_enabled = as_bool_or_none(payload.get("web_search_enabled"))

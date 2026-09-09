@@ -496,8 +496,8 @@ class CapacityHealthAdminService:
             )
             if self._deps.is_container_session(session) and session.expires_at > now:
                 try:
-                    resolved_config = self._deps.runtime.provider_config.resolve_for_directory(
-                        session.directory_path
+                    resolved_config = self._deps.runtime.provider_config.resolve_for_session_id(
+                        session.session_id
                     )
                 except Exception:
                     resolved_config = None
@@ -510,7 +510,11 @@ class CapacityHealthAdminService:
                         discovered_from=f"configured:{directory_path}",
                     )
                 register(
-                    self._deps.container_worker_url_from_metadata(session.metadata),
+                    (
+                        resolved_config.container_worker_base_url
+                        if resolved_config is not None
+                        else self._deps.container_worker_url_from_metadata(session.metadata)
+                    ),
                     directory_path=directory_path,
                     token_env=(
                         resolved_config.container_worker_token_env
@@ -550,7 +554,7 @@ class CapacityHealthAdminService:
         descriptor: dict[str, Any],
     ) -> CapacityWorkerTelemetryEntryPayload:
         worker_url = str(descriptor.get("worker_url") or "").strip().rstrip("/")
-        token_env = str(descriptor.get("token_env") or "EVANDER_WORKER_TOKEN").strip()
+        token_env = str(descriptor.get("token_env") or "").strip()
         timeout_seconds = float(descriptor.get("timeout_seconds") or 30.0)
         checked_at = _utc_now()
         entry = CapacityWorkerTelemetryEntryPayload(
@@ -559,6 +563,14 @@ class CapacityHealthAdminService:
             discovered_from=[str(item) for item in descriptor.get("discovered_from", [])],
             last_checked_at=checked_at,
         )
+        if not token_env:
+            entry.errors.append(
+                TelemetryError(
+                    status=TelemetryStatus.MISSING,
+                    message="Saved connection settings are unavailable for this worker.",
+                )
+            )
+            return entry
         worker_client = ContainerWorkerClient(
             base_url=worker_url,
             token_env=token_env,
