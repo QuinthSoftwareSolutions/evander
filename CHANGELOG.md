@@ -1,11 +1,57 @@
 # Changelog
 
-## 2026-09-08 - Task board column layout (0.28.2)
+## 2026-09-09 - Task board column layout (0.31.1)
 
 - Hide the Done column until Show completed is enabled, giving active tasks more room
   while retaining access to completed history and pagination.
 - Adapt the number of columns to the available space and wrap long task titles, briefs,
   links, and worktree paths inside their cards.
+
+## 2026-09-09 - Managed website sessions (0.31.0)
+
+- Add generic, directory-scoped JSON login profiles with host-held credential references
+  and explicit authentication grants on session HTTP targets.
+- Renew temporary browser storage on demand through the existing HTTP target relay,
+  checking session proof, current grants, expiry, and public HTTPS destinations.
+- Extend the seeded Playwright helper to create authenticated browser contexts without
+  placing passwords or persistent browser state in guest files.
+- Add Admin Web website profile editing, encrypted host credential entry and rotation,
+  scoped assistant grants, and sanitized login tests/status. Preserve authentication
+  bindings when editing existing HTTP targets and use revision checks for profile changes.
+- Resolve profiles from current saved layers so root deletion revokes cached access;
+  replace inherited profiles completely when editing credential or storage mappings.
+- Enforce one cancellable login deadline across DNS, connection and response streaming,
+  while allowing unrelated website sessions to proceed independently.
+- Preserve HTTP target serialization for unbound targets, and allow worker-default
+  changes to reuse saved assignments after historical job directories are deleted.
+
+## 2026-09-09 - Durable container worker assignments (0.30.0)
+
+- Keep existing container agents on their assigned worker when the directory default
+  changes, while new agents start on the new default. Persist assignments before
+  provisioning, including worker authentication references, relay and Git settings,
+  images, and database endpoints; retain assignments through retries and cleanup.
+- Route resumed work, execution inspection, logs, files, Git, and cleanup to the
+  session's saved connection settings, including when agents on the same worker have
+  different defaults, without falling back to another host when it is unavailable.
+- Pin legacy agents before Admin configuration changes and add
+  `execution pin-worker-assignments` with a preview and explicit apply mode for upgrades.
+  Include jobs that have execution records without session manifests.
+  Refuse a cutover when an existing worker's connection settings cannot be recovered.
+- Add directory-scoped `container_workers` choices and a `worker_id` override for
+  workflow and manual agent creation, including Admin Web, Team, and the container-job
+  CLI. Load images and subscription profiles from the selected worker, and reject attempts to move an
+  existing session through a creation override.
+- Report inherited Codex authentication from the saved worker assignment so billing
+  mode and policy editing stay consistent after worker defaults change.
+
+## 2026-09-08 - Release PR work-item links (0.29.0)
+
+- Capture originating ADO work-item IDs with the immutable release publication context and
+  link them to newly created or reused pull requests, including nested release contributions.
+- Preserve personal creator policy, avoid duplicate links on retries, and report which items
+  linked successfully when Azure DevOps rejects an association. Legacy publication contexts
+  retain their existing attribution without inferring missing work-item IDs.
 
 ## 2026-09-08 - Release history visibility (0.28.1)
 

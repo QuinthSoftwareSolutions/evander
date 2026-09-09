@@ -526,7 +526,7 @@ class VmAgentChatAssistantMixin:
         safe_user_id: str,
         settings: dict[str, Any] | None,
     ) -> None:
-        backend = self.container_worker_backend(directory_path="root")
+        backend = self.container_worker_backend(directory_path="root", session_id=session_id)
         backend.prepare_session(
             session_id=session_id,
             metadata={

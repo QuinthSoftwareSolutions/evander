@@ -17,6 +17,8 @@ class VmAgentContainerBackendMixin:
         *,
         directory_path: str | None = None,
         worker_url: str | None = None,
+        worker_id: str | None = None,
+        session_id: str | None = None,
     ):
         from evander.execution.container_worker_backend import (
             ContainerWorkerVmExecutionBackend,
@@ -34,8 +36,25 @@ class VmAgentContainerBackendMixin:
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value
         }
         normalized_worker_url = str(worker_url or "").strip()
-        if normalized_worker_url:
-            update["container_worker_base_url"] = normalized_worker_url
+        if normalized_worker_url or worker_id or session_id:
+            from evander.admin.services.container_worker_assignment_service import (
+                ContainerWorkerAssignmentService,
+            )
+
+            assignments = ContainerWorkerAssignmentService(resolved_config)
+            if session_id:
+                resolved_config = assignments.resolve(
+                    session_id,
+                    directory_path=directory_path,
+                    worker_id=worker_id,
+                    worker_url=normalized_worker_url or None,
+                )
+            elif worker_id:
+                resolved_config = assignments.config_for_worker_id(worker_id)
+            else:
+                resolved_config = assignments.config_for_worker(
+                    normalized_worker_url, directory_path=directory_path
+                )
         config = resolved_config.model_copy(update=update)
         return ContainerWorkerVmExecutionBackend(config=config)
 
@@ -44,14 +63,22 @@ class VmAgentContainerBackendMixin:
         *,
         directory_path: str | None = None,
         worker_url: str | None = None,
+        worker_id: str | None = None,
+        session_id: str | None = None,
     ):
         port = self._deps.container_worker_backend_port
         if port is not None:
             return port.container_worker_backend(
-                directory_path=directory_path, worker_url=worker_url
+                directory_path=directory_path,
+                worker_url=worker_url,
+                **({"worker_id": worker_id} if worker_id else {}),
+                **({"session_id": session_id} if session_id else {}),
             )
         return self._build_container_worker_backend(
-            directory_path=directory_path, worker_url=worker_url
+            directory_path=directory_path,
+            worker_url=worker_url,
+            worker_id=worker_id,
+            session_id=session_id,
         )
 
     def container_worker_execution_repository(self):
@@ -128,6 +155,13 @@ class VmAgentContainerBackendMixin:
             if metadata_url:
                 return metadata_url
         if session is not None:
+            from evander.execution.worker_assignments import ContainerWorkerAssignmentRepository
+
+            assignment = ContainerWorkerAssignmentRepository(self._deps.config.runtime_dir).get(
+                session.session_id
+            )
+            if assignment is not None:
+                return assignment.worker_url
             return self.container_worker_url_from_metadata(session.metadata)
         return None
 

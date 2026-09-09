@@ -457,7 +457,12 @@ def test_teams_auth_help_exposes_subcommands() -> None:
 def test_execution_start_container_job_builds_spec_with_metadata_and_limits(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from evander.directories import DirectoryService
+
     config_path = write_container_config(tmp_path)
+    DirectoryService(DirectoryStore(tmp_path / "runtime" / "directories.json")).create(
+        parent="root", name="team"
+    )
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
     monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
@@ -511,6 +516,64 @@ def test_execution_start_container_job_builds_spec_with_metadata_and_limits(
     assert spec.resource_limits == {"memory": "512m", "cpus": 1.5, "pids_limit": 128}
     payload = json.loads(result.output)
     assert payload["execution_id"] == "target-1"
+
+
+def test_execution_start_container_job_selects_named_worker_before_token_preflight(
+    tmp_path, monkeypatch
+):
+    config_path = write_container_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryConfigStore(
+        DirectoryStore(runtime_dir / "directories.json"), runtime_dir=runtime_dir
+    )
+    store.write(
+        "root",
+        domain="providers",
+        payload={
+            "container_worker_base_url": "http://default.test",
+            "container_worker_token_env": "UNSET_TOKEN",
+            "container_workers": {
+                "fast": {"base_url": "http://fast.test", "token_env": "FAST_TOKEN"}
+            },
+        },
+    )
+    monkeypatch.setenv("FAST_TOKEN", "test-token")
+    monkeypatch.delenv("UNSET_TOKEN", raising=False)
+    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    FakeExecutionBackend.instances = []
+    command = [
+        "execution",
+        "start-container-job",
+        "--config",
+        str(config_path),
+        "--session-id",
+        "chosen",
+        "--command",
+        "true",
+        "--json",
+    ]
+    result = CliRunner().invoke(app, [*command, "--worker-id", "fast"])
+    assert result.exit_code == 0, result.output
+    assert FakeExecutionBackend.instances[-1].config.container_worker_token_env == "FAST_TOKEN"
+    store.write(
+        "root",
+        domain="providers",
+        payload={
+            "container_worker_base_url": "http://new.test",
+            "container_worker_token_env": "UNSET_TOKEN",
+        },
+    )
+    for override in ([], ["--worker-id", "fast"]):
+        retried = CliRunner().invoke(app, [*command, *override])
+        assert retried.exit_code == 0, retried.output
+        assert (
+            FakeExecutionBackend.instances[-1].config.container_worker_base_url
+            == "http://fast.test"
+        )
+    conflict = CliRunner().invoke(app, [*command, "--worker-id", "different"])
+    assert conflict.exit_code != 0
+    assert "different worker assignment" in conflict.output
+    assert len(FakeExecutionBackend.instances) == 3
 
 
 def test_execution_start_container_job_uses_human_output_by_default(

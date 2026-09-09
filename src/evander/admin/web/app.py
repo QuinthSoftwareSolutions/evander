@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.admin.web.website_sessions import website_session_routes
+
 import argparse
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -593,6 +595,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(connector_routes(service, auth))
     routes.extend(discord_webhook_routes(service, auth))
     routes.extend(host_directory_routes(service, auth))
+    routes.extend(website_session_routes(service, auth))
     routes.extend(capacity_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))

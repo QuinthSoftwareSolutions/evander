@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
+import { WebsiteLoginsConfiguration } from "./WebsiteLoginsConfiguration";
 import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
 import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
@@ -955,6 +956,7 @@ export function ConfigurationScreen() {
   const [modelPricingDraft, setModelPricingDraft] = useState<ModelPricingCatalogDraft | null>(null);
   const [modelPricingDraftBaseRevision, setModelPricingDraftBaseRevision] = useState<string | null>(null);
   const [modelPricingDirty, setModelPricingDirty] = useState(false);
+  const [websiteLoginsDirty, setWebsiteLoginsDirty] = useState(false);
   const [modelPricingSaving, setModelPricingSaving] = useState(false);
   const [modelPricingError, setModelPricingError] = useState<string | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
@@ -1206,7 +1208,7 @@ export function ConfigurationScreen() {
       if (
         state !== null
         && globalSelectedDirectoryPath !== selectedDirectoryPath
-        && hasDirtyDrafts(dirtyTabs)
+        && (hasDirtyDrafts(dirtyTabs) || websiteLoginsDirty)
         && !window.confirm("Discard unsaved configuration edits and switch directories?")
       ) {
         setGlobalSelectedDirectoryPath(selectedDirectoryPath);
@@ -1280,6 +1282,9 @@ export function ConfigurationScreen() {
     fieldName?: string | null,
   ) {
     if (!tabKey || !destinationKey) return;
+    if (websiteLoginsDirty && destinationKey !== "website-logins"
+      && !window.confirm("Discard unsaved website login changes?")) return;
+    if (destinationKey !== "website-logins") setWebsiteLoginsDirty(false);
     lastDestinationByTabRef.current[tabKey] = destinationKey;
     setSelectedTab(tabKey);
     setSelectedDestination(destinationKey);
@@ -3495,6 +3500,10 @@ export function ConfigurationScreen() {
           </article>
         ) : null}
 
+        {selectedUtility === "website-logins" ? <WebsiteLoginsConfiguration
+          key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
+          disabled={mutationLocked || !state?.directory_scoped_config_enabled}
+          onDirtyChange={setWebsiteLoginsDirty} /> : null}
         {selectedUtility === "validation" ? <article className="panel configuration-utility-panel">
           <div className="panel-header">
             <h3>Validation</h3>

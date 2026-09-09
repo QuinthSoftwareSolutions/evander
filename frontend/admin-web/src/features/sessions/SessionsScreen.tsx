@@ -2899,6 +2899,7 @@ export function SessionsScreen() {
                       legacyFallback={policyDraft.httpTargetsLegacyFallback}
                       sourceError={policyDraft.httpTargetsSourceError}
                       sessionId={selectedSession.session_id}
+                      directoryPath={selectedSession.directory_path}
                       disabled={mutationLocked}
                     />
                   </div>

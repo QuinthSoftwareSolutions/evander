@@ -15,6 +15,7 @@ from evander.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from evander.config import GatewayConfig
 from evander.models import HttpTargetMetadata, SessionManifest
 from evander.provider_config import ProviderConfigResolver
+from evander.website_sessions import ManagedWebsiteSessionService, WebsiteSessionError
 from evander.session_auth import (
     MCP_SESSION_TOKEN_HEADER_NAMES,
     MCP_SESSION_TOKEN_QUERY_PARAM_NAMES,
@@ -48,10 +49,12 @@ class HttpTargetRelay:
         transport: httpx.AsyncBaseTransport | None = None,
         *,
         provider_config_resolver: ProviderConfigResolver | None = None,
+        website_sessions: ManagedWebsiteSessionService | None = None,
     ) -> None:
         self.config = config
         self.transport = transport
         self.provider_config_resolver = provider_config_resolver or ProviderConfigResolver(config)
+        self.website_sessions = website_sessions or ManagedWebsiteSessionService(self.provider_config_resolver)
 
     def create_app(self) -> Starlette:
         relay = self
@@ -65,6 +68,18 @@ class HttpTargetRelay:
                     "forwards_authorization": True,
                 }
             )
+
+        async def website_session(request: Request) -> Response:
+            headers = {"cache-control": "no-store"}
+            # This credential surface accepts proof only in a header, never query/path auth.
+            proof = request.headers.get("x-evander-mcp-session-token")
+            try:
+                state = await relay.website_sessions.acquire(
+                    request.path_params["session_id"], request.path_params["alias"], proof,
+                )
+                return JSONResponse(state, headers=headers)
+            except WebsiteSessionError as exc:
+                return JSONResponse({"error": exc.code}, status_code=exc.status, headers=headers)
 
         async def proxy(request: Request) -> Response:
             try:
@@ -127,6 +142,7 @@ class HttpTargetRelay:
             debug=False,
             routes=[
                 Route("/healthz", health, methods=["GET"]),
+                Route("/session/{session_id}/website-session/{alias}", website_session, methods=["POST"]),
                 Route(
                     "/auth/{mcp_session_token}/session/{session_id}/target/{alias}",
                     proxy,

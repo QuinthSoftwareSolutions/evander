@@ -28,6 +28,7 @@ export type AgentCreateFormState = {
   subscriptionProfileId: string;
   vmImage: string;
   containerImage: string;
+  workerId: string;
   dotnet: boolean;
   nuget: boolean;
   mssql: boolean;
@@ -69,6 +70,7 @@ export function emptyCreateForm(): AgentCreateFormState {
     subscriptionProfileId: "",
     vmImage: "",
     containerImage: "",
+    workerId: "",
     dotnet: false,
     nuget: false,
     mssql: false,
@@ -187,6 +189,8 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   } else {
     payload.target_name = optionalText(form.targetName);
     payload.container_image = optionalText(form.containerImage);
+    const workerId = optionalText(form.workerId);
+    if (workerId) payload.worker_id = workerId;
   }
   const initialPolicy = form.initialPolicy;
   if (Object.keys(initialPolicy.labels).length > 0) {
@@ -229,10 +233,12 @@ export function agentCreateTargetLabel(form: AgentCreateFormState): string {
 
 export async function loadAgentCreateOptions(
   directoryPath: string,
+  workerId = "",
 ): Promise<AgentCreateOptionsResponse> {
   const query = new URLSearchParams();
   const trimmed = directoryPath.trim();
   if (trimmed) query.set("directory_path", trimmed);
+  if (workerId.trim()) query.set("worker_id", workerId.trim());
   const suffix = query.toString();
   return fetchJson<AgentCreateOptionsResponse>(
     `/api/admin/agents/create-options${suffix ? `?${suffix}` : ""}`,

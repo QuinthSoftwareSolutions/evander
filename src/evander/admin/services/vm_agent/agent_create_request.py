@@ -79,11 +79,14 @@ class VmAgentCreateRequestMixin:
         return self._vm_lifecycle_port().create_vm(**kwargs)
 
     def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        worker_id = self._agent_optional_string(payload, "worker_id")
         selected_backend = self._normalize_agent_backend(
             self._agent_optional_string(payload, "backend")
             or self._agent_optional_string(payload, "execution_backend")
         )
         if selected_backend == "libvirt_vm":
+            if worker_id:
+                raise ValueError("worker_id is supported only for container_worker_vm agents")
             vm_name = self._agent_optional_string(payload, "vm_name")
             if not vm_name:
                 raise ValueError("vm_name is required for libvirt_vm agents")
@@ -275,7 +278,11 @@ class VmAgentCreateRequestMixin:
         policy = self.runtime.policy_config.resolve_for_directory(directory_path)
         labels = _normalize_session_labels(payload.get("labels"))
         model = self._agent_optional_string(payload, "model")
-        backend = self.container_worker_backend(directory_path=directory_path)
+        backend = self.container_worker_backend(
+            directory_path=directory_path,
+            session_id=session_id,
+            **({"worker_id": worker_id} if worker_id else {}),
+        )
         from evander.effects.providers.agent_session import default_agent_provider_for_config
 
         requested_agent_provider = self._agent_optional_string(payload, "agent_provider")
@@ -520,10 +527,24 @@ class VmAgentCreateRequestMixin:
     def resolve_vm_defaults(self, directory_path: str) -> EffectiveVmDefaultsConfig:
         return self._resolve_vm_defaults(directory_path)
 
-    def agent_create_options(self, directory_path: str | None = None) -> dict[str, Any]:
+    def agent_create_options(
+        self, directory_path: str | None = None, *, worker_id: str | None = None
+    ) -> dict[str, Any]:
         normalized_directory = self._normalize_directory_path(directory_path)
         vm_defaults = self.resolve_vm_defaults(normalized_directory)
         provider_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
+        workers = [
+            {"worker_id": key, "display_name": profile.display_name or key}
+            for key, profile in sorted(provider_config.container_workers.items())
+        ]
+        if worker_id:
+            from evander.admin.services.container_worker_assignment_service import (
+                ContainerWorkerAssignmentService,
+            )
+
+            provider_config = ContainerWorkerAssignmentService(
+                provider_config
+            ).config_for_worker_id(worker_id)
         policy_config = self.runtime.policy_config.resolve_for_directory(normalized_directory)
         libvirt_templates = [
             {"alias": alias, "image_ref": image_ref}
@@ -536,7 +557,8 @@ class VmAgentCreateRequestMixin:
         subscription_profiles: list[dict[str, object]] = []
         try:
             profile_payload = self.container_worker_backend(
-                directory_path=normalized_directory
+                directory_path=normalized_directory,
+                **({"worker_id": worker_id} if worker_id else {}),
             ).client.list_codex_auth_profiles()
             subscription_profiles = [
                 {
@@ -652,6 +674,8 @@ class VmAgentCreateRequestMixin:
                 "templates": libvirt_templates,
             },
             "container_worker": {
+                "workers": workers,
+                "selected_worker_id": worker_id,
                 "default_image": provider_config.container_worker_default_image,
                 "images": container_images,
                 "codex_auth_mode": provider_config.container_worker_codex_auth_mode,

@@ -239,14 +239,14 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
 test("create modal loads create-options for the selected directory", () => {
   assert.match(page, /\/api\/admin\/agents\/create-options/);
   assert.match(agentsPage, /directoryPath=\{selectedDirectoryPath\}/);
-  assert.match(agentCreateDialog, /loadAgentCreateOptions\(directoryPath\)/);
+  assert.match(agentCreateDialog, /loadAgentCreateOptions\(directoryPath, createForm\.workerId\)/);
   assert.match(page, /setCreateOptions\(options\)/);
 });
 
 test("create modal clears directory-scoped grants when the selected directory changes", () => {
   assert.match(
     agentCreateDialog,
-    /useEffect\(\(\) => \{[\s\S]*?setCreateForm\(\(current\) => \(\{[\s\S]*?connectorGrants: \{\},[\s\S]*?\}\)\);[\s\S]*?loadAgentCreateOptions\(directoryPath\)[\s\S]*?\}, \[directoryPath\]\);/,
+    /useEffect\(\(\) => \{[\s\S]*?setCreateForm\(\(current\) => \(\{[\s\S]*?connectorGrants: \{\},[\s\S]*?\}\)\);[\s\S]*?\}, \[directoryPath\]\);/,
   );
 });
 
@@ -449,7 +449,7 @@ test("create modal explains provider and bootstrap fields with tooltips", () => 
     "Model stored on the session for runtime prompts and resumes. Leave blank to use the selected agent provider or directory default.",
     "VM infrastructure provider, not the model provider. Leave blank to use the directory default, usually libvirt.",
     "Approved libvirt template alias for the base qcow2 image. Leave blank to use the directory default.",
-    "Approved container image alias for worker sessions. Leave blank to use the directory default runner image.",
+    "Approved container image alias for worker sessions. Leave blank to use the selected worker's default runner image.",
     "Session policy values written when the agent is created. Empty rows are ignored.",
   ]) {
     assert.match(createModal, new RegExp(helpText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));

@@ -100,7 +100,13 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Lifetime in seconds for generated agent prompt tokens before the gateway rejects them."
     ),
     "container_worker_base_url": (
-        "Base HTTP URL for the container worker service used when execution_backend is container_worker_vm."
+        "Base HTTP URL of the worker for new container agents. Existing agents retain their "
+        "saved worker assignment and connection settings when this default changes."
+    ),
+    "container_workers": (
+        "Named worker choices for agent creation. Each entry requires base_url and token_env; "
+        "optional connection settings inherit the directory defaults. Workflow effects and "
+        "manual creation select an entry by worker_id. Assignments are fixed once created."
     ),
     "container_worker_codex_auth_mode": (
         "Default Codex usage source for container-worker sessions. Metered API uses the existing "

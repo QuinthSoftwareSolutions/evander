@@ -9,6 +9,15 @@ import {
   searchConfiguration,
 } from "../src/features/configuration/configurationNavigation.ts";
 
+test("website logins are navigable and searchable in access configuration", () => {
+  const access = {key: "access_approvals_audit", title: "Access, Approvals & Audit", help_text: null,
+    underlying_domains: ["providers"], sections: []};
+  assert.ok(configurationDestinationsForTab(access).some(d => d.key === "website-logins"));
+  const location = resolveConfigurationLocation([access], configurationHash(access.key, "website-logins"));
+  assert.equal(location.destinationKey, "website-logins");
+  assert.ok(searchConfiguration([access], "website logins").some(r => r.destinationKey === "website-logins"));
+});
+
 const tabs = [
   {
     key: "people_communications",

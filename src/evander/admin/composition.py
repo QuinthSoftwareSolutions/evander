@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.admin.services.website_session_admin_service import WebsiteSessionAdminService
+
 import os
 import fcntl
 import threading
@@ -235,6 +237,7 @@ class AdminRuntimeComponents:
     skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
     connector_admin: ConnectorAdminService
+    website_session_admin: WebsiteSessionAdminService
     host_directory_admin: HostDirectoryAdminService
     codex_auth_admin: CodexAuthAdminService
     documentation_admin: DocumentationService
@@ -787,6 +790,7 @@ def _build_admin_runtime_components(
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
         connector_admin=connector_admin,
+        website_session_admin=WebsiteSessionAdminService(operations_admin, runtime.provider_config, runtime.audit),
         host_directory_admin=host_directory_admin,
         codex_auth_admin=codex_auth_admin,
         documentation_admin=documentation_admin,

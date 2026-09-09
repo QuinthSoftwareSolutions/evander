@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.website_sessions import ManagedWebsiteSessionProfile
+
 from collections import Counter
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -44,6 +46,7 @@ from evander.models import (
 )
 from evander.provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
 from evander.container_worker_images import normalize_container_worker_images
+from evander.container_workers import ContainerWorkerProfile
 from evander.events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
@@ -303,6 +306,7 @@ class GatewayConfig(BaseModel):
     enable_directory_scoped_config: bool = False
     execution_backend: Literal["libvirt_vm", "container_worker_vm"] = "libvirt_vm"
     container_worker_base_url: str | None = None
+    container_workers: dict[str, ContainerWorkerProfile] = Field(default_factory=dict)
     container_worker_token_env: str = Field(default="EVANDER_WORKER_TOKEN", min_length=1)
     container_worker_default_image: str = Field(default="evander-runner:latest", min_length=1)
     container_worker_images: dict[str, str] = Field(default_factory=dict)
@@ -432,6 +436,7 @@ class GatewayConfig(BaseModel):
     http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777
     http_target_relay_timeout_seconds: float = 300.0
+    managed_website_sessions: dict[str, ManagedWebsiteSessionProfile] = Field(default_factory=dict)
     http_target_browser_proxy_host: str = "0.0.0.0"
     http_target_browser_proxy_port: int = Field(default=11778, gt=0, le=65535)
     http_target_browser_proxy_connect_timeout_seconds: float = Field(default=15.0, gt=0)
@@ -806,6 +811,18 @@ class GatewayConfig(BaseModel):
     @classmethod
     def normalize_container_worker_images_field(cls, value: object) -> dict[str, str]:
         return normalize_container_worker_images(value)
+
+    @field_validator("container_workers")
+    @classmethod
+    def validate_container_worker_ids(
+        cls, value: dict[str, ContainerWorkerProfile]
+    ) -> dict[str, ContainerWorkerProfile]:
+        for worker_id in value:
+            if not worker_id or worker_id != worker_id.strip():
+                raise ValueError(
+                    "container_workers IDs must be nonempty and have no surrounding whitespace"
+                )
+        return value
 
     @field_validator("agent_consultation_profiles", mode="before")
     @classmethod

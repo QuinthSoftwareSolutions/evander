@@ -2360,10 +2360,11 @@ function currentPageVisible(): boolean {
   return typeof globalThis.document === "undefined" || globalThis.document.visibilityState !== "hidden";
 }
 
-function workflowCatalogPath(directoryPath: string): string {
+function workflowCatalogPath(directoryPath: string, workerId = ""): string {
   const params = new URLSearchParams();
   const trimmedDirectoryPath = directoryPath.trim();
   if (trimmedDirectoryPath) params.set("directory_path", trimmedDirectoryPath);
+  if (workerId.trim()) params.set("worker_id", workerId.trim());
   const query = params.toString();
   return query ? `/api/workflow-editor/catalog?${query}` : "/api/workflow-editor/catalog";
 }
@@ -4198,6 +4199,7 @@ export default function App() {
   const [inspectorNodeId, setInspectorNodeId] = useState("");
   const [inspectorDisplayName, setInspectorDisplayName] = useState("");
   const [inspectorKnownValues, setInspectorKnownValues] = useState<Record<string, unknown>>({});
+  const [agentWorkerCatalog, setAgentWorkerCatalog] = useState<{ key: string; catalog: WorkflowEditorCatalog } | null>(null);
   const [inspectorUnknownValues, setInspectorUnknownValues] = useState<Record<string, unknown>>({});
   const [inspectorJsonDrafts, setInspectorJsonDrafts] = useState<Record<string, string>>({});
   const [inspectorToolArgumentPolicyDrafts, setInspectorToolArgumentPolicyDrafts] = useState<
@@ -4516,6 +4518,32 @@ export default function App() {
     [activeWorkflowOutputSchemas, selectedNode?.id, selectedNodeBindingConfig],
   );
   const hasCollapsedTargetUi = TARGET_SELECTOR_NODE_TYPES.has(selectedNode?.type ?? "");
+  const agentWorkerId = selectedNode?.type === AGENT_CREATE_NODE_TYPE
+    && inspectorFieldModes.worker_id !== "bind"
+    && typeof inspectorKnownValues.worker_id === "string"
+    ? inspectorKnownValues.worker_id.trim() : "";
+  const agentWorkerDirectory = selectedNode?.type === AGENT_CREATE_NODE_TYPE
+    && inspectorFieldModes.directory_path !== "bind"
+    && typeof inspectorKnownValues.directory_path === "string"
+    && inspectorKnownValues.directory_path.trim()
+    ? inspectorKnownValues.directory_path.trim() : selectedDirectoryPath;
+  const agentWorkerCatalogKey = selectedNode?.type === AGENT_CREATE_NODE_TYPE
+    && (agentWorkerId || agentWorkerDirectory !== selectedDirectoryPath)
+    ? workflowCatalogPath(agentWorkerDirectory, agentWorkerId) : "";
+
+  useEffect(() => {
+    if (!agentWorkerCatalogKey || isTutorialMode) return;
+    let cancelled = false;
+    fetchJson<WorkflowEditorCatalog>(agentWorkerCatalogKey)
+      .then((catalog) => {
+        if (!cancelled) setAgentWorkerCatalog({ key: agentWorkerCatalogKey, catalog });
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => { cancelled = true; };
+  }, [agentWorkerCatalogKey, isTutorialMode]);
+
   const effectTargetKey = hasCollapsedTargetUi ? inspectorEffectTargetKey : activeEffectTargetKey(inspectorKnownValues);
   const inspectorFields = (() => {
     if (!selectedCatalogEntry) return [];
@@ -4523,6 +4551,16 @@ export default function App() {
     if (selectedNode?.type === AGENT_CREATE_NODE_TYPE) {
       const executionBackend = normalizedAgentCreateExecutionBackend(inspectorKnownValues);
       fields = fields.filter((field) => agentCreateFieldVisibleForBackend(field, executionBackend));
+      if (agentWorkerCatalogKey) {
+        const workerFields = agentWorkerCatalog?.key === agentWorkerCatalogKey
+          ? agentWorkerCatalog.catalog.nodes.find((node) => node.type === AGENT_CREATE_NODE_TYPE)?.fields
+          : undefined;
+        fields = fields.map((field) => {
+          if (field.key !== "subscription_profile_id" && field.key !== "worker_id") return field;
+          return workerFields?.find((candidate) => candidate.key === field.key)
+            ?? (field.key === "subscription_profile_id" ? { ...field, options: [] } : field);
+        });
+      }
     }
     if (!hasCollapsedTargetUi) return fields;
     return fields.filter((field) => !EFFECT_TARGET_KEYS.includes(field.key as EffectTargetKey));
@@ -8067,6 +8105,10 @@ export default function App() {
 
   function updateKnownField(key: string, value: unknown) {
     const next = { ...inspectorKnownValues, [key]: value };
+    if (selectedNode?.type === AGENT_CREATE_NODE_TYPE && key === "worker_id") {
+      delete next.subscription_profile_id;
+      delete next.container_image;
+    }
     let nextJsonDrafts = inspectorJsonDrafts;
     if (selectedNode?.type === "gate:filter") {
       if (key === "match" && value !== undefined && value !== null && value !== "") {
@@ -9725,7 +9767,7 @@ export default function App() {
         )
         : field.options;
       const literalEnumValue = typeof value === "string" ? value : "";
-      const unavailableSubscriptionProfile = field.key === "subscription_profile_id"
+      const unavailableSubscriptionProfile = (field.key === "subscription_profile_id" || field.key === "worker_id")
         && Boolean(literalEnumValue)
         && !enumOptions.some((option) => option.value === literalEnumValue);
       const enumValue = field.key === "query_mode" && isAdoQueryModeNodeType(selectedNodeType)

@@ -226,3 +226,13 @@ def test_attributed_intake_and_release_correction_reach_both_pr_paths(
         assert result["actual_creator"]["id"] == result["intended_creator_id"] == "alice"
         assert result["credential_source"] == "personal_pat"
         assert result["fallback_reason"] is None
+        assert result["work_item_linked"] is True
+        assert result["linked_work_item_ids"] == ["17015"]
+        relation = remote.work_items["17015"]["relations"][0]
+        assert relation == {
+            "rel": "ArtifactLink",
+            "url": "vstfs:///Git/PullRequestId/project-id%2Frepo-id%2F42",
+            "attributes": {"name": "Pull Request"},
+        }
+        assert effect.execute(resolved_config=resolved)["work_item_linked"] is True
+        assert remote.link_writes == ["17015"]

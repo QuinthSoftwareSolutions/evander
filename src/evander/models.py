@@ -855,6 +855,7 @@ class SessionToolApprovalLease(BaseModel):
 
 class HttpTargetMetadata(BaseModel):
     base_url: str = Field(validation_alias=AliasChoices("base_url", "allowed_base_url"))
+    managed_website_session: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("base_url", mode="before")

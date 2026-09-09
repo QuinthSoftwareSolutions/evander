@@ -18,6 +18,7 @@ def test_playwright_bootstrap_docs_and_script_are_present() -> None:
     assert "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in script
     assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in script
     assert "playwright-core" in script
+    assert "createManagedWebsiteContext" in script
 
 
 def test_playwright_bootstrap_rewriter_repairs_profile_without_stripping_foreign_fi(

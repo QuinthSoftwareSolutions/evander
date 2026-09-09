@@ -124,6 +124,8 @@ Directory-scoped config is rooted at `root`:
    `11881`, `8081`, and `3142`. Port `11778` is the authenticated browser forward proxy: seeded
    browsers can reach only real origins registered as session HTTP targets while preserving
    application CORS, cookies, and root-relative assets.
+   [Managed website sessions](docs/managed-website-sessions.md) add explicitly granted
+   browser login and renewal through the existing relay, with passwords held on the host.
 
 6. Start the host-side services:
 
@@ -280,10 +282,17 @@ sudo systemctl start evander-managed-git-refresh.service
 
 For fresh-host Ubuntu 24.04 deployment paths that wrap this same repo-native flow with Ansible,
 including the dedicated container-worker VM playbook, see `ansible/README.md`.
+Container sessions keep their assigned worker when the default changes, so existing agents
+can continue on one worker while new agents start on another. See
+[changing the default worker](docs/container-worker-backend.md#changing-the-default-worker)
+for the upgrade backfill and connection requirements.
 When worker MSSQL is enabled, that playbook can also mount a host-seeded, read-only `sqlcmd` and
 ODBC Driver 18 cache into runner containers. Agents use it only with session-owned databases
 created by the existing Core MSSQL or optional MSSQL Seed add-on tools; the SQL Server engine stays
 on the worker VM.
+Configure named `container_workers` choices to override the default with `worker_id`
+on workflow or manual creation, or select **Worker** in the Admin Web and Team dialogs.
+See [worker selection](docs/container-worker-backend.md#selecting-a-worker-when-creating-an-agent).
 
 Optional Godot container-runner images can be built manually with
 `scripts/build_evander_godot_runner_images.sh`; see

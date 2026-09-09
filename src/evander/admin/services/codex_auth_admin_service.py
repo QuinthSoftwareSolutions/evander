@@ -44,8 +44,14 @@ class CodexAuthAdminService:
             **self._client(directory_path).codex_auth_status(),
         }
 
-    def list_profiles(self, directory_path: str) -> dict[str, Any]:
+    def list_profiles(self, directory_path: str, *, worker_id: str | None = None) -> dict[str, Any]:
         config = self._deps.provider_config.resolve_for_directory(directory_path)
+        if worker_id:
+            from evander.admin.services.container_worker_assignment_service import (
+                ContainerWorkerAssignmentService,
+            )
+
+            config = ContainerWorkerAssignmentService(config).config_for_worker_id(worker_id)
         worker_url = str(config.container_worker_base_url or "").strip()
         payload = self._client_for_config(config).list_codex_auth_profiles()
         queue_counts = self._queued_counts_by_profile(worker_url=worker_url)

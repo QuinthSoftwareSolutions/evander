@@ -229,3 +229,4 @@ printf 'PLAYWRIGHT_MCP_EXECUTABLE_PATH=%s\n' "${PLAYWRIGHT_MCP_EXECUTABLE_PATH}"
 EOF
 
 echo "Playwright bootstrap complete for ${VM_NAME} (${VM_IP})"
+echo 'The seeded launch helper also exports createManagedWebsiteContext(browser, targetAlias) for explicitly granted website logins.'
