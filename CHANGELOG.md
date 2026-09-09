@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-09 - Native Team thread resumption (0.32.1)
+
+- Keep asynchronous dispatch and execution identities separate from observed provider
+  thread IDs. Capture native threads from worker metadata or bounded execution-log
+  searches, including queued prompts and verbose runs.
+- Persist native receipts against each Team dispatch and bind only its own work lineage.
+  Guard delayed completions, newer dispatches, session changes, and policy resets.
+- Treat old synthetic lineage bindings as unbound so recovery uses current durable Team
+  context. Add additive persistence migration and recovery/rollback guidance.
+
 ## 2026-09-09 - Focused Team contexts (0.32.0)
 
 - Make every ordinary Team wake independently actionable with current identity,

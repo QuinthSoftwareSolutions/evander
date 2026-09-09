@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.agent_threads import usable_agent_thread_id
+
 from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
 
 from evander.admin.services.vm_agent.common import (
@@ -431,7 +433,9 @@ class VmAgentPromptMixin:
         outputs.update(
             {
                 "dispatch_id": dispatch_id,
-                "thread_id": str(result.get("thread_id") or resume_thread_id or dispatch_id),
+                "thread_id": usable_agent_thread_id(
+                    result.get("thread_id"), dispatch_id, worker_execution_id
+                ),
                 "success": True,
                 "queued": False,
                 "output_mode": "on_completion",

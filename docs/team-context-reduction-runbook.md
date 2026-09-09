@@ -55,9 +55,61 @@ family, mixed/partly unbound releases receive a release lineage, and successors
 inherit that release lineage. Existing unbound tasks run fresh without backfill.
 The existing missing-thread path retries once with fresh context.
 
+### Native thread recovery (0.32.1)
+
+Asynchronous container dispatch returns no native thread until the provider reports
+one. `dispatch_id` and `execution_id` remain correlation IDs. Reconciliation reads
+the worker's native metadata or searches that execution's raw log for its startup
+header, then saves `native_thread_id` and `native_thread_observed_at` on the Team
+dispatch. Each lineage binding retains its owning dispatch, so delayed completions
+cannot replace the binding of a later wake or change another lineage's context.
+
+The Team SQLite store adds these receipt columns and the lineage owner map on
+normal startup; no operator pack or direct database edits are required. Already
+running or completed pre-fix dispatches can recover their own poisoned bindings
+from retained execution evidence. If the native identity cannot be recovered,
+the next wake treats a synthetic binding as unbound and uses the current durable
+Team records with `fresh_full` context. It does not reconstruct conversation
+history or re-investigate work already recorded in tasks and deliverables.
+If a provider later reports that an explicitly resumed native thread is missing,
+completion reconciliation invalidates only that dispatch's owned binding. The
+next Team wake uses fresh durable context; an older failure cannot invalidate a
+binding subsequently established by another wake.
+
+After an authorized deployment, the first wake may start fresh with no requested
+resume ID. On the next same-lineage wake, compare its requested `resume_thread_id`
+and worker-observed native ID with the first wake's observed ID and the persisted
+Team lineage binding. They must identify the same native conversation. Repeat
+after a wake for another lineage and verify the return uses the original native ID. A
+`retained_current` label or successful dispatch alone does not prove resumption.
+
+The columns are additive. Older code can read the database, but may erase new
+receipts when it writes and reintroduce synthetic bindings. For rollback, use the
+supported revision-checked Team controls to leave `work_lineage` before deploying
+the older code; changing the policy clears bindings and their owners together.
+Returning to 0.32.1 and `work_lineage` starts with fresh, durable context and captures
+new native identities. Preserve runtime evidence before rollback.
+
+Local 0.32.1 verification passed the native-thread, lineage, selected runtime and
+container-prompt suites, context-retry checks, and focused repository, context,
+operator-chat, and source-evidence tests. Run the new regression suite with an
+explicit timeout, using the checkout's `src` on `PYTHONPATH` if its virtualenv is
+shared with another worktree:
+
+```bash
+timeout 120s python -m pytest -q tests/test_team_native_threads.py
+```
+
+The broader unified-persistence suite has nine failures that reproduce on the
+unchanged 0.32.0 base: one stale collection-count expectation and eight legacy
+release-base/retry expectations. A combined 642-test batch timed out at 180 seconds
+at the sandbox HTTP tests; the isolated operator-chat and source-evidence suites
+passed all 31 tests outside the sandbox. These results are local regression
+evidence; the live native-ID comparison above remains required.
+
 ## Reproduce local validation and measurements
 
-Local validation on 2026-09-09 passed 377 distinct tests across the suites below,
+Original 0.32.0 validation on 2026-09-09 passed 377 distinct tests across the suites below,
 plus Ruff and `git diff --check`. The initial read/evidence command reached its
 180-second sandbox timeout; the identical focused suite passed outside the
 sandbox (42 tests in 13.64 seconds). No live configuration was changed.

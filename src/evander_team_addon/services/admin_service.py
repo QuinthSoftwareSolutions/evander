@@ -2929,6 +2929,7 @@ class TeamAdminService:
                     )
                     runtime.last_context_rotated_at = now
                     runtime.work_lineage_thread_ids = {}
+                    runtime.work_lineage_thread_dispatch_ids = {}
                     runtime.updated_at = now
             if set_display_name:
                 agent.display_name = display_name

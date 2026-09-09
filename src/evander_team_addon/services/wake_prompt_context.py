@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.agent_threads import usable_agent_thread_id
+
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -82,7 +84,7 @@ def work_lineage_resume_thread_id(lease: Mapping[str, Any]) -> str | None:
     bindings = runtime.get("work_lineage_thread_ids")
     if lineage_id is None or not isinstance(bindings, Mapping):
         return None
-    return _optional_text(bindings.get(lineage_id))
+    return usable_agent_thread_id(bindings.get(lineage_id))
 
 
 def build_compact_wake_context(

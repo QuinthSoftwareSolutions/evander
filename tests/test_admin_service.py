@@ -3838,7 +3838,7 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     assert records[0].directory_path == "root"
     assert records[0].outputs["output_mode"] == "on_completion"
     assert records[0].outputs["execution_id"] == backend.started_specs[0].target_name
-    assert str(records[0].outputs["thread_id"]).startswith("dispatch-")
+    assert records[0].outputs["thread_id"] is None
     assert (
         records[0].outputs["queue_key"]
         == "admin-agent-prompt:container_worker_vm:container-session"
@@ -3935,7 +3935,7 @@ def test_resume_agent_routes_container_session_through_container_prompt_dispatch
 
     assert result.success is True
     assert result.provider == "container_worker_vm"
-    assert result.thread_id == "team-dispatch-1"
+    assert result.thread_id is None
     assert backend.started_specs[0].session_id == "container-session"
     assert backend.started_specs[0].image == "runner:team-image"
     assert "codex exec resume --last" in str(backend.started_specs[0].command)

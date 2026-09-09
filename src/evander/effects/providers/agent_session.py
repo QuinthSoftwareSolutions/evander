@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+from evander.agent_threads import usable_agent_thread_id
 from evander.codex_auth import (
     CodexAuthMode,
     CodexTurnSpec,
@@ -1252,14 +1253,7 @@ def _container_claude_prompt_command(
 
 
 def _container_resume_thread_id(resume_thread_id: str | None) -> str | None:
-    normalized = normalize_optional_string(resume_thread_id)
-    if normalized is None:
-        return None
-    if normalized.startswith("dispatch-"):
-        return None
-    if normalized.startswith("chat-thread-"):
-        return None
-    return normalized
+    return usable_agent_thread_id(resume_thread_id)
 
 
 def container_thread_id_from_logs(logs: str) -> str | None:

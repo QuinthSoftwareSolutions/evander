@@ -1441,6 +1441,19 @@ class TeamStateSqliteStore:
                     column_name="work_lineage_thread_ids_json",
                     definition="TEXT NOT NULL DEFAULT '{}'",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="work_lineage_thread_dispatch_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '{}'",
+                )
+                for column_name in ("native_thread_id", "native_thread_observed_at"):
+                    _ensure_column(
+                        connection,
+                        table_name="team_dispatches",
+                        column_name=column_name,
+                        definition="TEXT",
+                    )
                 connection.execute(
                     """
                     UPDATE team_agent_runtimes
@@ -2949,6 +2962,9 @@ class TeamStateSqliteStore:
                 "work_lineage_thread_ids": _json_loads(
                     row["work_lineage_thread_ids_json"] or "{}"
                 ),
+                "work_lineage_thread_dispatch_ids": _json_loads(
+                    row["work_lineage_thread_dispatch_ids_json"] or "{}"
+                ),
                 "last_delivered_role_description_fingerprint": row[
                     "last_delivered_role_description_fingerprint"
                 ],
@@ -2974,9 +2990,9 @@ class TeamStateSqliteStore:
                     context_handoff_preparation_status, last_agent_handoff_summary,
                     last_agent_handoff_at, last_context_rotated_at, last_thread_id,
                     last_delivered_role_description_fingerprint,
-                    work_lineage_thread_ids_json, updated_at
+                    work_lineage_thread_ids_json, work_lineage_thread_dispatch_ids_json, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -3009,6 +3025,7 @@ class TeamStateSqliteStore:
                     runtime.get("last_thread_id"),
                     runtime.get("last_delivered_role_description_fingerprint"),
                     _json_dumps(runtime.get("work_lineage_thread_ids", {})),
+                    _json_dumps(runtime.get("work_lineage_thread_dispatch_ids", {})),
                     runtime["updated_at"],
                 ),
             )
@@ -4912,6 +4929,8 @@ class TeamStateSqliteStore:
                 "cause_kind": row["cause_kind"],
                 "cause_id": row["cause_id"],
                 "work_lineage_id": row["work_lineage_id"],
+                "native_thread_id": row["native_thread_id"],
+                "native_thread_observed_at": row["native_thread_observed_at"],
                 "task_ids": scope_values["task_ids"].get(dispatch_id, []),
                 "claimed_role_task_ids": _json_loads(row["claimed_role_task_ids_json"] or "[]"),
                 "blocker_ids": scope_values["blocker_ids"].get(dispatch_id, []),
@@ -4975,8 +4994,8 @@ class TeamStateSqliteStore:
                     action_feedback_dispatch_ids_json,
                     source_evidence_snapshot_ids_json,
                     prepared_at, leased_at, lease_expires_at,
-                    completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    completed_at, error, native_thread_id, native_thread_observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -5007,6 +5026,8 @@ class TeamStateSqliteStore:
                     dispatch.get("lease_expires_at"),
                     dispatch.get("completed_at"),
                     dispatch.get("error"),
+                    dispatch.get("native_thread_id"),
+                    dispatch.get("native_thread_observed_at"),
                 ),
             )
             for field_name, table_name, value_column in (
@@ -8542,6 +8563,7 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     last_thread_id TEXT,
     last_delivered_role_description_fingerprint TEXT,
     work_lineage_thread_ids_json TEXT NOT NULL DEFAULT '{}',
+    work_lineage_thread_dispatch_ids_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_wake
@@ -9283,6 +9305,8 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     cause_kind TEXT NOT NULL,
     cause_id TEXT,
     work_lineage_id TEXT,
+    native_thread_id TEXT,
+    native_thread_observed_at TEXT,
     claimed_role_task_ids_json TEXT NOT NULL DEFAULT '[]',
     chat_message_ids_json TEXT NOT NULL DEFAULT '[]',
     review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',

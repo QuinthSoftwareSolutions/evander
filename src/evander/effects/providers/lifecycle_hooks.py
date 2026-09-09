@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from evander.agent_threads import usable_agent_thread_id
 from evander.effects.providers.agent_session import (
     container_codex_turn_spec,
     container_prompt_command,
@@ -1487,7 +1488,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         }
         outputs = {
             "dispatch_id": dispatch_id,
-            "thread_id": effective_resume_thread_id or dispatch_id,
+            "thread_id": None,
+            "native_thread_id": None,
+            "resume_thread_id": effective_resume_thread_id,
             "success": True,
             "queued": False,
             "dispatched_from_queue": True,
@@ -2020,12 +2023,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
     @staticmethod
     def _usable_resume_thread_id(value: Any) -> str | None:
-        text = str(value or "").strip()
-        if not text:
-            return None
-        if text.startswith("dispatch-") or text.startswith("chat-thread-"):
-            return None
-        return text
+        return usable_agent_thread_id(value)
 
     @staticmethod
     def _workflow_context_from_record(record: Any) -> dict[str, dict[str, Any]] | None:

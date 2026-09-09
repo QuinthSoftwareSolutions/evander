@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from evander.addons import addon_storage_path
+from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
@@ -5619,6 +5620,65 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 activation_candidates.pop(dispatch_id, None)
                 if not activation_candidates:
                     break
+        # Native IDs arrive after asynchronous dispatch activation. Reconcile
+        # both running and completed execution receipts before closing leases;
+        # a completion workflow may already have finalized the Team dispatch.
+        for record in delivered_records:
+            outputs = _record_outputs(record)
+            dispatch_id = _optional_text(outputs.get("dispatch_id"))
+            dispatch = state.dispatches.get(dispatch_id or "")
+            session_id = _completed_prompt_session_id(record)
+            if dispatch is None or session_id != dispatch.session_id:
+                continue
+            requested_thread_id = (
+                outputs.get("resume_thread_id")
+                if "resume_thread_id" in outputs
+                else AgentPromptEffectProvider._record_text_value(record, "resume_thread_id")
+            )
+            native_thread_observed = (
+                usable_agent_thread_id(outputs.get("native_thread_id")) is not None
+                and outputs.get("native_thread_execution_id") == outputs.get("execution_id")
+            )
+            if not native_thread_observed and _resume_failure_reports_missing_thread(
+                outputs, resume_thread_id=requested_thread_id
+            ):
+                state, _invalidated = TeamRuntimeService(repo).invalidate_agent_work_lineage_thread_binding(
+                    agent_id=dispatch.agent_id,
+                    dispatch_id=dispatch.id,
+                    resume_thread_id=requested_thread_id,
+                    require_dispatch_owner=True,
+                )
+                continue
+            thread_id = usable_agent_thread_id(
+                outputs.get("native_thread_id", outputs.get("thread_id")),
+                dispatch_id,
+                outputs.get("execution_id"),
+                getattr(record, "execution_id", None),
+            )
+            if thread_id is None:
+                continue
+            if outputs.get("native_thread_execution_id") not in {
+                None,
+                outputs.get("execution_id"),
+            }:
+                continue
+            observed_at = _team_payload_datetime(outputs.get("native_thread_observed_at")) or getattr(
+                record, "finished_at", None
+            )
+            if dispatch.native_thread_id == thread_id and (
+                observed_at is None
+                or (
+                    dispatch.native_thread_observed_at is not None
+                    and _team_datetime_utc(observed_at) <= dispatch.native_thread_observed_at
+                )
+            ):
+                continue
+            state, _recorded = TeamRuntimeService(repo).record_agent_dispatch_native_thread(
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                thread_id=thread_id,
+                observed_at=observed_at,
+            )
         active_dispatches = {
             dispatch_id: agent_id
             for agent_id, runtime in state.agent_runtimes.items()
@@ -14774,6 +14834,8 @@ def _resume_failure_reports_missing_thread(
         _optional_text(payload.get("dispatch_error")) is not None for payload in mappings
     ):
         return False
+    if "resume_thread_missing" in result:
+        return result.get("resume_thread_missing") is True
     missing_codes = {
         "conversation_not_found",
         "missing_resume_thread",
@@ -14789,42 +14851,11 @@ def _resume_failure_reports_missing_thread(
             if code is not None and code.lower().replace("-", "_") in missing_codes:
                 return True
 
-    thread_id_text = normalized_thread_id.lower()
-    for payload in mappings:
-        for key in (
-            "message",
-            "error",
-            "detail",
-            "diagnostic",
-            "stderr",
-            "dispatch_error",
-        ):
-            message = _optional_text(payload.get(key))
-            if message is None:
-                continue
-            normalized = " ".join(message.lower().split())
-            missing = any(
-                marker in normalized
-                for marker in (
-                    "not found",
-                    "does not exist",
-                    "no such",
-                    "unknown",
-                    "missing",
-                    "no rollout found",
-                    "no thread found",
-                    "no conversation found",
-                    "could not find",
-                    "failed to find",
-                )
-            )
-            if not missing:
-                continue
-            if any(subject in normalized for subject in ("thread", "conversation", "rollout")):
-                return True
-            if "session" in normalized and thread_id_text in normalized:
-                return True
-    return False
+    return any(
+        agent_resume_thread_missing(payload.get(key), resume_thread_id=normalized_thread_id)
+        for payload in mappings
+        for key in ("message", "error", "detail", "diagnostic", "stderr", "dispatch_error", "logs")
+    )
 
 
 def _discard_failed_team_prompt_queue_record(
