@@ -670,6 +670,13 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         if route.path == "/release-packages/{release_package_id}/retry-gate"
     )
     assert retry_route.methods == {"POST"}
+    waiver_route = next(
+        route
+        for route in routes
+        if route.path
+        == "/release-packages/{release_package_id}/gate-obligation-waivers"
+    )
+    assert waiver_route.methods == {"POST"}
     cleanup_retry_route = next(
         route
         for route in routes
@@ -811,6 +818,59 @@ def test_team_addon_retry_gate_api_routes_operator_retry_flags(
     assert captured["release_package_id"] == "release-rejected"
     assert captured["gate_id"] == "review-rejected"
     assert captured[flag] is True
+    assert captured["operator_actor_id"].startswith("operator:")
+
+
+@pytest.mark.parametrize("unlock_privileged", [True, False])
+def test_team_addon_gate_obligation_waiver_requires_directory_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unlock_privileged: bool,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _authorize_waiver_with_result(
+        _self: TeamAdminService,
+        **kwargs: object,
+    ) -> tuple[TeamState, dict[str, object]]:
+        captured.update(kwargs)
+        return TeamState.empty(), {"success": True, "events": []}
+
+    monkeypatch.setattr(
+        TeamAdminService,
+        "authorize_release_gate_obligation_waiver_with_result",
+        _authorize_waiver_with_result,
+    )
+    repository = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    def _add_release(state: TeamState) -> TeamState:
+        state.release_packages["release-rejected"] = ReleasePackage(
+            id="release-rejected",
+            project_id="project",
+        )
+        return state
+
+    repository.update(_add_release)
+    client = _client(tmp_path, unlock_privileged=unlock_privileged)
+
+    response = client.post(
+        "/api/addons/team-addon/release-packages/release-rejected/gate-obligation-waivers",
+        json={
+            "gate_kind": "agent_review",
+            "candidate_commit_sha": "successor-sha",
+            "reason": "The replacement process supplies equivalent review evidence.",
+            "expected_revision": 0,
+        },
+    )
+
+    if not unlock_privileged:
+        assert response.status_code == 403, response.text
+        assert captured == {}
+        return
+    assert response.status_code == 200, response.text
+    assert captured["release_package_id"] == "release-rejected"
+    assert captured["gate_kind"] == "agent_review"
+    assert captured["candidate_commit_sha"] == "successor-sha"
     assert captured["operator_actor_id"].startswith("operator:")
 
 

@@ -16,6 +16,8 @@ from ...models import (
     ReleaseCandidateManifest,
     ReleaseCandidateReviewEvidence,
     ReleaseGateFailure,
+    ReleaseGateKind,
+    ReleaseGateObligationWaiver,
     ReleasePackage,
     ReleaseVerificationCommandResult,
     ReleaseVerificationRun,
@@ -389,45 +391,6 @@ def begin_release_gates(
         return
     release.gate_failure = None
     release.updated_at = utc_now()
-
-    if policy.verification_commands:
-        run_id = _verification_run_id(release.id, candidate_commit_sha, 1)
-        run = state.release_verification_runs.get(run_id)
-        if run is None:
-            now = utc_now()
-            run = ReleaseVerificationRun(
-                id=run_id,
-                release_package_id=release.id,
-                candidate_commit_sha=candidate_commit_sha,
-                session_id=f"team-release-verification-{uuid4().hex}",
-                state="pending",
-                provenance="server_executed",
-                evidence_refs=[],
-                container_image=policy.container_image,
-                resource_limits=policy.resource_limits,
-                verifier_settings_snapshotted=True,
-                attempt_number=1,
-                command_results=[
-                    ReleaseVerificationCommandResult(name=command.name)
-                    for command in policy.verification_commands
-                ],
-                current_command_index=0,
-                created_at=now,
-                updated_at=now,
-                finished_at=None,
-            )
-            state.release_verification_runs[run.id] = run
-        release.verification_run_ids = _append_unique(
-            release.verification_run_ids,
-            run.id,
-        )
-        _append_verification_requested_event(
-            result,
-            release=release,
-            run=run,
-        )
-        result.setdefault("release_verification_run_ids", []).append(run.id)
-        return
 
     advance_release_gates(
         state,
@@ -1301,6 +1264,95 @@ def _release_review_correction_description(
     )
 
 
+def _enabled_release_gate_kinds(release: ReleasePackage) -> list[ReleaseGateKind]:
+    manifest = release.manifest
+    if manifest is None:
+        return []
+    return [stage.kind for stage in manifest.gate_sequence if stage.enabled]
+
+
+def _pending_predecessor_gate_obligation(
+    state: TeamState,
+    release: ReleasePackage,
+) -> tuple[ReleaseGateKind, list[str]] | None:
+    predecessor = state.release_packages.get(release.supersedes_release_package_id or "")
+    failure = predecessor.gate_failure if predecessor is not None else None
+    if predecessor is None or failure is None:
+        return None
+    gate_kind = {
+        "verification": ReleaseGateKind.VERIFICATION,
+        "review": ReleaseGateKind.AGENT_REVIEW,
+        "human_review": ReleaseGateKind.HUMAN_REVIEW,
+    }.get(failure.stage)
+    if gate_kind is None or gate_kind in _enabled_release_gate_kinds(release):
+        return None
+    source_ids = [failure.source_id] if failure.source_id else [predecessor.id]
+    if gate_kind == ReleaseGateKind.AGENT_REVIEW:
+        source_ids = [
+            review.id
+            for review in _current_release_reviews(state, predecessor)
+            if review.state == TeamRecordState.REJECTED
+        ] or source_ids
+    covered = {
+        source_id
+        for waiver in release.gate_obligation_waivers
+        if waiver.gate_kind == gate_kind
+        and waiver.predecessor_release_package_id == predecessor.id
+        and waiver.candidate_commit_sha == release.candidate_commit_sha
+        for source_id in waiver.source_ids
+    }
+    if set(source_ids).issubset(covered):
+        return None
+    return gate_kind, source_ids
+
+
+def _ensure_release_verification(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    result: dict[str, Any],
+) -> bool:
+    manifest = release.manifest
+    candidate = release.candidate_commit_sha
+    if manifest is None or candidate is None:
+        return False
+    current = _current_verification_run(state, release)
+    if current is not None:
+        return current.state == "passed"
+
+    project = state.projects.get(release.project_id)
+    policy = project.release_policy if project is not None else None
+    run_id = _verification_run_id(release.id, candidate, 1)
+    now = utc_now()
+    run = ReleaseVerificationRun(
+        id=run_id,
+        release_package_id=release.id,
+        candidate_commit_sha=candidate,
+        session_id=f"team-release-verification-{uuid4().hex}",
+        state="pending",
+        provenance="server_executed",
+        evidence_refs=[],
+        container_image=(policy.container_image if policy is not None else None),
+        resource_limits=(policy.resource_limits if policy is not None else None),
+        verifier_settings_snapshotted=True,
+        attempt_number=1,
+        command_results=[
+            ReleaseVerificationCommandResult(name=command.name)
+            for command in manifest.verification_commands
+        ],
+        current_command_index=0,
+        created_at=now,
+        updated_at=now,
+        finished_at=None,
+    )
+    state.release_verification_runs[run.id] = run
+    release.verification_run_ids = _append_unique(release.verification_run_ids, run.id)
+    _append_verification_requested_event(result, release=release, run=run)
+    result.setdefault("release_verification_run_ids", []).append(run.id)
+    release.updated_at = now
+    return False
+
+
 def advance_release_gates(
     state: TeamState,
     *,
@@ -1337,7 +1389,6 @@ def advance_release_gates(
             result=result,
         )
         return
-
     manifest = release.manifest
     if manifest is None or release.candidate_commit_sha is None:
         _reject_release(
@@ -1349,10 +1400,27 @@ def advance_release_gates(
             result=result,
         )
         return
-    if manifest.verification_commands:
-        current_run = _current_verification_run(state, release)
-        if current_run is None or current_run.state != "passed":
-            return
+    pending_obligation = _pending_predecessor_gate_obligation(state, release)
+    if pending_obligation is not None:
+        gate_kind, source_ids = pending_obligation
+        _block_release_gate(
+            state,
+            release,
+            stage="gate_obligation",
+            kind="waiver_required",
+            source_id=source_ids[0] if source_ids else None,
+            error=(
+                f"successor release omits {gate_kind.value}, which rejected predecessor "
+                f"{release.supersedes_release_package_id}; a directory owner must record "
+                "an audited waiver for this pinned candidate"
+            ),
+            result=result,
+        )
+        result["gate_obligation"] = {
+            "gate_kind": gate_kind.value,
+            "source_ids": source_ids,
+        }
+        return
     promotion = release_promotion or _release_promotion(state, release)
     if promotion is None:
         _reject_release(
@@ -1364,7 +1432,24 @@ def advance_release_gates(
             result=result,
         )
         return
-    create_release_reviews_or_approve(
+    for gate_kind in _enabled_release_gate_kinds(release):
+        if gate_kind == ReleaseGateKind.VERIFICATION:
+            if not _ensure_release_verification(state, release=release, result=result):
+                return
+            continue
+        if gate_kind == ReleaseGateKind.AGENT_REVIEW:
+            if not _ensure_release_reviews(state, release=release, result=result):
+                return
+            continue
+        if gate_kind == ReleaseGateKind.HUMAN_REVIEW:
+            human_request = ensure_human_review_request(state, release=release, result=result)
+            if human_request is None or human_request.state != "approved":
+                release.updated_at = utc_now()
+                return
+            continue
+        raise ValueError(f"unsupported release gate kind {gate_kind.value}")
+
+    approve_release_candidate(
         state,
         release=release,
         release_promotion=promotion,
@@ -1372,13 +1457,12 @@ def advance_release_gates(
     )
 
 
-def create_release_reviews_or_approve(
+def _ensure_release_reviews(
     state: TeamState,
     *,
     release: ReleasePackage,
-    release_promotion: GitPromotionRecord,
     result: dict[str, Any],
-) -> None:
+) -> bool:
     project = state.projects.get(release.project_id)
     manifest = release.manifest
     candidate = release.candidate_commit_sha
@@ -1543,16 +1627,22 @@ def create_release_reviews_or_approve(
     current_reviews = _current_release_reviews(state, release)
     if any(review.state != TeamRecordState.ACCEPTED for review in current_reviews):
         release.updated_at = utc_now()
+        return False
+    return True
+
+
+def create_release_reviews_or_approve(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    release_promotion: GitPromotionRecord,
+    result: dict[str, Any],
+) -> None:
+    """Compatibility entrypoint used by existing review completion paths."""
+
+    if not _ensure_release_reviews(state, release=release, result=result):
         return
-    human_request = ensure_human_review_request(
-        state,
-        release=release,
-        result=result,
-    )
-    if human_request is not None and human_request.state != "approved":
-        release.updated_at = utc_now()
-        return
-    approve_release_candidate(
+    advance_release_gates(
         state,
         release=release,
         release_promotion=release_promotion,
@@ -1578,10 +1668,7 @@ def approve_release_candidate(
             result=result,
         )
         return
-    if release.manifest is not None and (
-        release.manifest.human_review_requirement is not None
-        or release.manifest.carried_human_findings
-    ):
+    if ReleaseGateKind.HUMAN_REVIEW in _enabled_release_gate_kinds(release):
         request = human_review_request_for_release(state, release.id)
         decisions = [
             decision
@@ -1613,6 +1700,84 @@ def approve_release_candidate(
         release_promotion=release_promotion,
         result=result,
     )
+
+
+def authorize_release_gate_obligation_waiver(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    gate_kind: ReleaseGateKind,
+    candidate_commit_sha: str,
+    reason: str,
+    authorized_by: str,
+    result: dict[str, Any],
+) -> ReleaseGateObligationWaiver:
+    if release.candidate_commit_sha != candidate_commit_sha:
+        raise ValueError("gate obligation waiver does not match the pinned release candidate")
+    normalized_reason = _required_text(reason, "reason")
+    normalized_actor = _required_text(authorized_by, "authorized_by")
+    waiver_id = f"release-gate-obligation-waiver-{release.id}-{gate_kind.value}"
+    existing = next(
+        (waiver for waiver in release.gate_obligation_waivers if waiver.id == waiver_id),
+        None,
+    )
+    if existing is not None:
+        if (
+            existing.candidate_commit_sha != candidate_commit_sha
+            or existing.gate_kind != gate_kind
+            or existing.reason != normalized_reason
+            or existing.authorized_by != normalized_actor
+        ):
+            raise ValueError(f"gate obligation waiver {waiver_id} already exists")
+        return existing
+    if (
+        release.state != TeamRecordState.BLOCKED
+        or release.gate_failure is None
+        or release.gate_failure.stage != "gate_obligation"
+    ):
+        raise ValueError("release is not blocked on a carried gate obligation")
+    pending = _pending_predecessor_gate_obligation(state, release)
+    if pending is None or pending[0] != gate_kind:
+        raise ValueError("release has no matching gate obligation to waive")
+    predecessor_id = _required_text(
+        release.supersedes_release_package_id,
+        "supersedes_release_package_id",
+    )
+    waiver = ReleaseGateObligationWaiver(
+        id=waiver_id,
+        gate_kind=gate_kind,
+        predecessor_release_package_id=predecessor_id,
+        candidate_commit_sha=candidate_commit_sha,
+        source_ids=pending[1],
+        reason=normalized_reason,
+        authorized_by=normalized_actor,
+    )
+    release.gate_obligation_waivers.append(waiver)
+    release.state = TeamRecordState.PENDING
+    release.gate_failure = None
+    release.error = None
+    release.updated_at = utc_now()
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id=release.id,
+        actor_agent_id=None,
+        dispatch_id=None,
+        note=f"{normalized_actor} waived {gate_kind.value}: {normalized_reason}",
+        reference_ids=[waiver.id],
+        result=result,
+    )
+    promotion = _release_promotion(state, release)
+    if promotion is None:
+        raise ValueError("release promotion record is missing")
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result=result,
+    )
+    result["gate_obligation_waiver_id"] = waiver.id
+    return waiver
 
 
 def _release_promotion(
@@ -2317,6 +2482,7 @@ def _candidate_manifest(
             if release.scope_validation is not None
             else None
         ),
+        gate_sequence=[stage.model_copy(deep=True) for stage in policy.gate_sequence],
         verification_commands=list(policy.verification_commands),
         review_requirements=list(policy.review_requirements),
         human_review_requirement=human_snapshot,
@@ -2402,19 +2568,17 @@ def _current_release_reviews(state: TeamState, release: ReleasePackage) -> list[
 
 
 def current_release_gates_passed(state: TeamState, release: ReleasePackage) -> bool:
+    enabled = set(_enabled_release_gate_kinds(release))
     current_run = _current_verification_run(state, release)
-    verification_passed = current_run is None or current_run.state == "passed"
+    verification_passed = ReleaseGateKind.VERIFICATION not in enabled or (
+        current_run is not None and current_run.state == "passed"
+    )
     reviews = _current_release_reviews(state, release)
-    reviews_accepted = all(review.state == TeamRecordState.ACCEPTED for review in reviews)
-    human_required = bool(
-        release.manifest is not None
-        and (
-            release.manifest.human_review_requirement is not None
-            or release.manifest.carried_human_findings
-        )
+    reviews_accepted = ReleaseGateKind.AGENT_REVIEW not in enabled or (
+        bool(reviews) and all(review.state == TeamRecordState.ACCEPTED for review in reviews)
     )
     human_request = human_review_request_for_release(state, release.id)
-    human_accepted = not human_required or (
+    human_accepted = ReleaseGateKind.HUMAN_REVIEW not in enabled or (
         human_request is not None and human_request.state == "approved"
     )
     return verification_passed and reviews_accepted and human_accepted
@@ -2609,6 +2773,7 @@ __all__ = [
     "RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE",
     "advance_release_gates",
     "approve_release_candidate",
+    "authorize_release_gate_obligation_waiver",
     "begin_release_gates",
     "create_release_reviews_or_approve",
     "materialize_release_review_rejection_correction",

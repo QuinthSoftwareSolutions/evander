@@ -39,6 +39,8 @@ from evander_team_addon.models import (
     ProjectGitIdentity,
     ProjectGoal,
     ProjectReleasePolicy,
+    ReleaseGateKind,
+    ReleaseGateStage,
     ReleasePackage,
     ReleaseReviewRequirement,
     ReviewCriterionResult,
@@ -299,6 +301,56 @@ def test_release_policy_resource_limits_are_typed_and_optional() -> None:
         "cpus": 4.0,
         "pids_limit": 1536,
     }
+
+
+def test_release_policy_supports_explicit_order_and_disabled_configured_gates() -> None:
+    policy = ProjectReleasePolicy(
+        gate_sequence=[
+            ReleaseGateStage(kind=ReleaseGateKind.AGENT_REVIEW, enabled=False),
+            ReleaseGateStage(kind=ReleaseGateKind.VERIFICATION, enabled=False),
+            ReleaseGateStage(kind=ReleaseGateKind.HUMAN_REVIEW, enabled=False),
+        ],
+        review_requirements=[
+            ReleaseReviewRequirement(
+                reviewer_agent_id="reviewer",
+                review_profile_id="release-profile",
+            )
+        ],
+    )
+
+    assert [stage.kind for stage in policy.gate_sequence] == [
+        ReleaseGateKind.AGENT_REVIEW,
+        ReleaseGateKind.VERIFICATION,
+        ReleaseGateKind.HUMAN_REVIEW,
+    ]
+    assert not any(stage.enabled for stage in policy.gate_sequence)
+
+
+def test_release_policy_rejects_enabled_gate_without_configuration() -> None:
+    with pytest.raises(ValidationError, match="enabled verification gate"):
+        ProjectReleasePolicy(
+            gate_sequence=[
+                ReleaseGateStage(kind=ReleaseGateKind.VERIFICATION),
+                ReleaseGateStage(kind=ReleaseGateKind.AGENT_REVIEW, enabled=False),
+                ReleaseGateStage(kind=ReleaseGateKind.HUMAN_REVIEW, enabled=False),
+            ]
+        )
+
+
+def test_release_policy_without_sequence_preserves_legacy_order() -> None:
+    policy = ProjectReleasePolicy.model_validate(
+        {
+            "verification_commands": [{"name": "tests", "argv": ["pytest"]}],
+            "review_requirements": [
+                {"reviewer_agent_id": "reviewer", "review_profile_id": "profile"}
+            ],
+        }
+    )
+
+    assert [stage.kind for stage in policy.gate_sequence if stage.enabled] == [
+        ReleaseGateKind.VERIFICATION,
+        ReleaseGateKind.AGENT_REVIEW,
+    ]
 
 
 @pytest.mark.parametrize(

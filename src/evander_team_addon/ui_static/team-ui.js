@@ -1835,6 +1835,22 @@ function bindForms() {
   });
 
   document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-release-gate-obligation-waiver]");
+    if (!button) return;
+    event.preventDefault();
+    if (!guardTeamMutation("waive a carried release-gate obligation")) return;
+    const reason = window.prompt(
+      "Why may this successor omit the gate that rejected its predecessor? This waiver is pinned to the current candidate and retained in release history.",
+      "",
+    );
+    if (!text(reason)) {
+      setStatus("A waiver reason is required.", "error");
+      return;
+    }
+    void waiveReleaseGateObligation(button, text(reason));
+  });
+
+  document.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-worktree-cleanup-retry]");
     if (!button) {
       return;
@@ -1965,6 +1981,18 @@ function bindForms() {
         return;
       }
       moveHumanReviewChecklistRow(checklistMove);
+      return;
+    }
+    const gateMove = event.target?.closest?.("[data-release-gate-move]");
+    if (gateMove) {
+      const row = gateMove.closest("[data-release-gate-row]");
+      const direction = gateMove.dataset.releaseGateMove;
+      if (row && direction === "up" && row.previousElementSibling) {
+        row.parentElement.insertBefore(row, row.previousElementSibling);
+      } else if (row && direction === "down" && row.nextElementSibling) {
+        row.parentElement.insertBefore(row.nextElementSibling, row);
+      }
+      refreshReleaseGateSequenceEditor(gateMove.closest("[data-release-gate-sequence]"));
       return;
     }
 
@@ -3024,6 +3052,7 @@ const lockedMutationControlSelectors = [
   ["[data-start-dependency-composition-recovery-id]", "start dependency composition recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
+  ["[data-release-gate-obligation-waiver]", "waive carried release-gate obligations"],
   ["[data-worktree-cleanup-retry]", "retry worktree cleanup"],
   [
     "[data-repair-cancelled-task-dependencies]",
@@ -8714,9 +8743,11 @@ function renderTeamInlineProjectForm(teamId) {
       </details>
       <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "release-gates"))}>
         <summary>Release gates</summary>
+        ${checkboxField("Configure release policy", "release_policy_enabled", false)}
+        ${renderReleaseGateSequenceEditor()}
         <label>Automated and agent-review policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
         ${renderHumanReviewPolicyEditor()}
-        <p class="field-help">Git releases fail closed until this policy defines disposable verification commands and/or release reviewers.</p>
+        <p class="field-help">Git releases require an explicit policy. Enable any gates that should run, or leave all three disabled for an ungated release.</p>
       </details>
       ${renderTeamInlineCreateActions(teamId, "project", "Create project")}
     </form>
@@ -14575,10 +14606,14 @@ function renderProjectReleasePolicy(policy) {
   const commands = (policy.verification_commands || []).map((command) => command.name);
   const reviewers = (policy.review_requirements || []).map((requirement) => requirement.reviewer_agent_id);
   const human = policy.human_review_requirement;
+  const enabledOrder = normalizedReleaseGateSequence(policy)
+    .filter((stage) => stage.enabled)
+    .map((stage) => RELEASE_GATE_LABELS[stage.kind] || stage.kind)
+    .join(" → ");
   const humanLabel = human
     ? `human review via ${(human.reviewer_group_ids || []).join(", ")} (${human.preparation_mode || "manual"})`
     : "no human review";
-  return `<div class="meta-line">Release gates: ${escapeHtml(commands.length ? `${commands.length} verification checks` : "no verification checks")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers")} - ${escapeHtml(humanLabel)}${policy.allow_ungated ? " - ungated explicitly allowed" : ""}</div>`;
+  return `<div class="meta-line">Release gates: ${escapeHtml(enabledOrder || "ungated")} - ${escapeHtml(commands.length ? `${commands.length} verification checks configured` : "no verification checks configured")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers configured")} - ${escapeHtml(humanLabel)}</div>`;
 }
 
 function renderGoals(projectId, goals, { compact = false } = {}) {
@@ -17096,6 +17131,10 @@ function releaseProgressStages(release) {
   const humanSummary = release.human_review || null;
   const humanRequired = Boolean(manifest?.human_review_requirement || humanSummary);
   const candidateInputsMissing = releaseCandidateInputsMissing(release);
+  const gateStages = {};
+  const gateSequence = normalizedReleaseGateSequence(
+    manifest || state.projects?.[text(release.project_id)]?.release_policy || null,
+  );
 
   const stages = [];
   stages.push(
@@ -17111,9 +17150,9 @@ function releaseProgressStages(release) {
   );
 
   if (!modern) {
-    stages.push({ label: "Automated verification", state: "legacy", detail: "Not recorded (legacy release)" });
+    gateStages.verification = { label: "Automated verification", state: "legacy", detail: "Not recorded (legacy release)" };
   } else if (!verificationCommands.length && !verificationRuns.length) {
-    stages.push({ label: "Automated verification", state: "not-applicable", detail: "No automated checks required" });
+    gateStages.verification = { label: "Automated verification", state: "not-applicable", detail: "Disabled" };
   } else {
     const runStates = verificationRuns.map((run) => text(run.state));
     const failed = runStates.some((stateValue) => ["failed", "timed_out", "blocked", "rejected"].includes(stateValue));
@@ -17127,40 +17166,49 @@ function releaseProgressStages(release) {
       : runningRun
         ? "Preparing verifier"
         : "";
-    stages.push({
+    gateStages.verification = {
       label: "Automated verification",
       state: failed ? "blocked" : completed ? "complete" : "pending",
       detail: failed ? releaseVerificationFailureSummary(verificationRuns) || "Checks need attention" : completed ? "Checks passed" : runningDetail || `${verificationCommands.length || verificationRuns.length} check${(verificationCommands.length || verificationRuns.length) === 1 ? "" : "s"} pending`,
-    });
+    };
   }
 
   if (!modern && !reviews.length) {
-    stages.push({ label: "Release agent review", state: "legacy", detail: "Not recorded (legacy release)" });
+    gateStages.agent_review = { label: "Release agent review", state: "legacy", detail: "Not recorded (legacy release)" };
   } else if (!reviewRequirements.length && !reviews.length) {
-    stages.push({ label: "Release agent review", state: "not-applicable", detail: "No agent review required" });
+    gateStages.agent_review = { label: "Release agent review", state: "not-applicable", detail: "Disabled" };
   } else {
     const reviewStates = reviews.map((review) => text(review.state));
     const failed = reviewStates.some((stateValue) => ["blocked", "rejected"].includes(stateValue));
     const completed = reviewStates.length && reviewStates.every((stateValue) => stateValue === "accepted");
-    stages.push({
+    gateStages.agent_review = {
       label: "Release agent review",
       state: failed ? "blocked" : completed ? "complete" : "pending",
       detail: failed ? "Review needs attention" : completed ? `${reviews.length} review${reviews.length === 1 ? "" : "s"} accepted` : "Awaiting agent review",
-    });
+    };
   }
 
   if (!humanRequired) {
-    stages.push({ label: "Human review", state: "not-applicable", detail: "Not required" });
+    gateStages.human_review = { label: "Human review", state: "not-applicable", detail: "Disabled" };
   } else {
     const humanState = text(humanSummary?.state || "required");
     const complete = ["approved", "accepted"].includes(humanState);
     const failed = ["blocked", "changes_requested", "rejected"].includes(humanState);
-    stages.push({
+    gateStages.human_review = {
       label: "Human review",
       state: complete ? "complete" : failed ? "blocked" : "pending",
       detail: complete ? "Approved" : failed ? humanizeToken(humanState) : "Awaiting human decision",
-    });
+    };
   }
+
+  gateSequence.forEach((stage) => {
+    const rendered = gateStages[stage.kind] || {
+      label: RELEASE_GATE_LABELS[stage.kind] || stage.kind,
+      state: "not-applicable",
+      detail: "Disabled",
+    };
+    stages.push(stage.enabled ? rendered : { ...rendered, state: "not-applicable", detail: "Disabled" });
+  });
 
   const published = Boolean(release.published_at);
   stages.push({
@@ -18899,6 +18947,12 @@ function renderReleasePolicyDetails(release) {
         .map((waiver) => `<li>${escapeHtml(waiver.deliverable_id)} (${escapeHtml(waiver.verification_status)}): ${escapeHtml(waiver.reason)} - ${escapeHtml(waiver.actor_kind)} ${escapeHtml(waiver.actor_id)}</li>`)
         .join("")}</ul></div>`
     : "";
+  const gateWaivers = release.gate_obligation_waivers || [];
+  const gateWaiverMarkup = gateWaivers.length
+    ? `<div class="meta-line"><strong>Gate obligation waivers:</strong><ul>${gateWaivers
+        .map((waiver) => `<li>${escapeHtml(humanizeToken(waiver.gate_kind))}: ${escapeHtml(waiver.reason)} - ${escapeHtml(waiver.authorized_by)}</li>`)
+        .join("")}</ul></div>`
+    : "";
   const scopeMarkup = scope
     ? `<div class="meta-line">Scope validation: ${escapeHtml(scope.state)}${(scope.unexpected_commit_shas || []).length ? ` - unexpected commits ${escapeHtml(scope.unexpected_commit_shas.join(", "))}` : ""}${(scope.unexpected_paths || []).length ? ` - unexpected paths ${escapeHtml(scope.unexpected_paths.join(", "))}` : ""}</div>`
     : "";
@@ -18906,7 +18960,7 @@ function renderReleasePolicyDetails(release) {
   const humanMarkup = humanRequirement
     ? `<div class="meta-line">Human gate: ${escapeHtml(humanRequirement.preparation_mode || "manual")} - groups ${escapeHtml((humanRequirement.configured_group_ids || []).join(", ") || "redacted")} - ${(humanRequirement.checklist || []).length} checklist item${(humanRequirement.checklist || []).length === 1 ? "" : "s"}</div>`
     : "";
-  return `${waiverMarkup}${scopeMarkup}${humanMarkup}`;
+  return `${waiverMarkup}${gateWaiverMarkup}${scopeMarkup}${humanMarkup}`;
 }
 
 function releaseHasSuccessor(releaseId) {
@@ -18919,6 +18973,25 @@ function releaseHasSuccessor(releaseId) {
 function renderReleaseGateAction(release) {
   const failure = release.gate_failure || null;
   const gateId = text(failure?.source_id);
+  if (release.state === "blocked" && failure?.stage === "gate_obligation") {
+    const predecessor = state.release_packages?.[text(release.supersedes_release_package_id)];
+    const gateKind = {
+      verification: "verification",
+      review: "agent_review",
+      human_review: "human_review",
+    }[text(predecessor?.gate_failure?.stage)];
+    if (!gateKind || !release.candidate_commit_sha) return "";
+    return `
+      <div class="record-actions">
+        <button class="record-action" type="button"
+          data-release-gate-obligation-waiver
+          data-release-id="${escapeAttr(release.id)}"
+          data-gate-kind="${escapeAttr(gateKind)}"
+          data-candidate-commit-sha="${escapeAttr(release.candidate_commit_sha)}"
+        >Waive carried ${escapeHtml(humanizeToken(gateKind))} obligation</button>
+      </div>
+    `;
+  }
   const retryableVerification =
     release.state === "blocked" &&
     failure?.stage === "verification" &&
@@ -19002,6 +19075,40 @@ async function retryReleaseGate(button, reason) {
     setStatus(`Release ${releaseId} ${gateKind} retry recorded.`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Release gate retry failed.", "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function waiveReleaseGateObligation(button, reason) {
+  const releaseId = text(button?.dataset?.releaseId);
+  const gateKind = text(button?.dataset?.gateKind);
+  const candidateCommitSha = text(button?.dataset?.candidateCommitSha);
+  if (!releaseId || !gateKind || !candidateCommitSha) {
+    setStatus("Release gate waiver context is incomplete.", "error");
+    return;
+  }
+  button.disabled = true;
+  setStatus(`Waiving carried ${gateKind} obligation.`, "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/release-packages/${encodeURIComponent(releaseId)}/gate-obligation-waivers`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gate_kind: gateKind,
+          candidate_commit_sha: candidateCommitSha,
+          reason,
+          expected_revision: state.revision,
+        }),
+      },
+    );
+    if (!response.ok) throw new Error(await responseText(response));
+    await applyMutationResultPayload(await response.json());
+    setStatus(`Release ${releaseId} gate obligation waived.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Release gate waiver failed.", "error");
   } finally {
     button.disabled = false;
   }
@@ -23323,14 +23430,25 @@ function taskAuthoredByForForm(data) {
 }
 
 function releasePolicyForForm(data, form = null) {
+  if (form?.elements?.release_policy_enabled && !form.elements.release_policy_enabled.checked) {
+    return null;
+  }
   const raw = text(data.release_policy_json);
-  if (!raw && !form?.elements?.human_review_enabled?.checked) {
+  const gateSequence = releaseGateSequenceFromForm(form);
+  if (
+    !form?.elements?.release_policy_enabled
+    && !raw
+    && !form?.elements?.human_review_enabled?.checked
+    && !gateSequence.some((stage) => stage.enabled)
+  ) {
     return null;
   }
   const policy = raw ? JSON.parse(raw) : {};
   if (!policy || Array.isArray(policy) || typeof policy !== "object") {
     throw new Error("Release policy must be a JSON object.");
   }
+  policy.schema_version = 2;
+  policy.gate_sequence = gateSequence;
   if (form?.elements?.human_review_enabled) {
     delete policy.human_review_requirement;
     if (form.elements.human_review_enabled.checked) {
@@ -23358,7 +23476,76 @@ function releasePolicyWithoutHumanJson(policy) {
   }
   const bounded = { ...policy };
   delete bounded.human_review_requirement;
+  delete bounded.gate_sequence;
+  delete bounded.schema_version;
   return JSON.stringify(bounded, null, 2);
+}
+
+const RELEASE_GATE_LABELS = {
+  agent_review: "Agent review",
+  verification: "Automated verification",
+  human_review: "Human review",
+};
+
+function normalizedReleaseGateSequence(policy = null) {
+  const configured = Array.isArray(policy?.gate_sequence) ? policy.gate_sequence : null;
+  if (configured?.length) {
+    return configured.map((stage) => ({ kind: text(stage.kind), enabled: Boolean(stage.enabled) }));
+  }
+  if (policy) {
+    return [
+      { kind: "verification", enabled: Boolean(policy.verification_commands?.length) },
+      { kind: "agent_review", enabled: Boolean(policy.review_requirements?.length) },
+      { kind: "human_review", enabled: Boolean(policy.human_review_requirement) },
+    ];
+  }
+  return [
+    { kind: "agent_review", enabled: false },
+    { kind: "verification", enabled: false },
+    { kind: "human_review", enabled: false },
+  ];
+}
+
+function renderReleaseGateSequenceEditor(policy = null) {
+  const sequence = normalizedReleaseGateSequence(policy);
+  const rows = sequence.map((stage, index) => `
+    <div class="human-review-checklist-editor-row" data-release-gate-row data-release-gate-kind="${escapeAttr(stage.kind)}">
+      ${checkboxField(RELEASE_GATE_LABELS[stage.kind] || stage.kind, `release_gate_enabled_${stage.kind}`, stage.enabled)}
+      <div class="record-actions">
+        <button type="button" data-release-gate-move="up" aria-label="Move ${escapeAttr(RELEASE_GATE_LABELS[stage.kind] || stage.kind)} earlier"${index === 0 ? " disabled" : ""}>Up</button>
+        <button type="button" data-release-gate-move="down" aria-label="Move ${escapeAttr(RELEASE_GATE_LABELS[stage.kind] || stage.kind)} later"${index === sequence.length - 1 ? " disabled" : ""}>Down</button>
+      </div>
+    </div>
+  `).join("");
+  return `
+    <fieldset data-release-gate-sequence>
+      <legend>Gate order</legend>
+      <div data-release-gate-rows>${rows}</div>
+      <p class="field-help">Enabled gates run from top to bottom. Disabled gates keep their settings. If all gates are disabled, the release publishes without gates.</p>
+    </fieldset>
+  `;
+}
+
+function releaseGateSequenceFromForm(form) {
+  const rows = Array.from(form?.querySelectorAll?.("[data-release-gate-row]") || []);
+  if (!rows.length) {
+    return normalizedReleaseGateSequence();
+  }
+  return rows.map((row) => {
+    const kind = text(row.dataset.releaseGateKind);
+    const control = row.querySelector(`[name="release_gate_enabled_${kind}"]`);
+    return { kind, enabled: Boolean(control?.checked) };
+  });
+}
+
+function refreshReleaseGateSequenceEditor(editor) {
+  const rows = Array.from(editor?.querySelectorAll?.("[data-release-gate-row]") || []);
+  rows.forEach((row, index) => {
+    const up = row.querySelector('[data-release-gate-move="up"]');
+    const down = row.querySelector('[data-release-gate-move="down"]');
+    if (up) up.disabled = index === 0;
+    if (down) down.disabled = index === rows.length - 1;
+  });
 }
 
 function renderHumanReviewPolicyEditor(requirement = null) {
@@ -24052,9 +24239,11 @@ function renderEditFields(type, record) {
       ${textField("Agent commit committer name", "agent_committer_name", record.git?.agent_committer_identity?.name || "", { placeholder: "Evander Bot" })}
       ${textField("Agent commit committer email", "agent_committer_email", record.git?.agent_committer_identity?.email || "", { placeholder: "evander@quinth.se" })}
       <p class="subheading">Release gates</p>
+      ${checkboxField("Configure release policy", "release_policy_enabled", Boolean(record.release_policy))}
+      ${renderReleaseGateSequenceEditor(record.release_policy)}
       ${textareaField("Automated and agent-review policy JSON", "release_policy_json", releasePolicyWithoutHumanJson(record.release_policy), {
         rows: 12,
-        placeholder: '{"verification_commands": [...], "review_requirements": [...], "allow_ungated": false}',
+        placeholder: '{"verification_commands": [...], "review_requirements": [...]}',
       })}
       <p class="field-help">Human review fields are intentionally excluded from the JSON editor and configured only through the bounded controls below.</p>
       ${renderHumanReviewPolicyEditor(record.release_policy?.human_review_requirement)}
