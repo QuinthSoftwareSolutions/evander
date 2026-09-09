@@ -89,6 +89,31 @@ def test_pat_scope_does_not_escape_directory(tmp_path, monkeypatch):
     assert _resolve(service, _context(service))[1] is None
 
 
+def test_publication_work_items_are_deduplicated_immutable_and_persisted(tmp_path):
+    service = AdoUserConnectionService(tmp_path)
+    context = _context(service, work_item_ids=["456", "123", "123"])
+    assert _context(service, work_item_ids=["123", "456"]) == context
+    metadata, _ = _resolve(AdoUserConnectionService(tmp_path), context)
+    assert metadata["work_item_ids"] == ["123", "456"]
+    for ids in (["123"], [], ["789"]):
+        with pytest.raises(AdoConnectionError, match="immutable"):
+            _context(service, work_item_ids=ids)
+    for ids in (["../123"], ["0"], ["-1"]):
+        with pytest.raises(AdoConnectionError, match="numeric"):
+            _context(service, source_ref="invalid", work_item_ids=ids)
+
+
+def test_legacy_publications_keep_empty_links_without_rewriting_attribution(tmp_path):
+    service = AdoUserConnectionService(tmp_path)
+    context = _context(service)
+    with sqlite3.connect(service.root / "connections.db") as db:
+        db.execute("DROP TABLE publication_work_items")
+    assert _context(service, work_item_ids=["123"]) == context
+    assert _resolve(service, context)[0]["work_item_ids"] == []
+    fresh = _context(service, source_ref="next-release", work_item_ids=["123"])
+    assert _resolve(service, fresh)[0]["work_item_ids"] == ["123"]
+
+
 def test_pat_validation_uses_authenticated_identity_and_sanitizes_failures(monkeypatch):
     calls = []
 

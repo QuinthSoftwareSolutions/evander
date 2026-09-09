@@ -348,6 +348,13 @@ Set `publication_policy: require_personal` to require the captured assignee's pe
 and reject missing attribution or an existing PR with another creator before pushing. It also
 prevents bot fallback during uncertain-creation reconciliation. Publication reports the
 intended and actual creator and any fallback reason; existing PR creators remain unchanged.
+New Team publication contexts also capture originating work-item IDs from the release's
+deliverables and nested contributions in the repository's ADO organization. PR creation and
+reuse add native Pull Request links to those items using the selected connection. Retries
+preserve existing links. Results include `work_item_ids`, `linked_work_item_ids`, and
+`work_item_linked`; a failed association returns `work_item_link_warning` while retaining
+the created PR. Older contexts without captured IDs require an explicit `work_item_id` to
+link an item; no IDs are inferred from task descriptions or branch names.
 See [Personal Azure DevOps PR connections](operations.md#personal-azure-devops-pr-connections)
 for storage, rotation, and reconciliation behavior.
 
