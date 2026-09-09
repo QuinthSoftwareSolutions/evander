@@ -9,6 +9,7 @@ import pytest
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
 from evander.daemons.effect_orchestrator import SqliteExecutionStore
 from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+from evander.effects.providers.base import EffectRuntimeContext
 from evander.execution import ExecutionStatusKind
 from evander.models import SessionManifest
 from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
@@ -17,8 +18,10 @@ from evander_team_addon.models import AgentContextClearingPolicy
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.providers import (
     TeamAgentPromptCompletionFinalizeHook,
+    TeamFinalizeAgentDispatchEffectProvider,
     _activate_delivered_team_prompt,
 )
+from evander_team_addon.provider_schemas import TeamFinalizeAgentDispatchEffectDefinition
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.runtime_service import (
     AgentDispatchNativeThreadReceipt,
@@ -633,6 +636,145 @@ def test_completion_stays_open_until_its_deferred_native_receipt_is_saved(native
     state = env.repo.read()
     assert state.dispatches[lease["dispatch_id"]].native_thread_id == NATIVE_A
     assert state.agent_runtimes["backend"].active_dispatch_id is None
+
+
+def test_workflow_finalizer_preserves_lineage_when_33rd_active_receipt_is_deferred(
+    native_env, monkeypatch
+):
+    env = native_env
+    lease = _lease(env)
+    record, job = _submit(env, lease)
+    observed_at = datetime.now(UTC) - timedelta(days=1)
+    waiting = []
+
+    def seed_active_backlog(state):
+        template_agent = state.agents["backend"]
+        template_runtime = state.agent_runtimes["backend"]
+        template_dispatch = state.dispatches[lease["dispatch_id"]]
+        for index in range(TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE):
+            agent_id = f"backlog-{index}"
+            session_id = f"session-{agent_id}"
+            dispatch_id = f"team-dispatch-{agent_id}"
+            state.agents[agent_id] = template_agent.model_copy(
+                update={"id": agent_id, "session_id": session_id}
+            )
+            state.agent_runtimes[agent_id] = template_runtime.model_copy(
+                update={
+                    "agent_id": agent_id,
+                    "active_dispatch_id": dispatch_id,
+                    "work_lineage_thread_ids": {
+                        template_dispatch.work_lineage_id: f"prior-{agent_id}"
+                    },
+                    "work_lineage_thread_dispatch_ids": {
+                        template_dispatch.work_lineage_id: dispatch_id
+                    },
+                }
+            )
+            state.dispatches[dispatch_id] = template_dispatch.model_copy(
+                update={
+                    "id": dispatch_id, "agent_id": agent_id, "session_id": session_id,
+                    "task_ids": [],
+                    "session_metadata_mirrored_at": observed_at,
+                }
+            )
+            receipt = AgentDispatchNativeThreadReceipt(
+                session_id, dispatch_id, f"native-{agent_id}", observed_at
+            )
+            pending = _receipt_record(receipt)
+            pending.status = "waiting"
+            waiting.append(pending)
+        return state
+
+    env.repo.update(seed_active_backlog)
+    job.logs = f"session id: {NATIVE_A}\ndone\n"
+    job.status = ExecutionStatusKind.STOPPED
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=env.worker) == 1
+    monkeypatch.setattr(
+        "evander_team_addon.providers._waiting_agent_prompt_records", lambda worker: waiting
+    )
+    assert env.hook.on_post_completion_dispatch(worker=env.worker) == 0
+    state = env.repo.read()
+    assert sum(d.native_thread_id is not None for d in state.dispatches.values()) == 32
+    assert state.dispatches[lease["dispatch_id"]].native_thread_id is None
+    assert state.agent_runtimes["backend"].active_dispatch_id == lease["dispatch_id"]
+
+    provider = TeamFinalizeAgentDispatchEffectProvider()
+    provider.initialize(
+        TeamFinalizeAgentDispatchEffectDefinition(
+            id="finalize", display_name="Finalize", type="effect:team:finalize-agent-dispatch",
+            session_id="session-backend", dispatch_id=lease["dispatch_id"],
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(env.admin.config.runtime_dir)}),
+    )
+    result = provider.execute()
+    assert result["success"] and result["finalized"]
+    # The independent workflow must capture the receipt before releasing the
+    # lease, not depend on another maintenance pass or process-local deferral.
+    next_lease = _lease(env)
+    assert work_lineage_resume_thread_id(next_lease) == NATIVE_A
+    assert env.repo.read().dispatches[lease["dispatch_id"]].native_thread_id == NATIVE_A
+
+
+def test_workflow_finalizer_invalidates_missing_thread_before_next_wake(native_env):
+    env = native_env
+    _, job = _submit(env, _lease(env))
+    job.logs = f"session id: {NATIVE_A}\nwork recorded\n"
+    _complete(env, job)
+    lease = _lease(env)
+    _, job = _submit(env, lease)
+    job.logs = f"No rollout found for session ID {NATIVE_A}\n"
+    job.status = ExecutionStatusKind.FAILED
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=env.worker) == 1
+    provider = TeamFinalizeAgentDispatchEffectProvider()
+    provider.initialize(
+        TeamFinalizeAgentDispatchEffectDefinition(
+            id="finalize", display_name="Finalize", type="effect:team:finalize-agent-dispatch",
+            session_id="session-backend", dispatch_id=lease["dispatch_id"],
+            expected_revision=env.repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(env.admin.config.runtime_dir)}),
+    )
+    result = provider.execute()
+    assert result["success"] and result["finalized"]
+    assert work_lineage_resume_thread_id(_lease(env)) is None
+
+
+@pytest.mark.parametrize("mismatch", ["session", "dispatch"])
+def test_finalizer_rejects_receipt_for_another_dispatch_or_session(native_env, mismatch):
+    env = native_env
+    lease = _lease(env)
+    _submit(env, lease)
+    receipt = AgentDispatchNativeThreadReceipt(
+        session_id="other" if mismatch == "session" else "session-backend",
+        dispatch_id="other" if mismatch == "dispatch" else lease["dispatch_id"],
+        thread_id=NATIVE_A, observed_at=datetime.now(UTC),
+    )
+    state, result = env.runtime.finalize_agent_dispatch_from_activity(
+        session_id="session-backend", dispatch_id=lease["dispatch_id"], native_thread_receipt=receipt
+    )
+    assert not result["finalized"]
+    assert result["errors"][0]["code"] == "native_thread_receipt_mismatch"
+    assert state.agent_runtimes["backend"].active_dispatch_id == lease["dispatch_id"]
+
+
+def test_finalizer_cannot_overwrite_a_newer_native_observation(native_env):
+    env = native_env
+    lease = _lease(env)
+    _submit(env, lease)
+    now = datetime.now(UTC)
+    env.runtime.record_agent_dispatch_native_thread(
+        session_id="session-backend", dispatch_id=lease["dispatch_id"],
+        thread_id=NATIVE_B, observed_at=now,
+    )
+    state, result = env.runtime.finalize_agent_dispatch_from_activity(
+        session_id="session-backend", dispatch_id=lease["dispatch_id"],
+        native_thread_receipt=AgentDispatchNativeThreadReceipt(
+            "session-backend", lease["dispatch_id"], NATIVE_A, now - timedelta(seconds=1)
+        ),
+    )
+    assert result["finalized"]
+    assert state.dispatches[lease["dispatch_id"]].native_thread_id == NATIVE_B
+    assert work_lineage_resume_thread_id(_lease(env)) == NATIVE_B
 
 
 @pytest.mark.parametrize("legacy_owner", [False, True])

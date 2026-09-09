@@ -9,6 +9,7 @@ import shlex
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from evander.addons import addon_storage_path
@@ -63,6 +64,7 @@ from evander.git_identity import (
     GitIdentity,
 )
 from evander.models import tool_name_value
+from evander.repositories.orchestration import read_latest_agent_prompt_execution
 from evander.runtime_generation import require_current_runtime_generation
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
@@ -3991,6 +3993,11 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
         dispatch = repo.read().dispatches.get(
             _required_text(payload.get("dispatch_id"), "dispatch_id")
         )
+        receipt_record = read_latest_agent_prompt_execution(
+            repo.runtime_dir / "orchestration.db",
+            session_id=_required_text(payload.get("session_id"), "session_id"),
+            dispatch_id=_required_text(payload.get("dispatch_id"), "dispatch_id"),
+        )
         try:
             state, result = TeamRuntimeService(repo).finalize_agent_dispatch_from_activity(
                 session_id=_required_text(payload.get("session_id"), "session_id"),
@@ -4004,6 +4011,7 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
                     self.runtime_context,
                     dispatch=dispatch,
                 ),
+                native_thread_receipt=_team_native_thread_receipt(receipt_record),
             )
         except TeamStateConflictError as exc:
             return {
@@ -5626,58 +5634,9 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         # a completion workflow may already have finalized the Team dispatch.
         native_receipts: list[AgentDispatchNativeThreadReceipt] = []
         for record in delivered_records:
-            outputs = _record_outputs(record)
-            dispatch_id = _optional_text(outputs.get("dispatch_id"))
-            dispatch = state.dispatches.get(dispatch_id or "")
-            session_id = _completed_prompt_session_id(record)
-            if dispatch is None or session_id != dispatch.session_id:
-                continue
-            observed_at = _team_payload_datetime(outputs.get("native_thread_observed_at")) or getattr(
-                record, "finished_at", None
-            )
-            requested_thread_id = _optional_text(
-                outputs.get("resume_thread_id")
-                if "resume_thread_id" in outputs
-                else AgentPromptEffectProvider._record_text_value(record, "resume_thread_id")
-            )
-            native_thread_observed = (
-                usable_agent_thread_id(outputs.get("native_thread_id")) is not None
-                and outputs.get("native_thread_execution_id") == outputs.get("execution_id")
-            )
-            if not native_thread_observed and _resume_failure_reports_missing_thread(
-                outputs, resume_thread_id=requested_thread_id
-            ):
-                native_receipts.append(
-                    AgentDispatchNativeThreadReceipt(
-                        session_id=session_id,
-                        dispatch_id=dispatch.id,
-                        thread_id=requested_thread_id,
-                        observed_at=observed_at,
-                        missing_thread=True,
-                    )
-                )
-                continue
-            thread_id = usable_agent_thread_id(
-                outputs.get("native_thread_id", outputs.get("thread_id")),
-                dispatch_id,
-                outputs.get("execution_id"),
-                getattr(record, "execution_id", None),
-            )
-            if thread_id is None:
-                continue
-            if outputs.get("native_thread_execution_id") not in {
-                None,
-                outputs.get("execution_id"),
-            }:
-                continue
-            native_receipts.append(
-                AgentDispatchNativeThreadReceipt(
-                    session_id=session_id,
-                    dispatch_id=dispatch.id,
-                    thread_id=thread_id,
-                    observed_at=observed_at,
-                )
-            )
+            receipt = _team_native_thread_receipt(record)
+            if receipt is not None:
+                native_receipts.append(receipt)
         state, deferred_native_dispatches = TeamRuntimeService(repo).reconcile_agent_dispatch_native_threads(
             state=state, receipts=native_receipts
         )
@@ -14737,6 +14696,50 @@ def _team_dispatch_execution_is_live(
             in {_optional_text(candidate) for candidate in getattr(summary, "session_ids", ())}
         )
         for summary in summaries
+    )
+
+
+def _team_native_thread_receipt(record: Any) -> AgentDispatchNativeThreadReceipt | None:
+    """Use the same receipt validation for batch and workflow finalization."""
+    if isinstance(record, Mapping):
+        record = SimpleNamespace(**record)
+    if record is None or _record_is_queued_prompt_marker(record):
+        return None
+    outputs = _record_outputs(record)
+    dispatch_id = _optional_text(outputs.get("dispatch_id"))
+    session_id = _completed_prompt_session_id(record)
+    if dispatch_id is None or session_id is None:
+        return None
+    observed_at = _team_payload_datetime(outputs.get("native_thread_observed_at")) or (
+        _team_payload_datetime(getattr(record, "finished_at", None))
+    )
+    requested_thread_id = _optional_text(
+        outputs.get("resume_thread_id")
+        if "resume_thread_id" in outputs
+        else AgentPromptEffectProvider._record_text_value(record, "resume_thread_id")
+    )
+    native_thread_observed = (
+        usable_agent_thread_id(outputs.get("native_thread_id")) is not None
+        and outputs.get("native_thread_execution_id") == outputs.get("execution_id")
+    )
+    if not native_thread_observed and _resume_failure_reports_missing_thread(
+        outputs, resume_thread_id=requested_thread_id
+    ):
+        return AgentDispatchNativeThreadReceipt(
+            session_id=session_id, dispatch_id=dispatch_id, thread_id=requested_thread_id,
+            observed_at=observed_at, missing_thread=True,
+        )
+    thread_id = usable_agent_thread_id(
+        outputs.get("native_thread_id", outputs.get("thread_id")),
+        dispatch_id, outputs.get("execution_id"), getattr(record, "execution_id", None),
+    )
+    if thread_id is None or outputs.get("native_thread_execution_id") not in {
+        None, outputs.get("execution_id"),
+    }:
+        return None
+    return AgentDispatchNativeThreadReceipt(
+        session_id=session_id, dispatch_id=dispatch_id, thread_id=thread_id,
+        observed_at=observed_at,
     )
 
 

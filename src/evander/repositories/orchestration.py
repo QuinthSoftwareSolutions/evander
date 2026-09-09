@@ -25,6 +25,41 @@ TRecord = TypeVar("TRecord", bound=BaseModel)
 R = TypeVar("R")
 
 
+def read_latest_agent_prompt_execution(
+    path: Path, *, session_id: str, dispatch_id: str
+) -> dict[str, Any] | None:
+    """Read one dispatch's durable receipt without materializing execution history.
+
+    Completion can be delivered while the prompt row is still waiting, so include
+    nonterminal receipts too. Queued retry markers are never execution evidence.
+    Do not create a database for legacy synchronous dispatches without one.
+    """
+    if not path.is_file():
+        return None
+    with connect_orchestration_db(path) as connection:
+        row = connection.execute(
+            """
+            SELECT payload_json FROM effect_executions
+            WHERE effect_type = 'effect:agent:enqueue-prompt'
+              AND status IN ('running', 'waiting', 'completion_pending', 'succeeded', 'failed')
+              AND json_extract(payload_json, '$.outputs.dispatch_id') = ?
+              AND COALESCE(
+                  NULLIF(json_extract(payload_json, '$.outputs.session_id'), ''),
+                  NULLIF(json_extract(payload_json, '$.outputs.scope.session_id'), ''),
+                  json_extract(payload_json, '$.resolved_config.session_id')
+              ) = ?
+              AND COALESCE(json_extract(payload_json, '$.outputs.queued'), 0) != 1
+            ORDER BY COALESCE(
+                json_extract(payload_json, '$.outputs.native_thread_observed_at'),
+                finished_at, started_at
+            ) DESC, execution_id DESC
+            LIMIT 1
+            """,
+            (dispatch_id, session_id),
+        ).fetchone()
+    return json_loads_object(row["payload_json"]) if row is not None else None
+
+
 class EffectExecutionRepository(Protocol):
     def get_execution(self, execution_id: str) -> Any | None: ...
 

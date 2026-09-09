@@ -2405,24 +2405,39 @@ class TeamRuntimeService:
                 if not is_due(current, receipt):
                     continue
                 dispatch = current.dispatches[receipt.dispatch_id]
-                if receipt.missing_thread:
-                    runtime = current.agent_runtimes[dispatch.agent_id]
-                    runtime.work_lineage_thread_ids.pop(dispatch.work_lineage_id, None)
-                    runtime.work_lineage_thread_dispatch_ids.pop(dispatch.work_lineage_id, None)
-                    if runtime.last_thread_id == receipt.thread_id:
-                        runtime.last_thread_id = None
-                    runtime.updated_at = effective_now
-                else:
-                    self._record_dispatch_native_thread_in_state(
-                        current,
-                        dispatch=dispatch,
-                        thread_id=receipt.thread_id,
-                        now=effective_now,
-                        observed_at=receipt.observed_at,
-                    )
+                self._apply_dispatch_native_thread_receipt(
+                    current, dispatch=dispatch, receipt=receipt, now=effective_now
+                )
             return current
 
         return self._repository.update(mutate), deferred
+
+    @staticmethod
+    def _apply_dispatch_native_thread_receipt(
+        state: TeamState, *, dispatch: TeamDispatch,
+        receipt: AgentDispatchNativeThreadReceipt, now: datetime,
+    ) -> None:
+        """Save the target receipt before its lease/lineage owner can be released."""
+        if receipt.missing_thread:
+            runtime = state.agent_runtimes.get(dispatch.agent_id)
+            lineage = dispatch.work_lineage_id
+            if runtime is None or lineage is None:
+                return
+            owner = runtime.work_lineage_thread_dispatch_ids.get(lineage)
+            if runtime.work_lineage_thread_ids.get(lineage) != receipt.thread_id or not (
+                owner == dispatch.id or (owner is None and runtime.active_dispatch_id == dispatch.id)
+            ):
+                return
+            runtime.work_lineage_thread_ids.pop(lineage, None)
+            runtime.work_lineage_thread_dispatch_ids.pop(lineage, None)
+            if runtime.last_thread_id == receipt.thread_id:
+                runtime.last_thread_id = None
+            runtime.updated_at = now
+        else:
+            TeamRuntimeService._record_dispatch_native_thread_in_state(
+                state, dispatch=dispatch, thread_id=receipt.thread_id, now=now,
+                observed_at=_ensure_utc(receipt.observed_at) if receipt.observed_at else None,
+            )
 
     def mark_agent_dispatch_session_metadata_mirrored(
         self,
@@ -3254,6 +3269,7 @@ class TeamRuntimeService:
         agent_id: str | None = None,
         expected_revision: int | None = None,
         mcp_capability_observation: Mapping[str, Any] | None = None,
+        native_thread_receipt: AgentDispatchNativeThreadReceipt | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
@@ -3336,6 +3352,22 @@ class TeamRuntimeService:
                         f"{durable_dispatch.status.value}, not leased"
                     ),
                     resolved_agent_id=agent.id,
+                )
+
+            if native_thread_receipt is not None:
+                if (
+                    native_thread_receipt.session_id != normalized_session_id
+                    or native_thread_receipt.dispatch_id != normalized_dispatch_id
+                    or durable_dispatch is None
+                    or durable_dispatch.session_id != normalized_session_id
+                ):
+                    return _failure(
+                        state, code="native_thread_receipt_mismatch",
+                        message="Native thread receipt does not belong to the finalizing dispatch",
+                        resolved_agent_id=agent.id,
+                    )
+                self._apply_dispatch_native_thread_receipt(
+                    state, dispatch=durable_dispatch, receipt=native_thread_receipt, now=utc_now()
                 )
 
             all_activities = tx.list_dispatch_activity(dispatch_id=normalized_dispatch_id)

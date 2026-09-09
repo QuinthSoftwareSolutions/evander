@@ -8,6 +8,9 @@
 - Skip unrecordable and already handled history before opening a transaction;
   retain timestamp and ownership checks under the write lock. Resume backfills
   from durable receipts after restart and defer completion until its receipt is saved.
+- Capture the finalizing dispatch's durable receipt in the same transaction as
+  lease release, including independent completion workflows and missing-thread
+  failures, so batch boundaries cannot lose same-lineage resume context.
 
 ## 2026-09-09 - Configurable Team release gates (0.33.0)
 
