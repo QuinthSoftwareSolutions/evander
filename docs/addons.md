@@ -2437,16 +2437,23 @@ and changed paths), and release consolidation rejects commits or paths outside
 the union of those manifests. Scope mismatches are hard blockers and cannot be
 waived.
 
-For Git releases, configure `Project.release_policy`. It selects the
-`container_worker_vm` verification backend, optional container image, ordered
-verification commands (`name`, `cwd`, `argv`, and timeout), and release review
-requirements (`reviewer_agent_id` plus `review_profile_id`). The consolidated
-release commit is pinned as the candidate, verification runs against that exact
-commit, and configured reviewers decide that same candidate. Canonical push is
-created only after verification, all release reviews, and scope validation pass.
-The candidate also receives a frozen typed manifest containing its deliverable
-verification, waiver audit records, accepted immutable reviews, reviewed change
-manifests, scope result, verification commands, and review requirements.
+For Git releases, configure `Project.release_policy`. Its `gate_sequence` lists
+automated verification, agent review, and human review exactly once each, with
+an `enabled` flag, in the order Team should run them. Each stage may be disabled;
+an explicit policy with every stage disabled is valid. Stage settings remain
+stored while their stage is disabled. New policies default to agent review,
+automated verification, then human review; policies saved before
+`gate_sequence` retain their historical verification, agent-review, then
+human-review order. The policy also selects the `container_worker_vm`
+verification backend, optional container image, ordered verification commands
+(`name`, `cwd`, `argv`, and timeout), and release review requirements
+(`reviewer_agent_id` plus `review_profile_id`). The consolidated release commit
+is pinned as the candidate, and each enabled gate decides that exact candidate.
+Canonical push is created only after scope validation and every enabled gate
+passes. The candidate also receives a frozen typed manifest containing its
+deliverable verification, waiver audit records, accepted immutable reviews,
+reviewed change manifests, scope result, gate sequence, verification commands,
+and review requirements.
 
 For a new release-review stage, Team validates the full frozen reviewer/profile
 set and seals it as one cohort before creating any reviewer handoff. A rejection
@@ -2561,11 +2568,13 @@ The verification history displays the retry comment and requester.
 `team_recover_release` remains limited to failed Git feature/release promotions
 and is not a release-gate retry mechanism.
 
-Set `allow_ungated: true` only for an intentionally ungated project; a missing
-policy blocks a new Git release rather than silently publishing it. Admin Web
-project create/edit forms expose the policy as JSON and release rows show the
-pinned candidate, verification state, release-review state, approved SHA, and a
-retry action only for an eligible typed gate failure.
+Use an explicit policy with every `gate_sequence` entry disabled for an
+intentionally ungated project; a missing policy blocks a new Git release rather
+than silently publishing it. The legacy `allow_ungated` input remains readable
+and upgrades to that explicit sequence. Admin Web project create/edit forms
+expose enable and ordering controls while retaining the detailed stage settings
+in JSON. Release rows show the pinned candidate, each gate state, approved SHA,
+and a retry action only for an eligible typed gate failure.
 
 #### Human Release Review, Corrections, And Feedback
 
@@ -2573,13 +2582,18 @@ retry action only for an eligible typed gate failure.
 IDs, a checklist, test instructions, and `manual` or `workflow` preparation.
 The frozen candidate manifest snapshots the directory, configured groups,
 initially eligible users, checklist, instructions, and preparation mode. The
-single gate sequencer advances candidate/hierarchy validation, verification,
-agent release reviews, target preparation, human review, and final publication
-in order; it creates only the next missing stage. At request creation it
+single gate sequencer advances candidate/hierarchy validation, then each enabled
+gate in the candidate's frozen `gate_sequence`, and finally publication; it
+creates only the next missing stage. At request creation it
 resolves the frozen group/directory requirement against current Admin
 membership, active users, and directory-scoped
 `team.human_reviews.decide` permission rather than trusting the policy-time
 eligibility list.
+
+If a correction successor disables the stage that rejected its predecessor,
+Team blocks publication until a directory owner records a reasoned waiver tied
+to that predecessor, gate, and candidate SHA. The waiver is stored on the
+release package and the sequencer resumes from the same frozen order.
 
 A human request is pinned to candidate SHA and tree. Manual requests become
 `pending`; workflow requests become `preparing` and emit

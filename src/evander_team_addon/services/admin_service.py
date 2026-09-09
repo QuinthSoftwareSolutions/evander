@@ -51,6 +51,7 @@ from ..models import (
     Project,
     ProjectGitConfig,
     ProjectReleasePolicy,
+    ReleaseGateKind,
     ProjectGoal,
     ProjectStatus,
     ReviewCriterionResult,
@@ -195,7 +196,10 @@ from .domain.release_packages import (
     ReleasePackageValidationError,
     _build_release_package,
 )
-from .domain.release_gates import retry_release_gate
+from .domain.release_gates import (
+    authorize_release_gate_obligation_waiver,
+    retry_release_gate,
+)
 from .domain.review import (
     _apply_finding_resolutions,
     _cascade_review_decision,
@@ -6754,6 +6758,66 @@ class TeamAdminService:
             outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
             expected_revision=expected_revision,
         )
+        result["revision"] = state.revision
+        result["release_package"] = release_package_payload_with_derived(
+            state,
+            state.release_packages[normalized_release_id],
+        )
+        return state, result
+
+    def authorize_release_gate_obligation_waiver_with_result(
+        self,
+        *,
+        release_package_id: str,
+        gate_kind: str,
+        candidate_commit_sha: str,
+        reason: str,
+        operator_actor_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_release_id = _required_text(release_package_id, "release_package_id")
+        normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
+        normalized_gate_kind = ReleaseGateKind(gate_kind)
+        result: dict[str, Any] = {
+            "success": False,
+            "release_package_id": normalized_release_id,
+            "events": [],
+            "created_inbox_item_ids": [],
+            "created_review_request_ids": [],
+            "release_verification_run_ids": [],
+            "operator_actor_id": normalized_actor_id,
+        }
+        if self._human_review_eligibility_resolver is not None:
+            result[HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY] = (
+                self._human_review_eligibility_resolver
+            )
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            release = _require_present(
+                state_model.release_packages,
+                normalized_release_id,
+                "release package",
+            )
+            waiver = authorize_release_gate_obligation_waiver(
+                state_model,
+                release=release,
+                gate_kind=normalized_gate_kind,
+                candidate_commit_sha=candidate_commit_sha,
+                reason=reason,
+                authorized_by=normalized_actor_id,
+                result=result,
+            )
+            _recalculate_project_status(state_model, release.project_id)
+            result["success"] = True
+            result["gate_obligation_waiver"] = waiver.model_dump(mode="json")
+            return state_model
+
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
+            expected_revision=expected_revision,
+        )
+        result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
         result["revision"] = state.revision
         result["release_package"] = release_package_payload_with_derived(
             state,

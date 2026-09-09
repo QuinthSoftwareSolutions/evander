@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-09 - Configurable Team release gates (0.33.0)
+
+- Let projects enable or disable automated verification, agent review, and human review
+  independently and arrange the enabled stages in any order. Freeze that order with each
+  release candidate and preserve disabled-stage settings for later reuse.
+- Allow an explicit policy with every stage disabled to publish without gates. Preserve the
+  historical verification, agent-review, human-review order when loading older policies.
+- Require a directory owner to record an audited, candidate-bound waiver when a correction
+  successor omits the gate that rejected its predecessor.
+- Honor the frozen human-gate setting and applicable waivers when recording publication,
+  persist waiver audit records across state updates, and resolve current reviewer eligibility
+  when a waiver advances into human review.
+
 ## 2026-09-09 - Native Team thread resumption (0.32.1)
 
 - Keep asynchronous dispatch and execution identities separate from observed provider

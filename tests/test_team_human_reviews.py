@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,6 +19,7 @@ from evander_team_addon.models import (
     GitPromotionRecord,
     HumanReviewChecklistItem,
     HumanReviewFindingTargetScope,
+    HumanReviewFindingSnapshot,
     HumanReviewRequirement,
     HumanReviewRequirementSnapshot,
     HumanReviewTestTarget,
@@ -28,6 +31,9 @@ from evander_team_addon.models import (
     ProjectReleasePolicy,
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
+    ReleaseGateFailure,
+    ReleaseGateKind,
+    ReleaseGateObligationWaiver,
     ReleasePackage,
     ReleaseReviewRequirement,
     ReleaseVerificationCommand,
@@ -76,7 +82,10 @@ from evander_team_addon.services.domain.release_packages import (
     _reviewed_commit_for_release,
 )
 from evander_team_addon.services.domain.review import _cascade_review_decision
-from evander_team_addon.services.git_release_service import TeamGitReleaseService
+from evander_team_addon.services.git_release_service import (
+    TeamGitReleaseService,
+    _human_review_publication_validation_error,
+)
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 
 
@@ -1557,6 +1566,208 @@ def test_human_gate_uses_current_directory_eligibility_not_stale_snapshot() -> N
     assert empty_request.current_assignment.eligible_user_ids == []
 
 
+@pytest.mark.parametrize("waive_predecessor", [False, True])
+def test_disabled_human_gate_completes_publication_with_retained_settings(
+    tmp_path: Path,
+    waive_predecessor: bool,
+) -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    for stage in release.manifest.gate_sequence:
+        stage.enabled = False
+    if waive_predecessor:
+        predecessor = ReleasePackage(
+            id="predecessor",
+            project_id="project",
+            candidate_commit_sha="c" * 40,
+            state=TeamRecordState.REJECTED,
+            gate_failure=ReleaseGateFailure(
+                stage="human_review",
+                kind="changes_requested",
+                source_id="predecessor-human-review",
+                message="Requested a correction.",
+            ),
+        )
+        state.release_packages[predecessor.id] = predecessor
+        release.supersedes_release_package_id = predecessor.id
+        release.manifest.carried_human_findings = [
+            HumanReviewFindingSnapshot(
+                finding_id="predecessor-finding",
+                text="Requested a correction.",
+                target_scope=HumanReviewFindingTargetScope.RELEASE_CANDIDATE,
+            )
+        ]
+    advance_release_gates(state, release=release, release_promotion=promotion, result={"events": []})
+    repository = TeamStateRepository(tmp_path)
+    repository.update(lambda _current: state)
+    if waive_predecessor:
+        assert release.state == TeamRecordState.BLOCKED
+        TeamAdminService(repository).authorize_release_gate_obligation_waiver_with_result(
+            release_package_id=release.id,
+            gate_kind=ReleaseGateKind.HUMAN_REVIEW.value,
+            candidate_commit_sha=release.candidate_commit_sha,
+            reason="Accept the remaining finding for this candidate.",
+            operator_actor_id="operator:owner",
+        )
+
+    def _record_push_success(current: TeamState) -> TeamState:
+        push = next(
+            row for row in current.git_promotions.values()
+            if row.promotion_kind == "canonical_push"
+        )
+        push.state = "succeeded"
+        push.commit_sha = release.candidate_commit_sha
+        return current
+
+    repository.update(_record_push_success)
+    published, result = TeamGitReleaseService(repository).mark_release_published(
+        release_package_id=release.id,
+        canonical_branch=release.canonical_branch,
+        published_commit_sha=release.candidate_commit_sha,
+    )
+
+    assert result["error"] is None
+    completed = published.release_packages[release.id]
+    assert completed.state == TeamRecordState.ACCEPTED
+    assert completed.published_commit_sha == release.candidate_commit_sha
+    assert completed.published_at is not None
+    assert completed.manifest.human_review_requirement is not None
+    assert not published.human_review_requests
+    if waive_predecessor:
+        assert completed.gate_obligation_waivers[0].source_ids == ["predecessor-human-review"]
+        assert completed.manifest.carried_human_findings[0].finding_id == "predecessor-finding"
+
+
+@pytest.mark.parametrize(
+    "invalid_binding",
+    ["missing", "gate_kind", "predecessor_release_package_id", "candidate_commit_sha", "source_ids"],
+)
+def test_disabled_human_gate_rejects_missing_or_mismatched_waiver(
+    invalid_binding: str,
+) -> None:
+    state, release, _promotion = _human_state(eligible_user_ids=["reviewer"])
+    for stage in release.manifest.gate_sequence:
+        stage.enabled = False
+    release.supersedes_release_package_id = "predecessor"
+    state.release_packages["predecessor"] = ReleasePackage(
+        id="predecessor",
+        project_id="project",
+        state=TeamRecordState.REJECTED,
+        gate_failure=ReleaseGateFailure(
+            stage="human_review",
+            kind="changes_requested",
+            source_id="predecessor-human-review",
+            message="Requested a correction.",
+        ),
+    )
+    waiver = ReleaseGateObligationWaiver(
+        id="waiver",
+        gate_kind=ReleaseGateKind.HUMAN_REVIEW,
+        predecessor_release_package_id="predecessor",
+        candidate_commit_sha=release.candidate_commit_sha,
+        source_ids=["predecessor-human-review"],
+        reason="Accept the remaining finding for this candidate.",
+        authorized_by="operator:owner",
+    )
+    if invalid_binding != "missing":
+        invalid_value = {
+            "gate_kind": ReleaseGateKind.AGENT_REVIEW,
+            "predecessor_release_package_id": "other-predecessor",
+            "candidate_commit_sha": "other-candidate",
+            "source_ids": ["other-human-review"],
+        }[invalid_binding]
+        release.gate_obligation_waivers = [
+            waiver.model_copy(update={invalid_binding: invalid_value})
+        ]
+
+    assert "requires a candidate-bound waiver" in (
+        _human_review_publication_validation_error(
+            state,
+            release=release,
+            candidate_commit_sha=release.candidate_commit_sha,
+        ) or ""
+    )
+
+
+def test_gate_waiver_schema_migrates_existing_release_history(tmp_path: Path) -> None:
+    state, release, _promotion = _human_state(eligible_user_ids=["reviewer"])
+    release.state = TeamRecordState.ACCEPTED
+    release.approved_commit_sha = release.candidate_commit_sha
+    release.published_commit_sha = release.candidate_commit_sha
+    release.published_at = release.created_at
+    repository = TeamStateRepository(tmp_path)
+    before = repository.update(lambda _current: state)
+    with sqlite3.connect(tmp_path / "addons" / "team-addon" / "state.db") as connection:
+        connection.execute(
+            "ALTER TABLE team_release_packages DROP COLUMN gate_obligation_waivers_json"
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '75' WHERE key = 'sqlite_schema_version'"
+        )
+
+    reopened = TeamStateRepository(tmp_path)
+    after = reopened.read()
+    assert after.release_packages[release.id] == before.release_packages[release.id]
+    assert after.release_packages[release.id].gate_obligation_waivers == []
+    assert reopened.read().release_packages[release.id] == after.release_packages[release.id]
+
+
+@pytest.mark.parametrize("current_reviewers", [["current-reviewer"], []])
+def test_gate_waiver_resolves_current_human_review_assignment(
+    tmp_path: Path,
+    current_reviewers: list[str],
+) -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["former-reviewer"])
+    predecessor = ReleasePackage(
+        id="predecessor",
+        project_id="project",
+        candidate_commit_sha="c" * 40,
+        state=TeamRecordState.REJECTED,
+        gate_failure=ReleaseGateFailure(
+            stage="review",
+            kind="rejected",
+            source_id="predecessor-agent-review",
+            message="Requested a correction.",
+        ),
+    )
+    state.release_packages[predecessor.id] = predecessor
+    release.supersedes_release_package_id = predecessor.id
+    advance_release_gates(state, release=release, release_promotion=promotion, result={"events": []})
+    assert release.state == TeamRecordState.BLOCKED
+    assert not state.human_review_requests
+    repository = TeamStateRepository(tmp_path)
+    before = repository.update(lambda _current: state)
+    resolved: list[HumanReviewRequirementSnapshot] = []
+
+    def _resolve(requirement: HumanReviewRequirementSnapshot) -> list[str]:
+        resolved.append(requirement)
+        return current_reviewers
+
+    updated, result = TeamAdminService(
+        repository,
+        human_review_eligibility_resolver=_resolve,
+    ).authorize_release_gate_obligation_waiver_with_result(
+        release_package_id=release.id,
+        gate_kind=ReleaseGateKind.AGENT_REVIEW.value,
+        candidate_commit_sha=release.candidate_commit_sha,
+        reason="Delegate this candidate's remaining review to the human gate.",
+        operator_actor_id="operator:owner",
+        expected_revision=before.revision,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].configured_group_ids == ["release-reviewers"]
+    request = next(iter(updated.human_review_requests.values()))
+    assert request.current_assignment.eligible_user_ids == current_reviewers
+    assert request.state == ("pending" if current_reviewers else "blocked")
+    assert request.requirement_snapshot.initially_eligible_user_ids == ["former-reviewer"]
+    notifications = repository.list_outbox_records(intent_type="team.release.human_review_requested")
+    assert {
+        record.payload["payload"]["recipient_user_id"] for record in notifications
+    } == set(current_reviewers)
+    assert HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY not in result
+    json.dumps(result)
+
+
 def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
     state.tasks["source-task"].authored_by = ProjectGitIdentity(
@@ -2354,6 +2565,12 @@ def test_changes_requested_successor_inherits_review_for_open_findings() -> None
 
 def test_successor_carries_open_findings_from_the_full_release_lineage() -> None:
     state, predecessor, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.projects["project"].release_policy = ProjectReleasePolicy(
+        human_review_requirement=HumanReviewRequirement(
+            reviewer_group_ids=["release-reviewers"],
+            resolved_reviewer_user_ids=["reviewer"],
+        ),
+    )
     state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")
     advance_release_gates(
         state,
