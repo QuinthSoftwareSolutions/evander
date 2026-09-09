@@ -905,7 +905,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     monkeypatch.setattr(
         VmAgentAdminService,
         "container_worker_backend",
-        lambda self, *, directory_path=None: fake_container_backend,
+        lambda self, *, directory_path=None, session_id=None: fake_container_backend,
     )
 
     alice_libvirt = service.resolve_chat_assistant_session(
@@ -2241,3 +2241,62 @@ def test_vm_agent_admin_service_create_vm_rejects_unknown_allowed_contact_id(
             allowed_contact_ids=["missing"],
             directory_path="root/team",
         )
+
+
+@pytest.mark.parametrize("saved_mode", ["metered_api", "chatgpt_subscription"])
+@pytest.mark.parametrize("worker_id", [None, "chosen"])
+def test_agent_policy_uses_saved_worker_auth_default(
+    tmp_path: Path, saved_mode: str, worker_id: str | None
+) -> None:
+    from evander.admin.services.container_worker_assignment_service import (
+        ContainerWorkerAssignmentService,
+    )
+    from evander.provider_config import ProviderConfigResolver
+
+    directory_mode = (
+        "metered_api" if saved_mode == "chatgpt_subscription" else "chatgpt_subscription"
+    )
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        container_worker_base_url="http://default.test:11888",
+        container_worker_codex_auth_mode=directory_mode if worker_id else saved_mode,
+        container_workers={
+            "chosen": {
+                "base_url": "http://chosen.test:11888",
+                "token_env": "CHOSEN_TOKEN",
+                "codex_auth_mode": saved_mode,
+            },
+        },
+    )
+    ContainerWorkerAssignmentService(config).resolve("chosen-session", worker_id=worker_id)
+    session = SessionManifest(
+        session_id="chosen-session",
+        vm_provider="container_worker_vm",
+        allowed_tools=[],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    admin = FakeAdmin(sessions=FakeSessionsStore({session.session_id: session}))
+    admin.config = config
+    admin.runtime.provider_config = ProviderConfigResolver(config)
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    for current in [
+        config,
+        config.model_copy(
+            update={"container_workers": {}, "container_worker_codex_auth_mode": directory_mode}
+        ),
+    ]:
+        admin.runtime.provider_config = ProviderConfigResolver(current)
+        inherited = service.agent_session_policy_payload(session)
+        assert inherited["codex_auth_mode"] is None
+        assert inherited["effective_codex_auth_mode"] == saved_mode
+        explicit = service.agent_session_policy_payload(
+            session.model_copy(update={"codex_auth_mode": CodexAuthMode(directory_mode)})
+        )
+        assert explicit["effective_codex_auth_mode"] == directory_mode
+        assert explicit["codex_auth_mode_source"] == "session_override"
+        routed = service.agent_session_policy_payload(
+            session.model_copy(update={"metadata": {"model_provider_mode": "local_openai"}})
+        )
+        assert routed["effective_codex_auth_mode"] == "metered_api"
+        assert routed["codex_auth_mode_source"] == "provider_route"

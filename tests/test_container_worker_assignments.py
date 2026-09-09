@@ -424,3 +424,128 @@ def test_telemetry_does_not_send_default_credentials_to_an_unresolved_worker(mon
     assert entry.healthz_status == TelemetryStatus.MISSING
     assert entry.telemetry_status == TelemetryStatus.MISSING
     assert "connection settings" in entry.errors[0].message
+
+
+def test_pin_command_includes_execution_only_sessions_and_directory_evidence(tmp_path, monkeypatch):
+    from evander import cli
+    from evander.admin.directory import DirectoryAdminService
+
+    config = config_for(tmp_path).model_copy(update={"enable_directory_scoped_config": True})
+    directories = DirectoryStore(config.directories_store_path)
+    directories.ensure_root()
+    admin = DirectoryAdminService.from_store(directory_store=directories, gateway_config=config)
+    assert admin.create_child(parent="root", name="team").ok
+    assert admin.create_child(parent="root/team", name="child").ok
+    DirectoryConfigStore(directories, runtime_dir=tmp_path).write(
+        "root/team",
+        domain="providers",
+        payload={
+            "container_worker_base_url": "http://team.test:11888",
+            "container_worker_token_env": "TEAM_TOKEN",
+        },
+    )
+    repository = ContainerWorkerExecutionRepository(tmp_path / "container-worker-executions.db")
+    for execution_id, session_id, directory in [
+        ("first", "cli-only", "root/team/child"),
+        ("second", "cli-only", "root/team/child"),
+        ("manifest-job", "manifest", "root/team"),
+        ("outside", "outside", "root"),
+    ]:
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=execution_id,
+                session_id=session_id,
+                worker_job_id=execution_id,
+                worker_url=(
+                    config.container_worker_base_url
+                    if directory == "root"
+                    else "http://team.test:11888"
+                ),
+                target_name=session_id,
+                directory_path=directory,
+            )
+        )
+    add_session(config, "manifest", directory_path="root/team")
+    monkeypatch.setattr(cli, "_load_runtime_config_from_option", lambda _path: config)
+    command = ["execution", "pin-worker-assignments", "--directory-path", "root/team"]
+    runner = CliRunner()
+    preview = runner.invoke(cli.app, command)
+    assert preview.exit_code == 0, preview.output
+    preview_payload = json.loads(preview.output)
+    assert preview_payload["count"] == 2
+    assert not ContainerWorkerAssignmentRepository(tmp_path).path.exists()
+
+    applied = runner.invoke(cli.app, [*command, "--apply"])
+    assert applied.exit_code == 0, applied.output
+    assert json.loads(applied.output) == {**preview_payload, "applied": True}
+    assignments = ContainerWorkerAssignmentRepository(tmp_path)
+    assert {item.session_id for item in assignments.list_assignments()} == {"cli-only", "manifest"}
+    assignment = assignments.get("cli-only")
+    assert assignment.directory_path == "root/team/child"
+    assert assignment.worker_url == "http://team.test:11888"
+    assert assignment.connection["container_worker_token_env"] == "TEAM_TOKEN"
+    assert JsonSessionManifestRepository(config.session_store_path).get_session("cli-only") is None
+
+    # Existing CLI jobs can still construct their backend after a default cutover.
+    monkeypatch.setenv("TEAM_TOKEN", "test-token")
+    monkeypatch.delenv("NEW_WORKER_TOKEN", raising=False)
+    monkeypatch.setattr(
+        cli, "_load_runtime_config_from_option", lambda _path: config_for(tmp_path, "new")
+    )
+    backend = cli._build_execution_backend_for_kind(tmp_path, target="second")
+    assert backend.client.base_url == "http://team.test:11888"
+    assert backend.client.token_env == "TEAM_TOKEN"
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_backfill_rejects_unknown_execution_only_worker_before_any_pins(tmp_path, persist):
+    config = config_for(tmp_path)
+    add_session(config, "a-valid")
+    ContainerWorkerExecutionRepository(tmp_path / "container-worker-executions.db").put(
+        ContainerWorkerExecutionRecord(
+            execution_id="job",
+            session_id="z-cli-only",
+            worker_job_id="job",
+            worker_url="http://unknown.test:11888",
+            target_name="cli-target",
+        )
+    )
+    with pytest.raises(ContainerWorkerAssignmentError, match="original worker configuration"):
+        ContainerWorkerAssignmentService(config).pin_existing_sessions(persist=persist)
+    assert not ContainerWorkerAssignmentRepository(tmp_path).path.exists()
+
+
+def test_admin_default_change_pins_execution_only_jobs(tmp_path):
+    from evander.admin.directory import DirectoryAdminService
+
+    config = config_for(tmp_path).model_copy(update={"enable_directory_scoped_config": True})
+    directories = DirectoryStore(config.directories_store_path)
+    directories.ensure_root()
+    ContainerWorkerExecutionRepository(tmp_path / "container-worker-executions.db").put(
+        ContainerWorkerExecutionRecord(
+            execution_id="job",
+            session_id="cli-only",
+            worker_job_id="job",
+            worker_url=config.container_worker_base_url,
+            target_name="cli-target",
+        )
+    )
+    admin = DirectoryAdminService.from_store(directory_store=directories, gateway_config=config)
+    result = admin.write_domain_config(
+        "root",
+        domain="providers",
+        payload={
+            "container_worker_base_url": "http://new.test:11888",
+            "container_worker_token_env": "NEW_WORKER_TOKEN",
+        },
+    )
+    assert result.ok, result.errors
+    current = ProviderConfigResolver(config, directory_store=directories).resolve_for_directory(
+        "root"
+    )
+    assert current.container_worker_token_env == "NEW_WORKER_TOKEN"
+    assert (
+        ContainerWorkerAssignmentService(current).resolve("cli-only").container_worker_token_env
+        == "OLD_WORKER_TOKEN"
+    )
+    assert JsonSessionManifestRepository(config.session_store_path).read_all() == {}

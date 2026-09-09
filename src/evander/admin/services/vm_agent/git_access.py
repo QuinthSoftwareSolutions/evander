@@ -167,6 +167,7 @@ class VmAgentGitAccessMixin:
         if remove_guest_key:
             if self.is_container_session(session):
                 backend = self.container_worker_backend(
+                    session_id=session.session_id,
                     directory_path=session.directory_path,
                     worker_url=self.container_worker_url_for_target(session=session),
                 )
@@ -308,6 +309,7 @@ class VmAgentGitAccessMixin:
             try:
                 if self.is_container_session(session):
                     backend = self.container_worker_backend(
+                        session_id=session.session_id,
                         directory_path=session.directory_path,
                         worker_url=self.container_worker_url_for_target(session=session),
                     )
@@ -358,6 +360,7 @@ class VmAgentGitAccessMixin:
         git_ssh_alias: str,
     ) -> dict[str, Any]:
         backend = self.container_worker_backend(
+            session_id=session.session_id,
             directory_path=session.directory_path,
             worker_url=self.container_worker_url_for_target(session=session),
         )

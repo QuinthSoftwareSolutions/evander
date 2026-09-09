@@ -111,6 +111,7 @@ class VmAgentSkillInstallMixin:
             raise ValueError(f"Unknown container worker agent target: {agent_id}")
         execution_records = self._container_execution_records_for_session(session.session_id)
         worker_backend = self.container_worker_backend(
+            session_id=session.session_id,
             directory_path=session.directory_path,
             worker_url=self._container_worker_url_for_target(
                 session=session,

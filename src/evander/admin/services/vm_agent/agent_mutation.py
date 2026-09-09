@@ -416,6 +416,7 @@ class VmAgentMutationMixin:
         )
         execution_records = self._container_execution_records_for_session(session_id)
         worker_backend = self.container_worker_backend(
+            session_id=session_id,
             directory_path=(
                 session.directory_path
                 if session is not None
@@ -582,6 +583,7 @@ class VmAgentMutationMixin:
                 self._container_execution_records_for_session(session_id) if session_id else []
             )
             worker_backend = self.container_worker_backend(
+                session_id=session_id,
                 directory_path=(
                     session.directory_path
                     if session is not None

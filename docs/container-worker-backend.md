@@ -242,7 +242,8 @@ evander-cli execution pin-worker-assignments --runtime-dir runtime --apply
 ```
 
 Use `--directory-path root/example` to limit either command to that subtree. The command
-validates all selected sessions before writing assignments. It can recover worker identity
+includes sessions found only in execution records, such as legacy `start-container-job` jobs,
+and validates all selected sessions before writing assignments. It can recover worker identity
 from execution records or older session metadata; agents with neither are pinned to their
 current effective directory worker during this pre-cutover step. It does not contact workers,
 move workspaces, or restart jobs. Deploy this version to every control-plane process before

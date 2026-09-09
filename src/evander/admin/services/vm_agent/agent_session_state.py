@@ -91,6 +91,7 @@ class VmAgentSessionStateMixin:
             reverse=True,
         )[0]
         worker_backend = self.container_worker_backend(
+            session_id=latest_record.session_id,
             directory_path=getattr(latest_record, "directory_path", None),
             worker_url=self._container_worker_url_for_target(
                 record=latest_record,

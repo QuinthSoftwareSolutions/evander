@@ -159,36 +159,60 @@ class ContainerWorkerAssignmentService:
         from evander.provider_config import ProviderConfigResolver
 
         resolver = ProviderConfigResolver(self.config, directory_store=directory_store)
-        sessions = JsonSessionManifestRepository(self.config.session_store_path).read_all().values()
+        sessions = JsonSessionManifestRepository(self.config.session_store_path).read_all()
+        execution_path = self.config.runtime_dir / "container-worker-executions.db"
+        executions = (
+            {
+                summary.session_id: summary.latest_execution
+                for summary in ContainerWorkerExecutionRepository(
+                    execution_path
+                ).list_session_summaries()
+                if summary.latest_execution is not None
+            }
+            if execution_path.exists()
+            else {}
+        )
         prefix = str(directory_path or "").strip().rstrip("/")
         plans = []
-        for session in sorted(sessions, key=lambda entry: entry.session_id):
+        for session_id in sorted(sessions.keys() | executions.keys()):
+            session = sessions.get(session_id)
+            execution = executions.get(session_id)
             if (
-                session.vm_provider != "container_worker_vm"
+                execution is None
+                and session is not None
+                and session.vm_provider != "container_worker_vm"
                 and session.metadata.get("execution_backend") != "container_worker_vm"
             ):
                 continue
+            session_directory = (
+                session.directory_path if session is not None else execution.directory_path
+            )
             if (
                 prefix
-                and session.directory_path != prefix
-                and not session.directory_path.startswith(prefix + "/")
+                and session_directory != prefix
+                and not session_directory.startswith(prefix + "/")
             ):
                 continue
             service = ContainerWorkerAssignmentService(
-                resolver.resolve_for_directory(session.directory_path)
+                resolver.resolve_for_directory(session_directory)
             )
-            resolved = service.resolve(session.session_id, session=session, persist=False)
-            plans.append((session, service, resolved))
+            resolve_kwargs = {
+                "session": session,
+                "directory_path": session_directory,
+                "worker_url": execution.worker_url if execution is not None else None,
+            }
+            resolved = service.resolve(session_id, **resolve_kwargs, persist=False)
+            plans.append((session_id, service, resolve_kwargs, resolved))
         # Validate the entire selection before pinning; an unknown worker blocks
         # a default change rather than allowing a partial, silent reassignment.
         rows = []
-        for session, service, resolved in plans:
+        for session_id, service, resolve_kwargs, resolved in plans:
             if persist:
-                resolved = service.resolve(session.session_id, session=session)
+                resolved = service.resolve(session_id, **resolve_kwargs)
             rows.append(
                 {
-                    "session_id": session.session_id,
-                    "directory_path": session.directory_path,
+                    "session_id": session_id,
+                    "directory_path": resolve_kwargs["directory_path"],
                     "worker_url": str(resolved.container_worker_base_url),
                 }
             )

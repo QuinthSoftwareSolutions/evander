@@ -27,6 +27,20 @@ class VmAgentContainerSessionPolicyMixin:
         except Exception:
             config = self.config
 
+        if self.is_container_session(session):
+            from evander.admin.services.container_worker_assignment_service import (
+                ContainerWorkerAssignmentService,
+            )
+            from evander.execution.worker_assignments import ContainerWorkerAssignmentRepository
+
+            assignment = ContainerWorkerAssignmentRepository(self.config.runtime_dir).get(
+                session.session_id
+            )
+            if assignment is not None:
+                config = ContainerWorkerAssignmentService(config).resolve(
+                    session.session_id, session=session, persist=False
+                )
+
         explicit_mode = session.codex_auth_mode
         effective_mode = effective_codex_auth_mode(session=session, config=config)
         source = "session_override" if explicit_mode is not None else "directory_default"

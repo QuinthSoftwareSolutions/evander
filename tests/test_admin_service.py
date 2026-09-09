@@ -162,7 +162,9 @@ def _assert_cursor_seeded_during_operation(
     assert before <= parsed <= after
 
 
-def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
+def write_config(
+    tmp_path: Path, *, enable_directory_scoped_config: bool = False, **config_overrides: Any
+) -> Path:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     (runtime_dir / "managed-git-repositories.json").write_text(
@@ -181,6 +183,7 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
     return write_runtime_config(
         tmp_path,
         enable_directory_scoped_config=enable_directory_scoped_config,
+        **config_overrides,
     )
 
 
@@ -807,6 +810,7 @@ def test_read_session_artifact_text_routes_container_sessions_to_worker_backend(
         {
             "backend_kwargs": {
                 "directory_path": "root",
+                "session_id": "container-session",
                 "worker_url": "http://worker.test",
             }
         },
@@ -3767,7 +3771,9 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     )
     from evander.execution import ExecutionStatusKind
 
-    service = build_admin_runtime(write_config(tmp_path))
+    service = build_admin_runtime(
+        write_config(tmp_path, container_worker_base_url="http://worker.test")
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -3877,7 +3883,9 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
 def test_resume_agent_routes_container_session_through_container_prompt_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
+    service = build_admin_runtime(
+        write_config(tmp_path, container_worker_base_url="http://worker.test")
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -4463,7 +4471,9 @@ def test_container_waiting_reconciliation_skips_operator_interrupt_in_progress()
 def test_run_admin_agent_action_prompt_agent_returns_queued_when_container_dispatch_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
+    service = build_admin_runtime(
+        write_config(tmp_path, container_worker_base_url="http://worker.test")
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -4520,7 +4530,9 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_container_dispa
 def test_run_admin_agent_action_prompt_agent_queues_busy_container_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
+    service = build_admin_runtime(
+        write_config(tmp_path, container_worker_base_url="http://worker.test")
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -18058,3 +18070,143 @@ def _write_proxy_issue_yaml(
     path = tmp_path / f"proxy-issue-{issue_number}-{state.lower()}.yaml"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize(
+    "operation", ["snapshot", "page", "stop", "artifact", "delete", "git", "inspect"]
+)
+def test_admin_operations_use_session_connection_when_worker_settings_differ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    from evander.admin.services.container_worker_assignment_service import (
+        ContainerWorkerAssignmentError,
+        ContainerWorkerAssignmentService,
+    )
+    from evander.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
+    from evander.execution.models import ExecutionStatus, ExecutionStatusKind
+
+    service = build_admin_runtime(write_config(tmp_path))
+    worker_url = "http://nondefault.test:11888"
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.db"
+    )
+    configs = {}
+    for number in (1, 2):
+        session_id = f"session-{number}"
+        config = service.config.model_copy(
+            update={
+                "container_worker_base_url": worker_url,
+                "container_worker_token_env": f"SAVED_TOKEN_{number}",
+                "container_worker_default_image": f"runner:v{number}",
+            }
+        )
+        configs[session_id] = config
+        monkeypatch.setenv(config.container_worker_token_env, "test-token")
+        ContainerWorkerAssignmentService(config).resolve(session_id)
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_provider="container_worker_vm",
+                allowed_tools=[],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                metadata={"managed_git_access_grants": {"repo": {"key_name": "test-key"}}},
+            )
+        )
+        repository.put(
+            ContainerWorkerExecutionRecord(
+                execution_id=f"job-{number}",
+                session_id=session_id,
+                worker_job_id=f"job-{number}",
+                worker_url=worker_url,
+                target_name=session_id,
+                last_status="running",
+            )
+        )
+
+    with pytest.raises(ContainerWorkerAssignmentError, match="unambiguous"):
+        ContainerWorkerAssignmentService(service.config).config_for_worker(worker_url)
+
+    calls = []
+
+    def check_backend(backend, session_id):
+        expected = configs[session_id]
+        assert (
+            backend.config.container_worker_default_image == expected.container_worker_default_image
+        )
+        assert backend.client.base_url == worker_url
+        assert backend.client.token_env == expected.container_worker_token_env
+        calls.append(session_id)
+
+    def inspect(backend, target):
+        record = repository.resolve(target)
+        check_backend(backend, record.session_id)
+        return ExecutionStatus(
+            execution_id=record.execution_id,
+            session_id=record.session_id,
+            backend="container_worker_vm",
+            target_name=record.target_name,
+            status=ExecutionStatusKind.STOPPED,
+        )
+
+    def snapshot(backend, target, **kwargs):
+        check_backend(backend, repository.resolve(target).session_id)
+        return "saved worker logs\n"
+
+    def page(backend, target, **kwargs):
+        return {"text": snapshot(backend, target), "returned_lines": 1}
+
+    def artifact(backend, *, session_id, relative_path):
+        check_backend(backend, session_id)
+        return "saved worker artifact\n"
+
+    def delete(backend, session_id):
+        check_backend(backend, session_id)
+        return {"deleted": True}
+
+    def revoke(backend, *, session_id, key_name):
+        check_backend(backend, session_id)
+
+    for name, method in {
+        "inspect": inspect,
+        "stop": inspect,
+        "get_log_snapshot": snapshot,
+        "get_log_page": page,
+        "read_session_artifact_text": artifact,
+        "delete_session": delete,
+        "revoke_git_key": revoke,
+    }.items():
+        monkeypatch.setattr(ContainerWorkerVmExecutionBackend, name, method)
+
+    vm_admin = service.vm_agent_admin
+    monkeypatch.setattr(service.managed_git_admin, "unbind", lambda *args, **kwargs: None)
+    for number in (1, 2):
+        session_id = f"session-{number}"
+        target = f"job-{number}"
+        if operation == "snapshot":
+            assert (
+                vm_admin.get_admin_agent_log_snapshot(target, backend="container_worker_vm")
+                == "saved worker logs\n"
+            )
+        elif operation == "page":
+            assert (
+                vm_admin.get_admin_agent_log_page(target, backend="container_worker_vm")["text"]
+                == "saved worker logs\n"
+            )
+        elif operation == "stop":
+            assert vm_admin.run_admin_agent_action(
+                session_id, "stop", backend="container_worker_vm"
+            )["success"]
+        elif operation == "artifact":
+            assert (
+                vm_admin.read_session_artifact_text(session_id=session_id, path="result.txt")[
+                    "content"
+                ]
+                == "saved worker artifact\n"
+            )
+        elif operation == "delete":
+            assert vm_admin.delete_admin_agent(session_id, backend="container_worker_vm")["success"]
+        elif operation == "git":
+            assert vm_admin.revoke_managed_git_access(session_id, "repo")["revoked"]
+        else:
+            vm_admin.get_agent(session_id, backend="container_worker_vm", reconcile_containers=True)
+    assert set(calls) == set(configs)

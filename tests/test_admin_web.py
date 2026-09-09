@@ -16349,7 +16349,13 @@ def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
     response = client.delete("/api/admin/agents/container-session?backend=container_worker_vm")
 
     assert response.status_code == 200
-    assert backend_kwargs == [{"directory_path": "root", "worker_url": "http://worker.test"}]
+    assert backend_kwargs == [
+        {
+            "directory_path": "root",
+            "worker_url": "http://worker.test",
+            "session_id": "container-session",
+        }
+    ]
     assert fake_backend.deleted_sessions == ["container-session"]
     assert service.runtime.session_repository.get_session("container-session") is None
     assert repository.read_all() == {}
