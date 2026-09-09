@@ -11,6 +11,12 @@
 - Add Admin Web website profile editing, encrypted host credential entry and rotation,
   scoped assistant grants, and sanitized login tests/status. Preserve authentication
   bindings when editing existing HTTP targets and use revision checks for profile changes.
+- Resolve profiles from current saved layers so root deletion revokes cached access;
+  replace inherited profiles completely when editing credential or storage mappings.
+- Enforce one cancellable login deadline across DNS, connection and response streaming,
+  while allowing unrelated website sessions to proceed independently.
+- Preserve HTTP target serialization for unbound targets, and allow worker-default
+  changes to reuse saved assignments after historical job directories are deleted.
 
 ## 2026-09-09 - Durable container worker assignments (0.30.0)
 

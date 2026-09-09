@@ -179,3 +179,88 @@ def test_disabling_profile_needs_no_password_and_retains_existing_encrypted_logi
     disabled_again = save(client, removed["revision"], removed["profiles"][0]["profile"], {})
     assert disabled_again.status_code == 200
     assert disabled_again.json()["profiles"][0]["profile"]["credential_ref"] is None
+
+
+@pytest.mark.parametrize("scope", ["root", "root/child"])
+@pytest.mark.parametrize("removal", ["delete_profile", "remove_catalog"])
+def test_deleting_bootstrapped_root_profile_revokes_warm_and_cold_brokers(tmp_path, monkeypatch, scope, removal):
+    value = profile() | {"credential_source": "environment"}
+    monkeypatch.setenv("username", "fake-user")
+    monkeypatch.setenv("password", "host-only-password")
+    runtime = write_runtime_config(tmp_path, enable_directory_scoped_config=True,
+                                   managed_website_sessions={"training": value})
+    service = build_admin_runtime(runtime)
+    service.operations_admin.create_directory_child("root", "child")
+    # This is the startup snapshot that used to resurrect deleted root profiles.
+    assert "training" in service.runtime.provider_config.config.managed_website_sessions
+    manifest = SessionManifest(session_id="browser", directory_path=scope, allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(days=1), metadata={
+            "mcp_session_auth": session_mcp_auth_metadata("proof"),
+            "http_targets": {"targets": {"app": {"base_url": value["browser_origin"], "managed_website_session": "training"}}},
+        })
+    service.runtime.session_repository.upsert_session(manifest)
+    calls = []
+    def login(request):
+        calls.append(request)
+        return httpx.Response(200, json={"token": "temporary-state"})
+    brokers = [ManagedWebsiteSessionService(service.runtime.provider_config,
+        transport_factory=lambda _: httpx.MockTransport(login)) for _ in range(2)]
+    asyncio.run(brokers[0].acquire("browser", "app", "proof"))
+    with TestClient(create_app(service)) as client:
+        client.post("/api/admin/privileged/unlock")
+        before = client.get("/api/managed-website-sessions").json()
+        if removal == "delete_profile":
+            deleted = client.request("DELETE", "/api/managed-website-sessions/training",
+                                     json={"expected_revision": before["revision"]})
+            assert deleted.status_code == 200, deleted.text
+        else:
+            overlay = service.operations_admin.read_directory_domain_config("root", "providers").data.config
+            overlay.pop("managed_website_sessions")
+            assert service.operations_admin.write_directory_domain_config("root", "providers", overlay).ok
+        assert client.get("/api/managed-website-sessions").json()["profiles"] == []
+        for broker in brokers:
+            with pytest.raises(WebsiteSessionError, match="website_session_not_granted"):
+                asyncio.run(broker.acquire("browser", "app", "proof"))
+    assert len(calls) == 1
+
+
+def test_child_profile_replaces_parent_fields_and_retains_parent_credentials(setup):
+    service, client, _ = setup
+    service.operations_admin.create_directory_child("root", "child")
+    client.post("/api/admin/privileged/unlock")
+    parent_value = profile() | {
+        "local_storage": {"obsolete": {"response_pointer": "/old"}, **profile()["local_storage"]},
+        "session_storage": {"old-session": {"response_pointer": "/old"}},
+        "static_fields": {"parent_only": True},
+    }
+    parent = save(client, client.get("/api/managed-website-sessions").json()["revision"], parent_value).json()
+    inherited = client.get("/api/managed-website-sessions?directory_path=root/child").json()
+    replacement = profile() | {
+        "credential_fields": {"email": "email", "password": "password"},
+        "public_credential_fields": ["email"],
+    }
+    response = save(client, inherited["revision"], replacement,
+                    {"email": "child-user", "password": "child-password"}, scope="root/child")
+    assert response.status_code == 200, response.text
+    effective = service.runtime.provider_config.resolve_for_directory("root/child").managed_website_sessions["training"]
+    requested = type(effective).model_validate(replacement)
+    assert effective.model_dump(exclude={"credential_ref"}) == requested.model_dump(exclude={"credential_ref"})
+    assert response.json()["profiles"][0]["credentials"]["configured_fields"] == ["email", "password"]
+    seen = []
+    def login(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"token": "temporary-state"})
+    service.website_session_admin.broker.transport_factory = lambda _: httpx.MockTransport(login)
+    tested = client.post("/api/managed-website-sessions/training/test?directory_path=root/child",
+                         json={"expected_revision": response.json()["revision"]})
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["profiles"][0]["last_test"]["status"] == "ok"
+    assert seen == [{"email": "child-user", "password": "child-password"}]
+    # Removing the local override must restore the intact parent profile and vault binding.
+    removed = client.request("DELETE", "/api/managed-website-sessions/training?directory_path=root/child",
+                             json={"expected_revision": tested.json()["revision"]})
+    assert removed.status_code == 200, removed.text
+    restored = removed.json()["profiles"][0]
+    assert restored["profile"] == parent["profiles"][0]["profile"]
+    assert restored["credentials"]["configured_fields"] == ["password", "username"]
+    assert not restored["local"]

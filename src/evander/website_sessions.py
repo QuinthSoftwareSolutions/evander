@@ -8,8 +8,9 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 import hashlib
+import inspect
 import ipaddress
 import json
 import logging
@@ -20,11 +21,12 @@ import socket
 import time
 from typing import Any, Literal, TYPE_CHECKING
 from urllib.parse import urlsplit
+from weakref import WeakValueDictionary
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
-from evander.http_transport import _PinnedAddressHTTPTransport
+from evander.http_transport import _PinnedAddressAsyncHTTPTransport
 from evander.session_auth import verify_mcp_session_proof_token
 from evander.website_credentials import WebsiteCredentialStore
 
@@ -128,30 +130,33 @@ def _pointer(value: Any, pointer: str) -> Any:
     return value
 
 
-def _public_transport(url: str) -> httpx.BaseTransport:
+async def _public_transport(url: str) -> httpx.AsyncBaseTransport:
     """Resolve once, reject nonpublic addresses, and pin the approved TLS connection."""
     parsed = urlsplit(url)
     host = parsed.hostname or ""
-    addresses = [ipaddress.ip_address(item[4][0]) for item in
-                 socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)]
+    resolved = await asyncio.get_running_loop().getaddrinfo(
+        host, parsed.port or 443, type=socket.SOCK_STREAM,
+    )
+    addresses = [ipaddress.ip_address(item[4][0]) for item in resolved]
     policy_addresses = [a.ipv4_mapped if isinstance(a, ipaddress.IPv6Address)
                         and a.ipv4_mapped else a for a in addresses]
     if not addresses or any(not a.is_global or a.is_multicast for a in policy_addresses):
         raise WebsiteSessionError("website_destination_blocked")
-    return _PinnedAddressHTTPTransport(allowed_host=host, approved_addresses=addresses)
+    return _PinnedAddressAsyncHTTPTransport(allowed_host=host, approved_addresses=addresses)
 
 
 class ManagedWebsiteSessionService:
     def __init__(
         self, resolver: ProviderConfigResolver, *,
-        transport_factory: Callable[[str], httpx.BaseTransport] = _public_transport,
+        transport_factory: Callable[[str], httpx.AsyncBaseTransport | Awaitable[httpx.AsyncBaseTransport]] = _public_transport,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.resolver = resolver
         self.transport_factory = transport_factory
         self.clock = clock
-        # One host broker serializes bounded logins; duplicate callers share the cache.
-        self._lock = asyncio.Lock()
+        # Duplicate callers share a login without blocking other session/target pairs.
+        # Weak entries disappear when the last caller releases its lock.
+        self._locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
         self._cache: OrderedDict[tuple[str, str], tuple[str, dict[str, Any]]] = OrderedDict()
         self._failures: OrderedDict[str, float] = OrderedDict()
 
@@ -204,9 +209,10 @@ class ManagedWebsiteSessionService:
 
     async def acquire(self, sid: str, alias: str, proof: str | None) -> dict[str, Any]:
         self._grant(sid, alias, proof)
-        async with self._lock:
+        key = (sid, alias)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
             profile, credentials, fingerprint, session_expiry = self._grant(sid, alias, proof)
-            key = (sid, alias)
             cached = self._cache.get(key)
             if cached and cached[0] == fingerprint and cached[1]["expiresAt"] > self.clock() + profile.renew_before_seconds:
                 self._cache.move_to_end(key)
@@ -215,7 +221,7 @@ class ManagedWebsiteSessionService:
             if self._failures.get(fingerprint, 0) > self.clock():
                 raise WebsiteSessionError("website_login_retry_later", 503)
             try:
-                state = await asyncio.to_thread(self._login, profile, credentials)
+                state = await self._login(profile, credentials)
                 # A revocation or credential/config change during login must prevent delivery.
                 if self._grant(sid, alias, proof)[2] != fingerprint:
                     raise WebsiteSessionError("website_session_changed", 409)
@@ -238,23 +244,28 @@ class ManagedWebsiteSessionService:
         while len(cache) > 128:
             cache.popitem(last=False)
 
-    def _login(self, profile: ManagedWebsiteSessionProfile, credentials: dict[str, str]) -> dict[str, Any]:
+    async def _login(self, profile: ManagedWebsiteSessionProfile, credentials: dict[str, str]) -> dict[str, Any]:
         started = self.clock()
         try:
-            with httpx.Client(transport=self.transport_factory(profile.login_url),
-                              timeout=profile.timeout_seconds, follow_redirects=False, trust_env=False) as client:
-                with client.stream("POST", profile.login_url, json={**profile.static_fields, **credentials},
-                                   headers={"accept": "application/json", "accept-encoding": "identity"}) as response:
-                    if not 200 <= response.status_code < 300:
-                        raise WebsiteSessionError("website_login_rejected")
-                    if response.headers.get("content-encoding", "identity").lower() != "identity":
-                        raise WebsiteSessionError("website_login_response_encoding")
-                    body = bytearray()
-                    deadline = time.monotonic() + profile.timeout_seconds
-                    for chunk in response.iter_bytes(chunk_size=16384):
-                        body.extend(chunk)
-                        if len(body) > profile.max_response_bytes or time.monotonic() > deadline:
-                            raise WebsiteSessionError("website_login_response_limit")
+            # This deadline includes DNS, connection/TLS, headers and the entire body.
+            # Async cancellation interrupts a stalled read and closes the connection.
+            async with asyncio.timeout(profile.timeout_seconds):
+                transport = self.transport_factory(profile.login_url)
+                if inspect.isawaitable(transport):
+                    transport = await transport
+                async with httpx.AsyncClient(transport=transport,
+                                  timeout=profile.timeout_seconds, follow_redirects=False, trust_env=False) as client:
+                    async with client.stream("POST", profile.login_url, json={**profile.static_fields, **credentials},
+                                       headers={"accept": "application/json", "accept-encoding": "identity"}) as response:
+                        if not 200 <= response.status_code < 300:
+                            raise WebsiteSessionError("website_login_rejected")
+                        if response.headers.get("content-encoding", "identity").lower() != "identity":
+                            raise WebsiteSessionError("website_login_response_encoding")
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(body) + len(chunk) > profile.max_response_bytes:
+                                raise WebsiteSessionError("website_login_response_limit")
+                            body.extend(chunk)
             data = json.loads(body)
             expiry = started + profile.max_age_seconds
             if profile.jwt_response_pointer is not None:
@@ -315,6 +326,8 @@ class ManagedWebsiteSessionService:
                     "sessionStorage": temporary}
         except WebsiteSessionError:
             raise
+        except TimeoutError:
+            raise WebsiteSessionError("website_login_timeout") from None
         except Exception:
             # Deliberately discard upstream exception chains (URLs, bodies, credentials).
             raise WebsiteSessionError("website_login_failed") from None

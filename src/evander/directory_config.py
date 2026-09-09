@@ -1025,6 +1025,10 @@ class DirectoryConfigResolver:
     ) -> DirectoryConfigResolution:
         details = self._service.show(reference)
         effective = deepcopy(base_config) if base_config is not None else {}
+        if domain == "providers" and "managed_website_sessions" in effective:
+            # Profiles are live grants, not bootstrap defaults. A loaded GatewayConfig
+            # may contain yesterday's root profiles; only current layers may grant them.
+            effective["managed_website_sessions"] = {}
         provenance: dict[str, DirectoryConfigValueSource] = {}
         if base_config is not None:
             self._mark_provenance(
@@ -1064,6 +1068,10 @@ class DirectoryConfigResolver:
                     directory_id=directory.id,
                     directory_path=directory.path,
                 ),
+                replace_paths=frozenset(
+                    ("managed_website_sessions", profile_id)
+                    for profile_id in (overlay.get("managed_website_sessions") or {})
+                ) if domain == "providers" else frozenset(),
             )
 
         validation_errors: list[str] = []
@@ -1110,20 +1118,28 @@ class DirectoryConfigResolver:
         path: tuple[str, ...],
         provenance: dict[str, DirectoryConfigValueSource],
         source: DirectoryConfigValueSource,
+        *,
+        replace_paths: frozenset[tuple[str, ...]] = frozenset(),
     ) -> Any:
         if overlay is None:
             self._mark_provenance(None, path, provenance, source)
             return None
 
-        if isinstance(current, dict) and isinstance(overlay, dict):
+        if isinstance(current, dict) and isinstance(overlay, dict) and path not in replace_paths:
             merged = deepcopy(current)
             for key in sorted(overlay):
                 merged[key] = self._merge_values(
-                    merged.get(key), overlay[key], (*path, key), provenance, source
+                    merged.get(key), overlay[key], (*path, key), provenance, source,
+                    replace_paths=replace_paths,
                 )
             return merged
 
         replacement = deepcopy(overlay)
+        if path in replace_paths:
+            prefix = ".".join(path)
+            for key in list(provenance):
+                if key == prefix or key.startswith(prefix + "."):
+                    del provenance[key]
         self._mark_provenance(replacement, path, provenance, source)
         return replacement
 

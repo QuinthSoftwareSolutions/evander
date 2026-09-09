@@ -30,7 +30,11 @@ removes this directory's override; a parent profile may become effective again.
 Disable a profile locally to prevent its use in that directory instead.
 
 Profiles inherit into child directories, but do not cross into siblings. The editor
-labels inherited profiles; saving one creates a local override. Writes use revision
+labels inherited profiles; saving one replaces that profile in the child, including
+its credential fields and storage mappings. Other parent profiles remain inherited.
+Profiles are resolved from current saved layers on every request. Deleting a root
+profile revokes further authentication, including cached state, without a restart.
+Writes use revision
 checks, preserving concurrent changes. A changed login destination, request fields,
 or public-identifier policy requires reentering credentials so an existing password
 cannot silently be redirected to another login endpoint.
@@ -92,8 +96,11 @@ session's own expiry. Optionally choose either `jwt_response_pointer` to read a 
 only a cache-expiry hint; it does not validate the token's signature. The website
 still enforces authentication. Without an expiry source, configure the age below the
 site's real lifetime. `renew_before_seconds` defaults to 60, and the maximum age must
-exceed twice this margin. Login timeouts default to 20 seconds (maximum 60) and
-responses to 256 KiB (maximum 1 MiB).
+exceed twice this margin. Login timeouts default to 20 seconds (maximum 60), covering
+DNS resolution, connection/TLS, response headers and the complete response body.
+The deadline cancels slow or trickling responses and closes the connection. Duplicate
+requests for the same session/target share a login; other sessions and targets can
+continue independently. Response limits default to 256 KiB (maximum 1 MiB).
 
 The UI's target binding corresponds to this supported session policy/metadata API
 payload, including the login endpoint's origin:

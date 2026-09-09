@@ -243,6 +243,37 @@ def test_admin_rejects_cutover_when_legacy_worker_connection_is_unknown(tmp_path
     )
 
 
+def test_admin_default_change_reuses_retired_cli_assignment_after_directory_deletion(tmp_path):
+    from evander.admin.directory import DirectoryAdminService
+
+    config = config_for(tmp_path).model_copy(update={"enable_directory_scoped_config": True})
+    store = DirectoryStore(config.directories_store_path)
+    store.ensure_root()
+    admin = DirectoryAdminService.from_store(directory_store=store, gateway_config=config)
+    assert admin.create_child(parent="root", name="retired").ok
+    assignment_service = ContainerWorkerAssignmentService(config)
+    assignment_service.resolve("retired-cli-job", directory_path="root/retired")
+    before = assignment_service.repository.get("retired-cli-job")
+    ContainerWorkerExecutionRepository(tmp_path / "container-worker-executions.db").put(
+        ContainerWorkerExecutionRecord(
+            execution_id="retired-job", session_id="retired-cli-job", worker_job_id="retired-job",
+            worker_url=config.container_worker_base_url, target_name="retired-cli-job",
+            directory_path="root/retired", last_status="destroyed", cleanup_status="completed",
+            cleanup_completed_at=datetime.now(UTC),
+        )
+    )
+    assert admin.delete("root/retired").ok
+    result = admin.write_domain_config("root", domain="providers", payload={
+        "container_worker_base_url": "http://new.test:11888",
+        "container_worker_token_env": "NEW_WORKER_TOKEN",
+    })
+    assert result.ok, result.errors
+    assert assignment_service.repository.get("retired-cli-job") == before
+    resolved = ProviderConfigResolver(config).resolve_for_directory("root")
+    assert resolved.container_worker_token_env == "NEW_WORKER_TOKEN"
+    assert ContainerWorkerAssignmentService(resolved).resolve("retired-cli-job").container_worker_token_env == "OLD_WORKER_TOKEN"
+
+
 def test_cli_existing_job_uses_assigned_token_even_when_new_token_is_unset(tmp_path, monkeypatch):
     from evander import cli
 

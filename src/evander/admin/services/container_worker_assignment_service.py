@@ -193,8 +193,10 @@ class ContainerWorkerAssignmentService:
                 and not session_directory.startswith(prefix + "/")
             ):
                 continue
-            service = ContainerWorkerAssignmentService(
-                resolver.resolve_for_directory(session_directory)
+            # Durable connections survive directory deletion. Historical CLI jobs can
+            # retain execution records after their directory has been removed.
+            service = self if self.repository.get(session_id) is not None else (
+                ContainerWorkerAssignmentService(resolver.resolve_for_directory(session_directory))
             )
             resolve_kwargs = {
                 "session": session,

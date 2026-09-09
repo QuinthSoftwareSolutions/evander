@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 import hashlib
 import json
@@ -153,7 +152,7 @@ class WebsiteSessionAdminService:
         expiry = None
         try:
             values = self.broker.credentials(scope, profile_id, profile)
-            state = await asyncio.to_thread(self.broker._login, profile, values)
+            state = await self.broker._login(profile, values)
             expiry = state["expiresAt"]
         except WebsiteSessionError as exc:
             status = exc.code
