@@ -599,6 +599,9 @@ def _attach_promotion_success(
 ) -> None:
     """Attach a succeeded promotion's branch + record id to its linked records."""
 
+    linked_release = state.release_packages.get(promotion.release_package_id or "")
+    if linked_release is not None and linked_release.state == TeamRecordState.CANCELLED:
+        return
     kind = promotion.promotion_kind
     if kind == "correction_aggregate":
         validation_error = _attach_correction_aggregate_manifests(
@@ -1017,6 +1020,8 @@ def _queue_canonical_push_after_release_success(
     release_promotion: GitPromotionRecord,
     result: dict[str, Any],
 ) -> None:
+    if release.state == TeamRecordState.CANCELLED:
+        return
     approved_commit_sha = release.approved_commit_sha
     if approved_commit_sha is None or approved_commit_sha != release.candidate_commit_sha:
         release.state = TeamRecordState.BLOCKED
@@ -1180,6 +1185,9 @@ def _attach_promotion_failure(
 ) -> None:
     """Block linked records and notify the actor's superior or project lead."""
 
+    linked_release = state.release_packages.get(promotion.release_package_id or "")
+    if linked_release is not None and linked_release.state == TeamRecordState.CANCELLED:
+        return
     deliverable = (
         state.deliverables.get(promotion.deliverable_id)
         if promotion.deliverable_id is not None

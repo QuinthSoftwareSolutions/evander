@@ -3263,6 +3263,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             "blocked",
             "approved",
             "changes_requested",
+            "cancelled",
         }
         unknown_states = states - allowed_states
         if unknown_states:
@@ -3815,6 +3816,32 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 ],
             }
         )
+
+    async def cancel_release_package(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        release_id = request.path_params["release_package_id"]
+        current = repository.read()
+        release = current.release_packages.get(release_id)
+        if release is None:
+            return JSONResponse({"error": "release package not found"}, status_code=404)
+        project = current.projects.get(release.project_id)
+        authorization_error = _directory_owner_authorization_error(
+            request,
+            directory_path=project.directory_path if project is not None else "root",
+            action="Release cancellation",
+        )
+        if authorization_error is not None:
+            return authorization_error
+        expected_revision = _expected_revision(payload)
+        if expected_revision is None:
+            return JSONResponse({"error": "expected_revision is required"}, status_code=400)
+        state, result = admin_service.cancel_release_package(
+            release_package_id=release_id,
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
+            reason=_optional(payload, "reason") or "",
+            expected_revision=expected_revision,
+        )
+        return _state_response(request, state, extra={"release_cancellation": result})
 
     async def retry_release_gate(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -4663,6 +4690,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/release-packages/{release_package_id}/retry-gate",
             retry_release_gate,
+            methods=["POST"],
+        ),
+        route(
+            "/release-packages/{release_package_id}/cancel",
+            cancel_release_package,
             methods=["POST"],
         ),
         route(
@@ -5938,6 +5970,7 @@ def _state_history_item_is_current(collection: str, item: Any) -> bool:
         return _record_state_value(item) not in {
             TeamRecordState.ACCEPTED.value,
             TeamRecordState.REJECTED.value,
+            TeamRecordState.CANCELLED.value,
         }
     if collection == "blockers":
         return _record_state_value(item) == "open"

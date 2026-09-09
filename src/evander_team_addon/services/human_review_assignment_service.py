@@ -104,7 +104,7 @@ def reconcile_current_human_review_assignments(
     requests = [
         request
         for request in initial_state.human_review_requests.values()
-        if request.state not in {"approved", "changes_requested"}
+        if request.state not in {"approved", "changes_requested", "cancelled"}
         and (selected_request_ids is None or request.id in selected_request_ids)
     ]
     if not requests:
@@ -151,7 +151,7 @@ def reconcile_current_human_review_assignments(
         )
         for request_id in changed_request_ids:
             request = state.human_review_requests.get(request_id)
-            if request is None or request.state in {"approved", "changes_requested"}:
+            if request is None or request.state in {"approved", "changes_requested", "cancelled"}:
                 continue
             eligible_user_ids = current_human_review_eligible_user_ids(
                 user_store,

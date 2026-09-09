@@ -130,7 +130,7 @@ class TeamReleaseVerificationRunner:
             verification_run_id=verification_run_id,
             candidate_commit_sha=candidate_commit_sha,
         )
-        if run.state in {"passed", "failed", "timed_out"}:
+        if run.state in {"passed", "failed", "timed_out", "cancelled"}:
             return {
                 "success": True,
                 "release_package_id": release_package_id,

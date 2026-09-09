@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-09 - Terminal Team release cancellation (0.34.0)
+
+- Add an audited Cancel release action for directory owners in release details and
+  human review, with an optional reason and revision-checked API.
+- Close outstanding reviews, verification runs, release blockers and exclusive
+  correction work without creating rework or an automatic successor. Preserve
+  candidates, decisions, findings and completed or shared work as history.
+- Ignore late gate and promotion results for cancelled releases. Refuse cancellation
+  once canonical publication has been queued or attempted, or delivery has completed.
+- Persist cancellation audit data with additive Team SQLite migration 77.
+
 ## 2026-09-09 - Bounded Team thread reconciliation (0.33.1)
 
 - Reconcile at most 32 eligible native-thread receipts in one state transaction per

@@ -121,7 +121,7 @@ const gitProviders = [
   ["azure_devops", "Azure DevOps"],
 ];
 const terminalTaskStates = new Set(["finished", "accepted", "rejected", "cancelled"]);
-const terminalRecordStates = new Set(["accepted", "rejected"]);
+const terminalRecordStates = new Set(["accepted", "rejected", "cancelled"]);
 const workspaceAttentionPageSize = 7;
 const defaultPlanningTaskStates = new Set([
   "pending",
@@ -1809,6 +1809,17 @@ function bindForms() {
   });
 
   document.addEventListener("click", (event) => {
+    const cancelButton = event.target?.closest?.("[data-release-cancel]");
+    if (cancelButton) {
+      event.preventDefault();
+      if (!guardTeamMutation("cancel releases")) return;
+      const reason = window.prompt(
+        "Cancel this release permanently? Its reviews and exclusive correction work will stop. No replacement work will be requested. Reason (optional):",
+        "",
+      );
+      if (reason !== null) void cancelRelease(cancelButton, text(reason));
+      return;
+    }
     const button = event.target?.closest?.("[data-release-gate-retry]");
     if (!button) {
       return;
@@ -3052,6 +3063,7 @@ const lockedMutationControlSelectors = [
   ["[data-start-dependency-composition-recovery-id]", "start dependency composition recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
+  ["[data-release-cancel]", "cancel releases"],
   ["[data-release-gate-obligation-waiver]", "waive carried release-gate obligations"],
   ["[data-worktree-cleanup-retry]", "retry worktree cleanup"],
   [
@@ -17100,6 +17112,9 @@ function releaseCandidateDetail(release) {
 }
 
 function releaseProgressStages(release) {
+  if (release.state === "cancelled") {
+    return [{ label: "Release cancelled", state: "not-applicable", detail: release.cancellation?.reason || "This release attempt has ended." }];
+  }
   const manifest = release.manifest || null;
   const modern = Number(release.policy_version || 1) >= 2 || Boolean(manifest);
   const candidateSha = text(release.candidate_commit_sha || manifest?.candidate_commit_sha);
@@ -17296,6 +17311,7 @@ function renderReleaseCardBody(release) {
       ${release.error ? `<div class="task-invalid-warning"><strong>Release needs attention:</strong> ${escapeHtml(release.error)}</div>` : ""}
       ${renderRecordBlockers("release_package", release.id)}
       ${renderReleaseGateAction(release)}
+      ${renderReleaseCancellation(release)}
       ${renderPostReleaseReportControl(release)}
       ${renderReleaseDetailControl(release)}
       ${renderCachedReleaseDetail(release.id)}
@@ -18230,6 +18246,7 @@ function renderHumanReviewRequest(request, carriedFindings, releaseId = "") {
       )}
       ${request.state === "pending" ? renderHumanReviewDecisionForm(request, checklist, carriedFindings) : ""}
       ${renderHumanReviewOwnerActions(request)}
+      ${renderReleaseCancellation(request.release || state.release_packages?.[request.release_package_id] || {})}
       ${renderTechnicalDetails([
         ["Human review request ID", request.id],
         ["Release ID", request.release_package_id],
@@ -18644,7 +18661,7 @@ function renderHumanReviewDecisionForm(request, checklist, carriedFindings) {
 }
 
 function renderHumanReviewOwnerActions(request) {
-  if (["approved", "changes_requested"].includes(text(request.state))) {
+  if (["approved", "changes_requested", "cancelled"].includes(text(request.state))) {
     return "";
   }
   return `
@@ -18952,7 +18969,44 @@ function releaseHasSuccessor(releaseId) {
   );
 }
 
+function renderReleaseCancellation(release) {
+  if (release.state === "cancelled") {
+    const audit = release.cancellation || {};
+    return `<div class="meta-line">Cancelled${audit.actor_id ? ` by ${escapeHtml(audit.actor_id)}` : ""}${audit.reason ? `: ${escapeHtml(audit.reason)}` : ""}. No further release work is scheduled.</div>`;
+  }
+  if (!release.cancellation_available) return "";
+  return `<div class="record-actions"><button class="record-action" type="button"
+    data-release-cancel data-release-id="${escapeAttr(release.id)}"
+    ${lockedAttrs("cancel releases")}>Cancel release</button></div>`;
+}
+
+async function cancelRelease(button, reason) {
+  const releaseId = text(button?.dataset?.releaseId);
+  if (!releaseId) return;
+  button.disabled = true;
+  setStatus("Cancelling release.", "loading");
+  try {
+    const response = await teamFetch(`${API_BASE}/release-packages/${encodeURIComponent(releaseId)}/cancel`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify({ reason, expected_revision: state.revision }),
+    });
+    if (!response.ok) throw new Error(await responseText(response));
+    await applyMutationResultPayload(await response.json());
+    setStatus("Release cancelled. No replacement work was requested.", "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Release cancellation failed.", "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderReleaseGateAction(release) {
+  if (release.state === "cancelled") return "";
   const failure = release.gate_failure || null;
   const gateId = text(failure?.source_id);
   if (release.state === "blocked" && failure?.stage === "gate_obligation") {

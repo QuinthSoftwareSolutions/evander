@@ -1523,17 +1523,17 @@ def _case_sort_key(case: TeamCase) -> tuple[int, str, str]:
 
 
 def _deliverable_sort_key(deliverable: Deliverable) -> tuple[int, str, str]:
-    terminal = deliverable.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+    terminal = deliverable.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
     return (1 if terminal else 0, _json_value(deliverable.created_at) or "", deliverable.id)
 
 
 def _review_request_sort_key(request: ReviewRequest) -> tuple[int, str, str]:
-    terminal = request.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+    terminal = request.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
     return (1 if terminal else 0, _json_value(request.created_at) or "", request.id)
 
 
 def _release_sort_key(release: ReleasePackage) -> tuple[int, str, str]:
-    terminal = release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+    terminal = release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
     timestamp = _json_value(release.updated_at) or _json_value(release.created_at) or ""
     return (1 if terminal else 0, timestamp, release.id)
 

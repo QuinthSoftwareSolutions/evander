@@ -166,7 +166,7 @@ def reconcile_human_review_assignment(
     """Reconcile current directory/RBAC eligibility without fabricating a decision."""
 
     request = _require_request(state, human_review_request_id)
-    if request.state in {"approved", "changes_requested"}:
+    if request.state in {"approved", "changes_requested", "cancelled"}:
         return request
     effective_now = now or utc_now()
     eligible = sorted(
@@ -213,7 +213,7 @@ def reassign_human_review(
     now: datetime | None = None,
 ) -> HumanReviewRequest:
     request = _require_request(state, human_review_request_id)
-    if request.state in {"approved", "changes_requested"}:
+    if request.state in {"approved", "changes_requested", "cancelled"}:
         raise ValueError("terminal human review requests cannot be reassigned")
     normalized_user_ids = sorted(
         {str(user_id).strip() for user_id in user_ids if str(user_id).strip()}
@@ -623,6 +623,8 @@ def route_human_finding_correction(
     )
     if source_request is None or release is None:
         raise ValueError("human review finding has no valid source release")
+    if release.state == TeamRecordState.CANCELLED:
+        raise ValueError(f"release {release.id} is cancelled")
     current_task = state.tasks.get(finding.correction_task_id)
     case = (
         state.cases.get(current_task.case_id)
@@ -1771,6 +1773,8 @@ def _require_release_for_request(
     release = state.release_packages.get(request.release_package_id)
     if release is None:
         raise ValueError(f"human review request {request.id} references a missing release")
+    if release.state == TeamRecordState.CANCELLED:
+        raise ValueError(f"release {release.id} is cancelled")
     return release
 
 

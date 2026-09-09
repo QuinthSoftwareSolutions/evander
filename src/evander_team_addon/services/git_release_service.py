@@ -6,6 +6,7 @@ from typing import Any
 
 from ..repository import TeamStateRepository
 from ..models import (
+    TeamTaskState,
     ReleaseGateKind,
     ReleasePackage,
     TeamBlockerSourceKind,
@@ -105,6 +106,16 @@ class TeamGitReleaseService:
                 normalized_promotion_id,
                 "git promotion",
             )
+            release = state_model.release_packages.get(promotion.release_package_id or "")
+            task = state_model.tasks.get(promotion.task_id or "")
+            if (
+                release is not None and release.state == TeamRecordState.CANCELLED
+            ) or (task is not None and task.state == TeamTaskState.CANCELLED):
+                result["promotion_state"] = promotion.state
+                result["release_package_id"] = promotion.release_package_id
+                result["ignored_terminal_state"] = True
+                result["success"] = True
+                return state_model
             if promotion.state == "retired":
                 result["promotion_state"] = promotion.state
                 result["deliverable_id"] = promotion.deliverable_id
@@ -357,7 +368,7 @@ class TeamGitReleaseService:
                 result["ignored_terminal_state"] = True
                 result["success"] = True
                 return state_model
-            if release.state == TeamRecordState.REJECTED:
+            if release.state in {TeamRecordState.REJECTED, TeamRecordState.CANCELLED}:
                 result["state"] = release.state.value
                 result["ignored_terminal_state"] = True
                 result["success"] = True

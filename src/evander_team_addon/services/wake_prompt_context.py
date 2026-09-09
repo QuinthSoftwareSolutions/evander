@@ -1621,7 +1621,7 @@ def _current_release_rows(value: object) -> tuple[list[Mapping[str, Any]], int]:
     skipped = 0
     for row in rows:
         state = _optional_text(row.get("state"))
-        if state in {"accepted", "rejected"}:
+        if state in {"accepted", "rejected", "cancelled"}:
             skipped += 1
             continue
         current.append(row)
@@ -1643,7 +1643,7 @@ def _runtime_attention_rows(
             hidden += 1
             continue
         if row.get("kind") == "blocked_release_package":
-            if _optional_text(row.get("state")) in {"accepted", "rejected"}:
+            if _optional_text(row.get("state")) in {"accepted", "rejected", "cancelled"}:
                 continue
             release_id = _optional_text(row.get("release_package_id"))
             if release_id in visible_release_ids:
