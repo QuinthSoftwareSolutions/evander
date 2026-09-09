@@ -8,6 +8,19 @@ import {
   metadataWithoutHttpTargets,
 } from "../src/features/httpTargets/httpTargetDraft.ts";
 
+test("editing HTTP targets preserves managed login grants until explicitly removed", () => {
+  const draft = httpTargetsDraftFromMetadata({http_targets: {targets: {
+    browser: {base_url: "https://training.example.test", managed_website_session: "training", metadata: {owner: "workflow"}},
+  }}});
+  draft.entries[0].baseUrl = "https://training.example.test/new-path";
+  let payload = httpTargetsPayload(draft.entries);
+  assert.equal(payload.targets.browser.managed_website_session, "training");
+  assert.deepEqual(payload.targets.browser.metadata, {owner: "workflow"});
+  draft.entries[0].managedWebsiteSession = "";
+  payload = httpTargetsPayload(draft.entries);
+  assert.equal(Object.hasOwn(payload.targets.browser, "managed_website_session"), false);
+});
+
 test("HTTP target drafts preserve canonical target metadata and normalize payload URLs", () => {
   const metadata = {
     keep: "value",

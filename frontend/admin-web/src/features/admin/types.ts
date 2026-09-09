@@ -416,6 +416,7 @@ export type AgentPolicyUpdateRequest = {
 
 export type HttpTargetPayload = {
   base_url: string;
+  managed_website_session?: string | null;
   metadata?: Record<string, unknown>;
 };
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.website_sessions import ManagedWebsiteSessionProfile
+
 from collections import Counter
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -434,6 +436,7 @@ class GatewayConfig(BaseModel):
     http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777
     http_target_relay_timeout_seconds: float = 300.0
+    managed_website_sessions: dict[str, ManagedWebsiteSessionProfile] = Field(default_factory=dict)
     http_target_browser_proxy_host: str = "0.0.0.0"
     http_target_browser_proxy_port: int = Field(default=11778, gt=0, le=65535)
     http_target_browser_proxy_connect_timeout_seconds: float = Field(default=15.0, gt=0)

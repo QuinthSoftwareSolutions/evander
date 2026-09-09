@@ -30,6 +30,55 @@ def _playwright_session_files() -> list[dict[str, object]]:
     )
 
 
+def test_managed_website_context_restores_state_and_fetches_on_every_use(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the Playwright launch helper")
+    helper = Path(__file__).parents[1] / "src/evander/assets/playwright-launch.mjs"
+    script = """
+      const {createManagedWebsiteContext} = await import(process.argv[1]);
+      const assert = (await import('node:assert/strict')).default;
+      let calls = 0;
+      const state = { origin:'https://app.example.test', expiresAt:Date.now()/1000+3600,
+        storageState:{cookies:[], origins:[]}, sessionStorage:{access:'temporary'} };
+      globalThis.fetch = async (url, options) => {
+        assert.equal(String(url), 'http://relay.test:11777/session/session-playwright/website-session/app');
+        assert.equal(options.headers['x-evander-mcp-session-token'], 'host-session-proof');
+        assert.equal(options.redirect, 'error');
+        calls++;
+        return new Response(JSON.stringify(state));
+      };
+      const writes = [];
+      const context = { addInitScript: async (fn, data) => {
+        const previous = writes.length;
+        globalThis.window = {location:{origin:'https://unrelated.test'}, sessionStorage:{setItem:(k,v)=>writes.push([k,v])}};
+        fn(data); assert.equal(writes.length, previous);
+        window.location.origin = state.origin; fn(data);
+      }};
+      const browser = { newContext: async (options) => {
+        assert.deepEqual(options.storageState, state.storageState);
+        assert.equal(options.viewport.width, 800);
+        return context;
+      }};
+      for (let i=0;i<2;i++) await createManagedWebsiteContext(browser,'app',{viewport:{width:800,height:600}});
+      assert.equal(calls, 2);
+      assert.deepEqual(writes, [['access','temporary'],['access','temporary']]);
+      await assert.rejects(createManagedWebsiteContext(browser,'app',{storageState:{}}), /must not override/);
+      globalThis.fetch = async () => new Response('secret upstream error', {status:503});
+      await assert.rejects(createManagedWebsiteContext(browser,'app'), error => {
+        assert.ok(!error.message.includes('secret'));
+        return /authentication unavailable/.test(error.message);
+      });
+      process.stdout.write('managed contexts verified');
+    """
+    result = subprocess.run([node, "--input-type=module", "-e", script, helper.as_uri()],
+        env={**os.environ, "HTTP_TARGET_RELAY_BASE_URL": "http://relay.test:11777/auth/host-session-proof",
+             "EVANDER_SESSION_ID": "session-playwright", "EVANDER_MCP_SESSION_TOKEN": "host-session-proof"},
+        capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "managed contexts verified"
+
+
 def test_playwright_launch_helper_uses_seed_with_repo_chromium_object(
     tmp_path: Path,
 ) -> None:

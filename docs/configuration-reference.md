@@ -1896,16 +1896,26 @@ C# bridge under `integrations/teams-meeting-media-bridge`.
 |---|---|---|
 | `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/evander/relays/http_target.py` listener bind and `src/evander/cli.py` status checks. |
 | `http_target_relay_timeout_seconds` | provider config overlays | `src/evander/relays/http_target.py` upstream request timeout. |
+| `managed_website_sessions` | directory provider config overlays | Named JSON-login profiles for explicit HTTP target authentication grants; see [managed website sessions](managed-website-sessions.md) for credential references, storage mappings, expiry, and bounds. |
 | `http_target_browser_proxy_host`, `http_target_browser_proxy_port` | root `host-config.json`, VM config overlays | Browser forward-proxy listener and guest-reachable endpoint; the default port is `11778`. |
 | `http_target_browser_proxy_connect_timeout_seconds`, `http_target_browser_proxy_header_timeout_seconds`, `http_target_browser_proxy_idle_timeout_seconds`, `http_target_browser_proxy_max_connections` | root `host-config.json` | Forward-proxy connection, unauthenticated header, tunnel-idle, and resource bounds. |
 
-The current HTTP target relay is upstream-auth-transparent: it allowlists the upstream destination
+The HTTP target forwarding routes are upstream-auth-transparent: they allowlist the upstream destination
 by session and per-target alias, but it forwards guest `Authorization` headers and cookies instead
-of injecting host-side credentials. Tokenized sessions may receive an
+of injecting host-side credentials. The separate managed website session endpoint performs
+operator-configured host logins only for targets carrying an explicit
+`managed_website_session` profile binding. Tokenized sessions may receive an
 `HTTP_TARGET_RELAY_BASE_URL` with relay auth embedded in the path prefix; guests should treat the
 base URL as opaque and append `/session/<session-id>/target/<alias>/`. The APP demo workflow is
 one consumer layered on top of this generic relay pattern and can register separate UI and API
 aliases for the same provisioned environment.
+
+Manage these profiles in **Configuration → Access, approvals & audit → Website logins**.
+The editor supports enabled state, login fields, encrypted credential entry/rotation,
+browser storage mappings, expiry settings, request bounds, and safe login tests.
+`credential_source: stored` uses an opaque `credential_ref` backed by host-only
+encrypted storage; `environment` retains existing env-name references. Assistant
+creation and session policy HTTP-target editors expose the profile selector.
 
 The browser proxy authenticates with the existing session id and MCP session token, then permits
 only origins present in that session's current HTTP targets. It does not terminate TLS or rewrite

@@ -786,7 +786,7 @@ def normalize_http_targets_metadata(value: object) -> dict[str, Any]:
         normalized = SessionHttpTargetsMetadata.model_validate(value)
     except ValidationError as exc:
         raise ValueError(f"http_targets is invalid: {exc}") from exc
-    return normalized.model_dump(mode="json")
+    return normalized.model_dump(mode="json", exclude_none=True)
 
 
 def wake_eligible_discord_channel_ids(

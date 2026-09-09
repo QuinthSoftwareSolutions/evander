@@ -73,6 +73,7 @@ PLAYWRIGHT_CONTAINER_PROMPT_GUIDANCE = """[Evander seeded Playwright]
 Browser downloads are disabled. Repository-local Playwright does not automatically use PLAYWRIGHT_MCP_EXECUTABLE_PATH and may request an unseeded browser revision. Keep the repository's own Playwright import, then either pass executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH to chromium.launch(...) or use:
 const { launchSeededChromium } = await import(process.env.EVANDER_PLAYWRIGHT_LAUNCH_HELPER);
 const browser = await launchSeededChromium(chromium, { headless: true });
+For an HTTP target explicitly granted a managed website session, import createManagedWebsiteContext from the same helper and call await createManagedWebsiteContext(browser, targetAlias) before navigation. The host renews login when needed. Never print or persist browser authentication state. An already-open context keeps the website's normal expiry; create a new managed context after it expires.
 Do not hard-code a cache revision or download a browser."""
 _CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
