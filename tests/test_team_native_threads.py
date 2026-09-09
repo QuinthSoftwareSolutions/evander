@@ -20,7 +20,11 @@ from evander_team_addon.providers import (
     _activate_delivered_team_prompt,
 )
 from evander_team_addon.services.admin_service import TeamAdminService
-from evander_team_addon.services.runtime_service import TeamRuntimeService
+from evander_team_addon.services.runtime_service import (
+    AgentDispatchNativeThreadReceipt,
+    TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE,
+    TeamRuntimeService,
+)
 from evander_team_addon.sqlite_store import TeamStateSqliteStore
 from evander_team_addon.services.wake_prompt_context import (
     build_compact_wake_context,
@@ -503,6 +507,234 @@ def test_failed_resumed_work_does_not_invalidate_observed_thread(native_env, dia
     assert env.repo.read().agent_runtimes["backend"].work_lineage_thread_ids == {
         first["dispatch"]["work_lineage_id"]: NATIVE_A,
     }
+
+
+def _seed_historical_native_receipts(env, count):
+    lease = _lease(env)
+    _, job = _submit(env, lease)
+    _complete(env, job)
+    template = env.repo.read().dispatches[lease["dispatch_id"]]
+    observed_at = datetime.now(UTC) - timedelta(days=1)
+    receipts = [
+        AgentDispatchNativeThreadReceipt(
+            session_id=template.session_id,
+            dispatch_id=f"team-dispatch-history-{index:04d}",
+            thread_id=f"native-history-{index:04d}",
+            observed_at=observed_at + timedelta(seconds=index),
+        )
+        for index in range(count)
+    ]
+
+    def seed(state):
+        for receipt in receipts:
+            state.dispatches[receipt.dispatch_id] = template.model_copy(
+                update={
+                    "id": receipt.dispatch_id,
+                    "native_thread_id": None,
+                    "native_thread_observed_at": None,
+                }
+            )
+        return state
+
+    env.repo.update(seed)
+    return receipts
+
+
+def _receipt_record(receipt):
+    return SimpleNamespace(
+        execution_id=f"exec-{receipt.dispatch_id}",
+        effect_type="effect:agent:enqueue-prompt",
+        status="succeeded",
+        finished_at=receipt.observed_at,
+        outputs={
+            "dispatch_id": receipt.dispatch_id,
+            "session_id": receipt.session_id,
+            "thread_id": receipt.thread_id,
+        },
+    )
+
+
+def test_historical_native_reconciliation_is_batched_restart_safe_and_eventually_idle(
+    native_env, monkeypatch
+):
+    env = native_env
+    limit = TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE
+    receipts = _seed_historical_native_receipts(env, 2 * limit + 5)
+    monkeypatch.setattr(
+        "evander_team_addon.providers._completed_agent_prompt_records",
+        lambda worker: [_receipt_record(receipt) for receipt in receipts],
+    )
+    transactions = []
+    update_state = TeamStateSqliteStore.update_state
+
+    def track_update(store, *args, **kwargs):
+        transactions.append(store.path)
+        return update_state(store, *args, **kwargs)
+
+    monkeypatch.setattr(TeamStateSqliteStore, "update_state", track_update)
+    # A fresh hook/repository on every pass also models a restart between batches.
+    for expected_count, expected_transactions in [
+        (limit, 1), (2 * limit, 1), (len(receipts), 1), (len(receipts), 0)
+    ]:
+        transactions.clear()
+        hook = TeamAgentPromptCompletionFinalizeHook()
+        assert hook.on_post_completion_dispatch(worker=env.worker) == 0
+        state = env.repo.read()
+        recorded = sum(
+            state.dispatches[r.dispatch_id].native_thread_id is not None for r in receipts
+        )
+        assert recorded == expected_count
+        assert len(transactions) == expected_transactions
+
+
+def test_native_reconciliation_prioritizes_active_completion_over_history(native_env, monkeypatch):
+    env = native_env
+    receipts = _seed_historical_native_receipts(env, 5)
+    lease = _lease(env)
+    record, job = _submit(env, lease)
+    job.logs = f"session id: {NATIVE_A}\ndone\n"
+    job.status = ExecutionStatusKind.STOPPED
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=env.worker) == 1
+    completed = env.worker.execution_store.get_execution(record.execution_id)
+    monkeypatch.setattr(
+        "evander_team_addon.providers._completed_agent_prompt_records",
+        lambda worker: [*map(_receipt_record, receipts), completed],
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.services.runtime_service.TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE", 1
+    )
+    assert env.hook.on_post_completion_dispatch(worker=env.worker) == 1
+    state = env.repo.read()
+    assert state.dispatches[lease["dispatch_id"]].native_thread_id == NATIVE_A
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+    assert all(state.dispatches[r.dispatch_id].native_thread_id is None for r in receipts)
+
+
+def test_completion_stays_open_until_its_deferred_native_receipt_is_saved(native_env, monkeypatch):
+    env = native_env
+    lease = _lease(env)
+    _, job = _submit(env, lease)
+    job.logs = f"session id: {NATIVE_A}\ndone\n"
+    job.status = ExecutionStatusKind.STOPPED
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=env.worker) == 1
+    with monkeypatch.context() as patch:
+        # Model the active receipt falling beyond a full batch of other active
+        # dispatches. Closing its lease now would allow a fresh wake too early.
+        patch.setattr(
+            TeamRuntimeService,
+            "reconcile_agent_dispatch_native_threads",
+            lambda self, *, state, receipts: (state, {lease["dispatch_id"]}),
+        )
+        assert env.hook.on_post_completion_dispatch(worker=env.worker) == 0
+    state = env.repo.read()
+    assert state.agent_runtimes["backend"].active_dispatch_id == lease["dispatch_id"]
+    assert state.dispatches[lease["dispatch_id"]].native_thread_id is None
+    assert env.hook.on_post_completion_dispatch(worker=env.worker) == 1
+    state = env.repo.read()
+    assert state.dispatches[lease["dispatch_id"]].native_thread_id == NATIVE_A
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+
+
+@pytest.mark.parametrize("legacy_owner", [False, True])
+def test_native_backfill_prioritizes_current_lineage_owner(native_env, monkeypatch, legacy_owner):
+    env = native_env
+    receipts = _seed_historical_native_receipts(env, 5)
+    owner = receipts[-1]
+
+    def bind_owner(state):
+        lineage = state.dispatches[owner.dispatch_id].work_lineage_id
+        runtime = state.agent_runtimes["backend"]
+        runtime.work_lineage_thread_ids[lineage] = owner.dispatch_id if legacy_owner else NATIVE_A
+        if legacy_owner:
+            runtime.work_lineage_thread_dispatch_ids.pop(lineage, None)
+        else:
+            runtime.work_lineage_thread_dispatch_ids[lineage] = owner.dispatch_id
+        return state
+
+    env.repo.update(bind_owner)
+    monkeypatch.setattr(
+        "evander_team_addon.services.runtime_service.TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE", 1
+    )
+    state, deferred = env.runtime.reconcile_agent_dispatch_native_threads(
+        state=env.repo.read(), receipts=receipts
+    )
+    assert state.dispatches[owner.dispatch_id].native_thread_id == owner.thread_id
+    assert deferred == {r.dispatch_id for r in receipts[:-1]}
+
+
+@pytest.mark.parametrize("reason", ["unactivated", "session_changed", "older_observation"])
+def test_unrecordable_native_history_never_opens_a_transaction(native_env, monkeypatch, reason):
+    env = native_env
+    receipt = _seed_historical_native_receipts(env, 1)[0]
+
+    def make_unrecordable(state):
+        dispatch = state.dispatches[receipt.dispatch_id]
+        if reason == "unactivated":
+            dispatch.activation_completed_at = None
+        elif reason == "session_changed":
+            dispatch.session_id = "session-retired"
+        else:
+            dispatch.native_thread_id = NATIVE_B
+            dispatch.native_thread_observed_at = receipt.observed_at + timedelta(seconds=1)
+        return state
+
+    env.repo.update(make_unrecordable)
+    if reason == "session_changed":
+        receipt = AgentDispatchNativeThreadReceipt(
+            session_id="session-retired", dispatch_id=receipt.dispatch_id,
+            thread_id=receipt.thread_id, observed_at=receipt.observed_at,
+        )
+
+    def unexpected_update(*args, **kwargs):
+        pytest.fail("an unrecordable receipt opened a full-state transaction")
+
+    monkeypatch.setattr(TeamStateSqliteStore, "update_state", unexpected_update)
+    for _ in range(3):
+        _, deferred = env.runtime.reconcile_agent_dispatch_native_threads(
+            state=env.repo.read(), receipts=[receipt]
+        )
+        assert deferred == set()
+
+
+def test_native_batch_rechecks_concurrent_observation_before_mutating(native_env):
+    env = native_env
+    receipt = _seed_historical_native_receipts(env, 1)[0]
+    stale_snapshot = env.repo.read()
+    env.runtime.record_agent_dispatch_native_thread(
+        session_id=receipt.session_id, dispatch_id=receipt.dispatch_id,
+        thread_id=NATIVE_B, observed_at=receipt.observed_at + timedelta(seconds=1),
+    )
+    before = env.repo.read()
+    state, deferred = env.runtime.reconcile_agent_dispatch_native_threads(
+        state=stale_snapshot, receipts=[receipt]
+    )
+    assert deferred == set()
+    assert state.dispatches[receipt.dispatch_id].native_thread_id == NATIVE_B
+    assert state.revision == before.revision
+
+
+def test_native_batch_does_not_replay_success_before_newer_missing_thread_failure(native_env):
+    env = native_env
+    lease = _lease(env)
+    _, job = _submit(env, lease)
+    job.logs = f"session id: {NATIVE_A}\nwork recorded\n"
+    _complete(env, job)
+    dispatch_id = lease["dispatch_id"]
+    now = datetime.now(UTC)
+    receipts = [
+        AgentDispatchNativeThreadReceipt("session-backend", dispatch_id, NATIVE_A, now),
+        AgentDispatchNativeThreadReceipt(
+            "session-backend", dispatch_id, NATIVE_A, now + timedelta(seconds=1), True
+        ),
+    ]
+    state, _ = env.runtime.reconcile_agent_dispatch_native_threads(
+        state=env.repo.read(), receipts=receipts
+    )
+    assert state.agent_runtimes["backend"].work_lineage_thread_ids == {}
+    revision = state.revision
+    state, _ = env.runtime.reconcile_agent_dispatch_native_threads(state=state, receipts=receipts)
+    assert state.agent_runtimes["backend"].work_lineage_thread_ids == {}
+    assert state.revision == revision
 
 
 @pytest.mark.parametrize("already_completed", [False, True])

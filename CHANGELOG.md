@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-09 - Bounded Team thread reconciliation (0.33.1)
+
+- Reconcile at most 32 eligible native-thread receipts in one state transaction per
+  maintenance pass, prioritizing active dispatches and current lineage owners so
+  historical backfills cannot monopolize workflow dispatch.
+- Skip unrecordable and already handled history before opening a transaction;
+  retain timestamp and ownership checks under the write lock. Resume backfills
+  from durable receipts after restart and defer completion until its receipt is saved.
+
 ## 2026-09-09 - Native Team thread resumption (0.32.1)
 
 - Keep asynchronous dispatch and execution identities separate from observed provider

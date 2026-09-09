@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -183,6 +184,7 @@ from .commands.outbox import _team_event_outbox_records
 
 
 GIT_WORK_CONTEXT_RETENTION_DAYS = 30
+TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE = 32
 MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS = 900
 REVIEW_DECISION_MCP_TOOL_NAME = "team_decide_review"
 MAX_REVIEW_MCP_CAPABILITY_ATTEMPTS = 2
@@ -204,6 +206,15 @@ def _team_lease_planning_lock(state_db_path: object) -> Lock:
             lock = Lock()
             _TEAM_LEASE_PLANNING_LOCKS[key] = lock
         return lock
+
+
+@dataclass(frozen=True)
+class AgentDispatchNativeThreadReceipt:
+    session_id: str
+    dispatch_id: str
+    thread_id: str
+    observed_at: datetime | None = None
+    missing_thread: bool = False
 
 
 class TeamRuntimeService:
@@ -2212,7 +2223,7 @@ class TeamRuntimeService:
         return state, activation
 
     @staticmethod
-    def _record_dispatch_native_thread_in_state(
+    def _dispatch_native_thread_update_is_due(
         state: TeamState,
         *,
         dispatch: TeamDispatch,
@@ -2220,7 +2231,6 @@ class TeamRuntimeService:
         now: datetime,
         observed_at: datetime | None = None,
     ) -> bool:
-        """Bind a receipt to its immutable dispatch scope, never the current task."""
         thread_id = usable_agent_thread_id(thread_id, dispatch.id)
         runtime = state.agent_runtimes.get(dispatch.agent_id)
         agent = state.agents.get(dispatch.agent_id)
@@ -2237,6 +2247,24 @@ class TeamRuntimeService:
             )
         ):
             return False
+        return True
+
+    @staticmethod
+    def _record_dispatch_native_thread_in_state(
+        state: TeamState,
+        *,
+        dispatch: TeamDispatch,
+        thread_id: str | None,
+        now: datetime,
+        observed_at: datetime | None = None,
+    ) -> bool:
+        """Bind a receipt to its immutable dispatch scope, never the current task."""
+        thread_id = usable_agent_thread_id(thread_id, dispatch.id)
+        if not TeamRuntimeService._dispatch_native_thread_update_is_due(
+            state, dispatch=dispatch, thread_id=thread_id, now=now, observed_at=observed_at
+        ):
+            return False
+        runtime = state.agent_runtimes[dispatch.agent_id]
         if dispatch.native_thread_id == thread_id:
             # Advance the receipt for a newer execution that used the same ID,
             # without resurrecting a binding invalidated since that execution.
@@ -2296,6 +2324,105 @@ class TeamRuntimeService:
             return state
 
         return self._repository.update(_mutate), recorded
+
+    def reconcile_agent_dispatch_native_threads(
+        self,
+        *,
+        state: TeamState,
+        receipts: Sequence[AgentDispatchNativeThreadReceipt],
+        now: datetime | None = None,
+    ) -> tuple[TeamState, set[str]]:
+        """Apply one bounded receipt batch; return dispatches deferred to a later pass.
+
+        The supplied snapshot avoids transactions for already handled history. All
+        identity, timestamp and binding-ownership checks run again under the write
+        transaction. Persisted receipts, not a process-local cursor, track progress.
+        """
+        effective_now = _ensure_utc(now or utc_now())
+
+        def is_due(current: TeamState, receipt: AgentDispatchNativeThreadReceipt) -> bool:
+            dispatch = current.dispatches.get(receipt.dispatch_id)
+            if dispatch is None or dispatch.session_id != receipt.session_id:
+                return False
+            if receipt.missing_thread:
+                runtime = current.agent_runtimes.get(dispatch.agent_id)
+                lineage = dispatch.work_lineage_id
+                if runtime is None or lineage is None:
+                    return False
+                owner = runtime.work_lineage_thread_dispatch_ids.get(lineage)
+                return runtime.work_lineage_thread_ids.get(lineage) == receipt.thread_id and (
+                    owner == dispatch.id
+                    or (owner is None and runtime.active_dispatch_id == dispatch.id)
+                )
+            return self._dispatch_native_thread_update_is_due(
+                current,
+                dispatch=dispatch,
+                thread_id=receipt.thread_id,
+                now=effective_now,
+                observed_at=receipt.observed_at,
+            )
+
+        # Only the newest receipt per immutable dispatch matters. In particular,
+        # an older successful observation must not undo a later missing-thread
+        # failure when a batch boundary or restart splits the history.
+        latest: dict[str, AgentDispatchNativeThreadReceipt] = {}
+        for receipt in receipts:
+            dispatch = state.dispatches.get(receipt.dispatch_id)
+            if dispatch is None or dispatch.session_id != receipt.session_id:
+                continue
+            if receipt.observed_at is not None:
+                receipt = replace(receipt, observed_at=_ensure_utc(receipt.observed_at))
+            previous = latest.get(receipt.dispatch_id)
+            if previous is None or (receipt.observed_at or effective_now) >= (
+                previous.observed_at or effective_now
+            ):
+                latest[receipt.dispatch_id] = receipt
+        candidates = [receipt for receipt in latest.values() if is_due(state, receipt)]
+
+        def priority(receipt: AgentDispatchNativeThreadReceipt) -> tuple[bool, bool, datetime, str]:
+            dispatch = state.dispatches[receipt.dispatch_id]
+            runtime = state.agent_runtimes[dispatch.agent_id]
+            owner = runtime.work_lineage_thread_dispatch_ids.get(dispatch.work_lineage_id or "")
+            if owner is None and runtime.work_lineage_thread_ids.get(
+                dispatch.work_lineage_id or ""
+            ) == dispatch.id:
+                owner = dispatch.id
+            return (
+                runtime.active_dispatch_id != dispatch.id,
+                owner != dispatch.id,
+                receipt.observed_at or effective_now,
+                dispatch.id,
+            )
+
+        candidates.sort(key=priority)
+        selected = candidates[:TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE]
+        deferred = {receipt.dispatch_id for receipt in candidates[len(selected):]}
+        if not selected:
+            return state, deferred
+
+        def mutate(current: TeamState) -> TeamState:
+            for receipt in selected:
+                if not is_due(current, receipt):
+                    continue
+                dispatch = current.dispatches[receipt.dispatch_id]
+                if receipt.missing_thread:
+                    runtime = current.agent_runtimes[dispatch.agent_id]
+                    runtime.work_lineage_thread_ids.pop(dispatch.work_lineage_id, None)
+                    runtime.work_lineage_thread_dispatch_ids.pop(dispatch.work_lineage_id, None)
+                    if runtime.last_thread_id == receipt.thread_id:
+                        runtime.last_thread_id = None
+                    runtime.updated_at = effective_now
+                else:
+                    self._record_dispatch_native_thread_in_state(
+                        current,
+                        dispatch=dispatch,
+                        thread_id=receipt.thread_id,
+                        now=effective_now,
+                        observed_at=receipt.observed_at,
+                    )
+            return current
+
+        return self._repository.update(mutate), deferred
 
     def mark_agent_dispatch_session_metadata_mirrored(
         self,

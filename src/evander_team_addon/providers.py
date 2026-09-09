@@ -354,6 +354,7 @@ from .services.wake_prompt_context import (
 from .services.read_service import TeamReadService
 from .services.wake_singleflight import TEAM_WAKE_SINGLE_FLIGHT
 from .services.runtime_service import (
+    AgentDispatchNativeThreadReceipt,
     MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS,
     TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
     TeamRuntimeService,
@@ -5623,6 +5624,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         # Native IDs arrive after asynchronous dispatch activation. Reconcile
         # both running and completed execution receipts before closing leases;
         # a completion workflow may already have finalized the Team dispatch.
+        native_receipts: list[AgentDispatchNativeThreadReceipt] = []
         for record in delivered_records:
             outputs = _record_outputs(record)
             dispatch_id = _optional_text(outputs.get("dispatch_id"))
@@ -5630,6 +5632,9 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             session_id = _completed_prompt_session_id(record)
             if dispatch is None or session_id != dispatch.session_id:
                 continue
+            observed_at = _team_payload_datetime(outputs.get("native_thread_observed_at")) or getattr(
+                record, "finished_at", None
+            )
             requested_thread_id = _optional_text(
                 outputs.get("resume_thread_id")
                 if "resume_thread_id" in outputs
@@ -5642,27 +5647,14 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if not native_thread_observed and _resume_failure_reports_missing_thread(
                 outputs, resume_thread_id=requested_thread_id
             ):
-                runtime = state.agent_runtimes.get(dispatch.agent_id)
-                lineage_id = dispatch.work_lineage_id
-                if (
-                    runtime is None
-                    or lineage_id is None
-                    or runtime.work_lineage_thread_ids.get(lineage_id) != requested_thread_id
-                ):
-                    continue
-                owner = runtime.work_lineage_thread_dispatch_ids.get(lineage_id)
-                if owner != dispatch.id and not (
-                    owner is None and runtime.active_dispatch_id == dispatch.id
-                ):
-                    continue
-                # Handled or superseded failures need no full-state transaction.
-                # The mutation rechecks ownership if another wake wins the race
-                # after this snapshot was read.
-                state, _invalidated = TeamRuntimeService(repo).invalidate_agent_work_lineage_thread_binding(
-                    agent_id=dispatch.agent_id,
-                    dispatch_id=dispatch.id,
-                    resume_thread_id=requested_thread_id,
-                    require_dispatch_owner=True,
+                native_receipts.append(
+                    AgentDispatchNativeThreadReceipt(
+                        session_id=session_id,
+                        dispatch_id=dispatch.id,
+                        thread_id=requested_thread_id,
+                        observed_at=observed_at,
+                        missing_thread=True,
+                    )
                 )
                 continue
             thread_id = usable_agent_thread_id(
@@ -5678,23 +5670,17 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 outputs.get("execution_id"),
             }:
                 continue
-            observed_at = _team_payload_datetime(outputs.get("native_thread_observed_at")) or getattr(
-                record, "finished_at", None
-            )
-            if dispatch.native_thread_id == thread_id and (
-                observed_at is None
-                or (
-                    dispatch.native_thread_observed_at is not None
-                    and _team_datetime_utc(observed_at) <= dispatch.native_thread_observed_at
+            native_receipts.append(
+                AgentDispatchNativeThreadReceipt(
+                    session_id=session_id,
+                    dispatch_id=dispatch.id,
+                    thread_id=thread_id,
+                    observed_at=observed_at,
                 )
-            ):
-                continue
-            state, _recorded = TeamRuntimeService(repo).record_agent_dispatch_native_thread(
-                session_id=session_id,
-                dispatch_id=dispatch_id,
-                thread_id=thread_id,
-                observed_at=observed_at,
             )
+        state, deferred_native_dispatches = TeamRuntimeService(repo).reconcile_agent_dispatch_native_threads(
+            state=state, receipts=native_receipts
+        )
         active_dispatches = {
             dispatch_id: agent_id
             for agent_id, runtime in state.agent_runtimes.items()
@@ -5704,7 +5690,11 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         finalized_count = 0
         for record in completed_records:
             dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
-            if dispatch_id is None or dispatch_id not in active_dispatches:
+            if (
+                dispatch_id is None
+                or dispatch_id not in active_dispatches
+                or dispatch_id in deferred_native_dispatches
+            ):
                 continue
             session_id = _completed_prompt_session_id(record)
             if session_id is None:
