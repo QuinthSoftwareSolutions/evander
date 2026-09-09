@@ -801,3 +801,98 @@ def test_secret_metadata_is_redacted_before_request_and_store(tmp_path: Path) ->
     assert "should-not-leak" not in store_text
     assert "hidden" not in store_text
     assert client.created[0].metadata["authorization"] == "[redacted]"
+
+
+def test_default_switch_routes_old_and_new_jobs_and_cleanup_to_assigned_workers(
+    tmp_path, monkeypatch
+):
+    from evander.execution import container_worker_backend as module
+
+    old = FakeContainerWorkerClient()
+    new = FakeContainerWorkerClient()
+    old.base_url, new.base_url = "http://old.test", "http://new.test"
+    clients = {old.base_url: old, new.base_url: new}
+    connections = []
+
+    def client_factory(*, base_url, token_env, timeout_seconds):
+        connections.append((base_url, token_env))
+        return clients[base_url]
+
+    monkeypatch.setattr(module, "ContainerWorkerClient", client_factory)
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        container_worker_base_url=old.base_url,
+        container_worker_token_env="OLD_TOKEN",
+        container_worker_mssql_host="old-sql",
+    )
+    backend = ContainerWorkerVmExecutionBackend(config=config)
+    backend.prepare_session(session_id="existing")
+    running = backend.start(backend.prepare(ExecutionSpec(session_id="existing", command=["true"])))
+    replacement_config = config.model_copy(
+        update={
+            "container_worker_base_url": new.base_url,
+            "container_worker_token_env": "NEW_TOKEN",
+            "container_worker_mssql_host": "new-sql",
+        }
+    )
+    restarted = ContainerWorkerVmExecutionBackend(config=replacement_config)
+    restarted.inspect(running.execution_id)
+    restarted.get_log_snapshot(running.execution_id)
+    restarted.interrupt_active_tool(running.execution_id)
+    restarted.stop(running.execution_id)
+    restarted.destroy(running.execution_id)
+    restarted.prepare_session(session_id="existing")
+    restarted.clone_repo(session_id="existing", repo_source="ssh://git/repo")
+    restarted.write_files(
+        session_id="existing",
+        files=[{"destination_path": "/home/agent/probe.txt", "content": "worker routing probe"}],
+    )
+    database = restarted.provision_mssql_database(session_id="existing", logical_name="app")
+    assert database.server == "old-sql"
+    resumed = restarted.start(
+        restarted.prepare(ExecutionSpec(session_id="existing", command=["true"]))
+    )
+    assert old.created[-1].job_id == resumed.execution_id
+    restarted.delete_session("existing")
+    restarted.prepare_session(session_id="fresh")
+    fresh = restarted.start(restarted.prepare(ExecutionSpec(session_id="fresh", command=["true"])))
+    assert new.created[-1].job_id == fresh.execution_id
+    assert old.got and old.logged and old.interruptions and old.stopped and old.deleted
+    assert old.cloned_repos and old.written_files and old.deleted_sessions == ["existing"]
+    assert not new.got and not new.deleted_sessions and not new.cloned_repos
+    assert set(connections) == {(old.base_url, "OLD_TOKEN"), (new.base_url, "NEW_TOKEN")}
+
+
+def test_worker_failure_keeps_assignment_and_never_falls_back_to_new_default(tmp_path, monkeypatch):
+    from evander.execution import container_worker_backend as module
+    from evander.execution.worker_assignments import ContainerWorkerAssignmentRepository
+
+    old = FakeContainerWorkerClient()
+    old.base_url = "http://old.test"
+    config = GatewayConfig(runtime_dir=tmp_path, container_worker_base_url=old.base_url)
+    backend = ContainerWorkerVmExecutionBackend(config=config, client=old)
+
+    def offline(request):
+        raise ContainerWorkerClientError("worker offline")
+
+    old.prepare_session = offline
+    with pytest.raises(ContainerWorkerClientError, match="offline"):
+        backend.prepare_session(session_id="existing")
+    assert ContainerWorkerAssignmentRepository(tmp_path).get("existing").worker_url == old.base_url
+
+    new = FakeContainerWorkerClient()
+    new.base_url = "http://new.test"
+    requested = []
+
+    def factory(**kwargs):
+        requested.append(kwargs["base_url"])
+        return old
+
+    monkeypatch.setattr(module, "ContainerWorkerClient", factory)
+    restarted = ContainerWorkerVmExecutionBackend(
+        config=config.model_copy(update={"container_worker_base_url": new.base_url}), client=new
+    )
+    with pytest.raises(ContainerWorkerClientError, match="offline"):
+        restarted.prepare_session(session_id="existing")
+    assert requested == [old.base_url]
+    assert not new.prepared_sessions

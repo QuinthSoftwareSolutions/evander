@@ -616,10 +616,12 @@ def agent_routes(
 
     async def create_options(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
+        worker_id = _string_query(request, "worker_id")
         try:
             options = await run_in_threadpool(
                 service.vm_agent_admin.agent_create_options,
                 directory_path,
+                **({"worker_id": worker_id} if worker_id else {}),
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)

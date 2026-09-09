@@ -130,6 +130,7 @@ _AGENT_EXECUTION_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "execution_backend"),
 )
 _CONTAINER_WORKER_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "container_workers"),
     ("providers", "container_worker_base_url"),
     ("providers", "container_worker_token_env"),
     ("providers", "container_worker_default_image"),
@@ -305,6 +306,7 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "openai_realtime_api_key_env"): "OpenAI Realtime API key env",
     ("providers", "openai_realtime_api_base_url"): "OpenAI Realtime API base URL",
     ("providers", "container_worker_images"): "Approved container image catalog",
+    ("providers", "container_workers"): "Available workers",
     ("providers", "container_worker_guest_openai_base_url"): ("Container-visible OpenAI base URL"),
     ("providers", "container_worker_codex_auth_mode"): "Default Codex auth mode",
     ("providers", "communication_artifact_public_base_url"): (

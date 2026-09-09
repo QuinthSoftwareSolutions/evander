@@ -78,13 +78,49 @@ class ContainerWorkerVmExecutionBackend:
     def capabilities(self) -> ExecutionBackendCapabilities:
         return ExecutionBackendCapabilities()
 
+    def config_for_session(
+        self, session_id: str, *, directory_path: str | None = None
+    ) -> GatewayConfig:
+        from evander.admin.services.container_worker_assignment_service import (
+            ContainerWorkerAssignmentService,
+        )
+
+        return ContainerWorkerAssignmentService(self.config).resolve(
+            session_id, directory_path=directory_path
+        )
+
+    def _client_for_config(self, config: GatewayConfig) -> ContainerWorkerClient:
+        if (
+            str(config.container_worker_base_url or "").rstrip("/")
+            == str(self.config.container_worker_base_url or "").rstrip("/")
+            and config.container_worker_token_env == self.config.container_worker_token_env
+        ):
+            return self.client
+        return ContainerWorkerClient(
+            base_url=config.container_worker_base_url,
+            token_env=config.container_worker_token_env,
+            timeout_seconds=config.container_worker_request_timeout_seconds,
+        )
+
+    def _client_for_session(self, session_id: str) -> ContainerWorkerClient:
+        return self._client_for_config(self.config_for_session(session_id))
+
+    def _client_for_mapping(self, mapping: ContainerWorkerExecutionRecord) -> ContainerWorkerClient:
+        from evander.admin.services.container_worker_assignment_service import (
+            ContainerWorkerAssignmentService,
+        )
+
+        config = ContainerWorkerAssignmentService(self.config).resolve(
+            mapping.session_id, directory_path=mapping.directory_path, worker_url=mapping.worker_url
+        )
+        return self._client_for_config(config)
+
     def prepare(self, spec: ExecutionSpec) -> PreparedExecution:
         execution_id = self._safe_execution_id(spec.target_name)
         session_id = spec.session_id or execution_id
+        config = self.config_for_session(session_id, directory_path=spec.directory_path)
         target_name = spec.target_name or execution_id
-        persistence_mode = (
-            spec.persistence_mode or self.config.container_worker_workspace_persistence
-        )
+        persistence_mode = spec.persistence_mode or config.container_worker_workspace_persistence
         workspace_mode = spec.workspace_mode or persistence_mode
         metadata = sanitize_metadata(
             {
@@ -93,10 +129,10 @@ class ContainerWorkerVmExecutionBackend:
                 "directory_path": spec.directory_path,
                 "persistence_mode": persistence_mode,
                 "workspace_mode": workspace_mode,
-                "gateway_url": self.config.gateway_url,
-                "openai_relay_port": self.config.openai_relay_port,
-                "http_target_relay_port": self.config.http_target_relay_port,
-                "nuget_relay_port": self.config.nuget_relay_port,
+                "gateway_url": config.gateway_url,
+                "openai_relay_port": config.openai_relay_port,
+                "http_target_relay_port": config.http_target_relay_port,
+                "nuget_relay_port": config.nuget_relay_port,
             }
         )
         return PreparedExecution(
@@ -107,7 +143,7 @@ class ContainerWorkerVmExecutionBackend:
             directory_path=spec.directory_path,
             command=spec.command,
             codex_turn=spec.codex_turn,
-            image=spec.image or self.config.container_worker_default_image,
+            image=spec.image or config.container_worker_default_image,
             repo_source=spec.repo_source,
             clone_branch=spec.clone_branch,
             working_directory=spec.working_directory,
@@ -124,12 +160,13 @@ class ContainerWorkerVmExecutionBackend:
             else self.prepare(self._spec_from_target(target))
         )
         request = self._job_request(prepared)
-        record = self.client.create(request)
+        client = self._client_for_session(request.session_id)
+        record = client.create(request)
         mapping = ContainerWorkerExecutionRecord(
             execution_id=prepared.execution_id,
             session_id=request.session_id,
             worker_job_id=record.job_id,
-            worker_url=self.client.base_url,
+            worker_url=client.base_url,
             target_name=prepared.target_name,
             started_at=record.started_at,
             finished_at=record.finished_at,
@@ -168,7 +205,7 @@ class ContainerWorkerVmExecutionBackend:
                 message="container worker job was destroyed",
             )
         try:
-            record = self.client.get(mapping.worker_job_id)
+            record = self._client_for_mapping(mapping).get(mapping.worker_job_id)
         except ContainerWorkerClientError as exc:
             if exc.status_code != 404:
                 raise
@@ -193,7 +230,7 @@ class ContainerWorkerVmExecutionBackend:
     def stop(self, target: ExecutionTarget, *, timeout_seconds: int = 60) -> ExecutionStatus:
         del timeout_seconds
         mapping = self._mapping_for_target(target)
-        record = self.client.stop(mapping.worker_job_id)
+        record = self._client_for_mapping(mapping).stop(mapping.worker_job_id)
         mapping.last_status = record.status
         mapping.finished_at = record.finished_at
         mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
@@ -213,7 +250,7 @@ class ContainerWorkerVmExecutionBackend:
         deliberately receives neither a caller-selected process ID nor a command string.
         """
         mapping = self._mapping_for_target(target)
-        record = self.client.interrupt_active_tool(
+        record = self._client_for_mapping(mapping).interrupt_active_tool(
             mapping.worker_job_id,
             max_elapsed_seconds=max_elapsed_seconds,
             reason=reason,
@@ -236,7 +273,7 @@ class ContainerWorkerVmExecutionBackend:
         mapping = self._mapping_for_target(target)
         attempted_at = now_utc()
         try:
-            self.client.delete(mapping.worker_job_id)
+            self._client_for_mapping(mapping).delete(mapping.worker_job_id)
         except ContainerWorkerClientError as exc:
             self._mark_cleanup_failed(
                 mapping,
@@ -263,7 +300,7 @@ class ContainerWorkerVmExecutionBackend:
     ) -> str:
         del repo_name, vm_user
         mapping = self._mapping_for_target(target)
-        text = self.client.logs(mapping.worker_job_id, mode=mode)
+        text = self._client_for_mapping(mapping).logs(mapping.worker_job_id, mode=mode)
         if lines <= 0:
             return text
         return "\n".join(text.splitlines()[-lines:]) + (
@@ -280,7 +317,7 @@ class ContainerWorkerVmExecutionBackend:
         mode: str | None = None,
     ) -> dict[str, object]:
         mapping = self._mapping_for_target(target)
-        text, metadata = self.client.logs_page(
+        text, metadata = self._client_for_mapping(mapping).logs_page(
             mapping.worker_job_id,
             mode=mode,
             limit=limit,
@@ -311,7 +348,7 @@ class ContainerWorkerVmExecutionBackend:
         session_id: str,
         metadata: dict[str, Any] | None = None,
     ) -> WorkerSessionRecord:
-        return self.client.prepare_session(
+        return self._client_for_session(session_id).prepare_session(
             WorkerSessionPrepareRequest(
                 session_id=session_id,
                 metadata=sanitize_metadata(metadata or {}),
@@ -327,7 +364,7 @@ class ContainerWorkerVmExecutionBackend:
         repo_name: str | None = None,
         reconcile_existing_remote: bool = False,
     ) -> WorkerRepoCloneRecord:
-        return self.client.clone_repo(
+        return self._client_for_session(session_id).clone_repo(
             session_id,
             WorkerRepoCloneRequest(
                 repo_source=repo_source,
@@ -348,7 +385,7 @@ class ContainerWorkerVmExecutionBackend:
         configuration_version: str,
         update_existing: bool = True,
     ) -> WorkerReferenceRepoPrepareRecord:
-        return self.client.prepare_reference_repo(
+        return self._client_for_session(session_id).prepare_reference_repo(
             session_id,
             WorkerReferenceRepoPrepareRequest(
                 repo_source=repo_source,
@@ -382,7 +419,7 @@ class ContainerWorkerVmExecutionBackend:
         dependency_merge_author_email: str | None = None,
         dependency_composition_commit_message: str | None = None,
     ) -> WorkerTaskWorktreeRecord:
-        return self.client.prepare_task_worktree(
+        return self._client_for_session(session_id).prepare_task_worktree(
             session_id,
             WorkerTaskWorktreeRequest(
                 repo_name=repo_name,
@@ -420,7 +457,7 @@ class ContainerWorkerVmExecutionBackend:
         expected_target_dir: str,
         dry_run: bool = False,
     ) -> WorkerTaskWorktreeCleanupRecord:
-        return self.client.cleanup_task_worktree(
+        return self._client_for_session(session_id).cleanup_task_worktree(
             session_id,
             WorkerTaskWorktreeCleanupRequest(
                 repo_name=repo_name,
@@ -443,7 +480,7 @@ class ContainerWorkerVmExecutionBackend:
         key_name: str = "evander-git-write",
         alias_is_exact: bool = False,
     ) -> WorkerGitWriteKeyRecord:
-        return self.client.provision_git_write_key(
+        return self._client_for_session(session_id).provision_git_write_key(
             session_id,
             WorkerGitWriteKeyRequest(
                 git_host=git_host,
@@ -455,7 +492,7 @@ class ContainerWorkerVmExecutionBackend:
         )
 
     def revoke_git_key(self, *, session_id: str, key_name: str) -> WorkerGitKeyDeleteRecord:
-        return self.client.revoke_git_key(session_id, key_name)
+        return self._client_for_session(session_id).revoke_git_key(session_id, key_name)
 
     def write_files(
         self,
@@ -463,7 +500,7 @@ class ContainerWorkerVmExecutionBackend:
         session_id: str,
         files: list[dict[str, Any]],
     ) -> WorkerFileWriteRecord:
-        return self.client.write_files(
+        return self._client_for_session(session_id).write_files(
             session_id,
             WorkerFileWriteRequest.model_validate({"files": files}),
         )
@@ -474,7 +511,9 @@ class ContainerWorkerVmExecutionBackend:
         session_id: str,
         relative_path: str,
     ) -> str:
-        return self.client.read_session_artifact_text(session_id, relative_path)
+        return self._client_for_session(session_id).read_session_artifact_text(
+            session_id, relative_path
+        )
 
     def provision_mssql_database(
         self,
@@ -482,18 +521,18 @@ class ContainerWorkerVmExecutionBackend:
         session_id: str,
         logical_name: str,
     ) -> WorkerMssqlDatabaseRecord:
-        record = self.client.provision_mssql_database(
+        record = self._client_for_session(session_id).provision_mssql_database(
             session_id,
             WorkerMssqlDatabaseRequest(logical_name=logical_name),
         )
-        return self._apply_mssql_endpoint_config(record)
+        return self._apply_mssql_endpoint_config(record, config=self.config_for_session(session_id))
 
     def list_mssql_databases(
         self,
         *,
         session_id: str,
     ) -> WorkerMssqlDatabaseListRecord:
-        return self.client.list_mssql_databases(session_id)
+        return self._client_for_session(session_id).list_mssql_databases(session_id)
 
     def drop_mssql_database(
         self,
@@ -501,7 +540,7 @@ class ContainerWorkerVmExecutionBackend:
         session_id: str,
         logical_name: str,
     ) -> WorkerMssqlDatabaseDeleteRecord:
-        return self.client.drop_mssql_database(session_id, logical_name)
+        return self._client_for_session(session_id).drop_mssql_database(session_id, logical_name)
 
     def delete_session(self, session_id: str) -> dict[str, Any]:
         normalized_session_id = str(session_id or "").strip()
@@ -522,7 +561,9 @@ class ContainerWorkerVmExecutionBackend:
                 ]
         attempted_at = now_utc()
         try:
-            response = self.client.delete_session(normalized_session_id)
+            response = self._client_for_session(normalized_session_id).delete_session(
+                normalized_session_id
+            )
         except ContainerWorkerClientError as exc:
             error = sanitize_text(str(exc))
             self._mark_session_cleanup_failed(
@@ -541,7 +582,8 @@ class ContainerWorkerVmExecutionBackend:
 
     def _job_request(self, prepared: PreparedExecution) -> WorkerJobRequest:
         command = self._command_from_spec(prepared.command)
-        image = str(prepared.image or self.config.container_worker_default_image).strip()
+        config = self.config_for_session(prepared.session_id or prepared.execution_id)
+        image = str(prepared.image or config.container_worker_default_image).strip()
         payload: dict[str, Any] = {
             "session_id": prepared.session_id or prepared.execution_id,
             "job_id": prepared.execution_id,
@@ -566,10 +608,12 @@ class ContainerWorkerVmExecutionBackend:
     def _apply_mssql_endpoint_config(
         self,
         record: WorkerMssqlDatabaseRecord,
+        *,
+        config: GatewayConfig,
     ) -> WorkerMssqlDatabaseRecord:
-        server = str(self.config.container_worker_mssql_host or record.server).strip()
+        server = str(config.container_worker_mssql_host or record.server).strip()
         server = server or record.server
-        port = int(self.config.container_worker_mssql_port)
+        port = int(config.container_worker_mssql_port)
         if server == record.server and port == record.port:
             return record
         connection_string = (

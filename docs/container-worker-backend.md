@@ -10,7 +10,9 @@ containers.
 
 ## Control-Plane Configuration
 
-`container_worker_vm` is wired for early single-worker control-plane use. Configure the host gateway with the worker URL and the environment variable that contains the bearer token:
+`container_worker_vm` selects a default worker for new sessions. Existing sessions retain
+their assigned worker when that default changes. Configure the host gateway with the worker
+URL and the environment variable that contains the bearer token:
 
 ```yaml
 execution_backend: container_worker_vm
@@ -55,7 +57,8 @@ the final, whole-job deadline if the agent cannot recover.
 `container_worker_codex_auth_mode` remains the inherited Codex usage source for compatibility.
 Keep `metered_api` for the existing OpenAI relay, or use `chatgpt_subscription` with an explicitly
 selected session profile. The directory-selected `container_worker_base_url` determines the
-effective worker; directory configuration does not select, default, grant, or restrict profiles.
+worker for new sessions; existing sessions use their saved worker assignment. Directory
+configuration does not select, default, grant, or restrict subscription profiles.
 The subscription selection is effective only for container Codex turns whose effective
 `model_provider_mode` is `openai_public`. A `local_openai` or `azure_openai` turn uses its
 configured private/API-key route without rewriting stored session state, and non-Codex agents do
@@ -88,8 +91,8 @@ container_worker_images:
   dotnet-playwright: "evander-runner-dotnet-playwright:2026-06-05"
 ```
 
-This is the Phase 5 first slice: one configured worker VM. The worker daemon still treats `none`
-as the safe default for disposable job containers, and the supported non-`none` path is the single
+Each worker VM is deployed independently. The worker daemon still treats `none`
+as the safe default for disposable job containers, and the supported non-`none` path is a
 worker VM deployment with an explicit egress policy. If the worker VM uses a non-`none` Docker
 network, the deployment must enable `evander_worker_egress_policy_enabled` and provide an
 allowlist rather than relying on Docker networking alone.
@@ -210,6 +213,119 @@ result read-only at `/opt/evander/toolchains/mssql-client`, and verifies `sqlcmd
 runner image. This adds only a client to disposable containers; the SQL Server engine and database
 files remain on the worker VM. Database connectivity still requires a session-scoped login returned
 by the existing MSSQL provisioning tools.
+
+## Changing the Default Worker
+
+A session's worker assignment is saved on the control plane before its first worker
+operation. It retains the worker URL, bearer-token environment-variable name, Git source
+restriction, image configuration, relay addresses (including their fallback gateway settings),
+workspace/authentication defaults, and database endpoint. Secret values are resolved on the
+host at request time. Model policy, tool permissions, resource limits, and job deadlines
+continue to resolve normally.
+
+Changing `container_worker_base_url` and related connection settings affects new sessions.
+Existing sessions, resumed turns, and create retries remain on their original worker. Job
+inspection, logs, Git, files, database provisioning, and cleanup use the saved assignment too.
+An unavailable assigned worker produces an error/retry on that worker; there is no automatic
+fallback or workspace migration.
+
+Admin directory configuration saves pin existing container sessions in the affected directory
+and descendants before changing worker settings. If an older session names an unknown worker
+whose connection settings cannot be recovered, the save fails without changing the default.
+
+For upgrades or configuration managed outside Admin, preview and apply the backfill while
+the original worker settings are still configured, before changing any defaults:
+
+```bash
+evander-cli execution pin-worker-assignments --runtime-dir runtime
+evander-cli execution pin-worker-assignments --runtime-dir runtime --apply
+```
+
+Use `--directory-path root/example` to limit either command to that subtree. The command
+includes sessions found only in execution records, such as legacy `start-container-job` jobs,
+and validates all selected sessions before writing assignments. It can recover worker identity
+from execution records or older session metadata; agents with neither are pinned to their
+current effective directory worker during this pre-cutover step. It does not contact workers,
+move workspaces, or restart jobs. Deploy this version to every control-plane process before
+switching defaults, so older processes cannot bypass assignment handling.
+
+Keep the original token environment variable available to every control-plane service that
+uses the worker. Use a distinct environment-variable name for the new worker if it has a
+different token. Rotate secret values normally; changing the default token variable does
+not update existing assignments. Assigned image and connection settings likewise remain
+captured for existing agents. Moving an existing agent or replacing its saved connection
+settings requires a separate migration; changing session `worker_url` metadata is insufficient.
+Use a new session ID for an agent that should use the new worker.
+
+Include `runtime/container-worker-assignments.db` in control-plane backups. Assignments are
+retained after cleanup alongside execution tombstones, so late status or cleanup requests
+cannot be redirected by a later default change. Each worker keeps its own session storage.
+
+## Selecting a Worker When Creating an Agent
+
+Configure named choices in the directory's `providers` configuration. Existing
+`container_worker_*` settings remain the directory default. For example:
+
+```json
+{
+  "container_worker_base_url": "http://worker-one.internal:11888",
+  "container_worker_token_env": "WORKER_ONE_TOKEN",
+  "container_workers": {
+    "fast": {
+      "display_name": "Fast worker",
+      "base_url": "http://worker-two.internal:11888",
+      "token_env": "WORKER_TWO_TOKEN",
+      "guest_gateway_url": "http://control-plane.internal:8000/mcp",
+      "guest_openai_base_url": "http://control-plane.internal:11434/v1",
+      "git_allowed_from": "10.50.0.2",
+      "default_image": "evander-runner:latest"
+    }
+  }
+}
+```
+
+Every entry requires `base_url` and `token_env`; only the name of a host environment
+variable is stored. `display_name` is optional. Connection overrides use the matching
+`container_worker_*` setting name without that prefix: `images`,
+`workspace_persistence`, `codex_auth_mode`, `guest_*` relay/package URLs,
+`git_allowed_from`, and `mssql_enabled`, `mssql_host`, `mssql_port`. Omitted settings
+inherit the effective directory defaults; configure all endpoints needed from the
+new worker's network. Child directories inherit the worker catalog and can add or
+replace named entries, with a complete address and token reference for each entry.
+
+Admin Web and Team's shared creation dialog offer **Worker → Directory default**
+or a configured worker. Changing the selection reloads that worker's image and
+subscription-profile choices. The manual create API and asynchronous create-operation
+API accept `"worker_id": "fast"`. Workflow `effect:agent:create` accepts the same
+field as a literal selector or runtime binding:
+
+```json
+{
+  "id": "create-fast-agent",
+  "display_name": "Create agent on fast worker",
+  "type": "effect:agent:create",
+  "execution_backend": "container_worker_vm",
+  "session_id": "new-agent",
+  "worker_id": "fast"
+}
+```
+
+For a manually started container job, use
+`evander-cli execution start-container-job --directory-path root --worker-id fast --session-id new-job --command 'echo hello'`.
+The CLI resolves and pins the selected worker before checking its token or starting work.
+
+Omitting `worker_id` uses the directory default for a new session. Unknown IDs and
+worker overrides on `libvirt_vm` are rejected. Existing sessions always retain their
+saved assignment: omitting the override or repeating the original ID preserves it,
+even if its catalog entry was later edited or removed. A different ID is rejected,
+including on workflow upserts and no-op retries. Legacy sessions without a named
+assignment must keep their existing worker; create a new session to choose a worker.
+
+The catalog is placement configuration, not worker provisioning or load balancing.
+Each worker needs its own daemon, state, authentication, and network isolation. To
+coexist with another control plane's worker on the same physical host, use a separate
+worker VM with separate storage and network addresses. Keep both control planes'
+worker credentials and session stores separate.
 
 ## Cleanup Visibility
 

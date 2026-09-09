@@ -15874,6 +15874,150 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
     assert payload["items"][0]["host"]["image_alias"] == "dotnet-playwright"
 
 
+def test_admin_web_agent_creation_selects_configured_worker(tmp_path, monkeypatch):
+    from evander.execution.worker_assignments import ContainerWorkerAssignmentRepository
+
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    assert service.operations_admin.write_directory_domain_config(
+        "root",
+        "providers",
+        {
+            "container_worker_base_url": "http://default.test",
+            "container_worker_token_env": "DEFAULT_TOKEN",
+            "container_workers": {
+                "fast": {
+                    "display_name": "Fast worker",
+                    "base_url": "http://fast.test",
+                    "token_env": "FAST_TOKEN",
+                    "default_image": "fast:latest",
+                    "images": {"special": "fast:special"},
+                    "guest_gateway_url": "http://vpn.test:8000/mcp",
+                }
+            },
+        },
+    ).ok
+    calls = []
+    fail_retry_once = True
+
+    class WorkerClient:
+        def __init__(self, *, base_url, token_env, **kwargs):
+            self.base_url = base_url
+            self.token_env = token_env
+
+        def list_codex_auth_profiles(self):
+            profile_id = (
+                "fast-account" if self.base_url == "http://fast.test" else "default-account"
+            )
+            calls.append(("profiles", self.base_url, self.token_env))
+            return {"profiles": [{"profile_id": profile_id, "enabled": True}]}
+
+        def prepare_session(self, request):
+            nonlocal fail_retry_once
+            calls.append(("prepare", self.base_url, self.token_env))
+            if request.session_id == "retry" and fail_retry_once:
+                fail_retry_once = False
+                raise RuntimeError("worker unavailable")
+            return WorkerSessionRecord(
+                session_id=request.session_id,
+                root_path="/worker/session",
+                agent_home_path="/worker/session/agent_home",
+                repo_root_path="/worker/session/agent_home/repos",
+                artifacts_path="/worker/session/artifacts",
+                logs_path="/worker/session/logs",
+                metadata_path="/worker/session/metadata.json",
+                metadata=request.metadata,
+            )
+
+        def write_files(self, session_id, request):
+            calls.append(("files", self.base_url, self.token_env))
+            assert "http://vpn.test:8000/mcp" in next(
+                file.content
+                for file in request.files
+                if file.destination_path == "/home/agent/.evander/session.env"
+            )
+
+    monkeypatch.setattr(
+        "evander.execution.container_worker_backend.ContainerWorkerClient", WorkerClient
+    )
+    monkeypatch.setattr(
+        service.codex_auth_admin,
+        "_client_for_config",
+        lambda config: WorkerClient(
+            base_url=config.container_worker_base_url,
+            token_env=config.container_worker_token_env,
+        ),
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+    options = client.get("/api/admin/agents/create-options?worker_id=fast")
+    assert options.status_code == 200
+    worker = options.json()["container_worker"]
+    assert worker["workers"] == [{"worker_id": "fast", "display_name": "Fast worker"}]
+    assert worker["selected_worker_id"] == "fast"
+    assert worker["images"] == [{"alias": "special", "image_ref": "fast:special"}]
+    assert worker["subscription_profiles"][0]["profile_id"] == "fast-account"
+    assert "FAST_TOKEN" not in options.text and "http://fast.test" not in options.text
+    assert client.get("/api/admin/agents/create-options?worker_id=unknown").status_code == 400
+    catalog = client.get("/api/workflow-editor/catalog?worker_id=fast")
+    assert catalog.status_code == 200, catalog.text
+    fields = {
+        field["key"]: field
+        for node in catalog.json()["nodes"]
+        if node["type"] == "effect:agent:create"
+        for field in node["fields"]
+    }
+    assert fields["worker_id"]["options"][0]["value"] == "fast"
+    assert fields["subscription_profile_id"]["options"][0]["value"] == "fast-account"
+    assert client.get("/api/workflow-editor/catalog?worker_id=unknown").status_code == 400
+
+    response = client.post(
+        "/api/admin/agents",
+        json={
+            "backend": "container_worker_vm",
+            "session_id": "chosen",
+            "worker_id": "fast",
+            "container_image": "special",
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["container_image"] == "fast:special"
+    assignment = ContainerWorkerAssignmentRepository(service.config.runtime_dir).get("chosen")
+    assert assignment.worker_id == "fast"
+    assert (
+        service.runtime.session_repository.get_session("chosen").metadata["worker_url"]
+        == "http://fast.test"
+    )
+    assert ("prepare", "http://fast.test", "FAST_TOKEN") in calls
+    assert ("files", "http://fast.test", "FAST_TOKEN") in calls
+    before_rejections = len(calls)
+    for backend in ("libvirt_vm", "container_worker_vm"):
+        rejected = client.post(
+            "/api/admin/agents",
+            json={
+                "backend": backend,
+                "vm_name": "vm",
+                "session_id": "invalid",
+                "worker_id": "unknown",
+            },
+        )
+        assert rejected.status_code == 400, rejected.text
+    assert len(calls) == before_rejections
+    retry_payload = {"backend": "container_worker_vm", "session_id": "retry", "worker_id": "fast"}
+    assert client.post("/api/admin/agents", json=retry_payload).status_code == 400
+    assert service.runtime.session_repository.get_session("retry") is None
+    assert service.operations_admin.write_directory_domain_config(
+        "root",
+        "providers",
+        {
+            "container_worker_base_url": "http://replacement.test",
+            "container_worker_token_env": "REPLACEMENT_TOKEN",
+        },
+    ).ok
+    retried = client.post("/api/admin/agents", json=retry_payload)
+    assert retried.status_code == 201, retried.text
+    assert calls[-1] == ("files", "http://fast.test", "FAST_TOKEN")
+
+
 def test_admin_web_agents_create_container_duplicate_session_returns_400(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -16205,7 +16349,13 @@ def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
     response = client.delete("/api/admin/agents/container-session?backend=container_worker_vm")
 
     assert response.status_code == 200
-    assert backend_kwargs == [{"directory_path": "root", "worker_url": "http://worker.test"}]
+    assert backend_kwargs == [
+        {
+            "directory_path": "root",
+            "worker_url": "http://worker.test",
+            "session_id": "container-session",
+        }
+    ]
     assert fake_backend.deleted_sessions == ["container-session"]
     assert service.runtime.session_repository.get_session("container-session") is None
     assert repository.read_all() == {}

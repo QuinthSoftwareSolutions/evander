@@ -44,6 +44,7 @@ from evander.models import (
 )
 from evander.provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
 from evander.container_worker_images import normalize_container_worker_images
+from evander.container_workers import ContainerWorkerProfile
 from evander.events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
@@ -303,6 +304,7 @@ class GatewayConfig(BaseModel):
     enable_directory_scoped_config: bool = False
     execution_backend: Literal["libvirt_vm", "container_worker_vm"] = "libvirt_vm"
     container_worker_base_url: str | None = None
+    container_workers: dict[str, ContainerWorkerProfile] = Field(default_factory=dict)
     container_worker_token_env: str = Field(default="EVANDER_WORKER_TOKEN", min_length=1)
     container_worker_default_image: str = Field(default="evander-runner:latest", min_length=1)
     container_worker_images: dict[str, str] = Field(default_factory=dict)
@@ -806,6 +808,18 @@ class GatewayConfig(BaseModel):
     @classmethod
     def normalize_container_worker_images_field(cls, value: object) -> dict[str, str]:
         return normalize_container_worker_images(value)
+
+    @field_validator("container_workers")
+    @classmethod
+    def validate_container_worker_ids(
+        cls, value: dict[str, ContainerWorkerProfile]
+    ) -> dict[str, ContainerWorkerProfile]:
+        for worker_id in value:
+            if not worker_id or worker_id != worker_id.strip():
+                raise ValueError(
+                    "container_workers IDs must be nonempty and have no surrounding whitespace"
+                )
+        return value
 
     @field_validator("agent_consultation_profiles", mode="before")
     @classmethod

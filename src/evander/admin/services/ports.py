@@ -150,4 +150,6 @@ class ContainerWorkerBackendPort(Protocol):
         *,
         directory_path: str | None = None,
         worker_url: str | None = None,
+        worker_id: str | None = None,
+        session_id: str | None = None,
     ) -> Any: ...

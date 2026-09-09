@@ -101,6 +101,7 @@ class OperatorSteeringAdminService:
             None,
         )
         backend = self._deps.container_worker_backend(
+            session_id=session_id,
             directory_path=directory_path,
             worker_url=self._deps.container_worker_url_for_target(
                 session=session,

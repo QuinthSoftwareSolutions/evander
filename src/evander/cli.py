@@ -449,6 +449,9 @@ def _build_execution_backend_for_kind(
     target: str | None = None,
     default_container: bool = False,
     require_container_token: bool = True,
+    directory_path: str | None = None,
+    session_id: str | None = None,
+    worker_id: str | None = None,
 ):
     cfg = _load_runtime_config_from_option(config_path)
     if backend is not None:
@@ -461,6 +464,25 @@ def _build_execution_backend_for_kind(
         selected = ExecutionBackendKind(str(cfg.execution_backend))
 
     if selected == ExecutionBackendKind.CONTAINER_WORKER_VM:
+        from evander.admin.services.container_worker_assignment_service import (
+            ContainerWorkerAssignmentService,
+        )
+        from evander.provider_config import ProviderConfigResolver
+
+        if target:
+            record = _container_worker_repository(cfg).resolve(target)
+            cfg = ProviderConfigResolver(cfg).resolve_for_directory(record.directory_path)
+            cfg = ContainerWorkerAssignmentService(cfg).resolve(
+                record.session_id,
+                worker_url=record.worker_url,
+                directory_path=record.directory_path,
+            )
+        else:
+            cfg = ProviderConfigResolver(cfg).resolve_for_directory(directory_path or "root")
+            if session_id:
+                cfg = ContainerWorkerAssignmentService(cfg).resolve(
+                    session_id, directory_path=directory_path, worker_id=worker_id
+                )
         if require_container_token:
             _preflight_container_worker_config(cfg)
         elif not cfg.container_worker_base_url:
@@ -922,11 +944,43 @@ def _container_mapping_payload(record) -> dict[str, object]:
     }
 
 
+@execution_app.command("pin-worker-assignments")
+def execution_pin_worker_assignments(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    apply: Annotated[
+        bool, typer.Option("--apply", help="Persist assignments; defaults to preview.")
+    ] = False,
+    directory_path: Annotated[
+        str | None,
+        typer.Option("--directory-path", help="Restrict to this directory and descendants."),
+    ] = None,
+) -> None:
+    """Pin legacy agents to their current worker before changing worker defaults."""
+    from evander.admin.services.container_worker_assignment_service import (
+        ContainerWorkerAssignmentService,
+    )
+
+    cfg = _load_runtime_config_from_option(config)
+    try:
+        rows = ContainerWorkerAssignmentService(cfg).pin_existing_sessions(
+            directory_path=directory_path, persist=apply
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps({"applied": apply, "count": len(rows), "assignments": rows}, indent=2))
+
+
 @execution_app.command("start-container-job")
 def execution_start_container_job(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     session_id: Annotated[
         str | None, typer.Option("--session-id", help="Session id for worker persistence.")
+    ] = None,
+    worker_id: Annotated[
+        str | None,
+        typer.Option(
+            "--worker-id", help="Configured named worker; defaults to directory selection."
+        ),
     ] = None,
     command: Annotated[
         str, typer.Option("--command", help="Command to run inside the worker container.")
@@ -964,7 +1018,18 @@ def execution_start_container_job(
 ) -> None:
     if not command.strip():
         raise typer.BadParameter("--command is required")
-    backend = _build_execution_backend_for_kind(config, default_container=True)
+    if worker_id and not session_id:
+        session_id = target_name or f"session-{uuid.uuid4().hex}"
+    try:
+        backend = _build_execution_backend_for_kind(
+            config,
+            default_container=True,
+            directory_path=directory_path,
+            session_id=session_id,
+            worker_id=worker_id,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     prepared = backend.prepare(
         ExecutionSpec(
             backend=ExecutionBackendKind.CONTAINER_WORKER_VM,

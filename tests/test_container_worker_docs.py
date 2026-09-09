@@ -24,7 +24,9 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "--security-opt no-new-privileges" in docs
     assert "--sandbox-profile strict" in docs
     assert "--tmpfs /tmp:rw,noexec,nosuid,size=4g" in docs
-    assert "Phase 5 first slice" in docs
+    assert "Existing sessions retain" in docs
+    assert "execution pin-worker-assignments" in docs
+    assert "container-worker-assignments.db" in docs
     assert "single-worker" in docs
     assert "evander_worker_egress_policy_enabled" in docs
     assert "DOCKER-USER" in docs

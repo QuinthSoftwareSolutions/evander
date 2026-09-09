@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-09-09 - Durable container worker assignments (0.30.0)
+
+- Keep existing container agents on their assigned worker when the directory default
+  changes, while new agents start on the new default. Persist assignments before
+  provisioning, including worker authentication references, relay and Git settings,
+  images, and database endpoints; retain assignments through retries and cleanup.
+- Route resumed work, execution inspection, logs, files, Git, and cleanup to the
+  session's saved connection settings, including when agents on the same worker have
+  different defaults, without falling back to another host when it is unavailable.
+- Pin legacy agents before Admin configuration changes and add
+  `execution pin-worker-assignments` with a preview and explicit apply mode for upgrades.
+  Include jobs that have execution records without session manifests.
+  Refuse a cutover when an existing worker's connection settings cannot be recovered.
+- Add directory-scoped `container_workers` choices and a `worker_id` override for
+  workflow and manual agent creation, including Admin Web, Team, and the container-job
+  CLI. Load images and subscription profiles from the selected worker, and reject attempts to move an
+  existing session through a creation override.
+- Report inherited Codex authentication from the saved worker assignment so billing
+  mode and policy editing stay consistent after worker defaults change.
+
 ## 2026-09-08 - Release PR work-item links (0.29.0)
 
 - Capture originating ADO work-item IDs with the immutable release publication context and

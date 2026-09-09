@@ -136,6 +136,7 @@ function resetBackendSensitiveFields(
   return {
     ...form,
     backend: nextBackend,
+    workerId: nextBackend === "container_worker_vm" ? form.workerId : "",
     mssql: nextBackend === "libvirt_vm" ? form.mssql : false,
     mssqlInitRoot: nextBackend === "libvirt_vm" ? form.mssqlInitRoot : "",
     agentProvider: nextAgentProvider,
@@ -177,19 +178,22 @@ export function AgentCreateDialog({
 }: AgentCreateDialogProps) {
   const [createForm, setCreateForm] = useState<AgentCreateFormState>(() => emptyCreateForm());
   const [createOptions, setCreateOptions] = useState<AgentCreateOptionsResponse | null>(null);
+  const [optionsLoading, setOptionsLoading] = useState(true);
+  const [optionsError, setOptionsError] = useState("");
   const [inlineValidation, setInlineValidation] = useState("");
   const [createLabelsValidationError, setCreateLabelsValidationError] = useState<string | null>(null);
   const [createHttpTargetsValidationError, setCreateHttpTargetsValidationError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
     setCreateOptions(null);
     setCreateForm((current) => ({
       ...current,
       agentProvider: "",
       vmImage: "",
       containerImage: "",
+      workerId: "",
+      subscriptionProfileId: "",
       initialPolicy: {
         ...current.initialPolicy,
         connectorGrants: {},
@@ -198,19 +202,27 @@ export function AgentCreateDialog({
         emailMailboxGrants: [],
       },
     }));
+  }, [directoryPath]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setOptionsLoading(true);
+    setOptionsError("");
     const refresh = async () => {
       try {
-        const options = await loadAgentCreateOptions(directoryPath);
+        const options = await loadAgentCreateOptions(directoryPath, createForm.workerId);
         if (!cancelled) setCreateOptions(options);
-      } catch {
-        if (!cancelled) setCreateOptions(null);
+      } catch (error) {
+        if (!cancelled) setOptionsError(error instanceof Error ? error.message : "Unable to load worker options.");
+      } finally {
+        if (!cancelled) setOptionsLoading(false);
       }
     };
     void refresh();
     return () => {
       cancelled = true;
     };
-  }, [directoryPath]);
+  }, [directoryPath, createForm.workerId]);
 
   const createProviderOptions = useMemo(
     () => (createOptions?.agent_providers ?? []).filter((option) =>
@@ -237,6 +249,7 @@ export function AgentCreateDialog({
   const createEmailMailboxOptions = createOptions?.email_mailboxes ?? [];
 
   async function handleSubmit() {
+    if (optionsLoading || optionsError) return;
     if (createForm.backend === "libvirt_vm" && !createForm.vmName.trim()) {
       setInlineValidation("VM name is required.");
       return;
@@ -312,6 +325,7 @@ export function AgentCreateDialog({
         </div>
         <div className="modal-body">
           {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
+          {optionsError ? <div role="alert" className="callout error-callout">{optionsError}</div> : null}
           <div className="config-field-grid">
             <label className="field-stack">
               <CreateFieldLabel tooltip="Execution target for the agent. VM agent launches a libvirt VM; Container worker prepares a worker session that runs in a managed container.">
@@ -427,6 +441,7 @@ export function AgentCreateDialog({
                 <span className="select-field-control">
                   <select
                     value={createForm.subscriptionProfileId}
+                    disabled={optionsLoading}
                     onChange={(event) =>
                       setCreateForm((current) => ({
                         ...current,
@@ -549,13 +564,39 @@ export function AgentCreateDialog({
                   />
                 </label>
                 <label className="field-stack">
-                  <CreateFieldLabel tooltip="Approved container image alias for worker sessions. Leave blank to use the directory default runner image.">
+                  <CreateFieldLabel tooltip="Worker for this new agent. Leave blank to use the directory default. The agent will keep its assigned worker for future work.">
+                    Worker
+                  </CreateFieldLabel>
+                  <span className="select-field-control">
+                    <select
+                      value={createForm.workerId}
+                      disabled={submitting}
+                      onChange={(event) => {
+                        setOptionsLoading(true);
+                        setCreateForm((current) => ({
+                          ...current,
+                          workerId: event.target.value,
+                          containerImage: "",
+                          subscriptionProfileId: "",
+                        }));
+                      }}
+                    >
+                      <option value="">Directory default</option>
+                      {(createOptions?.container_worker.workers ?? []).map((worker) => (
+                        <option key={worker.worker_id} value={worker.worker_id}>{worker.display_name}</option>
+                      ))}
+                    </select>
+                  </span>
+                </label>
+                <label className="field-stack">
+                  <CreateFieldLabel tooltip="Approved container image alias for worker sessions. Leave blank to use the selected worker's default runner image.">
                     Container image selector
                   </CreateFieldLabel>
                   {createOptions ? (
                     <span className="select-field-control">
                       <select
                         value={createForm.containerImage}
+                        disabled={optionsLoading}
                         onChange={(event) =>
                           setCreateForm((current) => ({ ...current, containerImage: event.target.value }))
                         }
@@ -826,7 +867,7 @@ export function AgentCreateDialog({
             </div>
           </div>
           <div className="inline-actions compact-actions">
-            <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || submitting} onClick={() => void handleSubmit()}>
+            <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || submitting || optionsLoading || Boolean(optionsError)} onClick={() => void handleSubmit()}>
               {submitting ? submittingLabel : submitLabel}
             </button>
           </div>

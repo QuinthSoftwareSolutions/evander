@@ -99,6 +99,7 @@ class VmAgentContainerSessionActionMixin:
         if is_container_session:
             worker_url = self._container_worker_url_for_target(session=session)
             backend = self.container_worker_backend(
+                session_id=session.session_id,
                 directory_path=session.directory_path,
                 worker_url=worker_url,
             )
@@ -163,6 +164,7 @@ class VmAgentContainerSessionActionMixin:
 
         execution_records = self._container_execution_records_for_session(normalized_session_id)
         worker_backend = self.container_worker_backend(
+            session_id=session.session_id,
             directory_path=session.directory_path,
             worker_url=self._container_worker_url_for_target(
                 session=session,

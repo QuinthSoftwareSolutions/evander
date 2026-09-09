@@ -584,7 +584,8 @@ def workflow_routes(
                 request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path
             )
             catalog = service.workflow_config_admin.read_workflow_editor_catalog(
-                directory_path=directory_path
+                directory_path=directory_path,
+                worker_id=(request.query_params.get("worker_id") or "").strip() or None,
             )
         except ValueError as exc:
             return json_error(str(exc))

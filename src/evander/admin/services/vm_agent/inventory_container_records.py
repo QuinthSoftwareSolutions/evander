@@ -24,6 +24,7 @@ class VmAgentContainerRecordInventoryMixin:
                 continue
             try:
                 self.container_worker_backend(
+                    session_id=record.session_id,
                     directory_path=record.directory_path,
                     worker_url=self._container_worker_url_for_target(record=record),
                 ).inspect(record.execution_id)
@@ -192,6 +193,7 @@ class VmAgentContainerRecordInventoryMixin:
         if reconcile:
             try:
                 self.container_worker_backend(
+                    session_id=record.session_id,
                     directory_path=record.directory_path,
                     worker_url=self._container_worker_url_for_target(record=record),
                 ).inspect(record.execution_id)

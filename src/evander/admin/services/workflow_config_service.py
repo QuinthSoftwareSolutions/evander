@@ -214,9 +214,11 @@ class WorkflowConfigAdminService:
         return self._read_composed_workflow_editor_document()
 
     def read_workflow_editor_catalog(
-        self, directory_path: str | None = None
+        self, directory_path: str | None = None, *, worker_id: str | None = None
     ) -> WorkflowEditorCatalogPayload:
-        return self._read_workflow_editor_catalog(directory_path=directory_path)
+        return self._read_workflow_editor_catalog(
+            directory_path=directory_path, worker_id=worker_id
+        )
 
     def coerce_workflow_editor_graphs(
         self,
@@ -2118,7 +2120,7 @@ class WorkflowConfigAdminService:
         ]
 
     def _read_workflow_editor_catalog(
-        self, directory_path: str | None = None
+        self, directory_path: str | None = None, *, worker_id: str | None = None
     ) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
         addon_catalog = self._addon_catalog or load_addons(
@@ -2137,7 +2139,20 @@ class WorkflowConfigAdminService:
         managed_git_repository_options = self._managed_git_reference_repository_options(
             directory_path
         )
-        subscription_profile_options = self._subscription_profile_options(directory_path)
+        from evander.provider_config import ProviderConfigResolver
+
+        worker_config = ProviderConfigResolver(self.config).resolve_for_directory(
+            self._normalize_directory_reference(directory_path)
+        )
+        if worker_id and worker_id not in worker_config.container_workers:
+            raise ValueError(f"Unknown configured worker_id: {worker_id!r}")
+        subscription_profile_options = self._subscription_profile_options(
+            directory_path, worker_id=worker_id
+        )
+        worker_options = [
+            _field_option(worker_id, profile.display_name or worker_id)
+            for worker_id, profile in sorted(worker_config.container_workers.items())
+        ]
         host_directory_trigger_options = self._directory_resource_trigger_options(directory_path)
         provider_catalog = self._load_workflow_provider_catalog(
             self._read_worker_provider_loader_config("trigger-orchestrator")
@@ -2179,6 +2194,8 @@ class WorkflowConfigAdminService:
                     and field.key == "communication_target_ids"
                     else field.model_copy(update={"options": subscription_profile_options})
                     if node.type == "effect:agent:create" and field.key == "subscription_profile_id"
+                    else field.model_copy(update={"options": worker_options})
+                    if node.type == "effect:agent:create" and field.key == "worker_id"
                     else field
                     for field in node.fields
                 ]
@@ -2275,13 +2292,15 @@ class WorkflowConfigAdminService:
         )
 
     def _subscription_profile_options(
-        self, directory_path: str | None
+        self, directory_path: str | None, *, worker_id: str | None = None
     ) -> list[WorkflowEditorFieldOption]:
         if self._codex_auth_admin is None:
             return []
         normalized = self._normalize_directory_reference(directory_path)
         try:
-            payload = self._codex_auth_admin.list_profiles(normalized)
+            payload = self._codex_auth_admin.list_profiles(
+                normalized, **({"worker_id": worker_id} if worker_id else {})
+            )
         except Exception:
             return []
         options: list[WorkflowEditorFieldOption] = []

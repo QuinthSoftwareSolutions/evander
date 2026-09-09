@@ -247,18 +247,27 @@ def effective_config_for_session(
     *,
     fallback_directory_path: str | None = None,
 ) -> GatewayConfig:
+    from evander.admin.services.container_worker_assignment_service import (
+        ContainerWorkerAssignmentError,
+        ContainerWorkerAssignmentService,
+    )
+
     for resolver in _provider_config_resolvers(context):
         resolve_for_session_id = getattr(resolver, "resolve_for_session_id", None)
         if callable(resolve_for_session_id):
             try:
                 return resolve_for_session_id(session_id)
+            except ContainerWorkerAssignmentError:
+                raise
             except ValueError:
                 pass
     config = effective_config_for_directory(context, fallback_directory_path)
     repository = runtime_session_repository(context, config)
     session = repository.get_session(session_id)
     if session is not None:
-        return effective_config_for_directory(context, session.directory_path)
+        config = effective_config_for_directory(context, session.directory_path)
+        if execution_backend_for_session(session, fallback_config=config) == "container_worker_vm":
+            return ContainerWorkerAssignmentService(config).resolve(session_id, session=session)
     return config
 
 
@@ -376,9 +385,6 @@ def selected_execution_backend_for_target(
 ) -> tuple[str, GatewayConfig]:
     explicit_backend = normalize_optional_string(payload.get("execution_backend"))
     base_config = effective_config_for_directory(context, directory_path)
-    if explicit_backend is not None:
-        return explicit_backend, base_config
-
     session_id = normalize_optional_string(payload.get("session_id"))
     target = normalize_optional_string(payload.get("target"))
     if session_id is None and target:
@@ -394,8 +400,10 @@ def selected_execution_backend_for_target(
                 session_id,
                 fallback_directory_path=session.directory_path,
             )
-            return execution_backend_for_session(session, fallback_config=config), config
-    return str(base_config.execution_backend), base_config
+            return explicit_backend or execution_backend_for_session(
+                session, fallback_config=config
+            ), config
+    return explicit_backend or str(base_config.execution_backend), base_config
 
 
 def container_backend(context: EffectRuntimeContext, config: GatewayConfig):
