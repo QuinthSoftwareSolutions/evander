@@ -121,6 +121,7 @@ def build_compact_wake_context(
         sort_key: Any,
         *,
         reverse: bool = False,
+        overflow: Any = _overflow_record,
     ) -> None:
         unique = _unique_records(rows)
         ordered = sorted((compact(row) for row in unique), key=sort_key, reverse=reverse)
@@ -130,7 +131,7 @@ def build_compact_wake_context(
         if len(ordered) > limit:
             omitted[key] = len(ordered) - limit
             context.setdefault("overflow", {})[key] = [
-                _overflow_record(row) for row in ordered[limit:]
+                overflow(row) for row in ordered[limit:]
             ]
 
     include(
@@ -257,6 +258,9 @@ def build_compact_wake_context(
         _compact_session_health,
         MAX_SESSION_HEALTH,
         _session_health_sort_key,
+        # Agent identity reads do not expose live health. Keep these already
+        # compact records self-contained, including beyond the preview limit.
+        overflow=dict,
     )
     if "operator_chat_participants" in lease:
         context["operator_chat_participants_replaces_prior"] = True
@@ -318,7 +322,6 @@ RECORD_READS = {
     "cases": {"tool": "team_get_case", "id_parameter": "case_id"},
     "case_index": {"tool": "team_get_case", "id_parameter": "case_id"},
     "subordinates": {"tool": "team_get_agent", "id_parameter": "agent_id"},
-    "session_health": {"tool": "team_get_agent", "id_parameter": "agent_id", "id_field": "agent"},
     "outcome_kinds": {"tool": "team_get_outcome_kind", "id_parameter": "definition_id"},
     "external_source_evidence_snapshots": {
         "tool": "team_get_source_evidence_snapshot",

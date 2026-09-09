@@ -9,6 +9,8 @@
   Guard delayed completions, newer dispatches, session changes, and policy resets.
 - Treat old synthetic lineage bindings as unbound so recovery uses current durable Team
   context. Add additive persistence migration and recovery/rollback guidance.
+- Skip handled or superseded missing-thread receipts before opening a state transaction.
+  Preserve actionable session-health fields in wake overflow without an unusable read reference.
 
 ## 2026-09-09 - Focused Team contexts (0.32.0)
 

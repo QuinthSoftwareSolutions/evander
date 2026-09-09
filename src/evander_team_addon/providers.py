@@ -5630,7 +5630,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             session_id = _completed_prompt_session_id(record)
             if dispatch is None or session_id != dispatch.session_id:
                 continue
-            requested_thread_id = (
+            requested_thread_id = _optional_text(
                 outputs.get("resume_thread_id")
                 if "resume_thread_id" in outputs
                 else AgentPromptEffectProvider._record_text_value(record, "resume_thread_id")
@@ -5642,6 +5642,22 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if not native_thread_observed and _resume_failure_reports_missing_thread(
                 outputs, resume_thread_id=requested_thread_id
             ):
+                runtime = state.agent_runtimes.get(dispatch.agent_id)
+                lineage_id = dispatch.work_lineage_id
+                if (
+                    runtime is None
+                    or lineage_id is None
+                    or runtime.work_lineage_thread_ids.get(lineage_id) != requested_thread_id
+                ):
+                    continue
+                owner = runtime.work_lineage_thread_dispatch_ids.get(lineage_id)
+                if owner != dispatch.id and not (
+                    owner is None and runtime.active_dispatch_id == dispatch.id
+                ):
+                    continue
+                # Handled or superseded failures need no full-state transaction.
+                # The mutation rechecks ownership if another wake wins the race
+                # after this snapshot was read.
                 state, _invalidated = TeamRuntimeService(repo).invalidate_agent_work_lineage_thread_binding(
                     agent_id=dispatch.agent_id,
                     dispatch_id=dispatch.id,
