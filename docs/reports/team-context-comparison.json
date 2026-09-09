@@ -1,0 +1,392 @@
+{
+  "baseline_commit": "243aed9fcda2f558d2eeea49992dba5481b71595",
+  "fixture_sha256": "faa8fcf404b6c7ef35d660092e486aa3fd2ef3ddee5d1940d6553c398c365e6b",
+  "provenance": "Synthetic sanitized examples; no historical token replay or billing data.",
+  "managed_guidance_before": {
+    "characters": 19728,
+    "utf8_bytes": 19728
+  },
+  "managed_guidance_after": {
+    "characters": 27765,
+    "utf8_bytes": 27765
+  },
+  "notes": [
+    "Wake sizes include the ordinary provider prompt; they exclude MCP schemas, system prompts and managed guidance loading.",
+    "Reads are compact serialized fixture records, excluding tool envelopes and request overhead. Full mode remains the baseline contract.",
+    "Targeted reads select task-0 and evidence-0 only, not completion of the entire dispatch; selected reads cost two extra calls versus full.",
+    "All-detail column retrieves every scoped task, inbox, blocker, review, project and evidence record; this exposes worst-case rehydration overhead.",
+    "Duplicate content counts repeated leaf-string bytes of at least 40 characters, excluding JSON keys, with each duplicate counted once.",
+    "Managed guidance bytes are reported separately; loading them, rebuilding contexts, retries, and rework must be measured in a live pilot.",
+    "50% wake and 35% targeted-read reductions are ambitious measurement targets, not functional acceptance gates or billing estimates."
+  ],
+  "rows": [
+    {
+      "fixture": "coding",
+      "mode": "fresh",
+      "wake_before": {
+        "characters": 20863,
+        "utf8_bytes": 20863
+      },
+      "wake_after": {
+        "characters": 10865,
+        "utf8_bytes": 10865
+      },
+      "wake_plus_guidance_bytes_before": 40591,
+      "wake_plus_guidance_bytes_after": 38630,
+      "wake_reduction_percent": 47.92,
+      "wake_duplicate_string_bytes_before": 3160,
+      "wake_duplicate_string_bytes_after": 440,
+      "full_read": {
+        "characters": 17110,
+        "utf8_bytes": 17110
+      },
+      "summary_read": {
+        "characters": 8070,
+        "utf8_bytes": 8070
+      },
+      "read_duplicate_string_bytes_before": 5620,
+      "read_duplicate_string_bytes_after": 440,
+      "targeted_retrievals": [
+        {
+          "collection": "tasks",
+          "id": "task-0",
+          "tool": "team_get_task",
+          "utf8_bytes": 1540
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0",
+          "tool": "team_get_source_evidence_snapshot",
+          "utf8_bytes": 4402
+        }
+      ],
+      "additional_read_calls_vs_full": 2,
+      "targeted_read_bytes_including_retrieval": 14012,
+      "targeted_read_reduction_percent": 18.11,
+      "all_detail_read_calls": 7,
+      "all_detail_read_bytes_including_summary": 23182
+    },
+    {
+      "fixture": "coding",
+      "mode": "retained",
+      "wake_before": {
+        "characters": 19923,
+        "utf8_bytes": 19923
+      },
+      "wake_after": {
+        "characters": 10379,
+        "utf8_bytes": 10379
+      },
+      "wake_plus_guidance_bytes_before": 39651,
+      "wake_plus_guidance_bytes_after": 38144,
+      "wake_reduction_percent": 47.9,
+      "wake_duplicate_string_bytes_before": 3160,
+      "wake_duplicate_string_bytes_after": 440,
+      "full_read": {
+        "characters": 17110,
+        "utf8_bytes": 17110
+      },
+      "summary_read": {
+        "characters": 8070,
+        "utf8_bytes": 8070
+      },
+      "read_duplicate_string_bytes_before": 5620,
+      "read_duplicate_string_bytes_after": 440,
+      "targeted_retrievals": [
+        {
+          "collection": "tasks",
+          "id": "task-0",
+          "tool": "team_get_task",
+          "utf8_bytes": 1540
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0",
+          "tool": "team_get_source_evidence_snapshot",
+          "utf8_bytes": 4402
+        }
+      ],
+      "additional_read_calls_vs_full": 2,
+      "targeted_read_bytes_including_retrieval": 14012,
+      "targeted_read_reduction_percent": 18.11,
+      "all_detail_read_calls": 7,
+      "all_detail_read_bytes_including_summary": 23182
+    },
+    {
+      "fixture": "independent-review",
+      "mode": "fresh",
+      "wake_before": {
+        "characters": 28127,
+        "utf8_bytes": 28127
+      },
+      "wake_after": {
+        "characters": 12449,
+        "utf8_bytes": 12449
+      },
+      "wake_plus_guidance_bytes_before": 47858,
+      "wake_plus_guidance_bytes_after": 40217,
+      "wake_reduction_percent": 55.74,
+      "wake_duplicate_string_bytes_before": 3751,
+      "wake_duplicate_string_bytes_after": 1271,
+      "full_read": {
+        "characters": 17289,
+        "utf8_bytes": 17289
+      },
+      "summary_read": {
+        "characters": 8877,
+        "utf8_bytes": 8877
+      },
+      "read_duplicate_string_bytes_before": 5856,
+      "read_duplicate_string_bytes_after": 1271,
+      "targeted_retrievals": [
+        {
+          "collection": "tasks",
+          "id": "task-0",
+          "tool": "team_get_task",
+          "utf8_bytes": 1549
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0",
+          "tool": "team_get_source_evidence_snapshot",
+          "utf8_bytes": 4402
+        }
+      ],
+      "additional_read_calls_vs_full": 2,
+      "targeted_read_bytes_including_retrieval": 14828,
+      "targeted_read_reduction_percent": 14.23,
+      "all_detail_read_calls": 9,
+      "all_detail_read_bytes_including_summary": 24495
+    },
+    {
+      "fixture": "independent-review",
+      "mode": "retained",
+      "wake_before": {
+        "characters": 27181,
+        "utf8_bytes": 27181
+      },
+      "wake_after": {
+        "characters": 11963,
+        "utf8_bytes": 11963
+      },
+      "wake_plus_guidance_bytes_before": 46912,
+      "wake_plus_guidance_bytes_after": 39731,
+      "wake_reduction_percent": 55.99,
+      "wake_duplicate_string_bytes_before": 3751,
+      "wake_duplicate_string_bytes_after": 1271,
+      "full_read": {
+        "characters": 17289,
+        "utf8_bytes": 17289
+      },
+      "summary_read": {
+        "characters": 8877,
+        "utf8_bytes": 8877
+      },
+      "read_duplicate_string_bytes_before": 5856,
+      "read_duplicate_string_bytes_after": 1271,
+      "targeted_retrievals": [
+        {
+          "collection": "tasks",
+          "id": "task-0",
+          "tool": "team_get_task",
+          "utf8_bytes": 1549
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0",
+          "tool": "team_get_source_evidence_snapshot",
+          "utf8_bytes": 4402
+        }
+      ],
+      "additional_read_calls_vs_full": 2,
+      "targeted_read_bytes_including_retrieval": 14828,
+      "targeted_read_reduction_percent": 14.23,
+      "all_detail_read_calls": 9,
+      "all_detail_read_bytes_including_summary": 24495
+    },
+    {
+      "fixture": "Truman-management",
+      "mode": "fresh",
+      "wake_before": {
+        "characters": 29360,
+        "utf8_bytes": 29360
+      },
+      "wake_after": {
+        "characters": 17090,
+        "utf8_bytes": 17090
+      },
+      "wake_plus_guidance_bytes_before": 49089,
+      "wake_plus_guidance_bytes_after": 44856,
+      "wake_reduction_percent": 41.79,
+      "wake_duplicate_string_bytes_before": 3390,
+      "wake_duplicate_string_bytes_after": 1270,
+      "full_read": {
+        "characters": 20968,
+        "utf8_bytes": 20968
+      },
+      "summary_read": {
+        "characters": 10641,
+        "utf8_bytes": 10641
+      },
+      "read_duplicate_string_bytes_before": 6875,
+      "read_duplicate_string_bytes_after": 1040,
+      "targeted_retrievals": [
+        {
+          "collection": "tasks",
+          "id": "task-0",
+          "tool": "team_get_task",
+          "utf8_bytes": 1543
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0",
+          "tool": "team_get_source_evidence_snapshot",
+          "utf8_bytes": 4402
+        }
+      ],
+      "additional_read_calls_vs_full": 2,
+      "targeted_read_bytes_including_retrieval": 16586,
+      "targeted_read_reduction_percent": 20.9,
+      "all_detail_read_calls": 9,
+      "all_detail_read_bytes_including_summary": 28826
+    },
+    {
+      "fixture": "Truman-management",
+      "mode": "retained",
+      "wake_before": {
+        "characters": 27837,
+        "utf8_bytes": 27837
+      },
+      "wake_after": {
+        "characters": 16604,
+        "utf8_bytes": 16604
+      },
+      "wake_plus_guidance_bytes_before": 47566,
+      "wake_plus_guidance_bytes_after": 44370,
+      "wake_reduction_percent": 40.35,
+      "wake_duplicate_string_bytes_before": 3390,
+      "wake_duplicate_string_bytes_after": 1270,
+      "full_read": {
+        "characters": 20968,
+        "utf8_bytes": 20968
+      },
+      "summary_read": {
+        "characters": 10641,
+        "utf8_bytes": 10641
+      },
+      "read_duplicate_string_bytes_before": 6875,
+      "read_duplicate_string_bytes_after": 1040,
+      "targeted_retrievals": [
+        {
+          "collection": "tasks",
+          "id": "task-0",
+          "tool": "team_get_task",
+          "utf8_bytes": 1543
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0",
+          "tool": "team_get_source_evidence_snapshot",
+          "utf8_bytes": 4402
+        }
+      ],
+      "additional_read_calls_vs_full": 2,
+      "targeted_read_bytes_including_retrieval": 16586,
+      "targeted_read_reduction_percent": 20.9,
+      "all_detail_read_calls": 9,
+      "all_detail_read_bytes_including_summary": 28826
+    },
+    {
+      "fixture": "Trudy-coordination",
+      "mode": "fresh",
+      "wake_before": {
+        "characters": 26030,
+        "utf8_bytes": 26030
+      },
+      "wake_after": {
+        "characters": 15511,
+        "utf8_bytes": 15511
+      },
+      "wake_plus_guidance_bytes_before": 45758,
+      "wake_plus_guidance_bytes_after": 43276,
+      "wake_reduction_percent": 40.41,
+      "wake_duplicate_string_bytes_before": 3390,
+      "wake_duplicate_string_bytes_after": 966,
+      "full_read": {
+        "characters": 19032,
+        "utf8_bytes": 19032
+      },
+      "summary_read": {
+        "characters": 9338,
+        "utf8_bytes": 9338
+      },
+      "read_duplicate_string_bytes_before": 6260,
+      "read_duplicate_string_bytes_after": 736,
+      "targeted_retrievals": [
+        {
+          "collection": "tasks",
+          "id": "task-0",
+          "tool": "team_get_task",
+          "utf8_bytes": 1540
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0",
+          "tool": "team_get_source_evidence_snapshot",
+          "utf8_bytes": 4402
+        }
+      ],
+      "additional_read_calls_vs_full": 2,
+      "targeted_read_bytes_including_retrieval": 15280,
+      "targeted_read_reduction_percent": 19.71,
+      "all_detail_read_calls": 8,
+      "all_detail_read_bytes_including_summary": 25990
+    },
+    {
+      "fixture": "Trudy-coordination",
+      "mode": "retained",
+      "wake_before": {
+        "characters": 24508,
+        "utf8_bytes": 24508
+      },
+      "wake_after": {
+        "characters": 15025,
+        "utf8_bytes": 15025
+      },
+      "wake_plus_guidance_bytes_before": 44236,
+      "wake_plus_guidance_bytes_after": 42790,
+      "wake_reduction_percent": 38.69,
+      "wake_duplicate_string_bytes_before": 3390,
+      "wake_duplicate_string_bytes_after": 966,
+      "full_read": {
+        "characters": 19032,
+        "utf8_bytes": 19032
+      },
+      "summary_read": {
+        "characters": 9338,
+        "utf8_bytes": 9338
+      },
+      "read_duplicate_string_bytes_before": 6260,
+      "read_duplicate_string_bytes_after": 736,
+      "targeted_retrievals": [
+        {
+          "collection": "tasks",
+          "id": "task-0",
+          "tool": "team_get_task",
+          "utf8_bytes": 1540
+        },
+        {
+          "collection": "external_source_evidence_snapshots",
+          "id": "evidence-0",
+          "tool": "team_get_source_evidence_snapshot",
+          "utf8_bytes": 4402
+        }
+      ],
+      "additional_read_calls_vs_full": 2,
+      "targeted_read_bytes_including_retrieval": 15280,
+      "targeted_read_reduction_percent": 19.71,
+      "all_detail_read_calls": 8,
+      "all_detail_read_bytes_including_summary": 25990
+    }
+  ]
+}

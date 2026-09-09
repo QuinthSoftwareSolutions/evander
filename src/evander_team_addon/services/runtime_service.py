@@ -132,6 +132,7 @@ from .domain.git_work_contexts import (
     finalize_active_git_work_contexts_for_dispatch,
     reconcile_git_work_context_lifecycle,
 )
+from .read_service import TeamReadService
 from .domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
     _manager_fallback_review_routing_authorities,
@@ -1240,6 +1241,9 @@ class TeamRuntimeService:
                 leases.append(
                     {
                         "agent": agent_payload,
+                        "supervisory_overview": TeamReadService(
+                            state=state_model, actor=agent,
+                        ).supervisory_overview(),
                         "runtime": runtime.model_dump(mode="json"),
                         "role_description_changed": (
                             runtime.last_delivered_role_description_fingerprint
@@ -1825,6 +1829,9 @@ class TeamRuntimeService:
                 leases.append(
                     {
                         "agent": manager_payload,
+                        "supervisory_overview": TeamReadService(
+                            state=state_model, actor=manager,
+                        ).supervisory_overview(),
                         "runtime": manager_runtime.model_dump(mode="json"),
                         "role_description_changed": (
                             manager_runtime.last_delivered_role_description_fingerprint

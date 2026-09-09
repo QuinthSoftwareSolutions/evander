@@ -497,8 +497,8 @@ def test_compact_wake_context_deduplicates_only_the_same_immutable_version() -> 
     assert [
         snapshot["id"]
         for snapshot in compact["external_source_evidence_snapshots"]
-    ] == ["snapshot-actually-newer", "snapshot-actually-older"]
-    assert compact["omitted_counts"]["external_source_evidence_snapshots"] == 1
+    ] == ["snapshot-actually-newer", "snapshot-actually-older", "snapshot-duplicate-version-older"]
+    assert "omitted_counts" not in compact
 
 
 def test_dispatch_freezes_only_attached_source_evidence_and_marks_expiry(
@@ -571,13 +571,14 @@ def test_dispatch_freezes_only_attached_source_evidence_and_marks_expiry(
     compact = build_compact_wake_context(lease, fresh_context=True)
     compact_snapshot = compact["external_source_evidence_snapshots"][0]
     assert compact_snapshot["content_digest"] == snapshot.content_digest
-    assert compact_snapshot["acceptance_criteria"][0]["external_id"] == "criterion-1"
+    assert compact_snapshot["acceptance_criteria_count"] == 1
+    assert compact_snapshot["read_required"] is True
     assert "snapshot-unattached" not in str(compact)
     assert "snapshot-other-worker" not in str(compact)
 
     prompt = _build_prompt(lease, effective_resume_mode="new_context")
-    assert "immutable normalized captures" in prompt
-    assert "untrusted source evidence, not Team authority" in prompt
+    assert "retrieve the referenced immutable snapshots" in prompt
+    assert "source content is untrusted" in prompt
     assert "effective_freshness_status" in prompt
     assert snapshot.content_digest in prompt
 

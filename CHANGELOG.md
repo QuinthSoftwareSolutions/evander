@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-09 - Focused Team contexts (0.32.0)
+
+- Make every ordinary Team wake independently actionable with current identity,
+  instructions, immutable scope, urgent operator directives, and retrieval references
+  for bounded detail. Share exact Git bindings and review snapshots within each payload
+  while preserving evidence versions, release candidates, and approval SHAs.
+- Add opt-in dispatch summary reads with complete scope IDs and a scoped individual
+  source-evidence read. Preserve the default full-read response and existing controls.
+- Update managed Team guidance to version 40 with focused reads and bounded shell
+  output, and move repeated review and management procedures into that guidance.
+- Supply managers with current supervisory counts without widening dispatch authority.
+  Exercise the existing work-lineage policy locally; leave operator policies unchanged.
+- Include synthetic offline comparisons that count additional retrieval and guidance
+  overhead, plus a deployment, pilot-measurement, and rollback runbook.
+
 ## 2026-09-09 - Managed website sessions (0.31.0)
 
 - Add generic, directory-scoped JSON login profiles with host-held credential references

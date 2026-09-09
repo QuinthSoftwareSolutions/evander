@@ -159,6 +159,7 @@ TEAM_LIST_AGENTS_TOOL = "team_list_agents"
 TEAM_GET_AGENT_TOOL = "team_get_agent"
 TEAM_GET_MY_IDENTITY_TOOL = "team_get_my_identity"
 TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL = "team_get_current_dispatch_context"
+TEAM_GET_SOURCE_EVIDENCE_SNAPSHOT_TOOL = "team_get_source_evidence_snapshot"
 TEAM_LIST_PROJECTS_TOOL = "team_list_projects"
 TEAM_GET_PROJECT_TOOL = "team_get_project"
 TEAM_LIST_OUTCOME_KINDS_TOOL = "team_list_outcome_kinds"
@@ -229,6 +230,7 @@ GOVERNANCE_TEAM_MCP_TOOL_NAMES = (
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
 )
 READ_TEAM_MCP_TOOL_NAMES = (
+    TEAM_GET_SOURCE_EVIDENCE_SNAPSHOT_TOOL,
     TEAM_LIST_TASKS_TOOL,
     TEAM_GET_TASK_TOOL,
     TEAM_LIST_INBOX_TOOL,
@@ -4029,6 +4031,7 @@ def _register_read_tools(
 
     def team_get_current_dispatch_context(
         session_id: str | None = None,
+        detail: Literal["summary", "full"] = "full",
     ) -> dict[str, Any]:
         caller = resolver.require_persistent_read_context(
             session_id=session_id,
@@ -4036,7 +4039,7 @@ def _register_read_tools(
         )
         dispatch_id = caller.active_dispatch_id or "current"
         return _team_read_get_result(
-            _read_service(caller).get_current_dispatch_context(),
+            _read_service(caller).get_current_dispatch_context(detail=detail),
             caller=caller,
             record_name="dispatch",
             record_id=dispatch_id,
@@ -4047,7 +4050,32 @@ def _register_read_tools(
         name=TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
         description=(
             "Get the calling agent's active immutable dispatch scope and hydrate "
-            "the scoped task, inbox, blocker, review, project, and Git records."
+            "the scoped task, inbox, blocker, review, project, and Git records. "
+            "Use detail=summary first for compact records and retrieval references; "
+            "detail=full (default) preserves the complete response."
+        ),
+    )
+
+    def team_get_source_evidence_snapshot(
+        snapshot_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_read_context(
+            session_id=session_id,
+            tool_name=TEAM_GET_SOURCE_EVIDENCE_SNAPSHOT_TOOL,
+        )
+        return _team_read_get_result(
+            _read_service(caller).get_source_evidence_snapshot(snapshot_id),
+            caller=caller,
+            record_name="source_evidence_snapshot",
+            record_id=snapshot_id,
+        )
+
+    server.add_tool(
+        team_get_source_evidence_snapshot,
+        name=TEAM_GET_SOURCE_EVIDENCE_SNAPSHOT_TOOL,
+        description=(
+            "Read one complete immutable evidence snapshot in the calling agent's active dispatch scope."
         ),
     )
 
