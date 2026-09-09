@@ -158,6 +158,7 @@ from evander_team_addon.providers import (
     _artifact_space_path_segment,
     _build_prompt,
     _build_team_chat_prompt,
+    _team_agent_guidance_content,
     _completed_agent_prompt_records,
     _create_project_repo_git_work_contexts,
     _ensure_project_repo_git_preparation_attempt,
@@ -1041,7 +1042,7 @@ def test_work_lineage_missing_thread_retries_once_with_fresh_context(
     assert resumer.calls[0]["resume_mode"] == "same_context"
     assert resumer.calls[1]["resume_thread_id"] is None
     assert resumer.calls[1]["resume_mode"] == "new_context"
-    assert '"context_mode": "fresh_full"' in str(resumer.calls[1]["prompt"])
+    assert _team_context_from_prompt(str(resumer.calls[1]["prompt"]))["context_mode"] == "fresh_full"
     runtime = repo.read().agent_runtimes["backend"]
     assert runtime.work_lineage_thread_ids == {lineage_id: "thread-fresh"}
     assert (
@@ -1650,12 +1651,11 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
     }
     assert fresh["operator_chat_participants_replaces_prior"] is True
     assert len(fresh["operator_chat_participants"]) == 15
-    assert [row["id"] for row in fresh["runtime_attention"]] == ["scoped", "inbox-mirror"]
+    assert [row["id"] for row in fresh["runtime_attention"]] == ["scoped"]
     assert "project_repo" not in fresh
     assert len(fresh["project_repos"]) == 1
-    assert fresh["project_repos"][0]["base_branch"] == "main"
-    assert fresh["project_repos"][0]["branch_context_id"] == "branch-context"
-    assert fresh["project_repos"][0]["agent_branch"] == "agents/session/tasks/task-integration"
+    assert "base_branch" not in fresh["project_repos"][0]
+    assert list(fresh["git_work_contexts"].values())[0]["base_branch"] == "main"
     assert fresh_prompt.count(worktree_path) == 1
     assert len(fresh_prompt) <= 16_000
 
@@ -1665,11 +1665,11 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
         effective_resume_mode="same_context",
     )
     retained = _team_context_from_prompt(retained_prompt)
-    assert retained["context_mode"] == "retained_delta"
-    assert set(retained["agent"]) == {"id"}
-    assert "projects" not in retained
-    assert "outcome_kinds" not in retained
-    assert "subordinates" not in retained
+    assert retained["context_mode"] == "retained_current"
+    assert retained["agent"] == fresh["agent"]
+    assert retained["projects"] == fresh["projects"]
+    assert retained["outcome_kinds"] == fresh["outcome_kinds"]
+    assert retained["subordinates"] == fresh["subordinates"]
     assert (
         retained["tasks"][0]["deliverable_contract"] == (fresh["tasks"][0]["deliverable_contract"])
     )
@@ -1683,7 +1683,8 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
     assert "agent_branch" not in retained_repo
     assert retained_repo["managed_repo_id"] == "repo"
     assert retained_repo["target_dir"] == "/home/agent/project-control"
-    assert retained_repo["git_work_contexts"][0] == {
+    binding_ref = retained_repo["git_work_context_refs"][0]
+    assert retained["git_work_contexts"][binding_ref] == {
         "id": "branch-context",
         "branch_context_id": "branch-context",
         "task_id": "task-integration",
@@ -1701,7 +1702,7 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
             }
         ],
     }
-    assert "Task creation mandate for this wake" not in retained_prompt
+    assert "Task creation mandate for this wake" in retained_prompt
     assert len(retained_prompt) < len(fresh_prompt)
 
     changed_role_prompt = _build_prompt(
@@ -1709,10 +1710,7 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
         effective_resume_mode="same_context",
     )
     changed_role_context = _team_context_from_prompt(changed_role_prompt)
-    assert changed_role_context["agent"] == {
-        "id": "ordinary-agent",
-        "role_description": "Integrate accepted contributions.",
-    }
+    assert changed_role_context["agent"] == fresh["agent"]
     assert "Role description update" in changed_role_prompt
 
     distinct_base_repo_context = {
@@ -1739,7 +1737,7 @@ def test_wake_prompt_pruning_is_lifecycle_based_deduplicated_and_bounded() -> No
         effective_resume_mode="same_context",
     )
     revoked_participants = _team_context_from_prompt(revoked_participants_prompt)
-    assert revoked_participants["context_mode"] == "retained_delta"
+    assert revoked_participants["context_mode"] == "retained_current"
     assert revoked_participants["operator_chat_participants_replaces_prior"] is True
     assert revoked_participants["operator_chat_participants"] == []
     assert "replaces every prior wake's list" in revoked_participants_prompt
@@ -3063,7 +3061,7 @@ def test_compact_wake_context_limits_case_index_and_filters_nonactionable_sessio
         },
         fresh_context=False,
     )
-    assert "case_index" not in retained
+    assert retained["case_index"] == context["case_index"]
     assert retained["omitted_counts"]["cases_outside_dispatch"] == 14
 
 
@@ -3632,11 +3630,13 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     ):
         assert forbidden not in prompt
     assert "MCP action surface" in prompt
-    assert "Deliverable mechanics for this wake" in prompt
+    assert "Deliverable mechanics for this wake" not in prompt
     assert "Git release sequencing" not in prompt
-    assert "Valid owned task_id values for deliverable tools are: task" in prompt
-    assert "/artifacts/team-deliverables/task/report.md" in prompt
-    assert "team-deliverables/task/report.md" in prompt
+    wake_context = _team_context_from_prompt(prompt)
+    assert wake_context["current_dispatch"]["task_ids"] == ["task"]
+    assert wake_context["tasks"][0]["id"] == "task"
+    guidance = _team_agent_guidance_content(agent=wake_context["agent"])
+    assert "pass paths relative to /artifacts" in guidance
     assert TEAM_AGENT_GUIDANCE_PATH in prompt
     assert TEAM_AGENT_GUIDANCE_SECTION_ID in prompt
     assert "Task creation mandate for this wake" in prompt
@@ -4722,7 +4722,7 @@ def test_every_wake_policy_applies_to_mutation_enabled_chat_and_seeds_context(
     assert resumer.calls[0]["resume_mode"] == "new_context"
     prompt = str(resumer.calls[0]["prompt"])
     assert "compact complete ordinary working set" in prompt
-    assert '"context_mode": "fresh_full"' in prompt
+    assert '"context_mode":"fresh_full"' in prompt
     reread = repo.read()
     assert reread.agent_runtimes["backend"].context_rotation_pending is False
     assert reread.agent_runtimes["backend"].last_thread_id == "mutation-chat-thread"
@@ -4938,7 +4938,7 @@ def test_explicit_new_context_forces_fresh_mutation_chat_after_retained_baseline
     assert resumer.calls[0]["resume_mode"] == "new_context"
     prompt = str(resumer.calls[0]["prompt"])
     assert "compact complete ordinary working set" in prompt
-    assert '"context_mode": "fresh_full"' in prompt
+    assert '"context_mode":"fresh_full"' in prompt
 
 
 def test_explicit_new_context_forces_fresh_reply_only_chat_without_ordinary_json(
@@ -5831,9 +5831,11 @@ def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec
     }
 
     prompt = _build_prompt(lease)
+    assert "review-integration" in prompt
+    assert "managed leaf/composite review procedure" in prompt
+    prompt = _team_agent_guidance_content(agent=lease["agent"])
 
-    assert "Assigned deliverable review procedure for this wake:" in prompt
-    assert "review-integration (deliverable deliverable-integration)" in prompt
+    assert "Assigned deliverable review procedure:" in prompt
     assert (
         "call team_get_deliverable for the complete deliverable, resolve its task_id, "
         "and call team_get_task"
@@ -6138,7 +6140,9 @@ def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
     context = _team_context_from_prompt(prompt)
     fallback_summary = context["manager_fallback_summary"]
 
-    assert "Manager fallback wake" in prompt
+    assert "Manager fallback:" in prompt
+    wake_prompt_size = len(prompt.encode("utf-8"))
+    prompt += _team_agent_guidance_content(agent=lease["agent"])
     assert (
         "Do not return a no-op merely because your own tasks and inbox arrays are empty" in prompt
     )
@@ -6191,7 +6195,7 @@ def test_manager_fallback_prompt_and_dispatch_authorize_handled_review_routing(
             "consumed_by_review_request_id": None,
         }
     ]
-    assert len(prompt.encode("utf-8")) < 32_000
+    assert wake_prompt_size < 32_000
 
     monkeypatch.setattr(
         "evander_team_addon.services.commands.executor.utc_now",
@@ -8679,7 +8683,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert project_repo["branch_context_id"] in prompt
     assert expected_agent_branch in prompt
     assert expected_worktree_path in prompt
-    assert "project_repos[].git_work_contexts" in prompt
+    assert "project_repos[].git_work_context_refs" in prompt
     assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
     assert any(
         call["metadata"]["team_addon"].get("agent_id") == "backend" for call in session_store.calls
@@ -10948,7 +10952,8 @@ def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
     assert getattr(captured_effects[0], "pinned_commit_sha") == commit_sha
     assert getattr(captured_effects[0], "git_access_mode") == "read-only"
     prompt_context = _team_context_from_prompt(str(resumer.calls[0]["prompt"]))
-    assert prompt_context["reviews"][0]["repository_snapshot"]["commit_sha"] == commit_sha
+    snapshot_ref = prompt_context["reviews"][0]["repository_snapshot_ref"]
+    assert prompt_context["review_repository_snapshots"][snapshot_ref]["commit_sha"] == commit_sha
     assert prompt_context["project_repos"][0]["target_dir"] == "/home/agent/Truman"
     assert prompt_context["project_repos"][0]["pinned_ref"] == pinned_ref
 
@@ -11105,7 +11110,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert "a superior may set state: finished on a subordinate non-terminal task" in str(
         copied_file["content"]
     )
-    assert "your own full role_description is included in fresh wake context" in str(
+    assert "your own full role_description is included in every wake" in str(
         copied_file["content"]
     )
     assert "Use team_get_my_identity when exact identity" in str(copied_file["content"])

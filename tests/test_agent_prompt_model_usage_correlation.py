@@ -51,7 +51,7 @@ def _runtime_context(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         config=config,
-        provider_config={},
+        provider_config=config.model_dump(mode="json"),
         metadata={"directory_path": "root/team-a"},
         admin_service=SimpleNamespace(
             config=config,

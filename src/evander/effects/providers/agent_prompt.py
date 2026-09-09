@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
 from evander.agent_context_retry import (
     CONTEXT_EXHAUSTION_FAILURE_KIND,
     CONTEXT_RETRY_MODE_REDUCED,
@@ -810,7 +811,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 )
         return {
             "dispatch_id": dispatch_id,
-            "thread_id": effective_resume_thread_id or dispatch_id,
+            "thread_id": None,
+            "native_thread_id": None,
+            "resume_thread_id": effective_resume_thread_id,
             "success": True,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "execution_id": handle.execution_id,
@@ -958,6 +961,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 backend=backend,
                 session_id=session_id,
                 execution_id=execution_id,
+                status_metadata=getattr(status, "metadata", None),
             )
             return 0
         if cls._defer_subscription_waiting_record(
@@ -974,17 +978,18 @@ class AgentPromptEffectProvider(EffectProviderBase):
             logs = backend.get_log_snapshot(execution_id, lines=400)
         except Exception:
             logs = ""
-        thread_id = cls._thread_id_from_logs(logs)
         failed_codex_outcome = cls._failed_codex_outcome_from_status_metadata(
             getattr(status, "metadata", None)
         )
         no_agent_response = cls._container_logs_indicate_no_agent_response(logs)
-        if thread_id and failed_codex_outcome is None and not no_agent_response:
-            cls._store_container_thread_id(
+        if failed_codex_outcome is None and not no_agent_response:
+            cls._capture_container_thread_id_from_running_logs(
                 worker=worker,
                 record=record,
+                backend=backend,
                 session_id=session_id,
-                thread_id=thread_id,
+                execution_id=execution_id,
+                status_metadata=getattr(status, "metadata", None),
             )
         if status.status != ExecutionStatusKind.DESTROYED:
             try:
@@ -1389,16 +1394,40 @@ class AgentPromptEffectProvider(EffectProviderBase):
         backend: Any,
         session_id: str,
         execution_id: str,
+        status_metadata: Mapping[str, Any] | None = None,
     ) -> None:
-        current_thread_id = str(record.outputs.get("thread_id") or "").strip()
-        if current_thread_id and not current_thread_id.startswith("dispatch-"):
+        # A requested resume ID is not evidence that this invocation used it.
+        # The receipt is scoped to the worker execution, including context retries.
+        if (
+            usable_agent_thread_id(record.outputs.get("native_thread_id"))
+            and record.outputs.get("native_thread_execution_id") == execution_id
+        ):
             return
-        try:
-            logs = backend.get_log_snapshot(execution_id, lines=80)
-        except Exception:
-            return
-        thread_id = cls._thread_id_from_logs(logs)
-        if not thread_id or cls._container_logs_indicate_no_agent_response(logs):
+        thread_id = usable_agent_thread_id(
+            (status_metadata or {}).get("codex_subscription_thread_id"),
+            execution_id,
+            record.outputs.get("dispatch_id"),
+        )
+        if thread_id is None:
+            try:
+                recent_logs = backend.get_log_snapshot(execution_id, lines=80)
+                if cls._container_logs_indicate_no_agent_response(recent_logs):
+                    return
+                log_page = getattr(backend, "get_log_page", None)
+                if callable(log_page):
+                    # The startup header can have fallen out of a verbose run's
+                    # tail before the first poll. Search only this job's raw log;
+                    # augmented session history can contain other native threads.
+                    page = log_page(
+                        execution_id, query="session id:", limit=20, mode="raw"
+                    )
+                    logs = str(page.get("text") or "")
+                else:
+                    logs = recent_logs
+            except Exception:
+                return
+            thread_id = cls._thread_id_from_logs(logs)
+        if not thread_id:
             return
         cls._store_container_thread_id(
             worker=worker,
@@ -1416,22 +1445,20 @@ class AgentPromptEffectProvider(EffectProviderBase):
         session_id: str,
         thread_id: str,
     ) -> None:
-        normalized_thread_id = str(thread_id or "").strip()
-        if not normalized_thread_id or normalized_thread_id.startswith("dispatch-"):
+        normalized_thread_id = usable_agent_thread_id(
+            thread_id, record.outputs.get("dispatch_id"), record.outputs.get("execution_id")
+        )
+        if normalized_thread_id is None:
             return
-        current_thread_id = str(record.outputs.get("thread_id") or "").strip()
-        if current_thread_id != normalized_thread_id:
-            record.outputs = {**record.outputs, "thread_id": normalized_thread_id}
-            store = getattr(worker, "execution_store", None)
-            put = getattr(store, "put", None)
-            record_execution = getattr(store, "record_execution", None)
-            try:
-                if callable(put):
-                    put(record)
-                elif callable(record_execution):
-                    record_execution(record)
-            except Exception:
-                pass
+        receipt = {
+            "thread_id": normalized_thread_id,
+            "native_thread_id": normalized_thread_id,
+            "native_thread_execution_id": record.outputs.get("execution_id"),
+        }
+        if any(record.outputs.get(key) != value for key, value in receipt.items()):
+            receipt["native_thread_observed_at"] = datetime.now(UTC).isoformat()
+            record.outputs = {**record.outputs, **receipt}
+            cls._put_execution_record(worker=worker, record=record)
         cls._persist_container_session_thread_id(
             worker=worker,
             record=record,
@@ -1597,7 +1624,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         finished_at = datetime.now(UTC)
         dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
         wake_dispatch_id = str(record.outputs.get("wake_dispatch_id") or "").strip()
-        thread_id = cls._thread_id_from_logs(logs) or str(record.outputs.get("thread_id") or "")
+        thread_id = usable_agent_thread_id(
+            record.outputs.get("native_thread_id") or cls._thread_id_from_logs(logs),
+            dispatch_id,
+            execution_id,
+        )
         failed_codex_outcome = cls._failed_codex_outcome_from_status_metadata(status_metadata)
         no_agent_response = (
             failed_codex_outcome is None
@@ -1637,6 +1668,16 @@ class AgentPromptEffectProvider(EffectProviderBase):
             if failure_reason is not None:
                 payload["failure_kind"] = CONTEXT_EXHAUSTION_FAILURE_KIND
                 payload["failure_reason"] = failure_reason
+        requested_thread_id = (
+            record.outputs.get("resume_thread_id")
+            if "resume_thread_id" in record.outputs
+            else cls._record_text_value(record, "resume_thread_id")
+        )
+        if not success and requested_thread_id:
+            payload["resume_thread_missing"] = thread_id is None and any(
+                agent_resume_thread_missing(value, resume_thread_id=requested_thread_id)
+                for value in (message, logs)
+            )
         if no_agent_response and "codex_outcome" not in payload:
             payload["codex_outcome"] = {
                 "status": "failed",
@@ -2057,7 +2098,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 "execution_id": handle.execution_id,
                 "worker_execution_id": handle.execution_id,
                 "session_id": session_id,
-                "thread_id": dispatch_id,
+                "thread_id": None,
+                "native_thread_id": None,
+                "native_thread_execution_id": None,
+                "native_thread_observed_at": None,
+                "resume_thread_id": None,
                 "context_retry_enqueued": True,
                 "context_retry_in_progress": True,
                 "context_retry_attempt": attempt + 1,
@@ -2716,12 +2761,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
     @classmethod
     def _usable_resume_thread_id(cls, value: Any) -> str | None:
-        text = cls._normalize_optional_string(value)
-        if not text:
-            return None
-        if text.startswith("dispatch-") or text.startswith("chat-thread-"):
-            return None
-        return text
+        return usable_agent_thread_id(value)
 
     @classmethod
     def _require_string(cls, value: Any, *, field_name: str) -> str:

@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
+from evander.agent_threads import usable_agent_thread_id
 from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
 from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from evander.execution.container_worker_client import (
@@ -923,7 +924,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
         return {
             "dispatch_id": dispatch_id,
-            "thread_id": effective_resume_thread_id or dispatch_id,
+            "thread_id": None,
+            "native_thread_id": None,
+            "resume_thread_id": effective_resume_thread_id,
             "success": True,
             "queued": False,
             "output_mode": "on_completion",
@@ -1674,12 +1677,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
     @classmethod
     def _usable_resume_thread_id(cls, value: Any) -> str | None:
-        text = cls._normalize_optional_string(value)
-        if text is None:
-            return None
-        if text.startswith("dispatch-") or text.startswith("chat-thread-"):
-            return None
-        return text
+        return usable_agent_thread_id(value)
 
     @staticmethod
     def _container_target_name(*, session: Any | None, session_id: str) -> str:

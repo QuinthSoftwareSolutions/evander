@@ -219,19 +219,32 @@ The prompt labels the context lifecycle explicitly:
 | Context mode | When it is used | What it carries |
 |---|---|---|
 | <code>fresh_full</code> | First successful wake, manual or idle rotation, <code>every_wake</code>, the first wake for a work lineage, an unbound <code>work_lineage</code> wake, or an explicit <code>new_context</code> resume. | A compact complete working set for the immutable dispatch. |
-| <code>retained_delta</code> | Successful retained same-session wake. | The current immutable dispatch delta; stable identity and organization detail already in the conversation are omitted. |
+| <code>retained_current</code> | Successful retained same-session wake. | The current independent working set, including identity, role, instructions, scope, obligations, and retrieval references. |
 | <code>context_handoff</code> | The bounded preparation dispatch before manual or idle reset. | One advisory continuity summary only; this is a dispatch cause, not an ordinary work context mode. |
 
 Lifecycle state and resume behavior choose the mode. Agent display names,
-model names, and provider names do not. During a retained delta,
-<code>team_get_current_dispatch_context</code> hydrates the active immutable
-scope and its task, inbox, blocker, review, project, and Git records without
-widening membership.
+model names, and provider names do not. Both modes remain actionable after
+compaction without relying on earlier messages. Preview caps retain overflow
+IDs, current obligation summaries, counts, and collection-level read references.
+Urgent messages and operator directives remain complete. Shared Git bindings and
+review snapshots are represented once within the payload and referenced by ID.
+
+Use <code>team_get_current_dispatch_context(detail="summary")</code> first when
+more context is needed. It returns complete frozen scope IDs and compact
+records with exact dispatch Git bindings. The default <code>detail="full"</code>
+keeps the existing full response. Use individual record reads for complete task,
+review, inbox, project, and release details, and
+<code>team_get_source_evidence_snapshot(snapshot_id=...)</code> for a complete
+capture in the active dispatch. Summary reads never widen execution scope or
+substitute a newer binding. Managers' <code>supervisory_overview</code> counts and
+paginated reads preserve awareness across lineages within existing read access.
+The [deployment and pilot runbook](../../team-context-reduction-runbook.md)
+explains measurement limits, guidance versioning, policy changes, and rollback.
 
 Case and session context remain intentionally selective even in
 <code>fresh_full</code>. Full compact case rows are included only when a
 structured task, blocker, review, release decision, or inbox reference links
-the case to the immutable dispatch. Fresh Team Chat and management wakes add a
+the case to the immutable dispatch. Team Chat and management wakes add a
 bounded <code>case_index</code> for other visible active cases containing only
 ID, title, status, priority, and project. Session health includes a count
 summary on every ordinary context and emits individual rows only for missing,
@@ -398,7 +411,7 @@ Begin in **Operations** with the agent's wake reason, runtime attention, active 
 | Task owner never wakes | Check dependency status, active deliverable review, interval, no-progress count, Team cap, stand-down, busy session, and active lease. |
 | Dispatch remains <code>preparing</code> | Inspect every scoped repository/worktree and the recorded preparation error; Team will not lease a partial scope. |
 | The same preparation error does not run again | Inspect the current cause-specific preparation blocker and its semantic generation. Recover it only after fixing the cause, or make a meaningful task/dependency/project-Git/candidate change. |
-| Retained wake omits stable detail | This is expected for <code>retained_delta</code>; call <code>team_get_current_dispatch_context</code> to hydrate the frozen active scope. |
+| Wake preview omits detail | Follow <code>retrieval</code> and <code>overflow</code>; start additional reads with <code>team_get_current_dispatch_context(detail="summary")</code>. |
 | Task appears in context but no worktree mapping does | Confirm the task actually needs the project's managed repository and that the complete dispatch preparation succeeded. |
 | Two prompts seem concurrent | Compare core session activity and Team <code>active_dispatch_id</code>; one may be a non-Team wake or an expired/stale completion. |
 | Lease remains after the model stopped | Session completion may not have routed or matched the active dispatch. Inspect session routing and finalizer workflow run. |

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from evander.agent_threads import usable_agent_thread_id
+
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
+import hashlib
+import json
 from typing import Any
 
 from ..models import ACTIVE_TEAM_CASE_STATUS_VALUES
@@ -80,7 +84,7 @@ def work_lineage_resume_thread_id(lease: Mapping[str, Any]) -> str | None:
     bindings = runtime.get("work_lineage_thread_ids")
     if lineage_id is None or not isinstance(bindings, Mapping):
         return None
-    return _optional_text(bindings.get(lineage_id))
+    return usable_agent_thread_id(bindings.get(lineage_id))
 
 
 def build_compact_wake_context(
@@ -88,343 +92,382 @@ def build_compact_wake_context(
     *,
     fresh_context: bool = True,
 ) -> dict[str, Any]:
-    """Build the small prompt context for a Team wake lease.
+    """Project one self-contained current working set, independent of history.
 
-    The lease payload can contain large historical slices. This keeps only the
-    current/actionable rows and records counts for rows dropped by caps so an
-    agent can fetch detail with read tools.
+    Caps bound previews, never obligation discovery. Overflow records retain
+    actionable identities and a collection-level read reference. Deduplication
+    is confined to this payload; no previous-wake fingerprints are consulted.
     """
 
-    omitted_counts: dict[str, int] = {}
-    agent = _mapping_or_empty(lease.get("agent"))
-    subordinate_ids = _limited_values(
-        _string_items(lease.get("subordinate_agent_ids")),
-        MAX_SUBORDINATE_IDS,
-        omitted_counts,
-        "subordinate_ids",
-    )
-    compact_agent = _compact_agent(agent) if fresh_context else _compact_fields(agent, ("id",))
-    if not fresh_context and lease.get("role_description_changed") is True:
-        role_description = _optional_text(agent.get("role_description"))
-        if role_description is not None:
-            compact_agent["role_description"] = role_description
-    compact_agent.pop("display_name", None)
+    omitted: dict[str, int] = {}
+    agent = _compact_agent(_mapping_or_empty(lease.get("agent")))
+    agent.pop("display_name", None)
     dispatch = _compact_current_dispatch(lease)
     context: dict[str, Any] = {
-        "agent": compact_agent,
-        "context_mode": "fresh_full" if fresh_context else "retained_delta",
+        "agent": agent,
+        "context_mode": "fresh_full" if fresh_context else "retained_current",
         "reason": _json_value(lease.get("reason")),
         "current_dispatch": dispatch,
+        "superior_id": _optional_text(lease.get("superior_agent_id")),
+        "subordinate_ids": sorted(set(_string_items(lease.get("subordinate_agent_ids")))),
+        "retrieval": {},
     }
-    if fresh_context:
-        context["superior_id"] = _optional_text(lease.get("superior_agent_id"))
-        context["subordinate_ids"] = subordinate_ids
 
-    if fresh_context:
-        subordinates = sorted(
-            (
-                _compact_agent(row, subordinate=True)
-                for row in _mapping_rows(lease.get("subordinates"))
-            ),
-            key=lambda row: _sort_text(row.get("id")),
-        )
-        if subordinates:
-            context["subordinates"] = _limited_rows(
-                subordinates,
-                MAX_SUBORDINATES,
-                omitted_counts,
-                "subordinates",
-            )
+    def include(
+        key: str,
+        rows: Sequence[Mapping[str, Any]],
+        compact: Any,
+        limit: int,
+        sort_key: Any,
+        *,
+        reverse: bool = False,
+        overflow: Any = _overflow_record,
+    ) -> None:
+        unique = _unique_records(rows)
+        ordered = sorted((compact(row) for row in unique), key=sort_key, reverse=reverse)
+        context[key] = ordered[:limit]
+        if key in RECORD_READS and ordered:
+            context["retrieval"][key] = {**RECORD_READS[key], "count": len(ordered)}
+        if len(ordered) > limit:
+            omitted[key] = len(ordered) - limit
+            context.setdefault("overflow", {})[key] = [
+                overflow(row) for row in ordered[limit:]
+            ]
 
-    tasks = sorted(
-        (_compact_task(row) for row in _mapping_rows(lease.get("tasks"))),
-        key=_task_sort_key,
+    include(
+        "subordinates",
+        _mapping_rows(lease.get("subordinates")),
+        lambda row: _compact_agent(row, subordinate=True),
+        MAX_SUBORDINATES,
+        lambda row: _sort_text(row.get("id")),
     )
-    context["tasks"] = _limited_rows(tasks, MAX_TASKS, omitted_counts, "tasks")
-
-    if fresh_context:
-        projects = sorted(
-            (_compact_project(row) for row in _mapping_rows(lease.get("projects"))),
-            key=lambda row: _sort_text(row.get("id")),
-        )
-        if projects:
-            context["projects"] = _limited_rows(
-                projects,
-                MAX_PROJECTS,
-                omitted_counts,
-                "projects",
-            )
-
-    if fresh_context:
-        outcome_kinds = sorted(
-            (_compact_outcome_kind(row) for row in _mapping_rows(lease.get("outcome_kinds"))),
-            key=lambda row: (
-                _sort_text(row.get("effective_project_id")),
-                _sort_text(row.get("kind")),
-            ),
-        )
-        if outcome_kinds:
-            context["outcome_kinds"] = _limited_rows(
-                outcome_kinds,
-                MAX_OUTCOME_KINDS,
-                omitted_counts,
-                "outcome_kinds",
-            )
-
-    inbox_rows, non_pending_inbox_count = _pending_inbox_rows(lease.get("inbox"))
-    _add_omitted(omitted_counts, "inbox_non_pending", non_pending_inbox_count)
-    sorted_inbox_rows = sorted(inbox_rows, key=_inbox_sort_key)
-    sole_high_priority_id = (
-        _optional_text(sorted_inbox_rows[0].get("id"))
-        if len(sorted_inbox_rows) == 1
-        and _optional_text(sorted_inbox_rows[0].get("priority")) == "high"
-        else None
+    include("tasks", _mapping_rows(lease.get("tasks")), _compact_task, MAX_TASKS, _task_sort_key)
+    include(
+        "projects",
+        _mapping_rows(lease.get("projects")),
+        _compact_project,
+        MAX_PROJECTS,
+        lambda row: _sort_text(row.get("id")),
     )
-    context["inbox"] = _limited_rows(
-        [
-            _compact_inbox(
-                row,
-                payload_text_limit=(
-                    2048 if _optional_text(row.get("id")) == sole_high_priority_id else TEXT_LIMIT
-                ),
-            )
-            for row in sorted_inbox_rows
-        ],
-        MAX_INBOX,
-        omitted_counts,
+    include(
+        "outcome_kinds",
+        _mapping_rows(lease.get("outcome_kinds")),
+        _compact_outcome_kind,
+        MAX_OUTCOME_KINDS,
+        lambda row: (_sort_text(row.get("effective_project_id")), _sort_text(row.get("kind"))),
+    )
+
+    inbox, skipped = _pending_inbox_rows(lease.get("inbox"))
+    _add_omitted(omitted, "inbox_non_pending", skipped)
+    # Deliver all urgent messages and operator directives verbatim, even when
+    # more than MAX_INBOX arrive together. Acknowledgements remain explicit.
+    urgent_count = sum(_urgent_inbox(row) for row in _unique_records(inbox))
+    include(
         "inbox",
+        inbox,
+        _compact_inbox,
+        max(MAX_INBOX, urgent_count),
+        lambda row: (not _urgent_inbox(row), _inbox_sort_key(row)),
     )
-    included_inbox_items = {
-        inbox_item_id: row
-        for row in context["inbox"]
-        if (inbox_item_id := _optional_text(row.get("id"))) is not None
-    }
-
-    blockers = sorted(
-        (_compact_blocker(row) for row in _mapping_rows(lease.get("blockers"))),
-        key=lambda row: (_sort_text(row.get("created_at")), _sort_text(row.get("id"))),
+    include(
+        "blockers",
+        _mapping_rows(lease.get("blockers")),
+        _compact_blocker,
+        MAX_BLOCKERS,
+        lambda row: (_sort_text(row.get("created_at")), _sort_text(row.get("id"))),
     )
-    if blockers:
-        context["blockers"] = _limited_rows(
-            blockers,
-            MAX_BLOCKERS,
-            omitted_counts,
-            "blockers",
-        )
-
-    reviews = sorted(
-        (_compact_review(row) for row in _mapping_rows(lease.get("reviews"))),
-        key=lambda row: (
-            _sort_text(row.get("created_at")),
-            _sort_text(row.get("id")),
-        ),
+    include(
+        "reviews",
+        _mapping_rows(lease.get("reviews")),
+        _compact_review,
+        MAX_REVIEWS,
+        lambda row: (_sort_text(row.get("created_at")), _sort_text(row.get("id"))),
     )
-    if reviews:
-        context["reviews"] = _limited_rows(
-            reviews,
-            MAX_REVIEWS,
-            omitted_counts,
-            "reviews",
+    if lease.get("reason") == "action_feedback":
+        include(
+            "action_feedback",
+            _mapping_rows(lease.get("recent_action_feedback")),
+            _compact_action_feedback,
+            MAX_ACTION_FEEDBACK,
+            _action_feedback_sort_key,
         )
 
-    if _optional_text(lease.get("reason")) == "action_feedback":
-        action_feedback = sorted(
-            (
-                _compact_action_feedback(row)
-                for row in _mapping_rows(lease.get("recent_action_feedback"))
-            ),
-            key=_action_feedback_sort_key,
-        )
-        if action_feedback:
-            context["action_feedback"] = _limited_rows(
-                action_feedback,
-                MAX_ACTION_FEEDBACK,
-                omitted_counts,
-                "action_feedback",
-            )
-
-    cases, non_current_case_count = _current_case_rows(lease.get("cases"))
-    _add_omitted(omitted_counts, "cases_non_current", non_current_case_count)
-    if cases:
-        context["cases"] = _limited_rows(
-            sorted((_compact_case(row) for row in cases), key=_case_sort_key),
-            MAX_CASES,
-            omitted_counts,
-            "cases",
-        )
-    unrelated_case_count = _positive_int(lease.get("unrelated_case_count"))
-    _add_omitted(omitted_counts, "cases_outside_dispatch", unrelated_case_count)
-    if fresh_context:
-        case_index = sorted(
-            (_compact_case_index(row) for row in _mapping_rows(lease.get("case_index"))),
-            key=_case_sort_key,
-        )
-        if case_index:
-            context["case_index"] = _limited_rows(
-                case_index,
-                MAX_CASE_INDEX,
-                omitted_counts,
-                "case_index",
-            )
-
-    all_source_evidence_snapshots = sorted(
-        (
-            _compact_external_source_evidence_snapshot(row)
-            for row in _mapping_rows(
-                lease.get("external_source_evidence_snapshots")
-            )
-        ),
-        key=_external_source_evidence_newest_sort_key,
+    cases, skipped = _current_case_rows(lease.get("cases"))
+    _add_omitted(omitted, "cases_non_current", skipped)
+    include("cases", cases, _compact_case, MAX_CASES, _case_sort_key)
+    _add_omitted(
+        omitted, "cases_outside_dispatch", _positive_int(lease.get("unrelated_case_count"))
+    )
+    include(
+        "case_index",
+        _mapping_rows(lease.get("case_index")),
+        _compact_case_index,
+        MAX_CASE_INDEX,
+        _case_sort_key,
+    )
+    include(
+        "external_source_evidence_snapshots",
+        _mapping_rows(lease.get("external_source_evidence_snapshots")),
+        _compact_external_source_evidence_snapshot,
+        MAX_EXTERNAL_SOURCE_EVIDENCE_SNAPSHOTS,
+        _external_source_evidence_newest_sort_key,
         reverse=True,
     )
-    unique_source_evidence_snapshots: list[dict[str, Any]] = []
-    seen_source_identities: set[tuple[str, str, str, str, str, str]] = set()
-    for snapshot in all_source_evidence_snapshots:
-        source_identity = _external_source_evidence_identity(snapshot)
-        if source_identity in seen_source_identities:
-            continue
-        seen_source_identities.add(source_identity)
-        unique_source_evidence_snapshots.append(snapshot)
-    if unique_source_evidence_snapshots:
-        limited_source_evidence_snapshots = unique_source_evidence_snapshots[
-            :MAX_EXTERNAL_SOURCE_EVIDENCE_SNAPSHOTS
-        ]
-        context["external_source_evidence_snapshots"] = (
-            limited_source_evidence_snapshots
-        )
-        _add_omitted(
-            omitted_counts,
-            "external_source_evidence_snapshots",
-            len(all_source_evidence_snapshots)
-            - len(limited_source_evidence_snapshots),
-        )
-
-    releases, non_current_release_count = _current_release_rows(lease.get("release_packages"))
-    _add_omitted(omitted_counts, "release_packages_non_current", non_current_release_count)
-    context["release_packages"] = _limited_release_packages(
+    releases, skipped = _current_release_rows(lease.get("release_packages"))
+    _add_omitted(omitted, "release_packages_non_current", skipped)
+    include(
+        "release_packages",
         releases,
-        omitted_counts,
+        _compact_release_package,
+        MAX_RELEASE_PACKAGES,
+        _release_sort_key,
     )
-    visible_release_ids = set(context["release_packages"])
+    context["release_packages"] = {row["id"]: row for row in context["release_packages"]}
 
-    runtime_attention, hidden_attention_count, out_of_scope_attention_count = (
-        _runtime_attention_rows(
-            lease.get("runtime_attention"),
-            dispatch=dispatch,
-            visible_release_ids=visible_release_ids,
-        )
+    attention, hidden, outside = _runtime_attention_rows(
+        lease.get("runtime_attention"),
+        dispatch=dispatch,
+        visible_release_ids={str(row.get("id")) for row in releases},
     )
-    _add_omitted(omitted_counts, "runtime_attention_hidden_failed_actions", hidden_attention_count)
-    _add_omitted(
-        omitted_counts,
-        "runtime_attention_outside_dispatch",
-        out_of_scope_attention_count,
+    _add_omitted(omitted, "runtime_attention_hidden_failed_actions", hidden)
+    _add_omitted(omitted, "runtime_attention_outside_dispatch", outside)
+    attention, duplicates = _without_inbox_runtime_attention_duplicates(
+        attention,
+        included_inbox_items={row["id"]: row for row in context["inbox"]},
     )
-    if not fresh_context:
-        runtime_attention, duplicate_inbox_attention_count = (
-            _without_inbox_runtime_attention_duplicates(
-                runtime_attention,
-                included_inbox_items=included_inbox_items,
-            )
-        )
-        _add_omitted(
-            omitted_counts,
-            "runtime_attention_duplicate_inbox",
-            duplicate_inbox_attention_count,
-        )
-    if runtime_attention:
-        context["runtime_attention"] = _limited_rows(
-            sorted(
-                (_compact_runtime_attention(row) for row in runtime_attention),
-                key=_runtime_attention_sort_key,
-            ),
-            MAX_RUNTIME_ATTENTION,
-            omitted_counts,
-            "runtime_attention",
-        )
+    _add_omitted(omitted, "runtime_attention_duplicate_inbox", duplicates)
+    include(
+        "runtime_attention",
+        attention,
+        _compact_runtime_attention,
+        MAX_RUNTIME_ATTENTION,
+        _runtime_attention_sort_key,
+    )
 
-    all_session_health = _mapping_rows(lease.get("session_health"))
-    attention_session_health = [
-        row for row in all_session_health if _session_health_requires_attention(row)
-    ]
+    health = _mapping_rows(lease.get("session_health"))
+    actionable_health = [row for row in health if _session_health_requires_attention(row)]
     if "session_health" in lease:
         context["session_health_summary"] = {
-            "checked_count": len(all_session_health),
-            "attention_required_count": len(attention_session_health),
-            "non_actionable_omitted_count": (
-                len(all_session_health) - len(attention_session_health)
-            ),
+            "checked_count": len(health),
+            "attention_required_count": len(actionable_health),
+            "non_actionable_omitted_count": len(health) - len(actionable_health),
         }
-    session_health = sorted(
-        (_compact_session_health(row) for row in attention_session_health),
-        key=_session_health_sort_key,
-    )
-    if session_health:
-        context["session_health"] = _limited_rows(
-            session_health,
-            MAX_SESSION_HEALTH,
-            omitted_counts,
-            "session_health",
-        )
-
-    operator_chat_participants = sorted(
-        (
-            _compact_operator_chat_participant(row)
-            for row in _mapping_rows(lease.get("operator_chat_participants"))
-        ),
-        key=lambda row: (
-            _sort_text(row.get("operator_display_name")),
-            _sort_text(row.get("operator_user_id")),
-        ),
+    include(
+        "session_health",
+        actionable_health,
+        _compact_session_health,
+        MAX_SESSION_HEALTH,
+        _session_health_sort_key,
+        # Agent identity reads do not expose live health. Keep these already
+        # compact records self-contained, including beyond the preview limit.
+        overflow=dict,
     )
     if "operator_chat_participants" in lease:
         context["operator_chat_participants_replaces_prior"] = True
-        context["operator_chat_participants"] = operator_chat_participants
-
-    manager_fallback_summary = lease.get("manager_fallback_summary")
-    if isinstance(manager_fallback_summary, Mapping):
-        context["manager_fallback_summary"] = _compact_manager_fallback_summary(
-            manager_fallback_summary
+        context["operator_chat_participants"] = sorted(
+            (
+                _compact_operator_chat_participant(row)
+                for row in _unique_records(_mapping_rows(lease["operator_chat_participants"]))
+            ),
+            key=lambda row: _sort_text(row.get("operator_user_id")),
         )
-
-    project_repos = _deduplicated_project_repos(
-        lease,
-        retained_delta=not fresh_context,
+    summary = lease.get("manager_fallback_summary")
+    if isinstance(summary, Mapping):
+        context["manager_fallback_summary"] = _compact_manager_fallback_summary(summary)
+    overview = lease.get("supervisory_overview")
+    if isinstance(overview, Mapping) and overview:
+        context["supervisory_overview"] = _json_value(overview)
+    repos = _deduplicated_project_repos(lease)
+    if repos:
+        context["project_repos"] = repos
+    for key, compact in (
+        ("review_artifact_imports", _compact_review_artifact_import),
+        ("review_artifact_import_errors", _compact_review_artifact_error),
+    ):
+        rows = _unique_records([compact(row) for row in _mapping_rows(lease.get(key))])
+        if rows:
+            context[key] = rows
+    _deduplicate_management_records(context)
+    _intern_git_records(context)
+    if omitted:
+        context["omitted_counts"] = dict(sorted(omitted.items()))
+    # Empty scope/participant lists are meaningful replacement values.
+    required = {
+        "tasks",
+        "inbox",
+        "release_packages",
+        "operator_chat_participants",
+        "subordinate_ids",
+        "superior_id",
+        "current_dispatch",
+    }
+    return _json_value(
+        {
+            key: value
+            for key, value in context.items()
+            if key in required or value not in (None, [], {})
+        }
     )
-    if project_repos:
-        context["project_repos"] = project_repos
 
-    review_artifact_imports = sorted(
+
+# Shared by wake and dispatch-summary projections. IDs address durable records;
+# list tools are explicitly paginated when no individual read exists.
+RECORD_READS = {
+    "tasks": {"tool": "team_get_task", "id_parameter": "task_id"},
+    "inbox": {"tool": "team_get_inbox_item", "id_parameter": "inbox_item_id"},
+    "blockers": {"tool": "team_get_blocker", "id_parameter": "blocker_id"},
+    "reviews": {"tool": "team_get_review_request", "id_parameter": "review_request_id"},
+    "release_packages": {"tool": "team_get_release_package", "id_parameter": "release_package_id"},
+    "projects": {"tool": "team_get_project", "id_parameter": "project_id"},
+    "cases": {"tool": "team_get_case", "id_parameter": "case_id"},
+    "case_index": {"tool": "team_get_case", "id_parameter": "case_id"},
+    "subordinates": {"tool": "team_get_agent", "id_parameter": "agent_id"},
+    "outcome_kinds": {"tool": "team_get_outcome_kind", "id_parameter": "definition_id"},
+    "external_source_evidence_snapshots": {
+        "tool": "team_get_source_evidence_snapshot",
+        "id_parameter": "snapshot_id",
+    },
+    "runtime_attention": {"tool": "team_list_runtime_attention", "paginate": True},
+    "action_feedback": {"tool": "team_list_runtime_attention", "paginate": True},
+}
+
+
+def compact_context_json(value: object) -> str:
+    return json.dumps(_json_value(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _unique_records(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    # Compare complete records, not just external version, repo ID or a truncated
+    # preview: two captures or bindings can share those fields and still differ.
+    return [json.loads(key) for key in sorted({compact_context_json(row) for row in rows})]
+
+
+def _overflow_record(row: Mapping[str, Any]) -> dict[str, Any]:
+    fields = {key for key in row if key.endswith(("_id", "_ids", "_sha"))}
+    fields.update(
         (
-            _compact_review_artifact_import(row)
-            for row in _mapping_rows(lease.get("review_artifact_imports"))
-        ),
-        key=lambda row: (
-            _sort_text(row.get("review_request_id")),
-            _sort_text(row.get("deliverable_id")),
-            _sort_text(row.get("artifact_key")),
-        ),
+            "id",
+            "agent",
+            "state",
+            "status",
+            "priority",
+            "title",
+            "kind",
+            "item_type",
+            "response_requested",
+            "next_action",
+            "next_action_hint",
+            "blocked_reason_code",
+            "route",
+            "follow_up_at",
+            "summary",
+            "external_version",
+            "content_digest",
+            "repository_snapshot",
+            "reason_code",
+            "resolution_scope",
+        )
     )
-    if review_artifact_imports:
-        context["review_artifact_imports"] = review_artifact_imports
+    result = _compact_fields(row, sorted(fields.intersection(row)))
+    if "payload" in row:
+        result["payload"] = _compact_payload(_mapping_or_empty(row["payload"]))
+    result["read_required"] = True
+    return result
 
-    review_artifact_errors = sorted(
-        (
-            _compact_review_artifact_error(row)
-            for row in _mapping_rows(lease.get("review_artifact_import_errors"))
-        ),
-        key=lambda row: (
-            _sort_text(row.get("review_request_id")),
-            _sort_text(row.get("deliverable_id")),
-            _sort_text(row.get("artifact_ref")),
-        ),
-    )
-    if review_artifact_errors:
-        context["review_artifact_import_errors"] = review_artifact_errors
 
-    if omitted_counts:
-        context["omitted_counts"] = dict(sorted(omitted_counts.items()))
-    return _json_value(context)
+def _urgent_inbox(row: Mapping[str, Any]) -> bool:
+    return row.get("priority") == "high" or row.get("item_type") == "operator_directive"
+
+
+def _intern_git_records(context: dict[str, Any]) -> None:
+    """Represent exact Git bindings and review snapshots once within a payload."""
+    bindings: dict[str, Any] = {}
+    snapshots: dict[str, Any] = {}
+
+    def intern(table: dict[str, Any], row: Mapping[str, Any], prefix: str) -> str:
+        key = prefix + hashlib.sha256(compact_context_json(row).encode()).hexdigest()[:20]
+        table[key] = _json_value(row)
+        return key
+
+    for repo in context.get("project_repos", []):
+        rows = repo.pop("git_work_contexts", [])
+        if rows:
+            repo["git_work_context_refs"] = sorted({intern(bindings, row, "git-") for row in rows})
+        rows = repo.pop("review_repository_snapshots", [])
+        if rows:
+            repo["review_repository_snapshot_refs"] = []
+            for row in rows:
+                snapshot = {k: v for k, v in row.items() if k != "review_request_id"}
+                repo["review_repository_snapshot_refs"].append(
+                    {
+                        "review_request_id": row.get("review_request_id"),
+                        "snapshot_ref": intern(snapshots, snapshot, "review-"),
+                    }
+                )
+    for review in [*context.get("reviews", []), *context.get("overflow", {}).get("reviews", [])]:
+        snapshot = review.pop("repository_snapshot", None)
+        if snapshot:
+            review["repository_snapshot_ref"] = intern(snapshots, snapshot, "review-")
+    if bindings:
+        context["git_work_contexts"] = dict(sorted(bindings.items()))
+    if snapshots:
+        context["review_repository_snapshots"] = dict(sorted(snapshots.items()))
+
+
+def _deduplicate_management_records(context: dict[str, Any]) -> None:
+    summary = context.get("manager_fallback_summary")
+    if not isinstance(summary, dict):
+        return
+    for key, collection in (
+        ("open_work", "tasks"),
+        ("review_requests", "reviews"),
+        ("pending_inbox", "inbox"),
+        ("projects", "projects"),
+        ("agents", "subordinates"),
+    ):
+        records = {row.get("id"): row for row in context.get(collection, [])}
+        for row in summary.get(key, []):
+            shared = records.get(row.get("id"))
+            if shared is None:
+                continue
+            for field in list(row):
+                if field != "id" and field in shared and row[field] == shared[field]:
+                    del row[field]
+            row["record_collection"] = collection
+
+
+def build_dispatch_summary(full: Mapping[str, Any]) -> dict[str, Any]:
+    """Summarize an already authorized, dispatch-bound read without changing scope."""
+    result: dict[str, Any] = {
+        "detail": "summary",
+        "dispatch": _compact_current_dispatch({"dispatch": full["dispatch"]}),
+        "retrieval": {},
+    }
+    result["dispatch"].update(_compact_fields(full["dispatch"], ("agent_id", "session_id")))
+    for key, compact in (
+        ("tasks", _compact_task),
+        ("blockers", _compact_blocker),
+        ("reviews", _compact_review),
+        ("inbox", _compact_inbox),
+        ("projects", _compact_project),
+        ("external_source_evidence_snapshots", _compact_external_source_evidence_snapshot),
+    ):
+        rows = []
+        for source in _unique_records(_mapping_rows(full.get(key))):
+            row = compact(source)
+            if key == "tasks" and "description" in row:
+                row["description_preview"] = _trim_text(row.pop("description"), 480)
+            rows.append(row)
+        result[key] = rows
+        result["retrieval"][key] = {**RECORD_READS[key], "count": len(rows)}
+    # These rows have already been restricted to the active dispatch. Never
+    # resolve a task's newer/current Git context while summarizing this payload.
+    result["git_work_contexts"] = _unique_records(_mapping_rows(full.get("git_work_contexts")))
+    for task in result["tasks"]:
+        task["git_work_context_ids"] = [
+            row["id"] for row in result["git_work_contexts"] if row.get("task_id") == task.get("id")
+        ]
+    return result
 
 
 def _compact_current_dispatch(lease: Mapping[str, Any]) -> dict[str, Any]:
@@ -434,6 +477,8 @@ def _compact_current_dispatch(lease: Mapping[str, Any]) -> dict[str, Any]:
         dispatch,
         (
             "id",
+            "work_lineage_id",
+            "status",
             "cause_kind",
             "cause_id",
             "task_ids",
@@ -444,6 +489,9 @@ def _compact_current_dispatch(lease: Mapping[str, Any]) -> dict[str, Any]:
             "managed_repo_ids",
             "source_evidence_snapshot_ids",
             "review_routing_authorities",
+            "chat_message_ids",
+            "claimed_role_task_ids",
+            "initial_release_decision_deliverable_ids",
             "lease_expires_at",
         ),
     )
@@ -464,22 +512,26 @@ def _compact_current_dispatch(lease: Mapping[str, Any]) -> dict[str, Any]:
 
 def _deduplicated_project_repos(
     lease: Mapping[str, Any],
-    *,
-    retained_delta: bool = False,
 ) -> list[dict[str, Any]]:
     candidates = list(_mapping_rows(lease.get("project_repos")))
     project_repo = lease.get("project_repo")
     if isinstance(project_repo, Mapping):
         candidates.append(project_repo)
-    result: list[dict[str, Any]] = []
+    result: dict[str, dict[str, Any]] = {}
     for candidate in candidates:
-        compact = _compact_project_repo(
-            candidate,
-            retained_delta=retained_delta,
+        compact = _compact_project_repo(candidate)
+        nested_keys = ("git_work_contexts", "review_repository_snapshots")
+        identity = compact_context_json(
+            {key: value for key, value in compact.items() if key not in nested_keys}
         )
-        if compact not in result:
-            result.append(compact)
-    return result
+        shared = result.setdefault(
+            identity, {key: value for key, value in compact.items() if key not in nested_keys}
+        )
+        for key in nested_keys:
+            rows = [*shared.get(key, []), *compact.get(key, [])]
+            if rows:
+                shared[key] = _unique_records(rows)
+    return [result[key] for key in sorted(result)]
 
 
 def _compact_agent(agent: Mapping[str, Any], *, subordinate: bool = False) -> dict[str, Any]:
@@ -508,9 +560,7 @@ def _compact_agent(agent: Mapping[str, Any], *, subordinate: bool = False) -> di
     ):
         values = _string_items(agent.get(key))
         if values:
-            row[key] = values[:ID_LIST_LIMIT]
-            if len(values) > ID_LIST_LIMIT:
-                row[f"{key}_omitted_count"] = len(values) - ID_LIST_LIMIT
+            row[key] = values
     assignments = [
         _compact_project_assignment(item)
         for item in _mapping_rows(agent.get("project_assignments"))
@@ -523,9 +573,7 @@ def _compact_agent(agent: Mapping[str, Any], *, subordinate: bool = False) -> di
                 _sort_text(item.get("kind")),
                 _sort_text(item.get("id")),
             ),
-        )[:ID_LIST_LIMIT]
-        if len(assignments) > ID_LIST_LIMIT:
-            row["project_assignments_omitted_count"] = len(assignments) - ID_LIST_LIMIT
+        )
     return row
 
 
@@ -560,6 +608,10 @@ def _compact_task(task: Mapping[str, Any]) -> dict[str, Any]:
             "task_kind",
             "integration_boundary",
             "source_evidence_snapshot_ids",
+            "description",
+            "work_lineage_id",
+            "git_base_branch",
+            "git_base_commit_sha",
         ),
     )
     row["title"] = _trim_text(task.get("title"), TITLE_LIMIT)
@@ -621,6 +673,8 @@ def _compact_project(project: Mapping[str, Any]) -> dict[str, Any]:
             }
             for source in blocking_sources[:ID_LIST_LIMIT]
         ]
+        if len(blocking_sources) > ID_LIST_LIMIT:
+            row["blocking_sources_omitted_count"] = len(blocking_sources) - ID_LIST_LIMIT
     return row
 
 
@@ -651,77 +705,12 @@ def _compact_external_source_evidence_snapshot(
         row["title"] = _trim_text(title, TITLE_LIMIT)
     body = snapshot.get("body")
     if isinstance(body, Mapping):
-        row["body"] = {
-            **_compact_fields(body, ("format",)),
-            "content": _trim_text(body.get("content"), 6000),
-        }
-        body_metadata = body.get("metadata")
-        if isinstance(body_metadata, Mapping) and body_metadata:
-            row["body"]["metadata"] = _compact_payload(body_metadata, text_limit=640)
-    acceptance_criteria = [
-        {
-            **_compact_fields(item, ("external_id", "status")),
-            "text": _trim_text(item.get("text"), 2000),
-            **(
-                {"metadata": _compact_payload(item["metadata"], text_limit=640)}
-                if isinstance(item.get("metadata"), Mapping) and item.get("metadata")
-                else {}
-            ),
-        }
-        for item in _mapping_rows(snapshot.get("acceptance_criteria"))
-    ]
-    if acceptance_criteria:
-        row["acceptance_criteria"] = acceptance_criteria[:30]
-        if len(acceptance_criteria) > 30:
-            row["acceptance_criteria_omitted_count"] = len(acceptance_criteria) - 30
-    discussion = [
-        {
-            **_compact_fields(item, ("external_id", "author", "occurred_at")),
-            "body": _trim_text(item.get("body"), 1200),
-            **(
-                {"metadata": _compact_payload(item["metadata"], text_limit=640)}
-                if isinstance(item.get("metadata"), Mapping) and item.get("metadata")
-                else {}
-            ),
-        }
-        for item in _mapping_rows(snapshot.get("discussion"))
-    ]
-    if discussion:
-        row["discussion"] = discussion[:20]
-        if len(discussion) > 20:
-            row["discussion_omitted_count"] = len(discussion) - 20
-    links = [
-        {
-            **_compact_fields(item, ("url", "label", "relation")),
-            **(
-                {"metadata": _compact_payload(item["metadata"], text_limit=640)}
-                if isinstance(item.get("metadata"), Mapping) and item.get("metadata")
-                else {}
-            ),
-        }
-        for item in _mapping_rows(snapshot.get("links"))
-    ]
-    if links:
-        row["links"] = links[:30]
-        if len(links) > 30:
-            row["links_omitted_count"] = len(links) - 30
-    metadata = snapshot.get("metadata")
-    if isinstance(metadata, Mapping) and metadata:
-        row["metadata"] = _compact_payload(metadata, text_limit=640)
+        row["body_excerpt"] = _trim_text(body.get("content"), 320)
+        row["body_character_count"] = len(str(body.get("content") or ""))
+    for key in ("acceptance_criteria", "discussion", "links"):
+        row[f"{key}_count"] = len(_mapping_rows(snapshot.get(key)))
+    row["read_required"] = True
     return row
-
-
-def _external_source_evidence_identity(
-    snapshot: Mapping[str, Any],
-) -> tuple[str, str, str, str, str, str]:
-    return (
-        _sort_text(snapshot.get("team_id")),
-        _sort_text(snapshot.get("project_id")),
-        _sort_text(snapshot.get("provider_type")),
-        _sort_text(snapshot.get("source_type")),
-        _sort_text(snapshot.get("external_identifier")),
-        _sort_text(snapshot.get("external_version")),
-    )
 
 
 def _external_source_evidence_newest_sort_key(
@@ -796,9 +785,10 @@ def _compact_inbox(
     )
     payload = item.get("payload")
     if isinstance(payload, Mapping):
-        compact_payload = _compact_payload(
-            payload,
-            text_limit=payload_text_limit,
+        compact_payload = (
+            _json_value(payload)
+            if _urgent_inbox(item)
+            else _compact_payload(payload, text_limit=payload_text_limit)
         )
         if compact_payload:
             row["payload"] = compact_payload
@@ -860,6 +850,10 @@ def _compact_release_package(release: Mapping[str, Any]) -> dict[str, Any]:
             "release_branch",
             "canonical_branch",
             "published_commit_sha",
+            "work_lineage_id",
+            "supersedes_release_package_id",
+            "review_request_ids",
+            "verification_status",
             "candidate_commit_sha",
             "approved_commit_sha",
             "next_action",
@@ -963,6 +957,9 @@ def _compact_blocker(blocker: Mapping[str, Any]) -> dict[str, Any]:
             "source_kind",
             "source_id",
             "reporter_agent_id",
+            "reason_code",
+            "resolution_scope",
+            "affected_task_ids",
             "owner_agent_id",
             "delegate_agent_id",
             "state",
@@ -1167,6 +1164,15 @@ def _compact_manager_fallback_summary(summary: Mapping[str, Any]) -> dict[str, A
     )
     if omitted_counts:
         row["omitted_counts"] = dict(sorted(omitted_counts.items()))
+    row["retrieval"] = {
+        "agents": {"tool": "team_list_agents", "paginate": True},
+        "open_work": {"tool": "team_list_tasks", "paginate": True},
+        "deliverables": {"tool": "team_list_deliverables", "paginate": True},
+        "pending_initial_release_decisions": {"tool": "team_list_deliverables", "paginate": True},
+        "review_requests": {"tool": "team_list_review_requests", "paginate": True},
+        "pending_inbox": {"tool": "team_list_inbox", "paginate": True},
+        "routing_gaps": {"tool": "team_list_runtime_attention", "paginate": True},
+    }
     return row
 
 
@@ -1336,8 +1342,6 @@ def _compact_routing_gap(item: Mapping[str, Any]) -> dict[str, Any]:
 
 def _compact_project_repo(
     repo: Mapping[str, Any],
-    *,
-    retained_delta: bool = False,
 ) -> dict[str, Any]:
     row = _compact_fields(
         repo,
@@ -1381,7 +1385,7 @@ def _compact_project_repo(
     ]
     if review_snapshots:
         row["review_repository_snapshots"] = review_snapshots
-    if retained_delta and len(git_contexts) == 1 and git_contexts[0].get("state") == "active":
+    if len(git_contexts) == 1 and git_contexts[0].get("state") == "active":
         active_context = git_contexts[0]
         for field_name in ("base_branch", "branch_context_id", "agent_branch"):
             if row.get(field_name) == active_context.get(field_name):
@@ -1409,7 +1413,7 @@ def _compact_review(review: Mapping[str, Any]) -> dict[str, Any]:
     )
     instructions = _optional_text(review.get("instructions"))
     if instructions is not None:
-        row["instructions"] = _trim_text(instructions)
+        row["instructions"] = instructions
     repository_snapshot = review.get("repository_snapshot")
     if isinstance(repository_snapshot, Mapping):
         row["repository_snapshot"] = _compact_fields(
@@ -1436,6 +1440,9 @@ def _compact_git_work_context(context: Mapping[str, Any]) -> dict[str, Any]:
             "task_id",
             "agent_branch",
             "base_branch",
+            "base_commit",
+            "preparation_generation",
+            "dependency_composition_recovery_id",
             "commit_sha",
             "dispatch_id",
             "worktree_path",
@@ -1512,7 +1519,7 @@ def _compact_payload(
                 compact[f"{key}_omitted_count"] = len(values) - ID_LIST_LIMIT
         elif key in _PAYLOAD_MAPPING_KEYS:
             compact[key] = _compact_nested_payload_mapping(value)
-        elif key.endswith("_id") or key in _PAYLOAD_SCALAR_KEYS:
+        elif key.endswith(("_id", "_sha", "_ref", "_branch")) or key in _PAYLOAD_SCALAR_KEYS:
             compact[key] = _json_value(value)
         else:
             omitted_keys.append(key)
@@ -1685,6 +1692,18 @@ def _merge_runtime_attention_context_into_inbox(
         inbox_item["project_ids"] = project_ids[:ID_LIST_LIMIT]
         if len(project_ids) > ID_LIST_LIMIT:
             inbox_item["project_ids_omitted_count"] = len(project_ids) - ID_LIST_LIMIT
+    for key in (
+        "next_action",
+        "next_action_hint",
+        "blocker_id",
+        "release_package_id",
+        "review_request_id",
+        "deliverable_id",
+        "follow_up_at",
+        "error",
+    ):
+        if attention.get(key) is not None and key not in inbox_item:
+            inbox_item[key] = _json_value(attention[key])
 
 
 def _runtime_attention_matches_dispatch(
@@ -1747,20 +1766,6 @@ def _runtime_attention_matches_dispatch(
     return False
 
 
-def _limited_release_packages(
-    releases: list[Mapping[str, Any]],
-    omitted_counts: dict[str, int],
-) -> dict[str, dict[str, Any]]:
-    rows = sorted((_compact_release_package(row) for row in releases), key=_release_sort_key)
-    limited = rows[:MAX_RELEASE_PACKAGES]
-    _add_omitted(omitted_counts, "release_packages", len(rows) - len(limited))
-    result: dict[str, dict[str, Any]] = {}
-    for index, row in enumerate(limited):
-        release_id = _optional_text(row.get("id")) or f"release-{index}"
-        result[release_id] = row
-    return result
-
-
 def _manager_fallback_limited_rows(
     rows: list[dict[str, Any]],
     limit: int,
@@ -1775,28 +1780,6 @@ def _manager_fallback_limited_rows(
         omitted_counts[count_key] = _positive_int(omitted_counts.get(count_key)) + (
             len(sorted_rows) - limit
         )
-    return limited
-
-
-def _limited_rows(
-    rows: list[dict[str, Any]],
-    limit: int,
-    omitted_counts: dict[str, int],
-    count_key: str,
-) -> list[dict[str, Any]]:
-    limited = rows[:limit]
-    _add_omitted(omitted_counts, count_key, len(rows) - len(limited))
-    return limited
-
-
-def _limited_values(
-    values: list[str],
-    limit: int,
-    omitted_counts: dict[str, int],
-    count_key: str,
-) -> list[str]:
-    limited = values[:limit]
-    _add_omitted(omitted_counts, count_key, len(values) - len(limited))
     return limited
 
 
@@ -1881,10 +1864,6 @@ def _trim_text(value: object, limit: int = TEXT_LIMIT) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
-
-
-def _drop_empty_lists(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in row.items() if value != []}
 
 
 def _add_omitted(counts: dict[str, int], key: str, count: int) -> None:

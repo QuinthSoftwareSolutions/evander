@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.agent_threads import usable_agent_thread_id
+
 from evander.admin.services.vm_agent.common import (
     Any,
     DirectoryPath,
@@ -188,10 +190,10 @@ class VmAgentContainerSessionHelperMixin:
             return None
 
         candidates = [
+            metadata.get("native_thread_id"),
+            metadata.get("codex_subscription_thread_id"),
             metadata.get("thread_id"),
             metadata.get("agent_thread_id"),
-            metadata.get("resume_thread_id"),
-            metadata.get("codex_subscription_thread_id"),
         ]
         codex_outcome = metadata.get("codex_outcome")
         if isinstance(codex_outcome, Mapping):
@@ -206,13 +208,22 @@ class VmAgentContainerSessionHelperMixin:
                     [
                         nested.get("thread_id"),
                         nested.get("agent_thread_id"),
-                        nested.get("resume_thread_id"),
+                        nested.get("native_thread_id"),
                     ]
                 )
 
+        # Historical UI grouping may have only the requested resume ID. Keep
+        # that display fallback after all observed identities, never before it.
+        candidates.append(metadata.get("resume_thread_id"))
+        for nested_key in ("outputs", "result", "container_worker"):
+            nested = metadata.get(nested_key)
+            if isinstance(nested, Mapping):
+                candidates.append(nested.get("resume_thread_id"))
         for candidate in candidates:
-            thread_id = str(candidate or "").strip()
-            if thread_id and not thread_id.startswith("dispatch-"):
+            thread_id = usable_agent_thread_id(
+                candidate, metadata.get("dispatch_id"), getattr(execution, "execution_id", None)
+            )
+            if thread_id:
                 return thread_id
         return None
 

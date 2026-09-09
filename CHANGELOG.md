@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-09-09 - Native Team thread resumption (0.32.1)
+
+- Keep asynchronous dispatch and execution identities separate from observed provider
+  thread IDs. Capture native threads from worker metadata or bounded execution-log
+  searches, including queued prompts and verbose runs.
+- Persist native receipts against each Team dispatch and bind only its own work lineage.
+  Guard delayed completions, newer dispatches, session changes, and policy resets.
+- Treat old synthetic lineage bindings as unbound so recovery uses current durable Team
+  context. Add additive persistence migration and recovery/rollback guidance.
+- Skip handled or superseded missing-thread receipts before opening a state transaction.
+  Preserve actionable session-health fields in wake overflow without an unusable read reference.
+
+## 2026-09-09 - Focused Team contexts (0.32.0)
+
+- Make every ordinary Team wake independently actionable with current identity,
+  instructions, immutable scope, urgent operator directives, and retrieval references
+  for bounded detail. Share exact Git bindings and review snapshots within each payload
+  while preserving evidence versions, release candidates, and approval SHAs.
+- Add opt-in dispatch summary reads with complete scope IDs and a scoped individual
+  source-evidence read. Preserve the default full-read response and existing controls.
+- Update managed Team guidance to version 40 with focused reads and bounded shell
+  output, and move repeated review and management procedures into that guidance.
+- Supply managers with current supervisory counts without widening dispatch authority.
+  Exercise the existing work-lineage policy locally; leave operator policies unchanged.
+- Include synthetic offline comparisons that count additional retrieval and guidance
+  overhead, plus a deployment, pilot-measurement, and rollback runbook.
+
 ## 2026-09-09 - Task board column layout (0.31.1)
 
 - Hide the Done column until Show completed is enabled, giving active tasks more room

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from ..models import (
     AgentInboxItem,
@@ -30,6 +30,7 @@ from ..human_review_projection import release_package_api_payload
 from .domain.project_status import project_blocking_sources
 from .domain.outcome_catalog import effective_outcome_kind_payloads
 from .domain.task_assessment import task_payload_with_assessment
+from .wake_prompt_context import build_dispatch_summary
 
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
@@ -318,9 +319,15 @@ class TeamReadService:
     def get_my_identity(self) -> dict[str, Any]:
         return self._agent_detail_payload(self._actor, full_identity=True)
 
-    def get_current_dispatch_context(self) -> dict[str, Any] | None:
+    def get_current_dispatch_context(
+        self,
+        *,
+        detail: Literal["summary", "full"] = "full",
+    ) -> dict[str, Any] | None:
         """Hydrate the caller's active immutable dispatch scope on demand."""
 
+        if detail not in {"summary", "full"}:
+            raise ValueError("detail must be summary or full")
         runtime = self._state.agent_runtimes.get(self._actor_id)
         dispatch_id = runtime.active_dispatch_id if runtime is not None else None
         if dispatch_id is None:
@@ -360,7 +367,7 @@ class TeamReadService:
             for project_id in dispatch.project_ids
             if (payload := self.get_project(project_id)) is not None
         ]
-        return _without_none(
+        payload = _without_none(
             {
                 "dispatch": dispatch.model_dump(mode="json"),
                 "tasks": tasks,
@@ -385,6 +392,74 @@ class TeamReadService:
                 ],
             }
         )
+        return build_dispatch_summary(payload) if detail == "summary" else payload
+
+    def get_source_evidence_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        """Read one immutable capture from the caller's current frozen scope."""
+
+        snapshot_id = _text(snapshot_id)
+        runtime = self._state.agent_runtimes.get(self._actor_id)
+        dispatch = self._state.dispatches.get(runtime.active_dispatch_id) if runtime else None
+        if (
+            dispatch is None
+            or dispatch.agent_id != self._actor_id
+            or snapshot_id not in dispatch.source_evidence_snapshot_ids
+        ):
+            return None
+        snapshot = self._state.external_source_evidence_snapshots.get(snapshot_id)
+        return external_source_evidence_snapshot_payload(snapshot) if snapshot else None
+
+    def supervisory_overview(self) -> dict[str, Any]:
+        """Current cross-lineage awareness within existing read visibility only."""
+
+        if not (
+            self._managed_team_ids
+            or self._subordinate_agent_ids()
+            or agent_lead_project_ids(self._state, self._actor_id)
+        ):
+            return {}
+        projects = []
+        for project_id in sorted(self._visible_project_ids):
+            project = self._state.projects.get(project_id)
+            if project is None:
+                continue
+            projects.append(
+                {
+                    "id": project.id,
+                    "name": project.name,
+                    "status": project.status.value,
+                    "task_counts": _state_counts(
+                        task.state.value
+                        for task in self._state.tasks.values()
+                        if task.project_id == project.id and self._task_visible(task)
+                    ),
+                    "open_blocker_count": sum(
+                        blocker.project_id == project.id
+                        and blocker.state == TeamBlockerState.OPEN
+                        and self._blocker_visible(blocker)
+                        for blocker in self._state.blockers.values()
+                    ),
+                    "release_counts": _state_counts(
+                        release.state.value
+                        for release in self._state.release_packages.values()
+                        if release.project_id == project.id and self._release_visible(release)
+                    ),
+                }
+            )
+        return {
+            "read_only": True,
+            "execution_scope": "current_dispatch",
+            "project_count": len(projects),
+            "projects": projects[:8],
+            "omitted_project_count": max(0, len(projects) - 8),
+            "retrieval": {
+                "projects": {"tool": "team_list_projects", "paginate": True},
+                "tasks": {"tool": "team_list_tasks", "paginate": True},
+                "blockers": {"tool": "team_list_blockers", "paginate": True},
+                "reviews": {"tool": "team_list_review_requests", "paginate": True},
+                "releases": {"tool": "team_list_release_packages", "paginate": True},
+            },
+        }
 
     def list_projects(
         self,
@@ -794,7 +869,11 @@ class TeamReadService:
             "owner_agent_id": task.owner_agent_id,
             "project_id": task.project_id,
             "authored_by": task.authored_by.model_dump(mode="json") if task.authored_by else None,
-            "work_item_attributions": [item.model_dump(mode="json") for item in task.work_item_attributions] if task.work_item_attributions else None,
+            "work_item_attributions": [
+                item.model_dump(mode="json") for item in task.work_item_attributions
+            ]
+            if task.work_item_attributions
+            else None,
             "git_base_branch": task.git_base_branch,
             "git_base_commit_sha": task.git_base_commit_sha,
             "case_id": task.case_id,

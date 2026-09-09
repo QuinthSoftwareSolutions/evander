@@ -1109,6 +1109,9 @@ class AgentRuntime(TeamModel):
     last_context_rotated_at: datetime | None = None
     last_thread_id: str | None = None
     work_lineage_thread_ids: dict[str, str] = Field(default_factory=dict)
+    # The latest delivered dispatch owns each binding, even while its native
+    # thread is unknown. Late completion receipts cannot replace this owner.
+    work_lineage_thread_dispatch_ids: dict[str, str] = Field(default_factory=dict)
     last_delivered_role_description_fingerprint: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1132,7 +1135,7 @@ class AgentRuntime(TeamModel):
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
 
-    @field_validator("work_lineage_thread_ids", mode="before")
+    @field_validator("work_lineage_thread_ids", "work_lineage_thread_dispatch_ids", mode="before")
     @classmethod
     def _work_lineage_thread_ids(cls, value: object) -> dict[str, str]:
         if value is None:
@@ -3351,6 +3354,8 @@ class TeamDispatch(TeamModel):
     cause_kind: str
     cause_id: str | None = None
     work_lineage_id: str | None = None
+    native_thread_id: str | None = None
+    native_thread_observed_at: datetime | None = None
     task_ids: list[str] = Field(default_factory=list)
     # Only this dispatch may release these claims after a pre-submission failure.
     claimed_role_task_ids: list[str] = Field(default_factory=list)
@@ -3391,6 +3396,7 @@ class TeamDispatch(TeamModel):
     @field_validator(
         "cause_id",
         "work_lineage_id",
+        "native_thread_id",
         "error",
         "role_description_fingerprint",
         "wake_work_fingerprint",
@@ -3899,14 +3905,16 @@ def filter_work_lineage_references(
     for runtime in runtimes.values():
         if not isinstance(runtime, dict):
             continue
-        thread_ids = runtime.get("work_lineage_thread_ids")
-        runtime["work_lineage_thread_ids"] = {
-            lineage_id: thread_id
-            for lineage_id, thread_id in (
-                thread_ids.items() if isinstance(thread_ids, Mapping) else ()
-            )
-            if lineage_id in visible_lineage_ids
-        }
+        for field in ("work_lineage_thread_ids", "work_lineage_thread_dispatch_ids"):
+            bindings = runtime.get(field)
+            if field in runtime:
+                runtime[field] = {
+                    lineage_id: value
+                    for lineage_id, value in (
+                        bindings.items() if isinstance(bindings, Mapping) else ()
+                    )
+                    if lineage_id in visible_lineage_ids
+                }
 
 
 class TeamChatMutationAuthorization(TeamModel):
@@ -5425,7 +5433,10 @@ class TeamState(TeamModel):
                             f"conversation {message.conversation_id}, not {ref.conversation_id}"
                         )
         for runtime in self.agent_runtimes.values():
-            for lineage_id in runtime.work_lineage_thread_ids:
+            for lineage_id in (
+                runtime.work_lineage_thread_ids.keys()
+                | runtime.work_lineage_thread_dispatch_ids.keys()
+            ):
                 if lineage_id not in self.work_lineages:
                     errors.append(
                         f"agent runtime {runtime.agent_id} references missing work lineage "

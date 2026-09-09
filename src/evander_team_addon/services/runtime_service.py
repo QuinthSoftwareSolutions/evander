@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Any, Callable, Literal
 from uuid import uuid4
 
+from evander.agent_threads import usable_agent_thread_id
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -132,6 +133,7 @@ from .domain.git_work_contexts import (
     finalize_active_git_work_contexts_for_dispatch,
     reconcile_git_work_context_lifecycle,
 )
+from .read_service import TeamReadService
 from .domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
     _manager_fallback_review_routing_authorities,
@@ -452,7 +454,7 @@ class TeamRuntimeService:
     ) -> TeamState:
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
-        normalized_thread_id = _optional_text(thread_id)
+        normalized_thread_id = usable_agent_thread_id(thread_id, dispatch_id)
 
         def _mutate(state: TeamState) -> TeamState:
             now = utc_now()
@@ -1240,6 +1242,9 @@ class TeamRuntimeService:
                 leases.append(
                     {
                         "agent": agent_payload,
+                        "supervisory_overview": TeamReadService(
+                            state=state_model, actor=agent,
+                        ).supervisory_overview(),
                         "runtime": runtime.model_dump(mode="json"),
                         "role_description_changed": (
                             runtime.last_delivered_role_description_fingerprint
@@ -1825,6 +1830,9 @@ class TeamRuntimeService:
                 leases.append(
                     {
                         "agent": manager_payload,
+                        "supervisory_overview": TeamReadService(
+                            state=state_model, actor=manager,
+                        ).supervisory_overview(),
                         "runtime": manager_runtime.model_dump(mode="json"),
                         "role_description_changed": (
                             manager_runtime.last_delivered_role_description_fingerprint
@@ -2037,7 +2045,7 @@ class TeamRuntimeService:
         from .chat_service import team_chat_mutation_allowed
 
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
-        normalized_thread_id = _optional_text(thread_id)
+        normalized_thread_id = usable_agent_thread_id(thread_id, dispatch_id)
         effective_now = _ensure_utc(now or utc_now())
         preparation_error: list[str] = []
         activation: dict[str, Any] = {
@@ -2108,6 +2116,9 @@ class TeamRuntimeService:
                 )
 
             if dispatch.activation_completed_at is not None:
+                self._record_dispatch_native_thread_in_state(
+                    state, dispatch=dispatch, thread_id=normalized_thread_id, now=effective_now
+                )
                 return state
 
             rotation_allowed = not context_handoff_preparation
@@ -2172,10 +2183,11 @@ class TeamRuntimeService:
             if (
                 runtime.context_clearing_policy == AgentContextClearingPolicy.WORK_LINEAGE
                 and dispatch.work_lineage_id is not None
-                and normalized_thread_id is not None
             ):
-                runtime.work_lineage_thread_ids[dispatch.work_lineage_id] = normalized_thread_id
-                runtime.last_thread_id = normalized_thread_id
+                lineage_id = dispatch.work_lineage_id
+                runtime.work_lineage_thread_dispatch_ids[lineage_id] = dispatch.id
+                if usable_agent_thread_id(runtime.work_lineage_thread_ids.get(lineage_id)) is None:
+                    runtime.work_lineage_thread_ids.pop(lineage_id, None)
 
             for task_id in dispatch.task_ids:
                 task = state.tasks.get(task_id)
@@ -2188,6 +2200,9 @@ class TeamRuntimeService:
                     task.assignment_started_at = effective_now
                     task.updated_at = effective_now
             dispatch.activation_completed_at = effective_now
+            self._record_dispatch_native_thread_in_state(
+                state, dispatch=dispatch, thread_id=normalized_thread_id, now=effective_now
+            )
             runtime.updated_at = effective_now
             return state
 
@@ -2195,6 +2210,92 @@ class TeamRuntimeService:
         if preparation_error:
             raise RuntimeError(preparation_error[0])
         return state, activation
+
+    @staticmethod
+    def _record_dispatch_native_thread_in_state(
+        state: TeamState,
+        *,
+        dispatch: TeamDispatch,
+        thread_id: str | None,
+        now: datetime,
+        observed_at: datetime | None = None,
+    ) -> bool:
+        """Bind a receipt to its immutable dispatch scope, never the current task."""
+        thread_id = usable_agent_thread_id(thread_id, dispatch.id)
+        runtime = state.agent_runtimes.get(dispatch.agent_id)
+        agent = state.agents.get(dispatch.agent_id)
+        if (
+            thread_id is None
+            or (dispatch.native_thread_id == thread_id and observed_at is None)
+            or runtime is None
+            or agent is None
+            or agent.session_id != dispatch.session_id
+            or dispatch.activation_completed_at is None
+            or (
+                dispatch.native_thread_observed_at is not None
+                and (observed_at or now) <= dispatch.native_thread_observed_at
+            )
+        ):
+            return False
+        if dispatch.native_thread_id == thread_id:
+            # Advance the receipt for a newer execution that used the same ID,
+            # without resurrecting a binding invalidated since that execution.
+            dispatch.native_thread_observed_at = observed_at
+            return True
+        dispatch.native_thread_id = thread_id
+        dispatch.native_thread_observed_at = observed_at or now
+        lineage_id = dispatch.work_lineage_id
+        if (
+            runtime.context_clearing_policy == AgentContextClearingPolicy.WORK_LINEAGE
+            and lineage_id is not None
+        ):
+            owner = runtime.work_lineage_thread_dispatch_ids.get(lineage_id)
+            # Recover an already-delivered pre-fix dispatch using its exact
+            # lease or poisoned binding. An absent binding after a policy reset
+            # is not permission to resurrect historical conversation state.
+            legacy_binding = runtime.work_lineage_thread_ids.get(lineage_id)
+            if owner is None and legacy_binding is not None and (
+                runtime.active_dispatch_id == dispatch.id or legacy_binding == dispatch.id
+            ):
+                runtime.work_lineage_thread_dispatch_ids[lineage_id] = dispatch.id
+                owner = dispatch.id
+            if owner == dispatch.id:
+                runtime.work_lineage_thread_ids[lineage_id] = thread_id
+        if runtime.active_dispatch_id == dispatch.id:
+            runtime.last_thread_id = thread_id
+        runtime.updated_at = now
+        return True
+
+    def record_agent_dispatch_native_thread(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str,
+        thread_id: str,
+        observed_at: datetime | None = None,
+        now: datetime | None = None,
+    ) -> tuple[TeamState, bool]:
+        """Reconcile an observed provider ID for an active or completed dispatch."""
+        session_id = _required_text(session_id, "session_id")
+        dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        effective_now = _ensure_utc(now or utc_now())
+        recorded = False
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal recorded
+            dispatch = state.dispatches.get(dispatch_id)
+            if dispatch is None or dispatch.session_id != session_id:
+                return state
+            recorded = self._record_dispatch_native_thread_in_state(
+                state,
+                dispatch=dispatch,
+                thread_id=thread_id,
+                now=effective_now,
+                observed_at=_ensure_utc(observed_at) if observed_at is not None else None,
+            )
+            return state
+
+        return self._repository.update(_mutate), recorded
 
     def mark_agent_dispatch_session_metadata_mirrored(
         self,
@@ -2222,6 +2323,7 @@ class TeamRuntimeService:
         agent_id: str,
         dispatch_id: str,
         resume_thread_id: str,
+        require_dispatch_owner: bool = False,
         now: datetime | None = None,
     ) -> tuple[TeamState, bool]:
         """Remove the exact lineage binding rejected by the agent provider."""
@@ -2249,7 +2351,16 @@ class TeamRuntimeService:
             )
             if runtime.work_lineage_thread_ids.get(lineage_id) != normalized_thread_id:
                 return state
+            owner = runtime.work_lineage_thread_dispatch_ids.get(lineage_id)
+            if require_dispatch_owner and not (
+                owner == dispatch.id
+                or (owner is None and runtime.active_dispatch_id == dispatch.id)
+            ):
+                return state
             runtime.work_lineage_thread_ids.pop(lineage_id, None)
+            runtime.work_lineage_thread_dispatch_ids.pop(lineage_id, None)
+            if runtime.last_thread_id == normalized_thread_id:
+                runtime.last_thread_id = None
             runtime.updated_at = effective_now
             invalidated = True
             return state

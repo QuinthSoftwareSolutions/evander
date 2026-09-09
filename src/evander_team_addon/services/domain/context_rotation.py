@@ -270,6 +270,7 @@ def _set_context_clearing_policy(
         _clear_pending_auto_context_rotation(runtime)
         if AgentContextClearingPolicy.WORK_LINEAGE in {previous_policy, policy}:
             runtime.work_lineage_thread_ids = {}
+            runtime.work_lineage_thread_dispatch_ids = {}
     runtime.context_clearing_policy = policy
     runtime.auto_context_clearing_enabled = policy != AgentContextClearingPolicy.OFF
     runtime.updated_at = now

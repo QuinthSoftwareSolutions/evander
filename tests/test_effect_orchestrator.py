@@ -8463,11 +8463,11 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert reconciled == 0
     running_record = list(execution_store.read_all().values())[0]
     assert running_record.status == "waiting"
-    assert running_record.outputs["thread_id"] == "thread-existing"
+    assert running_record.outputs["thread_id"] == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
     refreshed_session = session_repository.get_session("session-1")
     assert refreshed_session is not None
     assert refreshed_session.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
-        "thread-existing"
+        "019de31a-8393-71d2-8990-e5f4fb0a4df2"
     )
     assert "teams:chat-1:agent_thread_id" not in refreshed_session.metadata
 
