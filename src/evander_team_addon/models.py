@@ -117,6 +117,12 @@ class HumanReviewFindingTargetScope(str, Enum):
     DELIVERABLES = "deliverables"
 
 
+class ReleaseGateKind(str, Enum):
+    AGENT_REVIEW = "agent_review"
+    VERIFICATION = "verification"
+    HUMAN_REVIEW = "human_review"
+
+
 class ReviewBlockKind(str, Enum):
     DEPENDENCY = "dependency"
     INPUT_UNAVAILABLE = "input_unavailable"
@@ -916,14 +922,50 @@ class HumanReviewRequirement(TeamModel):
         return self
 
 
+class ReleaseGateStage(TeamModel):
+    kind: ReleaseGateKind
+    enabled: bool = True
+
+
+def _legacy_release_gate_sequence(value: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "kind": ReleaseGateKind.VERIFICATION.value,
+            "enabled": bool(value.get("verification_commands")),
+        },
+        {
+            "kind": ReleaseGateKind.AGENT_REVIEW.value,
+            "enabled": bool(value.get("review_requirements")),
+        },
+        {
+            "kind": ReleaseGateKind.HUMAN_REVIEW.value,
+            "enabled": value.get("human_review_requirement") is not None,
+        },
+    ]
+
+
 class ProjectReleasePolicy(TeamModel):
+    schema_version: Literal[1, 2] = 2
+    gate_sequence: list[ReleaseGateStage] = Field(default_factory=list)
     verification_backend: Literal["container_worker_vm"] = "container_worker_vm"
     container_image: str | None = None
     resource_limits: WorkerResourceLimits | None = None
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
     human_review_requirement: HumanReviewRequirement | None = None
+    # Retained as a compatibility input. An explicit policy with every stage
+    # disabled is now sufficient to authorize an ungated release.
     allow_ungated: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_gate_sequence(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or "gate_sequence" in value:
+            return value
+        normalized = dict(value)
+        normalized["schema_version"] = 2
+        normalized["gate_sequence"] = _legacy_release_gate_sequence(value)
+        return normalized
 
     @field_validator("container_image", mode="before")
     @classmethod
@@ -932,15 +974,17 @@ class ProjectReleasePolicy(TeamModel):
 
     @model_validator(mode="after")
     def _require_gate(self) -> "ProjectReleasePolicy":
-        if not self.allow_ungated and not (
-            self.verification_commands
-            or self.review_requirements
-            or self.human_review_requirement is not None
-        ):
-            raise ValueError(
-                "release policy requires verification_commands, review_requirements, "
-                "or human_review_requirement unless allow_ungated is true"
-            )
+        kinds = [stage.kind for stage in self.gate_sequence]
+        expected = set(ReleaseGateKind)
+        if len(kinds) != len(expected) or set(kinds) != expected:
+            raise ValueError("release policy gate_sequence must contain each gate kind exactly once")
+        enabled = {stage.kind for stage in self.gate_sequence if stage.enabled}
+        if ReleaseGateKind.VERIFICATION in enabled and not self.verification_commands:
+            raise ValueError("enabled verification gate requires verification_commands")
+        if ReleaseGateKind.AGENT_REVIEW in enabled and not self.review_requirements:
+            raise ValueError("enabled agent_review gate requires review_requirements")
+        if ReleaseGateKind.HUMAN_REVIEW in enabled and self.human_review_requirement is None:
+            raise ValueError("enabled human_review gate requires human_review_requirement")
         review_keys = [
             (requirement.reviewer_agent_id, requirement.review_profile_id)
             for requirement in self.review_requirements
@@ -4382,7 +4426,14 @@ class ReleaseVerificationRun(TeamModel):
 
 
 class ReleaseGateFailure(TeamModel):
-    stage: Literal["verification", "review", "human_review", "configuration", "lineage"]
+    stage: Literal[
+        "verification",
+        "review",
+        "human_review",
+        "configuration",
+        "lineage",
+        "gate_obligation",
+    ]
     kind: Literal[
         "candidate",
         "infrastructure",
@@ -4392,6 +4443,7 @@ class ReleaseGateFailure(TeamModel):
         "changes_requested",
         "configuration",
         "convergence",
+        "waiver_required",
     ]
     source_id: str | None = None
     message: str
@@ -4760,8 +4812,36 @@ class HumanReviewFinding(TeamModel):
         return self
 
 
+class ReleaseGateObligationWaiver(TeamModel):
+    id: str
+    gate_kind: ReleaseGateKind
+    predecessor_release_package_id: str
+    candidate_commit_sha: str
+    source_ids: list[str] = Field(default_factory=list)
+    reason: str
+    authorized_by: str
+    authorized_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "predecessor_release_package_id",
+        "candidate_commit_sha",
+        "reason",
+        "authorized_by",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("source_ids", mode="before")
+    @classmethod
+    def _source_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "source_ids")
+
+
 class ReleaseCandidateManifest(TeamModel):
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 3
     evidence_status: Literal["complete", "legacy_partial"] = "complete"
     project_id: str
     release_package_id: str
@@ -4771,6 +4851,7 @@ class ReleaseCandidateManifest(TeamModel):
     release_branch: str
     deliverables: list[ReleaseCandidateDeliverableEvidence] = Field(default_factory=list)
     scope_validation: ReleaseScopeValidation | None = None
+    gate_sequence: list[ReleaseGateStage] = Field(default_factory=list)
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
     human_review_requirement: HumanReviewRequirementSnapshot | None = None
@@ -4779,6 +4860,23 @@ class ReleaseCandidateManifest(TeamModel):
     carried_human_findings: list[HumanReviewFindingSnapshot] = Field(default_factory=list)
     contribution_graph: dict[str, list[str]] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_gate_sequence(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or "gate_sequence" in value:
+            return value
+        normalized = dict(value)
+        normalized["gate_sequence"] = _legacy_release_gate_sequence(value)
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_gate_sequence(self) -> "ReleaseCandidateManifest":
+        kinds = [stage.kind for stage in self.gate_sequence]
+        expected = set(ReleaseGateKind)
+        if len(kinds) != len(expected) or set(kinds) != expected:
+            raise ValueError("release manifest gate_sequence must contain each gate kind exactly once")
+        return self
 
     @field_validator(
         "project_id",
@@ -4838,6 +4936,7 @@ class ReleasePackage(TeamModel):
     git_promotion_record_ids: list[str] = Field(default_factory=list)
     policy_version: int = Field(default=1, ge=1)
     verification_waivers: list[ReleaseVerificationWaiver] = Field(default_factory=list)
+    gate_obligation_waivers: list[ReleaseGateObligationWaiver] = Field(default_factory=list)
     scope_validation: ReleaseScopeValidation | None = None
     state: TeamRecordState = TeamRecordState.PENDING
     published_at: datetime | None = None
@@ -8388,6 +8487,16 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
     if gate_failure is not None:
         if (
             release.state == TeamRecordState.BLOCKED
+            and gate_failure.stage == "gate_obligation"
+            and gate_failure.kind == "waiver_required"
+        ):
+            return (
+                "A directory owner must record a reasoned gate-obligation waiver for "
+                f"release {release.id} and its pinned candidate before publication can resume. "
+                f"Current blocker: {gate_failure.message}"
+            )
+        if (
+            release.state == TeamRecordState.BLOCKED
             and gate_failure.stage == "verification"
             and gate_failure.kind in {"infrastructure", "timeout"}
         ):
@@ -8519,6 +8628,12 @@ def _current_release_verification_run(
 def _release_next_action(state: TeamState, release: ReleasePackage) -> str:
     failure = release.gate_failure
     if failure is not None:
+        if (
+            release.state == TeamRecordState.BLOCKED
+            and failure.stage == "gate_obligation"
+            and failure.kind == "waiver_required"
+        ):
+            return "authorize_release_gate_obligation_waiver"
         if (
             release.state == TeamRecordState.BLOCKED
             and failure.stage == "verification"

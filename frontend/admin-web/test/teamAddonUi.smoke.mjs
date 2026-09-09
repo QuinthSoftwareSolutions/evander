@@ -12851,6 +12851,12 @@ test("team add-on reports published release regressions without implying rollbac
 test("team add-on project editor keeps human release policy in bounded controls", async (t) => {
   const initialState = seededGitState();
   initialState.projects["alpha-project"].release_policy = {
+    schema_version: 2,
+    gate_sequence: [
+      { kind: "verification", enabled: true },
+      { kind: "agent_review", enabled: false },
+      { kind: "human_review", enabled: true },
+    ],
     allow_ungated: false,
     verification_commands: [{ name: "pytest", command: "./.venv/bin/pytest -q" }],
     human_review_requirement: {
@@ -12889,6 +12895,13 @@ test("team add-on project editor keeps human release policy in bounded controls"
 
   const form = page.locator("#edit-record-form");
   await form.waitFor({ state: "visible" });
+  assert.equal(await form.locator('[name="release_policy_enabled"]').isChecked(), true);
+  const gateRows = form.locator("[data-release-gate-row]");
+  assert.deepEqual(await gateRows.evaluateAll((rows) => rows.map((row) => row.dataset.releaseGateKind)), [
+    "verification",
+    "agent_review",
+    "human_review",
+  ]);
   assert.equal(await form.locator('[name="human_review_enabled"]').isChecked(), true);
   assert.equal(
     await form.locator('[name="human_reviewer_group_ids"]').inputValue(),
@@ -12924,8 +12937,11 @@ test("team add-on project editor keeps human release policy in bounded controls"
   await form
     .locator('[name="release_policy_json"]')
     .fill(
-      '{"allow_ungated":false,"human_review_requirement":{"reviewer_group_ids":["injected-user-control"]}}',
+      '{"allow_ungated":false,"verification_commands":[{"name":"pytest","command":"./.venv/bin/pytest -q"}],"human_review_requirement":{"reviewer_group_ids":["injected-user-control"]}}',
     );
+  await gateRows.nth(2).getByRole("button", { name: "Move Human review earlier" }).click();
+  await gateRows.nth(1).getByRole("button", { name: "Move Human review earlier" }).click();
+  await form.locator('[name="release_gate_enabled_verification"]').uncheck();
   await form
     .locator('[name="human_reviewer_group_ids"]')
     .fill("release-approvers\nrelease-qa");
@@ -12993,6 +13009,12 @@ test("team add-on project editor keeps human release policy in bounded controls"
       request.pathname === "/api/addons/team-addon/projects/alpha-project",
   );
   assert.ok(patchRequest, "expected the project release policy update");
+  assert.deepEqual(patchRequest.payload.release_policy.gate_sequence, [
+    { kind: "human_review", enabled: true },
+    { kind: "verification", enabled: false },
+    { kind: "agent_review", enabled: false },
+  ]);
+  assert.equal(patchRequest.payload.release_policy.verification_commands.length, 1);
   assert.deepEqual(
     patchRequest.payload.release_policy.human_review_requirement.reviewer_group_ids,
     ["release-approvers", "release-qa"],

@@ -5808,19 +5808,32 @@ The prompt labels the context lifecycle explicitly:
 | Context mode | When it is used | What it carries |
 |---|---|---|
 | <code>fresh_full</code> | First successful wake, manual or idle rotation, <code>every_wake</code>, the first wake for a work lineage, an unbound <code>work_lineage</code> wake, or an explicit <code>new_context</code> resume. | A compact complete working set for the immutable dispatch. |
-| <code>retained_delta</code> | Successful retained same-session wake. | The current immutable dispatch delta; stable identity and organization detail already in the conversation are omitted. |
+| <code>retained_current</code> | Successful retained same-session wake. | The current independent working set, including identity, role, instructions, scope, obligations, and retrieval references. |
 | <code>context_handoff</code> | The bounded preparation dispatch before manual or idle reset. | One advisory continuity summary only; this is a dispatch cause, not an ordinary work context mode. |
 
 Lifecycle state and resume behavior choose the mode. Agent display names,
-model names, and provider names do not. During a retained delta,
-<code>team_get_current_dispatch_context</code> hydrates the active immutable
-scope and its task, inbox, blocker, review, project, and Git records without
-widening membership.
+model names, and provider names do not. Both modes remain actionable after
+compaction without relying on earlier messages. Preview caps retain overflow
+IDs, current obligation summaries, counts, and collection-level read references.
+Urgent messages and operator directives remain complete. Shared Git bindings and
+review snapshots are represented once within the payload and referenced by ID.
+
+Use <code>team_get_current_dispatch_context(detail="summary")</code> first when
+more context is needed. It returns complete frozen scope IDs and compact
+records with exact dispatch Git bindings. The default <code>detail="full"</code>
+keeps the existing full response. Use individual record reads for complete task,
+review, inbox, project, and release details, and
+<code>team_get_source_evidence_snapshot(snapshot_id=...)</code> for a complete
+capture in the active dispatch. Summary reads never widen execution scope or
+substitute a newer binding. Managers' <code>supervisory_overview</code> counts and
+paginated reads preserve awareness across lineages within existing read access.
+The [deployment and pilot runbook](../../team-context-reduction-runbook.md)
+explains measurement limits, guidance versioning, policy changes, and rollback.
 
 Case and session context remain intentionally selective even in
 <code>fresh_full</code>. Full compact case rows are included only when a
 structured task, blocker, review, release decision, or inbox reference links
-the case to the immutable dispatch. Fresh Team Chat and management wakes add a
+the case to the immutable dispatch. Team Chat and management wakes add a
 bounded <code>case_index</code> for other visible active cases containing only
 ID, title, status, priority, and project. Session health includes a count
 summary on every ordinary context and emits individual rows only for missing,
@@ -5987,7 +6000,7 @@ Begin in **Operations** with the agent's wake reason, runtime attention, active 
 | Task owner never wakes | Check dependency status, active deliverable review, interval, no-progress count, Team cap, stand-down, busy session, and active lease. |
 | Dispatch remains <code>preparing</code> | Inspect every scoped repository/worktree and the recorded preparation error; Team will not lease a partial scope. |
 | The same preparation error does not run again | Inspect the current cause-specific preparation blocker and its semantic generation. Recover it only after fixing the cause, or make a meaningful task/dependency/project-Git/candidate change. |
-| Retained wake omits stable detail | This is expected for <code>retained_delta</code>; call <code>team_get_current_dispatch_context</code> to hydrate the frozen active scope. |
+| Wake preview omits detail | Follow <code>retrieval</code> and <code>overflow</code>; start additional reads with <code>team_get_current_dispatch_context(detail="summary")</code>. |
 | Task appears in context but no worktree mapping does | Confirm the task actually needs the project's managed repository and that the complete dispatch preparation succeeded. |
 | Two prompts seem concurrent | Compare core session activity and Team <code>active_dispatch_id</code>; one may be a non-Team wake or an expired/stale completion. |
 | Lease remains after the model stopped | Session completion may not have routed or matched the active dispatch. Inspect session routing and finalizer workflow run. |
@@ -7050,8 +7063,7 @@ A branch name can move after review. A commit SHA cannot: it identifies one exac
 In plain language, the path is:
 
 ```text
-accepted work -> fixed candidate -> verification and release review
-              -> authenticated human review when policy requires it
+accepted work -> fixed candidate -> enabled gates in configured order
               -> canonical publication of that same candidate
 ```
 
@@ -7157,7 +7169,7 @@ The internal release branch is not the published branch operators should test or
 
 The release package is the sealed description of one candidate: what work it contains, what reviewers accepted, what changed, which checks must run, and who requested it. Later policy changes do not silently rewrite that package.
 
-All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy unless <code>allow_ungated=true</code> was deliberately configured.
+All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy. An explicit policy with every gate disabled is the deliberate ungated configuration; a missing policy still blocks publication.
 
 Git inputs must also share one authoritative task base branch and exact base
 commit. Team returns <code>mixed_git_base_branches</code> before creating a
@@ -7206,6 +7218,7 @@ This prevents policy drift after request time from silently redefining what was 
 > - candidate commit and tree;
 > - task/release base branch and exact base commit;
 > - scope-validation result;
+> - ordered enabled/disabled release-gate sequence;
 > - ordered verification commands;
 > - release-review requirements;
 > - optional human reviewer groups, checklist, test instructions, and
@@ -7224,7 +7237,7 @@ waiver records remain visible for audit only; new release decisions never use th
 
 ## Release policy
 
-The project policy says how the fixed candidate will be checked and who must review it. Unless the project was deliberately configured for ungated release, at least one command or review requirement is mandatory.
+The project policy says how the fixed candidate will be checked and who must review it. Automated verification, agent review, and human review may each be enabled or disabled and may run in any order. An explicit all-disabled policy is valid.
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Release-policy fields and verifier behavior**
 >
@@ -7234,14 +7247,18 @@ The project policy says how the fixed candidate will be checked and who must rev
 > - optional container image;
 > - optional <code>resource_limits</code> with a Docker memory string,
 >   positive CPU count, and positive integer <code>pids_limit</code>;
+> - <code>gate_sequence</code>, containing each gate exactly once with an
+>   <code>enabled</code> flag, in execution order;
 > - ordered commands, each with name, working directory, argv, and timeout;
 > - required reviewer/profile pairs;
 > - optional human-review requirement with Admin reviewer groups, checklist,
->   manual or workflow-prepared test instructions, and directory scope;
-> - or explicit <code>allow_ungated=true</code>.
+>   manual or workflow-prepared test instructions, and directory scope.
 >
-> Without <code>allow_ungated</code>, at least one verification command, agent
-> review requirement, or human-review requirement is required.
+> Settings for a disabled stage remain stored for later reuse. New policies use
+> agent review, automated verification, then human review by default. Policies
+> without <code>gate_sequence</code> retain the historical verification,
+> agent-review, then human-review order. The legacy <code>allow_ungated</code>
+> input remains readable and upgrades to an explicit all-disabled sequence.
 >
 > The verifier creates a disposable worker session, clones by
 > <code>managed_repo_id</code>, checks out the exact candidate SHA, runs
@@ -7335,19 +7352,17 @@ Legacy nonterminal packages without current immutable candidate evidence are rej
 ## One ordered release-gate sequencer
 
 Every gate callback returns to the same idempotent sequencer. For the frozen
-manifest it checks, in order:
+manifest it checks:
 
 1. candidate identity, hierarchy, aggregate contribution coverage, and reviewed
    scope;
-2. automated verification;
-3. every current agent release review;
-4. human test-target preparation when configured;
-5. authenticated human review when required; and
-6. final approval and canonical publication.
+2. each enabled stage in <code>gate_sequence</code>, in its configured order;
+   and
+3. final approval and canonical publication.
 
 The sequencer creates only the next missing stage and stops while that stage is
-pending or blocked. A project that does not configure one of the stages skips
-it; no separate callback may jump ahead. In particular,
+pending or blocked. A disabled stage is skipped while its settings remain in the
+project policy; no separate callback may jump ahead. In particular,
 <code>approved_commit_sha</code> is not set while an applicable human request
 is preparing, pending, blocked, or changes-requested.
 
@@ -7490,7 +7505,12 @@ automatically creates one successor with
 - adds accepted correction deliverables and recursive contribution lineage;
 - carries every still-open human finding with proposed resolution and evidence;
 - requires a different candidate tree; and
-- reruns verification, agent review, and human review.
+- runs its own frozen enabled gates in order.
+
+If that successor disables the stage that rejected its predecessor, Team blocks
+publication until a directory owner records an audited reason tied to the
+predecessor, gate, and new candidate SHA. The waiver remains visible on the
+release package and does not alter the predecessor's immutable rejection.
 
 The platform, not the coordination-parent owner, performs the Git aggregation.
 It orders the correction sources deterministically by finding and deliverable,
@@ -7711,6 +7731,15 @@ After release:
 - <code>src/evander/admin/services/managed_git_service.py</code> and core Git effects — managed bare repositories, operation worktrees, leases, compare-and-swap, and remote push.
 - <code>docs/addons.md</code> and <code>docs/git-remotes.md</code> — Team release and core managed-Git contracts.
 - <code>tests/test_team_addon_git_effects.py</code>, <code>tests/test_team_addon_mcp.py</code>, and <code>tests/test_team_addon_runtime.py</code> — promotion, scope, gates, retry, recovery, and publication behavior.
+
+### Task commit authors
+
+Set **Commit author name** and **Commit author email** on a task to attribute its Git
+commits to the delegating user. The `authored_by` identity is copied to child and
+follow-up tasks and to corrections of that work. With no task identity, the project
+author is used. Aggregate corrections involving different authors also use the project
+default. Clearing the two task fields restores that fallback. Changes apply to future
+commits after the task next resumes, and do not rewrite history or existing descendants.
 
 
 # 25. Governance, Memory, Cost, and Internals

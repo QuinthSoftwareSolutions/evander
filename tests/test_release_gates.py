@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from itertools import permutations
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+import evander_team_addon.services.domain.release_gates as release_gates_domain
 
 from evander_team_addon.models import (
     AgentInboxItem,
@@ -24,6 +28,8 @@ from evander_team_addon.models import (
     ReleaseCandidateManifest,
     ReleaseCandidateDeliverableEvidence,
     ReleaseGateFailure,
+    ReleaseGateKind,
+    ReleaseGateStage,
     ReleasePackage,
     ReleaseReviewRequirement,
     ReleaseVerificationCommand,
@@ -45,6 +51,7 @@ from evander_team_addon.models import (
 from evander_team_addon.services.domain.release_gates import (
     _materialize_candidate_verification_correction,
     advance_release_gates,
+    authorize_release_gate_obligation_waiver,
     begin_release_gates,
     create_release_reviews_or_approve,
     materialize_release_review_rejection_correction,
@@ -880,6 +887,230 @@ def test_successful_verification_only_policy_approves_release() -> None:
         row for row in state.git_promotions.values() if row.promotion_kind == "canonical_push"
     )
     assert canonical_push.sources[0].expected_commit_sha == "candidate-sha"
+
+
+def test_agent_review_can_run_before_automated_verification() -> None:
+    command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
+    requirement = ReleaseReviewRequirement(
+        reviewer_agent_id="reviewer",
+        review_profile_id="profile",
+    )
+    sequence = [
+        ReleaseGateStage(kind=ReleaseGateKind.AGENT_REVIEW),
+        ReleaseGateStage(kind=ReleaseGateKind.VERIFICATION),
+        ReleaseGateStage(kind=ReleaseGateKind.HUMAN_REVIEW, enabled=False),
+    ]
+    release, promotion = _release_and_promotion(
+        verification_commands=[command],
+        review_requirements=[requirement],
+    )
+    assert release.manifest is not None
+    release.manifest.gate_sequence = sequence
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(
+            gate_sequence=sequence,
+            verification_commands=[command],
+            review_requirements=[requirement],
+        )
+    )
+    state.agents["reviewer"] = PersistentAgent(
+        id="reviewer",
+        team_id="team",
+        role_id="reviewer-role",
+        session_id="reviewer-session",
+    )
+    state.review_profiles["profile"] = ReviewProfile(
+        id="profile",
+        team_id="team",
+        project_id="project",
+        name="Release review",
+    )
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+
+    advance_release_gates(state, release=release, release_promotion=promotion, result=_result())
+
+    assert len(release.review_request_ids) == 1
+    assert release.verification_run_ids == []
+    review = state.review_requests[release.review_request_ids[0]]
+    review.state = TeamRecordState.ACCEPTED
+    review.reviewed_commit_sha = "candidate-sha"
+
+    advance_release_gates(state, release=release, release_promotion=promotion, result=_result())
+
+    assert len(release.verification_run_ids) == 1
+    assert release.approved_commit_sha is None
+
+
+def test_release_with_every_gate_disabled_advances_directly_to_publication() -> None:
+    sequence = [
+        ReleaseGateStage(kind=ReleaseGateKind.AGENT_REVIEW, enabled=False),
+        ReleaseGateStage(kind=ReleaseGateKind.VERIFICATION, enabled=False),
+        ReleaseGateStage(kind=ReleaseGateKind.HUMAN_REVIEW, enabled=False),
+    ]
+    release, promotion = _release_and_promotion()
+    assert release.manifest is not None
+    release.manifest.gate_sequence = sequence
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="lead-session",
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(gate_sequence=sequence)
+    )
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+
+    result = _result()
+    advance_release_gates(state, release=release, release_promotion=promotion, result=result)
+
+    assert release.approved_commit_sha == "candidate-sha"
+    assert release.verification_run_ids == []
+    assert release.review_request_ids == []
+    assert result["git_promotion_event_ids"]
+
+
+ALL_RELEASE_GATE_ORDERS = [
+    order
+    for length in range(4)
+    for order in permutations(list(ReleaseGateKind), length)
+]
+
+
+@pytest.mark.parametrize("enabled_order", ALL_RELEASE_GATE_ORDERS)
+def test_release_gate_sequencer_honors_every_enabled_subset_and_order(
+    monkeypatch: pytest.MonkeyPatch,
+    enabled_order: tuple[ReleaseGateKind, ...],
+) -> None:
+    disabled = [kind for kind in ReleaseGateKind if kind not in enabled_order]
+    sequence = [ReleaseGateStage(kind=kind) for kind in enabled_order] + [
+        ReleaseGateStage(kind=kind, enabled=False) for kind in disabled
+    ]
+    release, promotion = _release_and_promotion()
+    assert release.manifest is not None
+    release.manifest.gate_sequence = sequence
+    state = TeamState.empty()
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        release_gates_domain,
+        "_ensure_release_reviews",
+        lambda *_args, **_kwargs: calls.append(ReleaseGateKind.AGENT_REVIEW.value) or True,
+    )
+    monkeypatch.setattr(
+        release_gates_domain,
+        "_ensure_release_verification",
+        lambda *_args, **_kwargs: calls.append(ReleaseGateKind.VERIFICATION.value) or True,
+    )
+    monkeypatch.setattr(
+        release_gates_domain,
+        "ensure_human_review_request",
+        lambda *_args, **_kwargs: (
+            calls.append(ReleaseGateKind.HUMAN_REVIEW.value)
+            or SimpleNamespace(state="approved")
+        ),
+    )
+    monkeypatch.setattr(
+        release_gates_domain,
+        "approve_release_candidate",
+        lambda *_args, **_kwargs: calls.append("publication"),
+    )
+
+    advance_release_gates(state, release=release, release_promotion=promotion, result=_result())
+
+    assert calls == [kind.value for kind in enabled_order] + ["publication"]
+
+
+def test_successor_can_waive_an_omitted_predecessor_gate_obligation() -> None:
+    sequence = [
+        ReleaseGateStage(kind=ReleaseGateKind.AGENT_REVIEW, enabled=False),
+        ReleaseGateStage(kind=ReleaseGateKind.VERIFICATION, enabled=False),
+        ReleaseGateStage(kind=ReleaseGateKind.HUMAN_REVIEW, enabled=False),
+    ]
+    predecessor = ReleasePackage(
+        id="predecessor",
+        project_id="project",
+        candidate_commit_sha="predecessor-sha",
+        state=TeamRecordState.REJECTED,
+        gate_failure=ReleaseGateFailure(
+            stage="review",
+            kind="rejected",
+            source_id="rejected-review",
+            message="Fix the review finding.",
+        ),
+        review_request_ids=["rejected-review"],
+    )
+    release, promotion = _release_and_promotion()
+    release.supersedes_release_package_id = predecessor.id
+    assert release.manifest is not None
+    release.manifest.gate_sequence = sequence
+    review = ReviewRequest(
+        id="rejected-review",
+        deliverable_id="",
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.REJECTED,
+        findings=["Fix the review finding."],
+        release_package_id=predecessor.id,
+        candidate_commit_sha="predecessor-sha",
+    )
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="lead-session",
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(gate_sequence=sequence)
+    )
+    state.release_packages[predecessor.id] = predecessor
+    state.release_packages[release.id] = release
+    state.review_requests[review.id] = review
+    state.git_promotions[promotion.id] = promotion
+
+    result = _result()
+    advance_release_gates(state, release=release, release_promotion=promotion, result=result)
+
+    assert release.state == TeamRecordState.BLOCKED
+    assert release.gate_failure is not None
+    assert release.gate_failure.stage == "gate_obligation"
+
+    authorize_release_gate_obligation_waiver(
+        state,
+        release=release,
+        gate_kind=ReleaseGateKind.AGENT_REVIEW,
+        candidate_commit_sha="candidate-sha",
+        reason="The finding is accepted for this release.",
+        authorized_by="operator:owner",
+        result=_result(),
+    )
+
+    assert release.approved_commit_sha == "candidate-sha"
+    assert release.gate_obligation_waivers[0].source_ids == ["rejected-review"]
 
 
 def test_candidate_verification_failure_creates_candidate_rooted_correction_task() -> None:

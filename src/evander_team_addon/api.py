@@ -3851,6 +3851,33 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             }
         )
 
+    async def authorize_release_gate_obligation_waiver(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        release_id = request.path_params["release_package_id"]
+        current = repository.read()
+        release = current.release_packages.get(release_id)
+        if release is None:
+            return JSONResponse({"error": "release package not found"}, status_code=404)
+        project = current.projects.get(release.project_id)
+        directory_path = project.directory_path if project is not None else "root"
+        authorization_error = _directory_owner_authorization_error(
+            request,
+            directory_path=directory_path,
+            action="Release gate obligation waiver",
+        )
+        if authorization_error is not None:
+            return authorization_error
+        state, result = admin_service.authorize_release_gate_obligation_waiver_with_result(
+            release_package_id=release_id,
+            gate_kind=_required(payload, "gate_kind"),
+            candidate_commit_sha=_required(payload, "candidate_commit_sha"),
+            reason=_required(payload, "reason"),
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        published_event_ids = _publish_team_events(context, result.get("events"))
+        return JSONResponse({**result, "published_event_ids": published_event_ids})
+
     async def retry_worktree_cleanup(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         candidate_id = request.path_params["cleanup_candidate_id"]
@@ -4636,6 +4663,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/release-packages/{release_package_id}/retry-gate",
             retry_release_gate,
+            methods=["POST"],
+        ),
+        route(
+            "/release-packages/{release_package_id}/gate-obligation-waivers",
+            authorize_release_gate_obligation_waiver,
             methods=["POST"],
         ),
         route(
