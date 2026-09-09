@@ -3862,13 +3862,6 @@ function bindTaskBoardSelectors() {
       renderTaskBoard();
       return;
     }
-    if (event.target?.closest?.("[data-task-board-reveal-completed]")) {
-      event.preventDefault();
-      taskBoardShowCompleted = true;
-      resetTaskBoardPagination();
-      renderTaskBoard();
-      return;
-    }
     const hierarchyToggle = event.target?.closest?.("[data-task-board-toggle-children-id]");
     if (hierarchyToggle) {
       event.preventDefault();
@@ -13336,18 +13329,14 @@ function taskBoardRelationLabel(taskId, focus) {
 }
 
 function renderTaskBoardLanes(matchingTasks, focus) {
-  const lanes = taskBoardLanes.map((lane) => {
-    const matchingLaneTasks = matchingTasks
-      .filter((task) => taskBoardLaneForTask(task) === lane.id)
-      .sort(compareTaskBoardTasks);
-    const hiddenCompleted = lane.id === "done" && !taskBoardShowCompleted;
-    return {
+  const lanes = taskBoardLanes
+    .filter((lane) => lane.id !== "done" || taskBoardShowCompleted)
+    .map((lane) => ({
       ...lane,
-      matchingTasks: matchingLaneTasks,
-      tasks: hiddenCompleted ? [] : matchingLaneTasks,
-      hiddenCompletedCount: hiddenCompleted ? matchingLaneTasks.length : 0,
-    };
-  });
+      tasks: matchingTasks
+        .filter((task) => taskBoardLaneForTask(task) === lane.id)
+        .sort(compareTaskBoardTasks),
+    }));
   return `
     <div class="task-board-lanes" aria-label="Task board lanes">
       ${lanes.map((lane) => renderTaskBoardLane(lane, focus)).join("")}
@@ -13693,24 +13682,17 @@ function renderTaskBoardLane(lane, focus) {
     >
       <div class="task-board-lane-header">
         <h3>${escapeHtml(lane.label)}</h3>
-        <span>${lane.matchingTasks.length}</span>
+        <span>${total}</span>
       </div>
       ${
-        lane.hiddenCompletedCount
+        pageTasks.length
           ? `
-            <div class="task-board-completed-hidden">
-              <p>${lane.hiddenCompletedCount} completed task${lane.hiddenCompletedCount === 1 ? "" : "s"} hidden.</p>
-              <button type="button" class="secondary" data-task-board-reveal-completed>Show completed</button>
-            </div>
+            <ul class="task-board-card-list">
+              ${pageTasks.map((task) => renderTaskBoardCard(task, focus)).join("")}
+            </ul>
+            ${renderTaskBoardLanePager(lane.id, page, pageCount, startIndex, total)}
           `
-          : pageTasks.length
-            ? `
-              <ul class="task-board-card-list">
-                ${pageTasks.map((task) => renderTaskBoardCard(task, focus)).join("")}
-              </ul>
-              ${renderTaskBoardLanePager(lane.id, page, pageCount, startIndex, total)}
-            `
-            : `<p class="empty-state task-board-empty">No tasks.</p>`
+          : `<p class="empty-state task-board-empty">No tasks.</p>`
       }
     </section>
   `;

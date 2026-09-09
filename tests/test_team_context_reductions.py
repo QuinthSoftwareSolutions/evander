@@ -20,6 +20,7 @@ from evander_team_addon.providers import _build_prompt, _team_agent_guidance_con
 from evander_team_addon.services.read_service import TeamReadService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 from evander_team_addon.services.wake_prompt_context import (
+    MAX_SESSION_HEALTH,
     RECORD_READS,
     build_compact_wake_context,
     compact_context_json,
@@ -167,6 +168,52 @@ def test_urgent_directives_are_complete_even_when_the_list_overflows() -> None:
     assert "an empty list means no proactive Team Chat recipient is authorized" in prompt
     guidance = _team_agent_guidance_content(agent=lease["agent"])
     assert "Do not mark a multi-step directive handled before its final required action" in guidance
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+@pytest.mark.parametrize(
+    "health",
+    [
+        {"agent_execution_status": "idle", "container_lifecycle_state": "exited"},
+        {"agent_execution_status": "failed", "container_lifecycle_state": "running"},
+        {"session_present": False, "status": "missing"},
+        {"is_expired": True, "status": "expired"},
+    ],
+)
+def test_overflow_session_health_keeps_actionable_details_without_an_unusable_read(fresh, health):
+    rows = [
+        {
+            "agent_id": f"agent-{index:02d}",
+            "session_id": f"session-{index:02d}",
+            "session_present": True,
+            "status": "active",
+            "is_expired": False,
+            "expires_at": "2026-09-10T12:00:00Z",
+            "execution_backend": "container_worker_vm",
+            "agent_execution_status": "idle",
+            "container_lifecycle_state": "running",
+            "agent_active_execution_count": 0,
+            "agent_latest_execution_id": f"execution-{index:02d}",
+            **health,
+        }
+        for index in range(MAX_SESSION_HEALTH + 3)
+    ]
+    context = build_compact_wake_context({"session_health": rows}, fresh_context=fresh)
+    assert len(context["session_health"]) == MAX_SESSION_HEALTH
+    overflow = context["overflow"]["session_health"]
+    assert len(overflow) == context["omitted_counts"]["session_health"] == 3
+    assert context["session_health_summary"]["attention_required_count"] == len(rows)
+    by_agent = {row["agent_id"]: row for row in rows}
+    for row in context["session_health"] + overflow:
+        source = by_agent[row["agent"]]
+        for field in (
+            "session_id", "session_present", "status", "is_expired", "expires_at",
+            "execution_backend", "agent_execution_status", "container_lifecycle_state",
+            "agent_active_execution_count", "agent_latest_execution_id",
+        ):
+            assert row[field] == source[field]
+        assert not row.get("read_required")
+    assert "session_health" not in context.get("retrieval", {})
 
 
 def test_exact_duplicates_share_bindings_and_changed_versions_remain_distinct() -> None:

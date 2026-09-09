@@ -21,6 +21,7 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
+from evander_team_addon.sqlite_store import TeamStateSqliteStore
 from evander_team_addon.services.wake_prompt_context import (
     build_compact_wake_context,
     wake_uses_fresh_context,
@@ -429,6 +430,53 @@ def test_async_missing_native_thread_invalidates_only_its_owned_binding(native_e
     assert env.repo.read().agent_runtimes["backend"].work_lineage_thread_ids == {
         first["dispatch"]["work_lineage_id"]: NATIVE_A,
     }
+
+
+@pytest.mark.parametrize("binding_state", ["cleared", "different_thread", "new_owner"])
+def test_handled_missing_thread_receipts_do_not_open_state_transactions(
+    native_env, monkeypatch, binding_state
+):
+    env = native_env
+    first = _lease(env)
+    _, job = _submit(env, first)
+    job.logs = f"session id: {NATIVE_A}\nwork recorded\n"
+    _complete(env, job)
+    failed_lease = _lease(env)
+    _, job = _submit(env, failed_lease)
+    job.logs = f"No rollout found for session ID {NATIVE_A}\n"
+    _complete(env, job, failed=True)
+    lineage = first["dispatch"]["work_lineage_id"]
+
+    if binding_state == "different_thread":
+        def replace_thread(state):
+            runtime = state.agent_runtimes["backend"]
+            runtime.work_lineage_thread_ids[lineage] = NATIVE_B
+            runtime.work_lineage_thread_dispatch_ids[lineage] = failed_lease["dispatch_id"]
+            return state
+
+        env.repo.update(replace_thread)
+    elif binding_state == "new_owner":
+        _, job = _submit(env, _lease(env))
+        job.logs = f"session id: {NATIVE_A}\ncontinued work\n"
+        _complete(env, job)
+
+    before = env.repo.read()
+    transactions = []
+    update_state = TeamStateSqliteStore.update_state
+
+    def track_update(store, *args, **kwargs):
+        transactions.append(store.path)
+        return update_state(store, *args, **kwargs)
+
+    monkeypatch.setattr(TeamStateSqliteStore, "update_state", track_update)
+    # The failed execution remains available for all of these polling cycles.
+    # An unchanged revision alone would miss the expensive no-op transactions.
+    for _ in range(3):
+        env.hook.on_post_completion_dispatch(worker=env.worker)
+    after = env.repo.read()
+    assert transactions == []
+    assert after.revision == before.revision
+    assert after.agent_runtimes["backend"] == before.agent_runtimes["backend"]
 
 
 @pytest.mark.parametrize(
