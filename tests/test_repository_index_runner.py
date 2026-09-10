@@ -244,3 +244,106 @@ def test_workspace_query_failure_does_not_claim_successful_restore(npm_repo, tmp
     artifact, _, indexes = index_fixture(repo, tmp_path, monkeypatch)
     assert not indexes
     assert all(p["status"] == "failed" for p in artifact.projects)
+
+
+def dotnet_index_fixture(tmp_path, monkeypatch, *, build_fails=False):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "Example.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>'
+    )
+    (repo / "Example.cs").write_text("public sealed class Example {}\n")
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=Index test",
+            "-c",
+            "user.email=index@example.test",
+            "add",
+            ".",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=Index test",
+            "-c",
+            "user.email=index@example.test",
+            "commit",
+            "-m",
+            "Fixture",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
+    calls = []
+    original_output = subprocess.check_output
+
+    def command_output(command, **kwargs):
+        if command[0] in {"scip-dotnet", "scip-typescript"}:
+            return TOOLCHAIN[command[0]].encode()
+        return original_output(command, **kwargs)
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[:2] == ["dotnet", "build"] and build_fails:
+            raise subprocess.CalledProcessError(1, command)
+        if command[0] == "scip-dotnet":
+            path = b"Example.cs"
+            occurrence = (
+                _encode_field(1, bytes([0, 20, 27])) + _encode_field(2, b"Example.") + b"\x18\x01"
+            )
+            document = _encode_field(1, path) + _encode_field(2, occurrence)
+            destination = Path(command[command.index("--output") + 1])
+            destination.write_bytes(_encode_field(2, document))
+
+    monkeypatch.setattr(runner.subprocess, "check_output", command_output)
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setenv("NoWarn", "CS1591")
+    artifact = runner.build_artifact(
+        repo,
+        sha,
+        IndexSettings(semantic=False, dotnet_projects=["Example.csproj"]),
+        tmp_path / "artifacts" / "code-index.json",
+    )
+    return artifact, calls
+
+
+def test_dotnet_navigation_disables_transport_metadata_and_pruning_warning(tmp_path, monkeypatch):
+    artifact, calls = dotnet_index_fixture(tmp_path, monkeypatch)
+
+    assert artifact.projects[0]["status"] == "ready"
+    compiler_calls = [call for call in calls if call[0][0] in {"dotnet", "scip-dotnet"}]
+    assert [call[0][:2] for call in compiler_calls] == [
+        ["dotnet", "restore"],
+        ["dotnet", "build"],
+        ["scip-dotnet", "index"],
+    ]
+    for _, kwargs in compiler_calls:
+        assert kwargs["env"]["EnableSourceLink"] == "false"
+        assert kwargs["env"]["NoWarn"] == "CS1591;NU1510"
+
+
+def test_dotnet_navigation_remains_partial_after_real_compilation_failure(tmp_path, monkeypatch):
+    artifact, _ = dotnet_index_fixture(tmp_path, monkeypatch, build_fails=True)
+
+    assert artifact.projects[0]["status"] == "partial"
+    assert artifact.projects[0]["compilation"] == "failed"

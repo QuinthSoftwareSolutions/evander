@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-10 - Reliable .NET repository navigation (0.37.2)
+
+- Disable SourceLink metadata generation inside isolated indexing subprocesses so
+  managed-Git transport URLs cannot break an otherwise valid project build.
+- Suppress the .NET 10 `NU1510` package-pruning advisory during SCIP analysis so
+  successful workspace loads are not conservatively reported as partial coverage.
+- Preserve partial navigation status for genuine compilation failures.
+
 ## 2026-09-10 - Repository indexing runtime wiring (0.37.1)
 
 - Supply the standard admin provider adapter when preparing indexing sessions so

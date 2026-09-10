@@ -16,11 +16,39 @@ from .models import IndexArtifact, IndexSettings, SourceDocument, TOOLCHAIN, com
 from .scip import read_scip, portable_scip
 
 
-def run(command: list[str], *, cwd: Path, log: Path, timeout: int) -> None:
+def run(
+    command: list[str],
+    *,
+    cwd: Path,
+    log: Path,
+    timeout: int,
+    env: dict[str, str] | None = None,
+) -> None:
     with log.open("ab") as stream:
         subprocess.run(
-            command, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT, timeout=timeout, check=True
+            command,
+            cwd=cwd,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=True,
+            env=env,
         )
+
+
+def dotnet_index_environment() -> dict[str, str]:
+    """Return MSBuild settings that keep repository transport out of code analysis."""
+    env = dict(os.environ)
+    # SourceLink metadata is irrelevant to SCIP and rejects Evander's intentionally
+    # private managed-Git transport URL in some projects.
+    env["EnableSourceLink"] = "false"
+    # .NET 10's package-pruning advisory is reported as an MSBuildWorkspace failure
+    # by the pinned SCIP indexer even when the project builds successfully.
+    no_warn = [value.strip() for value in re.split(r"[;,]", env.get("NoWarn", "")) if value.strip()]
+    if "NU1510" not in {value.upper() for value in no_warn}:
+        no_warn.append("NU1510")
+    env["NoWarn"] = ";".join(no_warn)
+    return env
 
 
 def tracked_files(repo: Path) -> list[str]:
@@ -124,6 +152,7 @@ def build_artifact(
                 if TOOLCHAIN[tool] not in installed[tool]:
                     raise ValueError("Pinned indexer version is not installed")
                 if language == "dotnet":
+                    dotnet_env = dotnet_index_environment()
                     # SCIP restores its working directory, not its positional project.
                     # Restore explicitly and check the exit status before navigation.
                     run(
@@ -131,6 +160,7 @@ def build_artifact(
                         cwd=repo,
                         log=log,
                         timeout=300,
+                        env=dotnet_env,
                     )
                     try:
                         run(
@@ -146,6 +176,7 @@ def build_artifact(
                             cwd=repo,
                             log=log,
                             timeout=settings.timeout_seconds,
+                            env=dotnet_env,
                         )
                     except subprocess.CalledProcessError:
                         row["compilation"] = "failed"
@@ -203,7 +234,13 @@ def build_artifact(
                                     f"Resolved untracked npm lock: {lock_file.relative_to(repo)}; retain the worker lock to reproduce dependencies"
                                 )
                     command = [tool, "index", project, "--output", str(scip_file)]
-                run(command, cwd=repo, log=log, timeout=settings.timeout_seconds)
+                run(
+                    command,
+                    cwd=repo,
+                    log=log,
+                    timeout=settings.timeout_seconds,
+                    env=dotnet_env if language == "dotnet" else None,
+                )
                 data = scip_file.read_bytes()
                 occurrences, relationships, paths = read_scip(data)
                 if not paths:
