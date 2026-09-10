@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-10 - Repository indexing runtime wiring (0.37.1)
+
+- Supply the standard admin provider adapter when preparing indexing sessions so
+  managed Git cloning and repository bindings work in the deployed runtime.
+- Exercise real session creation and clone providers together in indexing coverage.
+
 ## 2026-09-10 - Copy Team configurations (0.37.0)
 
 - Add a revision-checked Team copy operation and Teams-view wizard that clones
