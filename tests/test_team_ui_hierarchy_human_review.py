@@ -83,6 +83,18 @@ def test_project_git_payload_uses_visible_provider_neutral_directory_scope() -> 
     assert result.returncode == 0, result.stderr
 
 
+def test_project_release_policy_exposes_automatic_publication_control() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert source.count('"automatic_release_branch_publication"') >= 2
+    assert "policy.schema_version = 3;" in source
+    assert "Boolean(form.elements.automatic_release_branch_publication.checked)" in source
+    assert "workflow-managed branch publication" in source
+    assert "Handled by approval workflow" in source
+
+
 def test_review_decision_ui_submits_criterion_evidence_references() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"

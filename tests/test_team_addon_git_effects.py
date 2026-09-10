@@ -874,7 +874,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
 
     assert result["success"] is True
     assert len(result["git_promotion_event_ids"]) == 1
-    assert len(result["published_event_ids"]) == 1
+    assert len(result["published_event_ids"]) == 2
     state = repo.read()
     canonical_id = result["git_promotion_event_ids"][0]
     canonical = state.git_promotions[canonical_id]
@@ -885,14 +885,18 @@ def test_record_release_promotion_success_publishes_canonical_push(
     assert release.git_promotion_record_ids == ["release-promotion", canonical_id]
 
     events = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
-    assert len(events) == 1
-    assert events[0].event_type == "team.git.promotion_requested"
-    assert events[0].payload["promotion_id"] == canonical_id
-    assert events[0].payload["promotion_kind"] == "canonical_push"
-    assert events[0].payload["source_branch"] == "team/team/releases/release-1"
-    assert events[0].payload["target_branch"] == "releases/project/release-1"
-    assert events[0].payload["managed_repo_id"] == "mr_0123456789abcdefabcd"
-    assert events[0].payload["directory_path"] == "root/team-a"
+    assert len(events) == 2
+    approval_event = next(event for event in events if event.event_type == "team.release.approved")
+    canonical_event = next(
+        event for event in events if event.event_type == "team.git.promotion_requested"
+    )
+    assert approval_event.payload["approved_commit_sha"] == "feedface"
+    assert canonical_event.payload["promotion_id"] == canonical_id
+    assert canonical_event.payload["promotion_kind"] == "canonical_push"
+    assert canonical_event.payload["source_branch"] == "team/team/releases/release-1"
+    assert canonical_event.payload["target_branch"] == "releases/project/release-1"
+    assert canonical_event.payload["managed_repo_id"] == "mr_0123456789abcdefabcd"
+    assert canonical_event.payload["directory_path"] == "root/team-a"
     assert events[0].payload["expected_commit_sha"] == "feedface"
     assert "bare_repo_name" not in events[0].payload
     assert "canonical_origin_url" not in events[0].payload

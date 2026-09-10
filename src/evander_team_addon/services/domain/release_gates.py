@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from .task_authorship import combined_deliverable_attributions, common_deliverable_author
+from ...git_naming import canonical_release_branch
 from ...models import (
     AgentStatus,
     AgentTask,
@@ -14,6 +15,7 @@ from ...models import (
     Project,
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
+    ReleaseCandidateRepositoryScope,
     ReleaseCandidateReviewEvidence,
     ReleaseGateFailure,
     ReleaseGateKind,
@@ -55,7 +57,13 @@ from .human_reviews import (
     human_review_request_for_release,
 )
 from .git_work_contexts import finalize_active_git_work_contexts_for_task
-from .release_packages import allowed_release_parent_task_ids, release_lineage_gate_error
+from .project_status import _recalculate_project_status
+from .release_events import append_release_approved_event
+from .release_packages import (
+    RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY,
+    allowed_release_parent_task_ids,
+    release_lineage_gate_error,
+)
 from .task_assessment import deliverable_source_lineage, require_release_scope
 from .work_lineage import ensure_task_work_lineage
 
@@ -1695,11 +1703,23 @@ def approve_release_candidate(
             )
     release.gate_failure = None
     release.approved_commit_sha = candidate
+    release.error = None
     release.updated_at = utc_now()
     from .git_promotion import _queue_canonical_push_after_release_success
 
     result.setdefault("events", [])
     result.setdefault("git_promotion_event_ids", [])
+    automatic_publication = (
+        release.manifest.automatic_release_branch_publication
+        if release.manifest is not None
+        else True
+    )
+    if not automatic_publication:
+        release.state = TeamRecordState.ACCEPTED
+        _recalculate_project_status(state, release.project_id)
+    append_release_approved_event(state, release=release, result=result)
+    if not automatic_publication:
+        return
     _queue_canonical_push_after_release_success(
         state,
         release=release,
@@ -2356,6 +2376,26 @@ def _candidate_manifest(
     policy = project.release_policy
     if policy is None or release.candidate_commit_sha is None:
         raise ValueError("release candidate policy or commit is missing")
+    raw_repository_scope = release_promotion.outputs.get(
+        RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY
+    )
+    if raw_repository_scope is not None:
+        repository_scope = ReleaseCandidateRepositoryScope.model_validate(
+            raw_repository_scope
+        )
+    else:
+        git = project.git
+        if git is None:
+            raise ValueError("release candidate repository scope is missing")
+        repository_scope = ReleaseCandidateRepositoryScope(
+            managed_repo_id=git.managed_repo_id,
+            directory_path=git.directory_path,
+            base_branch=release.git_base_branch or git.base_branch,
+            canonical_branch=(
+                release.canonical_branch
+                or canonical_release_branch(project, release.id)
+            ),
+        )
     require_release_scope(
         state,
         project_id=release.project_id,
@@ -2484,6 +2524,10 @@ def _candidate_manifest(
         candidate_commit_sha=release.candidate_commit_sha,
         candidate_tree_hash=release.candidate_tree_hash,
         release_branch=release.release_branch or release_promotion.target_branch,
+        repository_scope=repository_scope,
+        automatic_release_branch_publication=(
+            policy.automatic_release_branch_publication
+        ),
         deliverables=deliverable_rows,
         scope_validation=(
             release.scope_validation.model_copy(deep=True)

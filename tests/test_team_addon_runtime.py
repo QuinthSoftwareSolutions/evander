@@ -38,6 +38,7 @@ from evander.workflow.packs import WorkflowPack
 from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 import evander_team_addon.outbox_publication as team_outbox_publication
+import evander_team_addon.providers as team_providers
 from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
 from evander_team_addon.costs import TeamCostService
@@ -14562,6 +14563,56 @@ def test_team_event_publisher_schedules_delayed_wake_events(tmp_path: Path) -> N
     assert record.event_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
     assert record.status == "pending"
     assert record.payload["agent_id"] == "backend"
+
+
+def test_team_event_publisher_enriches_release_approval_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)})
+    publication_context_calls = []
+
+    def _publication_context(*_args, **kwargs):
+        publication_context_calls.append(kwargs)
+        return "publication-context"
+
+    monkeypatch.setattr(
+        team_providers,
+        "release_publication_context",
+        _publication_context,
+    )
+
+    _publish_team_events(
+        context,
+        [
+            {
+                "event_type": "team.release.approved",
+                "correlation_key": "release",
+                "idempotency_key": "team-addon:team.release.approved:release:candidate",
+                "payload": {
+                    "release_package_id": "release",
+                    "approved_commit_sha": "candidate",
+                    "managed_repo_id": "mr_0123456789abcdefabcd",
+                    "directory_path": "root/app",
+                },
+            }
+        ],
+    )
+
+    events = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == "team.release.approved"
+    assert events[0].payload["publication_revision"] == 0
+    assert events[0].payload["publication_context_id"] == "publication-context"
+    assert publication_context_calls == [
+        {
+            "release_package_id": "release",
+            "managed_git_admin": None,
+            "commit_sha": "candidate",
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root/app",
+        }
+    ]
 
 
 def test_team_runtime_pack_routes_git_promotion_kinds() -> None:

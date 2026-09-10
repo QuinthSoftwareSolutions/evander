@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-10 - Workflow-managed release publication (0.35.0)
+
+- Add a project release-policy switch that can accept an approved Git release
+  without publishing its generated release branch to the canonical remote.
+- Emit the durable `team.release.approved` event after all frozen gates pass,
+  independent of canonical publication, while retaining `team.release.published`
+  exclusively for completed canonical pushes.
+- Bind approval events and their Azure publication identity to the candidate's
+  frozen managed-repository scope rather than mutable project Git settings.
+- Add Admin Web controls for choosing automatic or workflow-managed branch
+  publication.
+
 ## 2026-09-10 - Restrict website credential environment access (0.34.2)
 
 - Require explicit host-controlled grants before managed website profiles can resolve environment

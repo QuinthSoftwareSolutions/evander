@@ -7,7 +7,8 @@ flowchart TB
     scope{Only reviewed\ncommits and paths?}
     verify{Verification commands}
     releaseReview{Required release reviews\nof the same candidate SHA}
-    canonical[Canonical remote branch\nreleases/&lt;project&gt;/&lt;release&gt; by default]
+    approval[team.release.approved\nalways emitted]
+    canonical[Optional canonical remote branch\nreleases/&lt;project&gt;/&lt;release&gt; by default]
     stop[Terminal candidate failure\nnew reviewed content and release required]
     retryVerify[Immutable successor verification run\nsame pinned candidate]
     retryReview[Immutable successor review\nsame pinned candidate]
@@ -20,11 +21,12 @@ flowchart TB
     verify -- pass --> releaseReview
     releaseReview -- reject candidate --> stop
     releaseReview -- process blocked --> retryReview --> releaseReview
-    releaseReview -- "all accept; expected SHA and destination lease" --> canonical
+    releaseReview -- "all accept" --> approval
+    approval -- "automatic publication enabled; expected SHA and destination lease" --> canonical
 
     recovery[team_recover_release repairs eligible failed\nfeature or internal-release Git promotion only.]
     recovery -. distinct from gate retry .-> feature
     recovery -. distinct from gate retry .-> internal
 
-    publication[Agent, review, feature, and internal release refs stay in the managed bare repo.\nOnly the approved candidate is pushed to the canonical remote branch.]
+    publication[Agent, review, feature, and internal release refs stay in the managed bare repo.\nThe approved event can drive a named branch workflow without publishing the generated release branch.]
     publication --- canonical
