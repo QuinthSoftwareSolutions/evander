@@ -17,6 +17,31 @@ accepted work -> fixed candidate -> enabled gates in configured order
 
 Internal review, feature, and release branches are preparation areas. The release package's canonical branch and published commit are the final publication evidence. If content fails, it must be corrected and reviewed as new content. If the candidate is sound but a test worker times out or a reviewer cannot access evidence, a linked retry may run against the unchanged candidate.
 
+## Cancelling an unwanted release
+
+A directory owner can choose **Cancel release** on a release card or its human-review
+details. The reason is optional. Cancellation permanently ends that attempt without
+creating a blocker, assigning rework, or automatically requesting another release.
+Outstanding reviews, verification runs, release-owned blockers and exclusive correction
+tasks are closed together. Completed and shared work, candidate Git refs, findings and
+earlier decisions remain available as history; cancellation does not claim a finding was fixed.
+
+Cancellation is available before canonical publication is queued. Once a canonical push
+has been queued or attempted, the action is unavailable because an external Git effect
+may already have run. Cancel the current attempt when an older attempt has a successor.
+Cancellation does not undo published code. A running isolated check may finish, but its
+late result cannot resume the cancelled release or create correction work.
+
+The authenticated operator API is `POST /release-packages/{release_package_id}/cancel`
+under the Team add-on API prefix. Send the current `expected_revision` and an optional
+`reason`. It requires `admin.owner` in the project's directory. Repeating cancellation
+preserves the original audit record. A subsequent release must be explicitly requested;
+the cancelled attempt cannot be retried or used as a successor's predecessor.
+
+SQLite schema 77 adds nullable `team_release_packages.cancellation_json`. Old rows retain
+their existing behavior. Upgrade all Team processes together before using cancellation;
+older binaries do not understand the new `cancelled` release/review states.
+
 ## The repository boundary
 
 Team refers to a repository by its registered identity rather than by an arbitrary host folder. Every preparation branch stays inside the managed repository until the one canonical publication step.

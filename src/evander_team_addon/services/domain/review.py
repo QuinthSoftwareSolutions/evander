@@ -2380,6 +2380,8 @@ def _cascade_release_review_decision(
         review.release_package_id,
         "release package",
     )
+    if release.state == TeamRecordState.CANCELLED:
+        return
     candidate = release.candidate_commit_sha
     if review.candidate_commit_sha != candidate or review.reviewed_commit_sha != candidate:
         release.state = TeamRecordState.REJECTED

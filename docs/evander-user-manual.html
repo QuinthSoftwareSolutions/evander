@@ -1207,6 +1207,8 @@ and Release Gates</a>
 <ul>
 <li><a href="#the-release-promise" id="toc-the-release-promise">The
 release promise</a></li>
+<li><a href="#cancelling-an-unwanted-release" id="toc-cancelling-an-unwanted-release">Cancelling an unwanted
+release</a></li>
 <li><a href="#the-repository-boundary" id="toc-the-repository-boundary">The repository boundary</a></li>
 <li><a href="#intent-effect-and-evidence" id="toc-intent-effect-and-evidence">Intent, effect, and
 evidence</a></li>
@@ -11969,12 +11971,16 @@ caps retain overflow IDs, current obligation summaries, counts, and
 collection-level read references. Urgent messages and operator
 directives remain complete. Shared Git bindings and review snapshots are
 represented once within the payload and referenced by ID.</p>
-<p>Use <code>team_get_current_dispatch_context(detail=&quot;summary&quot;)</code>
-first when more context is needed. It returns complete frozen scope IDs
-and compact records with exact dispatch Git bindings. The default
-<code>detail=&quot;full&quot;</code> keeps the existing full response. Use
-individual record reads for complete task, review, inbox, project, and
-release details, and
+<p>Start from the current Team context JSON supplied in the wake. Fetch
+missing task, review, inbox, project, and release details directly with
+individual record reads. Use
+<code>team_get_current_dispatch_context(detail=&quot;summary&quot;)</code> to
+recover a missing dispatch working set or refresh it for a specific
+reason; prefer an individual read when only one record needs refreshing.
+The summary returns complete frozen scope IDs and compact records with
+exact dispatch Git bindings. The default <code>detail=&quot;full&quot;</code>
+keeps the existing full response; use it when the complete records
+across the dispatch are needed. Use
 <code>team_get_source_evidence_snapshot(snapshot_id=...)</code> for a
 complete capture in the active dispatch. Summary reads never widen
 execution scope or substitute a newer binding. Managers&#39;
@@ -12208,9 +12214,9 @@ meaningful task/dependency/project-Git/candidate change.</td>
 </tr>
 <tr class="even">
 <td>Wake preview omits detail</td>
-<td>Follow <code>retrieval</code> and <code>overflow</code>; start
-additional reads with
-<code>team_get_current_dispatch_context(detail=&quot;summary&quot;)</code>.</td>
+<td>Use the supplied working set and fetch missing detail directly with
+the record-specific tools in <code>retrieval</code>; read relevant
+<code>overflow</code> records before acting.</td>
 </tr>
 <tr class="odd">
 <td>Task appears in context but no worktree mapping does</td>
@@ -13958,6 +13964,37 @@ final publication evidence. If content fails, it must be corrected and
 reviewed as new content. If the candidate is sound but a test worker
 times out or a reviewer cannot access evidence, a linked retry may run
 against the unchanged candidate.</p>
+<h2 id="cancelling-an-unwanted-release">Cancelling an unwanted
+release</h2>
+<p>A directory owner can choose <strong>Cancel release</strong> on a
+release card or its human-review details. The reason is optional.
+Cancellation permanently ends that attempt without creating a blocker,
+assigning rework, or automatically requesting another release.
+Outstanding reviews, verification runs, release-owned blockers and
+exclusive correction tasks are closed together. Completed and shared
+work, candidate Git refs, findings and earlier decisions remain
+available as history; cancellation does not claim a finding was
+fixed.</p>
+<p>Cancellation is available before canonical publication is queued.
+Once a canonical push has been queued or attempted, the action is
+unavailable because an external Git effect may already have run. Cancel
+the current attempt when an older attempt has a successor. Cancellation
+does not undo published code. A running isolated check may finish, but
+its late result cannot resume the cancelled release or create correction
+work.</p>
+<p>The authenticated operator API is
+<code>POST /release-packages/{release_package_id}/cancel</code> under
+the Team add-on API prefix. Send the current
+<code>expected_revision</code> and an optional <code>reason</code>. It
+requires <code>admin.owner</code> in the project&#39;s directory. Repeating
+cancellation preserves the original audit record. A subsequent release
+must be explicitly requested; the cancelled attempt cannot be retried or
+used as a successor&#39;s predecessor.</p>
+<p>SQLite schema 77 adds nullable
+<code>team_release_packages.cancellation_json</code>. Old rows retain
+their existing behavior. Upgrade all Team processes together before
+using cancellation; older binaries do not understand the new
+<code>cancelled</code> release/review states.</p>
 <h2 id="the-repository-boundary">The repository boundary</h2>
 <p>Team refers to a repository by its registered identity rather than by
 an arbitrary host folder. Every preparation branch stays inside the

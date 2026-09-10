@@ -125,7 +125,7 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
             blockers.append(f"owns task {task.id}")
         if task.created_by_agent_id == agent.id:
             blockers.append(f"created task {task.id}")
-    terminal_record_states = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+    terminal_record_states = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
     for release in state.release_packages.values():
         if (
             release.owner_agent_id == agent.id

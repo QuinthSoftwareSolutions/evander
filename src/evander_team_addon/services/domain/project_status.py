@@ -38,7 +38,7 @@ def project_blocking_sources(
     terminal_release_review_ids = {
         review_id
         for release in project_releases
-        if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+        if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
         for review_id in release.review_request_ids
     }
     project = state.projects.get(project_id)
@@ -212,7 +212,7 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
     terminal_release_reviews = {
         review_id: release
         for release in project_releases
-        if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+        if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
         for review_id in release.review_request_ids
     }
     for review_id, release in terminal_release_reviews.items():
@@ -236,10 +236,15 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         if request.release_package_id in project_release_ids
     ]
     project_human_request_ids = {request.id for request in project_human_requests}
+    cancelled_release_request_ids = {
+        request.id for request in project_human_requests
+        if state.release_packages[request.release_package_id].state == TeamRecordState.CANCELLED
+    }
     project_human_findings = [
         finding
         for finding in state.human_review_findings.values()
         if finding.source_human_review_request_id in project_human_request_ids
+        and finding.source_human_review_request_id not in cancelled_release_request_ids
     ]
     assessment_service = TaskAssessmentService(state)
     assessments = {task.id: assessment_service.assess(task.id) for task in project_tasks}

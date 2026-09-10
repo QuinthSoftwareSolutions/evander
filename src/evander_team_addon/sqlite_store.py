@@ -31,7 +31,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 76
+SQLITE_SCHEMA_VERSION = 77
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1454,6 +1454,12 @@ class TeamStateSqliteStore:
                         column_name=column_name,
                         definition="TEXT",
                     )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="cancellation_json",
+                    definition="TEXT",
+                )
                 connection.execute(
                     """
                     UPDATE team_agent_runtimes
@@ -1989,7 +1995,7 @@ class TeamStateSqliteStore:
                         error = 'legacy_unpinned_release: recreate this nonterminal release under the current immutable candidate policy',
                         updated_at = COALESCE(updated_at, created_at)
                     WHERE policy_version < 2
-                      AND state NOT IN ('accepted', 'rejected')
+                      AND state NOT IN ('accepted', 'rejected', 'cancelled')
                     """
                 )
                 if previous_schema_version < 31:
@@ -4539,6 +4545,10 @@ class TeamStateSqliteStore:
                     else None
                 ),
                 "git_promotion_record_ids": promotions.get(row["id"], []),
+                "cancellation": (
+                    _json_loads(row["cancellation_json"])
+                    if row["cancellation_json"] is not None else None
+                ),
                 "state": row["state"],
                 "published_at": row["published_at"],
                 "error": row["error"],
@@ -4572,9 +4582,9 @@ class TeamStateSqliteStore:
                     manifest_json, gate_failure_json,
                     state, published_at, error, policy_version,
                     verification_waivers_json, gate_obligation_waivers_json,
-                    scope_validation_json, created_at, updated_at
+                    scope_validation_json, created_at, updated_at, cancellation_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -4618,6 +4628,7 @@ class TeamStateSqliteStore:
                     ),
                     package["created_at"],
                     package.get("updated_at"),
+                    _json_dumps(package["cancellation"]) if package.get("cancellation") else None,
                 ),
             )
             _insert_position_values(
@@ -7415,7 +7426,7 @@ def _has_dependency_composed_release_base_candidates(
               ON link.package_id = release.id
             JOIN team_deliverables AS deliverable
               ON deliverable.id = link.deliverable_id
-            WHERE release.state NOT IN ('accepted', 'rejected')
+            WHERE release.state NOT IN ('accepted', 'rejected', 'cancelled')
               AND release.base_commit_sha IS NOT NULL
               AND deliverable.dependency_composition_manifest_json IS NOT NULL
             LIMIT 1
@@ -9159,6 +9170,7 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     verification_waivers_json TEXT NOT NULL DEFAULT '[]',
     gate_obligation_waivers_json TEXT NOT NULL DEFAULT '[]',
     scope_validation_json TEXT,
+    cancellation_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT
 );

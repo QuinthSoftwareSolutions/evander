@@ -103,6 +103,7 @@ class TeamRecordState(str, Enum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     BLOCKED = "blocked"
+    CANCELLED = "cancelled"
 
 
 class InitialReleaseDispositionState(str, Enum):
@@ -4360,7 +4361,7 @@ class ReleaseVerificationRun(TeamModel):
     release_package_id: str
     candidate_commit_sha: str
     session_id: str
-    state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
+    state: Literal["pending", "running", "passed", "failed", "timed_out", "cancelled"] = "pending"
     provenance: Literal["server_executed", "server_acceptance_reuse"] = "server_executed"
     evidence_refs: list[str] = Field(default_factory=list)
     container_image: str | None = None
@@ -4664,6 +4665,7 @@ class HumanReviewRequest(TeamModel):
         "blocked",
         "approved",
         "changes_requested",
+        "cancelled",
     ] = "pending"
     preparation_generation: int = Field(default=1, ge=1)
     test_target: HumanReviewTestTarget | None = None
@@ -4685,7 +4687,7 @@ class HumanReviewRequest(TeamModel):
 
     @model_validator(mode="after")
     def _validate_lifecycle(self) -> "HumanReviewRequest":
-        terminal = self.state in {"approved", "changes_requested"}
+        terminal = self.state in {"approved", "changes_requested", "cancelled"}
         if terminal and self.completed_at is None:
             raise ValueError("terminal human review request requires completed_at")
         if not terminal and self.completed_at is not None:
@@ -4905,6 +4907,17 @@ class ReleaseCandidateManifest(TeamModel):
         return _unique_text_list(value or [], "correction_deliverable_ids")
 
 
+class ReleaseCancellation(TeamModel):
+    actor_id: str
+    reason: str = ""
+    cancelled_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("actor_id", mode="before")
+    @classmethod
+    def _actor_id(cls, value: object) -> str:
+        return _required_text(value, "actor_id")
+
+
 class ReleasePackage(TeamModel):
     id: str
     project_id: str
@@ -4939,10 +4952,19 @@ class ReleasePackage(TeamModel):
     gate_obligation_waivers: list[ReleaseGateObligationWaiver] = Field(default_factory=list)
     scope_validation: ReleaseScopeValidation | None = None
     state: TeamRecordState = TeamRecordState.PENDING
+    cancellation: ReleaseCancellation | None = None
     published_at: datetime | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _validate_cancellation(self) -> "ReleasePackage":
+        if (self.state == TeamRecordState.CANCELLED) != (self.cancellation is not None):
+            raise ValueError("cancelled release requires cancellation audit; cancellation is terminal")
+        if self.cancellation is not None and (self.published_at or self.published_commit_sha):
+            raise ValueError("published release cannot be cancelled")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -6899,7 +6921,7 @@ class TeamState(TeamModel):
             if release.owner_agent_id is not None:
                 owner = self.agents.get(release.owner_agent_id)
                 terminal_historical_owner = (
-                    release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+                    release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
                     and owner is not None
                     and owner.team_id is None
                     and owner.retired_team_id == project.team_id
@@ -8378,7 +8400,14 @@ def release_package_payload_with_derived(
     state: TeamState,
     release: ReleasePackage,
 ) -> dict[str, Any]:
+    from .services.domain.release_cancellation import release_cancellation_error
+
     payload = release.model_dump(mode="json")
+    cancellation_error = release_cancellation_error(state, release)
+    payload["cancellation_available"] = (
+        release.state != TeamRecordState.CANCELLED and cancellation_error is None
+    )
+    payload["cancellation_unavailable_reason"] = cancellation_error
     payload["verification_runs"] = [
         state.release_verification_runs[run_id].model_dump(mode="json")
         for run_id in release.verification_run_ids
@@ -10370,13 +10399,14 @@ def _runtime_attention_terminal_context(
             continue
         if deliverable.superseded_by_deliverable_id is not None:
             add("deliverable", deliverable.id, "superseded")
-        elif deliverable.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}:
+        elif deliverable.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}:
             add("deliverable", deliverable.id, deliverable.state.value)
     for release_id in links.get("release_package_ids", []):
         release = state.release_packages.get(release_id)
         if release is not None and release.state in {
             TeamRecordState.ACCEPTED,
             TeamRecordState.REJECTED,
+            TeamRecordState.CANCELLED,
         }:
             add("release_package", release.id, release.state.value)
     for review_id in links.get("review_request_ids", []):

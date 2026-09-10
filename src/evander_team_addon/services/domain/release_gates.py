@@ -255,7 +255,7 @@ def begin_release_gates(
     candidate_tree_hash: str | None,
     result: dict[str, Any],
 ) -> None:
-    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}:
+    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}:
         return
     lineage_error = release_lineage_gate_error(state, release)
     if lineage_error is not None:
@@ -416,6 +416,10 @@ def record_release_verification_result(
     run = state.release_verification_runs.get(verification_run_id)
     if release is None or run is None:
         raise ValueError("release package or verification run does not exist")
+    if release.state == TeamRecordState.CANCELLED:
+        result["verification_state"] = run.state
+        result["ignored_terminal_state"] = True
+        return
     if release.candidate_commit_sha != candidate_commit_sha:
         raise ValueError(
             f"release {release.id} is pinned to {release.candidate_commit_sha}, not "
@@ -544,6 +548,8 @@ def record_release_verification_command_progress(
         verification_run_id=verification_run_id,
         candidate_commit_sha=candidate_commit_sha,
     )
+    if _release.state == TeamRecordState.CANCELLED:
+        return run
     if command_index < 0 or command_index >= len(run.command_results):
         raise ValueError(f"release verification command index {command_index} is out of range")
     existing = run.command_results[command_index]
@@ -1362,7 +1368,7 @@ def advance_release_gates(
 ) -> None:
     """Idempotently create only the next missing release gate in policy order."""
 
-    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}:
+    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}:
         return
     lineage_error = release_lineage_gate_error(state, release)
     if lineage_error is not None:
@@ -1712,6 +1718,8 @@ def authorize_release_gate_obligation_waiver(
     authorized_by: str,
     result: dict[str, Any],
 ) -> ReleaseGateObligationWaiver:
+    if release.state == TeamRecordState.CANCELLED:
+        raise ValueError(f"release {release.id} is cancelled")
     if release.candidate_commit_sha != candidate_commit_sha:
         raise ValueError("gate obligation waiver does not match the pinned release candidate")
     normalized_reason = _required_text(reason, "reason")

@@ -4574,6 +4574,34 @@ class TeamAdminService:
         )
         return state, result
 
+    def cancel_release_package(
+        self,
+        *,
+        release_package_id: str,
+        operator_actor_id: str,
+        reason: str = "",
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        from .domain.release_cancellation import cancel_release
+
+        release_id = _required_text(release_package_id, "release_package_id")
+        actor_id = _required_text(operator_actor_id, "operator_actor_id")
+        result: dict[str, Any] = {}
+
+        def _mutate(state: TeamState) -> TeamState:
+            release = _require_present(state.release_packages, release_id, "release package")
+            result.update(cancel_release(
+                state, release=release, actor_id=actor_id, reason=_optional_text(reason) or "",
+            ))
+            return state
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        result.update({
+            "success": True, "revision": state.revision,
+            "release_package": state.release_packages[release_id].model_dump(mode="json"),
+        })
+        return state, result
+
     def cancel_task(
         self,
         *,

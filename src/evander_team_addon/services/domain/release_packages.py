@@ -61,7 +61,7 @@ from .work_lineage import ensure_release_work_lineage
 
 
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
-_TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+_TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
 _HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = "human_correction_aggregation_task_id"
 _SYSTEM_CORRECTION_TASK_ACTORS = {
     "system:human-review",
@@ -766,6 +766,9 @@ def _build_release_package(
             result["inferred_predecessor_release_package_id"] = predecessor.id
 
     if predecessor is not None:
+        if predecessor.state == TeamRecordState.CANCELLED:
+            result["errors"].append("cancelled releases cannot have successor attempts; request a new release")
+            return None
         lineage_root_id = release_lineage_root_id(state, predecessor)
         waiting_task_ids = _lineage_waiting_task_ids(
             state,
@@ -2229,7 +2232,7 @@ def _release_packages_for_deliverables(
 def _release_package_requires_recreation(release: ReleasePackage) -> bool:
     """Return whether same-scope dedup must leave a supported replacement path."""
 
-    return (
+    return release.state == TeamRecordState.CANCELLED or (
         release.state in _TERMINAL_RELEASE_STATES
         and release.state == TeamRecordState.REJECTED
         and release.gate_failure is not None
@@ -2607,6 +2610,7 @@ def _queue_release_promotion_if_ready(
         TeamRecordState.ACCEPTED,
         TeamRecordState.REJECTED,
         TeamRecordState.BLOCKED,
+        TeamRecordState.CANCELLED,
     }:
         return
     if not _release_feature_prerequisites_ready(state, release):
