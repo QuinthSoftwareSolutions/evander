@@ -4324,7 +4324,7 @@ def create_vm(
             "--model-provider-mode",
             help=(
                 "Session relay mode override: openai_public, local_openai, "
-                "azure_openai, or anthropic."
+                "azure_openai, anthropic, or openrouter."
             ),
         ),
     ] = None,
@@ -4548,7 +4548,7 @@ def create_issue_vm(
             "--model-provider-mode",
             help=(
                 "Session relay mode override: openai_public, local_openai, "
-                "azure_openai, or anthropic."
+                "azure_openai, anthropic, or openrouter."
             ),
         ),
     ] = None,
@@ -4625,7 +4625,10 @@ def set_session_model_provider_mode(
         str,
         typer.Option(
             "--mode",
-            help="Relay mode to persist: openai_public, local_openai, azure_openai, or anthropic.",
+            help=(
+                "Relay mode to persist: openai_public, local_openai, azure_openai, "
+                "anthropic, or openrouter."
+            ),
         ),
     ] = "",
     clear: Annotated[

@@ -305,7 +305,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "model_provider_mode": (
         "Default provider mode for relay-backed model requests. Use openai_public for public OpenAI, "
         "local_openai for a host-local OpenAI-compatible endpoint, azure_openai for Azure OpenAI, "
-        "or anthropic for Claude Messages API routing. "
+        "anthropic for Claude Messages API routing, or openrouter for pinned Codex Responses API "
+        "routing through OpenRouter. "
         "Individual sessions can override this default with session metadata model_provider_mode."
     ),
     "openai_api_base_url": (
@@ -313,6 +314,16 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "openai_api_key_env": (
         "Name of the host environment variable that holds the upstream OpenAI API key in public OpenAI mode."
+    ),
+    "openrouter_api_base_url": (
+        "OpenRouter API base URL used by the host relay in openrouter mode."
+    ),
+    "openrouter_api_key_env": (
+        "Name of the host environment variable that holds the OpenRouter API key."
+    ),
+    "openrouter_model_routes": (
+        "JSON object mapping each approved exact OpenRouter model ID to one pinned provider "
+        "endpoint slug. OpenRouter sessions fail closed unless their model is present here."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
     "openai_image_generation_max_request_bytes": (

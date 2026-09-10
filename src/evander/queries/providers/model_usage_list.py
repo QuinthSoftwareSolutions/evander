@@ -72,12 +72,14 @@ class ModelUsageListQueryProvider(QueryProviderBase):
         catalog = self._pricing_catalog(admin_service) if include_costs else None
         items: list[dict[str, Any]] = []
         total_estimated_cost = Decimal("0")
+        total_reported_cost = Decimal("0")
         total_input_tokens = 0
         total_cached_input_tokens = 0
         total_cache_write_input_tokens = 0
         total_output_tokens = 0
         total_tokens = 0
         costs_estimated_count = 0
+        costs_reported_count = 0
         costs_unavailable_count = 0
 
         for event_value in events:
@@ -102,6 +104,15 @@ class ModelUsageListQueryProvider(QueryProviderBase):
                 item.update(
                     {
                         "estimated_cost": _decimal_to_float(estimate.estimated_total),
+                        "reported_cost": _decimal_to_float(estimate.reported_total),
+                        "cost": _decimal_to_float(estimate.total),
+                        "cost_source": (
+                            "provider_reported"
+                            if estimate.reported_total is not None
+                            else "catalog_estimate"
+                            if estimate.estimated_total is not None
+                            else None
+                        ),
                         "estimated_input_cost": _decimal_to_float(estimate.input_cost),
                         "estimated_cached_input_cost": _decimal_to_float(
                             estimate.cached_input_cost
@@ -120,6 +131,9 @@ class ModelUsageListQueryProvider(QueryProviderBase):
                 if estimate.estimated_total is not None:
                     total_estimated_cost += estimate.estimated_total
                     costs_estimated_count += 1
+                elif estimate.reported_total is not None:
+                    total_reported_cost += estimate.reported_total
+                    costs_reported_count += 1
                 else:
                     costs_unavailable_count += 1
             items.append(item)
@@ -130,12 +144,19 @@ class ModelUsageListQueryProvider(QueryProviderBase):
             "total_estimated_cost": _decimal_to_float(total_estimated_cost)
             if include_costs
             else None,
+            "total_reported_cost": _decimal_to_float(total_reported_cost)
+            if include_costs
+            else None,
+            "total_cost": _decimal_to_float(total_estimated_cost + total_reported_cost)
+            if include_costs
+            else None,
             "total_input_tokens": total_input_tokens,
             "total_cached_input_tokens": total_cached_input_tokens,
             "total_cache_write_input_tokens": total_cache_write_input_tokens,
             "total_output_tokens": total_output_tokens,
             "total_tokens": total_tokens,
             "costs_estimated_count": costs_estimated_count,
+            "costs_reported_count": costs_reported_count,
             "costs_unavailable_count": costs_unavailable_count,
         }
 

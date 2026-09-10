@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-10 - Pinned OpenRouter Codex routing (0.38.0)
+
+- Add an opt-in OpenRouter provider for Codex HTTP Responses requests and
+  compaction passthrough, with exact session model allowlists, one configured
+  provider route, mandatory ZDR and parameter support, and disabled fallbacks.
+- Keep provider credentials on the host, reject guest routing overrides and
+  OpenRouter server tools, and expose provider settings in Admin Web.
+- Capture routing metadata and provider-reported USD charges without retaining
+  prompt or response content. Separate reported charges from catalog estimates
+  and include both in Team budgets and cost displays while preserving fractional dollars.
+- Leave OpenRouter routes empty and public OpenAI as the default; live provider
+  compatibility and credentials require operator configuration.
+
 ## 2026-09-10 - Copy Team configurations (0.37.0)
 
 - Add a revision-checked Team copy operation and Teams-view wizard that clones

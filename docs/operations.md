@@ -1157,6 +1157,11 @@ and record the backup SHA-256 in the resulting artifact bundle.
   `--model-provider-mode local_openai`.
 - Restart `evander-openai-relay.service` after changing provider config that the relay process has already loaded.
 - Public OpenAI remains the default when `model_provider_mode` is omitted.
+- OpenRouter is opt-in through `model_provider_mode: "openrouter"` and
+  `openrouter_model_routes`. Select an explicit approved session model and
+  metered API authentication. Use the [OpenRouter operator guide](openrouter.md)
+  for provider endpoint selection, mandatory ZDR, compaction compatibility,
+  usage evidence, and rollback. No additional service or guest port is needed.
 - For Claude Code routing, set `model_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.
 - The relay records provider-neutral model usage metadata for HTTP, SSE, and
   WebSocket Responses/Completions traffic that exposes a provider `usage`

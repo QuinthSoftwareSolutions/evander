@@ -296,3 +296,57 @@ def test_model_usage_list_query_provider_adds_cost_estimates_and_totals(tmp_path
     assert result["items"][0]["pricing_rule_id"] == "openai:gpt-5.2-codex:text:2025-12-11"
     assert result["items"][0]["pricing_version"]
     assert result["items"][1]["cost_status"] == "pricing_unavailable"
+
+
+def test_model_usage_list_query_provider_separates_openrouter_reported_cost(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    occurred_at = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+    event = _event(
+        "event-openrouter",
+        occurred_at=occurred_at,
+        directory_path="root",
+        provider="openrouter",
+        model="openai/gpt-5.4",
+        input_tokens=10,
+        output_tokens=20,
+        total_tokens=30,
+    ).model_copy(
+        update={
+            "raw_usage_metadata": {
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "total_tokens": 30,
+                    "cost": 0.0042,
+                }
+            }
+        }
+    )
+    store.upsert_event(event)
+    provider = ModelUsageListQueryProvider()
+    provider.initialize(
+        ModelUsageListQueryDefinition(
+            id="query-openrouter-costs",
+            display_name="OpenRouter costs",
+            type="query:model-usage:list",
+        ),
+        QueryRuntimeContext(
+            provider_config={},
+            admin_service=_ModelUsageAdminServiceStub(store),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["total_estimated_cost"] == 0
+    assert result["total_reported_cost"] == pytest.approx(0.0042)
+    assert result["total_cost"] == pytest.approx(0.0042)
+    assert result["costs_estimated_count"] == 0
+    assert result["costs_reported_count"] == 1
+    assert result["costs_unavailable_count"] == 0
+    assert result["items"][0]["estimated_cost"] is None
+    assert result["items"][0]["reported_cost"] == pytest.approx(0.0042)
+    assert result["items"][0]["cost_source"] == "provider_reported"

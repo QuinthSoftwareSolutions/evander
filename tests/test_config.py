@@ -526,6 +526,52 @@ def test_openai_provider_defaults_remain_public_mode() -> None:
     assert config.anthropic_api_base_url == "https://api.anthropic.com"
     assert config.anthropic_api_key_env == "ANTHROPIC_API_KEY"
     assert config.anthropic_api_version == "2023-06-01"
+    assert config.openrouter_api_base_url == "https://openrouter.ai/api/v1"
+    assert config.openrouter_api_key_env == "OPENROUTER_API_KEY"
+    assert config.openrouter_model_routes == {}
+
+
+def test_openrouter_provider_config_normalizes_exact_pinned_routes() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "model_provider_mode": " openrouter ",
+            "openrouter_api_base_url": " https://openrouter.example/api/v1/ ",
+            "openrouter_api_key_env": " OPENROUTER_TEST_KEY ",
+            "openrouter_model_routes": {
+                " openai/gpt-5.4 ": " openai ",
+                "anthropic/claude-sonnet-4.6": "anthropic",
+            },
+        }
+    )
+
+    assert config.model_provider_mode == "openrouter"
+    assert config.openrouter_api_base_url == "https://openrouter.example/api/v1"
+    assert config.openrouter_api_key_env == "OPENROUTER_TEST_KEY"
+    assert config.openrouter_model_routes == {
+        "openai/gpt-5.4": "openai",
+        "anthropic/claude-sonnet-4.6": "anthropic",
+    }
+
+
+@pytest.mark.parametrize(
+    "routes",
+    [
+        [],
+        {"": "openai"},
+        {"openai/*": "openai"},
+        {"~openai/gpt-5.4": "openai"},
+        {"openrouter/auto": "openrouter"},
+        {"openrouter/free": "openrouter"},
+        {"openai/gpt-5.4:online": "openai"},
+        {"openai/gpt-5.4@preset/test": "openai"},
+        {"openai/gpt-5.4": ["openai", "azure"]},
+        {"openai/gpt-5.4": {"provider": "openai"}},
+        {"openai/gpt-5.4": ""},
+    ],
+)
+def test_openrouter_provider_config_rejects_unpinned_routes(routes: object) -> None:
+    with pytest.raises(ValueError, match="openrouter_model_routes"):
+        GatewayConfig.model_validate({"openrouter_model_routes": routes})
 
 
 def test_gateway_config_scheduled_wake_prefix_defaults_to_empty_and_uses_canonical_key() -> None:

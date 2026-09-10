@@ -46,6 +46,10 @@ recorded, while `claude` and `dotnet-playwright` resolve to additional approved 
 dispatch does not pull or build images, so approved refs must already be present on the worker VM.
 For Anthropic-backed Claude sessions, set `model_provider_mode: "anthropic"` in the effective
 provider config and select the `claude` image alias when creating the container-backed session.
+For Codex through OpenRouter, use `model_provider_mode: "openrouter"`, an explicit approved
+`namespace/model` session model, and the host-owned `openrouter_model_routes` mapping.
+Workers still use the existing host relay; no OpenRouter key or internet access is added to
+containers. See [OpenRouter setup and limitations](openrouter.md).
 
 `container_worker_active_tool_timeout_seconds` is a narrower safeguard than the job deadline.
 When the effect reconciler sees an active Codex tool call that has exceeded this budget, it asks
@@ -63,6 +67,8 @@ The subscription selection is effective only for container Codex turns whose eff
 `model_provider_mode` is `openai_public`. A `local_openai` or `azure_openai` turn uses its
 configured private/API-key route without rewriting stored session state, and non-Codex agents do
 not inherit this Codex default.
+OpenRouter always uses metered API routing; an explicit session `chatgpt_subscription`
+override is rejected. An inherited subscription default is not used for OpenRouter turns.
 
 The same image catalog is used by request-scoped codebase consultations. A named
 `agent_consultation_profiles` entry selects the model, provider mode, image alias, deadline, and

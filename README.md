@@ -1059,6 +1059,16 @@ Response:
   - grant `respond_to_agent` only to sessions that need to answer prompts;
   - avoid broad cross-team sharing by keeping sessions in narrow `directory_path` scopes.
 
+## OpenRouter for Codex
+
+Evander supports opt-in `model_provider_mode: openrouter` for Codex sessions on
+libvirt VMs and container workers. The host relay pins each exact session model
+to one configured provider route, enforces ZDR, and disables provider fallbacks.
+The default route map is empty. Configure an approved model and host credential
+through Admin Web before selecting OpenRouter for a session.
+See [OpenRouter setup and verification](docs/openrouter.md) for the configuration
+contract, compatibility checks, and cost accounting.
+
 ## Request-Scoped Codebase Consultations
 
 `consult_codebase` is the low-latency delegation path for repository questions. It does not
