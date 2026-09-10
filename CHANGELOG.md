@@ -1,13 +1,5 @@
 # Changelog
 
-## 2026-09-10 - Cancel releases with frozen review cohorts (0.35.1)
-
-- Allow release cancellation to retire its reviews while retaining the frozen
-  reviewer membership and recorded decisions as history. Continue validating the
-  required reviewer slots and excluding superseded review attempts.
-- Cover pending, blocked, accepted and retried reviews, persisted cancellation,
-  and rejection of incomplete cohorts before and after cancellation.
-
 ## 2026-09-10 - Portable repository indexing (0.35.0)
 
 - Add opt-in managed repository indexes with text and semantic search, C#/TypeScript
@@ -26,6 +18,17 @@
 - Export versioned SQLite/SCIP bundles with a standalone Python query tool and optional
   embeddings for external coding workflows. Include a pinned worker image build,
   APP profile, retrieval benchmark and operational documentation.
+- Allow release cancellation to retire its reviews while retaining the frozen
+  reviewer membership and recorded decisions as history. Continue validating the
+  required reviewer slots and excluding superseded review attempts.
+- Cover pending, blocked, accepted and retried reviews, persisted cancellation,
+  and rejection of incomplete cohorts before and after cancellation.
+
+## 2026-09-10 - Restrict website credential environment access (0.34.2)
+
+- Require explicit host-controlled grants before managed website profiles can resolve environment
+  variables. Bind each grant to its directory subtree, profile, request fields, browser origin,
+  and login URL, and load the same grant configuration in Admin Web and the HTTP target relay.
 
 ## 2026-09-10 - Direct Team wake reads (0.34.1)
 

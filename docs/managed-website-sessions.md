@@ -50,7 +50,12 @@ metadata and have a 60-second cooldown.
 The `managed_website_sessions` map remains available through the directory provider
 configuration API. Existing environment references are also supported by selecting
 **Existing host environment variables** in the UI. These values remain managed by
-the host environment; switch to encrypted storage for credential management in the UI.
+the host environment and require a matching entry in the host-controlled JSON array
+`EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST`. Each entry binds its environment names
+to one directory subtree, profile ID, request-field mapping, browser origin, and exact login URL.
+This prevents a directory owner from reusing an approved credential for a sibling directory or
+redirecting it to another destination. Switch to encrypted storage for credential management in
+the UI.
 For example, an environment-backed configuration is:
 
 ```json
@@ -75,6 +80,20 @@ For example, an environment-backed configuration is:
   }
 }
 ```
+
+The matching host grant is a single-line JSON value in `config/http-target-relay.env` (copied
+from `config/http-target-relay.env.example`) or an equivalent service-manager secret source:
+
+```bash
+EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST='[{"directory_path":"root","profile_id":"training-app","browser_origin":"https://training.example.org","login_url":"https://training-api.example.org/auth/login","credential_fields":{"email":"TRAINING_LOGIN_USER","password":"TRAINING_LOGIN_PASSWORD"},"public_credential_fields":["email"],"static_fields":{"tenant":"training"}}]'
+```
+
+The grant applies to its named directory and descendants, matching normal profile inheritance.
+Changing the profile ID, browser origin, login URL, credential fields, public fields, or static
+fields requires a new host grant. Systemd loads `config/http-target-relay.env` into both Admin Web
+and the HTTP target relay so saving, testing, and session acquisition enforce the same grants.
+Keep the actual credential values in that ignored host-local file, repo-root `secrets.env`, or an
+equivalent service-manager secret source loaded by both services.
 
 With `credential_source: "environment"` (the backward-compatible default),
 `credential_fields` maps JSON request fields to host environment variables. With

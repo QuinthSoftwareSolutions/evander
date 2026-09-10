@@ -1157,6 +1157,7 @@ for deployment, device-login, and egress requirements.
   - `config/openai-relay.env` (loaded by both the relay and Admin Web units)
   - `config/nuget-relay.env`
   - `config/npm-audit-facade.env`
+  - `config/http-target-relay.env` (loaded by both the HTTP target relay and Admin Web units)
 - Directory-specific OpenAI model key env vars named by `openai_api_key_env` should be
   available to the relay.
 - Do not place these values in guest images, cloud-init, session manifests, or guest shell
