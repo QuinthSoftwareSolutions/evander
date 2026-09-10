@@ -31,6 +31,9 @@ package, Git, and HTTP relays.
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network
 - Systemd service templates and an install script for persistent host services
 - Directory-scoped managed bare Git repositories with pinned promotion and ephemeral worktrees
+- Opt-in [repository indexing](docs/repository-indexing.md) with scoped source search,
+  reusable baseline coverage, bounded compiler scheduling, C#/TypeScript navigation,
+  Admin Web controls and portable SQLite/SCIP exports
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`

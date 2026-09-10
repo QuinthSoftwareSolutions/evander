@@ -35,6 +35,7 @@ from evander.admin.web.frontend_assets import (
     admin_frontend_dist_dir,
 )
 from evander.admin.web.git_repositories import git_repository_routes
+from evander.admin.web.repository_index import repository_index_routes
 from evander.admin.web.agents import agent_routes
 from evander.admin.web.addons import addon_routes
 from evander.admin.web.capacity import capacity_routes
@@ -623,6 +624,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(operator_steering_routes(service, auth))
     routes.extend(artifact_routes(service, auth))
     routes.extend(git_repository_routes(service, auth))
+    routes.extend(repository_index_routes(service, auth))
     addon_service = AdminWebAddonServiceAdapter(service)
     for addon in addon_catalog.registrations:
         context = AddonContext(

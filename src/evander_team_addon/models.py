@@ -6977,7 +6977,12 @@ class TeamState(TeamModel):
                         for review_id in release.review_request_ids
                         if review_id in self.review_requests
                         and self.review_requests[review_id].superseded_by_review_request_id is None
-                        and self.review_requests[review_id].retired_at is None
+                        # Cancellation retires the final reviews but preserves
+                        # their membership in the frozen historical cohort.
+                        and (
+                            release.state == TeamRecordState.CANCELLED
+                            or self.review_requests[review_id].retired_at is None
+                        )
                     ]
                     current_members = [
                         (review.reviewer_agent_id, review.review_profile_id)

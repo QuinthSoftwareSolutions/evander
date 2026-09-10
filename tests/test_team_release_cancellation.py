@@ -17,7 +17,9 @@ from evander_team_addon.api import admin_api_routes
 from evander_team_addon.models import (
     AgentTask,
     GitPromotionRecord,
+    ReleaseReviewRequirement,
     ReleaseVerificationRun,
+    ReviewProfile,
     ReviewRequest,
     TeamBlockerSourceKind,
     TeamRecordState,
@@ -139,6 +141,107 @@ def test_cancel_release_closes_obligations_without_rework_and_persists_audit(tmp
     assert all(item.state.value == "handled" for item in state.inbox.values())
     assert repo.list_outbox_records() == []
     assert _release_package_requires_recreation(release)
+
+
+def _sealed_cohort_repository(tmp_path, review_state, *, replaced=False):
+    repo, _, human_id = _repository(tmp_path)
+
+    def seal(state):
+        release = state.release_packages["release"]
+        release.review_cohort_id = "release-cohort"
+        release.review_cohort_sealed_at = state.updated_at
+        release.manifest.review_requirements = []
+        for reviewer_id, review_id in [("owner", "review"), ("lead", "second-review")]:
+            profile_id = f"{reviewer_id}-profile"
+            state.review_profiles[profile_id] = ReviewProfile(
+                id=profile_id, team_id="team", project_id="project", name=profile_id,
+            )
+            release.manifest.review_requirements.append(ReleaseReviewRequirement(
+                reviewer_agent_id=reviewer_id, review_profile_id=profile_id,
+            ))
+            state.review_requests[review_id] = ReviewRequest(
+                id=review_id,
+                release_package_id=release.id,
+                candidate_commit_sha=release.candidate_commit_sha,
+                reviewed_commit_sha=release.candidate_commit_sha,
+                reviewer_agent_id=reviewer_id,
+                review_profile_id=profile_id,
+                review_cohort_id=release.review_cohort_id,
+                state=review_state,
+                findings=["Recorded review evidence"],
+                decision_at=state.updated_at if review_state != TeamRecordState.PENDING else None,
+            )
+        release.review_request_ids = ["review", "second-review"]
+        if replaced:
+            previous = state.review_requests["review"].model_copy(deep=True)
+            previous.id = "previous-review"
+            previous.state = TeamRecordState.BLOCKED
+            previous.superseded_by_review_request_id = "review"
+            state.review_requests[previous.id] = previous
+            state.review_requests["review"].supersedes_review_request_id = previous.id
+            state.review_requests["review"].retry_reason = "Checkout restored"
+            state.review_requests["review"].retry_requested_by = "operator:jonathan"
+            release.review_request_ids.insert(0, previous.id)
+        return state
+
+    before = repo.update(seal)
+    return repo, before, human_id
+
+
+@pytest.mark.parametrize("review_state", [
+    TeamRecordState.PENDING, TeamRecordState.BLOCKED, TeamRecordState.ACCEPTED,
+])
+@pytest.mark.parametrize("replaced", [False, True])
+def test_cancel_sealed_release_preserves_frozen_cohort_and_decisions(
+    tmp_path, review_state, replaced,
+):
+    repo, before, human_id = _sealed_cohort_repository(
+        tmp_path, review_state, replaced=replaced,
+    )
+    TeamAdminService(repo).cancel_release_package(
+        release_package_id="release",
+        operator_actor_id="jonathan",
+        reason="Duplicate",
+        expected_revision=before.revision,
+    )
+    after = repo.read()
+    release = after.release_packages["release"]
+    assert release.state == TeamRecordState.CANCELLED
+    assert release.manifest == before.release_packages["release"].manifest
+    assert release.review_request_ids == before.release_packages["release"].review_request_ids
+    assert release.review_cohort_id == "release-cohort"
+    for review_id in release.review_request_ids:
+        review = after.review_requests[review_id]
+        previous = before.review_requests[review_id]
+        assert review.retired_at is not None
+        assert review.findings == previous.findings
+        assert review.decision_at == previous.decision_at
+        assert review.reviewed_commit_sha == previous.reviewed_commit_sha
+        assert review.superseded_by_review_request_id == previous.superseded_by_review_request_id
+        assert review.state == (
+            TeamRecordState.ACCEPTED
+            if previous.state == TeamRecordState.ACCEPTED else TeamRecordState.CANCELLED
+        )
+    assert after.human_review_requests[human_id].state == "cancelled"
+    assert not project_blocking_sources(after, "project")
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_sealed_release_still_requires_its_frozen_members_after_cancellation(tmp_path, cancelled):
+    repo, before, _ = _sealed_cohort_repository(tmp_path, TeamRecordState.ACCEPTED)
+    if cancelled:
+        before, _ = TeamAdminService(repo).cancel_release_package(
+            release_package_id="release", operator_actor_id="jonathan",
+            expected_revision=before.revision,
+        )
+
+    def remove_member(state):
+        state.release_packages["release"].review_request_ids.remove("second-review")
+        return state
+
+    with pytest.raises(ValueError, match="cohort membership does not match"):
+        repo.update(remove_member, expected_revision=before.revision)
+    assert repo.read_revision() == before.revision
 
 
 def test_cancelled_release_cannot_be_revived_by_callbacks_or_review_decisions(tmp_path):

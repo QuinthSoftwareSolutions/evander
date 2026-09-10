@@ -6741,6 +6741,31 @@ select {
   margin: 0;
 }
 
+.managed-git-index-panel,
+.managed-git-index-panel fieldset {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.managed-git-index-panel fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.managed-git-index-panel .field-stack,
+.managed-git-index-panel .checkbox-row,
+.managed-git-index-panel p {
+  margin: 0;
+}
+
+.managed-git-index-panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
 .managed-git-register-form,
 .managed-git-identity-form {
   display: grid;

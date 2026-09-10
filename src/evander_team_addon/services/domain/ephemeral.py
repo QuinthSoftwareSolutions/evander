@@ -135,6 +135,21 @@ def _create_ephemeral_assignments(
             created_at=now,
             updated_at=now,
         )
+        # Freeze the parent's task commit on the server. Ignore caller-supplied bindings.
+        project = state.projects.get(task.project_id)
+        assignment.metadata["code_index_bindings"] = [
+            {
+                "managed_repo_id": project.git.managed_repo_id,
+                "commit_sha": context.commit_sha or context.base_commit,
+            }
+            for context in state.git_work_contexts.values()
+            if project
+            and project.git
+            and context.task_id == task.id
+            and context.agent_id == parent.id
+            and context.state.value == "active"
+            and (context.commit_sha or context.base_commit)
+        ]
         state.ephemeral_assignments[assignment.id] = assignment
         result["created_ephemeral_assignment_ids"].append(assignment.id)
 

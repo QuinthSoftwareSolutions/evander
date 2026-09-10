@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-09-10 - Portable repository indexing (0.36.0)
+
+- Add opt-in managed repository indexes with text and semantic search, C#/TypeScript
+  symbol navigation, assigned-commit Team scope and incremental embedding reuse.
+- Let tasks and reviewers reuse unchanged files from a proven indexed ancestor with
+  explicit source/target provenance, without queuing per-task compiler builds. Update
+  Team guidance to version 43 for baseline coverage and local-change verification.
+- Bound automatic branch indexing to a one-hour default interval and one CPU, with
+  one compiler indexing job across the runtime; skip intermediate branch heads.
+- Build compiler indexes in isolated container workers, verify imported Git blobs,
+  report partial coverage, and reconcile jobs and retention through workflow nodes.
+- Bootstrap relay-aware NuGet, honor npm workspace root lockfiles, reserve compiler
+  capacity at submission, and serialize cancellation with reconciliation. Retain
+  failed worker cleanup for retry and reclaim cancelled, unprovisioned snapshots.
+- Resolve approved image aliases before compiler submission, revoke session Git access
+  and bindings on retirement, and allow the default packages-directory exclusion to be
+  removed for tracked npm workspace source.
+- Add revision-checked Admin Web controls, gateway tools and operator CLI commands.
+- Reconcile Team indexing tool grants with dispatch scope, removing stale grants
+  when project authorization is lost and avoiding duplicates on repeated wakes.
+- Export versioned SQLite/SCIP bundles with a standalone Python query tool and optional
+  embeddings for external coding workflows. Include a pinned worker image build,
+  APP profile, retrieval benchmark and operational documentation.
+- Allow release cancellation to retire its reviews while retaining the frozen
+  reviewer membership and recorded decisions as history. Continue validating the
+  required reviewer slots and excluding superseded review attempts.
+- Cover pending, blocked, accepted and retried reviews, persisted cancellation,
+  and rejection of incomplete cohorts before and after cancellation.
+
 ## 2026-09-10 - Workflow-managed release publication (0.35.0)
 
 - Add a project release-policy switch that can accept an approved Git release

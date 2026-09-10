@@ -883,6 +883,65 @@ _VM_ARTIFACT_TEXT_READ_COMMAND = vm_agent_service._VM_ARTIFACT_TEXT_READ_COMMAND
 
 _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:code-index:ensure",
+        label="Ensure repository index",
+        fields=[
+            _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
+            _field("commit_sha", "Exact commit", "string", bindable=True),
+            _field("directory_path", "Directory", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:code-index:reconcile",
+        label="Advance repository indexing",
+        fields=[
+            _field("directory_path", "Directory", "string", bindable=True),
+            _field("limit", "Builds per pass", "number", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:code-index:status",
+        label="Repository index status",
+        fields=[
+            _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
+            _field("commit_sha", "Exact commit", "string", bindable=True),
+            _field("directory_path", "Directory", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:code-index:search",
+        label="Search repository index",
+        fields=[
+            _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
+            _field("commit_sha", "Exact commit", "string", required=True, bindable=True),
+            _field("query", "Query", "string", required=True, bindable=True),
+            _field("mode", "Search mode", "string", bindable=True),
+            _field("allow_baseline", "Allow indexed ancestor", "boolean", bindable=True),
+            _field("limit", "Limit", "number", bindable=True),
+            _field("offset", "Offset", "number", bindable=True),
+            _field("directory_path", "Directory", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:code-index:navigate",
+        label="Navigate repository symbols",
+        fields=[
+            _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
+            _field("commit_sha", "Exact commit", "string", required=True, bindable=True),
+            _field("symbol", "Symbol", "string", required=True, bindable=True),
+            _field("kind", "Navigation kind", "string", bindable=True),
+            _field("allow_baseline", "Allow indexed ancestor", "boolean", bindable=True),
+            _field("limit", "Limit", "number", bindable=True),
+            _field("offset", "Offset", "number", bindable=True),
+            _field("directory_path", "Directory", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
         kind="trigger",
         type="trigger:cron",
         label="Cron",

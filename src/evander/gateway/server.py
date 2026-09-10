@@ -240,6 +240,7 @@ from evander.gateway.mssql_tools import register_mssql_tools
 from evander.gateway.pr_tools import register_pr_tools
 from evander.gateway.reference_repository_tools import register_reference_repository_tools
 from evander.gateway.semantic_tools import register_semantic_tools
+from evander.gateway.code_index_tools import register_code_index_tools
 from evander.gateway.visibility_helpers import (
     VisibilityHelpers,
     _require_target_session_visible_within_directory,
@@ -833,6 +834,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
         ado_artifact_approval_payload=artifact_helpers.ado_artifact_approval_payload,
     )
     register_reference_repository_tools(
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+    )
+    register_code_index_tools(
         server,
         context,
         deps,

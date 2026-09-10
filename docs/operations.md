@@ -3742,3 +3742,15 @@ The gateway and effect providers emit structured log markers for agent orchestra
 4. **Tool calls denied unexpectedly**
    - Filter by `metric_mcp_tool_decision` and inspect `reason`.
    - Compare with session `allowed_tools` and any provider-specific allowlists in session policy metadata.
+## Repository index operations
+
+Use **Managed Git → repository → Repository indexing** to configure indexing, inspect
+coverage, request/cancel builds and download portable snapshots. The feature is disabled
+by default and uses the existing worker and workflow services. Team tasks and reviews
+reuse existing coverage without queuing compiler work. Automatic branch builds default
+to a one-hour minimum interval and one CPU, with one compiler job across the runtime.
+The interval and CPU allowance are configurable; turn off automatic refresh for a
+manually scheduled baseline. Search changed and dirty files in the agent checkout.
+See
+[Repository indexing](repository-indexing.md) for image preparation, APP configuration,
+the reconciliation workflow, CLI commands, recovery, retention and external queries.

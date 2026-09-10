@@ -202,6 +202,29 @@ class QdrantClient:
         _raise_points_error(response, collection_name=name, action="point upsert")
         return _operation_result_from_payload(_json_object(response))
 
+    def upsert_points(
+        self, collection_name: str, *, points: list[dict[str, Any]], wait: bool = True
+    ) -> QdrantOperationResult:
+        name = _normalize_collection_name(collection_name)
+        if not points or len(points) > 128:
+            raise ValueError("Point batch requires 1..128 points")
+        normalized = [
+            {
+                "id": normalize_point_id(point["id"]),
+                "vector": _normalize_vector(point["vector"]),
+                "payload": dict(point.get("payload") or {}),
+            }
+            for point in points
+        ]
+        try:
+            response = self._client.put(
+                f"collections/{name}/points", params=_wait_params(wait), json={"points": normalized}
+            )
+        except httpx.RequestError as exc:
+            raise QdrantError(f"Qdrant point batch upsert failed: {exc}") from exc
+        _raise_points_error(response, collection_name=name, action="point batch upsert")
+        return _operation_result_from_payload(_json_object(response))
+
     def retrieve_points(
         self,
         collection_name: str,

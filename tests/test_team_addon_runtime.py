@@ -239,6 +239,9 @@ from evander_team_addon.workflow_packs import team_runtime_v1, team_runtime_v1_l
 ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES = (
     *ORDINARY_TEAM_MCP_TOOL_NAMES,
     *READ_TEAM_MCP_TOOL_NAMES,
+    "code_index_status",
+    "code_search",
+    "code_navigate",
 )
 
 

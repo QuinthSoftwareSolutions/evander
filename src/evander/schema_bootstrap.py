@@ -700,6 +700,17 @@ _GATE_OUTPUT_SCHEMAS = {
 }
 
 _EFFECT_OUTPUT_SCHEMAS = {
+    "effect:code-index:ensure": {
+        "status": {"type": "string"},
+        "id": {"type": "string"},
+        "repo": {"type": "string"},
+        "sha": {"type": "string"},
+    },
+    "effect:code-index:reconcile": {
+        "status": {"type": "string"},
+        "processed": {"type": "integer"},
+        "build_ids": {"type": "array"},
+    },
     "effect:event:emit": {
         "success": {"type": "boolean"},
         "event_id": {"type": "string"},
@@ -1436,6 +1447,35 @@ _EFFECT_OUTPUT_SCHEMAS = {
 }
 
 _QUERY_OUTPUT_SCHEMAS = {
+    "query:code-index:status": {
+        "status": {"type": "string"},
+        "builds": {"type": "array"},
+        "settings": {"type": "object"},
+        "revision": {"type": "integer"},
+        "available_index": {"type": "object"},
+    },
+    "query:code-index:search": {
+        "status": {"type": "string"},
+        "snapshot_id": {"type": "string"},
+        "commit_sha": {"type": "string"},
+        "requested_commit_sha": {"type": "string"},
+        "match": {"type": "string"},
+        "warnings": {"type": "array"},
+        "hits": {"type": "array"},
+        "coverage": {"type": "object"},
+        "next_offset": {"type": ["integer", "null"]},
+    },
+    "query:code-index:navigate": {
+        "status": {"type": "string"},
+        "snapshot_id": {"type": "string"},
+        "commit_sha": {"type": "string"},
+        "requested_commit_sha": {"type": "string"},
+        "match": {"type": "string"},
+        "warnings": {"type": "array"},
+        "hits": {"type": "array"},
+        "coverage": {"type": "object"},
+        "next_offset": {"type": ["integer", "null"]},
+    },
     "query:vm:run-state": {
         "vm_name": {"type": "string"},
         "provider": {"type": "string"},
