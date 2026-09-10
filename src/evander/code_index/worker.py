@@ -11,6 +11,7 @@ from evander.effects.providers.schemas import (
 )
 from evander.effects.registry import EffectProviderFactory
 from evander.execution.container_worker_client import ContainerWorkerClient
+from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
 from evander.worker.models import (
     WorkerFileWrite,
     WorkerFileWriteRequest,
@@ -37,7 +38,7 @@ class IndexWorker:
     def start(self, build: dict, *, before_submit: Callable[[], None]) -> str:
         factory = EffectProviderFactory(
             provider_config_resolver=self.components.runtime.provider_config,
-            admin_service=self.components,
+            admin_adapter=AdminRuntimeProviderAdapter(self.components),
         )
         settings = IndexSettings.model_validate(build["config"])
         config = settings.model_dump()
