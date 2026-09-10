@@ -628,15 +628,16 @@ collision-safe IDs for the Team graph and copies active or blocked projects,
 active or paused agents, non-archived roles, review profiles and outcome-kind
 definitions, project goals and assignments, release policy, Team settings, and
 managed Git bindings. Copied projects and agents start active, goals start
-pending, and a configured cost cap receives a fresh budget window.
+pending, governance escalation starts disabled, and a configured cost cap
+receives a fresh budget window.
 
 The operation intentionally does not copy tasks, cases, inbox or conversation
 history, memories, deliverables, reviews, releases, dispatch/runtime state,
 cost history, blockers, or governance-group membership. Completed projects and
 archived agents or configuration definitions are excluded. The endpoint rejects
 missing, duplicate, unknown, or already Team-bound destination sessions and
-rolls back newly added managed Git bindings if the revision-checked state write
-fails.
+requires directory-owner permission for every selected session. It rolls back
+newly added managed Git bindings if the revision-checked state write fails.
 
 The Delivery view defaults to records that still need attention. Projects stay
 collapsed until selected or opened, and the project selector plus status

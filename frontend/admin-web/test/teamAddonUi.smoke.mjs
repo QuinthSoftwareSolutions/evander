@@ -2240,6 +2240,23 @@ async function createTeamAddonServer(
         return;
       }
 
+      if (
+        request.method === "POST"
+        && /^\/api\/addons\/team-addon\/teams\/[^/]+\/copy$/.test(pathname)
+        && payload.expected_revision !== state.revision
+      ) {
+        jsonResponse(
+          response,
+          {
+            error: `stale team add-on state revision: expected ${payload.expected_revision}, current ${state.revision}`,
+            expected_revision: payload.expected_revision,
+            current_revision: state.revision,
+          },
+          409,
+        );
+        return;
+      }
+
       applyMutation(state, pathname, payload);
       jsonResponse(response, state, request.method === "POST" ? 201 : 200);
     } catch (error) {
@@ -2529,8 +2546,11 @@ function applyTeamCopyMutation(state, sourceTeamId, payload) {
       && !role.archived
       && (!role.project_id || sourceProjectIds.has(role.project_id)),
   );
+  const sourceRoleIds = new Set(sourceRoles.map((role) => role.id));
   const sourceAgents = Object.values(state.agents).filter(
-    (agent) => agent.team_id === sourceTeamId && agent.status !== "archived",
+    (agent) => agent.team_id === sourceTeamId
+      && agent.status !== "archived"
+      && sourceRoleIds.has(agent.role_id),
   );
   const projectIds = Object.fromEntries(sourceProjects.map((project) => [
     project.id,
@@ -2612,6 +2632,7 @@ function applyTeamCopyMutation(state, sourceTeamId, payload) {
       (projectId) => projectIds[projectId],
     ),
     cost_budget_windows: [],
+    escalate_to_governance: false,
     archived: false,
   };
 }
@@ -3202,6 +3223,33 @@ test("team add-on copies a clean team configuration with existing and new core s
   const initialState = seededOrgChartState();
   initialState.projects.project.directory_path = "root/team-project";
   initialState.projects.project.git.directory_path = "root/team-project";
+  initialState.projects.historical = {
+    id: "historical",
+    team_id: "team",
+    name: "Historical project",
+    lead_agent_id: "historical-lead",
+    goals: [],
+    status: "completed",
+  };
+  initialState.roles["historical__project-lead"] = {
+    id: "historical__project-lead",
+    team_id: "team",
+    project_id: "historical",
+    name: "Historical lead",
+    permissions: [],
+    archived: false,
+  };
+  initialState.agents["historical-lead"] = {
+    id: "historical-lead",
+    team_id: "team",
+    role_id: "historical__project-lead",
+    session_id: "session-historical-lead",
+    reports_to_agent_id: "manager",
+    subordinate_agent_ids: [],
+    status: "active",
+  };
+  initialState.teams.team.project_ids.push("historical");
+  initialState.agents.manager.subordinate_agent_ids.push("historical-lead");
   const originalTaskIds = Object.keys(initialState.tasks);
   const destinationSessions = ["manager", "lead", "backend", "worker"].map((agentId) => ({
     agent_id: `core-copy-${agentId}`,
@@ -3297,6 +3345,89 @@ test("team add-on copies a clean team configuration with existing and new core s
       && request.pathname === "/api/admin/agents"
       && request.search.includes("directory_path=root%2Fteam-project"),
     ),
+  );
+});
+
+test("team add-on submits the source revision shown by the copy preview", async (t) => {
+  const initialState = seededOrgChartState();
+  const destinationSessions = ["manager", "lead", "backend", "worker"].map((agentId) => ({
+    agent_id: `core-copy-${agentId}`,
+    backend: "libvirt_vm",
+    target_name: `core-copy-${agentId}`,
+    session_id: `session-copy-${agentId}`,
+    directory_path: "root",
+    status: "running",
+    updated_at: "2026-06-09T00:00:00Z",
+    capabilities: {},
+    host: {},
+  }));
+  const {
+    port,
+    requests,
+    state: serverState,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, {
+    initialState,
+    coreAgentItems: destinationSessions,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before testing the copy preview",
+  );
+  await openTeams(page);
+  await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
+  const copyForm = page.locator("form[data-team-copy-form]");
+  await copyForm.waitFor({ state: "visible" });
+  assert.equal(await copyForm.getAttribute("data-source-revision"), "8");
+
+  serverState.revision = 9;
+  serverState.teams.team.name = "Concurrently changed Team";
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: 9 }) > 0,
+    "expected the concurrent revision to reach the Team client",
+  );
+  await waitForRevision(page, 9);
+  for (const agentId of ["manager", "lead", "backend", "worker"]) {
+    await copyForm
+      .locator(`[data-team-copy-session-select][data-source-agent-id="${agentId}"]`)
+      .selectOption(`session-copy-${agentId}`);
+  }
+  await copyForm.getByRole("button", { name: "Copy team" }).click();
+
+  await page.locator("#status-message", {
+    hasText: "The source Team changed after this copy preview was opened.",
+  }).waitFor({ state: "visible" });
+  const copyRequest = requests.find(
+    (request) => request.method === "POST"
+      && request.pathname === "/api/addons/team-addon/teams/team/copy",
+  );
+  assert.ok(copyRequest);
+  assert.equal(copyRequest.payload.expected_revision, 8);
+  assert.deepEqual(Object.keys(serverState.teams), ["team"]);
+});
+
+test("team add-on hides copy for archived teams", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.teams.team.archived = true;
+  Object.values(initialState.agents).forEach((agent) => {
+    if (agent.team_id === "team") agent.status = "archived";
+  });
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await page.locator("#show-archived-toggle").check();
+  await openTeams(page);
+  await page.locator("#people-agent-detail-view").getByText("archived", { exact: true }).waitFor({
+    state: "visible",
+  });
+  assert.equal(
+    await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').count(),
+    0,
   );
 });
 

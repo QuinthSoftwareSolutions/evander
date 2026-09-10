@@ -272,6 +272,28 @@ class RepositoryIndexService:
         while page := self.store.list(offset=offset):
             builds.extend(page)
             offset += len(page)
+        build_directories = {
+            build["repo"]: build["directory"]
+            for build in builds
+            if build.get("directory")
+        }
+        resolved_protected = set(protected)
+        for repo, requested_sha in protected:
+            build_directory = build_directories.get(repo)
+            if build_directory is None:
+                continue
+            try:
+                resolved = self.query_snapshot(
+                    repo,
+                    build_directory,
+                    requested_sha,
+                    allow_baseline=True,
+                )
+            except (ValueError, LookupError, PermissionError):
+                continue
+            if resolved is not None:
+                resolved_protected.add((repo, resolved["sha"]))
+        protected = resolved_protected
         for build in builds:
             if build["status"] in {"ready", "partial"} and build["repo"] not in latest:
                 latest.add(build["repo"])

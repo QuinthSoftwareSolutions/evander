@@ -6590,6 +6590,96 @@ def test_team_addon_admin_api_copies_team_to_registered_unbound_sessions(
     assert missing_session.json()["error"] == "core sessions were not found: session-does-not-exist"
 
 
+def test_team_addon_admin_api_team_copy_requires_owner_for_destination_sessions(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    admin = _team_admin_service(repo)
+    state = admin.create_team(
+        team_id="source",
+        name="Source Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = admin.create_project(
+        project_id="project",
+        team_id="source",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        directory_path="root/source",
+        expected_revision=state.revision,
+    )
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-copy-manager",
+            directory_path="root/sibling",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-copy-lead",
+            directory_path="root/source",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class SourceDirectoryOwnerAuth(_HumanApiAuthStub):
+        def can(
+            self,
+            _request,
+            permission: str,
+            directory_path: str | None = None,
+        ) -> bool:
+            self.permission_calls.append((permission, directory_path))
+            return permission == "admin.owner" and directory_path == "root/source"
+
+    auth = SourceDirectoryOwnerAuth(login="owner@example.com")
+    service = SimpleNamespace(
+        runtime=SimpleNamespace(session_repository=session_repo),
+        managed_git_admin=None,
+    )
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=auth,
+                    service=service,
+                )
+            )
+        )
+    )
+
+    response = client.post(
+        "/teams/source/copy",
+        json={
+            "expected_revision": state.revision,
+            "name": "Unauthorized destination",
+            "agent_session_ids": {
+                "manager": "session-copy-manager",
+                "lead": "session-copy-lead",
+            },
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == (
+        "Team copy requires directory owner permission for every destination session."
+    )
+    assert ("admin.owner", "root/source") in auth.permission_calls
+    assert ("admin.owner", "root/sibling") in auth.permission_calls
+    assert repo.read().revision == state.revision
+
+
 def test_team_addon_admin_api_team_copy_requires_privileged_unlock(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     source = _team_admin_service(TeamStateRepository(runtime_dir)).create_team(

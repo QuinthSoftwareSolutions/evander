@@ -149,7 +149,8 @@ def test_copy_team_creates_clean_configuration_graph(tmp_path: Path) -> None:
     assert copied_team.name == "Destination Team"
     assert copied_team.manager_agent_id == copied_manager.id
     assert copied_team.operator_communication_target_id == "discord:ops"
-    assert copied_team.escalate_to_governance is True
+    assert source_state.teams["source"].escalate_to_governance is True
+    assert copied_team.escalate_to_governance is False
     assert float(copied_team.max_cost_usd or 0) == 25.0
     assert len(copied_team.cost_budget_windows) == 1
     assert copied_team.cost_budget_windows[0].actor == "operator:team-copy"
@@ -263,7 +264,9 @@ def test_copy_team_keeps_source_snapshot_revision_strict(tmp_path: Path) -> None
         )
 
 
-def test_copy_team_excludes_completed_and_archived_configuration(tmp_path: Path) -> None:
+def test_copy_team_excludes_agents_and_assignments_for_completed_projects(
+    tmp_path: Path,
+) -> None:
     admin, repo = _seed_copyable_team(tmp_path)
     state = admin.create_project(
         project_id="historical",
@@ -276,13 +279,13 @@ def test_copy_team_excludes_completed_and_archived_configuration(tmp_path: Path)
     historical_role_id = state.agents["historical-lead"].role_id
     assert historical_role_id is not None
 
-    def _archive_historical_configuration(current):
+    def _complete_historical_project(current):
         current.projects["historical"].status = ProjectStatus.COMPLETED
-        current.agents["historical-lead"].status = AgentStatus.ARCHIVED
-        current.roles[historical_role_id].archived = True
         return current
 
-    source_state = repo.update(_archive_historical_configuration)
+    source_state = repo.update(_complete_historical_project)
+    assert source_state.agents["historical-lead"].status == AgentStatus.ACTIVE
+    assert source_state.roles[historical_role_id].archived is False
     copied_state, result = admin.copy_team(
         source_team_id="source",
         team_id=None,
@@ -303,6 +306,36 @@ def test_copy_team_excludes_completed_and_archived_configuration(tmp_path: Path)
     copied_manager = copied_state.agents[result["agent_ids"]["manager"]]
     assert result["agent_ids"]["lead"] in copied_manager.subordinate_agent_ids
     assert len(copied_manager.subordinate_agent_ids) == 1
+    copied_assignments = [
+        assignment
+        for assignment in copied_state.project_assignments.values()
+        if assignment.team_id == copied_team.id
+    ]
+    assert copied_assignments
+    assert {assignment.project_id for assignment in copied_assignments} == {
+        result["project_ids"]["project"]
+    }
+    assert "historical-lead" not in {
+        assignment.agent_id for assignment in copied_assignments
+    }
+
+
+def test_copy_team_rejects_archived_source_team(tmp_path: Path) -> None:
+    admin, repo = _seed_copyable_team(tmp_path)
+    state = admin.update_team(
+        team_id="source",
+        archived=True,
+        expected_revision=repo.read().revision,
+    )
+
+    with pytest.raises(ValueError, match="archived source teams cannot be copied"):
+        admin.copy_team(
+            source_team_id="source",
+            team_id=None,
+            name="Archived copy",
+            agent_session_ids={},
+            expected_revision=state.revision,
+        )
 
 
 def test_copy_team_copies_managed_repository_bindings_and_rolls_back_conflicts(

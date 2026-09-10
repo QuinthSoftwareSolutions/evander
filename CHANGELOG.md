@@ -9,8 +9,14 @@
   review profiles, outcome kinds, release policy, goals, project assignments,
   budget settings, and managed Git bindings under collision-safe new IDs.
 - Reset copied agents and projects to active, goals to pending, and budget
-  history to a fresh window. Exclude operational work and historical records,
-  governance membership, completed projects, and archived configuration.
+  history to a fresh window. Disable governance escalation because governance
+  membership is not copied. Exclude operational work and historical records,
+  completed projects, project-only agents, and archived configuration.
+- Require directory-owner permission for every destination session, preserve
+  the copy-preview revision through submission, and hide copying for archived
+  Teams.
+- Preserve the concrete indexed ancestor used by active Team work during
+  repository-index retention.
 
 ## 2026-09-10 - Portable repository indexing (0.36.0)
 

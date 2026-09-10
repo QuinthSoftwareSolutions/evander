@@ -912,6 +912,33 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             raise ValueError(
                 "core sessions were not found: " + ", ".join(missing_session_ids)
             )
+        for session_id in sorted(requested_session_ids):
+            session_record = session_records[session_id]
+            raw_directory_path = (
+                session_record.get("directory_path")
+                if isinstance(session_record, Mapping)
+                else getattr(session_record, "directory_path", None)
+            )
+            if not raw_directory_path:
+                raise ValueError(
+                    f"core session {session_id} has no resolvable directory_path"
+                )
+            session_directory_path = normalize_directory_path(str(raw_directory_path))
+            if not _auth_can(
+                context.auth,
+                request,
+                ADMIN_OWNER_PERMISSION,
+                directory_path=session_directory_path,
+            ):
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Team copy requires directory owner permission for every "
+                            "destination session."
+                        )
+                    },
+                    status_code=403,
+                )
 
         state, result = admin_service.copy_team(
             source_team_id=source_team_id,

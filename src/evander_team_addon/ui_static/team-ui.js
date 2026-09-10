@@ -1519,9 +1519,6 @@ function teamCopyConfiguration(teamId) {
     )
     .sort(compareTeamProjects);
   const projectIds = new Set(projects.map((project) => text(project.id)));
-  const agents = values(state.agents)
-    .filter((agent) => text(agent.team_id) === normalizedTeamId && agentStatus(agent) !== "archived")
-    .sort(comparePeopleAgents);
   const roles = values(state.roles)
     .filter((role) =>
       text(role.team_id) === normalizedTeamId
@@ -1529,6 +1526,14 @@ function teamCopyConfiguration(teamId) {
       && (!text(role.project_id) || projectIds.has(text(role.project_id))),
     )
     .sort(compareTeamRoles);
+  const roleIds = new Set(roles.map((role) => text(role.id)));
+  const agents = values(state.agents)
+    .filter((agent) =>
+      text(agent.team_id) === normalizedTeamId
+      && agentStatus(agent) !== "archived"
+      && roleIds.has(text(agent.role_id)),
+    )
+    .sort(comparePeopleAgents);
   const reviewProfiles = values(state.review_profiles).filter((profile) =>
     text(profile.team_id) === normalizedTeamId
     && !profile.archived
@@ -1568,13 +1573,14 @@ function renderTeamCopySessionOptions(selectedValue = "") {
   });
 }
 
-function renderTeamCopyDialogBody(team, configuration) {
+function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
   const excludedProjects = values(state.projects).filter((project) =>
     text(project.team_id) === text(team.id)
     && !["active", "blocked"].includes(text(project.status)),
   ).length;
+  const includedAgentIds = new Set(configuration.agents.map((agent) => text(agent.id)));
   const excludedAgents = values(state.agents).filter((agent) =>
-    text(agent.team_id) === text(team.id) && agentStatus(agent) === "archived",
+    text(agent.team_id) === text(team.id) && !includedAgentIds.has(text(agent.id)),
   ).length;
   const excludedDefinitions = [
     ...values(state.roles).filter((role) => text(role.team_id) === text(team.id) && role.archived),
@@ -1589,6 +1595,7 @@ function renderTeamCopyDialogBody(team, configuration) {
       data-team-copy-form
       data-form-id="team-copy-form"
       data-source-team-id="${escapeAttr(team.id)}"
+      data-source-revision="${escapeAttr(sourceRevision)}"
     >
       <label>New team name <input name="name" required value="${escapeAttr(`${team.name || team.id} Copy`)}" /></label>
       <div class="team-copy-summary" role="note">
@@ -1638,16 +1645,23 @@ function renderTeamCopyDialogBody(team, configuration) {
 }
 
 async function openTeamCopyDialog(teamId) {
-  const team = state.teams?.[text(teamId)];
+  let team = state.teams?.[text(teamId)];
   if (!team) {
     setStatus("Team is no longer available.", "error");
     return;
   }
-  const configuration = teamCopyConfiguration(team.id);
+  let configuration = teamCopyConfiguration(team.id);
   await loadTeamCopyCoreAgentSessions(configuration);
+  team = state.teams?.[text(teamId)];
+  if (!team || team.archived) {
+    setStatus("Team is no longer available for copying.", "error");
+    return;
+  }
+  configuration = teamCopyConfiguration(team.id);
+  const sourceRevision = state.revision;
   showOrgActionDialog({
     title: `Copy ${team.name || team.id}`,
-    bodyHtml: renderTeamCopyDialogBody(team, configuration),
+    bodyHtml: renderTeamCopyDialogBody(team, configuration, sourceRevision),
   });
   syncTeamCopySessionSelections(document.querySelector("#team-copy-form"));
 }
@@ -1735,10 +1749,18 @@ async function submitTeamCopyForm(form) {
     {
       name: text(form.elements.name?.value),
       agent_session_ids: agentSessionIds,
+      expected_revision: Number(form.dataset.sourceRevision),
     },
     { resetOnSuccess: false, detailedResult: true },
   );
   if (!result.saved) {
+    if (result.failureReason === "conflict") {
+      pendingConflictRetry = null;
+      setStatus(
+        "The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
+        "warning",
+      );
+    }
     return false;
   }
   const copiedTeam = values(state.teams)
@@ -9741,7 +9763,7 @@ function renderTeamRecordDetailContent(team) {
       </div>
       <div class="record-actions agent-detail-actions">
         ${editButton("team", team.id)}
-        <button type="button" class="record-action" data-team-copy-open="${escapeAttr(team.id)}">Copy team</button>
+        ${team.archived ? "" : `<button type="button" class="record-action" data-team-copy-open="${escapeAttr(team.id)}">Copy team</button>`}
         ${team.max_cost_usd !== null && team.max_cost_usd !== undefined ? `<button type="button" class="record-action" data-team-cost-budget-reset="${escapeAttr(team.id)}">Reset budget</button>` : ""}
       </div>
       <div class="agent-detail-grid">
@@ -21939,7 +21961,7 @@ async function applyMutationResultPayload(result) {
 }
 
 function mutationBodyWithConflictMetadata(endpoint, method, payload) {
-  const body = { ...payload, expected_revision: state.revision };
+  const body = { expected_revision: state.revision, ...payload };
   const context = mutationResourceContext(endpoint, method, payload);
   if (!context) {
     return body;

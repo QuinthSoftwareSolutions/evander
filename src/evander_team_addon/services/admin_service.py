@@ -1607,6 +1607,8 @@ class TeamAdminService:
             normalized_source_team_id,
             "source team",
         )
+        if source_team.archived:
+            raise ValueError("archived source teams cannot be copied")
         included_projects = {
             project.id: project
             for project in current_state.projects.values()
@@ -1631,7 +1633,9 @@ class TeamAdminService:
         included_agents = {
             agent.id: agent
             for agent in current_state.agents.values()
-            if agent.team_id == source_team.id and agent.status != AgentStatus.ARCHIVED
+            if agent.team_id == source_team.id
+            and agent.status != AgentStatus.ARCHIVED
+            and agent.role_id in included_roles
         }
         included_outcome_kinds = {
             definition.id: definition
@@ -1681,6 +1685,8 @@ class TeamAdminService:
             for assignment in current_state.project_assignments.values()
             if assignment.team_id == source_team.id
             and assignment.project_id in included_projects
+            and assignment.agent_id in included_agents
+            and (assignment.role_id is None or assignment.role_id in included_roles)
         }
         for assignment in included_assignments.values():
             require_included(assignment.agent_id, included_agents, "agent")
@@ -1873,6 +1879,7 @@ class TeamAdminService:
                         project_ids[project_id] for project_id in ordered_included_project_ids
                     ],
                     "cost_budget_windows": [],
+                    "escalate_to_governance": False,
                     "archived": False,
                     "created_at": now,
                     "updated_at": now,
