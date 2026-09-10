@@ -12,7 +12,7 @@ from evander.models import AuditEvent
 from evander.website_credentials import WebsiteCredentialStore, credential_binding
 from evander.website_sessions import (
     ManagedWebsiteSessionProfile, ManagedWebsiteSessionService, WebsiteSessionError,
-    environment_credential_names, validate_environment_credentials,
+    validate_environment_credentials,
 )
 
 
@@ -49,9 +49,13 @@ class WebsiteSessionAdminService:
             if profile.credential_source == "stored":
                 status = self.credentials.status(scope, profile_id, profile)
             else:
-                allowed = environment_credential_names()
+                try:
+                    validate_environment_credentials(scope, profile_id, profile)
+                    approved = True
+                except ValueError:
+                    approved = False
                 status = {"configured_fields": [k for k, env in profile.credential_fields.items()
-                                                if env in allowed and os.environ.get(env)],
+                                                if approved and os.environ.get(env)],
                           "updated_at": None, "owner_directory": None}
             profiles.append({"id": profile_id, "profile": payload,
                              "local": profile_id in (overlay.get("managed_website_sessions") or {}),
@@ -90,7 +94,7 @@ class WebsiteSessionAdminService:
             raise ValueError("Credential values must be nonempty strings for configured login fields")
         if supplied and profile.credential_source != "stored":
             raise ValueError("Choose stored credentials before entering credential values")
-        validate_environment_credentials(profile)
+        validate_environment_credentials(scope, profile_id, profile)
         with self.operations.admin_config_mutation_lock():
             overlay = self._check_revision(scope, payload.get("expected_revision"))
             previous = self._effective(scope).get(profile_id)

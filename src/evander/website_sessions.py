@@ -9,6 +9,7 @@ import asyncio
 import base64
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 import hashlib
 import inspect
 import ipaddress
@@ -27,8 +28,9 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from evander.http_transport import _PinnedAddressAsyncHTTPTransport
+from evander.models import DirectoryPath
 from evander.session_auth import verify_mcp_session_proof_token
-from evander.website_credentials import WebsiteCredentialStore
+from evander.website_credentials import WebsiteCredentialStore, credential_binding
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +52,6 @@ def website_origin(url: str) -> str:
     host = f"[{host}]" if ":" in host else host.encode("idna").decode("ascii")
     port = parsed.port or 443
     return f"https://{host}" + (f":{port}" if port != 443 else "")
-
-
-def environment_credential_names() -> set[str]:
-    """Return host-approved environment names that website logins may consume."""
-    return {name.strip() for name in os.environ.get(WEBSITE_CREDENTIAL_ENV_ALLOWLIST, "").split(",")
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name.strip())}
 
 
 class WebsiteStorageBinding(BaseModel):
@@ -117,6 +113,62 @@ class ManagedWebsiteSessionProfile(BaseModel):
         return self
 
 
+@dataclass(frozen=True)
+class WebsiteEnvironmentCredentialGrant:
+    directory_path: str
+    profile_id: str
+    binding: str
+
+
+def environment_credential_grants() -> frozenset[WebsiteEnvironmentCredentialGrant]:
+    """Return host-approved, scope-bound environment credential grants."""
+    raw = os.environ.get(WEBSITE_CREDENTIAL_ENV_ALLOWLIST, "").strip()
+    if not raw:
+        return frozenset()
+    if len(raw) > 65536:
+        raise ValueError("website credential environment grant configuration is invalid")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        raise ValueError("website credential environment grant configuration is invalid") from None
+    if not isinstance(payload, list) or len(payload) > 256:
+        raise ValueError("website credential environment grant configuration is invalid")
+
+    required = {"directory_path", "profile_id", "browser_origin", "login_url", "credential_fields"}
+    optional = {"public_credential_fields", "static_fields"}
+    grants = set()
+    try:
+        for item in payload:
+            if (not isinstance(item, dict) or not required <= set(item)
+                    or set(item) - required - optional):
+                raise ValueError
+            raw_directory_path = item["directory_path"]
+            if not isinstance(raw_directory_path, str):
+                raise ValueError
+            directory_path = DirectoryPath(segments=raw_directory_path).as_posix()
+            profile_id = item["profile_id"]
+            if (not isinstance(profile_id, str)
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", profile_id)):
+                raise ValueError
+            binding_profile = ManagedWebsiteSessionProfile(
+                browser_origin=item["browser_origin"],
+                login_url=item["login_url"],
+                credential_source="environment",
+                credential_fields=item["credential_fields"],
+                public_credential_fields=item.get("public_credential_fields", []),
+                static_fields=item.get("static_fields", {}),
+                local_storage={"_grant_validation": WebsiteStorageBinding()},
+            )
+            grants.add(WebsiteEnvironmentCredentialGrant(
+                directory_path=directory_path,
+                profile_id=profile_id,
+                binding=credential_binding(binding_profile),
+            ))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("website credential environment grant configuration is invalid") from None
+    return frozenset(grants)
+
+
 class WebsiteSessionError(Exception):
     """Safe, fixed error codes only: never include upstream data or credentials."""
 
@@ -126,10 +178,24 @@ class WebsiteSessionError(Exception):
         self.status = status
 
 
-def validate_environment_credentials(profile: ManagedWebsiteSessionProfile) -> None:
-    if (profile.credential_source == "environment"
-            and not set(profile.credential_fields.values()) <= environment_credential_names()):
-        raise ValueError("website credential environment variable is not host-approved")
+def validate_environment_credentials(
+    directory_path: str,
+    profile_id: str,
+    profile: ManagedWebsiteSessionProfile,
+) -> None:
+    if profile.credential_source != "environment":
+        return
+    scope = DirectoryPath(segments=directory_path).as_posix()
+    binding = credential_binding(profile)
+    if not any(
+        grant.profile_id == profile_id
+        and grant.binding == binding
+        and (scope == grant.directory_path or scope.startswith(grant.directory_path + "/"))
+        for grant in environment_credential_grants()
+    ):
+        raise ValueError(
+            "website credential environment grant is not host-approved for this profile"
+        )
 
 
 def _pointer(value: Any, pointer: str) -> Any:
@@ -214,7 +280,7 @@ class ManagedWebsiteSessionService:
                 values = WebsiteCredentialStore(self.resolver.config.runtime_dir).read(
                     profile.credential_ref, scope, profile_id, profile)
             else:
-                validate_environment_credentials(profile)
+                validate_environment_credentials(scope, profile_id, profile)
                 values = {field: os.environ.get(env, "") for field, env in profile.credential_fields.items()}
             if set(values) != set(profile.credential_fields) or not all(values.values()):
                 raise ValueError("missing credentials")

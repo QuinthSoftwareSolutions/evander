@@ -113,6 +113,16 @@ This host-local env file is optional and may stay empty. The npm audit facade cu
 its bind and upstream settings from runtime config, so there are no required env parameters in
 the checked-in example.
 
+## `config/http-target-relay.env.example`
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST` | `config/http-target-relay.env` or a shared service-manager secret source | `evander-admin-web` and `evander-http-target-relay`; a single-line JSON array of environment-credential grants bound to directory subtree, profile ID, request fields, browser origin, and exact login URL. Defaults to `[]`. |
+
+The Admin Web and HTTP target relay systemd units both load `config/http-target-relay.env`, then
+repo-root `secrets.env`. Keep the grant and the referenced credential values in a source available
+to both processes. See [managed website sessions](managed-website-sessions.md) for the grant shape.
+
 ## `config/firewall.env.example`
 
 | Parameter | Found in | Consumed by |
@@ -1916,9 +1926,11 @@ browser storage mappings, expiry settings, request bounds, and safe login tests.
 `credential_source: stored` uses an opaque `credential_ref` backed by host-only
 encrypted storage; `environment` retains existing env-name references. Assistant
 creation and session policy HTTP-target editors expose the profile selector.
-Environment-backed profiles fail closed unless every referenced variable is listed in the
-host-controlled comma-separated `EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST`; never add
-general Admin Web, worker, or provider secret variables to this allowlist.
+Environment-backed profiles fail closed unless the complete security-relevant profile matches a
+host-controlled scoped grant in `EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST`. A grant covers
+its named directory and descendants and binds the profile ID, request fields, browser origin, exact
+login URL, public credential fields, and static fields. Never grant general Admin Web, worker, or
+provider secret variables for managed website use.
 
 The browser proxy authenticates with the existing session id and MCP session token, then permits
 only origins present in that session's current HTTP targets. It does not terminate TLS or rewrite

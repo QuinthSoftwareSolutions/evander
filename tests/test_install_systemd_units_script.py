@@ -200,11 +200,17 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     admin_web = (repo / "systemd" / "evander-admin-web.service.template").read_text(
         encoding="utf-8"
     )
+    website_environment = (
+        repo / "config" / "http-target-relay.env.example"
+    ).read_text(encoding="utf-8")
+    admin_environment = (repo / "config" / "admin-web.env.example").read_text(encoding="utf-8")
+    gateway_environment = (repo / "config" / "gateway.env.example").read_text(encoding="utf-8")
 
     assert "EnvironmentFile=-__PROJECT_DIR__/config/gateway.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/config/admin-web.env" in admin_web
     assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in admin_web
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/http-target-relay.env" in admin_web
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in admin_web
     assert "EnvironmentFile=-/etc/evander/local-secrets.env" in admin_web
     assert (
@@ -224,6 +230,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/config/http-target-relay.env" in http_target
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in http_target
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-http-target-relay" in http_target
+    assert "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST" in website_environment
+    assert "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST" not in admin_environment
+    assert "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST" not in gateway_environment
     assert "EnvironmentFile=-__PROJECT_DIR__/config/didww-sip-bridge.env" in didww_sip_bridge
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in didww_sip_bridge
     assert (

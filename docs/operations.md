@@ -3109,10 +3109,14 @@ Select the profile in the assistant's HTTP targets using **Managed website login
 Playwright bootstrap files for existing guests so they receive
 `createManagedWebsiteContext`. Newly provisioned Playwright sessions get it automatically.
 Profile, grant, and UI-stored credential changes are read on each request. Legacy
-environment-backed credentials require a relay restart after the host environment
-changes and require every referenced name in the host-controlled comma-separated
-`EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST`. Verify a new managed browser context can
-open the intended page and produce an artifact without printing authentication state.
+environment-backed credentials require a host-controlled scoped JSON grant in
+`EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST`. Copy
+`config/http-target-relay.env.example` to the ignored `config/http-target-relay.env`, add grants
+and referenced values there or in a shared service-manager secret source, then restart both
+`evander-admin-web.service` and `evander-http-target-relay.service`. Each grant must bind the
+directory subtree, profile ID, request fields, browser origin, and exact login URL. Verify a new
+managed browser context can open the intended page and produce an artifact without printing
+authentication state.
 
 Renewal runs on the next context request when state is near expiry, including after
 an idle period longer than the site's lifetime. Existing open contexts retain the
