@@ -229,11 +229,14 @@ IDs, current obligation summaries, counts, and collection-level read references.
 Urgent messages and operator directives remain complete. Shared Git bindings and
 review snapshots are represented once within the payload and referenced by ID.
 
-Use <code>team_get_current_dispatch_context(detail="summary")</code> first when
-more context is needed. It returns complete frozen scope IDs and compact
-records with exact dispatch Git bindings. The default <code>detail="full"</code>
-keeps the existing full response. Use individual record reads for complete task,
-review, inbox, project, and release details, and
+Start from the current Team context JSON supplied in the wake. Fetch missing
+task, review, inbox, project, and release details directly with individual record
+reads. Use <code>team_get_current_dispatch_context(detail="summary")</code> to
+recover a missing dispatch working set or refresh it for a specific reason;
+prefer an individual read when only one record needs refreshing. The summary
+returns complete frozen scope IDs and compact records with exact dispatch Git
+bindings. The default <code>detail="full"</code> keeps the existing full response;
+use it when the complete records across the dispatch are needed. Use
 <code>team_get_source_evidence_snapshot(snapshot_id=...)</code> for a complete
 capture in the active dispatch. Summary reads never widen execution scope or
 substitute a newer binding. Managers' <code>supervisory_overview</code> counts and
@@ -411,7 +414,7 @@ Begin in **Operations** with the agent's wake reason, runtime attention, active 
 | Task owner never wakes | Check dependency status, active deliverable review, interval, no-progress count, Team cap, stand-down, busy session, and active lease. |
 | Dispatch remains <code>preparing</code> | Inspect every scoped repository/worktree and the recorded preparation error; Team will not lease a partial scope. |
 | The same preparation error does not run again | Inspect the current cause-specific preparation blocker and its semantic generation. Recover it only after fixing the cause, or make a meaningful task/dependency/project-Git/candidate change. |
-| Wake preview omits detail | Follow <code>retrieval</code> and <code>overflow</code>; start additional reads with <code>team_get_current_dispatch_context(detail="summary")</code>. |
+| Wake preview omits detail | Use the supplied working set and fetch missing detail directly with the record-specific tools in <code>retrieval</code>; read relevant <code>overflow</code> records before acting. |
 | Task appears in context but no worktree mapping does | Confirm the task actually needs the project's managed repository and that the complete dispatch preparation succeeded. |
 | Two prompts seem concurrent | Compare core session activity and Team <code>active_dispatch_id</code>; one may be a non-Team wake or an expired/stale completion. |
 | Lease remains after the model stopped | Session completion may not have routed or matched the active dispatch. Inspect session routing and finalizer workflow run. |

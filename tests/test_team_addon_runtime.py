@@ -4721,7 +4721,7 @@ def test_every_wake_policy_applies_to_mutation_enabled_chat_and_seeds_context(
     assert result["success"] is True
     assert resumer.calls[0]["resume_mode"] == "new_context"
     prompt = str(resumer.calls[0]["prompt"])
-    assert "compact complete ordinary working set" in prompt
+    assert "current working set for its immutable dispatch" in prompt
     assert '"context_mode":"fresh_full"' in prompt
     reread = repo.read()
     assert reread.agent_runtimes["backend"].context_rotation_pending is False
@@ -4937,7 +4937,7 @@ def test_explicit_new_context_forces_fresh_mutation_chat_after_retained_baseline
     assert result["success"] is True
     assert resumer.calls[0]["resume_mode"] == "new_context"
     prompt = str(resumer.calls[0]["prompt"])
-    assert "compact complete ordinary working set" in prompt
+    assert "current working set for its immutable dispatch" in prompt
     assert '"context_mode":"fresh_full"' in prompt
 
 

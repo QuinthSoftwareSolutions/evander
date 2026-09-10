@@ -40,9 +40,14 @@ visible Git contexts; those never replace the wake/dispatch's frozen binding. Th
 only when its ID belongs to the caller's active immutable dispatch. No active
 dispatch or an out-of-scope ID returns the normal not-found/scope response.
 
-Managed guidance version 40 teaches summary-first reads, complete specification
-and evidence retrieval before implementation/review, targeted `rg` searches, and
-bounded excerpts. Large build/test logs belong in complete artifacts under
+Managed guidance version 41 starts from the supplied wake and directs missing
+detail to individual record reads. Dispatch summary reads recover a missing
+working set or refresh it for a specific reason; use an individual read when only
+one record needs refreshing. Complete specification and evidence retrieval before
+implementation/review, targeted `rg` searches, and bounded excerpts remain required.
+Deploy 0.34.1 or later for this guidance; the normal version check refreshes the
+managed section in `/home/agent/AGENTS.md` before the next applicable wake.
+Large build/test logs belong in complete artifacts under
 `/artifacts`; report status, relevant failures, and the artifact reference. The
 review and manager-fallback procedures now live in managed guidance. They remain
 part of the agent's instructions and their loading cost must be counted.

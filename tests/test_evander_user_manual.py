@@ -260,7 +260,7 @@ def test_feature_branch_team_contracts_are_documented() -> None:
 
     for term in (
         "fresh_full",
-        "retained_delta",
+        "retained_current",
         "team_record_context_handoff",
         "team_get_current_dispatch_context",
         "worktree_cleanup_dry_run",

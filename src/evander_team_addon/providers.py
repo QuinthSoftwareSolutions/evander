@@ -127,7 +127,6 @@ from .mcp import (
     TEAM_DECIDE_INITIAL_RELEASE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
-    TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL,
     TEAM_GET_DELIVERABLE_TOOL,
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_GET_TASK_TOOL,
@@ -369,7 +368,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 40
+TEAM_AGENT_GUIDANCE_VERSION = 41
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -7762,10 +7761,12 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "assuming the prompt contains the full Team state. Read tools currently "
         f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
         "Focused context reads:\n"
-        "- Start with team_get_current_dispatch_context(detail=summary) when the "
-        "wake is insufficient. Use the collection retrieval tool and id_parameter "
-        "to fetch individual records; use detail=full only when the whole dispatch "
-        "is needed. Every wake is current and self-contained, even after compaction.\n"
+        "- Start from the current Team context JSON supplied in the wake. Fetch "
+        "missing detail directly using the collection's retrieval tool and id_parameter.\n"
+        "- Use team_get_current_dispatch_context(detail=summary) to recover a missing "
+        "dispatch working set or refresh it for a specific reason. Prefer a "
+        "record-specific read when only one record needs refreshing. Use detail=full "
+        "only when you need the complete records across the dispatch.\n"
         "- overflow lists preserve obligations whose previews were capped. Fetch "
         "every relevant read_required record before acting; omitted_counts never "
         "means work is optional. Every assigned blocker, review, and requested inbox "
@@ -8369,8 +8370,9 @@ def _build_prompt(
         else "This wake retains conversation history.\n\n"
     ) + (
         "The JSON is the current working set. Scope, instructions and obligations "
-        "replace prior wake state. Read overflow records before acting on them; "
-        "start additional reads with team_get_current_dispatch_context(detail=summary).\n\n"
+        "replace prior wake state. Use this working set directly. Fetch missing "
+        "detail with record-specific read tools. Read overflow records before "
+        "acting on them.\n\n"
     )
     identity_section = (
         "Identity detail: the full role_description is in Team context JSON.agent. "
@@ -8612,14 +8614,16 @@ def _build_team_chat_prompt(
     context_guidance = (
         (
             "\n\nThis mutation-enabled chat wake starts a fresh Team context. "
-            "The compact complete ordinary working set for its immutable dispatch "
-            "is below. Use record-specific read tools or "
-            f"{TEAM_GET_CURRENT_DISPATCH_CONTEXT_TOOL}(detail=summary) for omitted detail.\n"
+            "The current working set for its immutable dispatch is below. "
+            "Use this working set directly and fetch missing detail with "
+            "record-specific read tools.\n"
         )
         if fresh_context and ordinary_team_context is not None
         else (
             "\n\nThis mutation-enabled chat wake retains prior Team context. "
-            "The self-contained current immutable dispatch working set is below.\n"
+            "The self-contained current immutable dispatch working set is below. "
+            "Use this working set directly and fetch missing detail with "
+            "record-specific read tools.\n"
             if ordinary_team_context is not None
             else (
                 "\n\nThis reply-only chat wake starts a fresh context.\n" if fresh_context else ""
