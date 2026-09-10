@@ -874,6 +874,86 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             rebased_from_revision=rebased_from_revision,
         )
 
+    async def copy_team(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        source_team_id = request.path_params["team_id"]
+        current_state = repository.read()
+        source_team = current_state.teams.get(source_team_id)
+        if source_team is None:
+            return JSONResponse({"error": "source team not found"}, status_code=404)
+        for directory_path in sorted(
+            {
+                project.directory_path
+                for project in current_state.projects.values()
+                if project.team_id == source_team_id
+                and project.status in {ProjectStatus.ACTIVE, ProjectStatus.BLOCKED}
+            }
+        ):
+            authorization_error = _directory_owner_authorization_error(
+                request,
+                directory_path=directory_path,
+                action="Team copy",
+            )
+            if authorization_error is not None:
+                return authorization_error
+
+        raw_agent_session_ids = payload.get("agent_session_ids")
+        if not isinstance(raw_agent_session_ids, Mapping):
+            raise ValueError("agent_session_ids must be a JSON object")
+        requested_session_ids = {
+            _required(raw_agent_session_ids, source_agent_id)
+            for source_agent_id in raw_agent_session_ids
+        }
+        session_records = _session_records_by_id(_session_repository_from_context(context))
+        if session_records is None:
+            raise ValueError("core session repository is unavailable")
+        missing_session_ids = sorted(requested_session_ids - set(session_records))
+        if missing_session_ids:
+            raise ValueError(
+                "core sessions were not found: " + ", ".join(missing_session_ids)
+            )
+        for session_id in sorted(requested_session_ids):
+            session_record = session_records[session_id]
+            raw_directory_path = (
+                session_record.get("directory_path")
+                if isinstance(session_record, Mapping)
+                else getattr(session_record, "directory_path", None)
+            )
+            if not raw_directory_path:
+                raise ValueError(
+                    f"core session {session_id} has no resolvable directory_path"
+                )
+            session_directory_path = normalize_directory_path(str(raw_directory_path))
+            if not _auth_can(
+                context.auth,
+                request,
+                ADMIN_OWNER_PERMISSION,
+                directory_path=session_directory_path,
+            ):
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Team copy requires directory owner permission for every "
+                            "destination session."
+                        )
+                    },
+                    status_code=403,
+                )
+
+        state, result = admin_service.copy_team(
+            source_team_id=source_team_id,
+            team_id=_optional(payload, "id") or _optional(payload, "team_id"),
+            name=_required(payload, "name"),
+            agent_session_ids=raw_agent_session_ids,
+            expected_revision=_expected_revision(payload),
+        )
+        return _state_response(
+            request,
+            state,
+            status_code=201,
+            extra={"copied": result},
+        )
+
     async def patch_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_archived = payload.get("archived")
@@ -4355,6 +4435,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/costs", get_costs, methods=["GET"]),
         route("/costs/backfill", backfill_costs, methods=["POST"]),
         route("/teams", create_team, methods=["POST"]),
+        route("/teams/{team_id}/copy", copy_team, methods=["POST"]),
         route("/teams/{team_id}", patch_team, methods=["PATCH"]),
         route("/teams/{team_id}/cost-budget/reset", reset_team_cost_budget, methods=["POST"]),
         route("/governance-groups", create_governance_group, methods=["POST"]),

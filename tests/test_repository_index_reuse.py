@@ -186,6 +186,34 @@ def test_team_preparation_never_queues_a_compiler_build(indexed_history, legacy_
     assert len(service.store.list(REPO)) == 1
 
 
+def test_retention_preserves_ancestor_snapshot_resolved_for_active_work(indexed_history):
+    history = indexed_history
+    service = history.service
+    history.git("checkout", "review")
+    (history.checkout / "Domain/New.cs").write_text(TEXT + "// Newer baseline\n")
+    history.git("add", ".")
+    history.git("commit", "-m", "Newer indexed baseline")
+    newest = history.git("rev-parse", "HEAD")
+
+    settings = IndexSettings.model_validate(service.settings(REPO, "root/app")["settings"])
+    newer_build = service.store.enqueue(REPO, "root/app", newest, settings, {})
+    service.store.update(newer_build["id"], status="ready")
+    expired = (datetime.now(UTC) - timedelta(days=settings.retention_days + 1)).isoformat()
+    with service.store.connect(write=True) as db:
+        db.execute(
+            "UPDATE snapshots SET created=? WHERE id=?",
+            (expired, history.build["id"]),
+        )
+
+    status = service.query_status(REPO, "root/app", history.target)
+    assert status["match"] == "baseline"
+    assert status["snapshot_id"] == history.build["id"]
+    service.protected_snapshots = lambda: {(REPO, history.target)}
+
+    assert service.maintenance("root/app")["deleted"] == []
+    assert service.store.get(history.build["id"])["sha"] == history.base
+
+
 def test_baseline_requires_proven_ancestry_and_current_policy(indexed_history):
     history = indexed_history
     service = history.service

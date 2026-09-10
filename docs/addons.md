@@ -614,6 +614,31 @@ deliverables, release packages, and Git promotion state are grouped inside
 **Delivery**. Team setup, persistent agents, roles, and stand-down controls are
 grouped inside **Teams** rather than separate People or Roles tabs.
 
+Opening a Team in the **Teams** view exposes **Copy team**. The copy wizard
+previews the current configuration that will be cloned and requires a distinct,
+unregistered core session for every copied persistent agent. Operators can
+select existing sessions discovered in the Team's active project directories or
+create a new VM/container session inline before submitting the copy.
+
+The corresponding Admin API is
+`POST /api/addons/team-addon/teams/{team_id}/copy`. Its request contains
+`name`, `expected_revision`, an optional destination `id`, and an
+`agent_session_ids` object keyed by source agent ID. The operation creates new,
+collision-safe IDs for the Team graph and copies active or blocked projects,
+active or paused agents, non-archived roles, review profiles and outcome-kind
+definitions, project goals and assignments, release policy, Team settings, and
+managed Git bindings. Copied projects and agents start active, goals start
+pending, governance escalation starts disabled, and a configured cost cap
+receives a fresh budget window.
+
+The operation intentionally does not copy tasks, cases, inbox or conversation
+history, memories, deliverables, reviews, releases, dispatch/runtime state,
+cost history, blockers, or governance-group membership. Completed projects and
+archived agents or configuration definitions are excluded. The endpoint rejects
+missing, duplicate, unknown, or already Team-bound destination sessions and
+requires directory-owner permission for every selected session. It rolls back
+newly added managed Git bindings if the revision-checked state write fails.
+
 The Delivery view defaults to records that still need attention. Projects stay
 collapsed until selected or opened, and the project selector plus status
 filters can narrow the workspace without discarding access to accepted and
