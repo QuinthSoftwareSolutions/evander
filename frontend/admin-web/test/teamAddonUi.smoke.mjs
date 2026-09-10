@@ -106,6 +106,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /renderSelectableRole/);
   assert.match(script, /create-team-from-teams-form/);
   assert.match(script, /data-team-inline-create-toggle/);
+  assert.match(script, /data-team-copy-open/);
+  assert.match(script, /data-team-copy-session-select/);
+  assert.match(script, /\/teams\/\$\{encodeURIComponent\(sourceTeamId\)\}\/copy/);
   assert.match(script, /data-team-inline-create-form/);
   assert.match(script, /data-git-import-button/);
   assert.match(script, /data-review-profile-criterion-add/);
@@ -123,6 +126,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(stylesheet, /\.projects-focus-row/);
   assert.match(stylesheet, /\.project-record-section/);
   assert.match(stylesheet, /\.team-inline-create-form/);
+  assert.match(stylesheet, /\.team-copy-session-row/);
   assert.match(stylesheet, /\.criteria-editor-row/);
   assert.match(stylesheet, /\.human-review-checklist-editor-row/);
   assert.match(stylesheet, /\.git-import-actions/);
@@ -2513,6 +2517,105 @@ function applyTemplateMaterialization(state, payload, template) {
   };
 }
 
+function applyTeamCopyMutation(state, sourceTeamId, payload) {
+  const sourceTeam = state.teams[sourceTeamId];
+  const destinationTeamId = payload.id || generatedId("team", [payload.name], state.teams);
+  const sourceProjects = Object.values(state.projects).filter(
+    (project) => project.team_id === sourceTeamId && ["active", "blocked"].includes(project.status),
+  );
+  const sourceProjectIds = new Set(sourceProjects.map((project) => project.id));
+  const sourceRoles = Object.values(state.roles).filter(
+    (role) => role.team_id === sourceTeamId
+      && !role.archived
+      && (!role.project_id || sourceProjectIds.has(role.project_id)),
+  );
+  const sourceAgents = Object.values(state.agents).filter(
+    (agent) => agent.team_id === sourceTeamId && agent.status !== "archived",
+  );
+  const projectIds = Object.fromEntries(sourceProjects.map((project) => [
+    project.id,
+    generatedId("project", [destinationTeamId, project.name], state.projects),
+  ]));
+  const roleIds = Object.fromEntries(sourceRoles.map((role) => [
+    role.id,
+    generatedId("role", [projectIds[role.project_id] || destinationTeamId, role.name], state.roles),
+  ]));
+  const agentIds = Object.fromEntries(sourceAgents.map((agent) => [
+    agent.id,
+    generatedId("agent", [destinationTeamId, agent.display_name || agent.id], state.agents),
+  ]));
+  const profileIds = Object.fromEntries(
+    Object.values(state.review_profiles).filter(
+      (profile) => profile.team_id === sourceTeamId
+        && !profile.archived
+        && (!profile.project_id || sourceProjectIds.has(profile.project_id)),
+    ).map((profile) => [
+      profile.id,
+      generatedId("profile", [projectIds[profile.project_id] || destinationTeamId, profile.name], state.review_profiles),
+    ]),
+  );
+
+  sourceRoles.forEach((role) => {
+    state.roles[roleIds[role.id]] = {
+      ...JSON.parse(JSON.stringify(role)),
+      id: roleIds[role.id],
+      team_id: destinationTeamId,
+      project_id: projectIds[role.project_id] || null,
+      archived: false,
+    };
+  });
+  sourceAgents.forEach((agent) => {
+    state.agents[agentIds[agent.id]] = {
+      ...JSON.parse(JSON.stringify(agent)),
+      id: agentIds[agent.id],
+      team_id: destinationTeamId,
+      role_id: roleIds[agent.role_id],
+      session_id: payload.agent_session_ids[agent.id],
+      reports_to_agent_id: agentIds[agent.reports_to_agent_id] || null,
+      subordinate_agent_ids: (agent.subordinate_agent_ids || [])
+        .filter((agentId) => agentIds[agentId])
+        .map((agentId) => agentIds[agentId]),
+      status: "active",
+    };
+  });
+  Object.entries(profileIds).forEach(([sourceProfileId, destinationProfileId]) => {
+    const profile = state.review_profiles[sourceProfileId];
+    state.review_profiles[destinationProfileId] = {
+      ...JSON.parse(JSON.stringify(profile)),
+      id: destinationProfileId,
+      team_id: destinationTeamId,
+      project_id: projectIds[profile.project_id] || null,
+      applicable_role_ids: (profile.applicable_role_ids || []).map((roleId) => roleIds[roleId]),
+      archived: false,
+    };
+  });
+  sourceProjects.forEach((project) => {
+    state.projects[projectIds[project.id]] = {
+      ...JSON.parse(JSON.stringify(project)),
+      id: projectIds[project.id],
+      team_id: destinationTeamId,
+      lead_agent_id: agentIds[project.lead_agent_id],
+      goals: (project.goals || []).map((goal) => ({
+        ...goal,
+        id: generatedId("goal", [projectIds[project.id], goal.description], new Set()),
+        state: "pending",
+      })),
+      status: "active",
+    };
+  });
+  state.teams[destinationTeamId] = {
+    ...JSON.parse(JSON.stringify(sourceTeam)),
+    id: destinationTeamId,
+    name: payload.name,
+    manager_agent_id: agentIds[sourceTeam.manager_agent_id],
+    project_ids: sourceTeam.project_ids.filter((projectId) => projectIds[projectId]).map(
+      (projectId) => projectIds[projectId],
+    ),
+    cost_budget_windows: [],
+    archived: false,
+  };
+}
+
 function applyMutation(state, pathname, payload) {
   state.revision += 1;
   if (pathname === "/api/addons/team-addon/operator-directives") {
@@ -2608,6 +2711,11 @@ function applyMutation(state, pathname, payload) {
       ephemeral_policy: { max_concurrent: 0 },
       status: "active",
     };
+    return;
+  }
+  const teamCopyMatch = pathname.match(/^\/api\/addons\/team-addon\/teams\/([^/]+)\/copy$/);
+  if (teamCopyMatch) {
+    applyTeamCopyMutation(state, decodeURIComponent(teamCopyMatch[1]), payload);
     return;
   }
   if (pathname === "/api/addons/team-addon/governance-groups") {
@@ -3088,6 +3196,108 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   assert.equal(teamRequest.payload.manager_display_name, "Launch Manager");
   assert.equal(teamRequest.payload.manager_role_name, "Manager");
   assert.equal(teamRequest.payload.operator_communication_target_id, "ops-launch");
+});
+
+test("team add-on copies a clean team configuration with existing and new core sessions", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.projects.project.directory_path = "root/team-project";
+  initialState.projects.project.git.directory_path = "root/team-project";
+  const originalTaskIds = Object.keys(initialState.tasks);
+  const destinationSessions = ["manager", "lead", "backend", "worker"].map((agentId) => ({
+    agent_id: `core-copy-${agentId}`,
+    backend: agentId === "backend" ? "container_worker_vm" : "libvirt_vm",
+    target_name: `core-copy-${agentId}`,
+    session_id: `session-copy-${agentId}`,
+    directory_path: agentId === "manager" ? "root" : "root/team-project",
+    status: "running",
+    updated_at: "2026-06-09T00:00:00Z",
+    capabilities: {},
+    host: {},
+  }));
+  const { port, requests, state: serverState } = await createTeamAddonServer(t, {
+    initialState,
+    coreAgentItems: destinationSessions,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
+
+  const dialog = page.locator("#org-action-modal");
+  await dialog.getByRole("heading", { name: "Copy Team" }).waitFor({ state: "visible" });
+  await dialog.getByText("Clean configuration copy").waitFor({ state: "visible" });
+  await dialog.getByText(/Tasks, cases, conversations, memories/).waitFor({ state: "visible" });
+  const copyForm = dialog.locator("form[data-team-copy-form]");
+  assert.equal(await copyForm.locator("[data-team-copy-agent-row]").count(), 4);
+  await copyForm.locator('[name="name"]').fill("Delivery Team Copy");
+
+  await copyForm
+    .locator('[data-team-copy-agent-row="manager"]')
+    .getByRole("button", { name: "Create session" })
+    .click();
+  const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
+  await createDialog.waitFor({ state: "visible" });
+  await createDialog.locator("label", { hasText: "VM name" }).locator("input").fill("vm-copy-manager");
+  await createDialog.locator('input[placeholder="Required"]').fill("session-new-copy-manager");
+  await createDialog.getByRole("button", { name: "Create and register" }).click();
+  await copyForm
+    .locator('[data-source-agent-id="manager"]')
+    .waitFor({ state: "visible" });
+  await page.waitForFunction(() =>
+    document.querySelector('[data-source-agent-id="manager"]')?.value === "session-new-copy-manager",
+  );
+  assert.equal(
+    requests.some((request) => request.pathname === "/api/addons/team-addon/teams/team/copy"),
+    false,
+  );
+
+  for (const agentId of ["lead", "backend", "worker"]) {
+    await copyForm
+      .locator(`[data-team-copy-session-select][data-source-agent-id="${agentId}"]`)
+      .selectOption(`session-copy-${agentId}`);
+  }
+  assert.equal(
+    await copyForm
+      .locator('[data-source-agent-id="lead"] option[value="session-new-copy-manager"]')
+      .evaluate((option) => option.disabled),
+    true,
+  );
+  await copyForm.getByRole("button", { name: "Copy team" }).click();
+
+  await waitForRevision(page, 9);
+  await dialog.waitFor({ state: "hidden" });
+  await page.locator("#people-agent-detail-view").getByRole("heading", {
+    name: "Delivery Team Copy",
+  }).waitFor({ state: "visible" });
+
+  const copyRequest = requests.find(
+    (request) => request.method === "POST"
+      && request.pathname === "/api/addons/team-addon/teams/team/copy",
+  );
+  assert.ok(copyRequest);
+  assert.equal(copyRequest.payload.expected_revision, 8);
+  assert.equal(copyRequest.payload.name, "Delivery Team Copy");
+  assert.deepEqual(copyRequest.payload.agent_session_ids, {
+    manager: "session-new-copy-manager",
+    lead: "session-copy-lead",
+    backend: "session-copy-backend",
+    worker: "session-copy-worker",
+  });
+  assert.deepEqual(Object.keys(serverState.tasks), originalTaskIds);
+  assert.ok(
+    requests.some((request) =>
+      request.method === "POST"
+      && request.pathname === "/api/admin/agents/create-operations"
+      && request.payload.session_id === "session-new-copy-manager"),
+  );
+  assert.ok(
+    requests.some((request) =>
+      request.method === "GET"
+      && request.pathname === "/api/admin/agents"
+      && request.search.includes("directory_path=root%2Fteam-project"),
+    ),
+  );
 });
 
 test("team add-on team editor selects from all registered communication targets", async (t) => {
@@ -4728,6 +4938,14 @@ test("team add-on locked mode disables mutation entry points", async (t) => {
   await createTeamButton.dispatchEvent("click");
   await page.waitForTimeout(100);
   await page.locator("#teams-create-team-panel").waitFor({ state: "hidden" });
+
+  const copyTeamButton = page.locator('#people-agent-detail-view [data-team-copy-open="team"]');
+  await copyTeamButton.waitFor({ state: "visible" });
+  assert.equal(await copyTeamButton.isDisabled(), true);
+  assert.equal(await copyTeamButton.getAttribute("title"), "Unlock privileged operations to copy teams.");
+  await copyTeamButton.dispatchEvent("click");
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator("#org-action-modal").isVisible().catch(() => false), false);
 
   const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });

@@ -284,6 +284,7 @@ let coreAgentSessions = [];
 let coreAgentSessionsDirectoryPath = "";
 let coreAgentSessionsLoading = null;
 const pendingTeamAgentCreateForms = new Map();
+const pendingTeamCopySessionAgents = new Map();
 
 const runtimeFilterChoices = [
   ["all", "All"],
@@ -1509,6 +1510,248 @@ function openOrgCreateTeamDialog() {
   });
 }
 
+function teamCopyConfiguration(teamId) {
+  const normalizedTeamId = text(teamId);
+  const projects = values(state.projects)
+    .filter((project) =>
+      text(project.team_id) === normalizedTeamId
+      && ["active", "blocked"].includes(text(project.status)),
+    )
+    .sort(compareTeamProjects);
+  const projectIds = new Set(projects.map((project) => text(project.id)));
+  const agents = values(state.agents)
+    .filter((agent) => text(agent.team_id) === normalizedTeamId && agentStatus(agent) !== "archived")
+    .sort(comparePeopleAgents);
+  const roles = values(state.roles)
+    .filter((role) =>
+      text(role.team_id) === normalizedTeamId
+      && !role.archived
+      && (!text(role.project_id) || projectIds.has(text(role.project_id))),
+    )
+    .sort(compareTeamRoles);
+  const reviewProfiles = values(state.review_profiles).filter((profile) =>
+    text(profile.team_id) === normalizedTeamId
+    && !profile.archived
+    && (!text(profile.project_id) || projectIds.has(text(profile.project_id))),
+  );
+  const outcomeKinds = values(state.outcome_kind_definitions).filter((definition) =>
+    text(definition.team_id) === normalizedTeamId
+    && !definition.archived
+    && (!text(definition.project_id) || projectIds.has(text(definition.project_id))),
+  );
+  return { projects, projectIds, agents, roles, reviewProfiles, outcomeKinds };
+}
+
+function teamCopyAgentDirectoryPath(agent, configuration) {
+  const assignedProject = agentProjectIds(agent)
+    .map((projectId) => state.projects[projectId])
+    .filter((project) => project && configuration.projectIds.has(text(project.id)))
+    .sort(compareTeamProjects)[0];
+  return text(assignedProject?.directory_path) || "root";
+}
+
+function renderTeamCopySessionOptions(selectedValue = "") {
+  const registeredSessions = registeredTeamSessionIds();
+  const selected = text(selectedValue);
+  const options = coreAgentSessions
+    .filter((session) => session.session_id === selected || !registeredSessions.has(session.session_id))
+    .map((session) => [
+      session.session_id,
+      `${session.target_name} (${session.session_id})${session.backend ? ` - ${backendLabelForCoreAgentSession(session.backend)}` : ""}`,
+    ]);
+  if (selected && !options.some(([sessionId]) => sessionId === selected)) {
+    options.unshift([selected, `${selected} (new session)`]);
+  }
+  return renderSelectOptions(options, {
+    selectedValue: selected,
+    placeholder: options.length ? "Select a session" : "No unregistered sessions found",
+  });
+}
+
+function renderTeamCopyDialogBody(team, configuration) {
+  const excludedProjects = values(state.projects).filter((project) =>
+    text(project.team_id) === text(team.id)
+    && !["active", "blocked"].includes(text(project.status)),
+  ).length;
+  const excludedAgents = values(state.agents).filter((agent) =>
+    text(agent.team_id) === text(team.id) && agentStatus(agent) === "archived",
+  ).length;
+  const excludedDefinitions = [
+    ...values(state.roles).filter((role) => text(role.team_id) === text(team.id) && role.archived),
+    ...values(state.review_profiles).filter((profile) => text(profile.team_id) === text(team.id) && profile.archived),
+    ...values(state.outcome_kind_definitions).filter((definition) => text(definition.team_id) === text(team.id) && definition.archived),
+  ].length;
+  const excludedCount = excludedProjects + excludedAgents + excludedDefinitions;
+  return `
+    <form
+      id="team-copy-form"
+      class="org-action-form team-copy-form"
+      data-team-copy-form
+      data-form-id="team-copy-form"
+      data-source-team-id="${escapeAttr(team.id)}"
+    >
+      <label>New team name <input name="name" required value="${escapeAttr(`${team.name || team.id} Copy`)}" /></label>
+      <div class="team-copy-summary" role="note">
+        <strong>Clean configuration copy</strong>
+        <span>${configuration.agents.length} agents, ${configuration.roles.length} roles, ${configuration.projects.length} projects, ${configuration.reviewProfiles.length} review profiles, and ${configuration.outcomeKinds.length} outcome kinds.</span>
+        <span>Tasks, cases, conversations, memories, deliverables, reviews, releases, dispatches, cost history, and governance membership will not be copied.</span>
+        ${excludedCount ? `<span>${excludedCount} completed or archived configuration record${excludedCount === 1 ? "" : "s"} will be excluded.</span>` : ""}
+      </div>
+      <div class="team-copy-session-header">
+        <div>
+          <strong>Agent sessions</strong>
+          <p>Assign a different unregistered core session to every copied agent.</p>
+        </div>
+        <button type="button" class="record-action" data-team-copy-sessions-refresh>Refresh sessions</button>
+      </div>
+      <div class="team-copy-session-list">
+        ${configuration.agents.map((agent) => {
+          const directoryPath = teamCopyAgentDirectoryPath(agent, configuration);
+          return `
+            <div class="team-copy-session-row" data-team-copy-agent-row="${escapeAttr(agent.id)}">
+              <div class="team-copy-agent-label">
+                <strong>${escapeHtml(agentLabel(agent))}</strong>
+                <span>${escapeHtml(agentRoleLabel(agent))} · ${escapeHtml(agent.id)}</span>
+              </div>
+              <label>
+                Destination session
+                <select required data-team-copy-session-select data-source-agent-id="${escapeAttr(agent.id)}">
+                  ${renderTeamCopySessionOptions()}
+                </select>
+              </label>
+              <button
+                type="button"
+                class="record-action"
+                data-team-copy-session-create="${escapeAttr(agent.id)}"
+                data-directory-path="${escapeAttr(directoryPath)}"
+              >Create session</button>
+            </div>
+          `;
+        }).join("")}
+      </div>
+      <div class="org-action-form-actions">
+        <button type="submit">Copy team</button>
+        <button type="button" class="secondary" data-org-action-close>Cancel</button>
+      </div>
+    </form>
+  `;
+}
+
+async function openTeamCopyDialog(teamId) {
+  const team = state.teams?.[text(teamId)];
+  if (!team) {
+    setStatus("Team is no longer available.", "error");
+    return;
+  }
+  const configuration = teamCopyConfiguration(team.id);
+  await loadTeamCopyCoreAgentSessions(configuration);
+  showOrgActionDialog({
+    title: `Copy ${team.name || team.id}`,
+    bodyHtml: renderTeamCopyDialogBody(team, configuration),
+  });
+  syncTeamCopySessionSelections(document.querySelector("#team-copy-form"));
+}
+
+function syncTeamCopySessionSelections(form) {
+  if (!form?.hasAttribute?.("data-team-copy-form")) {
+    return;
+  }
+  const selects = Array.from(form.querySelectorAll("[data-team-copy-session-select]"));
+  const selectedValues = selects.map((select) => text(select.value)).filter(Boolean);
+  selects.forEach((select) => {
+    const current = text(select.value);
+    Array.from(select.options).forEach((option) => {
+      option.disabled = Boolean(
+        option.value
+        && option.value !== current
+        && selectedValues.includes(option.value),
+      );
+    });
+    select.setCustomValidity("");
+  });
+}
+
+function refreshTeamCopySessionSelects(form) {
+  const selections = new Map(
+    Array.from(form?.querySelectorAll?.("[data-team-copy-session-select]") || []).map(
+      (select) => [text(select.dataset.sourceAgentId), text(select.value)],
+    ),
+  );
+  form?.querySelectorAll?.("[data-team-copy-session-select]").forEach((select) => {
+    const selected = selections.get(text(select.dataset.sourceAgentId)) || "";
+    select.innerHTML = renderTeamCopySessionOptions(selected);
+    select.value = selected;
+  });
+  syncTeamCopySessionSelections(form);
+}
+
+function openTeamCopyAgentSessionDialog(button) {
+  const form = button?.closest?.("form[data-team-copy-form]");
+  const sourceAgentId = text(button?.dataset?.teamCopySessionCreate);
+  if (!form || !sourceAgentId) {
+    setStatus("Team copy session row is unavailable.", "error");
+    return;
+  }
+  const contextId = `team-copy-${sourceAgentId}-${Date.now()}`;
+  pendingTeamCopySessionAgents.set(contextId, {
+    formId: form.id,
+    sourceAgentId,
+  });
+  const detail = {
+    contextId,
+    directoryPath: text(button.dataset.directoryPath) || "root",
+  };
+  if (typeof window.openTeamAgentCreateDialog === "function") {
+    window.openTeamAgentCreateDialog(detail);
+    return;
+  }
+  window.dispatchEvent(new CustomEvent("team-agent-create:open", { detail }));
+}
+
+async function submitTeamCopyForm(form) {
+  if (!guardTeamMutation("copy teams")) {
+    return false;
+  }
+  const sourceTeamId = text(form.dataset.sourceTeamId);
+  const sessionSelects = Array.from(form.querySelectorAll("[data-team-copy-session-select]"));
+  const agentSessionIds = Object.fromEntries(
+    sessionSelects.map((select) => [text(select.dataset.sourceAgentId), text(select.value)]),
+  );
+  const sessionIds = Object.values(agentSessionIds).filter(Boolean);
+  if (sessionIds.length !== sessionSelects.length) {
+    setStatus("Assign a destination session to every copied agent.", "error");
+    sessionSelects.find((select) => !text(select.value))?.focus();
+    return false;
+  }
+  if (new Set(sessionIds).size !== sessionIds.length) {
+    setStatus("Each copied agent must use a different destination session.", "error");
+    return false;
+  }
+  const existingTeamIds = new Set(Object.keys(state.teams || {}));
+  const result = await submitMutation(
+    form,
+    `/teams/${encodeURIComponent(sourceTeamId)}/copy`,
+    "POST",
+    {
+      name: text(form.elements.name?.value),
+      agent_session_ids: agentSessionIds,
+    },
+    { resetOnSuccess: false, detailedResult: true },
+  );
+  if (!result.saved) {
+    return false;
+  }
+  const copiedTeam = values(state.teams)
+    .filter((team) => !existingTeamIds.has(text(team.id)))
+    .sort((left, right) => text(right.created_at).localeCompare(text(left.created_at)) || byId(left, right))[0];
+  closeOrgActionDialog();
+  if (copiedTeam) {
+    expandedTeamRecordGroupIds.add(copiedTeam.id);
+    selectTeamRecord("team", copiedTeam.id);
+  }
+  return true;
+}
+
 function openOrgGovernanceOversightDialog(groupId, mode) {
   const group = state.governance_groups?.[text(groupId)];
   if (!group) {
@@ -1724,6 +1967,15 @@ function bindForms() {
   decideReviewForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     void submitReviewDecision(decideReviewForm);
+  });
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("form[data-team-copy-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    void submitTeamCopyForm(form);
   });
 
   document.addEventListener("submit", (event) => {
@@ -2215,6 +2467,16 @@ function bindRecordEditing() {
     }
   });
   document.addEventListener("click", (event) => {
+    const copyTeamButton = event.target.closest("[data-team-copy-open]");
+    if (copyTeamButton) {
+      event.preventDefault();
+      if (!guardTeamMutation("copy teams")) {
+        return;
+      }
+      void openTeamCopyDialog(copyTeamButton.dataset.teamCopyOpen);
+      return;
+    }
+
     const openCreateTeamButton = event.target.closest("[data-teams-create-team-open]");
     if (openCreateTeamButton) {
       event.preventDefault();
@@ -2751,6 +3013,11 @@ function bindExistingAgentPickers() {
 
 function bindTeamAgentSessionControls() {
   document.addEventListener("change", (event) => {
+    const copySelect = event.target?.closest?.("[data-team-copy-session-select]");
+    if (copySelect) {
+      syncTeamCopySessionSelections(copySelect.form);
+      return;
+    }
     const select = event.target?.closest?.("[data-core-agent-session-picker]");
     if (!select) {
       return;
@@ -2759,6 +3026,27 @@ function bindTeamAgentSessionControls() {
   });
 
   document.addEventListener("click", (event) => {
+    const copyRefreshButton = event.target?.closest?.("[data-team-copy-sessions-refresh]");
+    if (copyRefreshButton) {
+      event.preventDefault();
+      const form = copyRefreshButton.closest("form[data-team-copy-form]");
+      const configuration = teamCopyConfiguration(text(form?.dataset?.sourceTeamId));
+      void loadTeamCopyCoreAgentSessions(configuration)
+        .then(() => refreshTeamCopySessionSelects(form));
+      return;
+    }
+
+    const copyCreateButton = event.target?.closest?.("[data-team-copy-session-create]");
+    if (copyCreateButton) {
+      event.preventDefault();
+      if (!teamPrivilegedUnlocked()) {
+        setStatus("Unlock privileged operations to create a core agent session.", "warning");
+        return;
+      }
+      openTeamCopyAgentSessionDialog(copyCreateButton);
+      return;
+    }
+
     const refreshButton = event.target?.closest?.("[data-core-agent-session-refresh]");
     if (refreshButton) {
       event.preventDefault();
@@ -2921,6 +3209,32 @@ async function completeTeamAgentCreateRegistration(detail) {
     setStatus("Created agent session did not return a session ID.", "error");
     return;
   }
+  const copyTarget = pendingTeamCopySessionAgents.get(contextId);
+  if (copyTarget) {
+    pendingTeamCopySessionAgents.delete(contextId);
+    const copyForm = document.getElementById(copyTarget.formId);
+    const select = Array.from(
+      copyForm?.querySelectorAll?.("[data-team-copy-session-select]") || [],
+    ).find((candidate) => text(candidate.dataset.sourceAgentId) === copyTarget.sourceAgentId);
+    if (!copyForm || !select) {
+      setStatus(`Created session ${sessionId}, but the Team copy form is no longer open.`, "warning");
+      return;
+    }
+    if (!coreAgentSessions.some((session) => session.session_id === sessionId)) {
+      coreAgentSessions.push(normalizeCoreAgentSession({
+        session_id: sessionId,
+        target_name: detail.targetName || sessionId,
+        backend: detail.operation?.backend,
+        directory_path: detail.operation?.directory_path,
+      }));
+      coreAgentSessions = sortCoreAgentSessions(coreAgentSessions);
+    }
+    select.innerHTML = renderTeamCopySessionOptions(sessionId);
+    select.value = sessionId;
+    refreshTeamCopySessionSelects(copyForm);
+    setStatus(`Created session ${sessionId}; finish mapping the copied team.`, "ok");
+    return;
+  }
   const formId = pendingTeamAgentCreateForms.get(contextId);
   const form = formId ? document.getElementById(formId) : null;
   pendingTeamAgentCreateForms.delete(contextId);
@@ -3035,6 +3349,8 @@ function guardTeamMutation(action = "make changes") {
 }
 
 const lockedMutationControlSelectors = [
+  ["[data-team-copy-open]", "copy teams"],
+  ["[data-team-copy-session-create]", "create a core agent session"],
   ["[data-teams-create-team-open]", "create teams"],
   ["[data-project-create-toggle]", "create projects"],
   ["[data-project-review-profile-create-toggle]", "create review profiles"],
@@ -3202,6 +3518,57 @@ function backendLabelForCoreAgentSession(backend) {
   return backend;
 }
 
+function sortCoreAgentSessions(sessions) {
+  return sessions.filter(Boolean).sort((left, right) =>
+    text(left.target_name).localeCompare(text(right.target_name), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    }) || text(left.session_id).localeCompare(text(right.session_id)),
+  );
+}
+
+async function fetchCoreAgentSessions(directoryPath) {
+  const normalizedDirectoryPath = text(directoryPath) || "root";
+  const query = new URLSearchParams({
+    directory_path: normalizedDirectoryPath,
+    direct_only: "true",
+    include_inactive: "true",
+    backend: "all",
+    summary_only: "false",
+    reconcile_containers: "true",
+    omit_vm_state: "false",
+  });
+  const response = await teamFetch(`/api/admin/agents?${query.toString()}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(await responseText(response));
+  }
+  const payload = await response.json();
+  return (payload.items || []).map(normalizeCoreAgentSession).filter(Boolean);
+}
+
+async function loadTeamCopyCoreAgentSessions(configuration) {
+  const directoryPaths = Array.from(new Set(
+    configuration.agents.map((agent) => teamCopyAgentDirectoryPath(agent, configuration)),
+  ));
+  try {
+    const sessionGroups = await Promise.all(
+      (directoryPaths.length ? directoryPaths : ["root"]).map(fetchCoreAgentSessions),
+    );
+    const sessionsById = new Map();
+    sessionGroups.flat().forEach((session) => sessionsById.set(session.session_id, session));
+    coreAgentSessions = sortCoreAgentSessions(Array.from(sessionsById.values()));
+    coreAgentSessionsDirectoryPath = "";
+    return coreAgentSessions;
+  } catch (error) {
+    coreAgentSessions = [];
+    coreAgentSessionsDirectoryPath = "";
+    setStatus(error instanceof Error ? error.message : "Agent sessions could not be loaded.", "error");
+    return coreAgentSessions;
+  }
+}
+
 async function loadCoreAgentSessions({ directoryPath = "root", force = false, rerender = false } = {}) {
   const normalizedDirectoryPath = text(directoryPath) || "root";
   if (
@@ -3214,32 +3581,10 @@ async function loadCoreAgentSessions({ directoryPath = "root", force = false, re
   if (coreAgentSessionsLoading) {
     return coreAgentSessionsLoading;
   }
-  const query = new URLSearchParams({
-    directory_path: normalizedDirectoryPath,
-    direct_only: "true",
-    include_inactive: "true",
-    backend: "all",
-    summary_only: "false",
-    reconcile_containers: "true",
-    omit_vm_state: "false",
-  });
   coreAgentSessionsLoading = (async () => {
-    const response = await teamFetch(`/api/admin/agents?${query.toString()}`, {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) {
-      throw new Error(await responseText(response));
-    }
-    const payload = await response.json();
-    coreAgentSessions = (payload.items || [])
-      .map(normalizeCoreAgentSession)
-      .filter(Boolean)
-      .sort((left, right) =>
-        text(left.target_name).localeCompare(text(right.target_name), undefined, {
-          numeric: true,
-          sensitivity: "base",
-        }) || text(left.session_id).localeCompare(text(right.session_id)),
-      );
+    coreAgentSessions = sortCoreAgentSessions(
+      await fetchCoreAgentSessions(normalizedDirectoryPath),
+    );
     coreAgentSessionsDirectoryPath = normalizedDirectoryPath;
     return coreAgentSessions;
   })();
@@ -9396,6 +9741,7 @@ function renderTeamRecordDetailContent(team) {
       </div>
       <div class="record-actions agent-detail-actions">
         ${editButton("team", team.id)}
+        <button type="button" class="record-action" data-team-copy-open="${escapeAttr(team.id)}">Copy team</button>
         ${team.max_cost_usd !== null && team.max_cost_usd !== undefined ? `<button type="button" class="record-action" data-team-cost-budget-reset="${escapeAttr(team.id)}">Reset budget</button>` : ""}
       </div>
       <div class="agent-detail-grid">
@@ -21721,6 +22067,9 @@ function retryModeForForm(form) {
   if (form?.hasAttribute?.("data-org-action-form")) {
     return "org-action";
   }
+  if (form?.hasAttribute?.("data-team-copy-form")) {
+    return "team-copy";
+  }
   const formId = formIdentifier(form);
   if (formId === "update-task-form") {
     return "task-update";
@@ -21762,6 +22111,8 @@ async function retryPendingConflictSave() {
     await submitReviewDecision(form);
   } else if (retry.mode === "org-action") {
     await submitOrgActionForm(form);
+  } else if (retry.mode === "team-copy") {
+    await submitTeamCopyForm(form);
   } else {
     await submitCreateForm(form);
   }

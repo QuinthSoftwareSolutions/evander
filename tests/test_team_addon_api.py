@@ -6537,6 +6537,93 @@ def test_team_addon_admin_api_mutations_require_privileged_unlock(
     assert unlocked_response.json()["teams"]["team"]["name"] == "Team"
 
 
+def test_team_addon_admin_api_copies_team_to_registered_unbound_sessions(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    source = _team_admin_service(repo).create_team(
+        team_id="source",
+        name="Source Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-copy-manager",
+            vm_id="vm-copy-manager",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/teams/source/copy",
+        json={
+            "expected_revision": source.revision,
+            "name": "Copied Team",
+            "agent_session_ids": {"manager": "session-copy-manager"},
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    copied_team_id = body["copied"]["team_id"]
+    copied_manager_id = body["copied"]["agent_ids"]["manager"]
+    assert body["teams"][copied_team_id]["name"] == "Copied Team"
+    assert body["agents"][copied_manager_id]["session_id"] == "session-copy-manager"
+
+    missing_session = client.post(
+        "/api/addons/team-addon/teams/source/copy",
+        json={
+            "expected_revision": body["revision"],
+            "name": "Missing Session Team",
+            "agent_session_ids": {"manager": "session-does-not-exist"},
+        },
+    )
+    assert missing_session.status_code == 400
+    assert missing_session.json()["error"] == "core sessions were not found: session-does-not-exist"
+
+
+def test_team_addon_admin_api_team_copy_requires_privileged_unlock(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    source = _team_admin_service(TeamStateRepository(runtime_dir)).create_team(
+        team_id="source",
+        name="Source Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    JsonSessionManifestRepository(runtime_dir / "sessions.json").upsert_session(
+        SessionManifest(
+            session_id="session-copy-manager",
+            vm_id="vm-copy-manager",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client = _client(tmp_path, unlock_privileged=False)
+
+    response = client.post(
+        "/api/addons/team-addon/teams/source/copy",
+        json={
+            "expected_revision": source.revision,
+            "name": "Copied Team",
+            "agent_session_ids": {"manager": "session-copy-manager"},
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "Privileged operations are locked."
+
+
 def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

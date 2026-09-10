@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-10 - Copy Team configurations (0.37.0)
+
+- Add a revision-checked Team copy operation and Teams-view wizard that clones
+  the current organization configuration while assigning a distinct registered
+  core session to every copied persistent agent.
+- Copy active and blocked projects, active and paused agents, current roles,
+  review profiles, outcome kinds, release policy, goals, project assignments,
+  budget settings, and managed Git bindings under collision-safe new IDs.
+- Reset copied agents and projects to active, goals to pending, and budget
+  history to a fresh window. Exclude operational work and historical records,
+  governance membership, completed projects, and archived configuration.
+
 ## 2026-09-10 - Portable repository indexing (0.36.0)
 
 - Add opt-in managed repository indexes with text and semantic search, C#/TypeScript

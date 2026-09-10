@@ -5951,6 +5951,90 @@ form {
   flex-wrap: wrap;
 }
 
+.team-copy-form {
+  min-width: min(44rem, 82vw);
+}
+
+.team-copy-summary {
+  display: grid;
+  gap: 0.3rem;
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 0.7rem 0.8rem;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.team-copy-summary strong {
+  color: var(--ink);
+}
+
+.team-copy-session-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.team-copy-session-header p {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.team-copy-session-list {
+  display: grid;
+  gap: 0.55rem;
+  max-height: min(45vh, 28rem);
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.team-copy-session-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(14rem, 1fr) auto;
+  align-items: end;
+  gap: 0.65rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0.65rem;
+  background: var(--panel);
+}
+
+.team-copy-agent-label {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.team-copy-agent-label strong,
+.team-copy-agent-label span {
+  overflow-wrap: anywhere;
+}
+
+.team-copy-agent-label span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 760px) {
+  .team-copy-form {
+    min-width: 0;
+  }
+
+  .team-copy-session-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .team-copy-session-row > button {
+    justify-self: start;
+  }
+}
+
 .org-action-empty {
   display: grid;
   gap: 0.65rem;
