@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-10 - Cancel releases with frozen review cohorts (0.35.1)
+
+- Allow release cancellation to retire its reviews while retaining the frozen
+  reviewer membership and recorded decisions as history. Continue validating the
+  required reviewer slots and excluding superseded review attempts.
+- Cover pending, blocked, accepted and retried reviews, persisted cancellation,
+  and rejection of incomplete cohorts before and after cancellation.
+
 ## 2026-09-10 - Portable repository indexing (0.35.0)
 
 - Add opt-in managed repository indexes with text and semantic search, C#/TypeScript
