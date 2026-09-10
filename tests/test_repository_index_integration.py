@@ -213,22 +213,21 @@ def test_worker_provisions_approved_alias_and_submits_resolved_image(
     monkeypatch.setattr(
         "evander.effects.providers.agent_create.container_backend", lambda *args: backend
     )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_clone_repo.container_backend", lambda *args: backend
+    )
+    clone_calls, bindings = [], []
+
+    def clone_info(**kwargs):
+        clone_calls.append(kwargs)
+        return {"clone_url": "/managed/APP.git", "repo_name": "APP"}
+
+    service.managed_git.clone_info = clone_info
+    service.managed_git.bind = lambda **kwargs: bindings.append(kwargs)
     components = SimpleNamespace(
         runtime=SimpleNamespace(session_repository=sessions, provider_config=resolver),
         managed_git_admin=service.managed_git,
     )
-    factory = EffectProviderFactory(provider_config_resolver=resolver, admin_service=components)
-
-    class Factory:
-        def __init__(self, **kwargs):
-            pass
-
-        def build(self, definition, **kwargs):
-            if definition.type == "effect:agent:create":
-                return factory.build(definition, **kwargs)
-            return SimpleNamespace(execute=lambda: {"target_dir": "/home/agent/repos/APP"})
-
-    monkeypatch.setattr("evander.code_index.worker.EffectProviderFactory", Factory)
     settings = service.settings(REPO, "root/app")
     settings["settings"]["image"] = selector
     service.save_settings(
@@ -257,6 +256,15 @@ def test_worker_provisions_approved_alias_and_submits_resolved_image(
         return
     assert worker.start(build, before_submit=lambda: reserved.append(True)) == build["id"]
     assert reserved == [True]
+    assert clone_calls == [
+        {"managed_repo_id": REPO, "directory_path": "root/app", "session_id": build["session_id"]}
+    ]
+    assert backend.cloned_repos[0]["repo_source"] == "/managed/APP.git"
+    assert backend.cloned_repos[0]["clone_branch"] == "main"
+    assert bindings == [
+        {"managed_repo_id": REPO, "kind": "sessions", "binding_id": build["session_id"]}
+    ]
+    assert jobs[0].working_directory == "/home/agent/repos/APP"
     assert jobs[0].image == resolved_image
     assert sessions.get_session(build["session_id"]).metadata["container_worker"] == {
         "image": resolved_image,
