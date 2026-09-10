@@ -23216,7 +23216,9 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert canonical.target_branch == "releases/project/rel-1"
     assert promotion_result["git_promotion_event_ids"] == [canonical.id]
     payloads = {
-        event["payload"]["promotion_kind"]: event["payload"] for event in promotion_result["events"]
+        event["payload"]["promotion_kind"]: event["payload"]
+        for event in promotion_result["events"]
+        if "promotion_kind" in event["payload"]
     }
     assert payloads["canonical_push"]["source_branch"] == "team/team/releases/rel-1"
     assert payloads["canonical_push"]["target_branch"] == "releases/project/rel-1"
@@ -23225,6 +23227,163 @@ def test_apply_agent_action_git_release_request_creates_package(tmp_path: Path) 
     assert "canonical_origin_url" not in payloads["canonical_push"]
     assert "provider" not in payloads["canonical_push"]
     assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_approved_release_can_finish_without_canonical_push_and_outboxes_event(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+
+    def _disable_automatic_publication(state):
+        assert state.projects["project"].release_policy is not None
+        state.projects[
+            "project"
+        ].release_policy.automatic_release_branch_publication = False
+        return state
+
+    repo.update(_disable_automatic_publication)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-workflow-published",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    release_promotion_id = requested["git_promotion_event_ids"][0]
+
+    def _clear_mutable_project_git(state):
+        state.projects["project"].git = None
+        return state
+
+    repo.update(_clear_mutable_project_git)
+    state, result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=release_promotion_id,
+        success=True,
+        commit_sha="feedface",
+        outputs={
+            "release_repository_scope": {
+                "managed_repo_id": "mr_fedcba9876543210abcd",
+                "directory_path": "root/changed",
+                "base_branch": "changed-main",
+                "canonical_branch": "releases/changed",
+            }
+        },
+    )
+
+    release = state.release_packages["rel-workflow-published"]
+    assert release.manifest is not None
+    assert release.manifest.repository_scope is not None
+    assert release.manifest.repository_scope.managed_repo_id == MANAGED_REPO_ID
+    assert release.manifest.repository_scope.directory_path == "root"
+    assert release.manifest.repository_scope.base_branch == "main"
+    assert release.manifest.repository_scope.canonical_branch == (
+        "releases/project/rel-workflow-published"
+    )
+    assert release.manifest.automatic_release_branch_publication is False
+    assert release.state == TeamRecordState.ACCEPTED
+    assert release.approved_commit_sha == "feedface"
+    assert release.published_commit_sha is None
+    assert release.published_at is None
+    assert result["git_promotion_event_ids"] == []
+    assert not any(
+        promotion.promotion_kind == "canonical_push"
+        for promotion in state.git_promotions.values()
+    )
+    assert [event["event_type"] for event in result["events"]] == [
+        "team.release.approved"
+    ]
+    approval_outbox = repo.list_outbox_records(intent_type="team.release.approved")
+    assert len(approval_outbox) == 1
+    assert approval_outbox[0].aggregate_id == release.id
+    approval_payload = approval_outbox[0].payload["payload"]
+    assert approval_payload["approved_commit_sha"] == "feedface"
+    assert approval_payload["managed_repo_id"] == MANAGED_REPO_ID
+    assert approval_payload["directory_path"] == "root"
+    assert approval_payload["base_branch"] == "main"
+
+
+def test_verification_service_outboxes_approval_when_publication_is_disabled(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+
+    def _configure_verification_only(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            automatic_release_branch_publication=False,
+            verification_commands=[
+                ReleaseVerificationCommand(name="tests", argv=["pytest"])
+            ],
+        )
+        return state
+
+    repo.update(_configure_verification_only)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-verified-workflow-published",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=requested["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="feedface",
+    )
+    release = state.release_packages["rel-verified-workflow-published"]
+    verification_run_id = release.verification_run_ids[0]
+
+    def _clear_mutable_project_git(state):
+        state.projects["project"].git = None
+        return state
+
+    repo.update(_clear_mutable_project_git)
+
+    state, result = TeamReleaseGateService(repo).record_verification_result(
+        release_package_id=release.id,
+        verification_run_id=verification_run_id,
+        candidate_commit_sha="feedface",
+        verification_state="passed",
+        command_results=[{"name": "tests", "state": "passed", "exit_code": 0}],
+    )
+
+    release = state.release_packages[release.id]
+    assert release.state == TeamRecordState.ACCEPTED
+    assert release.published_commit_sha is None
+    assert [event["event_type"] for event in result["events"]] == [
+        "team.release.approved"
+    ]
+    approval_outbox = repo.list_outbox_records(intent_type="team.release.approved")
+    assert len(approval_outbox) == 1
+    assert approval_outbox[0].aggregate_id == release.id
+    approval_payload = approval_outbox[0].payload["payload"]
+    assert approval_payload["managed_repo_id"] == MANAGED_REPO_ID
+    assert approval_payload["directory_path"] == "root"
+    assert approval_payload["base_branch"] == "main"
 
 
 def test_canonical_push_requires_immutable_canonical_base_commit(tmp_path: Path) -> None:
@@ -24088,7 +24247,7 @@ def test_release_candidate_runs_ci_before_configured_release_reviews_and_push(
     canonical_event = next(
         event
         for event in second_review["events"]
-        if event["payload"]["promotion_kind"] == "canonical_push"
+        if event["payload"].get("promotion_kind") == "canonical_push"
     )
     assert canonical_event["payload"]["expected_commit_sha"] == "candidate-sha"
 

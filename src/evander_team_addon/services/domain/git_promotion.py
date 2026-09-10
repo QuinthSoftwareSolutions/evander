@@ -1082,7 +1082,10 @@ def _queue_canonical_push_after_release_success(
         )
         return
     project = state.projects.get(release_promotion.project_id)
-    git = project.git if project is not None else None
+    repository_scope = (
+        release.manifest.repository_scope if release.manifest is not None else None
+    )
+    git = repository_scope or (project.git if project is not None else None)
     if project is None or git is None:
         release.state = TeamRecordState.BLOCKED
         release.error = (
@@ -1101,7 +1104,11 @@ def _queue_canonical_push_after_release_success(
         return
 
     source_branch = release.release_branch or release_promotion.target_branch
-    target_branch = release.canonical_branch or canonical_release_branch(project, release.id)
+    target_branch = (
+        repository_scope.canonical_branch
+        if repository_scope is not None
+        else release.canonical_branch or canonical_release_branch(project, release.id)
+    )
     existing = next(
         (
             state.git_promotions[promotion_id]
@@ -1120,7 +1127,11 @@ def _queue_canonical_push_after_release_success(
             source_branch=source_branch,
             target_branch=target_branch,
             promotion_kind="canonical_push",
-            git_base_branch=release.git_base_branch,
+            git_base_branch=(
+                repository_scope.base_branch
+                if repository_scope is not None
+                else release.git_base_branch
+            ),
             base_commit_sha=canonical_base_commit_sha,
             sources=[
                 {
@@ -1166,7 +1177,11 @@ def _queue_canonical_push_after_release_success(
         "project_id": project.id,
         "release_package_id": release.id,
         "managed_repo_id": git.managed_repo_id,
-        "base_branch": release.git_base_branch,
+        "base_branch": (
+            repository_scope.base_branch
+            if repository_scope is not None
+            else release.git_base_branch
+        ),
         "base_commit_sha": canonical_base_commit_sha,
         "source_branch": existing.source_branch,
         "expected_commit_sha": approved_commit_sha,

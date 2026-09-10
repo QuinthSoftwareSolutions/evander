@@ -201,6 +201,44 @@ def test_session_tool_grant_requires_persisted_policy_confirmation(tmp_path: Pat
     )
 
 
+def test_session_index_tool_grants_are_idempotent_and_retired_with_team_scope(
+    tmp_path: Path,
+) -> None:
+    class SessionRepository:
+        def __init__(self) -> None:
+            self.session = SessionManifest(
+                session_id="session-backend",
+                allowed_tools=["read_documentation"],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+        def get_session(self, _session_id: str) -> SessionManifest:
+            return self.session
+
+        def upsert_session(self, session: SessionManifest) -> None:
+            self.session = session
+
+    repository = SessionRepository()
+    context = SimpleNamespace(
+        resolved_config=SimpleNamespace(runtime_dir=tmp_path),
+        session_repository=repository,
+    )
+    index_tools = ["code_index_status", "code_search", "code_navigate"]
+    for attempt in range(2):
+        result = _set_session_team_mcp_tools(
+            context, session_id="session-backend", tool_names=index_tools
+        )
+        assert result["error"] is None
+        assert result["granted_tools"] == (index_tools if attempt == 0 else [])
+        assert result["already_allowed_tools"] == ([] if attempt == 0 else index_tools)
+        assert repository.session.allowed_tools == ["read_documentation", *index_tools]
+
+    result = _set_session_team_mcp_tools(context, session_id="session-backend", tool_names=[])
+    assert result["error"] is None
+    assert result["removed_tools"] == index_tools
+    assert repository.session.allowed_tools == ["read_documentation"]
+
+
 def test_review_capability_observation_is_absent_without_post_lease_tools_list(
     tmp_path: Path,
 ) -> None:

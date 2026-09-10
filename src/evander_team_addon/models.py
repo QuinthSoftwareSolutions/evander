@@ -946,8 +946,9 @@ def _legacy_release_gate_sequence(value: Mapping[str, Any]) -> list[dict[str, An
 
 
 class ProjectReleasePolicy(TeamModel):
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 3
     gate_sequence: list[ReleaseGateStage] = Field(default_factory=list)
+    automatic_release_branch_publication: bool = True
     verification_backend: Literal["container_worker_vm"] = "container_worker_vm"
     container_image: str | None = None
     resource_limits: WorkerResourceLimits | None = None
@@ -964,7 +965,7 @@ class ProjectReleasePolicy(TeamModel):
         if not isinstance(value, Mapping) or "gate_sequence" in value:
             return value
         normalized = dict(value)
-        normalized["schema_version"] = 2
+        normalized["schema_version"] = 3
         normalized["gate_sequence"] = _legacy_release_gate_sequence(value)
         return normalized
 
@@ -4842,8 +4843,39 @@ class ReleaseGateObligationWaiver(TeamModel):
         return _unique_text_list(value or [], "source_ids")
 
 
+class ReleaseCandidateRepositoryScope(TeamModel):
+    managed_repo_id: str
+    directory_path: str = "root"
+    base_branch: str | None = None
+    canonical_branch: str
+
+    @field_validator("managed_repo_id", mode="before")
+    @classmethod
+    def _managed_repo_id(cls, value: object) -> str:
+        normalized = _required_text(value, "managed_repo_id")
+        if re.fullmatch(r"mr_[0-9a-f]{20}", normalized) is None:
+            raise ValueError("managed_repo_id must match mr_<20-hex>")
+        return normalized
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _directory_path(cls, value: object) -> str:
+        return DirectoryPath(segments=str(value or "root").strip() or "root").as_posix()
+
+    @field_validator("base_branch", mode="before")
+    @classmethod
+    def _base_branch(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        return validate_branch_name(normalized) if normalized is not None else None
+
+    @field_validator("canonical_branch", mode="before")
+    @classmethod
+    def _canonical_branch(cls, value: object) -> str:
+        return validate_branch_name(_required_text(value, "canonical_branch"))
+
+
 class ReleaseCandidateManifest(TeamModel):
-    schema_version: Literal[1, 2, 3] = 3
+    schema_version: Literal[1, 2, 3, 4] = 4
     evidence_status: Literal["complete", "legacy_partial"] = "complete"
     project_id: str
     release_package_id: str
@@ -4851,6 +4883,8 @@ class ReleaseCandidateManifest(TeamModel):
     candidate_commit_sha: str
     candidate_tree_hash: str | None = None
     release_branch: str
+    repository_scope: ReleaseCandidateRepositoryScope | None = None
+    automatic_release_branch_publication: bool = True
     deliverables: list[ReleaseCandidateDeliverableEvidence] = Field(default_factory=list)
     scope_validation: ReleaseScopeValidation | None = None
     gate_sequence: list[ReleaseGateStage] = Field(default_factory=list)

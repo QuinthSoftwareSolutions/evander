@@ -42,18 +42,71 @@ def capture_work_item_attribution(
     return [attribution], author
 
 
-def release_publication_context(state, *, release_package_id: str, managed_git_admin):
+def release_publication_context(
+    state,
+    *,
+    release_package_id: str,
+    managed_git_admin,
+    commit_sha: str | None = None,
+    managed_repo_id: str | None = None,
+    directory_path: str | None = None,
+):
     release = state.release_packages[release_package_id]
     project = state.projects[release.project_id]
+    manifest = getattr(release, "manifest", None)
+    repository_scope = getattr(manifest, "repository_scope", None)
+    approved_commit_sha = getattr(release, "approved_commit_sha", None)
+    candidate_commit_sha = getattr(release, "candidate_commit_sha", None)
+    published_commit_sha = getattr(release, "published_commit_sha", None)
+    requested_managed_repo_id = str(managed_repo_id or "").strip() or None
+    requested_directory_path = str(directory_path or "").strip() or None
+    if repository_scope is not None and (
+        (
+            requested_managed_repo_id is not None
+            and requested_managed_repo_id != repository_scope.managed_repo_id
+        )
+        or (
+            requested_directory_path is not None
+            and requested_directory_path != repository_scope.directory_path
+        )
+    ):
+        return None
+    selected_managed_repo_id = (
+        requested_managed_repo_id
+        or (repository_scope.managed_repo_id if repository_scope is not None else None)
+        or (project.git.managed_repo_id if project.git is not None else None)
+    )
+    selected_directory_path = (
+        requested_directory_path
+        or (repository_scope.directory_path if repository_scope is not None else None)
+        or (project.git.directory_path if project.git is not None else None)
+    )
+    selected_commit_sha = str(
+        commit_sha or published_commit_sha or approved_commit_sha or ""
+    ).strip()
+    approved_candidate = (
+        approved_commit_sha is not None
+        and approved_commit_sha == candidate_commit_sha
+    )
+    approved_context = (
+        approved_candidate and selected_commit_sha == approved_commit_sha
+    )
+    published_context = (
+        release.state == TeamRecordState.ACCEPTED
+        and published_commit_sha is not None
+        and selected_commit_sha == published_commit_sha
+    )
     if (
-        release.state != TeamRecordState.ACCEPTED
-        or not release.published_commit_sha
-        or not project.git
+        release.state in {TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
+        or not (approved_context or published_context)
+        or selected_managed_repo_id is None
+        or selected_directory_path is None
         or managed_git_admin is None
     ):
         return None
     record = managed_git_admin.get_repository(
-        project.git.managed_repo_id, directory_path=project.git.directory_path
+        selected_managed_repo_id,
+        directory_path=selected_directory_path,
     )
     if record.get("provider") != "azure_devops":
         return None
@@ -61,9 +114,9 @@ def release_publication_context(state, *, release_package_id: str, managed_git_a
         record["canonical_repository_url"]
     )
     ids = set(release.deliverable_ids)
-    if release.manifest:
-        ids.update(item.deliverable_id for item in release.manifest.deliverables)
-        for key, values in release.manifest.contribution_graph.items():
+    if manifest:
+        ids.update(item.deliverable_id for item in manifest.deliverables)
+        for key, values in manifest.contribution_graph.items():
             ids.add(key)
             ids.update(values)
     attributions = combined_deliverable_attributions(state, ids)
@@ -80,9 +133,9 @@ def release_publication_context(state, *, release_package_id: str, managed_git_a
         else:
             reason = "work_item_assignee_unavailable"
     return managed_git_admin.ado_user_connections.issue_publication_context(
-        managed_repo_id=project.git.managed_repo_id,
-        commit_sha=release.published_commit_sha,
-        directory_path=project.git.directory_path,
+        managed_repo_id=selected_managed_repo_id,
+        commit_sha=selected_commit_sha,
+        directory_path=selected_directory_path,
         organization=organization,
         identity_id=identity_id,
         fallback_reason=reason,

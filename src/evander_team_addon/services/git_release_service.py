@@ -36,7 +36,9 @@ from .domain.git_promotion import (
 )
 from .domain.project_status import _recalculate_project_status
 from .domain.release_gates import _pending_predecessor_gate_obligation
+from .domain.release_events import TEAM_RELEASE_APPROVED_EVENT_TYPE
 from .domain.release_packages import (
+    RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY,
     _normalized_release_deliverable_set,
     _repair_release_review_manifests_from_promotion_evidence,
     allowed_release_parent_task_ids,
@@ -122,19 +124,22 @@ class TeamGitReleaseService:
                 result["release_package_id"] = promotion.release_package_id
                 result["success"] = True
                 return state_model
-            durable_outputs = (
-                {
-                    key: promotion.outputs[key]
-                    for key in (
-                        "correction_deliverable_ids",
-                        "required_source_ancestor_commit_sha",
-                    )
-                    if key in promotion.outputs
-                }
-                if promotion.promotion_kind == "correction_aggregate"
-                else {}
-            )
-            promotion.outputs = {**normalized_outputs, **durable_outputs}
+            durable_output_keys = {
+                "correction_aggregate": (
+                    "correction_deliverable_ids",
+                    "required_source_ancestor_commit_sha",
+                ),
+                "release": (RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY,),
+            }.get(promotion.promotion_kind, ())
+            durable_outputs = {
+                key: promotion.outputs[key]
+                for key in durable_output_keys
+                if key in promotion.outputs
+            }
+            result_outputs = dict(normalized_outputs)
+            if promotion.promotion_kind == "release":
+                result_outputs.pop(RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY, None)
+            promotion.outputs = {**result_outputs, **durable_outputs}
             if normalized_commit_sha is not None:
                 promotion.commit_sha = normalized_commit_sha
             if success:
@@ -175,6 +180,7 @@ class TeamGitReleaseService:
                         AGENT_WAKE_REQUESTED_EVENT_TYPE,
                         HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
                         HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+                        TEAM_RELEASE_APPROVED_EVENT_TYPE,
                     }
                 ]
             ),

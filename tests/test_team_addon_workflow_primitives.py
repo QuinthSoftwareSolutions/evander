@@ -172,6 +172,7 @@ def test_team_workflow_provider_registration_includes_review_primitives() -> Non
     )
     assert registration.query_providers["query:team:memory"] is TeamMemoryQueryProvider
     internal_events = {entry.event_type for entry in registration.internal_event_catalog_entries}
+    assert "team.release.approved" in internal_events
     assert "team.release.human_review_requested" in internal_events
     assert "team.release.human_review_preparation_requested" in internal_events
 

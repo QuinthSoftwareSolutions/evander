@@ -298,6 +298,7 @@ from .services.domain.correction_git_source import (
     rejected_deliverable_continuation_git_sources,
 )
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
+from .services.domain.release_events import TEAM_RELEASE_APPROVED_EVENT_TYPE
 from .services.domain.release_gates import RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE
 from .services.domain.acceptance_verification import (
     DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
@@ -380,6 +381,7 @@ TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES = 50
 TEAM_WAKE_OUTPUT_MAX_IDS_PER_FIELD = 10
 TEAM_WAKE_OUTPUT_MAX_ID_CHARS = 200
 TEAM_WAKE_OUTPUT_MAX_ERROR_CHARS = 1_000
+_TEAM_CODE_INDEX_TOOL_NAMES = ("code_index_status", "code_search", "code_navigate")
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "seg_"
 _ARTIFACT_SPACE_COMPONENT_MAX_BYTES = 96
@@ -2402,6 +2404,14 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
         RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE,
         "Team release verification requested",
         "Published after a release candidate commit is pinned and ready for CI verification.",
+    ),
+    _team_internal_event(
+        TEAM_RELEASE_APPROVED_EVENT_TYPE,
+        "Team release approved",
+        (
+            "Published after every configured gate accepts the pinned candidate, "
+            "whether or not canonical branch publication is enabled."
+        ),
     ),
     _team_internal_event(
         DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
@@ -12858,8 +12868,9 @@ def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
     if _optional_text(agent.get("team_id")) is None:
         return []
     return [
-        *ORDINARY_TEAM_MCP_TOOL_NAMES, *READ_TEAM_MCP_TOOL_NAMES,
-        "code_index_status", "code_search", "code_navigate",
+        *ORDINARY_TEAM_MCP_TOOL_NAMES,
+        *READ_TEAM_MCP_TOOL_NAMES,
+        *_TEAM_CODE_INDEX_TOOL_NAMES,
     ]
 
 
@@ -12923,7 +12934,7 @@ def _set_session_team_mcp_tools(
         result["error"] = f"session {normalized_session_id} was not found"
         return result
     allowed_values = [tool_name_value(tool) for tool in getattr(session, "allowed_tools", [])]
-    managed_tools = set(MCP_TOOL_NAMES)
+    managed_tools = set(MCP_TOOL_NAMES) | set(_TEAM_CODE_INDEX_TOOL_NAMES)
     existing_team_tools = [tool for tool in allowed_values if tool in managed_tools]
     active_scope_tools = _active_team_mcp_tools_for_other_dispatches(
         context,
@@ -13382,14 +13393,16 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
     for event in events:
         if not isinstance(event, Mapping):
             continue
+        event_type = _required_text(event.get("event_type"), "event_type")
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = {}
+        payload = _team_event_payload(context, event_type=event_type, payload=payload)
         run_at = _team_event_run_at(event.get("run_at"))
         delay_seconds = _optional_float(event.get("delay_seconds"), default=None)
         if run_at is not None or (delay_seconds is not None and delay_seconds > 0):
             scheduled, _created = scheduled_store.schedule_event(
-                event_type=_required_text(event.get("event_type"), "event_type"),
+                event_type=event_type,
                 payload=dict(payload),
                 correlation_key=_optional_text(event.get("correlation_key")),
                 run_at=(
@@ -13406,7 +13419,7 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
             published_ids.append(scheduled.schedule_id)
             continue
         published = bus.publish(
-            event_type=_required_text(event.get("event_type"), "event_type"),
+            event_type=event_type,
             payload=dict(payload),
             correlation_key=_optional_text(event.get("correlation_key")),
             idempotency_key=_optional_text(event.get("idempotency_key")),
@@ -13414,6 +13427,36 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
         )
         published_ids.append(published.event_id)
     return published_ids
+
+
+def _team_event_payload(
+    context: Any,
+    *,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(payload)
+    if event_type != TEAM_RELEASE_APPROVED_EVENT_TYPE:
+        return enriched
+    release_package_id = _required_text(
+        enriched.get("release_package_id"),
+        "release_package_id",
+    )
+    state = TeamStateRepository(_runtime_dir(context)).read()
+    enriched["publication_revision"] = state.revision
+    enriched["publication_context_id"] = release_publication_context(
+        state,
+        release_package_id=release_package_id,
+        managed_git_admin=getattr(
+            getattr(context, "admin_service", None),
+            "managed_git_admin",
+            None,
+        ),
+        commit_sha=_optional_text(enriched.get("approved_commit_sha")),
+        managed_repo_id=_optional_text(enriched.get("managed_repo_id")),
+        directory_path=_optional_text(enriched.get("directory_path")),
+    )
+    return enriched
 
 
 def _team_event_run_at(value: object) -> datetime | None:

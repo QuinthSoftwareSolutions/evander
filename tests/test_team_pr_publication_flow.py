@@ -14,6 +14,8 @@ from evander.workflow.binding import resolve_workflow_bindings
 from evander_team_addon.models import (
     Deliverable,
     ProjectGitConfig,
+    ReleaseCandidateManifest,
+    ReleaseCandidateRepositoryScope,
     ReleasePackage,
     ReviewRequest,
     TeamRecordState,
@@ -37,6 +39,84 @@ def bind(config, node_id, output):
         {node_id: output},
         {node_id: set(output)},
     ).resolved_config
+
+
+def test_publication_context_can_bind_an_approved_unpublished_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    service, _remote, _args = publisher(tmp_path, monkeypatch)
+    repo = _seed_hierarchy(tmp_path / "team-state")
+    state = repo.read()
+    state.projects["project"].git = ProjectGitConfig(
+        managed_repo_id="mr_fedcba9876543210abcd",
+        directory_path="root/changed",
+        base_branch="changed-main",
+    )
+    frozen_scope = ReleaseCandidateRepositoryScope(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        directory_path="root/app",
+        base_branch="main",
+        canonical_branch="releases/project/approved-candidate",
+    )
+    release = ReleasePackage(
+        id="approved-candidate",
+        project_id="project",
+        release_branch="team/team/releases/approved-candidate",
+        candidate_commit_sha="1" * 40,
+        approved_commit_sha="1" * 40,
+        manifest=ReleaseCandidateManifest(
+            project_id="project",
+            release_package_id="approved-candidate",
+            candidate_commit_sha="1" * 40,
+            release_branch="team/team/releases/approved-candidate",
+            repository_scope=frozen_scope,
+        ),
+        state=TeamRecordState.PENDING,
+    )
+    state.release_packages[release.id] = release
+    record = service._require_scoped_record("repo", "root/app")
+    record["managed_repo_id"] = frozen_scope.managed_repo_id
+    repository_lookups = []
+
+    def _get_repository(managed_repo_id, *, directory_path):
+        repository_lookups.append((managed_repo_id, directory_path))
+        return record
+
+    monkeypatch.setattr(service, "get_repository", _get_repository)
+
+    context_id = release_publication_context(
+        state,
+        release_package_id=release.id,
+        managed_git_admin=service,
+        commit_sha="1" * 40,
+        managed_repo_id=frozen_scope.managed_repo_id,
+        directory_path=frozen_scope.directory_path,
+    )
+
+    assert context_id is not None
+    assert repository_lookups == [(frozen_scope.managed_repo_id, "root/app")]
+    assert (
+        release_publication_context(
+            state,
+            release_package_id=release.id,
+            managed_git_admin=service,
+            commit_sha="2" * 40,
+        )
+        is None
+    )
+    assert (
+        release_publication_context(
+            state,
+            release_package_id=release.id,
+            managed_git_admin=service,
+            commit_sha="1" * 40,
+            managed_repo_id=state.projects["project"].git.managed_repo_id,
+            directory_path=state.projects["project"].git.directory_path,
+        )
+        is None
+    )
+    assert repository_lookups == [(frozen_scope.managed_repo_id, "root/app")]
 
 
 @pytest.mark.parametrize("repair_path", [False, True])

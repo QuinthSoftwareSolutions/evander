@@ -61,6 +61,7 @@ from .work_lineage import ensure_release_work_lineage
 
 
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
+RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY = "release_repository_scope"
 _TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED, TeamRecordState.CANCELLED}
 _HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = "human_correction_aggregation_task_id"
 _SYSTEM_CORRECTION_TASK_ACTORS = {
@@ -2674,6 +2675,11 @@ def _queue_release_promotion_if_ready(
         project.team_id,
         release.id,
     )
+    target_canonical_branch = release.canonical_branch or canonical_release_branch(
+        project,
+        release.id,
+    )
+    release.canonical_branch = target_canonical_branch
     release_promotion = GitPromotionRecord(
         id=f"promotion-{uuid4().hex}",
         project_id=project.id,
@@ -2694,13 +2700,17 @@ def _queue_release_promotion_if_ready(
         promotion_kind="release",
         git_base_branch=release.git_base_branch,
         base_commit_sha=release.base_commit_sha,
+        outputs={
+            RELEASE_REPOSITORY_SCOPE_OUTPUT_KEY: {
+                "managed_repo_id": git.managed_repo_id,
+                "directory_path": git.directory_path,
+                "base_branch": release.git_base_branch,
+                "canonical_branch": target_canonical_branch,
+            }
+        },
     )
     state.git_promotions[release_promotion.id] = release_promotion
     release.release_branch = target_release_branch
-    release.canonical_branch = release.canonical_branch or canonical_release_branch(
-        project,
-        release.id,
-    )
     release.git_promotion_record_ids = _append_unique(
         release.git_promotion_record_ids,
         release_promotion.id,

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-10 - Portable repository indexing (0.35.0)
+## 2026-09-10 - Portable repository indexing (0.36.0)
 
 - Add opt-in managed repository indexes with text and semantic search, C#/TypeScript
   symbol navigation, assigned-commit Team scope and incremental embedding reuse.
@@ -18,6 +18,8 @@
   and bindings on retirement, and allow the default packages-directory exclusion to be
   removed for tracked npm workspace source.
 - Add revision-checked Admin Web controls, gateway tools and operator CLI commands.
+- Reconcile Team indexing tool grants with dispatch scope, removing stale grants
+  when project authorization is lost and avoiding duplicates on repeated wakes.
 - Export versioned SQLite/SCIP bundles with a standalone Python query tool and optional
   embeddings for external coding workflows. Include a pinned worker image build,
   APP profile, retrieval benchmark and operational documentation.
@@ -26,6 +28,18 @@
   required reviewer slots and excluding superseded review attempts.
 - Cover pending, blocked, accepted and retried reviews, persisted cancellation,
   and rejection of incomplete cohorts before and after cancellation.
+
+## 2026-09-10 - Workflow-managed release publication (0.35.0)
+
+- Add a project release-policy switch that can accept an approved Git release
+  without publishing its generated release branch to the canonical remote.
+- Emit the durable `team.release.approved` event after all frozen gates pass,
+  independent of canonical publication, while retaining `team.release.published`
+  exclusively for completed canonical pushes.
+- Bind approval events and their Azure publication identity to the candidate's
+  frozen managed-repository scope rather than mutable project Git settings.
+- Add Admin Web controls for choosing automatic or workflow-managed branch
+  publication.
 
 ## 2026-09-10 - Restrict website credential environment access (0.34.2)
 

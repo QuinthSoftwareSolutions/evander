@@ -11,6 +11,7 @@ from .domain.release_gates import (
     record_release_verification_command_progress,
     record_release_verification_result,
 )
+from .domain.release_events import TEAM_RELEASE_APPROVED_EVENT_TYPE
 from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
     HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
@@ -85,6 +86,7 @@ class TeamReleaseGateService:
                             AGENT_WAKE_REQUESTED_EVENT_TYPE,
                             HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
                             HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
+                            TEAM_RELEASE_APPROVED_EVENT_TYPE,
                         }
                     )
                 ]
