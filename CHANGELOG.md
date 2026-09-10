@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-10 - Restrict website credential environment access (0.34.2)
+
+- Require explicit host-controlled grants before managed website profiles can resolve environment
+  variables. Bind each grant to its directory subtree, profile, request fields, browser origin,
+  and login URL, and load the same grant configuration in Admin Web and the HTTP target relay.
+
 ## 2026-09-10 - Direct Team wake reads (0.34.1)
 
 - Start ordinary and mutation-enabled chat work from the supplied wake context,

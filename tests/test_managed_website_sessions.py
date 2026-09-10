@@ -34,6 +34,24 @@ def jwt(expiry):
     return f"header.{payload}.signature"
 
 
+def environment_grant(profile, *, directory_path="root", profile_id="demo"):
+    return {
+        "directory_path": directory_path,
+        "profile_id": profile_id,
+        "browser_origin": profile.browser_origin,
+        "login_url": profile.login_url,
+        "credential_fields": profile.credential_fields,
+        "public_credential_fields": sorted(profile.public_credential_fields),
+        "static_fields": profile.static_fields,
+    }
+
+
+def environment_grants(profile, *, directory_path="root", profile_id="demo"):
+    return json.dumps([environment_grant(
+        profile, directory_path=directory_path, profile_id=profile_id,
+    )])
+
+
 @pytest.fixture
 def rig(monkeypatch):
     now = [datetime.now(UTC).timestamp()]
@@ -46,6 +64,9 @@ def rig(monkeypatch):
         public_credential_fields={"email"},
         local_storage={"currentUser": {"response_pointer": ""}},
         jwt_response_pointer="/token", max_age_seconds=86400,
+    )
+    monkeypatch.setenv(
+        "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST", environment_grants(profile),
     )
     config = GatewayConfig(managed_website_sessions={"demo": profile})
     session = SessionManifest(
@@ -104,13 +125,17 @@ def test_renewal_margin_and_concurrent_callers_share_login(rig):
     assert len(rig.calls) == 2
 
 
-def test_different_site_payload_storage_and_expiry_format(rig):
+def test_different_site_payload_storage_and_expiry_format(rig, monkeypatch):
     rig.config.managed_website_sessions["demo"] = ManagedWebsiteSessionProfile(
         browser_origin=rig.profile.browser_origin, login_url=rig.profile.login_url,
         credential_fields={"login": "WEBSITE_USER", "passcode": "WEBSITE_PASSWORD"},
         static_fields={"tenant": "training", "remember": False},
         session_storage={"access": {"response_pointer": "/result/access~1key", "encoding": "string"}},
         expires_in_response_pointer="/lifetime", max_age_seconds=1800,
+    )
+    monkeypatch.setenv(
+        "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST",
+        environment_grants(rig.config.managed_website_sessions["demo"]),
     )
     def handler(request):
         payload = json.loads(request.content)
@@ -175,6 +200,61 @@ def test_credentials_are_required_and_rotation_invalidates_cache(rig, monkeypatc
     with pytest.raises(WebsiteSessionError, match="website_credentials_unavailable"):
         acquire(rig)
     assert len(rig.calls) == 2
+
+
+def test_environment_credentials_require_explicit_host_grant(rig, monkeypatch):
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-secret")
+    rig.profile.credential_fields = {"password": "EVANDER_ADMIN_WEB_PASSWORD"}
+    with pytest.raises(WebsiteSessionError, match="website_credentials_unavailable"):
+        acquire(rig)
+    assert not rig.calls
+
+
+def test_environment_credential_grant_is_bound_to_scope_profile_and_destination(rig, monkeypatch):
+    monkeypatch.setenv(
+        "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST",
+        environment_grants(rig.profile, directory_path="root/alice"),
+    )
+    assert rig.service.credentials("root/alice/child", "demo", rig.profile)["password"]
+
+    attempts = [
+        ("root/bob", "demo", rig.profile),
+        ("root/alice", "other", rig.profile),
+        ("root/alice", "demo", rig.profile.model_copy(
+            update={"login_url": "https://attacker.example.test/capture"},
+        )),
+        ("root/alice", "demo", rig.profile.model_copy(
+            update={"browser_origin": "https://attacker.example.test"},
+        )),
+        ("root/alice", "demo", rig.profile.model_copy(
+            update={"public_credential_fields": {"email", "password"}},
+        )),
+        ("root/alice", "demo", rig.profile.model_copy(
+            update={"static_fields": {"tenant": "attacker"}},
+        )),
+    ]
+    for scope, profile_id, candidate in attempts:
+        with pytest.raises(WebsiteSessionError, match="website_credentials_unavailable"):
+            rig.service.credentials(scope, profile_id, candidate)
+
+
+@pytest.mark.parametrize(
+    "value", ["WEBSITE_USER,WEBSITE_PASSWORD", "{}", "[null]"],
+)
+def test_malformed_environment_credential_grants_fail_closed(rig, monkeypatch, value):
+    monkeypatch.setenv("EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST", value)
+    with pytest.raises(WebsiteSessionError, match="website_credentials_unavailable"):
+        rig.service.credentials("root", "demo", rig.profile)
+
+
+def test_environment_credential_grant_rejects_non_string_directory(rig, monkeypatch):
+    grant = environment_grant(rig.profile)
+    grant["directory_path"] = 1
+    monkeypatch.setenv(
+        "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST", json.dumps([grant]),
+    )
+    with pytest.raises(WebsiteSessionError, match="website_credentials_unavailable"):
+        rig.service.credentials("root", "demo", rig.profile)
 
 
 @pytest.mark.parametrize("case", ["401", "302", "oversized", "invalid_json", "expired", "nan", "timeout", "secret_reflected"])
@@ -347,10 +427,18 @@ def test_deadline_covers_resolution_headers_body_and_combined_duration(rig, stag
     asyncio.run(run())
 
 
-def test_slow_login_does_not_block_unrelated_cached_or_new_sessions(rig):
-    rig.config.managed_website_sessions["slow"] = rig.profile.model_copy(update={
+def test_slow_login_does_not_block_unrelated_cached_or_new_sessions(rig, monkeypatch):
+    slow_profile = rig.profile.model_copy(update={
         "login_url": "https://api.example.test/slow", "timeout_seconds": 1,
     })
+    rig.config.managed_website_sessions["slow"] = slow_profile
+    monkeypatch.setenv(
+        "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST",
+        json.dumps([
+            environment_grant(rig.profile),
+            environment_grant(slow_profile, profile_id="slow"),
+        ]),
+    )
     targets = rig.session.metadata["http_targets"]["targets"]
     targets["slow"] = {"base_url": rig.profile.browser_origin, "managed_website_session": "slow"}
     targets["fresh"] = dict(targets["app"])
