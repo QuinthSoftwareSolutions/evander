@@ -1,0 +1,13 @@
+{
+  "pack_id": "repository-indexing",
+  "pack_version": "v1",
+  "description": "Advance opted-in repository indexing jobs. Import through the workflow editor in the owning directory.",
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {"id": "index-tick", "display_name": "Repository index tick", "type": "trigger:cron", "config": {"expression": "* * * * *"}},
+      {"id": "index-reconcile", "display_name": "Advance repository indexes", "type": "effect:code-index:reconcile", "config": {"limit": 4}}
+    ],
+    "edges": [{"source_id": "index-tick", "target_id": "index-reconcile"}]
+  }
+}

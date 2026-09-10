@@ -379,3 +379,12 @@ evander-cli git-repos delete mr_0123456789abcdef0123
 
 Deletion refuses a repository with active issue/project/session bindings, authorized sessions, or
 active or unreconciled worktrees. There is no force-delete path.
+## Repository indexes
+
+Opt-in repository indexes retain exact commits under `refs/evander/code-index/BUILD_ID`
+with `code_indexes` bindings. Builds clone through normal read-only session grants.
+Retention releases each pin with an expected-commit check after worker cleanup.
+Team queries can reuse a proven indexed ancestor without granting arbitrary commit
+access: responses identify the source and requested commits and exclude changed paths.
+Guest commits/pushes and Team preparation do not trigger compiler indexing.
+See [Repository indexing](repository-indexing.md) for access controls and portable exports.

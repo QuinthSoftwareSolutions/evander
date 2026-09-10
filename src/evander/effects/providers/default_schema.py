@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.code_index.providers import CodeIndexEnsureDefinition, CodeIndexReconcileDefinition
+
 from collections.abc import Callable
 
 from pydantic import BaseModel
@@ -68,6 +70,8 @@ from evander.schema_bootstrap import _EFFECT_OUTPUT_SCHEMAS
 from evander.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _EFFECT_MODEL_BY_TYPE = {
+    "effect:code-index:ensure": CodeIndexEnsureDefinition,
+    "effect:code-index:reconcile": CodeIndexReconcileDefinition,
     "effect:event:emit": EventEmitEffectDefinition,
     "effect:event:schedule": EventScheduleEffectDefinition,
     "effect:artifact-space:create": ArtifactSpaceCreateEffectDefinition,

@@ -1385,6 +1385,8 @@ def _compact_project_repo(
     ]
     if review_snapshots:
         row["review_repository_snapshots"] = review_snapshots
+    if repo.get("code_indexes"):
+        row["code_indexes"] = repo["code_indexes"]
     if len(git_contexts) == 1 and git_contexts[0].get("state") == "active":
         active_context = git_contexts[0]
         for field_name in ("base_branch", "branch_context_id", "agent_branch"):

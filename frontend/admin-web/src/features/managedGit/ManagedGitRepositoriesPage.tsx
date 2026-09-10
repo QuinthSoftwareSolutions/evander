@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { RepositoryIndexPanel } from "./RepositoryIndexPanel";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 
@@ -575,6 +576,7 @@ export function ManagedGitRepositoriesPage({
               </dl>
             </article>
 
+            <RepositoryIndexPanel key={selectedRepository.managed_repo_id} repositoryId={selectedRepository.managed_repo_id} privilegedUnlocked={privilegedUnlocked} />
             <article className="panel managed-git-actions-panel">
               <div className="panel-header">
                 <div>

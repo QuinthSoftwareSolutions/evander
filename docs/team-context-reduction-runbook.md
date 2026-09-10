@@ -40,12 +40,17 @@ visible Git contexts; those never replace the wake/dispatch's frozen binding. Th
 only when its ID belongs to the caller's active immutable dispatch. No active
 dispatch or an out-of-scope ID returns the normal not-found/scope response.
 
-Managed guidance version 41 starts from the supplied wake and directs missing
+Managed guidance version 43 starts from the supplied wake and directs missing
 detail to individual record reads. Dispatch summary reads recover a missing
 working set or refresh it for a specific reason; use an individual read when only
 one record needs refreshing. Complete specification and evidence retrieval before
 implementation/review, targeted `rg` searches, and bounded excerpts remain required.
-Deploy 0.34.1 or later for this guidance; the normal version check refreshes the
+Repository queries use the assigned dispatch commit and may return unchanged files
+from an indexed ancestor, with both commit SHAs and a `baseline` match. They never
+start compiler indexing. Search new, changed and dirty files locally and verify
+symbol relationships even when the source text is unchanged. A local commit does
+not rebind the assignment; inspect that commit's changes in the checkout.
+Deploy 0.35.0 or later for this guidance; the normal version check refreshes the
 managed section in `/home/agent/AGENTS.md` before the next applicable wake.
 Large build/test logs belong in complete artifacts under
 `/artifacts`; report status, relevant failures, and the artifact reference. The

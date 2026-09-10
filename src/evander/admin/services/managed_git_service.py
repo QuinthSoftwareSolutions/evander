@@ -2042,10 +2042,31 @@ class ManagedGitAdminService:
     ) -> dict[str, Any]:
         """Idempotently release a consultation snapshot ref after worker cleanup."""
 
+        return self.release_retained_snapshot(
+            managed_repo_id,
+            directory_path,
+            binding_kind="consultations",
+            binding_id=consultation_id,
+            pin_ref=consultation_snapshot_ref(consultation_id),
+            expected_commit_sha=expected_commit_sha,
+        ) | {"consultation_id": consultation_id}
+
+    def release_retained_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        binding_kind: str,
+        binding_id: str,
+        pin_ref: str,
+        expected_commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Release a caller-owned pin with an expected commit and binding."""
+
         directory = self._normalize_directory_path(directory_path)
         record = self._require_scoped_record(managed_repo_id, directory)
         bare_path = self._bare_path(record)
-        pin_ref = consultation_snapshot_ref(consultation_id)
+        pin_ref = _normalize_ref(pin_ref, field_name="pin_ref")
         expected = (
             _normalize_object_id(expected_commit_sha, field_name="expected_commit_sha")
             if expected_commit_sha
@@ -2060,19 +2081,20 @@ class ManagedGitAdminService:
             if current is not None:
                 if expected is not None and current != expected:
                     raise ManagedGitConflictError(
-                        f"Consultation snapshot {pin_ref} points to {current}, not {expected}"
+                        f"Retained snapshot {pin_ref} points to {current}, not {expected}"
                     )
                 self._delete_ref_cas(bare_path, pin_ref, current)
                 remaining = self._resolve_ref(bare_path, pin_ref)
                 if remaining is not None:
                     raise ManagedGitConflictError(
-                        f"Consultation snapshot {pin_ref} could not be released"
+                        f"Retained snapshot {pin_ref} could not be released"
                     )
                 released = True
-        self.unbind(managed_repo_id, "consultations", consultation_id)
+        self.unbind(managed_repo_id, binding_kind, binding_id)
         return {
             "managed_repo_id": managed_repo_id,
-            "consultation_id": consultation_id,
+            "binding_kind": binding_kind,
+            "binding_id": binding_id,
             "pin_ref": pin_ref,
             "released": released,
         }

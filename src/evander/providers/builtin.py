@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.code_index.providers import CodeIndexEffectProvider, CodeIndexQueryProvider
+
 from evander.effects.providers.default_schema import effect_node_schema_resolvers
 from evander.gates.providers.default_schema import gate_node_schema_resolvers
 from evander.queries.providers.default_schema import query_node_schema_resolvers
@@ -247,6 +249,8 @@ def register_providers() -> dict[str, dict[str, type]]:
             "gate:validate": ValidateGateProvider,
         },
         effect_providers={
+            "effect:code-index:ensure": CodeIndexEffectProvider,
+            "effect:code-index:reconcile": CodeIndexEffectProvider,
             "effect:event:emit": EventEmitEffectProvider,
             "effect:event:schedule": EventScheduleEffectProvider,
             "effect:artifact-space:create": ArtifactSpaceCreateEffectProvider,
@@ -315,6 +319,9 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:state:update": StateUpdateEffectProvider,
         },
         query_providers={
+            "query:code-index:status": CodeIndexQueryProvider,
+            "query:code-index:search": CodeIndexQueryProvider,
+            "query:code-index:navigate": CodeIndexQueryProvider,
             "query:vm:run-state": VmRunStateQueryProvider,
             "query:artifact-space:list": ArtifactSpaceListQueryProvider,
             "query:artifact-space:latest": ArtifactSpaceLatestQueryProvider,

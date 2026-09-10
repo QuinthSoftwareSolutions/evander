@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from evander.admin.services.website_session_admin_service import WebsiteSessionAdminService
+from evander.admin.services.repository_index_service import RepositoryIndexService
 
 import os
 import fcntl
@@ -251,6 +252,7 @@ class AdminRuntimeComponents:
     vm_agent_support: VmAgentAdminSupport
     issue_git_admin: IssueGitAdminService
     managed_git_admin: ManagedGitAdminService
+    repository_index_admin: RepositoryIndexService
     ado_user_connections: AdoUserConnectionService
     managed_git_maintenance: ManagedGitMaintenanceService
     managed_git_repository_refresh: ManagedGitRepositoryRefreshService
@@ -440,6 +442,20 @@ def _build_admin_runtime_components(
         project_dir=project_dir,
     )
     ado_user_connections = managed_git_admin.ado_user_connections
+    from evander.code_index.semantic import IndexSemantic
+    from evander.queries.providers.base import QueryRuntimeContext
+
+    repository_index_admin = RepositoryIndexService(
+        config.runtime_dir,
+        managed_git_admin,
+        semantic=IndexSemantic(
+            QueryRuntimeContext(
+                provider_config={},
+                provider_config_resolver=runtime.provider_config,
+                env=dict(os.environ),
+            )
+        ),
+    )
     managed_git_maintenance = ManagedGitMaintenanceService(managed_git_admin)
     managed_git_repository_refresh = ManagedGitRepositoryRefreshService(managed_git_admin)
     directory_service = DirectoryService(directory_store)
@@ -757,7 +773,7 @@ def _build_admin_runtime_components(
         project_dir_provider=lambda: project_dir,
     )
 
-    return AdminRuntimeComponents(
+    components = AdminRuntimeComponents(
         runtime_dir=runtime_dir_path,
         project_dir=project_dir,
         config=config,
@@ -790,7 +806,9 @@ def _build_admin_runtime_components(
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
         connector_admin=connector_admin,
-        website_session_admin=WebsiteSessionAdminService(operations_admin, runtime.provider_config, runtime.audit),
+        website_session_admin=WebsiteSessionAdminService(
+            operations_admin, runtime.provider_config, runtime.audit
+        ),
         host_directory_admin=host_directory_admin,
         codex_auth_admin=codex_auth_admin,
         documentation_admin=documentation_admin,
@@ -804,6 +822,7 @@ def _build_admin_runtime_components(
         vm_agent_support=vm_agent_support,
         issue_git_admin=issue_git_admin,
         managed_git_admin=managed_git_admin,
+        repository_index_admin=repository_index_admin,
         ado_user_connections=ado_user_connections,
         managed_git_maintenance=managed_git_maintenance,
         managed_git_repository_refresh=managed_git_repository_refresh,
@@ -819,3 +838,7 @@ def _build_admin_runtime_components(
         agent_create_executor=agent_create_executor,
         execution_backend_instance=None,
     )
+    from evander.code_index.worker import IndexWorker
+
+    repository_index_admin.worker = IndexWorker(components)
+    return components

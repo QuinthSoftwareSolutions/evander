@@ -368,7 +368,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 41
+TEAM_AGENT_GUIDANCE_VERSION = 43
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -7761,6 +7761,15 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "assuming the prompt contains the full Team state. Read tools currently "
         f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
         "Focused context reads:\n"
+        "- Use code_index_status, code_search and code_navigate when granted to discover "
+        "source for the dispatch's assigned Git commit. These reads never start compiler "
+        "indexing. Results may reuse an indexed ancestor: commit_sha identifies the indexed "
+        "source, requested_commit_sha identifies your assignment, and match states exact or "
+        "baseline. Baseline hits exclude changed and deleted files. Search new, changed and "
+        "dirty code with local rg and inspect the Git diff. After your own commit, keep querying "
+        "the assigned snapshot and inspect your changes locally. Verify relevant checkout "
+        "files and symbol relationships; unchanged text does not prove unchanged compiler "
+        "bindings. Use local tools when coverage is unavailable.\n"
         "- Start from the current Team context JSON supplied in the wake. Fetch "
         "missing detail directly using the collection's retrieval tool and id_parameter.\n"
         "- Use team_get_current_dispatch_context(detail=summary) to recover a missing "
@@ -9145,6 +9154,9 @@ def _prepare_project_repo(
             project_repo["branch_context_id"] = git_work_contexts[0]["branch_context_id"]
             project_repo["agent_branch"] = git_work_contexts[0]["agent_branch"]
     project_repo.update(commit_diagnostics)
+    from .code_index import prepare_indexes
+
+    prepare_indexes(context, project_repo)
     _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
     return state, project_repo
 
@@ -12845,7 +12857,10 @@ def _session_repository_for_manifest_updates(context: Any) -> Any | None:
 def _ordinary_team_tools_for_agent(agent: Mapping[str, Any]) -> list[str]:
     if _optional_text(agent.get("team_id")) is None:
         return []
-    return [*ORDINARY_TEAM_MCP_TOOL_NAMES, *READ_TEAM_MCP_TOOL_NAMES]
+    return [
+        *ORDINARY_TEAM_MCP_TOOL_NAMES, *READ_TEAM_MCP_TOOL_NAMES,
+        "code_index_status", "code_search", "code_navigate",
+    ]
 
 
 def _team_chat_mutation_allowed(message: object, dispatch: object) -> bool:

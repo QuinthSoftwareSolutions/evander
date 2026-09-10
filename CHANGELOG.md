@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-10 - Portable repository indexing (0.35.0)
+
+- Add opt-in managed repository indexes with text and semantic search, C#/TypeScript
+  symbol navigation, assigned-commit Team scope and incremental embedding reuse.
+- Let tasks and reviewers reuse unchanged files from a proven indexed ancestor with
+  explicit source/target provenance, without queuing per-task compiler builds. Update
+  Team guidance to version 43 for baseline coverage and local-change verification.
+- Bound automatic branch indexing to a one-hour default interval and one CPU, with
+  one compiler indexing job across the runtime; skip intermediate branch heads.
+- Build compiler indexes in isolated container workers, verify imported Git blobs,
+  report partial coverage, and reconcile jobs and retention through workflow nodes.
+- Add revision-checked Admin Web controls, gateway tools and operator CLI commands.
+- Export versioned SQLite/SCIP bundles with a standalone Python query tool and optional
+  embeddings for external coding workflows. Include a pinned worker image build,
+  APP profile, retrieval benchmark and operational documentation.
+
 ## 2026-09-10 - Direct Team wake reads (0.34.1)
 
 - Start ordinary and mutation-enabled chat work from the supplied wake context,

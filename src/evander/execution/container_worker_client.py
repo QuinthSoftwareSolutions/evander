@@ -310,6 +310,43 @@ class ContainerWorkerClient:
         )
         return response.text
 
+    def read_session_artifact_text_bounded(
+        self, session_id: str, relative_path: str, *, max_bytes: int
+    ) -> str:
+        """Read an index artifact without buffering an unbounded worker response."""
+        from contextlib import nullcontext
+
+        if max_bytes <= 0:
+            raise ValueError("Artifact byte limit must be positive")
+        token = os.environ.get(self.token_env, "")
+        if not token:
+            raise ContainerWorkerClientError("Container worker bearer token is not configured")
+        path = (
+            f"/v1/sessions/{quote(session_id, safe='')}/artifacts/{quote(relative_path, safe='/')}"
+        )
+        manager = (
+            nullcontext(self._client)
+            if self._client is not None
+            else httpx.Client(timeout=self.timeout_seconds)
+        )
+        with (
+            manager as client,
+            client.stream(
+                "GET", self._url(path), headers={"Authorization": f"Bearer {token}"}
+            ) as response,
+        ):
+            if response.status_code >= 400:
+                raise ContainerWorkerClientError(
+                    f"Worker artifact returned HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
+            content = bytearray()
+            for chunk in response.iter_bytes(chunk_size=65536):
+                if len(content) + len(chunk) > max_bytes:
+                    raise ValueError("Worker artifact exceeds import limit")
+                content.extend(chunk)
+        return content.decode("utf-8")
+
     def provision_mssql_database(
         self,
         session_id: str,
