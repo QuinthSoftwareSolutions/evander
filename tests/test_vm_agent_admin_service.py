@@ -1228,8 +1228,9 @@ def test_chat_assistant_libvirt_bootstraps_codex_when_missing(
     assert bootstrap_env["AGENT_MODEL"] == "gpt-test"
 
 
+@pytest.mark.parametrize("provider_mode", ["openai_public", "openrouter"])
 def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_mode: str
 ) -> None:
     existing = SessionManifest(
         session_id="assistant-shared",
@@ -1240,6 +1241,11 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
     sessions = FakeSessionsStore({"assistant-shared": existing})
     admin = FakeAdmin(sessions=sessions)
     admin.config.runtime_dir = tmp_path
+    if provider_mode == "openrouter":
+        existing.metadata["agent_provider"] = "claude"
+    admin.runtime.provider_config = SimpleNamespace(
+        resolve_for_directory=lambda _: SimpleNamespace(model_provider_mode=provider_mode)
+    )
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
 
     class Completed:

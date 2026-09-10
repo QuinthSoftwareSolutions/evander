@@ -75,10 +75,16 @@ def validate_openrouter_session_model(
 
 def validate_openrouter_session(config: GatewayConfig, session: object) -> None:
     metadata = getattr(session, "metadata", {}) or {}
-    mode = metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY) or config.model_provider_mode
+    requested_mode = normalize_model_provider_mode_override(
+        metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+    )
+    agent_provider = str(metadata.get("agent_provider") or "codex").strip().lower()
+    # Creation receives directory config, before the resolver's implicit harness route.
+    mode = requested_mode or (
+        "anthropic" if agent_provider == "claude" else config.model_provider_mode
+    )
     if mode != "openrouter":
         return
-    agent_provider = str(metadata.get("agent_provider") or "codex").strip().lower()
     if agent_provider != "codex":
         raise OpenRouterSessionError("OpenRouter is supported only for Codex sessions")
     if getattr(session, "codex_auth_mode", None) == "chatgpt_subscription":

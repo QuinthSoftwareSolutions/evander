@@ -15,6 +15,7 @@ from evander.provider_config import (
     OpenRouterSessionError,
     ProviderConfigResolver,
     ProviderSessionManifest,
+    validate_openrouter_session,
 )
 from evander.relays.openai import OpenAIRelay
 from evander.session_auth import session_mcp_auth_metadata
@@ -276,6 +277,26 @@ def test_router_resolution_rejects_missing_or_unapproved_model(router_config, mo
         resolver.resolve_for_session_manifest(session)
 
 
+@pytest.mark.parametrize("mode_override", [None, "", "  ", "anthropic"])
+def test_claude_creation_validation_matches_implicit_anthropic_routing(
+    router_config, mode_override
+):
+    resolver = ProviderConfigResolver(router_config)
+    directory_config = resolver.resolve_for_directory("root")
+    session = SessionManifest(
+        session_id="claude",
+        allowed_tools=[],
+        model="claude-sonnet-4-6",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"agent_provider": "claude", "model_provider_mode": mode_override},
+    )
+    assert directory_config.model_provider_mode == "openrouter"
+    assert resolver.resolve_for_session_manifest(session).model_provider_mode == "anthropic"
+    validate_openrouter_session(directory_config, session)
+    assert directory_config.model_provider_mode == "openrouter"
+    assert session.metadata["model_provider_mode"] == mode_override
+
+
 @pytest.mark.parametrize(
     "metadata,auth,error",
     [
@@ -294,6 +315,10 @@ def test_router_rejects_incompatible_harness_or_auth(router_config, metadata, au
     )
     with pytest.raises(ValueError, match=error):
         ProviderConfigResolver(router_config).resolve_for_session_manifest(session)
+    with pytest.raises(ValueError, match=error):
+        validate_openrouter_session(
+            ProviderConfigResolver(router_config).resolve_for_directory("root"), session
+        )
 
 
 def test_router_model_listing_cannot_bypass_filter_with_sse_accept(router_config):

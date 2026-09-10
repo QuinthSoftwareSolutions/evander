@@ -7,6 +7,8 @@
   provider route, mandatory ZDR and parameter support, and disabled fallbacks.
 - Keep provider credentials on the host, reject guest routing overrides and
   OpenRouter server tools, and expose provider settings in Admin Web.
+- Preserve implicit Anthropic routing when creating or reprovisioning Claude
+  agents in OpenRouter-default directories; explicit Claude/OpenRouter routing remains rejected.
 - Capture routing metadata and provider-reported USD charges without retaining
   prompt or response content. Separate reported charges from catalog estimates
   and include both in Team budgets and cost displays while preserving fractional dollars.
