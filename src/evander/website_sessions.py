@@ -32,6 +32,8 @@ from evander.website_credentials import WebsiteCredentialStore
 
 logger = logging.getLogger(__name__)
 
+WEBSITE_CREDENTIAL_ENV_ALLOWLIST = "EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST"
+
 if TYPE_CHECKING:
     from evander.provider_config import ProviderConfigResolver
 
@@ -48,6 +50,12 @@ def website_origin(url: str) -> str:
     host = f"[{host}]" if ":" in host else host.encode("idna").decode("ascii")
     port = parsed.port or 443
     return f"https://{host}" + (f":{port}" if port != 443 else "")
+
+
+def environment_credential_names() -> set[str]:
+    """Return host-approved environment names that website logins may consume."""
+    return {name.strip() for name in os.environ.get(WEBSITE_CREDENTIAL_ENV_ALLOWLIST, "").split(",")
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name.strip())}
 
 
 class WebsiteStorageBinding(BaseModel):
@@ -116,6 +124,12 @@ class WebsiteSessionError(Exception):
         super().__init__(code)
         self.code = code
         self.status = status
+
+
+def validate_environment_credentials(profile: ManagedWebsiteSessionProfile) -> None:
+    if (profile.credential_source == "environment"
+            and not set(profile.credential_fields.values()) <= environment_credential_names()):
+        raise ValueError("website credential environment variable is not host-approved")
 
 
 def _pointer(value: Any, pointer: str) -> Any:
@@ -200,6 +214,7 @@ class ManagedWebsiteSessionService:
                 values = WebsiteCredentialStore(self.resolver.config.runtime_dir).read(
                     profile.credential_ref, scope, profile_id, profile)
             else:
+                validate_environment_credentials(profile)
                 values = {field: os.environ.get(env, "") for field, env in profile.credential_fields.items()}
             if set(values) != set(profile.credential_fields) or not all(values.values()):
                 raise ValueError("missing credentials")

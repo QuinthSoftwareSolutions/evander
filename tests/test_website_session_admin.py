@@ -167,6 +167,21 @@ def test_routes_require_owner_in_requested_directory(setup):
         assert client.put("/api/managed-website-sessions/training", json={}).status_code == 403
 
 
+def test_environment_profile_rejects_names_not_approved_by_host(setup, monkeypatch):
+    _, client, _ = setup
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-secret")
+    client.post("/api/admin/privileged/unlock")
+    initial = client.get("/api/managed-website-sessions").json()
+    environment_profile = profile() | {
+        "credential_source": "environment",
+        "credential_fields": {"password": "EVANDER_ADMIN_WEB_PASSWORD"},
+        "public_credential_fields": [],
+    }
+    response = save(client, initial["revision"], environment_profile, {})
+    assert response.status_code == 400
+    assert "not host-approved" in response.text
+
+
 def test_disabling_profile_needs_no_password_and_retains_existing_encrypted_login(setup):
     _, client, _ = setup
     client.post("/api/admin/privileged/unlock")
@@ -187,6 +202,7 @@ def test_deleting_bootstrapped_root_profile_revokes_warm_and_cold_brokers(tmp_pa
     value = profile() | {"credential_source": "environment"}
     monkeypatch.setenv("username", "fake-user")
     monkeypatch.setenv("password", "host-only-password")
+    monkeypatch.setenv("EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST", "username,password")
     runtime = write_runtime_config(tmp_path, enable_directory_scoped_config=True,
                                    managed_website_sessions={"training": value})
     service = build_admin_runtime(runtime)

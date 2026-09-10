@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-10 - Restrict website credential environment access (0.34.2)
+
+- Require an explicit host-controlled allowlist before managed website profiles can resolve
+  environment variables, preventing scoped directory owners from sending unrelated process
+  secrets to profile-controlled login destinations.
+
 ## 2026-09-10 - Direct Team wake reads (0.34.1)
 
 - Start ordinary and mutation-enabled chat work from the supplied wake context,

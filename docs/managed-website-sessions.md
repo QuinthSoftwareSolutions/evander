@@ -50,7 +50,10 @@ metadata and have a 60-second cooldown.
 The `managed_website_sessions` map remains available through the directory provider
 configuration API. Existing environment references are also supported by selecting
 **Existing host environment variables** in the UI. These values remain managed by
-the host environment; switch to encrypted storage for credential management in the UI.
+the host environment and each referenced name must appear in the host-controlled,
+comma-separated `EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST`. This explicit opt-in
+prevents directory owners from reading unrelated Admin Web or provider secrets. Switch to
+encrypted storage for credential management in the UI.
 For example, an environment-backed configuration is:
 
 ```json

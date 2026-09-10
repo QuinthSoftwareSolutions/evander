@@ -1916,6 +1916,9 @@ browser storage mappings, expiry settings, request bounds, and safe login tests.
 `credential_source: stored` uses an opaque `credential_ref` backed by host-only
 encrypted storage; `environment` retains existing env-name references. Assistant
 creation and session policy HTTP-target editors expose the profile selector.
+Environment-backed profiles fail closed unless every referenced variable is listed in the
+host-controlled comma-separated `EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST`; never add
+general Admin Web, worker, or provider secret variables to this allowlist.
 
 The browser proxy authenticates with the existing session id and MCP session token, then permits
 only origins present in that session's current HTTP targets. It does not terminate TLS or rewrite

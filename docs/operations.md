@@ -3110,7 +3110,8 @@ Playwright bootstrap files for existing guests so they receive
 `createManagedWebsiteContext`. Newly provisioned Playwright sessions get it automatically.
 Profile, grant, and UI-stored credential changes are read on each request. Legacy
 environment-backed credentials require a relay restart after the host environment
-changes. Verify a new managed browser context can
+changes and require every referenced name in the host-controlled comma-separated
+`EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST`. Verify a new managed browser context can
 open the intended page and produce an artifact without printing authentication state.
 
 Renewal runs on the next context request when state is near expiry, including after

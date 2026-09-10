@@ -39,6 +39,7 @@ def rig(monkeypatch):
     now = [datetime.now(UTC).timestamp()]
     monkeypatch.setenv("WEBSITE_USER", "operator@example.test")
     monkeypatch.setenv("WEBSITE_PASSWORD", 'host-only-"secret\\password')
+    monkeypatch.setenv("EVANDER_MANAGED_WEBSITE_CREDENTIAL_ENV_ALLOWLIST", "WEBSITE_USER,WEBSITE_PASSWORD")
     profile = ManagedWebsiteSessionProfile(
         browser_origin="https://app.example.test:8443",
         login_url="https://api.example.test/auth",
@@ -175,6 +176,14 @@ def test_credentials_are_required_and_rotation_invalidates_cache(rig, monkeypatc
     with pytest.raises(WebsiteSessionError, match="website_credentials_unavailable"):
         acquire(rig)
     assert len(rig.calls) == 2
+
+
+def test_environment_credentials_require_explicit_host_allowlist(rig, monkeypatch):
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-secret")
+    rig.profile.credential_fields = {"password": "EVANDER_ADMIN_WEB_PASSWORD"}
+    with pytest.raises(WebsiteSessionError, match="website_credentials_unavailable"):
+        acquire(rig)
+    assert not rig.calls
 
 
 @pytest.mark.parametrize("case", ["401", "302", "oversized", "invalid_json", "expired", "nan", "timeout", "secret_reflected"])
