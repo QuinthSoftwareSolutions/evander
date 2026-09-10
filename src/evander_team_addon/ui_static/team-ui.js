@@ -8749,6 +8749,7 @@ function renderTeamInlineProjectForm(teamId) {
       <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "release-gates"))}>
         <summary>Release gates</summary>
         ${checkboxField("Configure release policy", "release_policy_enabled", false)}
+        ${checkboxField("Automatically publish the release branch to the canonical remote", "automatic_release_branch_publication", true)}
         ${renderReleaseGateSequenceEditor()}
         <label>Automated and agent-review policy JSON<textarea name="release_policy_json" rows="10" placeholder='{"verification_commands": [...], "review_requirements": [...]}'></textarea></label>
         ${renderHumanReviewPolicyEditor()}
@@ -14607,7 +14608,10 @@ function renderProjectReleasePolicy(policy) {
   const humanLabel = human
     ? `human review via ${(human.reviewer_group_ids || []).join(", ")} (${human.preparation_mode || "manual"})`
     : "no human review";
-  return `<div class="meta-line">Release gates: ${escapeHtml(enabledOrder || "ungated")} - ${escapeHtml(commands.length ? `${commands.length} verification checks configured` : "no verification checks configured")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers configured")} - ${escapeHtml(humanLabel)}</div>`;
+  const publicationLabel = policy.automatic_release_branch_publication === false
+    ? "workflow-managed branch publication"
+    : "automatic canonical branch publication";
+  return `<div class="meta-line">Release gates: ${escapeHtml(enabledOrder || "ungated")} - ${escapeHtml(commands.length ? `${commands.length} verification checks configured` : "no verification checks configured")} - ${escapeHtml(reviewers.length ? `reviewers ${reviewers.join(", ")}` : "no release reviewers configured")} - ${escapeHtml(humanLabel)} - ${escapeHtml(publicationLabel)}</div>`;
 }
 
 function renderGoals(projectId, goals, { compact = false } = {}) {
@@ -17208,10 +17212,15 @@ function releaseProgressStages(release) {
   });
 
   const published = Boolean(release.published_at);
+  const workflowManagedPublication = (
+    release.manifest?.automatic_release_branch_publication === false
+    && release.approved_commit_sha
+    && release.approved_commit_sha === release.candidate_commit_sha
+  );
   stages.push({
     label: "Publication",
-    state: published ? "complete" : ["blocked", "rejected"].includes(text(release.state)) ? "blocked" : "pending",
-    detail: published ? `Published ${formatTimelineTimestamp(release.published_at)}` : release.error ? "Publication needs attention" : "Not published",
+    state: published ? "complete" : workflowManagedPublication ? "not-applicable" : ["blocked", "rejected"].includes(text(release.state)) ? "blocked" : "pending",
+    detail: published ? `Published ${formatTimelineTimestamp(release.published_at)}` : workflowManagedPublication ? "Handled by approval workflow" : release.error ? "Publication needs attention" : "Not published",
   });
   return stages;
 }
@@ -17914,7 +17923,7 @@ function renderReleaseDetail(release) {
         <div><div class="delivery-detail-label">Included work</div><div class="delivery-detail-value">${escapeHtml(includedWork.join(", ") || "No named work")}</div></div>
         <div><div class="delivery-detail-label">Release lineage</div><div class="delivery-detail-value">${release.supersedes_release_package_id || manifest.predecessor_release_package_id ? "Successor release attempt" : "Initial release attempt"}</div></div>
         <div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value">${escapeHtml(releaseCandidateDetail(release))}</div></div>
-        <div><div class="delivery-detail-label">Publication</div><div class="delivery-detail-value">${release.published_at ? renderRecordDate(release.published_at, "Published") : escapeHtml(release.next_action_hint || release.next_action || "Not published")}</div></div>
+        <div><div class="delivery-detail-label">Publication</div><div class="delivery-detail-value">${release.published_at ? renderRecordDate(release.published_at, "Published") : manifest.automatic_release_branch_publication === false && release.approved_commit_sha === release.candidate_commit_sha ? "Handled by approval workflow" : escapeHtml(release.next_action_hint || release.next_action || "Not published")}</div></div>
         <div><div class="delivery-detail-label">Policy</div><div class="delivery-detail-value">Version ${Number(release.policy_version || 1)}</div></div>
       </div>
       ${renderReleaseCandidateCheckout(release)}
@@ -23483,8 +23492,12 @@ function releasePolicyForForm(data, form = null) {
   if (!policy || Array.isArray(policy) || typeof policy !== "object") {
     throw new Error("Release policy must be a JSON object.");
   }
-  policy.schema_version = 2;
+  policy.schema_version = 3;
   policy.gate_sequence = gateSequence;
+  policy.automatic_release_branch_publication = form?.elements
+    ?.automatic_release_branch_publication
+    ? Boolean(form.elements.automatic_release_branch_publication.checked)
+    : policy.automatic_release_branch_publication !== false;
   if (form?.elements?.human_review_enabled) {
     delete policy.human_review_requirement;
     if (form.elements.human_review_enabled.checked) {
@@ -23514,6 +23527,7 @@ function releasePolicyWithoutHumanJson(policy) {
   delete bounded.human_review_requirement;
   delete bounded.gate_sequence;
   delete bounded.schema_version;
+  delete bounded.automatic_release_branch_publication;
   return JSON.stringify(bounded, null, 2);
 }
 
@@ -24276,6 +24290,7 @@ function renderEditFields(type, record) {
       ${textField("Agent commit committer email", "agent_committer_email", record.git?.agent_committer_identity?.email || "", { placeholder: "evander@quinth.se" })}
       <p class="subheading">Release gates</p>
       ${checkboxField("Configure release policy", "release_policy_enabled", Boolean(record.release_policy))}
+      ${checkboxField("Automatically publish the release branch to the canonical remote", "automatic_release_branch_publication", record.release_policy?.automatic_release_branch_publication !== false)}
       ${renderReleaseGateSequenceEditor(record.release_policy)}
       ${textareaField("Automated and agent-review policy JSON", "release_policy_json", releasePolicyWithoutHumanJson(record.release_policy), {
         rows: 12,

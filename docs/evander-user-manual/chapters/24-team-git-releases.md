@@ -113,16 +113,25 @@ Accepted task results from one project are combined into the fixed release candi
 >
 > <code>team_request_release</code> selects accepted deliverables from one project. If needed, prerequisite feature promotions are created first. Release consolidation adopts a single dominant pinned commit directly or combines divergent pinned feature commits in one meaningful integration commit, then freezes the candidate SHA and tree.
 
-### Internal release → canonical
+### Internal release → approved handoff → optional canonical publication
 
-After every required check and review passes, that fixed candidate becomes the one canonical publication.
+After every required check and review passes, Team emits
+<code>team.release.approved</code> for that fixed candidate. This durable handoff
+does not depend on whether Team publishes a canonical branch.
 
-The internal release branch is not the published branch operators should test or advertise. The release package's <code>canonical_branch</code> and <code>published_commit_sha</code> are the publication truth.
+The internal release branch is not a branch operators should test or advertise.
+When automatic publication is enabled, the release package's
+<code>canonical_branch</code> and <code>published_commit_sha</code> are the remote
+publication truth. When it is disabled, <code>published_commit_sha</code> and
+<code>published_at</code> remain empty and the approval event supplies the exact
+candidate and internal source ref to the operator workflow.
 
 > <span class="sidebar-kicker">Technical detail</span> **Publishing the exact candidate**
 >
-> Only after every gate passes does the workflow create the canonical-push
-> promotion. Core <code>effect:git:push-branch</code> verifies the exact approved
+> Only after every gate passes may the workflow create the canonical-push
+> promotion. It does so when
+> <code>automatic_release_branch_publication</code> is enabled. Core
+> <code>effect:git:push-branch</code> verifies the exact approved
 > commit, requires an existing canonical destination to still equal the
 > release's immutable canonical base commit, and applies a destination lease
 > before pushing. A generated destination that does not exist yet is created
@@ -136,13 +145,13 @@ The internal release branch is not the published branch operators should test or
 
 ![Pinned Team Git promotion and release-gate flow](../../assets/evander-user-manual/diagrams/16-team-release.svg)
 
-<p class="figure-caption">Figure 24.1 — Reviewed commits move through internal refs and immutable gates before the sole canonical push.</p>
+<p class="figure-caption">Figure 24.1 — Reviewed commits move through internal refs and immutable gates before approval and any configured canonical push.</p>
 
 ## Creating a release package
 
 The release package is the sealed description of one candidate: what work it contains, what reviewers accepted, what changed, which checks must run, and who requested it. Later policy changes do not silently rewrite that package.
 
-All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy. An explicit policy with every gate disabled is the deliberate ungated configuration; a missing policy still blocks publication.
+All selected deliverables must be accepted and belong to one project. Artifact-only releases are allowed without Git configuration. A Git release requires project Git configuration and an explicit release policy. An explicit policy with every gate disabled is the deliberate ungated configuration; a missing policy still blocks approval. Set <code>automatic_release_branch_publication</code> to <code>false</code> when an operator workflow should publish only its own named branch. The setting and managed-repository scope are frozen into the candidate manifest, so later project edits do not redirect an in-flight release or its publication identity.
 
 Git inputs must also share one authoritative task base branch and exact base
 commit. Team returns <code>mixed_git_base_branches</code> before creating a
@@ -511,7 +520,13 @@ never reuses the predecessor human request.
 
 ### Publication and post-release feedback
 
-Final publication requires the candidate, approved, and published SHA to be
+Approval always emits <code>team.release.approved</code> with the candidate,
+approved SHA, internal source ref, project/repository scope, and publication
+policy. With automatic publication disabled, the package becomes accepted at
+that point without claiming a canonical push occurred. Custom packaging should
+trigger from this event.
+
+When automatic canonical publication is enabled, final publication requires the candidate, approved, and published SHA to be
 identical and a linked succeeded <code>canonical_push</code> promotion from the
 release branch to the configured canonical branch. The human request must be
 approved against the same candidate SHA/tree, with one durable approval
@@ -537,8 +552,9 @@ from resolved tasks in that case may extend the predecessor candidate.
 5. A disposable verification worker checks out that SHA and runs unit and integration commands.
 6. Scope validation confirms no unreviewed paths entered consolidation.
 7. Required release reviews accept the same SHA.
-8. Canonical push publishes it to the configured <code>releases/mission-control/...</code> branch under a destination lease.
-9. The accepted release package records the canonical branch and published SHA.
+8. Team emits <code>team.release.approved</code> for the exact candidate.
+9. Because this project enables automatic publication, canonical push publishes it to the configured <code>releases/mission-control/...</code> branch under a destination lease.
+10. The accepted release package records the canonical branch and published SHA.
 
 If integration verification times out, Riley may request one evidence-backed
 audited retry against the same SHA after the worker recovers. If that
@@ -683,9 +699,9 @@ During release:
 
 After release:
 
-1. Read <code>canonical_branch</code>, <code>published_commit_sha</code>, and <code>published_at</code> from the package.
-2. Match them to the successful canonical-push promotion and core Git effect.
-3. Verify the remote ref equals the approved SHA.
+1. Confirm the package's frozen automatic-publication setting and exact approved SHA.
+2. If automatic publication is disabled, verify the approval-triggered workflow published only its named destination branch; empty <code>published_commit_sha</code> and <code>published_at</code> are expected.
+3. If automatic publication is enabled, match <code>canonical_branch</code>, <code>published_commit_sha</code>, and <code>published_at</code> to the successful canonical-push promotion and core Git effect, then verify the remote ref equals the approved SHA.
 4. Verify the approved human request matches the same SHA/tree and explicitly
    confirms every carried finding.
 5. Preserve the immutable manifest and all gate attempts as release evidence.

@@ -410,6 +410,27 @@ def test_derive_team_timeline_filters_by_team_project_agent_type_status_and_atte
     assert all(entry["team_id"] == "beta-team" for entry in beta_view["entries"])
 
 
+def test_accepted_unpublished_release_is_reported_as_approved() -> None:
+    state = _timeline_state()
+    release = state.release_packages["alpha-release"]
+    release.state = TeamRecordState.ACCEPTED
+    release.approved_commit_sha = "a" * 40
+    release.updated_at = _dt(3, 9)
+
+    timeline = derive_team_timeline(state)
+    entries = {entry["id"]: entry for entry in timeline["entries"]}
+
+    approved = entries["release:alpha-release:approved"]
+    assert approved["category"] == "approved"
+    assert approved["change"] == {
+        "field": "Approval",
+        "before": None,
+        "after": "Approved",
+        "before_known": False,
+    }
+    assert approved["summary"] == "Release approved: Alpha Project: Alpha task"
+
+
 def test_derive_team_timeline_facets_cover_filtered_history_before_paging() -> None:
     state = _timeline_state()
 

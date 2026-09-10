@@ -658,15 +658,16 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
             )
         )
         if release.state == TeamRecordState.ACCEPTED:
+            published = release.published_at is not None
             timestamp = release.published_at or release.updated_at
             entries.append(
                 _entry(
-                    id=f"release:{release.id}:published",
+                    id=f"release:{release.id}:{'published' if published else 'approved'}",
                     type="release_package",
-                    category="published",
+                    category="published" if published else "approved",
                     timestamp=timestamp,
                     timestamp_source="published_at"
-                    if release.published_at is not None
+                    if published
                     else "updated_at",
                     timestamp_missing=timestamp is None,
                     related_agent_ids=related,
@@ -677,11 +678,15 @@ def _release_entries(state: TeamState) -> list[TimelineEntry]:
                     attention_needed=_release_attention_needed(release.state),
                     subject=subject,
                     change=TimelineChange(
-                        field="Publication",
-                        after="Published",
+                        field="Publication" if published else "Approval",
+                        after="Published" if published else "Approved",
                         before_known=False,
                     ),
-                    summary=f"Release published: {subject}",
+                    summary=(
+                        f"Release published: {subject}"
+                        if published
+                        else f"Release approved: {subject}"
+                    ),
                 )
             )
         elif release.state == TeamRecordState.BLOCKED:

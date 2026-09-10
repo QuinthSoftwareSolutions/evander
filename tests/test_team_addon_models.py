@@ -351,6 +351,18 @@ def test_release_policy_without_sequence_preserves_legacy_order() -> None:
         ReleaseGateKind.VERIFICATION,
         ReleaseGateKind.AGENT_REVIEW,
     ]
+    assert policy.schema_version == 3
+    assert policy.automatic_release_branch_publication is True
+
+
+def test_release_policy_can_disable_automatic_release_branch_publication() -> None:
+    policy = ProjectReleasePolicy(
+        allow_ungated=True,
+        automatic_release_branch_publication=False,
+    )
+
+    assert policy.automatic_release_branch_publication is False
+    assert policy.model_dump(mode="json")["automatic_release_branch_publication"] is False
 
 
 @pytest.mark.parametrize(

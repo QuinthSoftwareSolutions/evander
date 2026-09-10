@@ -1018,6 +1018,7 @@ requiring code inspection. Current catalog entries are:
 - `team.git.promotion_requested`
 - `team.git.release_recovery_requested`
 - `team.release.verification_requested`
+- `team.release.approved`
 - `team.release.human_review_requested`
 - `team.release.human_review_preparation_requested`
 
@@ -1193,9 +1194,10 @@ connection, then PAT, then the bot.
 Microsoft SSO authenticates the platform login separately; the OAuth option adds an explicit
 consent flow and encrypted refresh tokens. See [OAuth setup](operations.md#enabling-microsoft-oauth-through-cicd).
 
-`effect:team:mark-release-published` produces an optional `publication_context_id` for
-Azure DevOps releases. Carry it through custom release events into `effect:pr:create`.
-The reference is bound to the managed repository, directory, and exact published SHA.
+`team.release.approved` and `effect:team:mark-release-published` produce an optional
+`publication_context_id` for Azure DevOps release delivery. Carry it through custom
+release events into `effect:pr:create`. The reference is bound to the managed repository,
+directory, and exact approved or published SHA.
 The host checks all included deliverables and recursive contributions: one shared assignee
 selects that person's connection; mixed or missing attribution selects the existing bot.
 An unavailable PAT or ADO HTTP 401/403 also falls back to the bot. Git author edits cannot
@@ -2449,9 +2451,14 @@ verification backend, optional container image, ordered verification commands
 (`name`, `cwd`, `argv`, and timeout), and release review requirements
 (`reviewer_agent_id` plus `review_profile_id`). The consolidated release commit
 is pinned as the candidate, and each enabled gate decides that exact candidate.
-Canonical push is created only after scope validation and every enabled gate
-passes. The candidate also receives a frozen typed manifest containing its
-deliverable verification, waiver audit records, accepted immutable reviews,
+After scope validation and every enabled gate passes, Team always emits the
+durable `team.release.approved` event. By default it also creates the canonical
+push. Set `automatic_release_branch_publication` to `false` to accept the
+package without publishing the generated release branch; a custom workflow can
+consume the approval event and publish a semantic branch instead.
+`team.release.published` remains reserved for a completed canonical push. The
+candidate also receives a frozen typed manifest containing its repository scope,
+publication choice, deliverable verification, waiver audit records, accepted immutable reviews,
 reviewed change manifests, scope result, gate sequence, verification commands,
 and review requirements.
 

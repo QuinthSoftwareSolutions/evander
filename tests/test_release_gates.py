@@ -27,6 +27,7 @@ from evander_team_addon.models import (
     ProjectReleasePolicy,
     ReleaseCandidateManifest,
     ReleaseCandidateDeliverableEvidence,
+    ReleaseCandidateRepositoryScope,
     ReleaseGateFailure,
     ReleaseGateKind,
     ReleaseGateStage,
@@ -984,6 +985,129 @@ def test_release_with_every_gate_disabled_advances_directly_to_publication() -> 
     assert release.verification_run_ids == []
     assert release.review_request_ids == []
     assert result["git_promotion_event_ids"]
+    assert any(
+        event["event_type"] == "team.release.approved" for event in result["events"]
+    )
+
+
+def test_release_approval_can_skip_automatic_canonical_branch_publication() -> None:
+    sequence = [
+        ReleaseGateStage(kind=ReleaseGateKind.AGENT_REVIEW, enabled=False),
+        ReleaseGateStage(kind=ReleaseGateKind.VERIFICATION, enabled=False),
+        ReleaseGateStage(kind=ReleaseGateKind.HUMAN_REVIEW, enabled=False),
+    ]
+    release, promotion = _release_and_promotion()
+    assert release.manifest is not None
+    release.manifest.gate_sequence = sequence
+    release.manifest.automatic_release_branch_publication = False
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="lead-session",
+    )
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(
+            gate_sequence=sequence,
+            automatic_release_branch_publication=False,
+        )
+    )
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+
+    result = _result()
+    advance_release_gates(state, release=release, release_promotion=promotion, result=result)
+
+    assert release.state == TeamRecordState.ACCEPTED
+    assert release.approved_commit_sha == "candidate-sha"
+    assert release.published_commit_sha is None
+    assert release.published_at is None
+    assert result["git_promotion_event_ids"] == []
+    assert not any(
+        item.promotion_kind == "canonical_push" for item in state.git_promotions.values()
+    )
+    approved = next(
+        event for event in result["events"] if event["event_type"] == "team.release.approved"
+    )
+    assert approved["correlation_key"] == release.id
+    assert approved["payload"] == {
+        "project_id": "project",
+        "release_package_id": "release",
+        "managed_repo_id": MANAGED_REPO_ID,
+        "directory_path": "root",
+        "base_branch": "main",
+        "base_commit_sha": "base-sha",
+        "candidate_commit_sha": "candidate-sha",
+        "approved_commit_sha": "candidate-sha",
+        "expected_commit_sha": "candidate-sha",
+        "source_ref": "team/team/releases/release",
+        "canonical_branch": None,
+        "automatic_release_branch_publication": False,
+        "canonical_publication_performed": False,
+        "published_commit_sha": None,
+        "state": "approved",
+        "success": True,
+    }
+
+
+def test_release_approval_and_canonical_push_use_frozen_repository_scope() -> None:
+    sequence = [
+        ReleaseGateStage(kind=ReleaseGateKind.AGENT_REVIEW, enabled=False),
+        ReleaseGateStage(kind=ReleaseGateKind.VERIFICATION, enabled=False),
+        ReleaseGateStage(kind=ReleaseGateKind.HUMAN_REVIEW, enabled=False),
+    ]
+    release, promotion = _release_and_promotion()
+    assert release.manifest is not None
+    release.manifest.gate_sequence = sequence
+    release.manifest.repository_scope = ReleaseCandidateRepositoryScope(
+        managed_repo_id=MANAGED_REPO_ID,
+        directory_path="root/frozen",
+        base_branch="main",
+        canonical_branch="releases/project/frozen",
+    )
+    state = TeamState.empty()
+    state.teams["team"] = Team(
+        id="team",
+        name="Team",
+        manager_agent_id="lead",
+        project_ids=["project"],
+    )
+    state.agents["lead"] = PersistentAgent(
+        id="lead",
+        team_id="team",
+        role_id="lead-role",
+        session_id="lead-session",
+    )
+    project = _project(release_policy=ProjectReleasePolicy(gate_sequence=sequence))
+    project.git = None
+    state.projects["project"] = project
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+
+    result = _result()
+    advance_release_gates(state, release=release, release_promotion=promotion, result=result)
+
+    approved = next(
+        event for event in result["events"] if event["event_type"] == "team.release.approved"
+    )
+    canonical = next(
+        event
+        for event in result["events"]
+        if event["payload"].get("promotion_kind") == "canonical_push"
+    )
+    for event in (approved, canonical):
+        assert event["payload"]["managed_repo_id"] == MANAGED_REPO_ID
+        assert event["payload"]["directory_path"] == "root/frozen"
+        assert event["payload"]["base_branch"] == "main"
+    assert approved["payload"]["canonical_branch"] == "releases/project/frozen"
+    assert canonical["payload"]["target_branch"] == "releases/project/frozen"
 
 
 ALL_RELEASE_GATE_ORDERS = [

@@ -5,6 +5,7 @@ from typing import Any
 from .models import (
     HumanReviewRequest,
     ReleasePackage,
+    TeamRecordState,
     TeamState,
     release_package_payload_with_derived,
 )
@@ -267,6 +268,8 @@ def _finding_snapshot_id(finding: object) -> str | None:
 
 
 def _human_review_next_action(release: ReleasePackage, state_value: str) -> str | None:
+    if release.state == TeamRecordState.ACCEPTED:
+        return None
     if state_value == "preparing":
         return "wait_for_human_review_preparation"
     if state_value == "pending":
