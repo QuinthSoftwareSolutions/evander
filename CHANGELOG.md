@@ -14,6 +14,9 @@
 - Bootstrap relay-aware NuGet, honor npm workspace root lockfiles, reserve compiler
   capacity at submission, and serialize cancellation with reconciliation. Retain
   failed worker cleanup for retry and reclaim cancelled, unprovisioned snapshots.
+- Resolve approved image aliases before compiler submission, revoke session Git access
+  and bindings on retirement, and allow the default packages-directory exclusion to be
+  removed for tracked npm workspace source.
 - Add revision-checked Admin Web controls, gateway tools and operator CLI commands.
 - Export versioned SQLite/SCIP bundles with a standalone Python query tool and optional
   embeddings for external coding workflows. Include a pinned worker image build,

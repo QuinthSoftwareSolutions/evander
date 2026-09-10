@@ -39,7 +39,19 @@ Add the archive to the worker's existing `evander_runner_image_archives` Ansible
 ```
 
 Keep the worker's other archive entries. Use the existing worker playbook to deploy
-the image. No new service or firewall port is needed. Indexing sessions use
+the image. Add `code-index: evander-code-index:1` to the selected named worker's
+`container_workers.<worker-id>.images` map. For the legacy single-worker configuration,
+add it to `container_worker_images`:
+
+```json
+{"container_worker_images": {"code-index": "evander-code-index:1"}}
+```
+
+Add that entry alongside the existing aliases. The repository's `image` setting selects
+the alias (default `code-index`); session provisioning resolves it and the compiler job
+uses the returned Docker image reference. Update older profiles that specify
+`evander-code-index:1` to use the approved alias.
+No new service or firewall port is needed. Indexing sessions use
 `container_worker_vm`, read-only managed Git access, no MCP tools, and the existing
 package relays/caches. Builds run in disposable session workspaces with 8 GiB memory,
 one CPU by default (`worker_cpus`, configurable from 0.1 to 4), and a 1,024-process
@@ -167,6 +179,13 @@ and untracked files are excluded from retrieval/export. Large sources above the
 configured byte limit are skipped with diagnostics. File exclusions apply again during
 import, and changing the source policy blocks obsolete snapshots from queries/export.
 
+The default `excludes` list contains `**/packages/**` for legacy dependency caches.
+For npm workspaces whose tracked application source lives under `packages/*`, remove
+that entry in **Exclude files**, retain the other exclusions, and save the settings.
+`includes` must also match the source files; excludes take precedence over includes.
+Rebuild existing snapshots after changing this policy. Git metadata, `node_modules`,
+build output and credential files remain unconditionally excluded.
+
 Results contain repository-relative paths, line ranges, symbols, the exact commit and
 coverage. Lines are one-based; navigation columns are zero-based with an explicit
 UTF-8/UTF-16/UTF-32 encoding. Search returns at most 50 bounded snippets per page,
@@ -230,8 +249,9 @@ measurement of agent savings. Failed requests can incur unreported provider usag
 Retention defaults to 30 days. Active builds, active Team task/review/ephemeral bindings
 and the newest published snapshot per repository are retained. Old vectors, worker
 sessions, retained refs and unreferenced SQLite content are reclaimed in that order.
-Cleanup retries on failure, preserving the snapshot and Git pin until worker deletion
-is confirmed. Builds cancelled before provisioning can release their pin without a
+Cleanup retries on failure, preserving the snapshot and Git pin until worker deletion,
+host Git authorization revocation and session binding removal are confirmed.
+Builds cancelled before provisioning can release their pin without a
 worker session. If an old vector store's configuration has changed, cleanup
 is deferred until that store can be addressed again; it does not silently orphan vectors.
 

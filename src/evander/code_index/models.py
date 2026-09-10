@@ -30,6 +30,7 @@ DEFAULT_INCLUDES = [
     "**/*.sql",
 ]
 DEFAULT_EXCLUDES = [
+    "**/packages/**",
     "**/*.Designer.cs",
     "**/*ModelSnapshot.cs",
     "**/*.g.cs",
@@ -45,7 +46,6 @@ BLOCKED_PARTS = {
     "bin",
     "obj",
     "dist",
-    "packages",
     "vendor",
     ".angular",
 }
@@ -91,7 +91,7 @@ class IndexSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     worker_id: str | None = None
-    image: str = "evander-code-index:1"
+    image: str = "code-index"
     tracked_ref: str = "main"
     refresh_on_git_change: bool = True
     refresh_interval_seconds: int = Field(default=3600, ge=300, le=604800)

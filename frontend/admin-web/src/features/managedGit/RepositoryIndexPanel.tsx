@@ -73,7 +73,7 @@ export function RepositoryIndexPanel({ repositoryId, privilegedUnlocked }: { rep
         <div className="form-grid">
           <label className="field-stack">Tracked branch<input value={form.tracked_ref} onChange={e => update("tracked_ref", e.target.value)} /></label>
           <label className="field-stack">Worker ID (empty uses directory default)<input value={form.worker_id ?? ""} onChange={e => update("worker_id", e.target.value || null)} /></label>
-          <label className="field-stack">Indexing image<input value={form.image} onChange={e => update("image", e.target.value)} /></label>
+          <label className="field-stack">Indexing image alias<input value={form.image} onChange={e => update("image", e.target.value)} /></label>
           <label className="field-stack">Build timeout (seconds)<input type="number" min={60} max={14400} value={form.timeout_seconds} onChange={e => update("timeout_seconds", Number(e.target.value))} /></label>
           <label className="field-stack">Indexing CPU limit<input type="number" min={0.1} max={4} step={0.1} value={form.worker_cpus} onChange={e => update("worker_cpus", Number(e.target.value))} /></label>
           <label className="field-stack">Minimum automatic refresh interval (seconds)<input type="number" min={300} max={604800} value={form.refresh_interval_seconds} onChange={e => update("refresh_interval_seconds", Number(e.target.value))} /></label>

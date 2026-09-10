@@ -55,7 +55,7 @@ class IndexWorker:
             ttl_hours=24,
             metadata={"code_index_build_id": build["id"]},
         )
-        factory.build(create, directory_path=build["directory"]).execute()
+        prepared = factory.build(create, directory_path=build["directory"]).execute()
         # The deterministic ID lets a restarted reconciler adopt an already submitted job.
         client = self.client(build)
         try:
@@ -126,7 +126,7 @@ class IndexWorker:
         request = WorkerJobRequest(
             session_id=build["session_id"],
             job_id=build["id"],
-            image=config["image"],
+            image=prepared["container_image"],
             command=["bash", "-lc", shell],
             working_directory=repo_path,
             resource_limits=WorkerResourceLimits(
@@ -191,6 +191,19 @@ class IndexWorker:
                 worker_id=build["config"]["worker_id"],
             )
             backend.delete_session(build["session_id"])
+        if session is not None:
+            # Worker storage is gone, so revoke host authorization without trying
+            # to remove guest keys from the deleted workspace. Keep failed retirement retryable.
+            for grant in self.components.vm_agent_admin.list_managed_git_access(
+                build["session_id"]
+            ):
+                self.components.vm_agent_admin.revoke_managed_git_access(
+                    build["session_id"], grant["managed_repo_id"], remove_guest_key=False
+                )
+        # Revocation may have persisted metadata before a previous unbind failed.
+        # Clear both kinds even if no grants (or no session manifest) remain.
+        for kind in ("authorized_sessions", "sessions"):
+            self.components.managed_git_admin.unbind_all(kind, build["session_id"])
         self.components.managed_git_admin.release_retained_snapshot(
             build["repo"],
             build["directory"],

@@ -2522,17 +2522,21 @@ placeholder API key and never receive these host credentials.
 
 Repository index settings are revision-checked records managed through Admin Web or
 `evander-cli code-index configure`, stored in `runtime/code-index/state.db`. Defaults:
-`enabled=false`, `tracked_ref=main`, `image=evander-code-index:1`,
+`enabled=false`, `tracked_ref=main`, `image=code-index`,
 `refresh_on_git_change=true`, `refresh_interval_seconds=3600`, `worker_cpus=1`, `semantic=true`,
 `npm_restore=locked`, `timeout_seconds=1800`, `retention_days=30`, and
 `max_file_bytes=524288`. Optional `worker_id` selects an existing container worker.
+`image` selects an approved worker image alias; register `code-index` with the deployed
+`evander-code-index:1` image reference in the selected worker's image catalog.
 Only one compiler indexing job runs across the runtime. Team task/review preparation
 reads existing exact or ancestor coverage without starting builds. The legacy
 `index_task_commits` flag defaults to false and is ignored even when true.
 Automatic refresh skips intermediate branch heads while a build is active or the
 minimum interval has not elapsed. Explicit operator builds bypass that interval.
 `includes`, `excludes`, `dotnet_projects`, and `typescript_projects` constrain source
-and compiler coverage. Hard exclusions always remove build output, dependencies and
-known settings/credential filenames. Embeddings use existing directory-scoped semantic
+and compiler coverage. The default `**/packages/**` exclusion can be removed for tracked
+npm workspace source. Excludes take precedence over includes. Hard exclusions always
+remove Git metadata, `node_modules`, build output and known settings/credential filenames.
+Embeddings use existing directory-scoped semantic
 provider settings. See [Repository indexing](repository-indexing.md) and
 `config/repository-indexing/app.json.example` for the complete operator flow.

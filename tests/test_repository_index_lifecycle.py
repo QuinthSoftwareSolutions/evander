@@ -21,6 +21,7 @@ def lifecycle(tmp_path, monkeypatch):
     state = SimpleNamespace(fail_setup=None, cleanup_success=False)
     managed = ManagedGit()
     managed.release_retained_snapshot = lambda *args, **kwargs: released.append(kwargs)
+    managed.unbind_all = lambda *args: None
 
     def get(job_id):
         if job_id not in jobs:
@@ -54,7 +55,10 @@ def lifecycle(tmp_path, monkeypatch):
             session_repository=SimpleNamespace(get_session=sessions.get),
         ),
         managed_git_admin=managed,
-        vm_agent_admin=SimpleNamespace(cleanup_container_session=cleanup),
+        vm_agent_admin=SimpleNamespace(
+            cleanup_container_session=cleanup,
+            list_managed_git_access=lambda _: [],
+        ),
     )
     worker = IndexWorker(components)
     monkeypatch.setattr(worker, "client", lambda _: client)
@@ -71,7 +75,10 @@ def lifecycle(tmp_path, monkeypatch):
                     sessions[definition.session_id] = SimpleNamespace(metadata={})
                 elif state.fail_setup == "clone":
                     raise TimeoutError("Clone failed")
-                return {"target_dir": "/home/agent/repos/APP"}
+                return {
+                    "target_dir": "/home/agent/repos/APP",
+                    "container_image": "evander-code-index:1",
+                }
 
             return SimpleNamespace(execute=execute)
 
@@ -299,3 +306,140 @@ def test_partial_provisioning_without_manifest_requires_remote_cleanup(lifecycle
     assert service.maintenance("root/app")["deleted"] == [build["id"]]
     assert len(attempts) == 2
     assert len(lifecycle.released) == 1
+
+
+@pytest.mark.parametrize("failed_step", [None, "revoke", "authorized_sessions", "sessions", "pin"])
+def test_retirement_revokes_ssh_authorization_and_git_bindings_before_deletion(
+    tmp_path, failed_step
+):
+    from evander.admin.services.managed_git_service import ManagedGitConflictError
+    from evander.admin.services.vm_agent.git_access import VmAgentGitAccessMixin
+    from evander.models import SessionManifest
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+    from test_managed_git_service import _service, _source_repository
+
+    source, _, sha = _source_repository(tmp_path)
+    managed = _service(tmp_path)
+    repo_id = managed.register_repository("root/app", str(source))["managed_repo_id"]
+    service = RepositoryIndexService(
+        managed.runtime_dir, managed, protected_snapshots=lambda: set()
+    )
+    service.save_settings(
+        repo_id,
+        "root/app",
+        IndexSettings(enabled=True, semantic=False, refresh_on_git_change=False).model_dump(),
+        expected_revision=0,
+    )
+    build = service.store.get(service.ensure(repo_id, "root/app", sha)["id"])
+    session_id = build["session_id"]
+    authorized_keys = tmp_path / "authorized_keys"
+    authorized_keys.write_text(
+        "ssh-ed25519 AAAAIndexSession index\nssh-ed25519 AAAAOtherSession other\n"
+    )
+    sessions = JsonSessionManifestRepository(tmp_path / "sessions.json")
+    sessions.upsert_session(
+        SessionManifest(
+            session_id=session_id,
+            directory_path="root/app",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "managed_git_access_grants": {
+                    repo_id: {
+                        "managed_repo_id": repo_id,
+                        "access_mode": "read-only",
+                        "lifetime": "session",
+                        "execution_backend": "container_worker_vm",
+                        "public_key_body": "AAAAIndexSession",
+                        "authorized_keys_path": str(authorized_keys),
+                        "key_name": "index-key",
+                    }
+                }
+            },
+        )
+    )
+    managed.bind(repo_id, "sessions", session_id)
+    managed.bind(repo_id, "authorized_sessions", session_id)
+    service.store.update(build["id"], status="failed", worker_job_id=build["id"])
+    expire(service, build)
+
+    # Exercise the real Git-access service and persisted manifests/registry, while
+    # replacing only remote workspace deletion with its successful tombstone result.
+    git_access = VmAgentGitAccessMixin()
+    git_access._deps = SimpleNamespace(
+        runtime=SimpleNamespace(session_repository=sessions),
+        managed_git_admin=managed,
+    )
+    deleted_workspaces = []
+
+    def cleanup(target):
+        deleted_workspaces.append(target)
+        session = sessions.get_session(target)
+        sessions.upsert_session(
+            session.model_copy(
+                update={
+                    "expires_at": datetime.now(UTC) - timedelta(seconds=1),
+                    "metadata": {
+                        **session.metadata,
+                        "container_lifecycle": {"cleanup_status": "cleanup_succeeded"},
+                    },
+                }
+            )
+        )
+        return SimpleNamespace(success=True)
+
+    admin = SimpleNamespace(
+        cleanup_container_session=cleanup,
+        list_managed_git_access=git_access.list_managed_git_access,
+        revoke_managed_git_access=git_access.revoke_managed_git_access,
+    )
+    service.worker = IndexWorker(
+        SimpleNamespace(
+            runtime=SimpleNamespace(session_repository=sessions),
+            vm_agent_admin=admin,
+            managed_git_admin=managed,
+        )
+    )
+    original_revoke = admin.revoke_managed_git_access
+    original_unbind = managed.unbind_all
+    original_release = managed.release_retained_snapshot
+
+    def unavailable(*args, **kwargs):
+        raise OSError("Retirement dependency unavailable")
+
+    def unbind(kind, target):
+        if kind == failed_step:
+            unavailable()
+        return original_unbind(kind, target)
+
+    if failed_step == "revoke":
+        admin.revoke_managed_git_access = unavailable
+    elif failed_step == "pin":
+        managed.release_retained_snapshot = unavailable
+    elif failed_step:
+        managed.unbind_all = unbind
+    with pytest.raises(ManagedGitConflictError, match="active bindings"):
+        managed.delete_repository(repo_id)
+
+    if failed_step:
+        assert service.maintenance("root/app")["deleted"] == []
+        assert service.store.get(build["id"])
+        assert any(
+            binding["kind"] == "code_indexes"
+            for binding in managed.get_repository(repo_id)["bindings"]
+        )
+        assert deleted_workspaces == [session_id]
+        if failed_step == "revoke":
+            assert "AAAAIndexSession" in authorized_keys.read_text()
+        admin.revoke_managed_git_access = original_revoke
+        managed.unbind_all = original_unbind
+        managed.release_retained_snapshot = original_release
+
+    assert service.maintenance("root/app")["deleted"] == [build["id"]]
+    assert deleted_workspaces == [session_id]
+    assert authorized_keys.read_text() == "ssh-ed25519 AAAAOtherSession other\n"
+    assert not git_access.list_managed_git_access(session_id)
+    assert managed.get_repository(repo_id)["bindings"] == []
+    assert not service.store.list(repo_id)
+    assert managed.delete_repository(repo_id)["deleted"]

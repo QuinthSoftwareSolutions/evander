@@ -168,11 +168,31 @@ def test_exclusions_are_enforced_again_at_import(service):
         [
             SourceDocument(path="node_modules/library.cs", text="PRIVATE"),
             SourceDocument(path="appsettings.secret.json", text="PRIVATE"),
+            SourceDocument(path="packages/cache/library.ts", text="PRIVATE"),
         ]
     )
     import_artifact(service.store, build, data)
     service.store.update(build["id"], status="ready")
     assert not service.search(REPO, "root/app", SHA, "PRIVATE", mode="lexical")["hits"]
+
+
+def test_packages_exclusion_is_overridable_without_disabling_hard_exclusions():
+    settings = IndexSettings(includes=["packages/**"])
+    assert not settings.includes_file("packages/client/src/index.ts")
+    settings.excludes.remove("**/packages/**")
+    assert settings.includes_file("packages/client/src/index.ts")
+    for path in (
+        "packages/client/node_modules/dependency/index.ts",
+        "packages/client/.git/config",
+        "packages/client/obj/generated.cs",
+        "packages/client/bin/compiled.cs",
+        "packages/client/dist/index.ts",
+        "packages/client/.env",
+        "packages/client/credentials.json",
+        "packages/client/appsettings.secret.json",
+        "packages/client/key.pem",
+    ):
+        assert not settings.includes_file(path), path
 
 
 def test_portable_export_queries_without_evander(service, tmp_path):

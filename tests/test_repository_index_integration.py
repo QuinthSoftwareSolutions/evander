@@ -129,6 +129,7 @@ def test_provider_factories_materialize_index_nodes_and_enforce_directory_scope(
 def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, monkeypatch):
     build = service.store.get(service.ensure(REPO, "root/app", SHA)["id"])
     effects, jobs, writes = [], [], []
+    resolved_image = "registry.test/code-index@sha256:" + "1" * 64
 
     class Factory:
         def __init__(self, **kwargs):
@@ -136,7 +137,12 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
 
         def build(self, definition, **kwargs):
             effects.append(definition)
-            return SimpleNamespace(execute=lambda: {"target_dir": "/home/agent/repos/APP"})
+            return SimpleNamespace(
+                execute=lambda: {
+                    "target_dir": "/home/agent/repos/APP",
+                    "container_image": resolved_image,
+                }
+            )
 
     def missing(_):
         raise ContainerWorkerClientError("Missing", status_code=404)
@@ -166,6 +172,8 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
     assert "/home/agent/repos/APP" in jobs[0].command[-1]
     assert not effects[0].allowed_tools
     assert effects[0].nuget is True
+    assert effects[0].container_image == "code-index"
+    assert jobs[0].image == resolved_image
     assert reservations == [build["id"]]
     client.get = lambda _: SimpleNamespace(status="exited", metadata={"exit_code": 0}, error=None)
     assert worker.status(build) == "completed"
@@ -182,6 +190,79 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
     assert "worker_cpus" not in runner_settings
     assert "refresh_interval_seconds" not in runner_settings
     assert runner_settings["timeout_seconds"] == build["config"]["timeout_seconds"]
+
+
+@pytest.mark.parametrize("selector", ["code-index", "custom-index", "unknown-index"])
+def test_worker_provisions_approved_alias_and_submits_resolved_image(
+    service, monkeypatch, tmp_path, selector
+):
+    from evander.config import GatewayConfig
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+    from test_effect_registry import _ContainerResolverStub, _FakeContainerBackend
+
+    resolved_image = "registry.test/evander-index:approved"
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        container_worker_base_url="http://worker.test",
+        container_worker_default_image="runner-base:latest",
+        container_worker_images={"code-index": resolved_image, "custom-index": resolved_image},
+    )
+    resolver = _ContainerResolverStub(config)
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_create.container_backend", lambda *args: backend
+    )
+    components = SimpleNamespace(
+        runtime=SimpleNamespace(session_repository=sessions, provider_config=resolver),
+        managed_git_admin=service.managed_git,
+    )
+    factory = EffectProviderFactory(provider_config_resolver=resolver, admin_service=components)
+
+    class Factory:
+        def __init__(self, **kwargs):
+            pass
+
+        def build(self, definition, **kwargs):
+            if definition.type == "effect:agent:create":
+                return factory.build(definition, **kwargs)
+            return SimpleNamespace(execute=lambda: {"target_dir": "/home/agent/repos/APP"})
+
+    monkeypatch.setattr("evander.code_index.worker.EffectProviderFactory", Factory)
+    settings = service.settings(REPO, "root/app")
+    settings["settings"]["image"] = selector
+    service.save_settings(
+        REPO, "root/app", settings["settings"], expected_revision=settings["revision"]
+    )
+    build = service.store.get(service.ensure(REPO, "root/app", SHA)["id"])
+    jobs, reserved = [], []
+
+    def missing(_):
+        raise ContainerWorkerClientError("Missing", status_code=404)
+
+    worker = IndexWorker(components)
+    monkeypatch.setattr(
+        worker,
+        "client",
+        lambda _: SimpleNamespace(
+            get=missing,
+            write_files=lambda *args: None,
+            create=lambda job: jobs.append(job) or SimpleNamespace(job_id=job.job_id),
+        ),
+    )
+    if selector == "unknown-index":
+        with pytest.raises(ValueError, match="unknown container worker image selector"):
+            worker.start(build, before_submit=lambda: reserved.append(True))
+        assert not jobs and not reserved and not backend.prepared_sessions
+        return
+    assert worker.start(build, before_submit=lambda: reserved.append(True)) == build["id"]
+    assert reserved == [True]
+    assert jobs[0].image == resolved_image
+    assert sessions.get_session(build["session_id"]).metadata["container_worker"] == {
+        "image": resolved_image,
+        "image_alias": selector,
+    }
+    assert backend.prepared_sessions[0]["metadata"]["container_worker"]["image"] == jobs[0].image
 
 
 def test_bounded_worker_artifact_stream(monkeypatch):

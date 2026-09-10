@@ -5,11 +5,17 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import zipfile
 
 import pytest
 
 from evander.code_index import runner
+from evander.admin.services.repository_index_service import RepositoryIndexService
+from evander.code_index.importer import import_artifact
 from evander.code_index.models import IndexSettings, TOOLCHAIN
+from evander.code_index.portable_query import navigate, open_index, search
+from evander.code_index.scip import _encode_field, read_scip
+from test_repository_index import ManagedGit, REPO
 
 
 @pytest.fixture
@@ -84,20 +90,27 @@ def index_fixture(repo, tmp_path, monkeypatch, *, projects=None, npm_restore="lo
     def run(command, **kwargs):
         if command[0] == "scip-typescript":
             indexes.append(command[2])
-            # Minimal SCIP document: source path only. Compiler behavior is outside this test.
+            # Minimal SCIP document with one definition. Compiler behavior is outside this test.
             path = b"packages/client/index.ts"
-            document = b"\x0a" + bytes([len(path)]) + path
-            Path(command[-1]).write_bytes(b"\x12" + bytes([len(document)]) + document)
+            occurrence = (
+                _encode_field(1, bytes([0, 13, 18])) + _encode_field(2, b"value.") + b"\x18\x01"
+            )
+            document = _encode_field(1, path) + _encode_field(2, occurrence)
+            Path(command[-1]).write_bytes(_encode_field(2, document))
         else:
             installs.append((command, kwargs["cwd"]))
             original_run(command, **kwargs)
 
     monkeypatch.setattr(runner.subprocess, "check_output", command_output)
     monkeypatch.setattr(runner, "run", run)
+    settings = IndexSettings(
+        semantic=False, typescript_projects=projects or [], npm_restore=npm_restore
+    )
+    settings.excludes.remove("**/packages/**")
     artifact = runner.build_artifact(
         repo,
         sha,
-        IndexSettings(semantic=False, typescript_projects=projects or [], npm_restore=npm_restore),
+        settings,
         tmp_path / "artifacts" / "code-index.json",
     )
     return artifact, installs, indexes
@@ -139,6 +152,45 @@ def test_workspace_projects_share_root_lock_and_single_restore(
     expected = hashlib.sha256((repo / "package-lock.json").read_bytes()).hexdigest()
     assert all(p["dependency_lock_sha256:."] == expected for p in artifact.projects)
     assert not (repo / "packages/client/package-lock.json").exists()
+    source_path = "packages/client/index.ts"
+    assert [document.path for document in artifact.documents] == [source_path]
+    assert artifact.occurrences[0].symbol == "value."
+    assert artifact.occurrences[0].path == source_path
+
+    # Exercise the host importer and portable export too: merely reaching SCIP
+    # does not prove the workspace's source survived filtering.
+    service = RepositoryIndexService(tmp_path / "runtime", ManagedGit())
+    settings = IndexSettings(enabled=True, semantic=False)
+    settings.excludes.remove("**/packages/**")
+    service.save_settings(REPO, "root/app", settings.model_dump(), expected_revision=0)
+    build = service.store.get(service.ensure(REPO, "root/app", artifact.commit_sha)["id"])
+    source = (repo / source_path).read_bytes()
+    coverage = import_artifact(
+        service.store,
+        build,
+        artifact,
+        tracked_blobs={
+            source_path: hashlib.sha1(f"blob {len(source)}\0".encode() + source).hexdigest(),
+        },
+    )
+    service.store.update(build["id"], status="ready", coverage=coverage)
+    assert (
+        service.search(REPO, "root/app", artifact.commit_sha, "value")["hits"][0]["path"]
+        == source_path
+    )
+    assert (
+        service.navigate(REPO, "root/app", artifact.commit_sha, "value.")["hits"][0]["path"]
+        == source_path
+    )
+    destination = tmp_path / "workspace.zip"
+    service.export(REPO, "root/app", build["id"], destination)
+    with zipfile.ZipFile(destination) as bundle:
+        bundle.extractall(tmp_path / "exported")
+        scip_path = next(name for name in bundle.namelist() if name.endswith(".scip"))
+        assert read_scip(bundle.read(scip_path))[2] == {source_path}
+    with open_index(tmp_path / "exported/index.sqlite") as db:
+        assert search(db, "value")["hits"][0]["path"] == source_path
+        assert navigate(db, "value.")["hits"][0]["path"] == source_path
 
 
 @pytest.mark.parametrize("restore", ["locked", "install"])
