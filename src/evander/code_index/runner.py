@@ -30,6 +30,19 @@ def tracked_files(repo: Path) -> list[str]:
     return [source_path(p.decode()) for p in result.stdout.split(b"\0") if p]
 
 
+def npm_workspaces(package_root: Path, log: Path) -> list[Path]:
+    # Ask the installed npm after restore: its actual dependency tree applies npm's
+    # workspace glob/negation rules and excludes unrelated nested packages.
+    with log.open("ab") as stream:
+        raw = subprocess.check_output(
+            ["npm", "query", ".workspace", "--json"],
+            cwd=package_root,
+            stderr=stream,
+            timeout=30,
+        )
+    return [Path(package["path"]).resolve() for package in json.loads(raw)]
+
+
 def build_artifact(
     repo: Path, sha: str, settings: IndexSettings, output: Path, *, lexical_only: bool = False
 ) -> IndexArtifact:
@@ -94,6 +107,7 @@ def build_artifact(
             except (OSError, subprocess.SubprocessError):
                 installed[tool] = "unavailable"
         restored_npm = set()
+        workspace_owners = {}
         seen_occurrences, seen_relationships, exported_paths = set(), set(), set()
         allowed_paths = {document.path for document in documents}
         for number, (language, project) in enumerate(projects):
@@ -152,6 +166,7 @@ def build_artifact(
                     # Monorepos can have dependencies in more than one ancestor.
                     roots = [p for p in reversed(parents) if (p / "package.json").is_file()]
                     for package_root in roots:
+                        package_root = workspace_owners.get(package_root, package_root)
                         package = json.loads((package_root / "package.json").read_text())
                         if not any(
                             package.get(key)
@@ -171,6 +186,12 @@ def build_artifact(
                                 log=log,
                                 timeout=300,
                             )
+                            if package.get("workspaces"):
+                                workspace_owners.update(
+                                    (member, package_root)
+                                    for member in npm_workspaces(package_root, log)
+                                    if member.is_relative_to(package_root)
+                                )
                             restored_npm.add(package_root)
                         if lock_file.is_file():
                             row[

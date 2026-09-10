@@ -46,6 +46,9 @@ one CPU by default (`worker_cpus`, configurable from 0.1 to 4), and a 1,024-proc
 limit. Only one compiler indexing job can run across the control-plane runtime,
 including jobs for other repositories/directories. A pending submission keeps that
 slot reserved while its outcome is uncertain; retries adopt the same worker job.
+Provisioning failures before compiler submission do not reserve this slot. Cancellation
+waits for the current reconciliation pass, then confirms shutdown before releasing
+capacity. Indexing sessions bootstrap NuGet with the configured host relay.
 If retries fail and stopping the job cannot be confirmed, other compiler builds stay
 queued. Restore worker connectivity and cancel that failed build to confirm shutdown
 and release the slot.
@@ -66,7 +69,8 @@ one hour. APP's frontend lockfiles are currently untracked, so the profile expli
 allows npm to resolve dependencies when a lock is missing. Resulting lock hashes are
 recorded per project. Retain those worker lockfiles to reproduce that resolution.
 The general default requires a package lock. A repository containing only an unrelated
-root lockfile does not satisfy a nested package's dependencies.
+root lockfile does not satisfy a nested package's dependencies. npm workspace members
+share their owning root's restore and lockfile; membership is resolved by npm.
 
 Semantic indexing uses the owning directory's existing semantic provider settings:
 `semantic_embedding_provider`, `semantic_embedding_model`,
@@ -226,7 +230,9 @@ measurement of agent savings. Failed requests can incur unreported provider usag
 Retention defaults to 30 days. Active builds, active Team task/review/ephemeral bindings
 and the newest published snapshot per repository are retained. Old vectors, worker
 sessions, retained refs and unreferenced SQLite content are reclaimed in that order.
-Cleanup retries on failure. If an old vector store's configuration has changed, cleanup
+Cleanup retries on failure, preserving the snapshot and Git pin until worker deletion
+is confirmed. Builds cancelled before provisioning can release their pin without a
+worker session. If an old vector store's configuration has changed, cleanup
 is deferred until that store can be addressed again; it does not silently orphan vectors.
 
 No live deployment is required for tests. Run the focused indexing tests and use

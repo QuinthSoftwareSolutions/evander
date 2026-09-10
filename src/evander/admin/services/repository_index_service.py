@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 import fcntl
 import logging
@@ -126,6 +127,10 @@ class RepositoryIndexService:
 
     def cancel(self, repo: str, directory: str, build_id: str) -> dict:
         self.authorize(repo, directory)
+        with self._lifecycle_lock():
+            return self._cancel(repo, build_id)
+
+    def _cancel(self, repo: str, build_id: str) -> dict:
         build = self.store.get(build_id)
         if build["repo"] != repo:
             raise LookupError("Index build not found")
@@ -160,13 +165,22 @@ class RepositoryIndexService:
                 blobs[path.decode("utf-8")] = sha.decode()
         return blobs
 
-    def reconcile(self, directory: str, *, limit: int = 4) -> dict:
-        """One bounded pass. A filesystem lease prevents duplicate external submissions."""
+    @contextmanager
+    def _lifecycle_lock(self, *, wait: bool = True):
+        """Serialize submission, cancellation and cleanup across processes/instances."""
         self.store.root.mkdir(parents=True, exist_ok=True)
         with (self.store.root / "reconcile.lock").open("a") as lock:
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
             except BlockingIOError:
+                yield False
+                return
+            yield True
+
+    def reconcile(self, directory: str, *, limit: int = 4) -> dict:
+        """One bounded pass. A filesystem lease prevents duplicate external submissions."""
+        with self._lifecycle_lock(wait=False) as acquired:
+            if not acquired:
                 return {"status": "busy", "processed": 0}
             processed, repos = [], set()
             self._refresh_requested_refs(directory)
@@ -211,7 +225,7 @@ class RepositoryIndexService:
                         ],
                     )
                 processed.append(build["id"])
-            self.maintenance(directory)
+            self._maintenance(directory)
             return {"status": "ok", "processed": len(processed), "build_ids": processed}
 
     def _refresh_requested_refs(self, directory: str) -> None:
@@ -241,6 +255,10 @@ class RepositoryIndexService:
                 continue
 
     def maintenance(self, directory: str) -> dict:
+        with self._lifecycle_lock():
+            return self._maintenance(directory)
+
+    def _maintenance(self, directory: str) -> dict:
         from evander_team_addon.code_index import protected_bindings
 
         protected = (
@@ -301,26 +319,34 @@ class RepositoryIndexService:
         settings = IndexSettings.model_validate(build["config"])
         current = IndexSettings.model_validate(self.store.settings(build["repo"])["settings"])
         if not current.enabled or current.index_policy() != settings.index_policy():
-            self.cancel(build["repo"], build["directory"], build["id"])
+            self._cancel(build["repo"], build["id"])
             return
         if build["status"] == "queued":
             # Apply the current CPU budget even to previously queued snapshots.
             build = {**build, "config": {**build["config"], "worker_cpus": current.worker_cpus}}
-            # A submission can succeed remotely before the response is lost. Reserve
-            # the compiler slot durably so retries adopt this job before starting another.
             self.store.update(
-                build["id"], metrics={**build["metrics"], "compiler_submission_pending": True}
+                build["id"], metrics={**build["metrics"], "worker_provisioning_started": True}
             )
-            job_id = self.worker.start(build)
-            if self.store.get(build["id"])["status"] == "cancelled":
-                self.worker.stop({**build, "worker_job_id": job_id})
-                return
+
+            def reserve_submission():
+                self.store.update(
+                    build["id"],
+                    metrics={
+                        **self.store.get(build["id"])["metrics"],
+                        "compiler_submission_pending": True,
+                        "compiler_submission_attempted": True,
+                    },
+                )
+
+            # Keep any earlier uncertain reservation during retries; fresh setup
+            # failures do not reserve compiler capacity. Cancellation holds this lease too.
+            job_id = self.worker.start(build, before_submit=reserve_submission)
             self.store.update(
                 build["id"],
                 status="running",
                 worker_job_id=job_id,
                 metrics={
-                    **build["metrics"],
+                    **self.store.get(build["id"])["metrics"],
                     "started_at": datetime.now(UTC).isoformat(),
                     "compiler_submission_pending": False,
                 },

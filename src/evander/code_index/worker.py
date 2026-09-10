@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import shlex
 
@@ -33,7 +34,7 @@ class IndexWorker:
             timeout_seconds=config.container_worker_request_timeout_seconds,
         )
 
-    def start(self, build: dict) -> str:
+    def start(self, build: dict, *, before_submit: Callable[[], None]) -> str:
         factory = EffectProviderFactory(
             provider_config_resolver=self.components.runtime.provider_config,
             admin_service=self.components,
@@ -49,6 +50,7 @@ class IndexWorker:
             worker_id=config["worker_id"],
             container_image=config["image"],
             existing_agent_behavior="upsert",
+            nuget=True,
             allowed_tools=[],
             ttl_hours=24,
             metadata={"code_index_build_id": build["id"]},
@@ -136,6 +138,9 @@ class IndexWorker:
                 "execution_kind": "code_index",
             },
         )
+        # Provisioning and clone failures cannot have started the compiler. Persist
+        # the reservation only at the boundary where a lost response becomes ambiguous.
+        before_submit()
         return client.create(request).job_id
 
     def status(self, build: dict) -> str:
@@ -157,6 +162,8 @@ class IndexWorker:
         )
 
     def stop(self, build: dict) -> None:
+        if self._session(build) is None:
+            return
         try:
             self.client(build).stop(build["worker_job_id"] or build["id"])
         except Exception as exc:
@@ -164,7 +171,26 @@ class IndexWorker:
                 raise
 
     def cleanup(self, build: dict) -> None:
-        self.components.vm_agent_admin.cleanup_container_session(build["session_id"])
+        session = self._session(build)
+        if session is not None:
+            lifecycle = session.metadata.get("container_lifecycle", {})
+            if lifecycle.get("cleanup_status") != "cleanup_succeeded":
+                result = self.components.vm_agent_admin.cleanup_container_session(
+                    build["session_id"]
+                )
+                if not result.success:
+                    raise RuntimeError("Index worker cleanup did not succeed")
+        elif build["metrics"].get("worker_provisioning_started") or build["metrics"].get(
+            "failures"
+        ):
+            # Session preparation can allocate storage before its manifest is saved.
+            # Resolve the persisted worker assignment and confirm deletion there too.
+            backend = self.components.vm_agent_admin.container_worker_backend(
+                session_id=build["session_id"],
+                directory_path=build["directory"],
+                worker_id=build["config"]["worker_id"],
+            )
+            backend.delete_session(build["session_id"])
         self.components.managed_git_admin.release_retained_snapshot(
             build["repo"],
             build["directory"],
@@ -173,3 +199,12 @@ class IndexWorker:
             pin_ref="refs/evander/code-index/" + build["id"],
             expected_commit_sha=build["sha"],
         )
+
+    def _session(self, build: dict):
+        session = self.components.runtime.session_repository.get_session(build["session_id"])
+        if session is None and (
+            build["worker_job_id"] or build["metrics"].get("compiler_submission_attempted")
+        ):
+            # Missing state after submission is not evidence of remote shutdown.
+            raise RuntimeError("Index worker session is missing after compiler submission")
+        return session

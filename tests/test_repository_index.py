@@ -250,7 +250,8 @@ def test_cancel_and_failed_rebuild_preserve_published_snapshot(service):
 
 def test_worker_reconciliation_and_restart(service):
     class Worker:
-        def start(self, build):
+        def start(self, build, *, before_submit):
+            before_submit()
             return build["id"]
 
         def status(self, build):

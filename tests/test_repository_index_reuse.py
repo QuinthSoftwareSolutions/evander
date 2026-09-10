@@ -289,7 +289,7 @@ def test_only_one_compiler_job_runs_across_repositories(tmp_path):
     }
     started = []
     worker = SimpleNamespace(
-        start=lambda build: started.append(build) or build["id"],
+        start=lambda build, **kwargs: started.append(build) or build["id"],
         status=lambda build: "running",
     )
     service = RepositoryIndexService(tmp_path, managed, worker=worker)
@@ -317,7 +317,8 @@ def test_uncertain_worker_submission_reserves_capacity_until_confirmed_stopped(t
     }
     submitted = []
 
-    def lost_response(build):
+    def lost_response(build, *, before_submit):
+        before_submit()
         submitted.append(build["id"])
         raise TimeoutError("Worker may have accepted this job")
 
@@ -350,7 +351,7 @@ def test_uncertain_worker_submission_reserves_capacity_until_confirmed_stopped(t
     assert service.store.get(first["id"])["metrics"]["compiler_submission_pending"]
     worker.stop = lambda build: None
     service.cancel(REPO, "root/app", first["id"])
-    worker.start = lambda build: submitted.append(build["id"]) or build["id"]
+    worker.start = lambda build, **kwargs: submitted.append(build["id"]) or build["id"]
     service.reconcile("root/app")
     assert len(submitted) == 4
     assert service.store.get(submitted[-1])["repo"] == other_repo

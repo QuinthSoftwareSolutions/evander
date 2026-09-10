@@ -19,6 +19,9 @@
   one compiler indexing job across the runtime; skip intermediate branch heads.
 - Build compiler indexes in isolated container workers, verify imported Git blobs,
   report partial coverage, and reconcile jobs and retention through workflow nodes.
+- Bootstrap relay-aware NuGet, honor npm workspace root lockfiles, reserve compiler
+  capacity at submission, and serialize cancellation with reconciliation. Retain
+  failed worker cleanup for retry and reclaim cancelled, unprovisioned snapshots.
 - Add revision-checked Admin Web controls, gateway tools and operator CLI commands.
 - Export versioned SQLite/SCIP bundles with a standalone Python query tool and optional
   embeddings for external coding workflows. Include a pinned worker image build,

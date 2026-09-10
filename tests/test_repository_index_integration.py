@@ -156,18 +156,26 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
     )
     monkeypatch.setattr("evander.code_index.worker.EffectProviderFactory", Factory)
     monkeypatch.setattr(worker, "client", lambda _: client)
-    assert worker.start(build) == build["id"]
+    reservations = []
+    assert (
+        worker.start(build, before_submit=lambda: reservations.append(build["id"])) == build["id"]
+    )
     assert effects[-1].pinned_commit_sha == SHA
     assert effects[-1].git_access_mode == "read-only"
     assert jobs[0].working_directory == "/home/agent/repos/APP"
     assert "/home/agent/repos/APP" in jobs[0].command[-1]
     assert not effects[0].allowed_tools
+    assert effects[0].nuget is True
+    assert reservations == [build["id"]]
     client.get = lambda _: SimpleNamespace(status="exited", metadata={"exit_code": 0}, error=None)
     assert worker.status(build) == "completed"
     client.get = lambda _: SimpleNamespace(status="exited", metadata={"exit_code": 137}, error=None)
     assert worker.status(build) == "failed"
     client.get = lambda _: SimpleNamespace(job_id=build["id"])
-    assert worker.start(build) == build["id"]
+    assert (
+        worker.start(build, before_submit=lambda: pytest.fail("Adoption resubmitted"))
+        == build["id"]
+    )
     assert len(jobs) == 1  # Restart adopts the original job.
     assert jobs[0].resource_limits.cpus == 1
     runner_settings = json.loads(writes[0].files[0].content)
