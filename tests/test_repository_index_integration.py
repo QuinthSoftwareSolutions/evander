@@ -15,7 +15,8 @@ from starlette.applications import Starlette
 
 from evander.admin.web.repository_index import repository_index_routes
 from evander.code_index.access import authorize_session
-from evander.code_index.models import IndexSettings
+from evander.code_index.importer import import_artifact
+from evander.code_index.models import IndexArtifact, IndexSettings, SourceDocument, digest
 from evander.code_index.semantic import IndexSemantic
 from evander.code_index.worker import IndexWorker
 from evander.effects.registry import EffectProviderFactory
@@ -41,14 +42,18 @@ def service(tmp_path):
     result.save_settings(
         REPO,
         "root/app",
-        IndexSettings(enabled=True, scip=True, semantic=False, refresh_on_git_change=False).model_dump(),
+        IndexSettings(
+            enabled=True, scip=True, semantic=False, refresh_on_git_change=False
+        ).model_dump(),
         expected_revision=0,
     )
     return result
 
 
 @pytest.mark.parametrize("disable_scip", [False, True])
-def test_current_policy_applies_to_queries_exports_and_pending_builds(service, tmp_path, disable_scip):
+def test_current_policy_applies_to_queries_exports_and_pending_builds(
+    service, tmp_path, disable_scip
+):
     published = publish(service)
     pending = service.ensure(REPO, "root/app", OTHER_SHA)
     settings = service.settings(REPO, "root/app")
@@ -348,7 +353,9 @@ def test_qdrant_batch_keeps_snapshot_filters():
 
 
 @pytest.mark.parametrize("scip", [False, True])
-def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monkeypatch, tmp_path, scip):
+def test_semantic_cache_reused_across_commits_and_portable_vectors(
+    service, monkeypatch, tmp_path, scip
+):
     service.semantic = IndexSemantic(
         QueryRuntimeContext(
             provider_config={"semantic_embedding_dimensions": 2, "semantic_embedding_model": "test"}
@@ -431,6 +438,83 @@ def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monk
     assert result["hits"][0]["path"] == "Domain/Retry.cs"
 
 
+def test_cached_semantic_vectors_drain_beyond_new_embedding_limit(service, monkeypatch):
+    service.semantic = IndexSemantic(
+        QueryRuntimeContext(
+            provider_config={"semantic_embedding_dimensions": 2, "semantic_embedding_model": "test"}
+        )
+    )
+    saved = service.settings(REPO, "root/app")
+    service.save_settings(
+        REPO,
+        "root/app",
+        {**saved["settings"], "semantic": True, "scip": False},
+        expected_revision=saved["revision"],
+    )
+    build = service.ensure(REPO, "root/app", SHA)
+    build = service.store.get(build["id"])
+    documents = [
+        SourceDocument(path=f"Domain/Cached{i}.cs", text=f"class Cached{i} {{}}\n")
+        for i in range(513)
+    ]
+    import_artifact(service.store, build, IndexArtifact(commit_sha=SHA, documents=documents))
+    fingerprint = digest(build["embedding"])
+    with service.store.connect(write=True) as db:
+        hashes = [
+            row[0]
+            for row in db.execute(
+                "SELECT DISTINCT hash FROM chunks WHERE snapshot=?", (build["id"],)
+            )
+        ]
+        db.executemany(
+            "INSERT INTO embeddings VALUES(?,?,?,?)",
+            ((REPO, fingerprint, value, "[1.0, 0.0]") for value in hashes),
+        )
+
+    class Embeddings:
+        last_usage = {}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def embed_texts(self, texts):
+            pytest.fail("Cached vectors must not call the embedding provider")
+
+    upserted = []
+
+    class Vectors:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ensure_collection(self, *args, **kwargs):
+            pass
+
+        def upsert_points(self, collection, **kwargs):
+            upserted.extend(kwargs["points"])
+
+    monkeypatch.setattr("evander.code_index.semantic.OpenAIEmbeddingClient", Embeddings)
+    monkeypatch.setattr("evander.code_index.semantic.QdrantClient", Vectors)
+
+    assert service.semantic.index_batch(service.store, build, limit=1, cached_limit=1024)
+    metrics = service.store.get(build["id"])["metrics"]
+    assert metrics["embedded_chunks"] == 513
+    assert metrics["embedding_cache_hits"] == 513
+    assert "embedding_requests" not in metrics
+    assert len(upserted) == 513
+
+
 def test_admin_controls_authorization_revision_cancel_and_export(service, monkeypatch, tmp_path):
     published = publish(service)
     queued = service.ensure(REPO, "root/app", OTHER_SHA)
@@ -479,7 +563,10 @@ def test_admin_controls_authorization_revision_cancel_and_export(service, monkey
             assert (
                 await client.patch(
                     base,
-                    json={"expected_revision": current["revision"], "settings": current["settings"]},
+                    json={
+                        "expected_revision": current["revision"],
+                        "settings": current["settings"],
+                    },
                 )
             ).status_code == 200
             assert (await client.get(base)).json()["settings"]["scip"] is False

@@ -87,9 +87,10 @@ also need rebuilding because their policy fingerprint predates this setting. Reb
 and deploy the indexing worker image together with this product update.
 
 `config/repository-indexing/app.json.example` is an opt-in APP profile. Set its worker
-ID if the directory has no appropriate default. The profile explicitly enables SCIP, discovers all tracked
-`.csproj` files and lists the APP frontend configurations explicitly. Its timeout is
-one hour. APP's frontend lockfiles are currently untracked, so the profile explicitly
+ID if the directory has no appropriate default. The profile explicitly enables SCIP,
+indexes the tracked `Src/App.slnx` workspace in one Roslyn invocation and lists the APP
+frontend configurations explicitly. Its timeout is one hour. APP's frontend lockfiles
+are currently untracked, so the profile explicitly
 allows npm to resolve dependencies when a lock is missing. Resulting lock hashes are
 recorded per project. Retain those worker lockfiles to reproduce that resolution.
 The general default requires a package lock. A repository containing only an unrelated
@@ -251,8 +252,9 @@ each new snapshot; unchanged embedding content is reused, not compiler outputs.
 Jobs and sessions have deterministic IDs for restart adoption. Git commits are retained
 under `refs/evander/code-index/BUILD_ID`. Imports validate source blobs against that
 commit and publish only after an atomic SQLite import. Artifacts are limited to 512 MiB.
-Semantic ingestion batches up to 32 texts per request, 512 chunks per pass, with a time
-budget between requests. Embedding input is capped at 2,000 characters per chunk;
+Semantic ingestion batches up to 32 texts per request and limits each pass to 512 new
+embeddings. Cached vectors can drain up to 16,384 chunks per pass; both paths retain a
+30-second time budget between requests. Embedding input is capped at 2,000 characters per chunk;
 text retrieval retains the full stored chunk. Provider failures leave explicit partial
 coverage; lexical queries remain available. Lexical queries also work after the atomic
 import while semantic ingestion is still running. Changing embedding settings requires a
