@@ -66,7 +66,7 @@ def indexed_history(tmp_path):
     service.save_settings(
         REPO,
         "root/app",
-        IndexSettings(enabled=True, semantic=False, refresh_on_git_change=False).model_dump(),
+        IndexSettings(enabled=True, scip=True, semantic=False, refresh_on_git_change=False).model_dump(),
         expected_revision=0,
     )
     build = service.store.get(service.ensure(REPO, "root/app", base)["id"])

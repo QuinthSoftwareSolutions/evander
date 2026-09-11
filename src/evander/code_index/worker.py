@@ -51,7 +51,7 @@ class IndexWorker:
             worker_id=config["worker_id"],
             container_image=config["image"],
             existing_agent_behavior="upsert",
-            nuget=True,
+            nuget=settings.scip,
             allowed_tools=[],
             ttl_hours=24,
             metadata={"code_index_build_id": build["id"]},
@@ -118,12 +118,11 @@ class IndexWorker:
             "--output",
             "/artifacts/code-index.json",
         ]
-        # Profile seeds package/Git relay configuration; keep the pinned compiler first.
-        shell = (
-            container_shell_preamble()
-            + "export DOTNET_ROOT=/opt/code-index/dotnet\nexport PATH=/opt/code-index/node/bin:/opt/code-index/typescript/node_modules/.bin:/opt/code-index/dotnet:$PATH\nexec "
-            + shlex.join(command)
-        )
+        shell = container_shell_preamble()
+        if settings.scip:
+            # Profile seeds package/Git relay configuration; keep the pinned compiler first.
+            shell += "export DOTNET_ROOT=/opt/code-index/dotnet\nexport PATH=/opt/code-index/node/bin:/opt/code-index/typescript/node_modules/.bin:/opt/code-index/dotnet:$PATH\n"
+        shell += "exec " + shlex.join(command)
         request = WorkerJobRequest(
             session_id=build["session_id"],
             job_id=build["id"],

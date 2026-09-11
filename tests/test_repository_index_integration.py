@@ -41,17 +41,21 @@ def service(tmp_path):
     result.save_settings(
         REPO,
         "root/app",
-        IndexSettings(enabled=True, semantic=False, refresh_on_git_change=False).model_dump(),
+        IndexSettings(enabled=True, scip=True, semantic=False, refresh_on_git_change=False).model_dump(),
         expected_revision=0,
     )
     return result
 
 
-def test_current_policy_applies_to_queries_exports_and_pending_builds(service, tmp_path):
+@pytest.mark.parametrize("disable_scip", [False, True])
+def test_current_policy_applies_to_queries_exports_and_pending_builds(service, tmp_path, disable_scip):
     published = publish(service)
     pending = service.ensure(REPO, "root/app", OTHER_SHA)
     settings = service.settings(REPO, "root/app")
-    settings["settings"]["excludes"].append("Domain/**")
+    if disable_scip:
+        settings["settings"]["scip"] = False
+    else:
+        settings["settings"]["excludes"].append("Domain/**")
     service.save_settings(
         REPO, "root/app", settings["settings"], expected_revision=settings["revision"]
     )
@@ -126,7 +130,12 @@ def test_provider_factories_materialize_index_nodes_and_enforce_directory_scope(
     )
 
 
-def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, monkeypatch):
+@pytest.mark.parametrize("scip", [False, True])
+def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, monkeypatch, scip):
+    saved = service.settings(REPO, "root/app")
+    service.save_settings(
+        REPO, "root/app", {**saved["settings"], "scip": scip}, expected_revision=saved["revision"]
+    )
     build = service.store.get(service.ensure(REPO, "root/app", SHA)["id"])
     effects, jobs, writes = [], [], []
     resolved_image = "registry.test/code-index@sha256:" + "1" * 64
@@ -171,7 +180,8 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
     assert jobs[0].working_directory == "/home/agent/repos/APP"
     assert "/home/agent/repos/APP" in jobs[0].command[-1]
     assert not effects[0].allowed_tools
-    assert effects[0].nuget is True
+    assert effects[0].nuget is scip
+    assert ("export DOTNET_ROOT=" in jobs[0].command[-1]) is scip
     assert effects[0].container_image == "code-index"
     assert jobs[0].image == resolved_image
     assert reservations == [build["id"]]
@@ -187,6 +197,7 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
     assert len(jobs) == 1  # Restart adopts the original job.
     assert jobs[0].resource_limits.cpus == 1
     runner_settings = json.loads(writes[0].files[0].content)
+    assert runner_settings["scip"] is scip
     assert "worker_cpus" not in runner_settings
     assert "refresh_interval_seconds" not in runner_settings
     assert runner_settings["timeout_seconds"] == build["config"]["timeout_seconds"]
@@ -336,7 +347,8 @@ def test_qdrant_batch_keeps_snapshot_filters():
     assert [p["payload"]["snapshot"] for p in requests[0]["points"]] == ["build-1", "build-2"]
 
 
-def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monkeypatch, tmp_path):
+@pytest.mark.parametrize("scip", [False, True])
+def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monkeypatch, tmp_path, scip):
     service.semantic = IndexSemantic(
         QueryRuntimeContext(
             provider_config={"semantic_embedding_dimensions": 2, "semantic_embedding_model": "test"}
@@ -344,6 +356,7 @@ def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monk
     )
     saved = service.settings(REPO, "root/app")
     saved["settings"]["semantic"] = True
+    saved["settings"]["scip"] = scip
     service.save_settings(REPO, "root/app", saved["settings"], expected_revision=saved["revision"])
     requests, points = [], []
 
@@ -381,10 +394,10 @@ def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monk
 
     monkeypatch.setattr("evander.code_index.semantic.OpenAIEmbeddingClient", Embeddings)
     monkeypatch.setattr("evander.code_index.semantic.QdrantClient", Vectors)
-    first = publish(service)
+    first = publish(service, scip=scip)
     assert service.semantic.index_batch(service.store, first)
     count = len(requests)
-    second = publish(service, OTHER_SHA)
+    second = publish(service, OTHER_SHA, scip=scip)
     assert service.semantic.index_batch(service.store, second)
     assert len(requests) == count
     assert service.store.get(second["id"])["metrics"]["embedding_cache_hits"] == count
@@ -392,7 +405,9 @@ def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monk
     destination = tmp_path / "vectors.zip"
     service.export(REPO, "root/app", second["id"], destination, include_embeddings=True)
     with zipfile.ZipFile(destination) as bundle:
-        assert json.loads(bundle.read("manifest.json"))["embedding"]["dimensions"] == 2
+        manifest = json.loads(bundle.read("manifest.json"))
+        assert manifest["embedding"]["dimensions"] == 2
+        assert manifest["coverage"]["navigation"] == ("ready" if scip else "disabled")
         assert b"http://" not in bundle.read("manifest.json")
         bundle.extractall(tmp_path / "external-vectors")
     folder = tmp_path / "external-vectors"
@@ -458,6 +473,16 @@ def test_admin_controls_authorization_revision_cancel_and_export(service, monkey
             assert (
                 await client.post(base + f"/builds/{queued['id']}/cancel", json={})
             ).status_code == 200
+            current = (await client.get(base)).json()
+            assert current["settings"]["scip"] is True
+            current["settings"]["scip"] = False
+            assert (
+                await client.patch(
+                    base,
+                    json={"expected_revision": current["revision"], "settings": current["settings"]},
+                )
+            ).status_code == 200
+            assert (await client.get(base)).json()["settings"]["scip"] is False
 
     asyncio.run(exercise())
 

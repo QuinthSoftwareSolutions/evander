@@ -2523,11 +2523,16 @@ placeholder API key and never receive these host credentials.
 Repository index settings are revision-checked records managed through Admin Web or
 `evander-cli code-index configure`, stored in `runtime/code-index/state.db`. Defaults:
 `enabled=false`, `tracked_ref=main`, `image=code-index`,
-`refresh_on_git_change=true`, `refresh_interval_seconds=3600`, `worker_cpus=1`, `semantic=true`,
+`refresh_on_git_change=true`, `refresh_interval_seconds=3600`, `worker_cpus=1`, `semantic=true`, `scip=false`,
 `npm_restore=locked`, `timeout_seconds=1800`, `retention_days=30`, and
 `max_file_bytes=524288`. Optional `worker_id` selects an existing container worker.
 `image` selects an approved worker image alias; register `code-index` with the deployed
 `evander-code-index:1` image reference in the selected worker's image catalog.
+`scip=true` opts into C#/TypeScript symbol navigation and its language toolchains;
+otherwise jobs skip NuGet bootstrap, package restore and compiler analysis. C# SCIP
+uses Roslyn semantic analysis after restore without a separate `dotnet build`.
+Existing settings that omit `scip` default to off. The new analysis-policy fingerprint
+requires rebuilding older snapshots; changing `scip` also requires a new snapshot.
 Only one compiler indexing job runs across the runtime. Team task/review preparation
 reads existing exact or ancestor coverage without starting builds. The legacy
 `index_task_commits` flag defaults to false and is ignored even when true.

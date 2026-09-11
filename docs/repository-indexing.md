@@ -1,7 +1,7 @@
 # Repository indexing
 
-Repository indexes provide text search, optional semantic search, and C#/TypeScript
-symbol navigation for an exact managed Git commit. Agents can also reuse an indexed
+Repository indexes provide text search, optional semantic search, and opt-in SCIP
+symbol navigation for C#/TypeScript at an exact managed Git commit. Agents can also reuse an indexed
 ancestor for unchanged files in their assigned commit, with explicit provenance.
 Indexes are portable: export a
 snapshot and query it without an Evander installation, gateway, worker, or Qdrant server.
@@ -60,7 +60,8 @@ including jobs for other repositories/directories. A pending submission keeps th
 slot reserved while its outcome is uncertain; retries adopt the same worker job.
 Provisioning failures before compiler submission do not reserve this slot. Cancellation
 waits for the current reconciliation pass, then confirms shutdown before releasing
-capacity. Indexing sessions bootstrap NuGet with the configured host relay.
+capacity. Indexing sessions bootstrap NuGet with the configured host relay only when
+SCIP is enabled. Text/semantic-only jobs do not invoke .NET, npm or SCIP tools.
 If retries fail and stopping the job cannot be confirmed, other compiler builds stay
 queued. Restore worker connectivity and cancel that failed build to confirm shutdown
 and release the slot.
@@ -74,8 +75,19 @@ owners can view coverage and export published snapshots. Unlock privileged opera
 to change settings, build, rebuild or cancel. Settings saves require the revision
 shown by the last load; concurrent edits return HTTP 409.
 
+**SCIP symbol navigation** is off by default (`scip=false`). Enable it to index
+definitions, references and implementations using the language tools and project
+dependencies on the worker. Text and semantic search work independently of SCIP.
+The standard indexing image bundles both language toolchains even when SCIP is off.
+
+Existing settings that omit `scip` also default to off. Set `scip=true` explicitly to
+continue compiler navigation. Changing this setting changes snapshot identity; build
+a new snapshot before querying or exporting under the new policy. Pre-upgrade snapshots
+also need rebuilding because their policy fingerprint predates this setting. Rebuild
+and deploy the indexing worker image together with this product update.
+
 `config/repository-indexing/app.json.example` is an opt-in APP profile. Set its worker
-ID if the directory has no appropriate default. The profile discovers all tracked
+ID if the directory has no appropriate default. The profile explicitly enables SCIP, discovers all tracked
 `.csproj` files and lists the APP frontend configurations explicitly. Its timeout is
 one hour. APP's frontend lockfiles are currently untracked, so the profile explicitly
 allows npm to resolve dependencies when a lock is missing. Resulting lock hashes are
@@ -88,7 +100,7 @@ Semantic indexing uses the owning directory's existing semantic provider setting
 `semantic_embedding_provider`, `semantic_embedding_model`,
 `semantic_embedding_dimensions`, `semantic_vector_distance`, `openai_api_base_url`,
 `openai_api_key_env`, `qdrant_base_url` and `qdrant_api_key_env`. Credentials stay on
-the control plane. Disable semantic indexing to use text and symbol search alone.
+the control plane. Disable semantic indexing to use text search with optional symbol navigation.
 
 Import `config/workflow-packs/repository-indexing.v1-example.json` through the workflow
 editor into the repository's owning directory, or an authorized ancestor. Its minute
@@ -172,7 +184,11 @@ editing or issuing review findings.
 
 Each snapshot reports text, semantic and navigation coverage separately, with project
 statuses and diagnostics. A project restore failure does not claim compiler coverage.
-C# build/workspace failures can retain partial navigation. Angular HTML templates,
+When SCIP is off, navigation reports `disabled`; successful enabled indexes can still
+publish a `ready` snapshot. `code_navigate` returns `disabled` with no hits for that snapshot.
+C# indexing restores dependencies and runs SCIP's Roslyn semantic analysis without a
+separate `dotnet build`. Workspace failures can retain partial navigation; projects
+that require build-generated inputs may have incomplete coverage. Angular HTML templates,
 styles, Markdown and SQL provide text/semantic retrieval; SCIP does not provide Angular
 template navigation. Source-generated code participates in compilation, but generated
 and untracked files are excluded from retrieval/export. Large sources above the

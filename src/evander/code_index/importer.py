@@ -15,6 +15,10 @@ def validate_artifact(
     if artifact.commit_sha != build["sha"] or artifact.toolchain != TOOLCHAIN:
         raise ValueError("Index artifact commit or toolchain does not match the requested snapshot")
     settings = IndexSettings.model_validate(build["config"])
+    if not settings.scip and (
+        artifact.occurrences or artifact.relationships or artifact.projects or artifact.scip_files
+    ):
+        raise ValueError("SCIP data requires scip=true in the requested snapshot")
     documents = {}
     for document in artifact.documents:
         if document.path in documents:
@@ -139,16 +143,23 @@ def import_artifact(
             db.execute("INSERT INTO scip_files VALUES(?,?,?)", (build["id"], name, data))
         projects = artifact.projects
         navigation = bool(projects) and all(p.get("status") == "ready" for p in projects)
+        scip_enabled = IndexSettings.model_validate(build["config"]).scip
         coverage = {
             "lexical": "ready",
             "semantic": "pending" if build["config"]["semantic"] else "disabled",
-            "navigation": "ready" if navigation else "partial" if occurrences else "unavailable",
+            "navigation": "disabled"
+            if not scip_enabled
+            else "ready"
+            if navigation
+            else "partial"
+            if occurrences
+            else "unavailable",
             "projects": projects,
             "documents": len(documents),
             "occurrences": len(occurrences),
             "chunks": chunk_count,
             "navigation_documents": len({item.path for item in occurrences}),
-            "navigation_languages": ["cs", "ts", "tsx"],
+            "navigation_languages": ["cs", "ts", "tsx"] if scip_enabled else [],
             "templates": "lexical-only",
         }
         db.execute(

@@ -66,7 +66,7 @@ def main():
     coverage = import_artifact(service.store, build, artifact, tracked_blobs=blobs)
     import_seconds = time.monotonic() - started
     service.store.update(
-        build["id"], status="ready" if coverage["navigation"] == "ready" else "partial"
+        build["id"], status="ready" if coverage["navigation"] in {"ready", "disabled"} else "partial"
     )
     rows = []
     allowed = [

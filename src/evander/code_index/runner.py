@@ -110,6 +110,8 @@ def build_artifact(
     artifact = IndexArtifact(commit_sha=sha, documents=documents, diagnostics=diagnostics)
     if lexical_only:
         artifact.diagnostics.append("Lexical-only evaluation: compiler navigation was not run")
+    elif not settings.scip:
+        artifact.diagnostics.append("SCIP symbol navigation is disabled")
     else:
         projects = [
             ("dotnet", p)
@@ -162,24 +164,7 @@ def build_artifact(
                         timeout=300,
                         env=dotnet_env,
                     )
-                    try:
-                        run(
-                            [
-                                "dotnet",
-                                "build",
-                                project,
-                                "--no-restore",
-                                "-p:EnableWindowsTargeting=true",
-                                "--verbosity",
-                                "quiet",
-                            ],
-                            cwd=repo,
-                            log=log,
-                            timeout=settings.timeout_seconds,
-                            env=dotnet_env,
-                        )
-                    except subprocess.CalledProcessError:
-                        row["compilation"] = "failed"
+                    # SCIP loads Roslyn semantic models without a separate application build.
                     command = [
                         tool,
                         "index",
@@ -270,9 +255,7 @@ def build_artifact(
                     )
                 )
                 row.update(
-                    status="partial"
-                    if workspace_failed or row.get("compilation") == "failed"
-                    else "ready",
+                    status="partial" if workspace_failed else "ready",
                     documents=len(paths),
                 )
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
