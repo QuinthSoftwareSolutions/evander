@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-11 - Session copy image selectors (0.39.1)
+
+- Use stored VM template and container image aliases when provisioning copied
+  sessions, allowing session and Team copies to use configured images.
+- Cover default and custom images through the session copy provisioning path.
+
 ## 2026-09-11 - Copy Team session configurations (0.39.0)
 
 - Default Team copying to automatic provisioning of fresh sessions with the

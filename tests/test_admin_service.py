@@ -2041,19 +2041,37 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     assert agents[0].host["image_alias"] == "dotnet-playwright"
 
 
+@pytest.mark.parametrize(
+    "image_metadata",
+    [
+        {},
+        {"image": "runner-base:latest", "image_alias": None},
+        {"image": "runner-dotnet-playwright:2026-06-05", "image_alias": "dotnet-playwright"},
+    ],
+    ids=["no-image-metadata", "default-image", "custom-image-alias"],
+)
 def test_copy_container_agent_preserves_policy_with_fresh_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, image_metadata: dict[str, str | None]
 ) -> None:
     from evander.session_auth import ensure_session_mcp_auth_token, session_mcp_auth_token
 
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     assert service.operations_admin.write_directory_domain_config(
-        "root", "providers", {"container_worker_base_url": "http://worker.test:11888"}
+        "root", "providers", {
+            "container_worker_base_url": "http://worker.test:11888",
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+            },
+        }
     ).ok
     service.skill_admin.create_skill({"name": "copy.skill", "content": "# Copy skill\n"})
     written_files: dict[str, str] = {}
 
     def prepare_session(self, request):
+        assert request.metadata["container_worker"] == (
+            image_metadata or {"image": "runner-base:latest", "image_alias": None}
+        )
         return WorkerSessionRecord(
             session_id=request.session_id,
             root_path=f"/worker/{request.session_id}",
@@ -2097,6 +2115,7 @@ def test_copy_container_agent_preserves_policy_with_fresh_identity(
         expires_at=datetime.now(UTC) - timedelta(days=1),
         metadata={
             "execution_backend": "container_worker_vm", "target_name": "source-target",
+            "container_worker": image_metadata,
             "model_provider_mode": "openai_public", "agent_provider": "codex",
             "dotnet": True, "nuget": True, "playwright": True,
             "codex_skills": ["copy.skill"], "labels": {"purpose": "development"},
@@ -2131,6 +2150,9 @@ def test_copy_container_agent_preserves_policy_with_fresh_identity(
     assert copied.metadata["http_targets"] == source.metadata["http_targets"]
     assert copied.metadata["capability_profile"] == "source-profile"
     assert copied.metadata["assistant_read_only"] is True
+    assert copied.metadata["container_worker"] == (
+        image_metadata or {"image": "runner-base:latest", "image_alias": None}
+    )
     assert "/home/agent/.config/evander/codex/skills/copy.skill/SKILL.md" in written_files
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in written_files
     assert "DOTNET_ROOT" in written_files["/home/agent/.profile"]
@@ -2141,41 +2163,65 @@ def test_copy_container_agent_preserves_policy_with_fresh_identity(
         service.vm_agent_admin.submit_admin_agent_copy(source, session_id=" ")
 
 
+@pytest.mark.parametrize(
+    ("image_alias", "image_ref"),
+    [
+        ("default", "ubuntu-24.04-server-cloudimg-amd64.img"),
+        ("gpu", "ubuntu-24.04-gpu.img"),
+    ],
+)
 def test_copy_vm_agent_uses_fresh_vm_and_preserves_configuration(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, image_alias: str, image_ref: str
 ) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    assert service.operations_admin.write_directory_domain_config(
+        "root", "vm", {
+            "libvirt_vm_default_template": "default",
+            "libvirt_vm_templates": {
+                "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "gpu": "ubuntu-24.04-gpu.img",
+            },
+        }
+    ).ok
+    image_metadata = {"image_ref": image_ref, "template_alias": image_alias}
     source = SessionManifest(
         session_id="source", vm_id="source-vm", vm_provider="libvirt",
         allowed_tools=[], model="source-model", image_generation_enabled=True,
         quotas={"tool_calls": 17}, expires_at=datetime.now(UTC) + timedelta(days=7),
-        metadata={"dotnet": True, "libvirt_vm_template": {"image_ref": "source-image"}},
+        metadata={"dotnet": True, "libvirt_vm_template": image_metadata},
     )
     service.runtime.session_repository.upsert_session(source)
     payloads = []
 
-    def create_agent(payload):
+    def create_vm(**payload):
         payloads.append(payload)
         service.runtime.session_repository.upsert_session(SessionManifest(
             session_id=payload["session_id"], vm_id=payload["vm_name"],
             allowed_tools=[ToolName.APPROVAL_CHECK], expires_at=datetime.now(UTC) + timedelta(days=7),
+            metadata=payload["metadata"],
         ))
-        return {"success": True, "session_id": payload["session_id"]}
+        return VmActionResult(
+            success=True, vm_name=payload["vm_name"], action="create_vm",
+            message="created", provider="libvirt",
+        )
 
-    monkeypatch.setattr(service.vm_agent_admin, "create_admin_agent", create_agent)
+    monkeypatch.setattr(service.vm_agent_admin, "create_vm", create_vm)
     operation = service.vm_agent_admin.submit_admin_agent_copy(source)
     operation = wait_for_agent_create_operation(
         service, operation.operation_id, statuses={"succeeded", "failed"}
     )
     assert operation.status == "succeeded", operation.error
     assert payloads[0]["vm_name"] != source.vm_id
-    assert payloads[0]["vm_image"] == "source-image"
+    assert payloads[0]["metadata"]["libvirt_vm_template"] == image_metadata
+    assert operation.result["vm_image"] == image_ref
+    assert operation.result["vm_image_alias"] == image_alias
     assert payloads[0]["dotnet"] is True
     copied = service.runtime.session_repository.get_session(operation.session_id)
     assert copied.allowed_tools == []
     assert copied.quotas == source.quotas
     assert copied.image_generation_enabled is True
     assert copied.model == source.model
+    assert copied.metadata["libvirt_vm_template"] == image_metadata
 
 
 def test_create_container_agent_fast_forwards_discord_cursor_for_new_target(

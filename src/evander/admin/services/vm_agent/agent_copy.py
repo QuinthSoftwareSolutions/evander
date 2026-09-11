@@ -74,12 +74,12 @@ def session_copy_create_payload(source: SessionManifest, *, session_id: str) -> 
     if backend == "container_worker_vm":
         payload["target_name"] = session_id
         image = source.metadata.get("container_worker") or {}
-        payload["container_image"] = image.get("image") or image.get("image_alias")
+        payload["container_image"] = image.get("image_alias") or image.get("image")
     else:
         payload["vm_name"] = f"vm-copy-{uuid4().hex}"
         payload["provider"] = source.vm_provider
         template = source.metadata.get("libvirt_vm_template") or {}
-        payload["vm_image"] = template.get("image_ref") or template.get("template_alias")
+        payload["vm_image"] = template.get("template_alias") or template.get("image_ref")
     return payload
 
 
