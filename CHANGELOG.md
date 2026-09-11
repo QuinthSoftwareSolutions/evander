@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-11 - Faster repeat repository indexes (0.40.1)
+
+- Index the APP .NET workspace through its tracked solution instead of starting a
+  separate restore and Roslyn process for every project.
+- Drain up to 16,384 cached semantic vectors per reconciliation pass while retaining
+  the existing 512-chunk bound for new embeddings and the 30-second time budget.
+
 ## 2026-09-11 - Opt-in SCIP symbol navigation (0.40.0)
 
 - Make SCIP symbol navigation opt-in per repository with an Admin Web setting,

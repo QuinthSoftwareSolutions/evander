@@ -2542,6 +2542,9 @@ minimum interval has not elapsed. Explicit operator builds bypass that interval.
 and compiler coverage. The default `**/packages/**` exclusion can be removed for tracked
 npm workspace source. Excludes take precedence over includes. Hard exclusions always
 remove Git metadata, `node_modules`, build output and known settings/credential filenames.
-Embeddings use existing directory-scoped semantic
-provider settings. See [Repository indexing](repository-indexing.md) and
+Prefer a tracked solution in `dotnet_projects` when the repository would otherwise
+discover many individual projects; this lets SCIP load their shared Roslyn workspace once.
+Embeddings use existing directory-scoped semantic provider settings. Cached vectors are
+drained faster than new embedding requests while retaining the reconciliation time bound.
+See [Repository indexing](repository-indexing.md) and
 `config/repository-indexing/app.json.example` for the complete operator flow.

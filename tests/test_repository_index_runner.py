@@ -370,6 +370,15 @@ def test_dotnet_navigation_restores_then_indexes_without_building(tmp_path, monk
         assert kwargs["env"]["NoWarn"] == "CS1591;NU1510"
 
 
+def test_app_profile_indexes_the_solution_as_one_workspace():
+    profile = json.loads(
+        (Path(__file__).parents[1] / "config/repository-indexing/app.json.example").read_text()
+    )
+
+    assert profile["scip"] is True
+    assert profile["dotnet_projects"] == ["Src/App.slnx"]
+
+
 @pytest.mark.parametrize(
     "workspace_failure",
     [
@@ -380,9 +389,7 @@ def test_dotnet_navigation_restores_then_indexes_without_building(tmp_path, monk
 def test_dotnet_navigation_remains_partial_after_workspace_failure(
     tmp_path, monkeypatch, workspace_failure
 ):
-    artifact, _ = dotnet_index_fixture(
-        tmp_path, monkeypatch, workspace_failure=workspace_failure
-    )
+    artifact, _ = dotnet_index_fixture(tmp_path, monkeypatch, workspace_failure=workspace_failure)
 
     assert artifact.projects[0]["status"] == "partial"
     assert artifact.occurrences
@@ -390,9 +397,7 @@ def test_dotnet_navigation_remains_partial_after_workspace_failure(
 
 @pytest.mark.parametrize("failing_command", [["dotnet", "restore"], ["scip-dotnet", "index"]])
 def test_dotnet_navigation_failure_preserves_text_coverage(tmp_path, monkeypatch, failing_command):
-    artifact, calls = dotnet_index_fixture(
-        tmp_path, monkeypatch, failing_command=failing_command
-    )
+    artifact, calls = dotnet_index_fixture(tmp_path, monkeypatch, failing_command=failing_command)
 
     assert artifact.projects[0]["status"] == "failed"
     assert artifact.projects[0]["error"] == "CalledProcessError"
