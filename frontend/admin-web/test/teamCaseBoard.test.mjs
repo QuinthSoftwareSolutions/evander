@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { caseTaskIds, caseBoardPermalink, replaceCaseBoardLocation } from "../../../src/evander_team_addon/ui_static/team-case-board.js";
+import {
+  caseTaskIds,
+  caseBoardPermalink,
+  replaceCaseBoardLocation,
+  taskBoardViewSearchParams,
+} from "../../../src/evander_team_addon/ui_static/team-case-board.js";
 import { addonIframeHashQuery, nextPathFromHash } from "../src/adminRouting.ts";
 
 test("case board follows children and correction origins, not dependencies or unrelated cases", () => {
@@ -31,6 +36,19 @@ test("case permalink encodes IDs, drops privileged query values, and survives sh
   assert.equal(forwarded.get("view"), "task-board");
   assert.equal(forwarded.get("case_id"), "case A&42");
   assert.equal(addonIframeHashQuery(url.hash, "addon:another-addon"), "");
+});
+
+test("task board view requests carry the selected server scope", () => {
+  const params = taskBoardViewSearchParams({
+    caseId: "case A&42",
+    teamId: "team A",
+    projectId: "project&1",
+  });
+  assert.equal(
+    params.toString(),
+    "scope=selection&case_id=case+A%2642&team_id=team+A&project_id=project%261",
+  );
+  assert.equal(taskBoardViewSearchParams().toString(), "scope=selection");
 });
 
 test("embedded case selection notifies shell routing without repeated reloads", () => {
