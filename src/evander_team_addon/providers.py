@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlencode
 
 from evander.addons import addon_storage_path
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
@@ -1391,6 +1392,11 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         "Create Team case",
         "Create a Team intake or lifecycle case, optionally linked to existing execution tasks.",
         [
+            _catalog_field(
+                "reuse_existing", "Reuse existing source", "boolean",
+                description="Reuse a case with the same Team, project, source and source reference without changing it. Requires source and source_ref.",
+                default_value=False,
+            ),
             _catalog_field(
                 "case_id",
                 "Case ID",
@@ -5029,6 +5035,7 @@ class TeamCreateCaseEffectProvider(EffectProviderBase):
         payload = _definition_payload(
             self.effect_definition,
             "case_id",
+            "reuse_existing",
             "team_id",
             "title",
             "description",
@@ -5050,6 +5057,7 @@ class TeamCreateCaseEffectProvider(EffectProviderBase):
         try:
             state, effective_case_id = TeamAdminService(repo).create_case_with_id(
                 case_id=case_id,
+                reuse_existing=_optional_bool(payload.get("reuse_existing"), default=False),
                 team_id=_required_text(payload.get("team_id"), "team_id"),
                 title=_required_text(payload.get("title"), "title"),
                 description=_optional_text(payload.get("description")) or "",
@@ -14206,6 +14214,7 @@ def _case_effect_success_result(
     case = state.cases.get(case_id or "")
     case_payload = case.model_dump(mode="json") if case is not None else None
     return {
+        "task_board_path": "/#addon:team-addon?" + urlencode({"view": "task-board", "case_id": case_id}),
         "success": case is not None,
         "revision": state.revision,
         "case_id": case.id if case is not None else case_id,

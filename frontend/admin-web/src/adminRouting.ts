@@ -115,6 +115,9 @@ const ADDON_IFRAME_HASH_PARAM_NAMES = [
   "view",
   "human_review_request_id",
   "conversation_id",
+  "case_id",
+  "team_id",
+  "project_id",
 ] as const;
 
 export function tabsForExecutionBackend(

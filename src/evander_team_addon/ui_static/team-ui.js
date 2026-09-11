@@ -1,5 +1,6 @@
 import { createTeamMailController } from "./team-mail.js";
 import { createTeamActivityController } from "./team-activity.js";
+import { caseTaskIds, caseBoardPermalink, replaceCaseBoardLocation } from "./team-case-board.js";
 
 const API_BASE = "/api/addons/team-addon";
 
@@ -223,6 +224,7 @@ let showArchived = false;
 let showHandledGovernanceAgenda = false;
 const initialHumanReviewDeepLink = readHumanReviewDeepLink();
 const initialChatDeepLink = readChatDeepLink();
+const initialTaskBoardDeepLink = readAddonDeepLinkParams();
 let selectedChatConversationId = initialChatDeepLink.conversationId || null;
 let chatMobileConversationListOpen = !selectedChatConversationId;
 let activeTeamView =
@@ -230,7 +232,9 @@ let activeTeamView =
     ? "delivery"
     : initialChatDeepLink.enabled
       ? "chat"
-      : readStoredTeamView();
+      : initialTaskBoardDeepLink.get("view") === "task-board"
+        ? "task-board"
+        : readStoredTeamView();
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
@@ -251,11 +255,15 @@ const teamRecordGroupTabs = {};
 const teamRecordGroupPages = {};
 const openTeamInlineCreateForms = new Set();
 const teamRecordPageSize = 6;
-let selectedTaskBoardTeamId = "";
-let selectedTaskBoardProjectId = "";
+let selectedTaskBoardTeamId = initialTaskBoardDeepLink.get("view") === "task-board"
+  ? text(initialTaskBoardDeepLink.get("team_id")) : "";
+let selectedTaskBoardProjectId = initialTaskBoardDeepLink.get("view") === "task-board"
+  ? text(initialTaskBoardDeepLink.get("project_id")) : "";
 let taskBoardViewMode = "board";
 let selectedTaskBoardTaskId = "";
-let taskBoardShowCompleted = false;
+let taskBoardCaseId = initialTaskBoardDeepLink.get("view") === "task-board"
+  ? text(initialTaskBoardDeepLink.get("case_id")) : "";
+let taskBoardShowCompleted = Boolean(taskBoardCaseId);
 let taskBoardQuery = "";
 let taskBoardAssigneeId = "";
 let taskBoardStateFilter = "";
@@ -4180,6 +4188,9 @@ function bindTaskBoardSelectors() {
     }
     const value = text(filter.value);
     switch (filter.dataset.taskBoardFilter) {
+      case "case":
+        selectTaskBoardCase(value);
+        return;
       case "assignee":
         taskBoardAssigneeId = value;
         break;
@@ -4209,6 +4220,23 @@ function bindTaskBoardSelectors() {
   });
 
   document.addEventListener("click", (event) => {
+    const caseButton = event.target?.closest?.("[data-open-case-board]");
+    if (caseButton) {
+      event.preventDefault();
+      selectTaskBoardCase(text(caseButton.dataset.openCaseBoard));
+      setTeamView("task-board");
+      return;
+    }
+    if (event.target?.closest?.("[data-copy-case-board]")) {
+      event.preventDefault();
+      void copyCaseBoardLink();
+      return;
+    }
+    if (event.target?.closest?.("[data-clear-case-board]")) {
+      event.preventDefault();
+      selectTaskBoardCase("");
+      return;
+    }
     const modeButton = event.target?.closest?.("[data-task-board-mode]");
     if (modeButton) {
       event.preventDefault();
@@ -4291,6 +4319,8 @@ async function submitTaskBoardCreateForm(form) {
 }
 
 function resetTaskBoardProjectState() {
+  taskBoardCaseId = "";
+  persistCaseBoardLocation();
   resetTaskBoardFilters();
   selectedTaskBoardTaskId = "";
   expandedTaskBoardTaskIds.clear();
@@ -4299,7 +4329,7 @@ function resetTaskBoardProjectState() {
 }
 
 function resetTaskBoardFilters() {
-  taskBoardShowCompleted = false;
+  taskBoardShowCompleted = Boolean(taskBoardCaseId);
   taskBoardQuery = "";
   taskBoardAssigneeId = "";
   taskBoardStateFilter = "";
@@ -12990,6 +13020,7 @@ function renderCaseItem(item) {
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(item.status || "open")}">${escapeHtml(humanizeToken(item.status || "open"))}</span>
           ${editButton("case", item.id)}
+          ${item.project_id ? `<button type="button" class="record-action secondary" data-open-case-board="${escapeAttr(item.id)}">View task board</button>` : ""}
         </div>
       </div>
       <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
@@ -13146,7 +13177,46 @@ function teamWideReviewProfilesForProject(project) {
     .sort(compareReviewProfiles);
 }
 
+function caseBoardUrl() {
+  const base = window.parent !== window ? window.parent.location.href : `${window.location.origin}/`;
+  return caseBoardPermalink(base, taskBoardCaseId);
+}
+
+function persistCaseBoardLocation() {
+  replaceCaseBoardLocation(window, taskBoardCaseId, {
+    teamId: selectedTaskBoardTeamId,
+    projectId: selectedTaskBoardProjectId,
+  });
+}
+
+function selectTaskBoardCase(caseId) {
+  taskBoardCaseId = caseId;
+  selectedTaskBoardTaskId = "";
+  resetTaskBoardFilters();
+  persistCaseBoardLocation();
+  renderTaskBoard();
+}
+
+async function copyCaseBoardLink() {
+  try {
+    await navigator.clipboard.writeText(caseBoardUrl());
+    setStatus("Case task board link copied.", "success");
+  } catch {
+    setStatus(`Copy this case task board link: ${caseBoardUrl()}`, "warning");
+  }
+}
+
 function renderTaskBoard() {
+  const selectedCase = taskBoardCaseId ? state.cases[taskBoardCaseId] : null;
+  if (taskBoardCaseId) {
+    const caseProject = selectedCase && state.projects[selectedCase.project_id];
+    if (!selectedCase || !isVisibleCase(selectedCase) || !caseProject || !isVisibleProject(caseProject)) {
+      renderIntoActiveTargets("[data-task-board-view]", `<p class="empty-state">This case is unavailable in your current scope. <button type="button" data-clear-case-board>Clear case filter</button></p>`);
+      return;
+    }
+    selectedTaskBoardTeamId = selectedCase.team_id;
+    selectedTaskBoardProjectId = selectedCase.project_id;
+  }
   const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
   const selectedTeam = visibleTeams.find((team) => text(team.id) === text(selectedTaskBoardTeamId)) || null;
   if (selectedTaskBoardTeamId && !selectedTeam) {
@@ -13192,9 +13262,7 @@ function renderTaskBoard() {
     return;
   }
 
-  const projectTasks = values(state.tasks)
-    .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId))
-    .filter((task) => taskBoardLaneForTask(task) !== null);
+  const projectTasks = selectedTaskBoardProjectTasks();
   const hierarchy = buildTaskBoardHierarchyIndex(projectTasks);
   if (taskBoardRootTaskId && !hierarchy.roots.some((task) => text(task.id) === taskBoardRootTaskId)) {
     taskBoardRootTaskId = "";
@@ -13221,8 +13289,9 @@ function renderTaskBoard() {
     "[data-task-board-view]",
     `
       <div class="task-board-context">
-        <strong>${escapeHtml(selectedProject.name || selectedProject.id)}</strong>
+        <strong>${escapeHtml(selectedCase?.title || selectedProject.name || selectedProject.id)}</strong>
         <span>${escapeHtml(selectedTeam.name || selectedTeam.id)} - ${escapeHtml(boardMeta.join(" - "))}</span>
+        ${selectedCase ? `<span>Includes linked tasks and follow-up work.</span><div class="record-actions"><button type="button" class="secondary" data-copy-case-board>Copy link</button><button type="button" class="secondary" data-clear-case-board>Clear case filter</button>${renderCaseSourceLink(selectedCase)}</div>` : ""}
       </div>
       ${renderTaskBoardCreateForm(selectedProject, projectTasks)}
       ${renderTaskBoardControls(projectTasks, hierarchy, terminalCount)}
@@ -13278,7 +13347,7 @@ function renderTaskBoardCreateForm(project, projectTasks) {
             <select name="owner_agent_id" required>${renderSelectOptions(ownerOptions, { placeholder: "Select project agent" })}</select>
           </label>
           <label>Case
-            <select name="case_id">${renderSelectOptions(caseOptions, { placeholder: "No case" })}</select>
+            <select name="case_id">${renderSelectOptions(caseOptions, { selectedValue: taskBoardCaseId, placeholder: "Inherit from parent or origin" })}</select>
           </label>
           <label>Priority <input name="priority" type="number" min="0" value="0" required /></label>
           <label>Title <input name="title" required /></label>
@@ -13334,6 +13403,9 @@ function renderRoleTaskQueueStatus(task) {
 }
 
 function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
+  const caseOptions = values(state.cases)
+    .filter((item) => item.project_id === selectedTaskBoardProjectId && isVisibleCase(item))
+    .sort(compareCases).map((item) => [item.id, item.title]);
   const assignees = [...new Map(projectTasks
     .filter((task) => taskAssignmentKey(task))
     .map((task) => [taskAssignmentKey(task), taskAssignmentLabel(task)])).entries()]
@@ -13368,6 +13440,7 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
       }
     </div>
     <form class="task-board-filters" data-task-board-search-form data-form-id="task-board-search-form" data-form-draft-scope="${escapeAttr(`${selectedTaskBoardTeamId}:${selectedTaskBoardProjectId}`)}" role="search">
+      <label>Case<select data-task-board-filter="case">${renderSelectOptions(caseOptions, { selectedValue: taskBoardCaseId, placeholder: "All cases" })}</select></label>
       <label class="task-board-search-filter">
         Search
         <span class="task-board-search-controls">
@@ -13906,9 +13979,19 @@ function taskBoardBlockerCount(task) {
 }
 
 function selectedTaskBoardProjectTasks() {
-  return values(state.tasks)
-    .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId))
-    .filter((task) => taskBoardLaneForTask(task) !== null);
+  const tasks = values(state.tasks)
+    .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId));
+  const members = taskBoardCaseId ? caseTaskIds(tasks, taskBoardCaseId) : null;
+  return tasks.filter((task) => taskBoardLaneForTask(task) !== null && (!members || members.has(task.id)));
+}
+
+function renderCaseSourceLink(item) {
+  const candidate = item.metadata?.work_item_url || item.source_ref;
+  try {
+    const url = new URL(candidate);
+    if (!["https:", "http:"].includes(url.protocol)) return "";
+    return `<a class="record-action secondary" href="${escapeAttr(url.href)}" target="_blank" rel="noopener noreferrer">Source work item</a>`;
+  } catch { return ""; }
 }
 
 function selectTaskBoardTask(taskId, { reveal = false } = {}) {

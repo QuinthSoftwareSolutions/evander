@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-11 - Case progress task boards (0.38.0)
+
+- Add case filters, source links and shareable task-board permalinks, including
+  completed work and follow-up/correction lineage while preserving normal access checks.
+- Inherit task case membership across operator, workflow and agent task creation,
+  including out-of-order batches; preserve explicitly selected correction cases.
+- Add atomic source-based reuse to the create-case workflow action.
+- Add an optional revision-checked APP backfill helper for linking existing work
+  to intake cases without posting comments or dispatching work.
+- Preserve Team/project selection through embedded-board navigation; cache shared
+  case-less lineage and retain valid agent-action creations when other plans have
+  invalid task graphs. Cover case permalinks through local and Microsoft sign-in.
+
 ## 2026-09-10 - Reliable .NET repository navigation (0.37.2)
 
 - Disable SourceLink metadata generation inside isolated indexing subprocesses so

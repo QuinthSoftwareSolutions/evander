@@ -200,6 +200,7 @@ class TeamSetTaskWorkStateEffectDefinition(EffectDefinition):
 class TeamCreateCaseEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-case"]
     case_id: ConfigValue | None = None
+    reuse_existing: ConfigValue | None = None
     team_id: ConfigValue
     title: ConfigValue
     description: ConfigValue | None = None
@@ -709,6 +710,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "error": {"type": ["string", "null"]},
     },
     "effect:team:create-case": {
+        "task_board_path": {"type": "string"},
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
         "case_id": {"type": ["string", "null"]},
@@ -719,6 +721,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "error": {"type": ["string", "null"]},
     },
     "effect:team:update-case": {
+        "task_board_path": {"type": "string"},
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
         "case_id": {"type": ["string", "null"]},

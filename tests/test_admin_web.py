@@ -10314,8 +10314,12 @@ def test_admin_web_azure_callback_rejects_non_allowlisted_user(tmp_path: Path, m
     assert response.json()["error"] == "Azure sign-in user is not allowed"
 
 
+@pytest.mark.parametrize(
+    "next_path",
+    [None, "/#addon:team-addon?view=task-board&case_id=case+A%2642"],
+)
 def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_session(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, next_path: str | None
 ) -> None:
     monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
@@ -10347,7 +10351,11 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     app.state.auth._exchange_azure_code_for_token = fake_exchange  # type: ignore[method-assign]
     app.state.auth._validate_azure_id_token = fake_validate  # type: ignore[method-assign]
 
-    start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
+    start = client.get(
+        "/api/auth/azure-sso/start",
+        params={"next": next_path} if next_path is not None else {},
+        follow_redirects=False,
+    )
     state = start.headers["location"].split("state=")[1].split("&", 1)[0]
     callback = client.get(
         f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False
@@ -10355,7 +10363,7 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     session = client.get("/api/auth/session")
 
     assert callback.status_code == 303
-    assert callback.headers["location"] == "/#workflow"
+    assert callback.headers["location"] == (next_path or "/#workflow")
     assert "evander_admin_session=" in callback.headers.get("set-cookie", "")
     assert session.status_code == 200
     assert session.json()["authenticated"] is True

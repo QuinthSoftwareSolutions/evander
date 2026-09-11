@@ -284,13 +284,84 @@ def _resolve_new_task_git_base_branch(
     )
 
 
+def inherited_task_case_id(
+    state: TeamState,
+    *,
+    project_id: str,
+    case_id: str | None = None,
+    originating_task_id: str | None = None,
+    parent_task_id: str | None = None,
+    plans: Mapping[str, _TaskCreationPlan] | None = None,
+    seen: frozenset[str] = frozenset(),
+    resolved: dict[tuple[str, str], str | None] | None = None,
+) -> str | None:
+    """Preserve explicit cases; otherwise follow origin, then parent, within a project."""
+    if resolved is None:
+        resolved = {}
+    if case_id is not None:
+        case = _require_present(state.cases, case_id, "case")
+        project = _require_present(state.projects, project_id, "project")
+        if case.team_id != project.team_id or case.project_id not in (None, project_id):
+            raise ValueError(
+                f"task in project {project_id} cannot be linked to case {case_id}: "
+                "case belongs to another project or team"
+            )
+        return case_id
+    for source_id in dict.fromkeys((originating_task_id, parent_task_id)):
+        if source_id is None:
+            continue
+        if source_id in seen:
+            raise ValueError("task case lineage cycle")
+        key = (project_id, source_id)
+        if key not in resolved:
+            source = (plans or {}).get(source_id) or state.tasks.get(source_id)
+            if source is None:
+                kind = "originating task" if source_id == originating_task_id else "parent"
+                raise ValueError(f"task references missing {kind} {source_id}")
+            if source.project_id != project_id:
+                raise ValueError("task case source belongs to another project")
+            resolved[key] = inherited_task_case_id(
+                state,
+                project_id=project_id,
+                case_id=source.case_id,
+                originating_task_id=source.originating_task_id,
+                parent_task_id=source.parent_task_id,
+                plans=plans,
+                seen=seen | {source_id},
+                resolved=resolved,
+            )
+        inherited = resolved[key]
+        if inherited is not None:
+            return inherited
+    return None
+
+
 def _resolve_task_creation_plan_git_bases(
     state: TeamState,
     plans: list[_TaskCreationPlan],
     *,
     git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
 ) -> list[_TaskCreationPlan]:
-    """Resolve Git bases and inherited task authors across a creation batch atomically."""
+    """Resolve cases, Git bases and task authors across a creation batch atomically."""
+
+    original_plans = {plan.task_id: plan for plan in plans}
+    resolved_cases: dict[tuple[str, str], str | None] = {}
+    plans = [
+        replace(
+            plan,
+            case_id=inherited_task_case_id(
+                state,
+                project_id=plan.project_id,
+                case_id=plan.case_id,
+                originating_task_id=plan.originating_task_id,
+                parent_task_id=plan.parent_task_id,
+                plans=original_plans,
+                seen=frozenset({plan.task_id}),
+                resolved=resolved_cases,
+            ),
+        )
+        for plan in plans
+    ]
 
     plans_by_id = {plan.task_id: plan for plan in plans}
     resolved: dict[str, str | None] = {}

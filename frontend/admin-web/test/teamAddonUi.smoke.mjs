@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { chromium } from "playwright";
+import { createServer as createViteServer } from "vite";
+import { fulfillAdminShellBackgroundApiRequest } from "./adminShellHelpers.mjs";
 
 const staticRoot = path.resolve(
   fileURLToPath(new URL("../../../src/evander_team_addon/ui_static", import.meta.url)),
@@ -1569,6 +1571,10 @@ async function createTeamAddonServer(
         await serveStatic(response, "team-mail.js", "application/javascript; charset=utf-8");
         return;
       }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-case-board.js") {
+        await serveStatic(response, "team-case-board.js", "application/javascript; charset=utf-8");
+        return;
+      }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-activity.js") {
         await serveStatic(response, "team-activity.js", "application/javascript; charset=utf-8");
         return;
@@ -3008,6 +3014,137 @@ async function openBrowserPage(
     waitUntil: "domcontentloaded",
   });
   return page;
+}
+
+async function openCaseBoardAdminShell(t, fixturePort, { hash = "#addon:team-addon", authMode = "none" } = {}) {
+  const target = `http://127.0.0.1:${fixturePort}`;
+  const server = await createViteServer({
+    root: path.resolve(fileURLToPath(new URL("..", import.meta.url))),
+    server: { host: "127.0.0.1", port: 0, proxy: { "/addons/": target, "/api/addons/": target } },
+    logLevel: "error",
+  });
+  await server.listen();
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  page.setDefaultTimeout(10000);
+  t.after(async () => {
+    await browser.close();
+    await server.close();
+  });
+  let authenticated = authMode === "none";
+  const loginTargets = [];
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const session = () => ({
+    auth_mode: authMode, auth_required: authMode !== "none", authenticated,
+    username: authenticated ? "operator" : null, display_name: "Test Operator",
+    permissions: ["admin.owner"], effective_permissions: ["admin.owner"],
+    can_manage_users: true, session_id: authenticated ? "test-session" : null,
+    available_login_methods: [authMode], azure_sso_login_url: "/api/auth/azure-sso/start",
+    privileged_operations: { unlocked: false },
+  });
+  await page.route("**/api/**", async route => {
+    const url = new URL(route.request().url());
+    const { pathname } = url;
+    const json = (value) => route.fulfill({ contentType: "application/json", body: JSON.stringify(value) });
+    if (pathname.startsWith("/api/addons/")) return route.continue();
+    if (pathname === "/api/auth/session") return json(session());
+    if (pathname === "/api/auth/login") {
+      authenticated = true;
+      return json(session());
+    }
+    if (pathname === "/api/auth/azure-sso/start") {
+      const next = url.searchParams.get("next");
+      loginTargets.push(next);
+      authenticated = true;
+      // Simulate the identity-provider round trip; backend callback coverage checks
+      // that the signed pending-login cookie preserves this same target.
+      return route.fulfill({ status: 303, headers: { location: next || "/" }, body: "" });
+    }
+    if (await fulfillAdminShellBackgroundApiRequest(route, pathname)) return;
+    if (pathname === "/api/admin/state") return json({
+      selected_directory_path: "root", directory_scoped_config_enabled: false,
+      execution_backend: "libvirt_vm", permissions: ["admin.owner"], effective_permissions: ["admin.owner"],
+      privileged_operations: { unlocked: false }, assistant: { enabled: false, show_launcher_when_disabled: false },
+      addons: [{ addon_id: "team-addon", tab_key: "addon:team-addon", label: "Teams",
+        ui_path: "/addons/team-addon/", api_base_path: "/api/addons/team-addon" }],
+    });
+    if (pathname === "/api/configuration/state") return json({
+      selected_directory_path: "root", selected_directory: { parent_path: null },
+      directory_scoped_config_enabled: false, execution_backend: "libvirt_vm", tree: null,
+    });
+    return json({});
+  });
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/${hash}`, { waitUntil: "domcontentloaded" });
+  return { page, board: page.frameLocator('iframe[title="Teams"]'), loginTargets, errors };
+}
+
+function caseBoardState() {
+  const state = seededGitState();
+  state.cases = { "case A&42": { id: "case A&42", team_id: "team-alpha", project_id: "alpha-project",
+    title: "Case progress regression", status: "open", task_ids: ["task-planned"] } };
+  state.tasks["task-planned"].case_id = "case A&42";
+  state.projects["alpha-other"] = { ...state.projects["alpha-project"], id: "alpha-other", name: "Other Alpha Project" };
+  return state;
+}
+
+test("case board preserves Team and project selection across real Admin shell reloads", { timeout: 45000 }, async (t) => {
+  const { port } = await createTeamAddonServer(t, { initialState: caseBoardState() });
+  const { page, board, errors } = await openCaseBoardAdminShell(t, port);
+  async function afterBoardReload(action) {
+    const previousDocument = await board.locator("body").evaluate(() => performance.timeOrigin);
+    await action();
+    await page.waitForFunction(previous => {
+      const frame = document.querySelector('iframe[title="Teams"]');
+      return frame?.contentWindow.performance.timeOrigin !== previous
+        && frame?.contentDocument?.readyState === "complete";
+    }, previousDocument);
+  }
+  await board.getByRole("tab", { name: "Task board", exact: true }).click();
+  await afterBoardReload(() => board.locator("[data-task-board-team]").selectOption("team-alpha"));
+  await board.locator('[data-task-board-project] option[value="alpha-project"]').waitFor({ state: "attached" });
+  assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-alpha");
+  await afterBoardReload(() => board.locator("[data-task-board-project]").selectOption("alpha-project"));
+  await afterBoardReload(() => board.locator('[data-task-board-filter="case"]').selectOption("case A&42"));
+  await afterBoardReload(() => board.getByRole("button", { name: "Clear case filter", exact: true }).click());
+  await board.locator(".task-board-context strong", { hasText: "Alpha Project" }).waitFor();
+  assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-alpha");
+  assert.equal(await board.locator("[data-task-board-project]").inputValue(), "alpha-project");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await board.locator('[data-task-board-filter="case"]').waitFor();
+  assert.equal(await board.locator("[data-task-board-project]").inputValue(), "alpha-project");
+  await afterBoardReload(() => board.locator('[data-task-board-filter="case"]').selectOption("case A&42"));
+  await board.getByRole("button", { name: "Clear case filter", exact: true }).waitFor();
+  await afterBoardReload(() => board.locator("[data-task-board-project]").selectOption("alpha-other"));
+  await board.locator(".task-board-context strong", { hasText: "Other Alpha Project" }).waitFor();
+  assert.equal(await board.locator("[data-task-board-project]").inputValue(), "alpha-other");
+  await afterBoardReload(() => board.locator("[data-task-board-team]").selectOption("team-beta"));
+  await board.locator('[data-task-board-project] option[value="beta-project"]').waitFor({ state: "attached" });
+  assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-beta");
+  assert.deepEqual(errors, []);
+});
+
+for (const authMode of ["local_password", "azure_sso"]) {
+  test(`case board permalink survives ${authMode} sign-in in the Admin shell`, { timeout: 45000 }, async (t) => {
+    const { port } = await createTeamAddonServer(t, { initialState: caseBoardState() });
+    const hash = "#addon:team-addon?view=task-board&case_id=case+A%2642";
+    const { page, board, loginTargets, errors } = await openCaseBoardAdminShell(t, port, { hash, authMode });
+    await page.getByRole("heading", { name: "Admin Sign In", exact: true }).waitFor();
+    if (authMode === "local_password") {
+      await page.getByRole("textbox", { name: "Username", exact: true }).fill("operator");
+      await page.getByLabel("Password", { exact: true }).fill("test-only-password");
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Sign in with Microsoft", exact: true }).click();
+    }
+    await board.locator(".task-board-context strong", { hasText: "Case progress regression" }).waitFor();
+    assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-alpha");
+    assert.equal(await board.locator("[data-task-board-project]").inputValue(), "alpha-project");
+    assert.equal(await board.locator('[data-task-board-filter="case"]').inputValue(), "case A&42");
+    assert.equal(new URL(page.url()).hash, hash);
+    if (authMode === "azure_sso") assert.deepEqual(loginTargets, [`/${hash}`]);
+    assert.deepEqual(errors, []);
+  });
 }
 
 async function waitForRevision(page, revision) {
