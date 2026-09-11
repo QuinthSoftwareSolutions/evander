@@ -13510,6 +13510,13 @@ def test_admin_web_unlock_endpoint_does_not_start_privileged_helper(
 
 _ADMIN_AGENT_MUTATION_CASES = (
     (
+        "submit-copy-operation",
+        "POST",
+        "/api/admin/agents/copy-operations",
+        {"source_session_id": "session-1"},
+        202,
+    ),
+    (
         "create",
         "POST",
         "/api/admin/agents",
@@ -13652,7 +13659,7 @@ def _install_admin_agent_mutation_stub(
     *,
     directory_path: str = "root",
 ) -> None:
-    if case in {"patch", "delete", "action", "prompt"}:
+    if case in {"patch", "delete", "action", "prompt", "submit-copy-operation"}:
         service.runtime.session_repository.upsert_session(
             SessionManifest(
                 session_id="session-1",
@@ -13665,6 +13672,19 @@ def _install_admin_agent_mutation_stub(
             )
         )
 
+    if case == "submit-copy-operation":
+        def submit_admin_agent_copy(source, *, session_id=None):
+            assert source.session_id == "session-1"
+            assert source.directory_path == directory_path
+            calls.append("submit_admin_agent_copy")
+            return AgentCreateOperation(
+                operation_id="copy-1", status="queued", backend="libvirt_vm",
+                target_name="new-vm", session_id=session_id or "new-session",
+                directory_path=source.directory_path,
+            )
+
+        monkeypatch.setattr(service.vm_agent_admin, "submit_admin_agent_copy", submit_admin_agent_copy)
+        return
     if case == "create":
 
         def create_admin_agent(self, payload):
@@ -14144,6 +14164,13 @@ def test_admin_web_vm_action_requires_owner_for_every_linked_directory(
     ("case", "method", "path", "payload", "expected_status"),
     (
         (
+            "submit-copy-operation",
+            "POST",
+            "/api/admin/agents/copy-operations",
+            {"source_session_id": "session-1"},
+            202,
+        ),
+        (
             "create",
             "POST",
             "/api/admin/agents",
@@ -14202,6 +14229,23 @@ def test_admin_web_agent_mutations_authorize_scoped_owner_at_target_directory(
 
     assert response.status_code == expected_status
     assert calls
+
+
+def test_admin_web_session_copy_rejects_foreign_source_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    calls = []
+    _install_admin_agent_mutation_stub(
+        service, monkeypatch, "submit-copy-operation", calls, directory_path="root"
+    )
+    client = _scoped_owner_admin_web_client(monkeypatch, service, directory_path="root/ops")
+    response = client.post(
+        "/api/admin/agents/copy-operations", json={"source_session_id": "session-1"}
+    )
+    _assert_admin_mutation_forbidden(response)
+    assert calls == []
 
 
 def test_admin_web_rejects_start_when_vm_session_model_is_missing(

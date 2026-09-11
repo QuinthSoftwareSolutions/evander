@@ -615,10 +615,23 @@ deliverables, release packages, and Git promotion state are grouped inside
 grouped inside **Teams** rather than separate People or Roles tabs.
 
 Opening a Team in the **Teams** view exposes **Copy team**. The copy wizard
-previews the current configuration that will be cloned and requires a distinct,
-unregistered core session for every copied persistent agent. Operators can
-select existing sessions discovered in the Team's active project directories or
-create a new VM/container session inline before submitting the copy.
+previews the current configuration and defaults to creating a fresh core session
+for every copied persistent agent. Each new session copies the source session's
+model, capabilities, allowed tools, approval policy, access grants, communication
+settings, quotas, configured image, and recorded toolchain/skill settings. Session
+IDs, VM identities, authentication tokens, and lifetime windows are fresh. Execution
+history and run-scoped approval leases are excluded. Operators can instead select
+existing sessions or use **Configure manually** for a different configuration.
+The wizard displays provisioning progress and retains completed session selections
+if a later session fails, so retrying does not recreate completed sessions.
+
+Session provisioning uses `POST /api/admin/agents/copy-operations` with
+`source_session_id` and an optional new `session_id`; status is available through
+the normal agent create-operation endpoint. Source-directory ownership and
+unlocked privileged operations are required. Configuration is captured on the
+server and copied through the normal VM/container provisioning service. Optional
+toolchain settings can only be reproduced when recorded in the source session;
+guest filesystem contents and manually installed software are not cloned.
 
 The corresponding Admin API is
 `POST /api/addons/team-addon/teams/{team_id}/copy`. Its request contains

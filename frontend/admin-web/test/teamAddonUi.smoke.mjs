@@ -1983,12 +1983,13 @@ async function createTeamAddonServer(
         });
         return;
       }
-      if (request.method === "POST" && pathname === "/api/admin/agents/create-operations") {
+      if (request.method === "POST" && ["/api/admin/agents/create-operations", "/api/admin/agents/copy-operations"].includes(pathname)) {
         const payload = await requestJson(request);
         requests.push({ method: request.method, pathname, payload });
         const operationId = `create-${coreCreateOperations.size + 1}`;
         const backend = payload.backend || "libvirt_vm";
-        const targetName = payload.vm_name || payload.target_name || payload.session_id || "agent-created";
+        const targetName = payload.vm_name || payload.target_name || payload.session_id
+          || (payload.source_session_id ? `copy-${payload.source_session_id}` : "agent-created");
         const sessionId = payload.session_id || `session-${targetName}`;
         const operation = {
           operation_id: operationId,
@@ -3455,7 +3456,7 @@ test("team add-on copies a clean team configuration with existing and new core s
 
   await copyForm
     .locator('[data-team-copy-agent-row="manager"]')
-    .getByRole("button", { name: "Create session" })
+    .getByRole("button", { name: "Configure manually" })
     .click();
   const createDialog = page.locator('[role="dialog"][aria-label="Create and register agent"]');
   await createDialog.waitFor({ state: "visible" });
@@ -3519,6 +3520,64 @@ test("team add-on copies a clean team configuration with existing and new core s
       && request.search.includes("directory_path=root%2Fteam-project"),
     ),
   );
+});
+
+test("team add-on copies all source sessions by default without individual setup", async (t) => {
+  const { port, requests, state: serverState } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
+  const form = page.locator("form[data-team-copy-form]");
+  const selects = form.locator("[data-team-copy-session-select]");
+  await form.waitFor({ state: "visible" });
+  assert.equal(await selects.count(), 4);
+  for (const select of await selects.all()) {
+    assert.equal(await select.inputValue(), "");
+    assert.match(await select.locator("option:checked").innerText(), /Copy source session configuration/);
+  }
+  await form.locator('[name="name"]').fill("Automatic Copy");
+  await form.getByRole("button", { name: "Copy team" }).click();
+  await waitForRevision(page, 9);
+  const copies = requests.filter((request) => request.pathname === "/api/admin/agents/copy-operations");
+  assert.equal(copies.length, 4);
+  for (const request of copies) assert.deepEqual(Object.keys(request.payload), ["source_session_id"]);
+  const copyRequest = requests.find((request) => request.pathname === "/api/addons/team-addon/teams/team/copy");
+  assert.equal(new Set(Object.values(copyRequest.payload.agent_session_ids)).size, 4);
+  for (const [agentId, sessionId] of Object.entries(copyRequest.payload.agent_session_ids)) {
+    assert.notEqual(sessionId, serverState.agents[agentId].session_id);
+  }
+  assert.equal(requests.some((request) => request.pathname === "/api/admin/agents/create-operations"), false);
+});
+
+test("team add-on retains completed session copies when another session fails", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, { initialState: seededOrgChartState() });
+  const page = await openBrowserPage(t, port);
+  let attempts = 0;
+  await page.route("**/api/admin/agents/copy-operations", async (route) => {
+    attempts += 1;
+    if (attempts === 2) {
+      await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Worker temporarily unavailable" }) });
+    } else {
+      await route.continue();
+    }
+  });
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
+  const form = page.locator("form[data-team-copy-form]");
+  await form.getByRole("button", { name: "Copy team" }).click();
+  await page.locator("#status-message", { hasText: "Worker temporarily unavailable" }).waitFor({ state: "visible" });
+  const selected = await form.locator("[data-team-copy-session-select]").evaluateAll((selects) => selects.map((select) => select.value).filter(Boolean));
+  assert.equal(selected.length, 1);
+  assert.equal(requests.some((request) => request.pathname === "/api/addons/team-addon/teams/team/copy"), false);
+  await form.getByRole("button", { name: "Copy team" }).click();
+  await waitForRevision(page, 9);
+  const copies = requests.filter((request) => request.pathname === "/api/admin/agents/copy-operations");
+  assert.equal(copies.length, 4);
+  assert.equal(new Set(copies.map((request) => request.payload.source_session_id)).size, 4);
 });
 
 test("team add-on submits the source revision shown by the copy preview", async (t) => {

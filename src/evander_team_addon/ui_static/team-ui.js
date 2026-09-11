@@ -1582,7 +1582,7 @@ function renderTeamCopySessionOptions(selectedValue = "") {
   }
   return renderSelectOptions(options, {
     selectedValue: selected,
-    placeholder: options.length ? "Select a session" : "No unregistered sessions found",
+    placeholder: "Copy source session configuration (new ID)",
   });
 }
 
@@ -1620,7 +1620,7 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
       <div class="team-copy-session-header">
         <div>
           <strong>Agent sessions</strong>
-          <p>Assign a different unregistered core session to every copied agent.</p>
+          <p>New sessions automatically inherit each source session's model, capabilities, approved tools, access grants, and limits. You can also select an existing session.</p>
         </div>
         <button type="button" class="record-action" data-team-copy-sessions-refresh>Refresh sessions</button>
       </div>
@@ -1635,7 +1635,7 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
               </div>
               <label>
                 Destination session
-                <select required data-team-copy-session-select data-source-agent-id="${escapeAttr(agent.id)}">
+                <select data-team-copy-session-select data-source-agent-id="${escapeAttr(agent.id)}" data-source-session-id="${escapeAttr(agent.session_id)}">
                   ${renderTeamCopySessionOptions()}
                 </select>
               </label>
@@ -1644,11 +1644,12 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
                 class="record-action"
                 data-team-copy-session-create="${escapeAttr(agent.id)}"
                 data-directory-path="${escapeAttr(directoryPath)}"
-              >Create session</button>
+              >Configure manually</button>
             </div>
           `;
         }).join("")}
       </div>
+      <p data-team-copy-progress role="status" aria-live="polite"></p>
       <div class="org-action-form-actions">
         <button type="submit">Copy team</button>
         <button type="button" class="secondary" data-org-action-close>Cancel</button>
@@ -1735,12 +1736,81 @@ function openTeamCopyAgentSessionDialog(button) {
   window.dispatchEvent(new CustomEvent("team-agent-create:open", { detail }));
 }
 
+async function copyTeamAgentSessions(form, selects) {
+  for (const select of selects) {
+    if (text(select.value)) continue;
+    if (!form.isConnected) throw new Error("Team copy was closed. Prepared sessions remain available in the session list.");
+    const sourceSessionId = text(select.dataset.sourceSessionId);
+    const agentName = text(select.closest("[data-team-copy-agent-row]")?.querySelector("strong")?.textContent)
+      || select.dataset.sourceAgentId;
+    const progressMessage = `Copying session configuration for ${agentName}.`;
+    form.querySelector("[data-team-copy-progress]").textContent = progressMessage;
+    setStatus(progressMessage, "loading");
+    const operationUrl = select.dataset.copyOperationId
+      ? `/api/admin/agents/create-operations/${encodeURIComponent(select.dataset.copyOperationId)}`
+      : "/api/admin/agents/copy-operations";
+    let response = await teamFetch(operationUrl, select.dataset.copyOperationId ? {} : {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_session_id: sourceSessionId }),
+    });
+    if (!response.ok) throw new Error(await responseText(response));
+    let { operation } = await response.json();
+    select.dataset.copyOperationId = operation.operation_id;
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (["queued", "running"].includes(operation.status)) {
+      if (Date.now() >= deadline) throw new Error("Session creation is still running. Retry to check its progress.");
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      response = await teamFetch(`/api/admin/agents/create-operations/${encodeURIComponent(operation.operation_id)}`);
+      if (!response.ok) throw new Error(await responseText(response));
+      ({ operation } = await response.json());
+    }
+    if (operation.status !== "succeeded") {
+      delete select.dataset.copyOperationId;
+      throw new Error(operation.error || `Could not copy session ${sourceSessionId}.`);
+    }
+    const sessionId = text(operation.session_id || operation.result?.session_id);
+    if (!sessionId) throw new Error("Session copy did not return a session ID.");
+    coreAgentSessions.push(normalizeCoreAgentSession({
+      session_id: sessionId,
+      target_name: operation.target_name,
+      backend: operation.backend,
+      directory_path: operation.directory_path,
+    }));
+    select.innerHTML = renderTeamCopySessionOptions(sessionId);
+    select.value = sessionId;
+    refreshTeamCopySessionSelects(form);
+  }
+}
+
 async function submitTeamCopyForm(form) {
   if (!guardTeamMutation("copy teams")) {
     return false;
   }
+  if (form.dataset.copyingSessions === "true") return false;
   const sourceTeamId = text(form.dataset.sourceTeamId);
   const sessionSelects = Array.from(form.querySelectorAll("[data-team-copy-session-select]"));
+  if (sessionSelects.some((select) => !text(select.value))) {
+    if (Number(form.dataset.sourceRevision) !== state.revision) {
+      setStatus("The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.", "warning");
+      return false;
+    }
+    form.dataset.copyingSessions = "true";
+    setFormBusy(form, true);
+    try {
+      await copyTeamAgentSessions(form, sessionSelects);
+      if (!form.isConnected) return false;
+      form.querySelector("[data-team-copy-progress]").textContent = "Sessions copied. Saving team.";
+    } catch (error) {
+      const message = `${error.message} Sessions already copied are kept selected; retry to continue.`;
+      form.querySelector("[data-team-copy-progress]").textContent = message;
+      setStatus(message, "error");
+      return false;
+    } finally {
+      delete form.dataset.copyingSessions;
+      setFormBusy(form, false);
+    }
+  }
   const agentSessionIds = Object.fromEntries(
     sessionSelects.map((select) => [text(select.dataset.sourceAgentId), text(select.value)]),
   );
