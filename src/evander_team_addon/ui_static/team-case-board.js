@@ -31,6 +31,14 @@ export function caseBoardPermalink(baseUrl, caseId, { teamId = "", projectId = "
   return url.href;
 }
 
+export function taskBoardViewSearchParams({ caseId = "", teamId = "", projectId = "" } = {}) {
+  const params = new URLSearchParams({ scope: "selection" });
+  if (caseId) params.set("case_id", caseId);
+  if (teamId) params.set("team_id", teamId);
+  if (projectId) params.set("project_id", projectId);
+  return params;
+}
+
 export function replaceCaseBoardLocation(browserWindow, caseId, { teamId = "", projectId = "" } = {}) {
   const local = new URL(browserWindow.location.href);
   local.hash = "";

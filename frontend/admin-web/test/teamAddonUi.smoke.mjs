@@ -1518,6 +1518,8 @@ async function createTeamAddonServer(
 ) {
   const state = initialState ? { ...emptyState(), ...initialState } : emptyState();
   const requests = [];
+  const viewRequests = [];
+  const costRequests = [];
   const costResponses = [];
   const timelineRequests = [];
   const chatRequests = [];
@@ -1676,6 +1678,7 @@ async function createTeamAddonServer(
       const viewMatch = pathname.match(/^\/api\/addons\/team-addon\/views\/([^/]+)$/);
       if (request.method === "GET" && viewMatch) {
         const view = decodeURIComponent(viewMatch[1]);
+        viewRequests.push({ view, search: url.search });
         if (view === "chat") {
           chatRequests.push({ method: request.method, pathname, search: url.search });
           if (conversationsBeforeResponse) {
@@ -1693,6 +1696,7 @@ async function createTeamAddonServer(
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/costs") {
+        costRequests.push(url.search);
         if (costsBeforeResponse) {
           await costsBeforeResponse;
         }
@@ -2309,8 +2313,10 @@ async function createTeamAddonServer(
   return {
     port: address.port,
     requests,
+    viewRequests,
     state,
     timelineRequests,
+    costRequests,
     costResponses,
     chatRequests,
     emitChatSnapshots,
@@ -3122,6 +3128,36 @@ test("case board preserves Team and project selection across real Admin shell re
   await board.locator('[data-task-board-project] option[value="beta-project"]').waitFor({ state: "attached" });
   assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-beta");
   assert.deepEqual(errors, []);
+});
+
+test("case board loads from its selected server scope without requesting costs", { timeout: 45000 }, async (t) => {
+  let releaseCosts = () => {};
+  const costsGate = new Promise((resolve) => {
+    releaseCosts = resolve;
+  });
+  t.after(() => {
+    releaseCosts();
+  });
+  const {
+    port,
+    viewRequests,
+    costRequests,
+  } = await createTeamAddonServer(t, {
+    initialState: caseBoardState(),
+    costsBeforeResponse: costsGate,
+  });
+  const hash = "#addon:team-addon?view=task-board&case_id=case+A%2642";
+  const { board, errors } = await openCaseBoardAdminShell(t, port, { hash });
+
+  await board.locator(".task-board-context strong", { hasText: "Case progress regression" }).waitFor();
+  const taskBoardRequest = viewRequests.find((request) => request.view === "task-board");
+  assert.ok(taskBoardRequest);
+  const params = new URLSearchParams(taskBoardRequest.search);
+  assert.equal(params.get("scope"), "selection");
+  assert.equal(params.get("case_id"), "case A&42");
+  assert.deepEqual(costRequests, []);
+  assert.deepEqual(errors, []);
+  releaseCosts();
 });
 
 for (const authMode of ["local_password", "azure_sso"]) {

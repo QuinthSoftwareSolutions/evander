@@ -1,6 +1,11 @@
 import { createTeamMailController } from "./team-mail.js";
 import { createTeamActivityController } from "./team-activity.js";
-import { caseTaskIds, caseBoardPermalink, replaceCaseBoardLocation } from "./team-case-board.js";
+import {
+  caseTaskIds,
+  caseBoardPermalink,
+  replaceCaseBoardLocation,
+  taskBoardViewSearchParams,
+} from "./team-case-board.js";
 
 const API_BASE = "/api/addons/team-addon";
 
@@ -4151,6 +4156,7 @@ function bindTaskBoardSelectors() {
     selectedTaskBoardProjectId = nextProjectId;
     resetTaskBoardProjectState();
     renderTaskBoard();
+    void loadView("task-board", { force: true, preserveForms: true });
   };
   teamSelect?.addEventListener("input", updateTeam);
   teamSelect?.addEventListener("change", updateTeam);
@@ -4511,7 +4517,15 @@ async function loadView(view, { force = false, preserveForms = false } = {}) {
   }
   const loadGeneration = teamViewCacheGeneration;
   const promise = (async () => {
-    const query = normalizedView === "timeline" ? timelineSearchParams() : new URLSearchParams();
+    const query = normalizedView === "timeline"
+      ? timelineSearchParams()
+      : normalizedView === "task-board"
+        ? taskBoardViewSearchParams({
+            caseId: taskBoardCaseId,
+            teamId: selectedTaskBoardTeamId,
+            projectId: selectedTaskBoardProjectId,
+          })
+        : new URLSearchParams();
     const response = await teamFetch(`${API_BASE}/views/${encodeURIComponent(normalizedView)}${query.toString() ? `?${query.toString()}` : ""}`, {
       headers: { Accept: "application/json" },
     });
@@ -4664,9 +4678,13 @@ function scheduleAuxiliaryLoadsForView(view) {
   if (view === "activity") {
     void activityController.load();
   }
-  if (view !== "chat") {
+  if (teamViewUsesCostState(view)) {
     void loadCosts();
   }
+}
+
+function teamViewUsesCostState(view) {
+  return view !== "chat" && view !== "task-board";
 }
 
 function scheduleIdleViewPrefetch() {
@@ -4711,7 +4729,9 @@ async function loadState({ preserveForms = false } = {}) {
       renderTemplatePreview();
     }
     setStatus("", "");
-    void loadCosts();
+    if (teamViewUsesCostState(activeTeamView)) {
+      void loadCosts();
+    }
     void loadConversations({ preserveSelection: true });
     void loadTimeline();
     ensureStateStream();
@@ -4742,7 +4762,9 @@ function applyStateSnapshot(payload) {
   state = normalizeState(payload);
   render();
   restoreFormDrafts(drafts);
-  void loadCosts();
+  if (teamViewUsesCostState(activeTeamView)) {
+    void loadCosts();
+  }
   void loadConversations({ preserveSelection: true });
   void loadTimeline();
 }
@@ -4816,21 +4838,25 @@ async function loadCosts() {
     if (requestId !== costsRequestId) {
       return;
     }
-    const drafts = captureFormDrafts();
     costState = normalizeCosts(payload);
-    render();
-    restoreFormDrafts(drafts);
+    if (teamViewUsesCostState(activeTeamView)) {
+      const drafts = captureFormDrafts();
+      render();
+      restoreFormDrafts(drafts);
+    }
   } catch (error) {
     if (requestId !== costsRequestId) {
       return;
     }
-    const drafts = captureFormDrafts();
     costState = normalizeCosts({
       ...emptyCostState(),
       error: error instanceof Error ? error.message : "Cost data failed to load.",
     });
-    render();
-    restoreFormDrafts(drafts);
+    if (teamViewUsesCostState(activeTeamView)) {
+      const drafts = captureFormDrafts();
+      render();
+      restoreFormDrafts(drafts);
+    }
   }
 }
 
@@ -13195,6 +13221,9 @@ function selectTaskBoardCase(caseId) {
   resetTaskBoardFilters();
   persistCaseBoardLocation();
   renderTaskBoard();
+  if (activeTeamView === "task-board") {
+    void loadView("task-board", { force: true, preserveForms: true });
+  }
 }
 
 async function copyCaseBoardLink() {

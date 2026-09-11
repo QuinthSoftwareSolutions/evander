@@ -12,6 +12,8 @@
 - Preserve Team/project selection through embedded-board navigation; cache shared
   case-less lineage and retain valid agent-action creations when other plans have
   invalid task graphs. Cover case permalinks through local and Microsoft sign-in.
+- Load task boards from their selected Team/project/case scope and keep cost
+  aggregation off the task-board path, avoiding full-state transfers and rerenders.
 
 ## 2026-09-10 - Reliable .NET repository navigation (0.37.2)
 

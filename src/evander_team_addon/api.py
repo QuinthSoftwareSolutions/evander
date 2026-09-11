@@ -5436,9 +5436,17 @@ def _view_payload_for_request(
         }
 
     collections = TEAM_VIEW_COLLECTIONS.get(view, TEAM_VIEW_COLLECTIONS["workspace"])
-    ids_by_collection = _view_ids_by_collection(state, view)
+    ids_by_collection = _view_ids_by_collection(state, view, request=request)
+    authorized_evidence_ids = _authorized_external_source_evidence_snapshot_ids(
+        auth,
+        request,
+        state,
+    )
+    requested_evidence_ids = ids_by_collection.get("external_source_evidence_snapshots")
     ids_by_collection["external_source_evidence_snapshots"] = (
-        _authorized_external_source_evidence_snapshot_ids(auth, request, state)
+        authorized_evidence_ids
+        if requested_evidence_ids is None
+        else requested_evidence_ids & authorized_evidence_ids
     )
     data: dict[str, Any] = {
         "state": _state_slice_payload_for_request(
@@ -5703,7 +5711,212 @@ def _latest_task_preparation_invalidation_ids(state: TeamState) -> set[str]:
     return {item.id for item in latest_by_task_id.values()}
 
 
-def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
+def _task_board_case_task_ids(
+    state: TeamState,
+    *,
+    case_id: str,
+    project_id: str,
+) -> set[str]:
+    project_tasks = {
+        task.id: task for task in state.tasks.values() if task.project_id == project_id
+    }
+    member_ids = {task.id for task in project_tasks.values() if task.case_id == case_id}
+    children_by_source_id: dict[str, set[str]] = {}
+    for task in project_tasks.values():
+        for source_id in {task.parent_task_id, task.originating_task_id} - {None}:
+            children_by_source_id.setdefault(source_id, set()).add(task.id)
+    pending = list(member_ids)
+    for task_id in pending:
+        for child_id in children_by_source_id.get(task_id, set()):
+            if child_id in member_ids:
+                continue
+            member_ids.add(child_id)
+            pending.append(child_id)
+    return member_ids
+
+
+def _task_board_reference_task_ids(state: TeamState, task_ids: set[str]) -> set[str]:
+    included_ids = set(task_ids)
+    pending = list(task_ids)
+    for task_id in pending:
+        task = state.tasks.get(task_id)
+        if task is None:
+            continue
+        for reference_id in {task.parent_task_id, task.originating_task_id} - {None}:
+            if reference_id in included_ids or reference_id not in state.tasks:
+                continue
+            included_ids.add(reference_id)
+            pending.append(reference_id)
+    for task_id in task_ids:
+        task = state.tasks.get(task_id)
+        if task is not None:
+            included_ids.update(
+                reference_id
+                for reference_id in task.dependency_task_ids
+                if reference_id in state.tasks
+            )
+    return included_ids
+
+
+def _task_board_selected_ids_by_collection(
+    state: TeamState,
+    request: Request,
+) -> dict[str, set[str]]:
+    case_id = _query_text(request, "case_id")
+    requested_project_id = _query_text(request, "project_id")
+    selected_case = state.cases.get(case_id) if case_id else None
+    project_id = (
+        str(selected_case.project_id or "").strip()
+        if selected_case is not None
+        else requested_project_id
+    )
+    project = state.projects.get(project_id) if project_id else None
+
+    if selected_case is not None and project is not None:
+        board_task_ids = _task_board_case_task_ids(
+            state,
+            case_id=selected_case.id,
+            project_id=project.id,
+        )
+    elif case_id:
+        board_task_ids = set()
+    elif project is not None:
+        board_task_ids = {task.id for task in state.tasks.values() if task.project_id == project.id}
+    else:
+        board_task_ids = set()
+    task_ids = _task_board_reference_task_ids(state, board_task_ids)
+
+    team_id = project.team_id if project is not None else ""
+    case_ids = (
+        {
+            item.id
+            for item in state.cases.values()
+            if item.project_id == project.id
+            or (item.project_id is None and item.team_id == team_id)
+        }
+        if project is not None
+        else ({selected_case.id} if selected_case is not None else set())
+    )
+    if selected_case is not None:
+        case_ids.add(selected_case.id)
+
+    blocker_ids = {
+        blocker.id
+        for blocker in state.blockers.values()
+        if blocker.task_id in board_task_ids
+        or bool(set(blocker.affected_task_ids) & board_task_ids)
+        or (
+            getattr(blocker.source_kind, "value", blocker.source_kind) == "task"
+            and blocker.source_id in board_task_ids
+        )
+    }
+    blocker_event_ids = {
+        event.id for event in state.blocker_events.values() if event.blocker_id in blocker_ids
+    }
+    recovery_ids = {
+        recovery.id
+        for recovery in state.dependency_composition_recoveries.values()
+        if recovery.blocker_id in blocker_ids
+        or recovery.target_task_id in board_task_ids
+        or recovery.recovery_task_id in board_task_ids
+    }
+    dispatch_ids = {
+        dispatch.id
+        for dispatch in state.dispatches.values()
+        if bool(set(dispatch.task_ids) & board_task_ids)
+        or bool(set(dispatch.blocker_ids) & blocker_ids)
+    }
+    inbox_ids = {
+        item_id
+        for item_id in _latest_task_preparation_invalidation_ids(state)
+        if state.inbox[item_id].task_id in board_task_ids
+    }
+    git_preparation_attempt_ids = {
+        attempt.id
+        for attempt in state.git_preparation_attempts.values()
+        if attempt.task_id in board_task_ids
+    }
+    cleanup_candidate_ids = {
+        candidate.id
+        for candidate in state.worktree_cleanup_candidates.values()
+        if candidate.task_id in board_task_ids
+    }
+    git_work_context_ids = {
+        context.id
+        for context in state.git_work_contexts.values()
+        if context.task_id in board_task_ids
+    }
+
+    agent_ids = set()
+    if project is not None:
+        agent_ids.update(
+            agent.id
+            for agent in state.agents.values()
+            if project.id in agent_project_ids(state, agent.id)
+        )
+        agent_ids.add(project.lead_agent_id)
+    for task_id in task_ids:
+        task = state.tasks.get(task_id)
+        if task is not None:
+            agent_ids.update({task.owner_agent_id, task.created_by_agent_id} - {None})
+    for case_record_id in case_ids:
+        case_record = state.cases.get(case_record_id)
+        if case_record is not None and case_record.owner_agent_id:
+            agent_ids.add(case_record.owner_agent_id)
+    for blocker_id in blocker_ids:
+        blocker = state.blockers[blocker_id]
+        agent_ids.update(
+            {
+                blocker.reporter_agent_id,
+                blocker.owner_agent_id,
+                blocker.delegate_agent_id,
+            }
+            - {None}
+        )
+    for dispatch_id in dispatch_ids:
+        agent_ids.add(state.dispatches[dispatch_id].agent_id)
+    for item_id in inbox_ids:
+        item = state.inbox[item_id]
+        agent_ids.update({item.recipient_agent_id, item.sender_agent_id} - {None})
+    for attempt_id in git_preparation_attempt_ids:
+        agent_ids.add(state.git_preparation_attempts[attempt_id].agent_id)
+    for candidate_id in cleanup_candidate_ids:
+        agent_ids.add(state.worktree_cleanup_candidates[candidate_id].agent_id)
+    for context_id in git_work_context_ids:
+        agent_ids.add(state.git_work_contexts[context_id].agent_id)
+    agent_ids.intersection_update(state.agents)
+
+    evidence_ids = set()
+    if selected_case is not None:
+        evidence_ids.update(selected_case.source_evidence_snapshot_ids)
+    for task_id in board_task_ids:
+        task = state.tasks.get(task_id)
+        if task is not None:
+            evidence_ids.update(task.source_evidence_snapshot_ids)
+
+    return {
+        "agents": agent_ids,
+        "agent_runtimes": agent_ids,
+        "tasks": task_ids,
+        "cases": case_ids,
+        "external_source_evidence_snapshots": evidence_ids,
+        "inbox": inbox_ids,
+        "blockers": blocker_ids,
+        "blocker_events": blocker_event_ids,
+        "dependency_composition_recoveries": recovery_ids,
+        "dispatches": dispatch_ids,
+        "git_preparation_attempts": git_preparation_attempt_ids,
+        "worktree_cleanup_candidates": cleanup_candidate_ids,
+        "git_work_contexts": git_work_context_ids,
+    }
+
+
+def _view_ids_by_collection(
+    state: TeamState,
+    view: str,
+    *,
+    request: Request,
+) -> dict[str, set[str]]:
     ids_by_collection: dict[str, set[str]] = {}
     if view in {"people", "org", "operations", "workspace"}:
         ids_by_collection["inbox"] = {
@@ -5713,6 +5926,8 @@ def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
         }
     if view in {"planning", "task-board"}:
         ids_by_collection["inbox"] = _latest_task_preparation_invalidation_ids(state)
+    if view == "task-board" and _query_text(request, "scope") == "selection":
+        ids_by_collection.update(_task_board_selected_ids_by_collection(state, request))
     if view in {"operations", "workspace"}:
         ids_by_collection["action_records"] = {
             record.id for record in current_failed_action_records(state)
@@ -5747,8 +5962,16 @@ def _state_slice_payload_for_request(
     session_repository: Any | None = None,
 ) -> dict[str, Any]:
     scoped_ids = dict(ids_by_collection or {})
+    requested_evidence_ids = scoped_ids.get("external_source_evidence_snapshots")
+    authorized_evidence_ids = _authorized_external_source_evidence_snapshot_ids(
+        auth,
+        request,
+        state,
+    )
     scoped_ids["external_source_evidence_snapshots"] = (
-        _authorized_external_source_evidence_snapshot_ids(auth, request, state)
+        authorized_evidence_ids
+        if requested_evidence_ids is None
+        else requested_evidence_ids & authorized_evidence_ids
     )
     payload = state.model_dump(
         mode="json",

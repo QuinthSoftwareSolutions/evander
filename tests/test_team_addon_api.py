@@ -4558,6 +4558,109 @@ def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
     )
 
 
+def test_team_addon_task_board_selection_scopes_case_payload_and_related_history(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    admin = _team_admin_service(repo)
+    admin.create_case(
+        case_id="intake-case",
+        team_id="team",
+        project_id="project",
+        title="Intake case",
+        task_ids=["waiting-task"],
+    )
+    admin.create_case(
+        case_id="other-case",
+        team_id="team",
+        project_id="project",
+        title="Other case",
+        task_ids=["blocked-task"],
+    )
+    admin.create_or_reprioritize_task(
+        task_id="case-child",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=4,
+        title="Case child",
+        description="Follow-up work for the intake case.",
+        created_by_agent_id="lead",
+        parent_task_id="waiting-task",
+    )
+    now = datetime(2026, 1, 4, tzinfo=UTC)
+
+    def _add_history(state: TeamState) -> TeamState:
+        for item_id, task_id in (
+            ("case-preparation", "waiting-task"),
+            ("unrelated-preparation", "blocked-task"),
+        ):
+            state.inbox[item_id] = AgentInboxItem(
+                id=item_id,
+                recipient_agent_id="backend",
+                sender_agent_id="lead",
+                task_id=task_id,
+                item_type=TeamInboxItemType.STATUS_REQUEST,
+                state=TeamInboxItemState.PENDING,
+                payload={"kind": "task_preparation_invalidated"},
+                created_at=now,
+                updated_at=now,
+            )
+        state.dispatches["case-dispatch"] = TeamDispatch(
+            id="case-dispatch",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="scheduled",
+            task_ids=["waiting-task"],
+            status=TeamDispatchStatus.COMPLETED,
+            completed_at=now,
+        )
+        state.dispatches["unrelated-dispatch"] = TeamDispatch(
+            id="unrelated-dispatch",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="scheduled",
+            task_ids=["blocked-task"],
+            status=TeamDispatchStatus.COMPLETED,
+            completed_at=now,
+        )
+        return state
+
+    repo.update(_add_history)
+    client = _client(tmp_path)
+
+    response = client.get(
+        "/api/addons/team-addon/views/task-board?scope=selection&case_id=intake-case"
+    )
+
+    assert response.status_code == 200, response.text
+    selected = response.json()["data"]["state"]
+    # The dependency is retained as a label/reference, while unrelated board work is omitted.
+    assert set(selected["tasks"]) == {
+        "waiting-task",
+        "case-child",
+        "dependency-task",
+    }
+    assert "blocked-task" not in selected["tasks"]
+    assert set(selected["cases"]) == {"intake-case", "other-case"}
+    assert set(selected["inbox"]) == {"case-preparation"}
+    assert set(selected["dispatches"]) == {"case-dispatch"}
+    assert set(selected["agents"]) == {"backend", "lead"}
+    assert set(selected["agent_runtimes"]) == {"backend", "lead"}
+    assert set(selected["resource_tokens"]["tasks"]) == set(selected["tasks"])
+
+    empty = client.get("/api/addons/team-addon/views/task-board?scope=selection").json()["data"][
+        "state"
+    ]
+    assert empty["tasks"] == {}
+    assert empty["cases"] == {}
+    assert empty["agents"] == {}
+    assert empty["dispatches"] == {}
+
+    legacy = client.get("/api/addons/team-addon/views/task-board").json()["data"]["state"]
+    assert set(legacy["tasks"]) == set(repo.read().tasks)
+    assert set(legacy["dispatches"]) == set(repo.read().dispatches)
+
+
 def test_team_addon_delivery_view_serializes_derived_datetime_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
