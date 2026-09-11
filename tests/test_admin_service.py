@@ -2041,6 +2041,143 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     assert agents[0].host["image_alias"] == "dotnet-playwright"
 
 
+def test_copy_container_agent_preserves_policy_with_fresh_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.session_auth import ensure_session_mcp_auth_token, session_mcp_auth_token
+
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    assert service.operations_admin.write_directory_domain_config(
+        "root", "providers", {"container_worker_base_url": "http://worker.test:11888"}
+    ).ok
+    service.skill_admin.create_skill({"name": "copy.skill", "content": "# Copy skill\n"})
+    written_files: dict[str, str] = {}
+
+    def prepare_session(self, request):
+        return WorkerSessionRecord(
+            session_id=request.session_id,
+            root_path=f"/worker/{request.session_id}",
+            agent_home_path=f"/worker/{request.session_id}/agent_home",
+            repo_root_path=f"/worker/{request.session_id}/agent_home/repos",
+            artifacts_path=f"/worker/{request.session_id}/artifacts",
+            logs_path=f"/worker/{request.session_id}/logs",
+            metadata_path=f"/worker/{request.session_id}/metadata.json",
+            metadata=dict(request.metadata),
+        )
+
+    def write_files(self, session_id, request):
+        written_files.update({file.destination_path: file.content or "" for file in request.files})
+        return WorkerFileWriteRecord(
+            session_id=session_id, copied_count=len(request.files),
+            copied_paths=[file.destination_path for file in request.files],
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", prepare_session)
+    monkeypatch.setattr(ContainerWorkerClient, "write_files", write_files)
+    source = SessionManifest(
+        session_id="source", vm_provider="container_worker_vm", vm_provider_id="source-target",
+        model="source-model", codex_auth_mode="metered_api",
+        allowed_tools=[ToolName.APPROVAL_CHECK],
+        approval_required_tools=[ToolName.APPROVAL_CHECK],
+        approval_tool_settings={"approval_check": {"ttl_seconds": 7200, "max_uses": None}},
+        tool_argument_policies={
+            "approval_check": [{"id": "copy-rule", "constraints": [
+                {"id": "request-id", "path": "request_id", "operator": "required"},
+            ]}],
+        },
+        allowed_script_names=["build"], quotas={"tool_calls": 42},
+        communication_file_receive_enabled=True, communication_file_send_enabled=True,
+        communication_file_max_bytes=12345,
+        communication_file_allowed_mime_types=["text/plain"],
+        communication_file_allowed_extensions=[".txt"],
+        communication_file_blocked_extensions=[".exe"],
+        communication_file_require_approval_for_send=True,
+        web_search_enabled=True, image_generation_enabled=True,
+        created_at=datetime.now(UTC) - timedelta(days=8),
+        expires_at=datetime.now(UTC) - timedelta(days=1),
+        metadata={
+            "execution_backend": "container_worker_vm", "target_name": "source-target",
+            "model_provider_mode": "openai_public", "agent_provider": "codex",
+            "dotnet": True, "nuget": True, "playwright": True,
+            "codex_skills": ["copy.skill"], "labels": {"purpose": "development"},
+            "http_targets": {"targets": {"docs": {"base_url": "https://docs.example.test"}}},
+            "capability_profile": "source-profile", "assistant_read_only": True,
+            "git_access": {"key_path": "/source/private-key"},
+            "codex_thread_id": "source-thread", "container_session_lifecycle": {"state": "cleaned_up"},
+        },
+    )
+    source, source_token = ensure_session_mcp_auth_token(source)
+    service.runtime.session_repository.upsert_session(source)
+    operation = service.vm_agent_admin.submit_admin_agent_copy(source, session_id="copied")
+    operation = wait_for_agent_create_operation(
+        service, operation.operation_id, statuses={"succeeded", "failed"}
+    )
+    assert operation.status == "succeeded", operation.error
+    copied = service.runtime.session_repository.get_session("copied")
+    assert copied is not None
+    identity_fields = {
+        "session_id", "vm_id", "vm_provider", "vm_provider_id", "created_at", "expires_at",
+        "metadata",
+    }
+    assert copied.model_dump(exclude=identity_fields) == source.model_dump(exclude=identity_fields)
+    assert copied.vm_provider_id == "copied"
+    assert copied.expires_at > datetime.now(UTC) + timedelta(days=6)
+    assert session_mcp_auth_token(copied) != source_token
+    assert source_token not in "\n".join(written_files.values())
+    assert "git_access" not in copied.metadata
+    assert "codex_thread_id" not in copied.metadata
+    assert "container_session_lifecycle" not in copied.metadata
+    assert copied.metadata["codex_skills"] == ["copy.skill"]
+    assert copied.metadata["http_targets"] == source.metadata["http_targets"]
+    assert copied.metadata["capability_profile"] == "source-profile"
+    assert copied.metadata["assistant_read_only"] is True
+    assert "/home/agent/.config/evander/codex/skills/copy.skill/SKILL.md" in written_files
+    assert "/home/agent/.nuget/NuGet/NuGet.Config" in written_files
+    assert "DOTNET_ROOT" in written_files["/home/agent/.profile"]
+    assert service.runtime.session_repository.get_session("source") == source
+    with pytest.raises(ValueError, match="already exists"):
+        service.vm_agent_admin.submit_admin_agent_copy(source, session_id="copied")
+    with pytest.raises(ValueError, match="non-empty string"):
+        service.vm_agent_admin.submit_admin_agent_copy(source, session_id=" ")
+
+
+def test_copy_vm_agent_uses_fresh_vm_and_preserves_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    source = SessionManifest(
+        session_id="source", vm_id="source-vm", vm_provider="libvirt",
+        allowed_tools=[], model="source-model", image_generation_enabled=True,
+        quotas={"tool_calls": 17}, expires_at=datetime.now(UTC) + timedelta(days=7),
+        metadata={"dotnet": True, "libvirt_vm_template": {"image_ref": "source-image"}},
+    )
+    service.runtime.session_repository.upsert_session(source)
+    payloads = []
+
+    def create_agent(payload):
+        payloads.append(payload)
+        service.runtime.session_repository.upsert_session(SessionManifest(
+            session_id=payload["session_id"], vm_id=payload["vm_name"],
+            allowed_tools=[ToolName.APPROVAL_CHECK], expires_at=datetime.now(UTC) + timedelta(days=7),
+        ))
+        return {"success": True, "session_id": payload["session_id"]}
+
+    monkeypatch.setattr(service.vm_agent_admin, "create_admin_agent", create_agent)
+    operation = service.vm_agent_admin.submit_admin_agent_copy(source)
+    operation = wait_for_agent_create_operation(
+        service, operation.operation_id, statuses={"succeeded", "failed"}
+    )
+    assert operation.status == "succeeded", operation.error
+    assert payloads[0]["vm_name"] != source.vm_id
+    assert payloads[0]["vm_image"] == "source-image"
+    assert payloads[0]["dotnet"] is True
+    copied = service.runtime.session_repository.get_session(operation.session_id)
+    assert copied.allowed_tools == []
+    assert copied.quotas == source.quotas
+    assert copied.image_generation_enabled is True
+    assert copied.model == source.model
+
+
 def test_create_container_agent_fast_forwards_discord_cursor_for_new_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

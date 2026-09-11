@@ -664,6 +664,30 @@ def agent_routes(
             return json_error(str(exc), status_code=400)
         return JSONResponse({"operation": _jsonable(operation)}, status_code=202)
 
+    async def submit_copy_operation(request: Request) -> JSONResponse:
+        if error_response := require_privileged_unlocked(request):
+            return error_response
+        try:
+            payload = await _json_body(request)
+            source_id = str(payload.get("source_session_id") or "").strip()
+            source = service.runtime.session_repository.get_session(source_id)
+            if source is None:
+                return json_error("Source session not found.", status_code=404)
+            if error_response := require_owner_privileged(
+                request, directory_path=source.directory_path
+            ):
+                return error_response
+            if set(payload) - {"source_session_id", "session_id"}:
+                raise ValueError("Session copies accept only source_session_id and session_id")
+            operation = await run_in_threadpool(
+                service.vm_agent_admin.submit_admin_agent_copy,
+                source,
+                session_id=payload.get("session_id"),
+            )
+        except Exception as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse({"operation": _jsonable(operation)}, status_code=202)
+
     async def list_create_operations(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
         try:
@@ -787,6 +811,7 @@ def agent_routes(
         Route("/api/admin/agents", create_agent, methods=["POST"]),
         Route("/api/admin/agents/create-options", create_options, methods=["GET"]),
         Route("/api/admin/agents/create-operations", submit_create_operation, methods=["POST"]),
+        Route("/api/admin/agents/copy-operations", submit_copy_operation, methods=["POST"]),
         Route("/api/admin/agents/create-operations", list_create_operations, methods=["GET"]),
         Route(
             "/api/admin/agents/create-operations/{operation_id:str}",

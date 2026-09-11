@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-11 - Copy Team session configurations (0.39.0)
+
+- Default Team copying to automatic provisioning of fresh sessions with the
+  source model, capabilities, tool approvals, access grants, and limits.
+- Preserve configured images and recorded toolchain/skill settings while creating
+  fresh session identities, authentication tokens, and lifetime windows.
+- Add source-directory-authorized session copy operations, progress reporting,
+  and reuse of completed session selections when retrying a Team copy.
+
 ## 2026-09-11 - Case progress task boards (0.38.0)
 
 - Add case filters, source links and shareable task-board permalinks, including

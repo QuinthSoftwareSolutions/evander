@@ -103,6 +103,11 @@ class VmAgentCreateRequestMixin:
                 templates=vm_defaults.libvirt_vm_templates,
             )
             create_metadata: dict[str, Any] = {
+                **{
+                    key: payload[key]
+                    for key in ("dotnet", "nuget", "playwright", "mssql", "mssql_init_root", "vm_user")
+                    if key in payload
+                },
                 "libvirt_vm_template": {
                     "image_ref": vm_image_selection["image_ref"],
                     "template_alias": vm_image_selection["template_alias"],
@@ -347,6 +352,9 @@ class VmAgentCreateRequestMixin:
             metadata["worker_url"] = worker_url
         metadata["container_worker"] = container_image_selection
         metadata["playwright"] = bool(payload.get("playwright", False))
+        metadata["dotnet"] = bool(payload.get("dotnet", False))
+        metadata["nuget"] = bool(payload.get("nuget", False))
+        metadata["codex_skills"] = self._agent_string_list(payload, "codex_skills") or []
         if "http_targets" in payload:
             metadata["http_targets"] = normalize_http_targets_metadata(payload.get("http_targets"))
         resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(

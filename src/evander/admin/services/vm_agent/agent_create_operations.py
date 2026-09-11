@@ -45,7 +45,18 @@ class VmAgentCreateOperationMixin:
     def submit_admin_agent_create(self, payload: Mapping[str, Any]) -> AgentCreateOperation:
         if not isinstance(payload, Mapping):
             raise ValueError("Request body must be a JSON object")
+        if "_copy_configuration" in payload:
+            raise ValueError("_copy_configuration is reserved for session copy operations")
+        return self._submit_admin_agent_create(payload)
+
+    def _submit_admin_agent_create(
+        self, payload: Mapping[str, Any], *, copy_configuration: dict[str, Any] | None = None
+    ) -> AgentCreateOperation:
+        if not isinstance(payload, Mapping):
+            raise ValueError("Request body must be a JSON object")
         worker_payload = self._agent_create_operation_worker_payload(payload)
+        if copy_configuration is not None:
+            worker_payload["_copy_configuration"] = copy_configuration
         backend, target_name, session_id, directory_path = self._agent_create_operation_details(
             worker_payload
         )
@@ -149,7 +160,13 @@ class VmAgentCreateOperationMixin:
                 worker_payload = self._agent_create_operation_payloads.get(operation_id)
             if worker_payload is None:
                 raise RuntimeError("Agent create request payload is no longer available.")
-            result = self._agent_create_port().create_admin_agent(worker_payload)
+            create_payload = dict(worker_payload)
+            copy_configuration = create_payload.pop("_copy_configuration", None)
+            result = self._agent_create_port().create_admin_agent(create_payload)
+            if bool(result.get("success")) and copy_configuration is not None:
+                self._finish_admin_agent_copy(operation.session_id, copy_configuration)
+                session = self.runtime.session_repository.get_session(operation.session_id)
+                result["effective_tool_policy"] = self.effective_tool_policy_payload(session)
             finished_at = self._current_utc_now()
             if bool(result.get("success")):
                 self._update_agent_create_operation(
