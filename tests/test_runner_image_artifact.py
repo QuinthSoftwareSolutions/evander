@@ -12,6 +12,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SCRIPT = ROOT / "scripts" / "build_evander_runner_image.sh"
 RUNNER_DOCKERFILE = ROOT / "docker" / "evander-runner" / "Dockerfile"
+RUNNER_BASE_SCRIPT = ROOT / "scripts" / "build_evander_runner_base_image.sh"
+RUNNER_BASE_DOCKERFILE = ROOT / "docker" / "evander-runner-base" / "Dockerfile"
 CLAUDE_RUNNER_SCRIPT = ROOT / "scripts" / "build_evander_claude_runner_image.sh"
 CLAUDE_RUNNER_DOCKERFILE = ROOT / "docker" / "evander-runner-claude" / "Dockerfile"
 HOST_CODEX_PACKAGE = "@openai/codex"
@@ -22,16 +24,21 @@ RUNNER_TARGET_TRIPLE = "x86_64-unknown-linux-musl"
 def _copy_runner_repo(tmp_path: Path) -> Path:
     repo_root = tmp_path / "runner-repo"
     script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    base_script_path = repo_root / "scripts" / "build_evander_runner_base_image.sh"
     claude_script_path = repo_root / "scripts" / "build_evander_claude_runner_image.sh"
     dockerfile_path = repo_root / "docker" / "evander-runner" / "Dockerfile"
+    base_dockerfile_path = repo_root / "docker" / "evander-runner-base" / "Dockerfile"
     claude_dockerfile_path = repo_root / "docker" / "evander-runner-claude" / "Dockerfile"
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
+    base_dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
     claude_dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(RUNNER_SCRIPT, script_path)
+    shutil.copy2(RUNNER_BASE_SCRIPT, base_script_path)
     shutil.copy2(CLAUDE_RUNNER_SCRIPT, claude_script_path)
     shutil.copy2(RUNNER_DOCKERFILE, dockerfile_path)
+    shutil.copy2(RUNNER_BASE_DOCKERFILE, base_dockerfile_path)
     shutil.copy2(CLAUDE_RUNNER_DOCKERFILE, claude_dockerfile_path)
     return repo_root
 
@@ -98,12 +105,58 @@ def _write_fake_docker(tmp_path: Path) -> tuple[Path, Path]:
     fake_docker_path.write_text(
         """#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\\n' "${1:-}" >> "${FAKE_DOCKER_LOG:?}"
 if [[ -n "${FAKE_DOCKER_COMMAND_LOG:-}" ]]; then
   printf '%s\\n' "$*" >> "${FAKE_DOCKER_COMMAND_LOG}"
 fi
+if [[ "${1:-}" != "image" && "${1:-}" != "pull" && " $* " != *" -t evander-runner-base:latest "* ]]; then
+  printf '%s\\n' "${1:-}" >> "${FAKE_DOCKER_LOG:?}"
+fi
+os_state="${FAKE_DOCKER_LOG:?}.os-present"
+base_sha_state="${FAKE_DOCKER_LOG:?}.base-input-sha"
 case "${1:-}" in
+  image)
+    if [[ "${2:-}" != "inspect" ]]; then
+      exit 1
+    fi
+    if [[ "${3:-}" == "--format" ]]; then
+      [[ -f "$base_sha_state" ]] && cat "$base_sha_state"
+    else
+      [[ -f "$os_state" ]]
+    fi
+    ;;
+  pull)
+    pull_count_path="${FAKE_DOCKER_LOG:?}.pull-count"
+    pull_count=0
+    if [[ -f "$pull_count_path" ]]; then
+      pull_count="$(cat "$pull_count_path")"
+    fi
+    pull_count=$((pull_count + 1))
+    printf '%s\\n' "$pull_count" > "$pull_count_path"
+    if [[ "$pull_count" -le "${FAKE_DOCKER_PULL_FAILURES:-0}" ]]; then
+      exit 42
+    fi
+    touch "$os_state"
+    exit 0
+    ;;
   build)
+    base_input_sha=""
+    is_base_build=0
+    previous=""
+    for argument in "$@"; do
+      if [[ "$argument" == RUNNER_BASE_INPUT_SHA256=* ]]; then
+        base_input_sha="${argument#RUNNER_BASE_INPUT_SHA256=}"
+      fi
+      if [[ "$previous" == "-t" && "$argument" == "evander-runner-base:latest" ]]; then
+        is_base_build=1
+      fi
+      previous="$argument"
+    done
+    if [[ "$is_base_build" -eq 1 ]]; then
+      if [[ "${FAKE_DOCKER_BASE_BUILD_DELAY_SECONDS:-0}" != "0" ]]; then
+        sleep "${FAKE_DOCKER_BASE_BUILD_DELAY_SECONDS}"
+      fi
+      printf '%s\\n' "$base_input_sha" > "$base_sha_state"
+    fi
     exit 0
     ;;
   save)
@@ -179,27 +232,15 @@ def _docker_invocations(log_path: Path) -> list[str]:
 def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     dockerfile = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "FROM ubuntu:24.04" in dockerfile
+    assert "FROM ${RUNNER_BASE_IMAGE}" in dockerfile
     assert "COPY codex /usr/local/bin/codex" in dockerfile
     assert "COPY codex-code-mode-host /usr/local/bin/codex-code-mode-host" in dockerfile
     assert "chmod 0755 /usr/local/bin/codex /usr/local/bin/codex-code-mode-host" in dockerfile
-    assert "bubblewrap" in dockerfile
     assert "ENV HOME=/home/agent" in dockerfile
     assert "WORKDIR /home/agent" in dockerfile
     assert "useradd --uid 1001" not in dockerfile
     assert "USER agent:agent" not in dockerfile
     assert "/home/agent/repos" in dockerfile
-    assert "python3-pip" in dockerfile
-    assert "python3-venv" in dockerfile
-    assert "ripgrep" in dockerfile
-    assert "openssh-client" in dockerfile
-    assert "libgssapi-krb5-2" in dockerfile
-    assert "libicu74" in dockerfile
-    assert "libssl3t64" in dockerfile
-    assert "libunwind8" in dockerfile
-    assert "zlib1g" in dockerfile
-    assert "libnss3" in dockerfile
-    assert "libgtk-3-0" in dockerfile
     assert "/home/agent/.evander/session.env" in dockerfile
     assert "/opt/evander/toolchains/mssql-client/env.sh" in dockerfile
 
@@ -207,7 +248,7 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
 def test_claude_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     dockerfile = CLAUDE_RUNNER_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "FROM ubuntu:24.04" in dockerfile
+    assert "FROM ${RUNNER_BASE_IMAGE}" in dockerfile
     assert "COPY claude /usr/local/bin/claude" in dockerfile
     assert "COPY codex" not in dockerfile
     assert "ENV HOME=/home/agent" in dockerfile
@@ -220,13 +261,30 @@ def test_claude_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "/opt/evander/toolchains/node-v24.14.0/bin" in dockerfile
     assert "ANTHROPIC_AUTH_TOKEN" in dockerfile
     assert "DISABLE_TELEMETRY" in dockerfile
-    assert "python3-pip" in dockerfile
-    assert "python3-venv" in dockerfile
-    assert "ripgrep" in dockerfile
-    assert "openssh-client" in dockerfile
-    assert "libnss3" in dockerfile
-    assert "libgtk-3-0" in dockerfile
     assert 'CMD ["bash", "-lc", "claude --version"]' in dockerfile
+
+
+def test_shared_runner_base_contains_combined_runtime_dependencies() -> None:
+    dockerfile = RUNNER_BASE_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "ARG RUNNER_OS_BASE_IMAGE=ubuntu:24.04" in dockerfile
+    assert "FROM ${RUNNER_OS_BASE_IMAGE}" in dockerfile
+    assert "io.evander.runner.base-input-sha256" in dockerfile
+    for package in (
+        "bubblewrap",
+        "python3-pip",
+        "python3-venv",
+        "ripgrep",
+        "openssh-client",
+        "libgssapi-krb5-2",
+        "libicu74",
+        "libssl3t64",
+        "libunwind8",
+        "zlib1g",
+        "libnss3",
+        "libgtk-3-0",
+    ):
+        assert package in dockerfile
 
 
 def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
@@ -247,13 +305,16 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "RUNNER_BUILD_NETWORK" in script
     assert "RUNNER_MANIFEST_PATH" in script
     assert "RUNNER_FORCE_REBUILD" in script
+    assert "RUNNER_BASE_IMAGE" in script
+    assert "RUNNER_OS_BASE_IMAGE" in script
+    assert "build_evander_runner_base_image.sh" in script
     assert "evander-runner:latest" in script
     assert "dist/evander-runner.tar" in script
     assert "codex_code_mode_host_sha256" in script
     assert 'cp "${HOST_CODEX_CODE_MODE_HOST_PATH}" "${BUILD_CONTEXT}/codex-code-mode-host"' in script
-    assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
+    assert 'build_args=(build --build-arg "RUNNER_BASE_IMAGE=${RUNNER_BASE_IMAGE}" -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
-    assert "build_args+=(--pull)" in script
+    assert "build_args+=(--pull)" not in script
     assert (
         'RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"'
         in script
@@ -271,14 +332,17 @@ def test_claude_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "RUNNER_BUILD_NETWORK" in script
     assert "RUNNER_MANIFEST_PATH" in script
     assert "RUNNER_FORCE_REBUILD" in script
+    assert "RUNNER_BASE_IMAGE" in script
+    assert "RUNNER_OS_BASE_IMAGE" in script
+    assert "build_evander_runner_base_image.sh" in script
     assert "evander-runner-claude:latest" in script
     assert "dist/evander-runner-claude.tar" in script
     assert "claude_bin_realpath" in script
     assert "claude_bin_sha256" in script
     assert 'cp "${RESOLVED_CLAUDE_BIN}" "${BUILD_CONTEXT}/claude"' in script
-    assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
+    assert 'build_args=(build --build-arg "RUNNER_BASE_IMAGE=${RUNNER_BASE_IMAGE}" -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
-    assert "build_args+=(--pull)" in script
+    assert "build_args+=(--pull)" not in script
     assert (
         'RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"'
         in script
@@ -440,6 +504,32 @@ def test_runner_build_script_rebuilds_when_copied_dockerfile_changes(
 
     assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
     assert manifest_path.read_text(encoding="utf-8") != first_manifest
+
+
+def test_runner_build_script_rebuilds_when_shared_base_dockerfile_changes(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    base_dockerfile_path = repo_root / "docker" / "evander-runner-base" / "Dockerfile"
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    base_dockerfile_path.write_text(
+        base_dockerfile_path.read_text(encoding="utf-8") + "\n# cache-bust\n",
+        encoding="utf-8",
+    )
+    _run_runner_script(script_path, repo_root, env)
+
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
 
 
 @pytest.mark.parametrize("mutation", ["package_json", "binary", "code_mode_host"])
@@ -653,7 +743,7 @@ def test_runner_build_script_forces_rebuild_even_with_matching_manifest(
     assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
 
 
-def test_runner_build_script_pulls_base_image_on_forced_rebuild(
+def test_runner_build_script_refreshes_shared_base_on_forced_rebuild(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
@@ -674,17 +764,15 @@ def test_runner_build_script_pulls_base_image_on_forced_rebuild(
     _run_runner_script(script_path, repo_root, env)
     _run_runner_script(script_path, repo_root, env, args=["--force"])
 
-    build_commands = [
+    pull_commands = [
         line
         for line in docker_command_log_path.read_text(encoding="utf-8").splitlines()
-        if line.startswith("build ")
+        if line.startswith("pull ")
     ]
-    assert len(build_commands) == 2
-    assert " --pull " not in f" {build_commands[0]} "
-    assert " --pull " in f" {build_commands[1]} "
+    assert pull_commands == ["pull ubuntu:24.04", "pull ubuntu:24.04"]
 
 
-def test_claude_runner_build_script_pulls_base_image_on_forced_rebuild(
+def test_claude_runner_build_script_refreshes_shared_base_on_forced_rebuild(
     tmp_path: Path,
 ) -> None:
     repo_root = _copy_runner_repo(tmp_path)
@@ -703,14 +791,108 @@ def test_claude_runner_build_script_pulls_base_image_on_forced_rebuild(
     _run_runner_script(script_path, repo_root, env)
     _run_runner_script(script_path, repo_root, env, args=["--force"])
 
-    build_commands = [
+    pull_commands = [
         line
         for line in docker_command_log_path.read_text(encoding="utf-8").splitlines()
-        if line.startswith("build ")
+        if line.startswith("pull ")
     ]
-    assert len(build_commands) == 2
-    assert " --pull " not in f" {build_commands[0]} "
-    assert " --pull " in f" {build_commands[1]} "
+    assert pull_commands == ["pull ubuntu:24.04", "pull ubuntu:24.04"]
+
+
+def test_runner_base_pull_retries_are_bounded(tmp_path: Path) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_evander_runner_base_image.sh"
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+    docker_command_log_path = tmp_path / "docker-command.log"
+
+    result = _run_runner_script_raw(
+        script_path,
+        repo_root,
+        {
+            "DOCKER": str(fake_docker),
+            "FAKE_DOCKER_LOG": str(docker_log_path),
+            "FAKE_DOCKER_COMMAND_LOG": str(docker_command_log_path),
+            "FAKE_DOCKER_PULL_FAILURES": "2",
+            "RUNNER_BASE_PULL_RETRY_DELAY_SECONDS": "0",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    pull_commands = [
+        line
+        for line in docker_command_log_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("pull ")
+    ]
+    assert pull_commands == ["pull ubuntu:24.04"] * 3
+    assert "attempt 3/3, timeout 120s" in result.stderr
+
+
+def test_runner_base_reuses_matching_local_image_without_another_pull_or_build(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_evander_runner_base_image.sh"
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+    docker_command_log_path = tmp_path / "docker-command.log"
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "FAKE_DOCKER_COMMAND_LOG": str(docker_command_log_path),
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    second = _run_runner_script(script_path, repo_root, env)
+
+    commands = docker_command_log_path.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in commands if line.startswith("pull ")]) == 1
+    assert len([line for line in commands if line.startswith("build ")]) == 1
+    assert "Reused local evander-runner-base:latest shared base." in second.stderr
+
+
+def test_runner_base_pull_stops_after_configured_attempts(tmp_path: Path) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_evander_runner_base_image.sh"
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+    docker_command_log_path = tmp_path / "docker-command.log"
+
+    result = _run_runner_script_raw(
+        script_path,
+        repo_root,
+        {
+            "DOCKER": str(fake_docker),
+            "FAKE_DOCKER_LOG": str(docker_log_path),
+            "FAKE_DOCKER_COMMAND_LOG": str(docker_command_log_path),
+            "FAKE_DOCKER_PULL_FAILURES": "3",
+            "RUNNER_BASE_PULL_RETRY_DELAY_SECONDS": "0",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "after 3 bounded attempts" in result.stderr
+    assert not any(
+        line.startswith("build ")
+        for line in docker_command_log_path.read_text(encoding="utf-8").splitlines()
+    )
+
+
+def test_runner_base_build_timeout_is_bounded(tmp_path: Path) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_evander_runner_base_image.sh"
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    result = _run_runner_script_raw(
+        script_path,
+        repo_root,
+        {
+            "DOCKER": str(fake_docker),
+            "FAKE_DOCKER_LOG": str(docker_log_path),
+            "FAKE_DOCKER_BASE_BUILD_DELAY_SECONDS": "2",
+            "RUNNER_BASE_BUILD_TIMEOUT_SECONDS": "1",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "exceeded the bounded build window" in result.stderr
 
 
 def test_runner_build_script_preserves_cache_after_failed_save(

@@ -8,9 +8,9 @@ Usage: build_evander_claude_runner_image.sh [--force]
 Build the repo-local Claude evander runner image and save it as a Docker tarball.
 The script writes a sidecar manifest next to the tarball and reuses the cached
 archive when the manifest still matches the Dockerfile, build script, resolved
-Claude executable, and image metadata. Moving base-image tags such as ubuntu:24.04
-are part of that manifest, so use --force or RUNNER_FORCE_REBUILD=true to
-refresh an upstream tag that changed without a Dockerfile text edit.
+Claude executable, shared base image, and image metadata. Use --force or
+RUNNER_FORCE_REBUILD=true to refresh the upstream operating-system image as
+part of the rebuild.
 
 Flags:
   --force                  Force a rebuild even when the manifest matches.
@@ -22,6 +22,14 @@ Environment:
   RUNNER_MANIFEST_PATH     Sidecar manifest. Default: dist/evander-runner-claude.tar.manifest
   RUNNER_FORCE_REBUILD     Force a rebuild even when the manifest matches.
                            Accepted true values: 1, true, yes, on
+  RUNNER_BASE_IMAGE        Shared runner base tag. Default: evander-runner-base:latest
+  RUNNER_OS_BASE_IMAGE     Upstream OS image. Default: ubuntu:24.04
+  RUNNER_BASE_PULL_ATTEMPTS
+                           Bounded upstream pull attempts. Default: 3
+  RUNNER_BASE_PULL_TIMEOUT_SECONDS
+                           Timeout for each upstream pull. Default: 120
+  RUNNER_BASE_BUILD_TIMEOUT_SECONDS
+                           Overall shared-base build timeout. Default: 900
   RUNNER_BUILD_NETWORK     Optional Docker build network, for hosts whose Docker
                            bridge cannot reach apt mirrors. Example: host
   DOCKER                   Docker CLI path. Default: docker
@@ -56,6 +64,8 @@ fi
 RUNNER_IMAGE_NAME="${RUNNER_IMAGE_NAME:-evander-runner-claude:latest}"
 RUNNER_ARCHIVE_PATH="${RUNNER_ARCHIVE_PATH:-${ROOT_DIR}/dist/evander-runner-claude.tar}"
 RUNNER_MANIFEST_PATH="${RUNNER_MANIFEST_PATH:-${RUNNER_ARCHIVE_PATH}.manifest}"
+RUNNER_BASE_IMAGE="${RUNNER_BASE_IMAGE:-evander-runner-base:latest}"
+RUNNER_OS_BASE_IMAGE="${RUNNER_OS_BASE_IMAGE:-ubuntu:24.04}"
 RUNNER_BUILD_NETWORK="${RUNNER_BUILD_NETWORK:-}"
 DOCKER="${DOCKER:-docker}"
 if [[ "${RUNNER_FORCE_REBUILD:-}" != "" ]]; then
@@ -74,9 +84,15 @@ fi
 RESOLVED_CLAUDE_BIN="$(readlink -f "${HOST_CLAUDE_BIN}")"
 DOCKERFILE_PATH="${ROOT_DIR}/docker/evander-runner-claude/Dockerfile"
 BUILD_SCRIPT_PATH="${SCRIPT_DIR}/build_evander_claude_runner_image.sh"
+BASE_DOCKERFILE_PATH="${ROOT_DIR}/docker/evander-runner-base/Dockerfile"
+BASE_BUILD_SCRIPT_PATH="${SCRIPT_DIR}/build_evander_runner_base_image.sh"
 
 if [[ ! -f "${DOCKERFILE_PATH}" ]]; then
   echo "Missing Claude runner Dockerfile: ${DOCKERFILE_PATH}" >&2
+  exit 1
+fi
+if [[ ! -f "${BASE_DOCKERFILE_PATH}" || ! -x "${BASE_BUILD_SCRIPT_PATH}" ]]; then
+  echo "Missing shared runner base build inputs." >&2
   exit 1
 fi
 
@@ -94,11 +110,12 @@ append_manifest_line "runner_archive_path" "${RUNNER_ARCHIVE_PATH}"
 append_manifest_line "runner_manifest_path" "${RUNNER_MANIFEST_PATH}"
 append_manifest_line "dockerfile_sha256" "$(hash_file "${DOCKERFILE_PATH}")"
 append_manifest_line "build_script_sha256" "$(hash_file "${BUILD_SCRIPT_PATH}")"
+append_manifest_line "base_dockerfile_sha256" "$(hash_file "${BASE_DOCKERFILE_PATH}")"
+append_manifest_line "base_build_script_sha256" "$(hash_file "${BASE_BUILD_SCRIPT_PATH}")"
+append_manifest_line "runner_base_image" "${RUNNER_BASE_IMAGE}"
+append_manifest_line "runner_os_base_image" "${RUNNER_OS_BASE_IMAGE}"
 append_manifest_line "claude_bin_realpath" "${RESOLVED_CLAUDE_BIN}"
 append_manifest_line "claude_bin_sha256" "$(hash_file "${RESOLVED_CLAUDE_BIN}")"
-# The Dockerfile may keep the same text while a moving base-image tag refreshes
-# upstream, so the manifest records the exact FROM policy and operators can use
-# --force or RUNNER_FORCE_REBUILD=true for an intentional refresh.
 append_manifest_line "dockerfile_from_line" "$(grep -m1 '^FROM[[:space:]]' "${DOCKERFILE_PATH}")"
 
 manifest_payload="$(printf '%s\n' "${manifest_lines[@]}")"
@@ -116,6 +133,13 @@ if ! command -v "${DOCKER}" >/dev/null 2>&1; then
   echo "Missing Docker CLI: ${DOCKER}" >&2
   exit 1
 fi
+
+base_args=()
+if [[ "${FORCE_REBUILD}" -eq 1 ]]; then
+  base_args+=(--force)
+fi
+export DOCKER RUNNER_BASE_IMAGE RUNNER_OS_BASE_IMAGE RUNNER_BUILD_NETWORK
+"${BASE_BUILD_SCRIPT_PATH}" "${base_args[@]}"
 
 BUILD_CONTEXT=""
 RUNNER_ARCHIVE_TMP_PATH=""
@@ -138,12 +162,9 @@ cp "${ROOT_DIR}/docker/evander-runner-claude/Dockerfile" "${BUILD_CONTEXT}/Docke
 cp "${RESOLVED_CLAUDE_BIN}" "${BUILD_CONTEXT}/claude"
 chmod 0755 "${BUILD_CONTEXT}/claude"
 
-build_args=(build -t "${RUNNER_IMAGE_NAME}")
+build_args=(build --build-arg "RUNNER_BASE_IMAGE=${RUNNER_BASE_IMAGE}" -t "${RUNNER_IMAGE_NAME}")
 if [[ -n "${RUNNER_BUILD_NETWORK}" ]]; then
   build_args+=(--network "${RUNNER_BUILD_NETWORK}")
-fi
-if [[ "${FORCE_REBUILD}" -eq 1 ]]; then
-  build_args+=(--pull)
 fi
 build_args+=("${BUILD_CONTEXT}")
 
