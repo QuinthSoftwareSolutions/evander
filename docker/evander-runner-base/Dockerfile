@@ -6,7 +6,11 @@ LABEL io.evander.runner.base-input-sha256="${RUNNER_BASE_INPUT_SHA256}"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update \
+RUN sed -Ei \
+      -e 's|https?://archive\.ubuntu\.com/ubuntu/?|http://azure.archive.ubuntu.com/ubuntu/|g' \
+      -e 's|https?://security\.ubuntu\.com/ubuntu/?|http://azure.archive.ubuntu.com/ubuntu/|g' \
+      /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update \
     && apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
       bash \
       bubblewrap \
