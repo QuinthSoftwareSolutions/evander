@@ -6,6 +6,9 @@ package, Git, and HTTP relays.
 
 ## What This Scaffold Includes
 
+For Team task-board filtering, progress permalinks and ADO intake setup, see
+[Case progress boards](docs/case-progress-boards.md).
+
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - Directory-scoped named connectors for approved REST operations and host file retrieval, with
   host-owned authentication, per-session operation grants, approvals, and artifact results

@@ -119,6 +119,7 @@ from .domain.case_task import (
     _validate_protected_case_update,
     _validate_case_scope,
     _validate_case_status_transition,
+    inherited_task_case_id,
 )
 from .domain.case_events import append_case_closed_event
 from .domain.outcome_catalog import (
@@ -3857,6 +3858,7 @@ class TeamAdminService:
         metadata: Mapping[str, Any] | None = None,
         task_ids: list[str] | None = None,
         expected_revision: int | None = None,
+        reuse_existing: bool = False,
     ) -> tuple[TeamState, str]:
         normalized_case_id = _optional_text(case_id)
         normalized_team_id = _required_text(team_id, "team_id")
@@ -3877,6 +3879,8 @@ class TeamAdminService:
         normalized_tags = _unique_text_list(tags or [], "tags")
         normalized_metadata = _mapping(metadata or {}, "metadata")
         normalized_task_ids = _unique_text_list(task_ids or [], "task_ids")
+        if reuse_existing and not (normalized_source and normalized_source_ref):
+            raise ValueError("reusing a case requires source and source_ref")
         _validate_generic_case_source(normalized_source)
         _validate_case_status_transition(
             source=normalized_source,
@@ -3893,6 +3897,22 @@ class TeamAdminService:
                 project_id=normalized_project_id,
                 owner_agent_id=normalized_owner_agent_id,
             )
+            if reuse_existing:
+                matches = [
+                    case for case in state.cases.values()
+                    if case.team_id == normalized_team_id
+                    and case.project_id == normalized_project_id
+                    and case.source == normalized_source
+                    and case.source_ref == normalized_source_ref
+                ]
+                if len(matches) > 1:
+                    raise ValueError("multiple cases match this intake source")
+                if matches:
+                    existing = matches[0]
+                    if normalized_case_id in state.cases and normalized_case_id != existing.id:
+                        raise ValueError("case ID conflicts with the existing intake case")
+                    created_case_id = existing.id
+                    return state
             effective_case_id = normalized_case_id or _generated_id(
                 prefix="case",
                 labels=[normalized_project_id or normalized_team_id, normalized_title],
@@ -4473,11 +4493,18 @@ class TeamAdminService:
             )
             if contract_error is not None:
                 raise ValueError(contract_error)
+            inherited_case_id = inherited_task_case_id(
+                state_model,
+                project_id=normalized_project_id,
+                case_id=normalized_case_id,
+                originating_task_id=normalized_originating_task_id,
+                parent_task_id=normalized_parent_task_id,
+            )
             state_model.tasks[effective_task_id] = AgentTask(
                 id=effective_task_id,
                 owner_agent_id=normalized_owner_agent_id,
                 project_id=normalized_project_id,
-                case_id=normalized_case_id,
+                case_id=inherited_case_id,
                 priority=priority,
                 state=state,
                 state_entered_at=now,
@@ -4503,7 +4530,7 @@ class TeamAdminService:
                     project_id=normalized_project_id,
                     explicit_git_base_branch=normalized_git_base_branch,
                     parent_task_id=normalized_parent_task_id,
-                    case_id=normalized_case_id,
+                    case_id=inherited_case_id,
                     git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                 ),
                 git_base_commit_sha=normalized_git_base_commit_sha,
@@ -4535,11 +4562,11 @@ class TeamAdminService:
                     result=blocker_result,
                     now=now,
                 )
-            if normalized_case_id is not None:
+            if inherited_case_id is not None:
                 _link_task_to_case(
                     state_model,
                     task_id=effective_task_id,
-                    case_id=normalized_case_id,
+                    case_id=inherited_case_id,
                     now=now,
                 )
             if task_state_can_wake_owner(state):
