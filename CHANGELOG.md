@@ -7,9 +7,8 @@
 - Inherit task case membership across operator, workflow and agent task creation,
   including out-of-order batches; preserve explicitly selected correction cases.
 - Add atomic source-based reuse to the create-case workflow action.
-- Add revision-checked APP migration and backfill scripts for one intake case per
-  ADO item, an automatic idempotent progress-link comment, and non-terminal intake
-  based on the project's actual ADO state categories.
+- Add an optional revision-checked APP backfill helper for linking existing work
+  to intake cases without posting comments or dispatching work.
 
 ## 2026-09-10 - Reliable .NET repository navigation (0.37.2)
 

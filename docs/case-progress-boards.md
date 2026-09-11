@@ -26,14 +26,18 @@ ordinary create-case behavior remains unchanged.
 The create/update case outputs include a URL-encoded `task_board_path` for workflow
 comments and other links, suitable for appending to the configured Admin base URL.
 
-## APP rollout
+## Workflow configuration
 
-Deploy version 0.38.0 before enabling these workflow fields. Run commands from the
-deployed checkout as the service account with its existing ADO credential
-environment. The commands below preview changes unless `--apply` is supplied.
-They use supported revision-checked services, never direct pack or state edits.
+Deploy version 0.38.0 before using these workflow fields. Deployment does not
+modify workflow packs or post provider comments. Intake eligibility, case creation
+and progress-link notifications belong in operator-owned workflows. For APP,
+these changes are configured separately on the remote after deployment, using
+the existing revision-checked workflow editing service.
 
-First preview existing case linkage:
+## Existing APP case linkage
+
+The optional standalone backfill helper previews existing case linkage. Run it
+from the deployed checkout as the service account:
 
 ```bash
 ./.venv/bin/python scripts/backfill_app_intake_cases.py
@@ -47,33 +51,9 @@ reported and block application. Apply with `--apply` after reviewing the plan.
 Concurrent Team edits raise a revision conflict; rerun the preview to continue
 from the already-applied portion.
 
-Then preview the workflow migration using the operator-facing Admin Web URL:
-
-```bash
-./.venv/bin/python scripts/update_app_case_board_workflow.py \
-  --organization exampleindustry \
-  --admin-base-url https://YOUR-TRUMAN-ADMIN-HOST/
-```
-
-The existing attribution intake graph is required. The migration:
-
-- Reads ADO state categories and excludes `Completed` and `Removed` states per
-  work-item type, retaining tag `truman-v2`. New, Approved, Committed and In
-  Progress items are eligible. Refresh this migration after process state-category
-  changes; custom query restrictions require explicit review.
-- Preserves the existing dedupe key and lifetime. It creates/reuses the intake
-  case before creating the task and linking Trudy's directive.
-- Posts an idempotent progress-link comment after successful task creation, on a
-  branch independent of the directive. A comment delivery failure remains a failed
-  workflow execution that can be resumed; it does not prevent the Team directive.
-- Replaces the old agent-authored intake acknowledgement instruction. Trudy still
-  owns substantive questions and replies and uses guarded work-item state updates.
-
-Apply with `--apply`, reread the workflow revision, and verify the orchestrator
-reload and subsequent ADO comment delivery. The script refuses to overwrite
-modified case/comment nodes on repeat application. It does not replay old dedupe
-records or publish comments on historical items. Existing work can use the board
-after backfill; sharing links for existing items is a separate publication step.
+The helper uses supported revision-checked Team services, never direct state or
+workflow-pack edits. Existing work can use the board after backfill; sharing links
+for existing items is a separate publication step.
 
 The case board reports task execution and completion; it does not treat an intake
 task being finished as proof that the whole case has been released or deployed.
