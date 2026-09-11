@@ -8,10 +8,9 @@ Usage: build_evander_runner_image.sh [--force]
 Build the repo-local evander runner image and save it as a Docker tarball.
 The script writes a sidecar manifest next to the tarball and reuses the cached
 archive when the manifest still matches the Dockerfile, build script, resolved
-Codex binary, code-mode host, and package metadata. Moving base-image tags such
-as ubuntu:24.04 are part of that manifest, so use --force or
-RUNNER_FORCE_REBUILD=true to refresh an upstream tag that changed without a
-Dockerfile text edit.
+Codex binary, code-mode host, shared base image, and package metadata. Use
+--force or RUNNER_FORCE_REBUILD=true to refresh the upstream operating-system
+image as part of the rebuild.
 
 Flags:
   --force                  Force a rebuild even when the manifest matches.
@@ -31,6 +30,14 @@ Environment:
   RUNNER_MANIFEST_PATH     Sidecar manifest. Default: dist/evander-runner.tar.manifest
   RUNNER_FORCE_REBUILD     Force a rebuild even when the manifest matches.
                            Accepted true values: 1, true, yes, on
+  RUNNER_BASE_IMAGE        Shared runner base tag. Default: evander-runner-base:latest
+  RUNNER_OS_BASE_IMAGE     Upstream OS image. Default: ubuntu:24.04
+  RUNNER_BASE_PULL_ATTEMPTS
+                           Bounded upstream pull attempts. Default: 3
+  RUNNER_BASE_PULL_TIMEOUT_SECONDS
+                           Timeout for each upstream pull. Default: 120
+  RUNNER_BASE_BUILD_TIMEOUT_SECONDS
+                           Overall shared-base build timeout. Default: 900
   RUNNER_BUILD_NETWORK     Optional Docker build network, for hosts whose Docker
                            bridge cannot reach apt mirrors. Example: host
   DOCKER                   Docker CLI path. Default: docker
@@ -74,6 +81,8 @@ CODEX_BINARY_RELATIVE_PATHS=(
 RUNNER_IMAGE_NAME="${RUNNER_IMAGE_NAME:-evander-runner:latest}"
 RUNNER_ARCHIVE_PATH="${RUNNER_ARCHIVE_PATH:-${ROOT_DIR}/dist/evander-runner.tar}"
 RUNNER_MANIFEST_PATH="${RUNNER_MANIFEST_PATH:-${RUNNER_ARCHIVE_PATH}.manifest}"
+RUNNER_BASE_IMAGE="${RUNNER_BASE_IMAGE:-evander-runner-base:latest}"
+RUNNER_OS_BASE_IMAGE="${RUNNER_OS_BASE_IMAGE:-ubuntu:24.04}"
 RUNNER_BUILD_NETWORK="${RUNNER_BUILD_NETWORK:-}"
 DOCKER="${DOCKER:-docker}"
 if [[ "${RUNNER_FORCE_REBUILD:-}" != "" ]]; then
@@ -163,9 +172,15 @@ RESOLVED_CODEX_BINARY_PATH="$(readlink -f "${HOST_CODEX_BINARY_PATH}")"
 RESOLVED_CODEX_CODE_MODE_HOST_PATH="$(readlink -f "${HOST_CODEX_CODE_MODE_HOST_PATH}")"
 DOCKERFILE_PATH="${ROOT_DIR}/docker/evander-runner/Dockerfile"
 BUILD_SCRIPT_PATH="${SCRIPT_DIR}/build_evander_runner_image.sh"
+BASE_DOCKERFILE_PATH="${ROOT_DIR}/docker/evander-runner-base/Dockerfile"
+BASE_BUILD_SCRIPT_PATH="${SCRIPT_DIR}/build_evander_runner_base_image.sh"
 
 if [[ ! -f "${DOCKERFILE_PATH}" ]]; then
   echo "Missing runner Dockerfile: ${DOCKERFILE_PATH}" >&2
+  exit 1
+fi
+if [[ ! -f "${BASE_DOCKERFILE_PATH}" || ! -x "${BASE_BUILD_SCRIPT_PATH}" ]]; then
+  echo "Missing shared runner base build inputs." >&2
   exit 1
 fi
 
@@ -218,13 +233,14 @@ append_manifest_line "host_codex_platform_package" "${HOST_CODEX_PLATFORM_PACKAG
 append_manifest_line "codex_target_triple" "${CODEX_TARGET_TRIPLE}"
 append_manifest_line "dockerfile_sha256" "$(hash_file "${DOCKERFILE_PATH}")"
 append_manifest_line "build_script_sha256" "$(hash_file "${BUILD_SCRIPT_PATH}")"
+append_manifest_line "base_dockerfile_sha256" "$(hash_file "${BASE_DOCKERFILE_PATH}")"
+append_manifest_line "base_build_script_sha256" "$(hash_file "${BASE_BUILD_SCRIPT_PATH}")"
+append_manifest_line "runner_base_image" "${RUNNER_BASE_IMAGE}"
+append_manifest_line "runner_os_base_image" "${RUNNER_OS_BASE_IMAGE}"
 append_manifest_line "codex_binary_realpath" "${RESOLVED_CODEX_BINARY_PATH}"
 append_manifest_line "codex_binary_sha256" "$(hash_file "${RESOLVED_CODEX_BINARY_PATH}")"
 append_manifest_line "codex_code_mode_host_realpath" "${RESOLVED_CODEX_CODE_MODE_HOST_PATH}"
 append_manifest_line "codex_code_mode_host_sha256" "$(hash_file "${RESOLVED_CODEX_CODE_MODE_HOST_PATH}")"
-# The Dockerfile may keep the same text while a moving base-image tag refreshes
-# upstream, so the manifest records the exact FROM policy and operators can use
-# --force or RUNNER_FORCE_REBUILD=true for an intentional refresh.
 append_manifest_line "dockerfile_from_line" "$(grep -m1 '^FROM[[:space:]]' "${DOCKERFILE_PATH}")"
 
 RESOLVED_CODEX_PACKAGE_ROOT="${RESOLVED_CODEX_BINARY_PATH}"
@@ -251,6 +267,13 @@ if ! command -v "${DOCKER}" >/dev/null 2>&1; then
   exit 1
 fi
 
+base_args=()
+if [[ "${FORCE_REBUILD}" -eq 1 ]]; then
+  base_args+=(--force)
+fi
+export DOCKER RUNNER_BASE_IMAGE RUNNER_OS_BASE_IMAGE RUNNER_BUILD_NETWORK
+"${BASE_BUILD_SCRIPT_PATH}" "${base_args[@]}"
+
 BUILD_CONTEXT=""
 RUNNER_ARCHIVE_TMP_PATH=""
 MANIFEST_TMP_PATH=""
@@ -273,12 +296,9 @@ cp "${HOST_CODEX_BINARY_PATH}" "${BUILD_CONTEXT}/codex"
 cp "${HOST_CODEX_CODE_MODE_HOST_PATH}" "${BUILD_CONTEXT}/codex-code-mode-host"
 chmod 0755 "${BUILD_CONTEXT}/codex" "${BUILD_CONTEXT}/codex-code-mode-host"
 
-build_args=(build -t "${RUNNER_IMAGE_NAME}")
+build_args=(build --build-arg "RUNNER_BASE_IMAGE=${RUNNER_BASE_IMAGE}" -t "${RUNNER_IMAGE_NAME}")
 if [[ -n "${RUNNER_BUILD_NETWORK}" ]]; then
   build_args+=(--network "${RUNNER_BUILD_NETWORK}")
-fi
-if [[ "${FORCE_REBUILD}" -eq 1 ]]; then
-  build_args+=(--pull)
 fi
 build_args+=("${BUILD_CONTEXT}")
 

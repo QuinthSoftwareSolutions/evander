@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-11 - Reliable runner image builds (0.40.1)
+
+- Install the common Codex and Claude runner operating-system dependencies once in a shared base
+  image, avoiding a second full apt install in sequential archive builds.
+- Bound Ubuntu base-image pulls and shared-base builds, retry stalled pulls, and allow operators to
+  select a registry mirror or cache with `RUNNER_OS_BASE_IMAGE`.
+
 ## 2026-09-11 - Opt-in SCIP symbol navigation (0.40.0)
 
 - Make SCIP symbol navigation opt-in per repository with an Admin Web setting,
