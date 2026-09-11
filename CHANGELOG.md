@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-11 - Stable Team copy previews (0.40.4)
+
+- Keep Team copy previews valid while tasks, inbox items, dispatches, runtime state, cost history,
+  and other excluded operational records continue changing.
+- Reject a stale copy only when the stable source configuration graph changed, including Team
+  settings, projects, roles, agents, assignments, review profiles, and outcome kinds.
+
 ## 2026-09-11 - Azure runner package mirror (0.40.3)
 
 - Route the shared Ubuntu runner base image's release, update, backport, and security package

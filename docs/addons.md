@@ -635,12 +635,15 @@ guest filesystem contents and manually installed software are not cloned.
 
 The corresponding Admin API is
 `POST /api/addons/team-addon/teams/{team_id}/copy`. Its request contains
-`name`, `expected_revision`, an optional destination `id`, and an
-`agent_session_ids` object keyed by source agent ID. The operation creates new,
-collision-safe IDs for the Team graph and copies active or blocked projects,
-active or paused agents, non-archived roles, review profiles and outcome-kind
-definitions, project goals and assignments, release policy, Team settings, and
-managed Git bindings. Copied projects and agents start active, goals start
+`name`, `expected_revision`, the server-issued `source_configuration_token`, an
+optional destination `id`, and an `agent_session_ids` object keyed by source
+agent ID. The operation creates new, collision-safe IDs for the Team graph and
+copies active or blocked projects, active or paused agents, non-archived roles,
+review profiles and outcome-kind definitions, project goals and assignments,
+release policy, Team settings, and managed Git bindings. The configuration token
+allows unrelated tasks, inbox items, dispatches, runtime state, and cost history
+to advance while the wizard is open; a change to any copied configuration still
+invalidates the preview. Copied projects and agents start active, goals start
 pending, governance escalation starts disabled, and a configured cost cap
 receives a fresh budget window.
 

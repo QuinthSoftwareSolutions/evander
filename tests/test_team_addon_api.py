@@ -6693,6 +6693,108 @@ def test_team_addon_admin_api_copies_team_to_registered_unbound_sessions(
     assert missing_session.json()["error"] == "core sessions were not found: session-does-not-exist"
 
 
+def test_team_addon_admin_api_rebases_team_copy_after_live_state_changes(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    source = _team_admin_service(repo).create_team(
+        team_id="source",
+        name="Source Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-copy-manager",
+            vm_id="vm-copy-manager",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client = _client(tmp_path)
+    snapshot = client.get("/api/addons/team-addon/views/people").json()["data"]["state"]
+    source_token = snapshot["teams"]["source"]["copy_configuration_token"]
+    assert source_token.startswith("sha256:")
+
+    def _record_live_runtime(current: TeamState) -> TeamState:
+        current.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=1,
+        )
+        return current
+
+    live_state = repo.update(_record_live_runtime, expected_revision=source.revision)
+
+    response = client.post(
+        "/api/addons/team-addon/teams/source/copy",
+        json={
+            "expected_revision": source.revision,
+            "source_configuration_token": source_token,
+            "name": "Copied Team",
+            "agent_session_ids": {"manager": "session-copy-manager"},
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["rebased_from_revision"] == source.revision
+    assert body["revision"] == live_state.revision + 1
+    assert body["teams"][body["copied"]["team_id"]]["name"] == "Copied Team"
+
+
+def test_team_addon_admin_api_rejects_team_copy_after_source_configuration_changes(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    admin = _team_admin_service(repo)
+    source = admin.create_team(
+        team_id="source",
+        name="Source Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-copy-manager",
+            vm_id="vm-copy-manager",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client = _client(tmp_path)
+    snapshot = client.get("/api/addons/team-addon/state").json()
+    source_token = snapshot["teams"]["source"]["copy_configuration_token"]
+    changed = admin.update_team(
+        team_id="source",
+        name="Changed Source Team",
+        expected_revision=source.revision,
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/teams/source/copy",
+        json={
+            "expected_revision": source.revision,
+            "source_configuration_token": source_token,
+            "name": "Copied Team",
+            "agent_session_ids": {"manager": "session-copy-manager"},
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.revision
+    assert set(repo.read().teams) == {"source"}
+
+
 def test_team_addon_admin_api_team_copy_requires_owner_for_destination_sessions(
     tmp_path: Path,
 ) -> None:

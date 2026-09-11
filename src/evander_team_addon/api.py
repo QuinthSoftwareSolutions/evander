@@ -147,7 +147,7 @@ from .services.domain.task_assessment import task_payload_with_assessment
 from .services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
 )
-from .services.admin_service import TeamAdminService
+from .services.admin_service import TeamAdminService, team_copy_configuration_token
 from .services.chat_service import (
     TeamChatService,
     project_scoped_team_chat_authorization,
@@ -334,6 +334,8 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "projects",
         "roles",
         "agents",
+        "outcome_kind_definitions",
+        "review_profiles",
         "agent_runtimes",
         "stand_downs",
         "tasks",
@@ -877,6 +879,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def copy_team(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         source_team_id = request.path_params["team_id"]
+        expected_revision = _expected_revision(payload)
+        source_configuration_token = _optional(payload, "source_configuration_token")
         current_state = repository.read()
         source_team = current_state.teams.get(source_team_id)
         if source_team is None:
@@ -940,18 +944,70 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     status_code=403,
                 )
 
-        state, result = admin_service.copy_team(
-            source_team_id=source_team_id,
-            team_id=_optional(payload, "id") or _optional(payload, "team_id"),
-            name=_required(payload, "name"),
-            agent_session_ids=raw_agent_session_ids,
-            expected_revision=_expected_revision(payload),
-        )
+        rebased_from_revision: int | None = None
+        attempt_revision = expected_revision
+        if source_configuration_token is not None:
+            try:
+                current_source_configuration_token = team_copy_configuration_token(
+                    current_state,
+                    source_team_id,
+                )
+            except ValueError as exc:
+                raise TeamStateConflictError(
+                    expected_revision=expected_revision,
+                    current_revision=current_state.revision,
+                ) from exc
+            if current_source_configuration_token != source_configuration_token:
+                raise TeamStateConflictError(
+                    expected_revision=expected_revision,
+                    current_revision=current_state.revision,
+                )
+            if current_state.revision != expected_revision:
+                attempt_revision = current_state.revision
+                rebased_from_revision = expected_revision
+
+        last_conflict: TeamStateConflictError | None = None
+        for _attempt in range(5):
+            try:
+                state, result = admin_service.copy_team(
+                    source_team_id=source_team_id,
+                    team_id=_optional(payload, "id") or _optional(payload, "team_id"),
+                    name=_required(payload, "name"),
+                    agent_session_ids=raw_agent_session_ids,
+                    expected_revision=attempt_revision,
+                )
+                break
+            except TeamStateConflictError as exc:
+                last_conflict = exc
+                if source_configuration_token is None:
+                    raise
+                current_state = repository.read()
+                try:
+                    current_source_configuration_token = team_copy_configuration_token(
+                        current_state,
+                        source_team_id,
+                    )
+                except ValueError as token_error:
+                    raise TeamStateConflictError(
+                        expected_revision=expected_revision,
+                        current_revision=current_state.revision,
+                    ) from token_error
+                if current_source_configuration_token != source_configuration_token:
+                    raise TeamStateConflictError(
+                        expected_revision=expected_revision,
+                        current_revision=current_state.revision,
+                    ) from exc
+                attempt_revision = current_state.revision
+                rebased_from_revision = expected_revision
+        else:
+            assert last_conflict is not None
+            raise last_conflict
         return _state_response(
             request,
             state,
             status_code=201,
             extra={"copied": result},
+            rebased_from_revision=rebased_from_revision,
         )
 
     async def patch_team(request: Request) -> JSONResponse:
@@ -5211,6 +5267,7 @@ def _team_state_payload_for_request(
             )
     apply_compact_human_review_projection(payload, state)
     _add_team_resource_tokens(payload, state)
+    _add_team_copy_configuration_tokens(payload, state)
     _filter_external_source_evidence_payload(
         payload,
         allowed_snapshot_ids=_authorized_external_source_evidence_snapshot_ids(
@@ -6019,6 +6076,7 @@ def _state_slice_payload_for_request(
         collections=collections,
         ids_by_collection=scoped_ids,
     )
+    _add_team_copy_configuration_tokens(payload, state)
     _filter_external_source_evidence_payload(
         payload,
         allowed_snapshot_ids=scoped_ids["external_source_evidence_snapshots"],
@@ -6336,6 +6394,23 @@ def _add_team_resource_tokens(payload: dict[str, Any], state: TeamState) -> None
             row = rows.get(item_id)
             if isinstance(row, dict):
                 row["resource_token"] = token
+
+
+def _add_team_copy_configuration_tokens(
+    payload: dict[str, Any],
+    state: TeamState,
+) -> None:
+    teams = payload.get("teams")
+    if not isinstance(teams, dict):
+        return
+    for team_id, team_payload in teams.items():
+        if not isinstance(team_payload, dict):
+            continue
+        try:
+            token = team_copy_configuration_token(state, str(team_id))
+        except ValueError:
+            continue
+        team_payload["copy_configuration_token"] = token
 
 
 def _add_team_resource_tokens_for_collections(

@@ -2256,6 +2256,19 @@ async function createTeamAddonServer(
         && /^\/api\/addons\/team-addon\/teams\/[^/]+\/copy$/.test(pathname)
         && payload.expected_revision !== state.revision
       ) {
+        const sourceTeamId = decodeURIComponent(pathname.split("/").at(-2) || "");
+        const currentConfigurationToken = state.teams[sourceTeamId]?.copy_configuration_token;
+        if (
+          payload.source_configuration_token
+          && payload.source_configuration_token === currentConfigurationToken
+        ) {
+          applyMutation(state, pathname, payload);
+          jsonResponse(response, {
+            ...state,
+            rebased_from_revision: payload.expected_revision,
+          }, 201);
+          return;
+        }
         jsonResponse(
           response,
           {
@@ -3580,7 +3593,59 @@ test("team add-on retains completed session copies when another session fails", 
   assert.equal(new Set(copies.map((request) => request.payload.source_session_id)).size, 4);
 });
 
-test("team add-on submits the source revision shown by the copy preview", async (t) => {
+test("team add-on rebases a copy when only live Team state changed", async (t) => {
+  const initialState = seededOrgChartState();
+  const {
+    port,
+    requests,
+    state: serverState,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before testing the copy preview",
+  );
+  await openTeams(page);
+  await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
+  const copyForm = page.locator("form[data-team-copy-form]");
+  await copyForm.waitFor({ state: "visible" });
+  assert.equal(await copyForm.getAttribute("data-source-revision"), "8");
+  assert.equal(
+    await copyForm.getAttribute("data-source-configuration-token"),
+    "source-config-team-v1",
+  );
+
+  serverState.revision = 9;
+  serverState.tasks.task_open.state = "completed";
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: 9 }) > 0,
+    "expected the concurrent revision to reach the Team client",
+  );
+  await waitForRevision(page, 9);
+  await copyForm.getByRole("button", { name: "Copy team" }).click();
+
+  await waitForRevision(page, 10);
+  assert.equal(
+    requests.filter((request) => request.pathname === "/api/admin/agents/copy-operations").length,
+    4,
+  );
+  const copyRequest = requests.find(
+    (request) => request.method === "POST"
+      && request.pathname === "/api/addons/team-addon/teams/team/copy",
+  );
+  assert.ok(copyRequest);
+  assert.equal(copyRequest.payload.expected_revision, 8);
+  assert.equal(copyRequest.payload.source_configuration_token, "source-config-team-v1");
+  assert.equal(Object.keys(serverState.teams).length, 2);
+});
+
+test("team add-on rejects a copy when the stable source configuration changed", async (t) => {
   const initialState = seededOrgChartState();
   const destinationSessions = ["manager", "lead", "backend", "worker"].map((agentId) => ({
     agent_id: `core-copy-${agentId}`,
@@ -3614,10 +3679,10 @@ test("team add-on submits the source revision shown by the copy preview", async 
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
   const copyForm = page.locator("form[data-team-copy-form]");
   await copyForm.waitFor({ state: "visible" });
-  assert.equal(await copyForm.getAttribute("data-source-revision"), "8");
 
   serverState.revision = 9;
   serverState.teams.team.name = "Concurrently changed Team";
+  serverState.teams.team.copy_configuration_token = "source-config-team-v2";
   assert.ok(
     emitStateSnapshot({ response_scope: "revision", revision: 9 }) > 0,
     "expected the concurrent revision to reach the Team client",
@@ -3631,7 +3696,7 @@ test("team add-on submits the source revision shown by the copy preview", async 
   await copyForm.getByRole("button", { name: "Copy team" }).click();
 
   await page.locator("#status-message", {
-    hasText: "The source Team changed after this copy preview was opened.",
+    hasText: "The source Team configuration changed after this copy preview was opened.",
   }).waitFor({ state: "visible" });
   const copyRequest = requests.find(
     (request) => request.method === "POST"
@@ -9344,6 +9409,7 @@ function seededOrgChartState() {
       team: {
         id: "team",
         name: "Team",
+        copy_configuration_token: "source-config-team-v1",
         manager_agent_id: "manager",
         operator_communication_target_id: "ops-channel",
         project_ids: ["project"],
