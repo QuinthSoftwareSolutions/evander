@@ -3,7 +3,7 @@ import { fetchJson } from "../admin/api";
 
 type Settings = {
   enabled: boolean; worker_id: string | null; image: string; tracked_ref: string;
-  refresh_on_git_change: boolean; refresh_interval_seconds: number; worker_cpus: number; semantic: boolean;
+  refresh_on_git_change: boolean; refresh_interval_seconds: number; worker_cpus: number; semantic: boolean; scip: boolean;
   includes: string[]; excludes: string[]; dotnet_projects: string[]; typescript_projects: string[];
   timeout_seconds: number; retention_days: number; max_file_bytes: number;
   npm_restore: "locked" | "install";
@@ -78,15 +78,17 @@ export function RepositoryIndexPanel({ repositoryId, privilegedUnlocked }: { rep
           <label className="field-stack">Indexing CPU limit<input type="number" min={0.1} max={4} step={0.1} value={form.worker_cpus} onChange={e => update("worker_cpus", Number(e.target.value))} /></label>
           <label className="field-stack">Minimum automatic refresh interval (seconds)<input type="number" min={300} max={604800} value={form.refresh_interval_seconds} onChange={e => update("refresh_interval_seconds", Number(e.target.value))} /></label>
           <label className="field-stack">Unreferenced snapshot retention (days)<input type="number" min={1} max={365} value={form.retention_days} onChange={e => update("retention_days", Number(e.target.value))} /></label>
-          <label className="field-stack">JavaScript dependencies<select value={form.npm_restore} onChange={e => update("npm_restore", e.target.value as Settings["npm_restore"])}><option value="locked">Require package lock</option><option value="install">Resolve when lock is missing</option></select></label>
+          {form.scip && <label className="field-stack">JavaScript dependencies<select value={form.npm_restore} onChange={e => update("npm_restore", e.target.value as Settings["npm_restore"])}><option value="locked">Require package lock</option><option value="install">Resolve when lock is missing</option></select></label>}
         </div>
         <label className="checkbox-row"><input type="checkbox" checked={form.semantic} onChange={e => update("semantic", e.target.checked)} /> Search by meaning using the configured embedding provider</label>
+        <label className="checkbox-row"><input type="checkbox" checked={form.scip} onChange={e => update("scip", e.target.checked)} /> SCIP symbol navigation</label>
+        <p>Enable definitions, references and implementations for C# and TypeScript. Requires the corresponding language tools and project dependencies on the indexing worker.</p>
         <label className="checkbox-row"><input type="checkbox" checked={form.refresh_on_git_change} onChange={e => update("refresh_on_git_change", e.target.checked)} /> Refresh the shared branch index at the configured interval</label>
         <p>Teams use existing indexes without starting compiler builds. Branch changes are searched in the checkout. One compiler indexing job can run at a time.</p>
         {([
           ["includes", "Include files (one pattern per line)"], ["excludes", "Exclude files (one pattern per line)"],
           ["dotnet_projects", ".NET project paths (empty discovers tracked projects)"], ["typescript_projects", "TypeScript configuration paths (empty discovers tracked configurations)"],
-        ] as const).map(([key, label]) => <label className="field-stack" key={key}>{label}<textarea rows={3} value={form[key].join("\n")} onChange={e => update(key, e.target.value.split("\n"))} /></label>)}
+        ] as const).filter(([key]) => form.scip || key === "includes" || key === "excludes").map(([key, label]) => <label className="field-stack" key={key}>{label}<textarea rows={3} value={form[key].join("\n")} onChange={e => update(key, e.target.value.split("\n"))} /></label>)}
       </fieldset>
       <div className="feature-toolbar">
         <button className="admin-action-button" type="button" disabled={locked || !dirty} onClick={() => void act("save")}>Save indexing settings</button>

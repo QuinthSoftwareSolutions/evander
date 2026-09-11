@@ -410,10 +410,9 @@ class RepositoryIndexService:
                             f"Semantic indexing unavailable ({type(exc).__name__}); rebuild to retry",
                         ],
                     )
-            ready = coverage.get("navigation") == "ready" and coverage.get("semantic") in {
-                "ready",
-                "disabled",
-            }
+            ready = all(
+                coverage.get(kind) in {"ready", "disabled"} for kind in ("navigation", "semantic")
+            )
             self.store.update(
                 build["id"], status="ready" if ready else "partial", coverage=coverage
             )
@@ -654,6 +653,8 @@ class RepositoryIndexService:
         if build is None:
             return {"status": "unavailable", "commit_sha": sha, "hits": []}
         provenance = self.query_provenance(build, sha)
+        if build["coverage"].get("navigation") == "disabled":
+            return {"status": "disabled", **provenance, "hits": [], "next_offset": None}
         if build["sha"] != sha:
             changed = self._changed_paths(build, directory, sha)
             candidates, _ = self.store.navigate(build["id"], symbol, kind, limit=1000, offset=0)

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-11 - Opt-in SCIP symbol navigation (0.40.0)
+
+- Make SCIP symbol navigation opt-in per repository with an Admin Web setting,
+  defaulting to off for new and existing configurations that omit `scip`.
+- Skip compiler tools and NuGet bootstrap when SCIP is disabled, and report
+  successful text/semantic-only snapshots as ready with navigation disabled.
+- Run SCIP's Roslyn semantic analysis directly after dependency restore, removing
+  the separate `dotnet build` step from C# repository indexing.
+- Preserve partial navigation for workspace failures and text retrieval when
+  dependency restore or SCIP execution fails.
+
 ## 2026-09-11 - Session copy image selectors (0.39.1)
 
 - Use stored VM template and container image aliases when provisioning copied

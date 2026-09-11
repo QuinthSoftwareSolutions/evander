@@ -104,7 +104,7 @@ def index_fixture(repo, tmp_path, monkeypatch, *, projects=None, npm_restore="lo
     monkeypatch.setattr(runner.subprocess, "check_output", command_output)
     monkeypatch.setattr(runner, "run", run)
     settings = IndexSettings(
-        semantic=False, typescript_projects=projects or [], npm_restore=npm_restore
+        scip=True, semantic=False, typescript_projects=projects or [], npm_restore=npm_restore
     )
     settings.excludes.remove("**/packages/**")
     artifact = runner.build_artifact(
@@ -160,7 +160,7 @@ def test_workspace_projects_share_root_lock_and_single_restore(
     # Exercise the host importer and portable export too: merely reaching SCIP
     # does not prove the workspace's source survived filtering.
     service = RepositoryIndexService(tmp_path / "runtime", ManagedGit())
-    settings = IndexSettings(enabled=True, semantic=False)
+    settings = IndexSettings(enabled=True, scip=True, semantic=False)
     settings.excludes.remove("**/packages/**")
     service.save_settings(REPO, "root/app", settings.model_dump(), expected_revision=0)
     build = service.store.get(service.ensure(REPO, "root/app", artifact.commit_sha)["id"])
@@ -246,7 +246,9 @@ def test_workspace_query_failure_does_not_claim_successful_restore(npm_repo, tmp
     assert all(p["status"] == "failed" for p in artifact.projects)
 
 
-def dotnet_index_fixture(tmp_path, monkeypatch, *, build_fails=False):
+def dotnet_index_fixture(
+    tmp_path, monkeypatch, *, scip=True, failing_command=None, workspace_failure=""
+):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "Example.csproj").write_text(
@@ -299,14 +301,21 @@ def dotnet_index_fixture(tmp_path, monkeypatch, *, build_fails=False):
 
     def command_output(command, **kwargs):
         if command[0] in {"scip-dotnet", "scip-typescript"}:
+            if not scip:
+                pytest.fail("SCIP toolchain probed without opting in")
             return TOOLCHAIN[command[0]].encode()
         return original_output(command, **kwargs)
 
     def run(command, **kwargs):
+        if not scip:
+            pytest.fail("Compiler or package restore started without opting in")
         calls.append((command, kwargs))
-        if command[:2] == ["dotnet", "build"] and build_fails:
+        if command[:2] == failing_command:
             raise subprocess.CalledProcessError(1, command)
         if command[0] == "scip-dotnet":
+            if workspace_failure:
+                with kwargs["log"].open("a") as log:
+                    log.write(workspace_failure)
             path = b"Example.cs"
             occurrence = (
                 _encode_field(1, bytes([0, 20, 27])) + _encode_field(2, b"Example.") + b"\x18\x01"
@@ -321,29 +330,73 @@ def dotnet_index_fixture(tmp_path, monkeypatch, *, build_fails=False):
     artifact = runner.build_artifact(
         repo,
         sha,
-        IndexSettings(semantic=False, dotnet_projects=["Example.csproj"]),
+        IndexSettings(
+            **({"scip": scip} if scip is not None else {}),
+            semantic=False,
+            dotnet_projects=["Example.csproj"],
+        ),
         tmp_path / "artifacts" / "code-index.json",
     )
     return artifact, calls
 
 
-def test_dotnet_navigation_disables_transport_metadata_and_pruning_warning(tmp_path, monkeypatch):
+@pytest.mark.parametrize("scip", [None, False])
+def test_scip_is_opt_in_even_with_configured_projects(tmp_path, monkeypatch, scip):
+    artifact, calls = dotnet_index_fixture(tmp_path, monkeypatch, scip=scip)
+
+    assert [document.path for document in artifact.documents] == ["Example.cs"]
+    assert not calls
+    assert not artifact.projects
+    assert not artifact.occurrences
+    assert not artifact.scip_files
+    assert "SCIP symbol navigation is disabled" in artifact.diagnostics
+
+
+def test_dotnet_navigation_restores_then_indexes_without_building(tmp_path, monkeypatch):
     artifact, calls = dotnet_index_fixture(tmp_path, monkeypatch)
 
     assert artifact.projects[0]["status"] == "ready"
-    compiler_calls = [call for call in calls if call[0][0] in {"dotnet", "scip-dotnet"}]
-    assert [call[0][:2] for call in compiler_calls] == [
+    assert [(item.path, item.symbol, item.definition) for item in artifact.occurrences] == [
+        ("Example.cs", "Example.", True)
+    ]
+    assert [call[0][:2] for call in calls] == [
         ["dotnet", "restore"],
-        ["dotnet", "build"],
         ["scip-dotnet", "index"],
     ]
-    for _, kwargs in compiler_calls:
+    assert calls[0][0][2] == "Example.csproj"
+    assert "--skip-dotnet-restore" in calls[1][0]
+    for _, kwargs in calls:
         assert kwargs["env"]["EnableSourceLink"] == "false"
         assert kwargs["env"]["NoWarn"] == "CS1591;NU1510"
 
 
-def test_dotnet_navigation_remains_partial_after_real_compilation_failure(tmp_path, monkeypatch):
-    artifact, _ = dotnet_index_fixture(tmp_path, monkeypatch, build_fails=True)
+@pytest.mark.parametrize(
+    "workspace_failure",
+    [
+        "fail: Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace: missing project reference\n",
+        "Failure: unresolved project reference\n",
+    ],
+)
+def test_dotnet_navigation_remains_partial_after_workspace_failure(
+    tmp_path, monkeypatch, workspace_failure
+):
+    artifact, _ = dotnet_index_fixture(
+        tmp_path, monkeypatch, workspace_failure=workspace_failure
+    )
 
     assert artifact.projects[0]["status"] == "partial"
-    assert artifact.projects[0]["compilation"] == "failed"
+    assert artifact.occurrences
+
+
+@pytest.mark.parametrize("failing_command", [["dotnet", "restore"], ["scip-dotnet", "index"]])
+def test_dotnet_navigation_failure_preserves_text_coverage(tmp_path, monkeypatch, failing_command):
+    artifact, calls = dotnet_index_fixture(
+        tmp_path, monkeypatch, failing_command=failing_command
+    )
+
+    assert artifact.projects[0]["status"] == "failed"
+    assert artifact.projects[0]["error"] == "CalledProcessError"
+    assert [document.path for document in artifact.documents] == ["Example.cs"]
+    assert not artifact.occurrences
+    assert not artifact.scip_files
+    assert calls[-1][0][:2] == failing_command

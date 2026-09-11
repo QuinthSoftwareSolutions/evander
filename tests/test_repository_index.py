@@ -47,14 +47,14 @@ def service(tmp_path):
     result.save_settings(
         REPO,
         "root/app",
-        IndexSettings(enabled=True, semantic=False, refresh_on_git_change=False).model_dump(),
+        IndexSettings(enabled=True, scip=True, semantic=False, refresh_on_git_change=False).model_dump(),
         expected_revision=0,
     )
     return result
 
 
-def artifact(sha=SHA):
-    return IndexArtifact(
+def artifact(sha=SHA, *, scip=True):
+    result = IndexArtifact(
         commit_sha=sha,
         documents=[SourceDocument(path="Domain/Retry.cs", text=TEXT)],
         projects=[{"path": "Retry.csproj", "status": "ready"}],
@@ -90,12 +90,13 @@ def artifact(sha=SHA):
             Relationship(symbol="DurableRetry#", target="IRetry#", kind="implementation")
         ],
     )
+    return result if scip else IndexArtifact(commit_sha=sha, documents=result.documents)
 
 
-def publish(service, sha=SHA):
+def publish(service, sha=SHA, *, scip=True):
     build = service.ensure(REPO, "root/app", sha)
     build = service.store.get(build["id"])
-    coverage = import_artifact(service.store, build, artifact(sha))
+    coverage = import_artifact(service.store, build, artifact(sha, scip=scip))
     service.store.update(build["id"], status="ready", coverage=coverage)
     return service.store.get(build["id"])
 
@@ -268,7 +269,13 @@ def test_cancel_and_failed_rebuild_preserve_published_snapshot(service):
     assert service.snapshot(REPO, "root/app", SHA)["id"] == old["id"]
 
 
-def test_worker_reconciliation_and_restart(service):
+@pytest.mark.parametrize("scip", [False, True])
+def test_worker_reconciliation_and_restart(service, scip):
+    saved = service.settings(REPO, "root/app")
+    service.save_settings(
+        REPO, "root/app", {**saved["settings"], "scip": scip}, expected_revision=saved["revision"]
+    )
+
     class Worker:
         def start(self, build, *, before_submit):
             before_submit()
@@ -278,7 +285,7 @@ def test_worker_reconciliation_and_restart(service):
             return "completed"
 
         def artifact(self, build):
-            return artifact().model_dump_json()
+            return artifact(scip=scip).model_dump_json()
 
     service.worker = Worker()
     service._tracked_blobs = lambda build: {
@@ -289,6 +296,23 @@ def test_worker_reconciliation_and_restart(service):
     assert service.store.get(build["id"])["status"] == "running"
     assert service.reconcile("root/app")["processed"] == 1
     assert service.store.get(build["id"])["status"] == "ready"
+    assert service.store.get(build["id"])["coverage"]["navigation"] == (
+        "ready" if scip else "disabled"
+    )
+    assert service.search(REPO, "root/app", SHA, "retry", mode="lexical")["hits"]
+    result = service.navigate(REPO, "root/app", SHA, "IRetry#")
+    assert result["status"] == ("ready" if scip else "disabled")
+    assert bool(result["hits"]) is scip
+
+
+def test_import_rejects_scip_data_without_opt_in(service):
+    saved = service.settings(REPO, "root/app")
+    service.save_settings(
+        REPO, "root/app", {**saved["settings"], "scip": False}, expected_revision=saved["revision"]
+    )
+    build = service.store.get(service.ensure(REPO, "root/app", SHA)["id"])
+    with pytest.raises(ValueError, match="SCIP data requires scip=true"):
+        import_artifact(service.store, build, artifact())
 
 
 def test_scip_wire_format_and_malformed_input():
