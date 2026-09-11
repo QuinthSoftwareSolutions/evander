@@ -43,6 +43,15 @@ def _copy_runner_repo(tmp_path: Path) -> Path:
     return repo_root
 
 
+def test_runner_base_uses_azure_archive_for_all_ubuntu_pockets() -> None:
+    dockerfile = RUNNER_BASE_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "http://azure.archive.ubuntu.com/ubuntu/" in dockerfile
+    assert "https?://archive\\.ubuntu\\.com/ubuntu/?" in dockerfile
+    assert "https?://security\\.ubuntu\\.com/ubuntu/?" in dockerfile
+    assert dockerfile.index("sed -Ei") < dockerfile.index("apt-get -o")
+
+
 def _write_package_json(path: Path, *, name: str, version: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

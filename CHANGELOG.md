@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-11 - Azure runner package mirror (0.40.3)
+
+- Route the shared Ubuntu runner base image's release, update, backport, and security package
+  downloads through `azure.archive.ubuntu.com` to avoid the degraded public archive path from
+  Azure-hosted deployment agents.
+
 ## 2026-09-11 - Reliable runner image builds (0.40.2)
 
 - Install the common Codex and Claude runner operating-system dependencies once in a shared base
