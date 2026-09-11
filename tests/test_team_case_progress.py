@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +8,7 @@ from test_team_addon_repository import (
     _command_service,
     _lease_agent_dispatch,
     _seed_hierarchy,
+    _team_agent_action_service,
     _team_admin_service,
 )
 from test_team_task_authorship import _create
@@ -108,6 +110,69 @@ def test_case_inheritance_detects_legacy_cycles(tmp_path):
     state.tasks["first"].originating_task_id = "second"
     with pytest.raises(ValueError, match="cycle"):
         inherited_task_case_id(state, project_id="project", parent_task_id="first")
+
+
+@pytest.mark.parametrize("shared_predecessor", [True, False])
+def test_case_less_lineage_resolves_each_ancestor_once(tmp_path, shared_predecessor):
+    state = _seed_hierarchy(tmp_path).read()
+    depth = 24
+
+    class CountingPlans(dict):
+        reads = 0
+
+        def get(self, key, default=None):
+            self.reads += 1
+            # Fail promptly on the old exponential traversal, without a timing assertion.
+            assert self.reads <= depth * 2, "case-less lineage repeatedly traversed"
+            return super().get(key, default)
+
+    plans = CountingPlans()
+    for index in range(depth):
+        plans[f"node-{index}"] = SimpleNamespace(
+            project_id="project",
+            case_id=None,
+            originating_task_id=f"node-{index - 1}" if index else None,
+            parent_task_id=(
+                f"node-{index - (1 if shared_predecessor else 2)}" if index > 1 else None
+            ),
+        )
+    assert (
+        inherited_task_case_id(
+            state, project_id="project", parent_task_id=f"node-{depth - 1}", plans=plans
+        )
+        is None
+    )
+    assert plans.reads == depth
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_agent_action_keeps_valid_creations_when_other_plans_have_missing_parents(
+    tmp_path, reverse
+):
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    case(admin)
+    _create(admin, "root", case_id="intake")
+    tasks = [
+        {"task_id": "invalid", "parent_task_id": "missing"},
+        {"task_id": "invalid-child", "parent_task_id": "invalid"},
+        {"task_id": "invalid-dependent", "dependency_task_ids": ["invalid"]},
+        {"task_id": "valid", "parent_task_id": "root"},
+    ]
+    for task in tasks:
+        task.update(
+            owner_agent_id="backend",
+            project_id="project",
+            title=task["task_id"],
+            description="Work",
+        )
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={"agent_id": "lead", "task_creations": tasks[::-1] if reverse else tasks}
+    )
+    assert result["created_task_ids"] == ["valid"], result
+    assert state.tasks["valid"].case_id == "intake"
+    assert not {"invalid", "invalid-child", "invalid-dependent"}.intersection(state.tasks)
+    assert any("missing parent missing" in error for error in result["errors"])
 
 
 def test_create_case_effect_returns_encoded_permalink_and_reuses_case(tmp_path):

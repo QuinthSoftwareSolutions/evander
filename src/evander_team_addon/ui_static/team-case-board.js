@@ -20,29 +20,36 @@ export function caseTaskIds(tasks, caseId) {
   return members;
 }
 
-export function caseBoardPermalink(baseUrl, caseId) {
+export function caseBoardPermalink(baseUrl, caseId, { teamId = "", projectId = "" } = {}) {
   const url = new URL(baseUrl);
   url.search = "";
   const params = new URLSearchParams({ view: "task-board" });
   if (caseId) params.set("case_id", caseId);
+  if (teamId) params.set("team_id", teamId);
+  if (projectId) params.set("project_id", projectId);
   url.hash = `addon:team-addon?${params}`;
   return url.href;
 }
 
-export function replaceCaseBoardLocation(browserWindow, caseId) {
+export function replaceCaseBoardLocation(browserWindow, caseId, { teamId = "", projectId = "" } = {}) {
   const local = new URL(browserWindow.location.href);
   local.hash = "";
   local.searchParams.set("view", "task-board");
   if (caseId) local.searchParams.set("case_id", caseId);
   else local.searchParams.delete("case_id");
+  for (const [name, value] of [["team_id", teamId], ["project_id", projectId]]) {
+    if (value) local.searchParams.set(name, value);
+    else local.searchParams.delete(name);
+  }
   browserWindow.history.replaceState(null, "", local);
   const parent = browserWindow.parent;
   if (parent !== browserWindow) {
     const oldURL = parent.location.href;
-    const newURL = caseBoardPermalink(oldURL, caseId);
+    const newURL = caseBoardPermalink(oldURL, caseId, { teamId, projectId });
     if (oldURL !== newURL) {
       parent.history.replaceState(null, "", newURL);
-      // replaceState does not emit hashchange; the shell must refresh its iframe route.
+      // The shell reloads the iframe on hashchange. Include its Team/project context
+      // so ordinary board selection and clearing a case survive that reload.
       parent.dispatchEvent(new parent.HashChangeEvent("hashchange", { oldURL, newURL }));
     }
   }

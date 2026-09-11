@@ -9,6 +9,9 @@
 - Add atomic source-based reuse to the create-case workflow action.
 - Add an optional revision-checked APP backfill helper for linking existing work
   to intake cases without posting comments or dispatching work.
+- Preserve Team/project selection through embedded-board navigation; cache shared
+  case-less lineage and retain valid agent-action creations when other plans have
+  invalid task graphs. Cover case permalinks through local and Microsoft sign-in.
 
 ## 2026-09-10 - Reliable .NET repository navigation (0.37.2)
 

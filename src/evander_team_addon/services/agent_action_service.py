@@ -578,6 +578,20 @@ class TeamAgentActionService:
                 reserved_task_ids.add(plan.task_id)
                 task_creation_plans.append(plan)
 
+            # Prune invalid graphs (including their dependents) before resolving lineage.
+            # Agent actions preserve independent valid creations rather than failing the batch.
+            graph_errors = _task_creation_batch_graph_errors(
+                state_model,
+                task_creation_plans,
+                actor=agent,
+            )
+            for plan in task_creation_plans:
+                if plan.task_id in graph_errors:
+                    result["errors"].append(graph_errors[plan.task_id])
+            task_creation_plans = [
+                plan for plan in task_creation_plans if plan.task_id not in graph_errors
+            ]
+
             try:
                 task_creation_plans = _resolve_task_creation_plan_git_bases(
                     state_model,
@@ -588,17 +602,8 @@ class TeamAgentActionService:
                 result["errors"].append(f"task_creations: {exc}")
                 task_creation_plans = []
 
-            graph_errors = _task_creation_batch_graph_errors(
-                state_model,
-                task_creation_plans,
-                actor=agent,
-            )
             created_task_ids: list[str] = []
             for plan in task_creation_plans:
-                graph_error = graph_errors.get(plan.task_id)
-                if graph_error is not None:
-                    result["errors"].append(graph_error)
-                    continue
                 created_id = _apply_task_creation_plan(
                     state_model,
                     plan=plan,

@@ -6,6 +6,12 @@ the correct Team and project after login. It grants no permissions: the existing
 directory and Team access controls still apply. An unavailable case produces an
 empty view rather than falling back to the whole project.
 
+Signed-out visitors retain the case permalink through local-password sign-in.
+Microsoft sign-in carries the same link as the post-login return target. The
+user must still be authorized to view the case. Team/project selections are also
+kept in the board route so clearing a case or changing projects survives the
+Admin shell's iframe reload.
+
 The case view includes directly linked tasks and all descendants through
 `parent_task_id` or `originating_task_id`, including correction tasks that have a
 specialized case. Dependency links alone do not confer case membership. Counts,

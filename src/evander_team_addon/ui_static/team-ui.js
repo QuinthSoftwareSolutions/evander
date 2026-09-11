@@ -255,8 +255,10 @@ const teamRecordGroupTabs = {};
 const teamRecordGroupPages = {};
 const openTeamInlineCreateForms = new Set();
 const teamRecordPageSize = 6;
-let selectedTaskBoardTeamId = "";
-let selectedTaskBoardProjectId = "";
+let selectedTaskBoardTeamId = initialTaskBoardDeepLink.get("view") === "task-board"
+  ? text(initialTaskBoardDeepLink.get("team_id")) : "";
+let selectedTaskBoardProjectId = initialTaskBoardDeepLink.get("view") === "task-board"
+  ? text(initialTaskBoardDeepLink.get("project_id")) : "";
 let taskBoardViewMode = "board";
 let selectedTaskBoardTaskId = "";
 let taskBoardCaseId = initialTaskBoardDeepLink.get("view") === "task-board"
@@ -13181,7 +13183,10 @@ function caseBoardUrl() {
 }
 
 function persistCaseBoardLocation() {
-  replaceCaseBoardLocation(window, taskBoardCaseId);
+  replaceCaseBoardLocation(window, taskBoardCaseId, {
+    teamId: selectedTaskBoardTeamId,
+    projectId: selectedTaskBoardProjectId,
+  });
 }
 
 function selectTaskBoardCase(caseId) {
