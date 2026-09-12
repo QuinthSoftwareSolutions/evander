@@ -1,12 +1,9 @@
 # Changelog
 
-## 2026-09-12 - In-place Team task-board selection (0.40.5)
+## 2026-09-12 - Index-worker cleanup and in-place Team task-board selection (0.40.4)
 
 - Keep Team task-board Team, project, and case selection in the existing embedded dashboard
   while silently updating its deep link, avoiding a full dashboard reload for each change.
-
-## 2026-09-12 - Automatic index-worker cleanup (0.40.4)
-
 - Retire disposable indexing sessions, containers, workspaces and session-scoped Git access
   after artifact import or a terminal failure/cancellation, while retaining the imported index
   and its Git snapshot pin.
