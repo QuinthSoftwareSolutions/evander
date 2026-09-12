@@ -3095,38 +3095,58 @@ function caseBoardState() {
   return state;
 }
 
-test("case board preserves Team and project selection across real Admin shell reloads", { timeout: 45000 }, async (t) => {
+test("case board updates Team and project selection in place and preserves it across a shell reload", { timeout: 45000 }, async (t) => {
   const { port } = await createTeamAddonServer(t, { initialState: caseBoardState() });
   const { page, board, errors } = await openCaseBoardAdminShell(t, port);
-  async function afterBoardReload(action) {
+  async function afterBoardSelection(action, settled) {
     const previousDocument = await board.locator("body").evaluate(() => performance.timeOrigin);
     await action();
-    await page.waitForFunction(previous => {
-      const frame = document.querySelector('iframe[title="Teams"]');
-      return frame?.contentWindow.performance.timeOrigin !== previous
-        && frame?.contentDocument?.readyState === "complete";
-    }, previousDocument);
+    await settled();
+    await page.waitForTimeout(250);
+    assert.equal(
+      await board.locator("body").evaluate(() => performance.timeOrigin),
+      previousDocument,
+      "changing the task-board selection must not recreate the embedded Teams dashboard",
+    );
   }
   await board.getByRole("tab", { name: "Task board", exact: true }).click();
-  await afterBoardReload(() => board.locator("[data-task-board-team]").selectOption("team-alpha"));
-  await board.locator('[data-task-board-project] option[value="alpha-project"]').waitFor({ state: "attached" });
+  await afterBoardSelection(
+    () => board.locator("[data-task-board-team]").selectOption("team-alpha"),
+    () => board.locator('[data-task-board-project] option[value="alpha-project"]').waitFor({ state: "attached" }),
+  );
   assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-alpha");
-  await afterBoardReload(() => board.locator("[data-task-board-project]").selectOption("alpha-project"));
-  await afterBoardReload(() => board.locator('[data-task-board-filter="case"]').selectOption("case A&42"));
-  await afterBoardReload(() => board.getByRole("button", { name: "Clear case filter", exact: true }).click());
+  await afterBoardSelection(
+    () => board.locator("[data-task-board-project]").selectOption("alpha-project"),
+    () => board.locator(".task-board-context strong", { hasText: "Alpha Project" }).waitFor(),
+  );
+  await afterBoardSelection(
+    () => board.locator('[data-task-board-filter="case"]').selectOption("case A&42"),
+    () => board.getByRole("button", { name: "Clear case filter", exact: true }).waitFor(),
+  );
+  await afterBoardSelection(
+    () => board.getByRole("button", { name: "Clear case filter", exact: true }).click(),
+    () => board.locator(".task-board-context strong", { hasText: "Alpha Project" }).waitFor(),
+  );
   await board.locator(".task-board-context strong", { hasText: "Alpha Project" }).waitFor();
   assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-alpha");
   assert.equal(await board.locator("[data-task-board-project]").inputValue(), "alpha-project");
   await page.reload({ waitUntil: "domcontentloaded" });
   await board.locator('[data-task-board-filter="case"]').waitFor();
   assert.equal(await board.locator("[data-task-board-project]").inputValue(), "alpha-project");
-  await afterBoardReload(() => board.locator('[data-task-board-filter="case"]').selectOption("case A&42"));
+  await afterBoardSelection(
+    () => board.locator('[data-task-board-filter="case"]').selectOption("case A&42"),
+    () => board.getByRole("button", { name: "Clear case filter", exact: true }).waitFor(),
+  );
   await board.getByRole("button", { name: "Clear case filter", exact: true }).waitFor();
-  await afterBoardReload(() => board.locator("[data-task-board-project]").selectOption("alpha-other"));
-  await board.locator(".task-board-context strong", { hasText: "Other Alpha Project" }).waitFor();
+  await afterBoardSelection(
+    () => board.locator("[data-task-board-project]").selectOption("alpha-other"),
+    () => board.locator(".task-board-context strong", { hasText: "Other Alpha Project" }).waitFor(),
+  );
   assert.equal(await board.locator("[data-task-board-project]").inputValue(), "alpha-other");
-  await afterBoardReload(() => board.locator("[data-task-board-team]").selectOption("team-beta"));
-  await board.locator('[data-task-board-project] option[value="beta-project"]').waitFor({ state: "attached" });
+  await afterBoardSelection(
+    () => board.locator("[data-task-board-team]").selectOption("team-beta"),
+    () => board.locator('[data-task-board-project] option[value="beta-project"]').waitFor({ state: "attached" }),
+  );
   assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-beta");
   assert.deepEqual(errors, []);
 });

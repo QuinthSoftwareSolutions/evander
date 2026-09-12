@@ -277,6 +277,9 @@ def test_worker_reconciliation_and_restart(service, scip):
     )
 
     class Worker:
+        def __init__(self):
+            self.retired = []
+
         def start(self, build, *, before_submit):
             before_submit()
             return build["id"]
@@ -286,6 +289,9 @@ def test_worker_reconciliation_and_restart(service, scip):
 
         def artifact(self, build):
             return artifact(scip=scip).model_dump_json()
+
+        def retire_session(self, build):
+            self.retired.append(build["id"])
 
     service.worker = Worker()
     service._tracked_blobs = lambda build: {
@@ -299,6 +305,9 @@ def test_worker_reconciliation_and_restart(service, scip):
     assert service.store.get(build["id"])["coverage"]["navigation"] == (
         "ready" if scip else "disabled"
     )
+    assert service.worker.retired == [build["id"]]
+    assert service.store.get(build["id"])["metrics"]["worker_session_cleanup_completed_at"]
+    assert service.store.get(build["id"])["status"] == "ready"
     assert service.search(REPO, "root/app", SHA, "retry", mode="lexical")["hits"]
     result = service.navigate(REPO, "root/app", SHA, "IRetry#")
     assert result["status"] == ("ready" if scip else "disabled")

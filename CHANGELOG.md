@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-12 - Index-worker cleanup and in-place Team task-board selection (0.40.4)
+
+- Keep Team task-board Team, project, and case selection in the existing embedded dashboard
+  while silently updating its deep link, avoiding a full dashboard reload for each change.
+- Retire disposable indexing sessions, containers, workspaces and session-scoped Git access
+  after artifact import or a terminal failure/cancellation, while retaining the imported index
+  and its Git snapshot pin.
+- Retry incomplete terminal cleanup during reconciliation and keep uncertain compiler jobs
+  reserved until their shutdown is confirmed.
+
 ## 2026-09-11 - Azure runner package mirror (0.40.3)
 
 - Route the shared Ubuntu runner base image's release, update, backport, and security package

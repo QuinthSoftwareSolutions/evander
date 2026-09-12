@@ -264,11 +264,18 @@ Reconciliation records embedding requests, input characters, cache hits and prov
 token usage when reported. These counters are not a complete billing ledger or a
 measurement of agent savings. Failed requests can incur unreported provider usage.
 
-Retention defaults to 30 days. Active builds, active Team task/review/ephemeral bindings
-and the newest published snapshot per repository are retained. Old vectors, worker
-sessions, retained refs and unreferenced SQLite content are reclaimed in that order.
-Cleanup retries on failure, preserving the snapshot and Git pin until worker deletion,
-host Git authorization revocation and session binding removal are confirmed.
+Disposable compiler sessions are retired as soon as their artifact has been imported, while
+semantic ingestion continues from control-plane state. Failed and cancelled builds retire their
+sessions once shutdown is confirmed. Retirement deletes the worker job and workspace and revokes
+session-scoped Git authorization and bindings. Reconciliation records completion and retries an
+interrupted retirement without treating an uncertain compiler shutdown as safe to delete. The
+imported index and its `code_indexes` Git pin remain available independently.
+
+Snapshot retention defaults to 30 days. Active builds, active Team task/review/ephemeral
+bindings and the newest published snapshot per repository are retained. Old vectors,
+retained refs and unreferenced SQLite content are reclaimed in that order. Snapshot cleanup
+retries on failure and preserves the snapshot and Git pin until any outstanding worker
+retirement is confirmed.
 Builds cancelled before provisioning can release their pin without a
 worker session. If an old vector store's configuration has changed, cleanup
 is deferred until that store can be addressed again; it does not silently orphan vectors.

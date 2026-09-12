@@ -56,9 +56,8 @@ export function replaceCaseBoardLocation(browserWindow, caseId, { teamId = "", p
     const newURL = caseBoardPermalink(oldURL, caseId, { teamId, projectId });
     if (oldURL !== newURL) {
       parent.history.replaceState(null, "", newURL);
-      // The shell reloads the iframe on hashchange. Include its Team/project context
-      // so ordinary board selection and clearing a case survive that reload.
-      parent.dispatchEvent(new parent.HashChangeEvent("hashchange", { oldURL, newURL }));
+      // Persist the board selection for an explicit shell reload without dispatching
+      // hashchange: the Admin shell recreates this iframe when it receives that event.
     }
   }
 }
