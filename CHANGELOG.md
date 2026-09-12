@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-12 - Automatic index-worker cleanup (0.40.4)
+
+- Retire disposable indexing sessions, containers, workspaces and session-scoped Git access
+  after artifact import or a terminal failure/cancellation, while retaining the imported index
+  and its Git snapshot pin.
+- Retry incomplete terminal cleanup during reconciliation and keep uncertain compiler jobs
+  reserved until their shutdown is confirmed.
+
 ## 2026-09-11 - Azure runner package mirror (0.40.3)
 
 - Route the shared Ubuntu runner base image's release, update, backport, and security package

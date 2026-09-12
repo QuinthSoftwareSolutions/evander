@@ -319,6 +319,7 @@ def test_only_one_compiler_job_runs_across_repositories(tmp_path):
     worker = SimpleNamespace(
         start=lambda build, **kwargs: started.append(build) or build["id"],
         status=lambda build: "running",
+        retire_session=lambda build: None,
     )
     service = RepositoryIndexService(tmp_path, managed, worker=worker)
     settings = IndexSettings(enabled=True, semantic=False, refresh_on_git_change=False).model_dump()
@@ -353,7 +354,11 @@ def test_uncertain_worker_submission_reserves_capacity_until_confirmed_stopped(t
     def failed_stop(build):
         raise TimeoutError("Stop could not be confirmed")
 
-    worker = SimpleNamespace(start=lost_response, stop=failed_stop)
+    worker = SimpleNamespace(
+        start=lost_response,
+        stop=failed_stop,
+        retire_session=lambda build: None,
+    )
     service = RepositoryIndexService(tmp_path, managed, worker=worker)
     for repo in (REPO, other_repo):
         service.save_settings(

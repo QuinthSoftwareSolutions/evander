@@ -17,7 +17,7 @@ from test_repository_index import ManagedGit, OTHER_SHA, REPO, SHA
 
 @pytest.fixture
 def lifecycle(tmp_path, monkeypatch):
-    sessions, jobs, released, stopped = {}, {}, [], []
+    sessions, jobs, released, stopped, cleanup_attempts = {}, {}, [], [], []
     state = SimpleNamespace(fail_setup=None, cleanup_success=False)
     managed = ManagedGit()
     managed.release_retained_snapshot = lambda *args, **kwargs: released.append(kwargs)
@@ -42,6 +42,7 @@ def lifecycle(tmp_path, monkeypatch):
             raise TimeoutError("Bootstrap write failed")
 
     def cleanup(session_id):
+        cleanup_attempts.append(session_id)
         if state.cleanup_success:
             sessions[session_id].metadata["container_lifecycle"] = {
                 "cleanup_status": "cleanup_succeeded"
@@ -100,6 +101,7 @@ def lifecycle(tmp_path, monkeypatch):
         client=client,
         released=released,
         stopped=stopped,
+        cleanup_attempts=cleanup_attempts,
         state=state,
         components=components,
     )
@@ -211,6 +213,88 @@ def test_cancellation_serializes_with_submission_and_lost_response(lifecycle, st
     lifecycle.client.create = original_create
     service.reconcile("root/app")
     assert service.store.get(next_build["id"])["status"] == "running"
+
+
+@pytest.mark.parametrize("status", ["importing", "ready", "partial", "failed", "cancelled"])
+def test_imported_or_terminal_build_retires_session_without_pruning_snapshot(lifecycle, status):
+    service = lifecycle.service
+    build = service.ensure(REPO, "root/app", SHA)
+    service.reconcile("root/app")
+    service.store.update(build["id"], status=status)
+    lifecycle.state.cleanup_success = True
+
+    assert service.maintenance("root/app")["deleted"] == []
+
+    current = service.store.get(build["id"])
+    assert current["status"] == status
+    assert current["metrics"]["worker_session_cleanup_attempts"] == 1
+    assert current["metrics"]["worker_session_cleanup_completed_at"]
+    assert lifecycle.cleanup_attempts == [build["id"]]
+    assert lifecycle.sessions[build["id"]].metadata["container_lifecycle"] == {
+        "cleanup_status": "cleanup_succeeded"
+    }
+    assert lifecycle.released == []
+
+    assert service.maintenance("root/app")["deleted"] == []
+    assert lifecycle.cleanup_attempts == [build["id"]]
+
+
+def test_terminal_worker_cleanup_retries_before_marking_completion(lifecycle):
+    service = lifecycle.service
+    build = service.ensure(REPO, "root/app", SHA)
+    service.reconcile("root/app")
+    service.store.update(build["id"], status="ready")
+
+    assert service.maintenance("root/app")["deleted"] == []
+    first = service.store.get(build["id"])
+    assert first["metrics"]["worker_session_cleanup_attempts"] == 1
+    assert first["metrics"]["worker_session_cleanup_last_error"] == "RuntimeError"
+    assert "worker_session_cleanup_completed_at" not in first["metrics"]
+    assert lifecycle.released == []
+
+    lifecycle.state.cleanup_success = True
+    assert service.maintenance("root/app")["deleted"] == []
+    completed = service.store.get(build["id"])
+    assert completed["metrics"]["worker_session_cleanup_attempts"] == 2
+    assert completed["metrics"]["worker_session_cleanup_completed_at"]
+    assert "worker_session_cleanup_last_error" not in completed["metrics"]
+    assert lifecycle.cleanup_attempts == [build["id"], build["id"]]
+    assert lifecycle.released == []
+
+
+def test_terminal_worker_cleanup_waits_for_uncertain_compiler_shutdown(lifecycle):
+    service = lifecycle.service
+    build = service.ensure(REPO, "root/app", SHA)
+    service.reconcile("root/app")
+    service.store.update(
+        build["id"],
+        status="failed",
+        metrics={
+            **service.store.get(build["id"])["metrics"],
+            "compiler_submission_pending": True,
+        },
+    )
+    original_stop = lifecycle.client.stop
+
+    def fail_stop(_):
+        raise TimeoutError("Cannot confirm shutdown")
+
+    lifecycle.client.stop = fail_stop
+
+    assert service.maintenance("root/app")["deleted"] == []
+    uncertain = service.store.get(build["id"])
+    assert uncertain["metrics"]["compiler_submission_pending"]
+    assert uncertain["metrics"]["worker_session_cleanup_last_error"] == "TimeoutError"
+    assert lifecycle.cleanup_attempts == []
+
+    lifecycle.client.stop = original_stop
+    lifecycle.state.cleanup_success = True
+    assert service.maintenance("root/app")["deleted"] == []
+    completed = service.store.get(build["id"])
+    assert not completed["metrics"]["compiler_submission_pending"]
+    assert completed["metrics"]["worker_session_cleanup_completed_at"]
+    assert lifecycle.stopped == [build["id"]]
+    assert lifecycle.cleanup_attempts == [build["id"]]
 
 
 def test_retention_reclaims_cancelled_build_that_never_had_a_session(lifecycle):

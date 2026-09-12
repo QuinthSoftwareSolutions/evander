@@ -128,7 +128,9 @@ class RepositoryIndexService:
     def cancel(self, repo: str, directory: str, build_id: str) -> dict:
         self.authorize(repo, directory)
         with self._lifecycle_lock():
-            return self._cancel(repo, build_id)
+            self._cancel(repo, build_id)
+            self._retire_finished_worker_sessions(directory, [self.store.get(build_id)])
+            return self.public(self.store.get(build_id))
 
     def _cancel(self, repo: str, build_id: str) -> dict:
         build = self.store.get(build_id)
@@ -272,10 +274,9 @@ class RepositoryIndexService:
         while page := self.store.list(offset=offset):
             builds.extend(page)
             offset += len(page)
+        worker_cleanup_failed = self._retire_finished_worker_sessions(directory, builds)
         build_directories = {
-            build["repo"]: build["directory"]
-            for build in builds
-            if build.get("directory")
+            build["repo"]: build["directory"] for build in builds if build.get("directory")
         }
         resolved_protected = set(protected)
         for repo, requested_sha in protected:
@@ -295,6 +296,8 @@ class RepositoryIndexService:
                 resolved_protected.add((repo, resolved["sha"]))
         protected = resolved_protected
         for build in builds:
+            if build["id"] in worker_cleanup_failed:
+                continue
             if build["status"] in {"ready", "partial"} and build["repo"] not in latest:
                 latest.add(build["repo"])
                 continue
@@ -323,9 +326,9 @@ class RepositoryIndexService:
                     continue
             if self.worker:
                 try:
-                    self.worker.cleanup(build)
+                    self.worker.release_snapshot(build)
                 except Exception:
-                    logger.warning("Deferring worker cleanup for %s", build["id"])
+                    logger.warning("Deferring index snapshot release for %s", build["id"])
                     continue
             with self.store.connect(write=True) as db:
                 db.execute("DELETE FROM snapshots WHERE id=?", (build["id"],))
@@ -334,6 +337,49 @@ class RepositoryIndexService:
                 db.execute("DELETE FROM contents WHERE hash NOT IN (SELECT hash FROM chunks)")
             deleted.append(build["id"])
         return {"deleted": deleted}
+
+    def _retire_finished_worker_sessions(self, directory: str, builds: list[dict]) -> set[str]:
+        """Retire compiler sessions after artifact import or a terminal outcome."""
+        if self.worker is None:
+            return set()
+        failed: set[str] = set()
+        for build in builds:
+            metrics = dict(build["metrics"])
+            if build["status"] not in {
+                "importing",
+                "ready",
+                "partial",
+                "failed",
+                "cancelled",
+            } or metrics.get("worker_session_cleanup_completed_at"):
+                continue
+            try:
+                self.authorize(build["repo"], directory)
+            except (ValueError, LookupError, PermissionError):
+                continue
+            attempted_at = datetime.now(UTC).isoformat()
+            metrics["worker_session_cleanup_attempts"] = (
+                int(metrics.get("worker_session_cleanup_attempts", 0)) + 1
+            )
+            metrics["worker_session_cleanup_last_attempt_at"] = attempted_at
+            try:
+                if metrics.get("compiler_submission_pending"):
+                    self.worker.stop(build)
+                    metrics["compiler_submission_pending"] = False
+                    build = {**build, "metrics": metrics}
+                self.worker.retire_session(build)
+            except Exception as exc:
+                metrics["worker_session_cleanup_last_error"] = type(exc).__name__
+                self.store.update_worker_cleanup_metrics(build["id"], metrics)
+                failed.add(build["id"])
+                logger.warning(
+                    "Deferring terminal index worker cleanup for %s", build["id"], exc_info=True
+                )
+                continue
+            metrics.pop("worker_session_cleanup_last_error", None)
+            metrics["worker_session_cleanup_completed_at"] = datetime.now(UTC).isoformat()
+            self.store.update_worker_cleanup_metrics(build["id"], metrics)
+        return failed
 
     def _advance(self, build: dict) -> None:
         if not self.worker:

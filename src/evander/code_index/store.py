@@ -213,6 +213,17 @@ class IndexStore:
                 (*values.values(), build_id),
             )
 
+    def update_worker_cleanup_metrics(self, build_id: str, metrics: dict) -> None:
+        """Persist cleanup progress only after compilation no longer needs the worker."""
+        with self.connect(write=True) as db:
+            cursor = db.execute(
+                "UPDATE snapshots SET metrics=?,updated=? WHERE id=? "
+                "AND status IN ('importing','ready','partial','failed','cancelled')",
+                (json.dumps(metrics), now(), build_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Index build still requires its worker")
+
     def usable(self, repo: str, sha: str) -> dict | None:
         with self.connect() as db:
             row = db.execute(
