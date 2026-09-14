@@ -254,7 +254,7 @@ class FreshserviceConnectorDriver:
             attachment_url,
             max_bytes=int(operation.max_response_bytes or 0),
         )
-        effective_mime = declared_mime or response_mime
+        effective_mime = response_mime or declared_mime
         if allowed_mime_types and effective_mime not in allowed_mime_types:
             raise ConnectorInvocationError(
                 "Freshservice attachment response content type is not allowed"

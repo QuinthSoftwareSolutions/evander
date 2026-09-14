@@ -220,4 +220,8 @@ def _raise_for_status(response: httpx.Response, *, api_request: bool) -> None:
 
 def _origin(url: str) -> tuple[str, str, int | None]:
     parts = urlsplit(url)
-    return parts.scheme.casefold(), (parts.hostname or "").casefold(), parts.port
+    scheme = parts.scheme.casefold()
+    port = parts.port
+    if port is None:
+        port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return scheme, (parts.hostname or "").casefold(), port

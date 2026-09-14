@@ -306,6 +306,125 @@ def test_freshservice_download_resolves_conversation_attachment_and_strips_auth(
     assert requests[1].headers["Authorization"].startswith("Basic ")
 
 
+@pytest.mark.parametrize(
+    ("attachment_url", "expect_auth"),
+    [
+        ("https://example.freshservice.com/files/daily-report.csv", True),
+        ("https://example.freshservice.com./files/daily-report.csv", False),
+    ],
+)
+def test_freshservice_download_scopes_auth_to_canonical_same_origin(
+    tmp_path: Path,
+    attachment_url: str,
+    expect_auth: bool,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/api/v2/tickets/42":
+            return httpx.Response(
+                200,
+                json={
+                    "ticket": {
+                        "attachments": [
+                            {
+                                "id": 9,
+                                "name": "daily-report.csv",
+                                "content_type": "text/csv",
+                                "attachment_url": attachment_url,
+                            }
+                        ]
+                    }
+                },
+            )
+        assert request.url.path == "/files/daily-report.csv"
+        assert ("Authorization" in request.headers) is expect_auth
+        return httpx.Response(200, content=b"plant,output\nA,42\n")
+
+    config = _config(
+        operations={
+            "download_ticket_attachment": _operation(
+                "download_ticket_attachment", result_mode="artifact", max_response_bytes=1024
+            )
+        }
+    )
+    config.connectors["freshservice"].config["base_url"] = (
+        "https://example.freshservice.com:443/api/v2"
+    )
+    service = _service(tmp_path, config, handler)
+
+    result = asyncio.run(
+        service.invoke(
+            session=_session(["download_ticket_attachment"]),
+            connector_id="freshservice",
+            operation_name="download_ticket_attachment",
+            arguments={"ticket_id": 42, "attachment_id": 9},
+        )
+    )
+
+    assert result.artifact is not None
+    assert result.artifact.mime_type == "text/csv"
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    ("declared_mime", "response_headers"),
+    [
+        ("text/csv", {"content-type": "text/html"}),
+        (None, {}),
+    ],
+)
+def test_freshservice_download_rejects_missing_or_disallowed_response_content_type(
+    tmp_path: Path,
+    declared_mime: str | None,
+    response_headers: dict[str, str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/tickets/42":
+            return httpx.Response(
+                200,
+                json={
+                    "ticket": {
+                        "attachments": [
+                            {
+                                "id": 9,
+                                "name": "daily-report.csv",
+                                "content_type": declared_mime,
+                                "attachment_url": (
+                                    "https://attachments.example.test/files/daily-report.csv"
+                                ),
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            content=b"<html>Authentication required</html>",
+            headers=response_headers,
+        )
+
+    config = _config(
+        operations={
+            "download_ticket_attachment": _operation(
+                "download_ticket_attachment", result_mode="artifact", max_response_bytes=1024
+            )
+        }
+    )
+    service = _service(tmp_path, config, handler)
+
+    with pytest.raises(ConnectorInvocationError, match="response content type is not allowed"):
+        asyncio.run(
+            service.invoke(
+                session=_session(["download_ticket_attachment"]),
+                connector_id="freshservice",
+                operation_name="download_ticket_attachment",
+                arguments={"ticket_id": 42, "attachment_id": 9},
+            )
+        )
+
+
 def test_freshservice_download_rejects_attachment_url_outside_allowlist(
     tmp_path: Path,
 ) -> None:

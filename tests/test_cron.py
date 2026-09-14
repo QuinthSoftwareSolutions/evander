@@ -149,6 +149,48 @@ def test_latest_cron_time_uses_configured_timezone() -> None:
     ) == datetime(2026, 3, 29, 6, 0, tzinfo=UTC)
 
 
+@pytest.mark.parametrize(
+    ("timezone_name", "expression", "base", "expected"),
+    [
+        (
+            "Europe/Stockholm",
+            "* * * * *",
+            datetime(2026, 10, 25, 0, 59, tzinfo=UTC),
+            datetime(2026, 10, 25, 0, 59, tzinfo=UTC),
+        ),
+        (
+            "Europe/Stockholm",
+            "30 2 * * *",
+            datetime(2026, 10, 25, 1, 15, tzinfo=UTC),
+            datetime(2026, 10, 25, 0, 30, tzinfo=UTC),
+        ),
+        (
+            "Europe/Stockholm",
+            "30 2 * * *",
+            datetime(2026, 10, 25, 1, 31, tzinfo=UTC),
+            datetime(2026, 10, 25, 1, 30, tzinfo=UTC),
+        ),
+        (
+            "Australia/Lord_Howe",
+            "*/17 * * * *",
+            datetime(2026, 4, 4, 15, 1, 47, tzinfo=UTC),
+            datetime(2026, 4, 4, 14, 51, tzinfo=UTC),
+        ),
+    ],
+)
+def test_latest_cron_time_preserves_utc_order_across_fallback(
+    timezone_name: str, expression: str, base: datetime, expected: datetime
+) -> None:
+    assert (
+        latest_cron_time_on_or_before(
+            expression,
+            base,
+            timezone_name=timezone_name,
+        )
+        == expected
+    )
+
+
 def test_cron_min_interval_seconds_uses_shared_iterator() -> None:
     interval = cron_min_interval_seconds(
         "0 8-18/2 * * 1-5", datetime(2026, 5, 18, 7, 59, tzinfo=UTC)
