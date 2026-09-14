@@ -567,6 +567,8 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:semantic:ensure-collection",
         "effect:semantic:upsert",
         "effect:semantic:delete",
+        "effect:code-index:ensure",
+        "effect:code-index:reconcile",
         "effect:state:update",
         "effect:http:request",
         "effect:runtime:diagnostics-snapshot",

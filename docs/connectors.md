@@ -11,7 +11,7 @@ operation and can inject a host service identity.
 A connector definition has five relevant layers:
 
 - the stable connector id and operator-facing description;
-- a driver (`rest`, `filesystem`, or an enabled add-on driver);
+- a driver (`rest`, `filesystem`, or an enabled add-on driver such as `freshservice`);
 - an optional host-side authentication profile;
 - one or more fixed, JSON-Schema-described operations; and
 - an explicit per-session grant listing exactly which operations the session may use.
@@ -124,6 +124,37 @@ when `max_response_bytes` is exceeded.
 
 Copying an artifact into an agent workspace remains a separate policy decision through the
 existing communication-artifact copy tool and file-receive policy.
+
+## Freshservice Add-on Connector
+
+The bundled, opt-in `freshservice-addon` contributes the `freshservice` connector driver. It adds
+the multi-step validation needed for read-only scheduled ticket analysis without exposing
+Freshservice credentials or accepting arbitrary attachment URLs. It supports these actions:
+
+- `search_tickets_by_subject` scans a bounded page of recently updated tickets and returns only
+  case-insensitive exact subject matches;
+- `get_ticket` retrieves one ticket;
+- `list_ticket_conversations` retrieves one bounded conversation page; and
+- `download_ticket_attachment` resolves a numeric attachment ID against the named ticket and its
+  conversations, then stages the file as a communication artifact.
+
+Attachment downloads require an exact `attachment_host_allowlist`, a non-empty extension
+allowlist, and the normal `max_response_bytes` bound. The driver validates the URL returned by
+Freshservice on every redirect and never sends Freshservice API or authentication headers to a
+different origin. Callers supply only `ticket_id` and `attachment_id`; they cannot select a URL.
+Optional MIME-type restrictions provide an additional content policy.
+
+For a daily workflow, pass an `updated_since` lower bound with a timezone and continue paging while
+`has_more` is true. The driver requests descending results and performs the exact-subject check
+locally, avoiding Freshservice search-query syntax becoming an agent-controlled expression.
+
+See `config/connectors/freshservice-readonly.json.example` for a complete definition. Operators
+must first enable `freshservice-addon` through Admin Web **Add-ons** and restart the services shown
+there, including Admin Web and the gateway. They must then replace the example Freshservice domain,
+confirm the exact attachment hosts returned by their tenant, choose file types and size bounds, and
+grant only the operations required by each session. Connector artifacts still require
+`communication_copy_artifact_to_workspace` and an enabled file receive policy before an agent can
+inspect them.
 
 ## Filesystem Connector Example
 

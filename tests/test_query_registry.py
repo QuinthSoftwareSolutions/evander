@@ -123,6 +123,9 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:semantic:store-status",
         "query:semantic:search",
         "query:semantic:get",
+        "query:code-index:status",
+        "query:code-index:search",
+        "query:code-index:navigate",
         "query:state:get",
     }
 

@@ -307,6 +307,15 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ),
     ToolName.SEMANTIC_SEARCH: ("Search an allowlisted semantic collection for relevant points."),
     ToolName.SEMANTIC_GET_POINTS: ("Read specific points from an allowlisted semantic collection."),
+    ToolName.CODE_INDEX_STATUS: (
+        "Read exact or reusable ancestor index coverage for a managed repository commit."
+    ),
+    ToolName.CODE_SEARCH: (
+        "Search existing indexed repository content without starting a new index build."
+    ),
+    ToolName.CODE_NAVIGATE: (
+        "Navigate definitions, references, and symbols in existing indexed compiler data."
+    ),
     ToolName.SEMANTIC_DELETE_POINTS: (
         "Delete specific points from an allowlisted semantic collection."
     ),

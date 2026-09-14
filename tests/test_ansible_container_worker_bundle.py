@@ -756,7 +756,7 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "169.254.169.254" in ansible_docs
     assert "smoke-container-worker" in ansible_docs
     assert "ansible/worker.yml" in worker_docs
-    assert "Phase 5 first slice" in worker_docs
+    assert "worker-VM side of the container execution backend" in worker_docs
     assert "single-worker" in worker_docs
     assert "DOCKER-USER" in worker_docs
     assert "evander-npm-audit-facade" in worker_docs

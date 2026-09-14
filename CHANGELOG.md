@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-14 - Scheduled Freshservice reporting (0.41.0)
+
+- Add a bundled, opt-in Freshservice add-on with a read-only connector driver for exact-subject
+  ticket discovery, ticket and conversation reads, and bounded attachment staging with exact-host
+  and file-type policy.
+- Evaluate workflow cron triggers in an optional IANA timezone, preserving local morning schedules
+  across daylight-saving changes while recording both UTC and local scheduled times.
+- Provide a complete Freshservice connector example and operator guidance for the scheduled report
+  workflow.
+- Restore full-suite coverage for current repository indexing, worker assignment, Team migration,
+  Admin catalog, and generated-manual contracts.
+
 ## 2026-09-14 - Reliable Azure PR feedback history (0.40.5)
 
 - Resolve Azure DevOps short and scoped repository names through the authoritative PR map so an

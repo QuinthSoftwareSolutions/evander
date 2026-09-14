@@ -886,6 +886,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="effect",
         type="effect:code-index:ensure",
         label="Ensure repository index",
+        description=(
+            "Ensure exact or reusable ancestor index coverage for a managed repository commit, "
+            "scheduling a bounded build when needed."
+        ),
         fields=[
             _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
             _field("commit_sha", "Exact commit", "string", bindable=True),
@@ -896,6 +900,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="effect",
         type="effect:code-index:reconcile",
         label="Advance repository indexing",
+        description=(
+            "Advance pending repository index builds and import completed portable index artifacts."
+        ),
         fields=[
             _field("directory_path", "Directory", "string", bindable=True),
             _field("limit", "Builds per pass", "number", bindable=True),
@@ -905,6 +912,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="query",
         type="query:code-index:status",
         label="Repository index status",
+        description=(
+            "Read exact or reusable ancestor index coverage for a managed repository commit."
+        ),
         fields=[
             _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
             _field("commit_sha", "Exact commit", "string", bindable=True),
@@ -915,6 +925,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="query",
         type="query:code-index:search",
         label="Search repository index",
+        description=(
+            "Search indexed repository content for an exact commit or an allowed ancestor."
+        ),
         fields=[
             _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
             _field("commit_sha", "Exact commit", "string", required=True, bindable=True),
@@ -930,6 +943,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="query",
         type="query:code-index:navigate",
         label="Navigate repository symbols",
+        description=(
+            "Navigate definitions, references, and symbols in indexed compiler data for a "
+            "managed repository."
+        ),
         fields=[
             _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
             _field("commit_sha", "Exact commit", "string", required=True, bindable=True),
@@ -948,6 +965,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field(
                 "expression", "Cron expression", "string", required=True, placeholder="*/15 * * * *"
+            ),
+            _field(
+                "timezone",
+                "Timezone",
+                "string",
+                default_value="UTC",
+                placeholder="Europe/Stockholm",
+                description="IANA timezone used to evaluate the cron expression.",
             ),
         ],
     ),

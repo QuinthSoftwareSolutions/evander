@@ -10,8 +10,9 @@ For Team task-board filtering, progress permalinks and ADO intake setup, see
 [Case progress boards](docs/case-progress-boards.md).
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
-- Directory-scoped named connectors for approved REST operations and host file retrieval, with
-  host-owned authentication, per-session operation grants, approvals, and artifact results
+- Directory-scoped named connectors for approved REST and add-on operations, including
+  Freshservice, plus host file retrieval with host-owned authentication, per-session operation
+  grants, approvals, and artifact results
 - Directory-scoped Host Directories for relative listing, bounded artifact import, recoverable
   deletion, and settled new-file workflow triggers without exposing absolute host roots
 - A host-side OpenAI relay that keeps the API key on the host, exposes an OpenAI-compatible endpoint to guests, and session-gates hosted web search plus image generation/editing

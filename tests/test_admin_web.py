@@ -1869,6 +1869,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "container_image",
+        "worker_id",
         "npm_registry_url",
         "directory_path",
         "metadata",
@@ -12102,7 +12103,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert agent_prompt_fields["agent_context_retry_enabled"]["kind"] == "bool"
     assert agent_prompt_fields["agent_context_retry_max_attempts"]["kind"] == "int"
     assert agent_prompt_fields["agent_context_retry_target_chars"]["kind"] == "int"
-    assert "container worker service" in all_fields["container_worker_base_url"]["tooltip"]
+    assert "saved worker assignment" in all_fields["container_worker_base_url"]["tooltip"]
     assert (
         "Fallback runner container image" in all_fields["container_worker_default_image"]["tooltip"]
     )
@@ -15329,6 +15330,12 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "directory_path": "root/team-a",
         "metadata": {
             "agent_provider": "claude",
+            "dotnet": True,
+            "nuget": True,
+            "mssql": True,
+            "mssql_init_root": "/tmp/init",
+            "playwright": True,
+            "vm_user": "agent",
             "model_provider_mode": "local_openai",
             "libvirt_vm_template": {
                 "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",

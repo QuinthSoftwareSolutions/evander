@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from evander.cron import latest_cron_time_on_or_before, validate_cron_expression
 from evander.events.models import (
@@ -61,7 +62,11 @@ class CronTriggerProvider(TriggerProviderBase):
             latest_fire_at = pending_scheduled_for
         else:
             base = last_fired_at or (now - timedelta(minutes=1))
-            latest_fire_at = latest_cron_time_on_or_before(expression, now)
+            latest_fire_at = latest_cron_time_on_or_before(
+                expression,
+                now,
+                timezone_name=trigger.timezone,
+            )
             if latest_fire_at is None or latest_fire_at <= base:
                 return []
             cursor_store.update(
@@ -84,7 +89,13 @@ class CronTriggerProvider(TriggerProviderBase):
             trigger_id=trigger.id,
             trigger_type=trigger.type,
             occurred_at=latest_fire_at,
-            payload={"scheduled_for": latest_fire_at.isoformat().replace("+00:00", "Z")},
+            payload={
+                "scheduled_for": latest_fire_at.isoformat().replace("+00:00", "Z"),
+                "scheduled_for_local": latest_fire_at.astimezone(
+                    ZoneInfo(trigger.timezone)
+                ).isoformat(),
+                "timezone": trigger.timezone,
+            },
         )
         return [event]
 

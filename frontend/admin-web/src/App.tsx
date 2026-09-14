@@ -1701,6 +1701,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "trigger" && type === "trigger:cron") {
     return workflowNode(id, "New trigger", type, {
       expression: "*/15 * * * *",
+      timezone: "UTC",
     });
   }
   if (kind === "trigger" && type === "trigger:event") {
