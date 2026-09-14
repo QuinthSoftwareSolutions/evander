@@ -71,11 +71,13 @@ def write_communication_targets(
 
 
 def test_build_runtime_uses_stub_discord_backend_by_default(tmp_path: Path) -> None:
-    runtime = build_runtime(make_config(tmp_path))
+    config = make_config(tmp_path)
+    runtime = build_runtime(config)
     assert isinstance(runtime.discord_service, StubDiscordService)
     assert isinstance(runtime.teams_service, StubTeamsService)
     assert runtime.discord_service.read_reaction_emoji == "👀"
     assert runtime.teams_service.read_reaction_emoji == "👀"
+    assert runtime.pr_feedback_service.pr_map_path == config.pr_map_path
 
 
 def test_build_runtime_initializes_sqlite_teams_message_store(tmp_path: Path) -> None:

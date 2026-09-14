@@ -87,6 +87,7 @@ from evander.pr_feedback.providers import (
     _ado_thread_resolved,
     pr_feedback_item_payload,
 )
+from evander.pr_feedback.identity import pr_feedback_stream_aliases
 from evander.pr_feedback.store import PrFeedbackRepository, PrFeedbackStore, _stream_key
 
 _LOGGER = logging.getLogger(__name__)
@@ -4220,11 +4221,13 @@ class PrFeedbackService:
         store_path: Path,
         *,
         ignored_feedback_store_path: Path | None = None,
+        pr_map_path: Path | None = None,
         repository: PrFeedbackRepository | None = None,
     ) -> None:
         self.store_path = store_path
         self.store: PrFeedbackRepository = repository or PrFeedbackStore(store_path)
         self.ignored_feedback_store_path = ignored_feedback_store_path
+        self.pr_map_path = pr_map_path
 
     def has_pending_feedback(
         self,
@@ -4288,21 +4291,35 @@ class PrFeedbackService:
         persist_session_cursor: bool,
         exclude_ignored_feedback: bool,
     ) -> ListUnreadFeedbackResponse:
-        stream_cursors = {
-            (stream["provider"], stream["repo"], stream["pr_id"]): self._effective_cursor(
+        alias_groups = [
+            pr_feedback_stream_aliases(stream, pr_map_path=self.pr_map_path) for stream in streams
+        ]
+        expanded_streams: list[dict[str, str]] = []
+        for aliases in alias_groups:
+            for alias in aliases:
+                if alias not in expanded_streams:
+                    expanded_streams.append(alias)
+
+        stream_cursors: dict[tuple[str, str, str], str | None] = {}
+        for aliases in alias_groups:
+            effective_cursor = self._effective_cursor(
                 session_id=session_id,
-                stream=stream,
+                streams=aliases,
                 explicit_cursor=cursor,
             )
-            for stream in streams
-        }
+            for alias in aliases:
+                key = (alias["provider"], alias["repo"], alias["pr_id"])
+                stream_cursors[key] = self._max_cursor(
+                    stream_cursors.get(key),
+                    effective_cursor,
+                )
         ignored_feedback_ids = (
             self._read_ignored_feedback_ids() if exclude_ignored_feedback else None
         )
         items = [
             PrFeedbackItem.model_validate(pr_feedback_item_payload(item))
             for item in self.store.list_feedback_for_streams(
-                streams=streams,
+                streams=expanded_streams,
                 after=stream_cursors,
                 exclude_feedback_ids=ignored_feedback_ids,
                 limit=limit,
@@ -4316,7 +4333,7 @@ class PrFeedbackService:
         if persist_session_cursor and session_id is not None:
             self.store.mark_session_streams_read(
                 session_id=session_id,
-                streams=streams,
+                streams=expanded_streams,
                 cursor=next_cursor if next_cursor is not None else cursor,
             )
         return ListUnreadFeedbackResponse(feedback=items, next_cursor=next_cursor)
@@ -4344,17 +4361,22 @@ class PrFeedbackService:
         self,
         *,
         session_id: str | None,
-        stream: dict[str, str],
+        streams: list[dict[str, str]],
         explicit_cursor: str | None,
     ) -> str | None:
         if session_id is None:
             return explicit_cursor
-        return self._max_cursor(
-            self.store.get_session_cursor(
-                session_id,
-                _stream_key(stream["provider"], stream["repo"], stream["pr_id"]),
-            ),
-            explicit_cursor,
+        return self._max_cursors(
+            [
+                explicit_cursor,
+                *[
+                    self.store.get_session_cursor(
+                        session_id,
+                        _stream_key(stream["provider"], stream["repo"], stream["pr_id"]),
+                    )
+                    for stream in streams
+                ],
+            ]
         )
 
     def _max_cursor(self, first: str | None, second: str | None) -> str | None:

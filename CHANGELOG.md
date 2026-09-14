@@ -10,6 +10,13 @@
 - Provide a complete Freshservice connector example and operator guidance for the scheduled report
   workflow.
 
+## 2026-09-14 - Reliable Azure PR feedback history (0.40.5)
+
+- Resolve Azure DevOps short and scoped repository names through the authoritative PR map so an
+  allowlisted agent can read the complete comment history regardless of which form polling stored.
+- Share session read cursors across unambiguous repository aliases, preserving existing workflow
+  payloads without replaying older feedback after the compatibility fix.
+
 ## 2026-09-12 - Index-worker cleanup and in-place Team task-board selection (0.40.4)
 
 - Keep Team task-board Team, project, and case selection in the existing embedded dashboard

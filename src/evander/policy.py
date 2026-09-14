@@ -51,6 +51,7 @@ from evander.repositories.session_manifests import (
 from evander.repositories.session_tool_approval_leases import (
     SessionToolApprovalLeaseRepository,
 )
+from evander.pr_feedback.identity import pr_feedback_stream_aliases
 from evander.storage import JsonStore
 
 
@@ -1078,7 +1079,14 @@ class PolicyEngine:
         pr_id: str,
     ) -> None:
         streams = self.require_pr_feedback_streams(session)
-        allowed = {(stream["provider"], stream["repo"], stream["pr_id"]) for stream in streams}
+        allowed = {
+            (alias["provider"], alias["repo"], alias["pr_id"])
+            for stream in streams
+            for alias in pr_feedback_stream_aliases(
+                stream,
+                pr_map_path=self.config.pr_map_path,
+            )
+        }
         key = (provider, repo, pr_id)
         if key not in allowed:
             raise PolicyError(
