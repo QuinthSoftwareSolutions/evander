@@ -5830,7 +5830,7 @@ use it when the complete records across the dispatch are needed. Use
 capture in the active dispatch. Summary reads never widen execution scope or
 substitute a newer binding. Managers' <code>supervisory_overview</code> counts and
 paginated reads preserve awareness across lineages within existing read access.
-The [deployment and pilot runbook](../../team-context-reduction-runbook.md)
+The [deployment and pilot runbook](team-context-reduction-runbook.md)
 explains measurement limits, guidance versioning, policy changes, and rollback.
 
 Case and session context remain intentionally selective even in

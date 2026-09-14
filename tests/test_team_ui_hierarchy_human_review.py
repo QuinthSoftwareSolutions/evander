@@ -628,6 +628,11 @@ def test_release_progress_only_flags_git_packages_without_candidate_inputs() -> 
             "function renderReleaseProgress("
         )
     ]
+    gate_sequence_source = source[
+        source.index("function normalizedReleaseGateSequence(") : source.index(
+            "function renderReleaseGateSequenceEditor("
+        )
+    ]
 
     assert "function releaseRequiresGitCandidate(release)" in source
     assert "const candidateInputsMissing = releaseCandidateInputsMissing(release);" in source
@@ -653,6 +658,7 @@ def test_release_progress_only_flags_git_packages_without_candidate_inputs() -> 
       const humanizeToken = (value) => text(value);
       const formatTimelineTimestamp = (value) => text(value);
       {helper_source}
+      {gate_sequence_source}
       {progress_source}
 
       const artifactRelease = {{

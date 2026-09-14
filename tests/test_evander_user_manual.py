@@ -117,6 +117,14 @@ def test_subject_index_is_large_linked_and_validated_by_assembly() -> None:
     assert "# 30. Glossary" in markdown
 
 
+def test_assembly_rewrites_chapter_relative_links_for_combined_manual() -> None:
+    markdown, _manifest = _assemble()
+
+    assert "](team-context-reduction-runbook.md)" in markdown
+    assert "](../../team-context-reduction-runbook.md)" not in markdown
+    assert "](assets/evander-user-manual/diagrams/13-team-wake-decision.svg)" in markdown
+
+
 def test_every_diagram_source_has_both_outputs_and_is_used() -> None:
     sources = sorted(DIAGRAMS.glob("*.mmd"))
     chapter_text = "\n".join(

@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-09-10T11:55:41.187429+00:00",
+  "generated_at": "2026-09-14T21:29:08.980923+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "a61e7cd20f5e5f9abfd9b1ab880ab5ebc0dbf9359bb083849b038b8504887033",
-    "docs/evander-user-manual.html": "4d8f4ff109039ecaa22f1d0640c85279dcfe9b1089188fb69e1ce1b6608af1d6",
-    "docs/evander-user-manual.md": "544ec8a8205f0d1ea3ece5a96c20a116328866dc91ca79b40e3456ebda8e9721",
-    "docs/evander-user-manual.pdf": "7416597c0c60a4dd094ee8beb5ad3da7f7137947feea045aac249a2c8ca544c3"
+    "docs/evander-user-manual.docx": "d6c6b41bab23c563904c87dedb2bd40e0f3eccb79a83e61be175f8295975c9b1",
+    "docs/evander-user-manual.html": "602c92ca9b74220d6cc2177fdef188a2928b3095aeb4d141d1841bbd676d4c5a",
+    "docs/evander-user-manual.md": "14864199c4ce604f19730a19ca472708549d83fcc51e8528a482ae1cddd5a6e2",
+    "docs/evander-user-manual.pdf": "b50d64b5378f8860e1644aa7bfe53c978b6e05327a7084b6091e07b342f21818"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "55b0491dd46e051fc5727073929fe41f512ceb8502f6edf90eca22ae6d35e1ef",
+  "source_fingerprint": "13f4fe708e074c76807e3d160ba5c0cffeadc47acaf4ec8ff3707f689aa0af9a",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -115,7 +115,7 @@
     "docs/evander-user-manual/package-lock.json": "eee79c44f29953dca7edcd340fcc36b6fae771acd6eacc7a50d805b585ad3c7d",
     "docs/evander-user-manual/package.json": "a285163e89b29586f0ba15f21f9aec4151345645fb9a3ee1a925c8f5b4686ef9",
     "docs/evander-user-manual/puppeteer-config.json": "b16ddabf21f4ff900bba14c58d95438dff962b427f323e48d4867c4ee9184e14",
-    "scripts/build_evander_user_manual.py": "f85054739e33a20a49c88323e19361f0f1e6cf8ff6d30fd64ce30098b7993b5c",
+    "scripts/build_evander_user_manual.py": "9e53919c9c134de1247bd26872bbe23adcf66cc1ef3fdb8977caf3ddb82274cf",
     "scripts/capture_evander_user_manual_screenshots.mjs": "bb96c174c4158fae2242973a7af8370222cf9d7f43d37f553cafe86b2511788f"
   },
   "title": "Evander Technical Manual",

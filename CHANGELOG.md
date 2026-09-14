@@ -9,6 +9,8 @@
   across daylight-saving changes while recording both UTC and local scheduled times.
 - Provide a complete Freshservice connector example and operator guidance for the scheduled report
   workflow.
+- Restore full-suite coverage for current repository indexing, worker assignment, Team migration,
+  Admin catalog, and generated-manual contracts.
 
 ## 2026-09-14 - Reliable Azure PR feedback history (0.40.5)
 

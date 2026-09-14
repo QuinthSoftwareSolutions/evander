@@ -82,7 +82,7 @@ def test_persistence_registry_covers_every_collection_and_table_once() -> None:
         table for _group, specs, _writer in _PERSISTENCE_GROUPS for table, _column, _field in specs
     ]
 
-    assert len(fields) == len(set(fields)) == 40
+    assert len(fields) == len(set(fields)) == 41
     assert len(tables) == len(set(tables))
     assert set(tables) == set(_STATE_TABLES)
 
@@ -846,7 +846,7 @@ def test_sqlite_migration_reconciles_dependency_composed_release_base_and_retry(
     with sqlite3.connect(repository.store.path) as connection:
         connection.execute(
             "UPDATE team_state_metadata SET value = ? WHERE key = 'sqlite_schema_version'",
-            (str(SQLITE_SCHEMA_VERSION - 1),),
+            ("71",),
         )
 
     migrated_repository = TeamStateRepository(tmp_path)
