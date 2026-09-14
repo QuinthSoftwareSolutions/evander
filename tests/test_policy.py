@@ -3126,6 +3126,49 @@ def test_require_pr_feedback_stream_rejects_ambiguous_ado_repo_alias(tmp_path: P
         )
 
 
+def test_require_pr_feedback_stream_rejects_cross_org_ssh_repo_alias(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    mapped_repo = "organization-two/project/ExampleIndustryAPP"
+    engine.config.pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "binding": {
+                        "provider": "azure_devops",
+                        "repo": mapped_repo,
+                        "pr_id": "9463",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={
+            "pr_feedback_streams": [
+                {
+                    "provider": "azure_devops",
+                    "repo": (
+                        "ssh://git@ssh.dev.azure.com/v3/organization-one/project/ExampleIndustryAPP"
+                    ),
+                    "pr_id": "9463",
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(PolicyError, match="is not allowlisted"):
+        engine.require_pr_feedback_stream(
+            session,
+            provider="azure_devops",
+            repo=mapped_repo,
+            pr_id="9463",
+        )
+
+
 def test_require_pr_feedback_repo_enforces_repo_allowlist(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(

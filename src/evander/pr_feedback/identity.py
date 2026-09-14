@@ -36,6 +36,8 @@ def pr_feedback_stream_aliases(
 
     requested_name = _azure_devops_repository_name(normalized["repo"])
     requested_scope = _azure_devops_repository_scope(normalized["repo"])
+    if requested_scope is None and not _azure_devops_repository_is_short(normalized["repo"]):
+        return aliases
     matching_entries = [
         entry
         for entry in list_pr_map_entries(pr_map_path, provider="azure_devops")
@@ -118,6 +120,15 @@ def _azure_devops_repository_scope(repo: str) -> tuple[str, str, str] | None:
     parsed = urlparse(normalized)
     if parsed.scheme and parsed.netloc:
         parts = _nonempty_path_parts(parsed.path)
+        if (
+            parsed.scheme.casefold() == "ssh"
+            and parsed.hostname
+            and parsed.hostname.casefold() == "ssh.dev.azure.com"
+            and len(parts) == 4
+            and parts[0].casefold() == "v3"
+        ):
+            return _normalized_scope(parts[1], parts[2], parts[3])
+
         git_index = _part_index(parts, "_git")
         if git_index is not None and git_index >= 1 and len(parts) > git_index + 1:
             if parsed.hostname and parsed.hostname.casefold().endswith(".visualstudio.com"):
@@ -144,6 +155,16 @@ def _azure_devops_repository_scope(repo: str) -> tuple[str, str, str] | None:
         return None
 
     return _scope_from_parts(_nonempty_path_parts(normalized))
+
+
+def _azure_devops_repository_is_short(repo: str) -> bool:
+    normalized = unquote(str(repo or "").strip())
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    return (
+        not parsed.scheme and not parsed.netloc and "/" not in normalized and "\\" not in normalized
+    )
 
 
 def _nonempty_path_parts(value: str) -> list[str]:

@@ -484,6 +484,54 @@ def test_ado_short_repo_alias_resolution_fails_closed_when_ambiguous(tmp_path: P
     assert response.feedback == []
 
 
+def test_ado_ssh_repo_alias_resolves_only_within_its_scoped_repository(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    pr_map_path = tmp_path / "pr-map.json"
+    canonical_repo = "organization-one/project/ExampleIndustryAPP"
+    _write_ado_feedback_store(
+        store_path,
+        [("azure_devops:comment:one", canonical_repo, "2099-01-01T00:00:00Z")],
+    )
+    _write_ado_pr_map(pr_map_path, canonical_repo)
+    service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
+
+    response = service.list_all_feedback(
+        streams=[
+            {
+                "provider": "azure_devops",
+                "repo": "ssh://git@ssh.dev.azure.com/v3/organization-one/project/ExampleIndustryAPP",
+                "pr_id": "9463",
+            }
+        ]
+    )
+
+    assert [item.feedback_id for item in response.feedback] == ["azure_devops:comment:one"]
+
+
+def test_ado_unparsed_scoped_repo_does_not_use_short_name_fallback(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    pr_map_path = tmp_path / "pr-map.json"
+    mapped_repo = "organization-two/project/ExampleIndustryAPP"
+    _write_ado_feedback_store(
+        store_path,
+        [("azure_devops:comment:two", mapped_repo, "2099-01-01T00:00:00Z")],
+    )
+    _write_ado_pr_map(pr_map_path, mapped_repo)
+    service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
+
+    response = service.list_all_feedback(
+        streams=[
+            {
+                "provider": "azure_devops",
+                "repo": "ssh://git@example.invalid/v3/organization-one/project/ExampleIndustryAPP",
+                "pr_id": "9463",
+            }
+        ]
+    )
+
+    assert response.feedback == []
+
+
 def test_list_unread_feedback_can_use_repository_contract_without_file_reads(
     tmp_path: Path,
 ) -> None:
