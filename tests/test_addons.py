@@ -35,6 +35,7 @@ BUNDLED_ADDON_MANIFESTS = {
     "mssql-seed-addon": "evander_mssql_seed_addon",
     "ado-activity-addon": "evander_ado_activity_addon",
     "elastic-stack-addon": "evander_elastic_stack_addon",
+    "freshservice-addon": "evander_freshservice_addon",
 }
 BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_team_addon": ["addon.json", "ui_static/*"],
@@ -43,6 +44,7 @@ BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_mssql_seed_addon": ["addon.json", "ui_static/*"],
     "evander_ado_activity_addon": ["addon.json"],
     "evander_elastic_stack_addon": ["addon.json"],
+    "evander_freshservice_addon": ["addon.json"],
 }
 
 
@@ -164,6 +166,23 @@ def test_bundled_elastic_stack_addon_packaging_contract_is_declared() -> None:
     addon = importlib.import_module("evander_elastic_stack_addon").register_addon()
     assert addon.mcp_tools is not None
     assert addon.workflow_providers is not None
+
+
+def test_bundled_freshservice_addon_packaging_contract_is_declared() -> None:
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    addon_entry_points = pyproject["project"]["entry-points"]["evander.addons"]
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+
+    assert addon_entry_points["freshservice"] == ("evander_freshservice_addon:register_addon")
+    assert package_data["evander_freshservice_addon"] == ["addon.json"]
+    assert json.loads(
+        (PROJECT_ROOT / "src/evander_freshservice_addon/addon.json").read_text(encoding="utf-8")
+    ) == {"addon_id": "freshservice-addon", "module": "evander_freshservice_addon"}
+
+    addon = importlib.import_module("evander_freshservice_addon").register_addon()
+    assert set(addon.connector_drivers) == {"freshservice"}
+    assert addon.mcp_tools is None
 
 
 def test_bundled_addon_manifests_are_scannable_from_src() -> None:

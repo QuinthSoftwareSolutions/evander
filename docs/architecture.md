@@ -7,8 +7,8 @@ Guest and worker-container networking is default-deny. Reachability is limited t
 - Host orchestrator: creates session manifests, launches VMs, and destroys them at the end of a run.
 - MCP gateway: the MCP capability boundary reachable from guests; it is not the only guest-reachable host service.
 - Connector service: directory-scoped named operations implemented by fixed REST, approved-root
-  filesystem, or add-on drivers; sessions see only their granted operation schemas and never host
-  credentials or arbitrary destinations.
+  filesystem, or add-on drivers such as Freshservice; sessions see only their granted operation
+  schemas and never host credentials or arbitrary destinations.
 - Host Directory service: dedicated directory-scoped filesystem resources with per-session
   list/import/delete grants, descriptor-relative traversal, artifact-backed imports, and
   recoverable quarantine deletes. Agent and trigger payloads never expose configured roots.

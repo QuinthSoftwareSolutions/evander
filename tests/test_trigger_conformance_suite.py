@@ -1526,6 +1526,46 @@ def test_conformance_cron_due_and_cursor_persistence(
     )
 
 
+def test_conformance_cron_uses_iana_timezone_and_reports_local_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    frozen_now = datetime(2026, 3, 29, 6, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return frozen_now.replace(tzinfo=None)
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
+
+    provider = CronTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "cron-stockholm-morning",
+                "display_name": "Stockholm morning",
+                "type": "trigger:cron",
+                "expression": "0 8 * * *",
+                "timezone": "Europe/Stockholm",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].occurred_at == frozen_now
+    assert events[0].payload == {
+        "scheduled_for": "2026-03-29T06:00:00Z",
+        "scheduled_for_local": "2026-03-29T08:00:00+02:00",
+        "timezone": "Europe/Stockholm",
+    }
+
+
 def test_conformance_cron_high_frequency_edit_skips_backlog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_collector: dict[str, Any]
 ) -> None:

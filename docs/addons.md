@@ -158,6 +158,19 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
 Removing `runtime/addons/<addon_id>/` must not corrupt Evander core state.
 
+## Freshservice Add-on Guidance
+
+The bundled `evander_freshservice_addon` is a headless connector add-on. It contributes the
+`freshservice` driver to the existing `list_connectors` and `call_connector` MCP surface; it does
+not register separate Freshservice MCP tools or workflow providers. The driver provides bounded,
+read-only ticket discovery, ticket and conversation reads, and policy-controlled attachment
+staging.
+
+Enable `freshservice-addon` through `/#addons` or the equivalent Admin API and restart the services
+shown there, including Admin Web and the gateway. Configure the logical connector and host-owned
+authentication in directory-scoped connector configuration using
+`config/connectors/freshservice-readonly.json.example` as the starting point.
+
 ## Azure DevOps Activity Add-on Guidance
 
 The bundled `evander_ado_activity_addon` is a headless add-on: it intentionally

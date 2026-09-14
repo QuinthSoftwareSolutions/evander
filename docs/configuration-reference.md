@@ -215,9 +215,14 @@ The bundled add-ons ship `addon.json` manifests beside their package
 `__init__.py` files, so they use the same scanned-package shape as local copied
 add-ons in a source checkout. Enable them from Admin Web or set
 `addon_loader.enabled_addon_ids` to add-on ids such as `team-addon`,
-`skatteverket-addon`, `bokio-addon`, or `mssql-seed-addon`. Explicit
+`skatteverket-addon`, `bokio-addon`, `mssql-seed-addon`, or `freshservice-addon`. Explicit
 `addon_loader.modules` entries and `evander.addons` entry points remain
 supported compatibility paths.
+
+The bundled Freshservice Add-on is headless and contributes the `freshservice` connector driver.
+Enable `freshservice-addon` in the host add-on loader before saving a connector definition that
+selects that driver, then restart Admin Web and the gateway. The trigger/effect workers do not call
+the connector directly; agents receive its operations through gateway-managed connector grants.
 
 For the bundled Team Add-on, configure the same add-on loader in the host config
 to expose Admin Web routes/navigation, and in
@@ -349,7 +354,7 @@ Type-specific keys:
 | `trigger:event` | `event_type` | `correlation_key` |
 | `trigger:agent:artifact-staged` | — | `artifact_path`, `path_prefix` |
 | `trigger:http:webhook` | `slug`, `secret_env` | `event_type` |
-| `trigger:cron` | `expression` | — |
+| `trigger:cron` | `expression` | `timezone` |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
 | `trigger:issue:comment-created` | — | `provider`, `organization_url`, `project`, `directories` |
@@ -371,12 +376,15 @@ Type-specific keys:
 | `trigger:approval:pending-created` | — | `directory_path`, `action_types`, `tool_names` |
 | `trigger:git:push` | exactly one of `managed_repo_id`, `managed_repo_id_glob` | — |
 
-`trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
-ranges, stepped ranges, lists, and month/weekday names. When a cron trigger is overdue, the
-trigger orchestrator queues only the latest due occurrence. The provider stages that occurrence
-as pending and advances `last_fired_at` only after the trigger event is durably published and
-acknowledged, so a queue publish failure can retry the same scheduled occurrence. Editing a
-trigger to a higher frequency still does not replay historical runs.
+`trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports ranges,
+stepped ranges, lists, and month/weekday names. `timezone` is an optional IANA timezone name and
+defaults to `UTC`; for example, `Europe/Stockholm` keeps `0 8 * * *` at 08:00 local time across
+daylight-saving changes. Cron events retain the UTC `scheduled_for` value and also expose
+`scheduled_for_local` and `timezone` in their payload. When a cron trigger is overdue, the trigger
+orchestrator queues only the latest due occurrence. The provider stages that occurrence as pending
+and advances `last_fired_at` only after the trigger event is durably published and acknowledged,
+so a queue publish failure can retry the same scheduled occurrence. Editing a trigger to a higher
+frequency still does not replay historical runs.
 
 `trigger:host-directory:file-added` resolves `directory_id` from the workflow graph's Evander
 directory scope. Its first successful scan establishes a baseline. Later regular files must remain
@@ -594,7 +602,8 @@ Example:
       "id": "cron-15m",
       "display_name": "Every 15 minutes",
       "type": "trigger:cron",
-      "expression": "*/15 * * * *"
+      "expression": "*/15 * * * *",
+      "timezone": "UTC"
     },
     {
       "id": "mailbox-ops",

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-14 - Scheduled Freshservice reporting (0.41.0)
+
+- Add a bundled, opt-in Freshservice add-on with a read-only connector driver for exact-subject
+  ticket discovery, ticket and conversation reads, and bounded attachment staging with exact-host
+  and file-type policy.
+- Evaluate workflow cron triggers in an optional IANA timezone, preserving local morning schedules
+  across daylight-saving changes while recording both UTC and local scheduled times.
+- Provide a complete Freshservice connector example and operator guidance for the scheduled report
+  workflow.
+
 ## 2026-09-12 - Index-worker cleanup and in-place Team task-board selection (0.40.4)
 
 - Keep Team task-board Team, project, and case selection in the existing embedded dashboard

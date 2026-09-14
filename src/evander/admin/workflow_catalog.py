@@ -949,6 +949,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field(
                 "expression", "Cron expression", "string", required=True, placeholder="*/15 * * * *"
             ),
+            _field(
+                "timezone",
+                "Timezone",
+                "string",
+                default_value="UTC",
+                placeholder="Europe/Stockholm",
+                description="IANA timezone used to evaluate the cron expression.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
