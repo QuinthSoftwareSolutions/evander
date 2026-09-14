@@ -247,6 +247,9 @@ This sequence minimizes payload volume when there is no new feedback and support
   - advance only after feedback is successfully persisted/processed
   - optionally coupled with explicit host acknowledgment/update call
 - Sessions are isolated: cursor `A` for session `X` is never reused for session `Y`.
+- Azure DevOps short and organization/project/repository stream names are treated as aliases only
+  when the host PR map binds the PR to one unambiguous scoped repository. Session cursors advance
+  together across those aliases so an identity-format change does not replay older comments.
 
 ### Scheduled wake dispatch model
 

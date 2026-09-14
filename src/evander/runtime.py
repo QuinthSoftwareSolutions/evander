@@ -474,6 +474,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         pr_feedback_service=PrFeedbackService(
             config.runtime_dir / "pr-feedback-store.json",
             ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
+            pr_map_path=config.pr_map_path,
         ),
         pr_reply_service=_build_pr_reply_service(root_provider_config),
         pr_query_service=_build_pr_query_service(root_provider_config),

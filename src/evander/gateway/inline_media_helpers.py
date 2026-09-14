@@ -249,23 +249,18 @@ class InlineMediaHelpers:
     ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
         session = self.context.policy.require_tool(request.session_id, tool_name)
         self.context.policy.require_inline_media_receive_enabled(session, source_kind="pr_feedback")
-        allowed_streams = {
-            (stream["provider"], stream["repo"], stream["pr_id"])
-            for stream in self.context.policy.require_pr_feedback_streams(session)
-        }
         raw_feedback = self.context.pr_feedback_service.store.read_raw().get("feedback", {})
         if not isinstance(raw_feedback, dict):
             return []
         raw_item = raw_feedback.get(request.resource_id)
         if not isinstance(raw_item, dict):
             raise ToolError(f"Unknown PR feedback resource_id: {request.resource_id}")
-        key = (
-            str(raw_item.get("provider") or ""),
-            str(raw_item.get("repo") or ""),
-            str(raw_item.get("pr_id") or ""),
+        self.context.policy.require_pr_feedback_stream(
+            session,
+            provider=str(raw_item.get("provider") or ""),
+            repo=str(raw_item.get("repo") or ""),
+            pr_id=str(raw_item.get("pr_id") or ""),
         )
-        if key not in allowed_streams:
-            raise PolicyError("PR feedback stream is not allowlisted for this session")
         provider = str(raw_item.get("provider") or request.provider).strip().lower()
         comment_id = str(raw_item.get("comment_id") or "").strip() or None
         adapter = self.inline_media_provider_for_request(
