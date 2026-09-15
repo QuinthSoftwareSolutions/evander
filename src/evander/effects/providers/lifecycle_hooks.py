@@ -261,12 +261,32 @@ class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
         ):
             return MaintenanceResult(changes=self.on_waiting_reconciliation(worker=worker))
         records = page(node_type=self._provider_class.node_type(), after=self._waiting_cursor)
+        summaries: list[Any] | None = None
+        inventory_error: Exception | None = None
+
+        def load_vm_summaries() -> list[Any]:
+            nonlocal summaries, inventory_error
+            # Read lazily so container-only work needs no VM inventory. Share
+            # empty results and failures too, but retry on the next slice.
+            if inventory_error is not None:
+                raise inventory_error
+            if summaries is None:
+                try:
+                    summaries = list_vm_summaries_for_agent_reconciliation(worker)
+                except Exception as exc:
+                    inventory_error = exc
+                    raise
+            return summaries
+
         completed = 0
         for record in records:
             if not budget.take():
                 return MaintenanceResult(completed, budget.examined, True)
             completed += int(
-                self._provider_class.reconcile_waiting(worker=worker, records=[record]) or 0
+                self._provider_class.reconcile_waiting(
+                    worker=worker, records=[record], vm_summaries_loader=load_vm_summaries
+                )
+                or 0
             )
             self._waiting_cursor = record.execution_id
         remaining = len(records) == 50
@@ -454,6 +474,10 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 "phase=post_completion_dispatch queued_non_container_records=%d",
                 len(queued_records),
             )
+            if budget is not None:
+                # Defer this VM page until the next pass, allowing later pages
+                # (including container prompts) to proceed during an outage.
+                self._slice_visited.update(queued_records)
             return dispatched
 
         for queue_key in self._fifo_queue_keys(queued_records):

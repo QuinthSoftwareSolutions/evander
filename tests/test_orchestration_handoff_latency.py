@@ -12,6 +12,9 @@ import pytest
 from config_helpers import canonical_worker_config
 from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import EffectExecutionRecord, EffectOrchestratorWorker
+from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+from evander.effects.providers.lifecycle_hooks import ProviderCompletionLifecycleHook
 from evander.events.models import TriggerEvent
 from evander.orchestration.maintenance import MaintenanceBudget, RecoverySchedule
 from evander.repositories.orchestration_db import connect_orchestration_db
@@ -281,6 +284,150 @@ def test_replay_claim_rechecks_fifo_after_slice_snapshot(monkeypatch):
         is None
     )
     assert claims == []
+
+
+@pytest.mark.parametrize("vm_count", [50, 100])
+def test_queue_recovery_advances_past_failed_vm_inventory(monkeypatch, vm_count):
+    from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
+
+    now = datetime.now(UTC)
+    records = {
+        f"vm-{i:03d}": SimpleNamespace(created_at=now, target=f"vm-{i:03d}")
+        for i in range(vm_count)
+    }
+    records["container-last"] = SimpleNamespace(
+        created_at=now + timedelta(seconds=1), target="container-last"
+    )
+    inventory_reads, dispatched = [], []
+
+    def inventory():
+        inventory_reads.append(True)
+        raise RuntimeError("libvirt unavailable")
+
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=SimpleNamespace(read_all=lambda: dict(records), get=records.get),
+        agent_prompt_dispatch_port=object(),
+        agent_run_status_port=SimpleNamespace(list_vm_summaries=inventory),
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+    monkeypatch.setattr(hook, "_build_current_execution_graph", lambda **kw: None)
+    monkeypatch.setattr(
+        hook,
+        "_container_record_session_context",
+        lambda **kw: object() if kw["record"].target == "container-last" else None,
+    )
+    for name in (
+        "_has_earlier_subscription_profile_record",
+        "_has_earlier_local_capacity_record",
+        "_discard_queue_record_for_exact_execution",
+        "_has_earlier_claimed_replay_record",
+        "_has_waiting_enqueue_prompt_for_record",
+    ):
+        monkeypatch.setattr(hook, name, lambda **kw: False)
+    monkeypatch.setattr(hook, "_scheduled_wake_queue_record_is_current", lambda **kw: True)
+
+    def dispatch(**kwargs):
+        key = kwargs["queue_key"]
+        dispatched.append(key)
+        records.pop(key)
+        return True
+
+    monkeypatch.setattr(hook, "_dispatch_container_record_if_idle", dispatch)
+    for _ in range(vm_count // 50):
+        result = hook.on_post_completion_dispatch_slice(
+            worker=worker, budget=MaintenanceBudget(clock=lambda: 0)
+        )
+        assert result.remaining and result.changes == 0
+    result = hook.on_post_completion_dispatch_slice(
+        worker=worker, budget=MaintenanceBudget(clock=lambda: 0)
+    )
+    assert dispatched == ["container-last"]
+    assert result.changes == 1 and not result.remaining
+    assert len(records) == vm_count  # Failed VM entries are retained for retry.
+    assert len(inventory_reads) == vm_count // 50
+
+    # Ending the pass must make the failed VM pages eligible again.
+    hook.on_post_completion_dispatch_slice(
+        worker=worker, budget=MaintenanceBudget(clock=lambda: 0)
+    )
+    assert len(inventory_reads) == vm_count // 50 + 1
+
+
+@pytest.mark.parametrize(
+    "provider", [AgentPromptEffectProvider, AgentEnqueuePromptEffectProvider]
+)
+@pytest.mark.parametrize("inventory_fails", [False, True])
+def test_waiting_recovery_reuses_inventory_and_refreshes_next_slice(
+    monkeypatch, provider, inventory_fails
+):
+    records = [SimpleNamespace(execution_id=f"waiting-{i:02d}", outputs={}) for i in range(10)]
+    reads, observations = [], []
+    snapshot = []
+
+    def inventory():
+        reads.append(True)
+        if inventory_fails:
+            raise RuntimeError("libvirt unavailable")
+        return snapshot
+
+    worker = SimpleNamespace(
+        execution_store=SimpleNamespace(list_waiting_records_page=lambda **kw: records),
+        agent_run_status_port=SimpleNamespace(list_vm_summaries=inventory),
+    )
+    monkeypatch.setattr(
+        AgentPromptEffectProvider,
+        "_build_completion_queue_record_for_waiting_record",
+        lambda **kw: observations.append(kw["summaries"]) or None,
+    )
+    hook = ProviderCompletionLifecycleHook(provider)
+    result = hook.on_waiting_reconciliation_slice(
+        worker=worker, budget=MaintenanceBudget(clock=lambda: 0)
+    )
+    assert len(reads) == 1  # Empty and failed inventories are also shared.
+    assert result.examined == len(records) and not result.remaining
+
+    inventory_fails = False
+    snapshot = [SimpleNamespace(agent_state="idle")]
+    observations.clear()
+    hook.on_waiting_reconciliation_slice(worker=worker, budget=MaintenanceBudget(clock=lambda: 0))
+    assert len(reads) == 2
+    assert observations == [snapshot] * len(records)
+
+
+@pytest.mark.parametrize(
+    "provider", [AgentPromptEffectProvider, AgentEnqueuePromptEffectProvider]
+)
+def test_waiting_recovery_loads_inventory_lazily_and_still_yields(monkeypatch, provider):
+    clock = Clock()
+    records = [
+        SimpleNamespace(
+            execution_id="a-container", outputs={"execution_backend": "container_worker_vm"}
+        ),
+        SimpleNamespace(execution_id="b-vm", outputs={}),
+    ]
+    reads = []
+
+    def page(**kwargs):
+        return [record for record in records if record.execution_id > kwargs["after"]]
+
+    def reconcile_container(**kwargs):
+        clock.now += 1  # A slow record exhausts this slice's time budget.
+        return 0
+
+    worker = SimpleNamespace(
+        execution_store=SimpleNamespace(list_waiting_records_page=page),
+        agent_run_status_port=SimpleNamespace(list_vm_summaries=lambda: reads.append(True) or []),
+    )
+    monkeypatch.setattr(
+        AgentPromptEffectProvider, "_reconcile_container_waiting_record", reconcile_container
+    )
+    hook = ProviderCompletionLifecycleHook(provider)
+    first = hook.on_waiting_reconciliation_slice(worker=worker, budget=MaintenanceBudget(clock=clock))
+    assert first.examined == 1 and first.remaining
+    assert reads == []
+    second = hook.on_waiting_reconciliation_slice(worker=worker, budget=MaintenanceBudget(clock=clock))
+    assert second.examined == 1 and not second.remaining
+    assert reads == [True]
 
 
 @pytest.mark.parametrize("fails", [False, True])

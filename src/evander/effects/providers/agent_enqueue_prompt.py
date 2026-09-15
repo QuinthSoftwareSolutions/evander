@@ -1026,7 +1026,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             vm_records.append(record)
         if vm_records:
             try:
-                summaries = list_vm_summaries_for_agent_reconciliation(worker)
+                load_summaries = kwargs.get("vm_summaries_loader")
+                summaries = (
+                    load_summaries()
+                    if callable(load_summaries)
+                    else list_vm_summaries_for_agent_reconciliation(worker)
+                )
             except Exception:
                 summaries = []
             for record in vm_records:

@@ -10,6 +10,8 @@
   per-hook recovery work, continuations and budget overruns without message contents.
 - Preserve transactional lifecycle checks, queue claims and receipt-before-finalization ordering;
   add scheduler, history-load, migration and latency regression coverage.
+- Keep queue recovery moving past failed VM inventory pages and retry them on the next pass;
+  share one lazily loaded VM inventory per waiting-reconciliation slice.
 
 ## 2026-09-14 - Scheduled Freshservice reporting (0.41.0)
 

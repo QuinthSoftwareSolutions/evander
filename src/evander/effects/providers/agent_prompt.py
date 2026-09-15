@@ -900,7 +900,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if not vm_records:
             return completed
         try:
-            summaries = list_vm_summaries_for_agent_reconciliation(worker)
+            load_summaries = kwargs.get("vm_summaries_loader")
+            summaries = (
+                load_summaries()
+                if callable(load_summaries)
+                else list_vm_summaries_for_agent_reconciliation(worker)
+            )
         except Exception:
             logger.exception(
                 "AgentPromptEffectProvider inventory reconciliation skipped "
