@@ -71,7 +71,9 @@ def test_workers_delegate_run_once_to_shared_orchestration_loop(
     )  # type: ignore[arg-type]
     effect_worker.run_once()
 
-    assert calls == [1, 200]
+    # Effects delegate one event at a time so completed futures can be reaped
+    # between events; the worker owns the outer count/time slice budget.
+    assert calls == [1, 1]
 
 
 def test_effect_queue_delivery_semantics_are_preserved(tmp_path: Path) -> None:

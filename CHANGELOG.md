@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-15 - Lower orchestration handoff latency (0.41.1)
+
+- Drain ready effect completions through the durable event queue between bounded event slices;
+  schedule recovery separately, with cooperative candidate budgets and lease priority.
+- Read revision-consistent Team lifecycle candidate pages and indexed prompt receipts instead of
+  reconstructing full Team state and terminal execution history on routine no-op passes.
+- Record provider, executor-queue, reaping and completion-publication timing separately, and log
+  per-hook recovery work, continuations and budget overruns without message contents.
+- Preserve transactional lifecycle checks, queue claims and receipt-before-finalization ordering;
+  add scheduler, history-load, migration and latency regression coverage.
+
 ## 2026-09-14 - Scheduled Freshservice reporting (0.41.0)
 
 - Add a bundled, opt-in Freshservice add-on with a read-only connector driver for exact-subject

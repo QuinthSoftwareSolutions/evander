@@ -1,5 +1,8 @@
 # Operations
 
+For effect handoff timing, bounded recovery scheduling, and deployment verification, see
+[Orchestration latency and recovery](orchestration-latency.md).
+
 ## Personal Azure DevOps PR connections
 
 Users manage Microsoft OAuth and personal PATs through **My ADO connection** in Admin Web.

@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from types import TracebackType
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, TypeVar
@@ -28,11 +28,26 @@ from .models import (
     WORKTREE_CLEANUP_TRANSIENT_FAILURE_CHECKS,
     summarize_worktree_cleanup_inventory,
 )
+from .lifecycle_candidates import LifecycleCandidate, LifecycleCandidatePage
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 SQLITE_SCHEMA_VERSION = 77
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
+
+# Applied after column migrations. Additive indexes need no state rewrite.
+_LIFECYCLE_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_pending_activation
+    ON team_dispatches(id) WHERE status IN ('preparing', 'leased') AND activation_completed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_pending_mirror
+    ON team_dispatches(id) WHERE COALESCE(completed_at, activation_completed_at) IS NOT NULL
+      AND (session_metadata_mirrored_at IS NULL OR
+        julianday(session_metadata_mirrored_at) < julianday(COALESCE(completed_at, activation_completed_at)));
+CREATE INDEX IF NOT EXISTS idx_team_dispatches_receipt_recovery
+    ON team_dispatches(id) WHERE activation_completed_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_active_dispatch
+    ON team_agent_runtimes(active_dispatch_id) WHERE active_dispatch_id IS NOT NULL;
+"""
 
 T = TypeVar("T")
 
@@ -130,6 +145,134 @@ class TeamStateSqliteStore:
                 "SELECT value FROM team_state_metadata WHERE key = 'revision'"
             ).fetchone()
         return int(row["value"]) if row is not None else 0
+
+    def lifecycle_candidates(
+        self,
+        *,
+        kind: str = "completion",
+        after: str = "",
+        limit: int = 50,
+        due_at: datetime | None = None,
+        dispatch_ids: Sequence[str] | None = None,
+    ) -> LifecycleCandidatePage:
+        """Pin revision and narrowly projected rows in one read transaction.
+
+        Keyset cursors are hints only: mutations always revalidate in the runtime
+        service. The historical receipt lane is separately paginated so old
+        terminal dispatches cannot delay leases or active completions.
+        """
+        limit = max(1, min(50, limit))
+        params: list[Any] = []
+        if dispatch_ids is not None:
+            ids = sorted(set(dispatch_ids))
+            if len(ids) > 50:
+                raise ValueError("lifecycle dispatch lookup is limited to 50 IDs")
+            source = (
+                "SELECT id FROM team_dispatches WHERE id IN (" + ",".join("?" for _ in ids) + ")"
+            )
+            params.extend(ids)
+        elif kind == "leases":
+            source = """
+                SELECT d.id FROM team_agent_runtimes r
+                JOIN team_dispatches d ON d.id = r.active_dispatch_id AND d.agent_id = r.agent_id
+                WHERE d.status = 'leased' AND d.lease_expires_at IS NOT NULL
+                  AND r.wake_leased_until IS NOT NULL
+                  AND (julianday(d.lease_expires_at) <= julianday(?)
+                    OR julianday(r.wake_leased_until) <= julianday(?))
+            """
+            params.extend([(due_at or utc_now()).isoformat()] * 2)
+        elif kind == "history":
+            source = "SELECT id FROM team_dispatches WHERE activation_completed_at IS NOT NULL"
+        elif kind == "completion":
+            source = """
+                SELECT active_dispatch_id AS id, 0 AS priority FROM team_agent_runtimes WHERE active_dispatch_id IS NOT NULL
+                UNION SELECT id, 0 FROM team_dispatches
+                  WHERE status IN ('preparing', 'leased') AND activation_completed_at IS NULL
+                UNION SELECT j.value AS id, 1 FROM team_agent_runtimes r,
+                  json_each(r.work_lineage_thread_dispatch_ids_json) j
+                UNION SELECT id, 2 FROM team_dispatches
+                  WHERE COALESCE(completed_at, activation_completed_at) IS NOT NULL
+                    AND (session_metadata_mirrored_at IS NULL OR
+                      julianday(session_metadata_mirrored_at) < julianday(COALESCE(completed_at, activation_completed_at)))
+            """
+        else:
+            raise ValueError(f"unknown lifecycle candidate kind: {kind}")
+
+        # Include governance reservations in the same snapshot, with their
+        # manager's current session. They have no team_dispatches row.
+        governance = ""
+        if kind == "completion":
+            governance = """
+                UNION ALL SELECT g.active_dispatch_id, a.session_id, a.id, NULL, 1,
+                  NULL, NULL, NULL, NULL, NULL, a.session_id, 0, g.queued_at,
+                  g.governance_group_id, 0
+                FROM team_governance_runtimes g
+                JOIN team_governance_groups gg ON gg.id = g.governance_group_id
+                JOIN team_agents a ON a.id = gg.manager_agent_id
+                WHERE g.active_dispatch_id IS NOT NULL AND g.wake_leased_until IS NULL
+            """
+            if dispatch_ids is not None:
+                governance += " AND g.active_dispatch_id IN (" + ",".join("?" for _ in ids) + ")"
+                params.extend(ids)
+        prioritized = kind == "completion" and dispatch_ids is None
+        id_source = (
+            f"SELECT id, MIN(priority) AS priority FROM ({source}) GROUP BY id"
+            if prioritized
+            else source
+        )
+        priority = "ids.priority" if prioritized else "0"
+        sql = f"""
+            WITH ids AS ({id_source}), candidates AS (
+              SELECT d.id AS dispatch_id, d.session_id, d.agent_id, d.status,
+                COALESCE(r.active_dispatch_id = d.id, 0) AS active,
+                d.activation_completed_at, d.native_thread_id, d.native_thread_observed_at,
+                (SELECT value FROM json_each(r.work_lineage_thread_ids_json) WHERE key = d.work_lineage_id) AS lineage_thread_id,
+                (SELECT value FROM json_each(r.work_lineage_thread_dispatch_ids_json) WHERE key = d.work_lineage_id) AS lineage_owner_id,
+                a.session_id AS current_session_id,
+                (COALESCE(d.completed_at, d.activation_completed_at) IS NOT NULL AND
+                 (d.session_metadata_mirrored_at IS NULL OR
+                  julianday(d.session_metadata_mirrored_at) < julianday(COALESCE(d.completed_at, d.activation_completed_at)))) AS mirror_due,
+                d.queued_at, NULL AS governance_group_id, {priority} AS recovery_priority
+              FROM team_dispatches d JOIN ids ON ids.id = d.id
+              LEFT JOIN team_agent_runtimes r ON r.agent_id = d.agent_id
+              LEFT JOIN team_agents a ON a.id = d.agent_id
+              {governance}
+            )
+            SELECT * FROM candidates
+            WHERE (recovery_priority > ? OR (recovery_priority = ? AND dispatch_id > ?))
+            ORDER BY recovery_priority, dispatch_id LIMIT ?
+        """
+        after_priority = 0
+        if kind == "completion" and after:
+            priority_text, after = after.split(":", 1)
+            after_priority = int(priority_text)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN")
+            revision_row = connection.execute(
+                "SELECT value FROM team_state_metadata WHERE key = 'revision'"
+            ).fetchone()
+            rows = connection.execute(
+                sql, [*params, after_priority, after_priority, after, limit + 1]
+            ).fetchall()
+        candidates = []
+        for row in rows[:limit]:
+            data = dict(row)
+            for name in ("activation_completed_at", "native_thread_observed_at", "queued_at"):
+                data[name] = datetime.fromisoformat(data[name]) if data[name] else None
+                if data[name] is not None:
+                    data[name] = data[name].replace(tzinfo=data[name].tzinfo or UTC).astimezone(UTC)
+            data["active"] = bool(data["active"])
+            data["mirror_due"] = bool(data["mirror_due"])
+            candidates.append(LifecycleCandidate(**data))
+        return LifecycleCandidatePage(
+            revision=int(revision_row["value"]) if revision_row else 0,
+            candidates=tuple(candidates),
+            next_cursor=(
+                candidates[-1].cursor if kind == "completion" else candidates[-1].dispatch_id
+            )
+            if len(rows) > limit
+            else None,
+        )
 
     def write_object(self, payload: dict[str, Any]) -> None:
         state = TeamState.model_validate(payload)
@@ -2056,6 +2199,9 @@ class TeamStateSqliteStore:
                             now=utc_now(),
                         )
                         self._write_state(connection, migrated_state)
+                for statement in _LIFECYCLE_INDEX_SQL.split(";"):
+                    if statement.strip():
+                        connection.execute(statement)
                 connection.execute(
                     """
                     INSERT INTO team_state_metadata(key, value)
@@ -9356,6 +9502,7 @@ CREATE INDEX IF NOT EXISTS idx_team_dispatches_agent_status
     ON team_dispatches(agent_id, status, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_team_dispatches_session_status
     ON team_dispatches(session_id, status, created_at, id);
+
 
 CREATE TABLE IF NOT EXISTS team_dispatch_tasks (
     dispatch_id TEXT NOT NULL,

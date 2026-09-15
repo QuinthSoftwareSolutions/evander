@@ -1037,7 +1037,8 @@ def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_
 
     result = worker.run_once()
 
-    assert result.next_sleep_seconds == 13
+    assert worker.worker_config.poll_interval_seconds == 13
+    assert 0 < result.next_sleep_seconds <= 5  # recovery deadline caps idle polling
 
 
 @pytest.mark.parametrize("binding", ["store", "trigger_lock"])
@@ -1705,10 +1706,11 @@ def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) ->
         )
     )
 
-    active_results = [worker.run_once(), worker.run_once(), worker.run_once()]
+    active_result = worker.run_once()
     idle_result = worker.run_once()
 
-    assert [result.next_sleep_seconds for result in active_results] == [0.0, 0.0, 0.0]
+    assert active_result.next_sleep_seconds == 0.0
+    assert active_result.events_processed >= 3
     assert idle_result.next_sleep_seconds == 1
     effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
@@ -3860,7 +3862,7 @@ def test_effect_orchestrator_retries_partially_published_completion_publish_once
         if item["idempotency_key"] == "event-completion-retry-2::effect-1"
     ]
     assert len(completion_records) == 1
-    assert completion_records[0]["delivery_state"] == "pending"
+    assert completion_records[0]["delivery_state"] == "delivered"
 
     restarted_worker = EffectOrchestratorWorker(
         config=config, worker_config=worker_config, runtime=None
@@ -5549,6 +5551,7 @@ def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_cont
         type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
     )
 
+    worker._recovery_schedule.next_due = 0  # advance to the recovery deadline
     worker.run_once()
 
     assert len(resume_calls) == 1
@@ -5717,6 +5720,7 @@ def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
     )
 
     for _ in range(10):
+        worker._recovery_schedule.next_due = 0
         worker.run_once()
 
     assert len(resume_calls) == 1
@@ -10505,6 +10509,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
     )
 
     for _ in range(6):
+        worker._recovery_schedule.next_due = 0
         worker.run_once()
 
     effect_payload = effect_execution_payload(worker_config)
@@ -10797,6 +10802,7 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
     ]
 
     for _ in range(6):
+        worker._recovery_schedule.next_due = 0
         worker.run_once()
 
     effect_payload = effect_execution_payload(worker_config)
@@ -10904,6 +10910,7 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
     )
 
     for _ in range(6):
+        worker._recovery_schedule.next_due = 0
         worker.run_once()
 
     effect_payload = effect_execution_payload(worker_config)
@@ -12716,7 +12723,7 @@ def test_run_once_processes_unrelated_event_when_inventory_reconciliation_fails(
     result = worker.run_once()
 
     assert isinstance(result, EffectOrchestratorCycleResult)
-    assert result.events_processed == 1
+    assert result.events_processed >= 1  # a ready completion may drain in this slice too
     assert _await_agent_store(worker).read_all() == {pending_key: pending}
     assert "AwaitAgentGateProvider" in caplog.text
     assert "virsh list failed" in caplog.text

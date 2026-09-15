@@ -250,6 +250,29 @@ def _enqueue_prompt_execution_matches_target(
 class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
     def __init__(self, provider_class: type[Any]) -> None:
         self._provider_class = provider_class
+        self._waiting_cursor = ""
+
+    def on_waiting_reconciliation_slice(self, *, worker: Any, budget: Any):
+        from evander.orchestration.maintenance import MaintenanceResult
+
+        page = getattr(getattr(worker, "execution_store", None), "list_waiting_records_page", None)
+        if not getattr(self._provider_class, "supports_waiting_slices", False) or not callable(
+            page
+        ):
+            return MaintenanceResult(changes=self.on_waiting_reconciliation(worker=worker))
+        records = page(node_type=self._provider_class.node_type(), after=self._waiting_cursor)
+        completed = 0
+        for record in records:
+            if not budget.take():
+                return MaintenanceResult(completed, budget.examined, True)
+            completed += int(
+                self._provider_class.reconcile_waiting(worker=worker, records=[record]) or 0
+            )
+            self._waiting_cursor = record.execution_id
+        remaining = len(records) == 50
+        if not remaining:
+            self._waiting_cursor = ""
+        return MaintenanceResult(completed, budget.examined, remaining)
 
     def on_waiting_reconciliation(self, *, worker: Any) -> int:
         return int(self._provider_class.reconcile_waiting(worker=worker) or 0)
@@ -262,7 +285,42 @@ class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
 
 
 class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
+    def __init__(self) -> None:
+        self._slice_visited: set[str] = set()
+        self._slice_remaining = False
+
+    def on_post_completion_dispatch_slice(self, *, worker: Any, budget: Any):
+        from evander.orchestration.maintenance import MaintenanceResult
+
+        self._slice_remaining = False
+        changes = self._dispatch_queued(worker=worker, budget=budget)
+        if not self._slice_remaining:
+            self._slice_visited.clear()
+        return MaintenanceResult(changes, budget.examined, self._slice_remaining)
+
     def on_post_completion_dispatch(self, *, worker: Any) -> int:
+        return self._dispatch_queued(worker=worker)
+
+    def _take_candidate(self, queue_key: str, budget: Any) -> bool:
+        if budget is None:
+            return True
+        if not budget.take():
+            self._slice_remaining = True
+            return False
+        self._slice_visited.add(queue_key)
+        return True
+
+    @staticmethod
+    def _validate_queue_ownership(worker: Any, record: Any) -> bool:
+        # Add-ons validate reservations before the generic replay claims them.
+        # This also closes the gap between a recovery snapshot and a new claim.
+        for hook in getattr(worker, "_completion_dispatch_hooks", ()):
+            validate = getattr(hook, "validate_queued_prompt", None)
+            if callable(validate) and not validate(worker=worker, record=record):
+                return False
+        return True
+
+    def _dispatch_queued(self, *, worker: Any, budget: Any = None) -> int:
         queue_store = getattr(worker, "queued_agent_prompt_store", None)
         dispatch_port = resolve_agent_prompt_dispatch_port(worker)
         if queue_store is None or dispatch_port is None:
@@ -272,6 +330,21 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         if not queued_records:
             return 0
 
+        selected_keys = None
+        if budget is not None:
+            eligible = [
+                key
+                for key in self._fifo_queue_keys(queued_records)
+                if key not in self._slice_visited
+            ]
+            selected_keys = set(eligible[:50])
+            self._slice_remaining = len(eligible) > len(selected_keys)
+        all_snapshot = queued_records
+        if selected_keys is not None:
+            queued_records = {
+                key: record for key, record in queued_records.items() if key in selected_keys
+            }
+
         graph = self._build_current_execution_graph(worker=worker)
         if graph is not None:
             self._discard_non_dispatchable_queue_records(
@@ -279,16 +352,33 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 records=queued_records,
                 graph=graph,
             )
-            queued_records = queue_store.read_all()
+            all_snapshot = queue_store.read_all()
+            queued_records = {
+                key: record
+                for key, record in all_snapshot.items()
+                if selected_keys is None or key in selected_keys
+            }
             if not queued_records:
                 return 0
 
         dispatched = 0
         container_queue_keys = self._container_queue_keys(worker=worker, records=queued_records)
         for queue_key in self._fifo_queue_keys(queued_records, container_queue_keys):
-            current_records = queue_store.read_all()
+            if budget is not None and queue_key in self._slice_visited:
+                continue
+            if not self._take_candidate(queue_key, budget):
+                return dispatched
+            current_records = all_snapshot
+            get = getattr(queue_store, "get", None)
+            if callable(get):
+                current_records = dict(current_records)
+                current_records[queue_key] = get(queue_key)
+            else:
+                current_records = queue_store.read_all()
             record = current_records.get(queue_key)
             if record is None:
+                continue
+            if not self._validate_queue_ownership(worker, record):
                 continue
             if not self._retry_not_before_ready(record):
                 continue
@@ -333,16 +423,22 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 record=record,
             ):
                 dispatched += 1
+                all_snapshot = queue_store.read_all()
 
         all_queued_records = queue_store.read_all()
         current_container_queue_keys = self._container_queue_keys(
             worker=worker,
-            records=all_queued_records,
+            records={
+                key: record
+                for key, record in all_queued_records.items()
+                if selected_keys is None or key in selected_keys
+            },
         )
         queued_records = {
             queue_key: record
             for queue_key, record in all_queued_records.items()
             if queue_key not in current_container_queue_keys
+            and (selected_keys is None or queue_key in selected_keys)
         }
         if not queued_records:
             return dispatched
@@ -361,9 +457,21 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return dispatched
 
         for queue_key in self._fifo_queue_keys(queued_records):
-            current_records = queue_store.read_all()
+            if budget is not None and queue_key in self._slice_visited:
+                continue
+            if not self._take_candidate(queue_key, budget):
+                return dispatched
+            current_records = all_queued_records
+            get = getattr(queue_store, "get", None)
+            if callable(get):
+                current_records = dict(current_records)
+                current_records[queue_key] = get(queue_key)
+            else:
+                current_records = queue_store.read_all()
             record = current_records.get(queue_key)
             if record is None:
+                continue
+            if not self._validate_queue_ownership(worker, record):
                 continue
             if self._has_earlier_local_capacity_record(
                 records=current_records,
@@ -454,6 +562,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
                 continue
             claimed = self._claim_queue_record_for_replay(
+                worker=worker,
                 queue_store=queue_store,
                 queue_key=queue_key,
                 record=record,
@@ -528,6 +637,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                         dispatch_id=dispatch_id,
                     )
                 dispatched += 1
+                all_queued_records = queue_store.read_all()
             else:
                 self._release_local_inference_capacity(
                     worker=worker,
@@ -1075,6 +1185,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
         claimed = self._claim_queue_record_for_replay(
+            worker=worker,
             queue_store=queue_store,
             queue_key=queue_key,
             record=record,
@@ -1349,12 +1460,13 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return f"{event_id}:subscription-replay-{replay_attempt}"
         return event_id
 
-    @staticmethod
     def _claim_queue_record_for_replay(
+        self,
         *,
         queue_store: Any,
         queue_key: str,
         record: Any,
+        worker: Any = None,
     ) -> tuple[str, Any, str] | None:
         dispatch_id = queued_agent_prompt_dispatch_id(record)
         claimed_queue_key = agent_prompt_replay_queue_key(record)
@@ -1362,6 +1474,27 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         if not callable(claim):
             return None
         try:
+            # A slice snapshot is sufficient for no-op checks, but a runnable
+            # candidate must see queue replacements/new FIFO predecessors at
+            # the claim boundary. The claim still compare-checks dispatch ID.
+            current_records = queue_store.read_all()
+            current = current_records.get(queue_key)
+            if current is None or queued_agent_prompt_dispatch_id(current) != dispatch_id:
+                return None
+            if not self._retry_not_before_ready(current):
+                return None
+            if self._has_earlier_local_capacity_record(
+                records=current_records, queue_key=queue_key, candidates=set(current_records)
+            ) or self._has_earlier_claimed_replay_record(
+                records=current_records, queue_key=queue_key, record=current
+            ):
+                return None
+            if worker is not None and self._has_earlier_subscription_profile_record(
+                worker=worker, records=current_records, queue_key=queue_key
+            ):
+                return None
+            if worker is not None and not self._validate_queue_ownership(worker, current):
+                return None
             claimed_record = claim(
                 queue_key,
                 dispatch_id,
@@ -1748,6 +1881,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         worker: Any,
         execution_record: Any,
     ) -> None:
+        notify = getattr(worker, "_notify_prompt_lifecycle", None)
+        if callable(notify):
+            notify(execution_record)
         publish_or_mark_pending = getattr(
             worker, "_publish_effect_completion_event_or_mark_pending", None
         )

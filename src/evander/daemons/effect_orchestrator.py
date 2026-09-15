@@ -52,6 +52,13 @@ from evander.orchestration.host_polling import (
     HostWakeSleeper,
     wake_socket_path_for_lock,
 )
+from evander.orchestration.maintenance import (
+    EVENT_SLICE_SECONDS,
+    MAINTENANCE_SLICE_SECONDS,
+    MaintenanceBudget,
+    MaintenanceResult,
+    RecoverySchedule,
+)
 from evander.orchestration.adapters import (
     EffectCompletionPublisherAdapter,
     EffectDependencyResolverAdapter,
@@ -251,6 +258,16 @@ class EffectExecutionRecord(BaseModel):
     clear_reason: str | None = None
     dismissed_at: datetime | None = None
     dismiss_reason: str | None = None
+
+    # Optional: old records have no measurements. Legacy lifecycle timestamps
+    # retain their existing meanings, including finished_at at reaping time.
+    provider_started_at: datetime | None = None
+    provider_returned_at: datetime | None = None
+    provider_duration_ms: float | None = None
+    executor_queue_duration_ms: float | None = None
+    completion_observed_at: datetime | None = None
+    return_to_reap_ms: float | None = None
+    completion_published_at: datetime | None = None
 
 
 class GateExecutionRecord(BaseModel):
@@ -559,6 +576,7 @@ class EffectOrchestratorWorker:
         self._special_event_handlers = resolved_wiring.special_event_handlers
         self._lifecycle_reconciliation_hooks = resolved_wiring.lifecycle_reconciliation_hooks
         self._completion_dispatch_hooks = resolved_wiring.completion_dispatch_hooks
+        self._recovery_schedule = RecoverySchedule()
         self.event_queue.reset_inflight()
         self._reconcile_managed_git_worktrees(force=True, strict=True)
         wake_path = wake_socket_path_for_lock(self.lock_path)
@@ -603,6 +621,26 @@ class EffectOrchestratorWorker:
                 config_revision=config_revision,
             )
         future.add_done_callback(self._notify_inflight_completion)
+
+    def _submit_provider(self, provider: Callable[..., dict[str, Any]], **kwargs: Any):
+        timing: dict[str, Any] = {}
+        submitted = time.monotonic()
+
+        def execute() -> dict[str, Any]:
+            started = time.monotonic()
+            timing["provider_started_at"] = datetime.now(UTC)
+            timing["executor_queue_duration_ms"] = (started - submitted) * 1000
+            try:
+                return provider(**kwargs)
+            finally:
+                returned = time.monotonic()
+                timing["provider_returned_at"] = datetime.now(UTC)
+                timing["provider_duration_ms"] = (returned - started) * 1000
+                timing["returned_monotonic"] = returned
+
+        future = self._executor.submit(execute)
+        future.provider_timing = timing
+        return future
 
     def _notify_inflight_completion(self, _future: Future[dict[str, Any]]) -> None:
         try:
@@ -714,6 +752,7 @@ class EffectOrchestratorWorker:
                 self.worker_config = latest_config
                 active_config = latest_config
                 if store_wiring is not None:
+                    self._recovery_schedule = RecoverySchedule()
                     self.workflow_event_journal = store_wiring.workflow_event_journal
                     self.event_queue = store_wiring.event_queue
                     self.lock_path = store_wiring.lock_path
@@ -749,6 +788,7 @@ class EffectOrchestratorWorker:
                         runtime_wiring.lifecycle_reconciliation_hooks
                     )
                     self._completion_dispatch_hooks = runtime_wiring.completion_dispatch_hooks
+                    self._recovery_schedule = RecoverySchedule()
                     self._effect_provider_class_registry = getattr(
                         self.provider_factory, "registry", None
                     )
@@ -886,20 +926,27 @@ class EffectOrchestratorWorker:
             )
 
         phase_started = time.perf_counter()
-        loop_result = loop.run_once(
-            max_events=max(
-                1,
-                int(getattr(latest_config, "max_events_per_cycle", _DEFAULT_MAX_EVENTS_PER_CYCLE)),
-            ),
-            resolve_and_execute=_resolve_and_execute,
+        max_events = max(
+            1, int(getattr(active_config, "max_events_per_cycle", _DEFAULT_MAX_EVENTS_PER_CYCLE))
         )
-        pending_events_scanned = loop_result.events_scanned
-        events_processed = loop_result.events_scanned
+        event_deadline = time.monotonic() + EVENT_SLICE_SECONDS
+        executions_recorded = 0
+        while events_processed < max_events:
+            # Reaping only publishes to the durable FIFO. Never call successors
+            # from executor callbacks or bypass event delivery/idempotency.
+            completed, published = self._reap_completed_futures()
+            completion_events_published += published
+            loop_result = loop.run_once(max_events=1, resolve_and_execute=_resolve_and_execute)
+            events_processed += loop_result.events_scanned
+            executions_recorded += loop_result.executions_recorded
+            if not loop_result.events_scanned or time.monotonic() >= event_deadline:
+                break
+        pending_events_scanned = events_processed
         self._log_phase_duration(
             "event_loop",
             phase_started,
-            events_scanned=loop_result.events_scanned,
-            executions_recorded=loop_result.executions_recorded,
+            events_scanned=events_processed,
+            executions_recorded=executions_recorded,
         )
 
         # Give very short-running in-process effects a chance to settle before
@@ -917,8 +964,19 @@ class EffectOrchestratorWorker:
             published_count=published_count,
         )
         completion_events_published += published_count
-        completion_events_published += self._run_post_event_maintenance(graph=graph)
-        if events_processed == 0:
+        # Gate deadlines remain independent of broad recovery cadence.
+        completion_events_published += self._reconcile_gate_providers(graph=graph)
+        recovery_ran, recovered = self._run_due_recovery(graph=graph)
+        completion_events_published += recovered
+        with self._inflight_lock:
+            has_inflight = bool(self._inflight)
+        if (
+            events_processed == 0
+            and recovery_ran
+            and not has_inflight
+            and not self._recovery_schedule.pending
+            and not self.event_queue.list_pending(limit=1)
+        ):
             phase_started = time.perf_counter()
             try:
                 backfill = run_execution_history_backfill(
@@ -941,6 +999,9 @@ class EffectOrchestratorWorker:
             jitter_seconds=self.worker_config.jitter_seconds,
             next_reconcile_at=self._next_gate_reconcile_at(graph=graph),
         )
+        next_sleep_seconds = min(next_sleep_seconds, self._recovery_schedule.sleep_limit())
+        if self.event_queue.list_pending(limit=1):
+            next_sleep_seconds = 0.0
 
         return EffectOrchestratorCycleResult(
             pending_events_scanned=pending_events_scanned,
@@ -957,6 +1018,12 @@ class EffectOrchestratorWorker:
         graph: ExecutionGraph,
         config_revision: str,
     ) -> int:
+        logger.info(
+            "Effect orchestrator event dispatch event_id=%s trace_id=%s dispatched_at=%s",
+            queue_record.event_id,
+            queue_record.trace_id,
+            datetime.now(UTC).isoformat(),
+        )
         outbound_edges = _matching_outbound_edges(queue_record=queue_record, graph=graph)
         is_agent_completion_event = queue_record.trigger_type == "trigger:agent:run:completed"
         source_node_exists = queue_record.trigger_id in graph.nodes_by_id
@@ -1158,6 +1225,70 @@ class EffectOrchestratorWorker:
         self._log_phase_duration("post_completion_dispatch", phase_started, dispatched=count)
         published += count
         return published
+
+    def _run_due_recovery(self, *, graph: ExecutionGraph) -> tuple[bool, int]:
+        schedule = getattr(self, "_recovery_schedule", None)
+        if schedule is None:
+            schedule = self._recovery_schedule = RecoverySchedule()
+        tasks = [
+            ("waiting_reconciliation", hook)
+            for hook in sorted(
+                self._lifecycle_reconciliation_hooks,
+                key=lambda h: getattr(h, "maintenance_priority", 0),
+            )
+        ] + [
+            ("post_completion_dispatch", hook)
+            for hook in sorted(
+                self._completion_dispatch_hooks, key=lambda h: getattr(h, "maintenance_priority", 0)
+            )
+        ]
+        if not schedule.begin_if_due(tasks):
+            return False, 0
+        deadline = time.monotonic() + MAINTENANCE_SLICE_SECONDS
+        changes = 0
+        while schedule.pending:
+            phase, hook = schedule.pending[0]
+            started = time.perf_counter()
+            result = MaintenanceResult()
+            try:
+                sliced = getattr(hook, "run_maintenance_slice", None)
+                if callable(sliced):
+                    result = sliced(worker=self, graph=graph, budget=MaintenanceBudget())
+                elif phase == "waiting_reconciliation":
+                    result = MaintenanceResult(
+                        changes=int(hook.reconcile(worker=self, graph=graph) or 0)
+                    )
+                else:
+                    result = MaintenanceResult(changes=int(hook.dispatch(worker=self) or 0))
+            except Exception:
+                logger.exception("Effect recovery hook failed phase=%s hook=%s", phase, hook)
+                # Retry on the next pass, not in a tight failure loop.
+            self._log_phase_duration(
+                phase,
+                started,
+                hook=getattr(hook, "maintenance_name", type(hook).__name__),
+                records_examined=result.examined,
+                changes=result.changes,
+                remaining=result.remaining,
+                budget_overrun=time.perf_counter() - started > MAINTENANCE_SLICE_SECONDS,
+            )
+            changes += result.changes
+            if not result.remaining:
+                schedule.pending.popleft()
+            if time.monotonic() >= deadline:
+                break
+        return True, changes
+
+    def _notify_prompt_lifecycle(self, record: EffectExecutionRecord) -> None:
+        if record.effect_type != "effect:agent:enqueue-prompt":
+            return
+        for hook in self._completion_dispatch_hooks:
+            notify = getattr(hook, "on_prompt_execution_changed", None)
+            if callable(notify):
+                try:
+                    notify(worker=self, record=record)
+                except Exception:
+                    logger.exception("Targeted prompt lifecycle failed; recovery will retry")
 
     def _run_orchestration_wal_checkpoint_maintenance(self) -> None:
         phase_started = time.perf_counter()
@@ -1420,6 +1551,7 @@ class EffectOrchestratorWorker:
         record.outputs = dict(outputs)
         record.published_event_id = published_event_id
         record.completion_event_enqueued_at = finished_at
+        record.completion_published_at = datetime.now(UTC)
         record.finished_at = finished_at
         record.error = None
         if branch_port is not None:
@@ -1432,6 +1564,7 @@ class EffectOrchestratorWorker:
                 record.error = error_message
         self.execution_store.record_execution(record)
         self._update_event_delivery_state(record.event_id)
+        self._notify_prompt_lifecycle(record)
 
     def _retry_pending_gate_completion_publications(self, *, graph: ExecutionGraph) -> int:
         retried = 0
@@ -1787,7 +1920,7 @@ class EffectOrchestratorWorker:
                 with self._inflight_lock:
                     if idempotency_key in self._inflight:
                         return False
-                future = self._executor.submit(
+                future = self._submit_provider(
                     self._execute_query_provider,
                     query=query,
                     resolved_config=dict(existing.resolved_config),
@@ -1862,7 +1995,7 @@ class EffectOrchestratorWorker:
             config_revision=config_revision,
         )
         self.execution_store.record_execution(record)
-        future = self._executor.submit(
+        future = self._submit_provider(
             self._execute_query_provider,
             query=query,
             resolved_config=resolved_config,
@@ -1891,7 +2024,7 @@ class EffectOrchestratorWorker:
                 with self._inflight_lock:
                     if idempotency_key in self._inflight:
                         return False
-                future = self._executor.submit(
+                future = self._submit_provider(
                     self._execute_provider,
                     effect=effect,
                     resolved_config=dict(existing.resolved_config),
@@ -2010,7 +2143,7 @@ class EffectOrchestratorWorker:
             config_revision=config_revision,
         )
         self.execution_store.record_execution(record)
-        future = self._executor.submit(
+        future = self._submit_provider(
             self._execute_provider,
             effect=effect,
             resolved_config=resolved_config,
@@ -2251,6 +2384,18 @@ class EffectOrchestratorWorker:
             if record is None:
                 continue
             finished_at = datetime.now(UTC)
+            timing = getattr(future, "provider_timing", {})
+            for key in (
+                "provider_started_at",
+                "provider_returned_at",
+                "provider_duration_ms",
+                "executor_queue_duration_ms",
+            ):
+                if key in timing:
+                    setattr(record, key, timing[key])
+            record.completion_observed_at = finished_at
+            if "returned_monotonic" in timing:
+                record.return_to_reap_ms = (time.monotonic() - timing["returned_monotonic"]) * 1000
             try:
                 outputs = dict(future.result() or {})
                 provider_class = self._effect_provider_class(record.effect_type)
@@ -2268,6 +2413,7 @@ class EffectOrchestratorWorker:
                     if provider_class is not None:
                         provider_class.on_execution_waiting(worker=self, record=record)
                     self._update_event_delivery_state(record.event_id)
+                    self._notify_prompt_lifecycle(record)
                     continue
             except Exception as exc:  # noqa: BLE001
                 if record.effect_type in _PROMPT_FAILURE_EFFECT_TYPES:
@@ -2322,6 +2468,7 @@ class EffectOrchestratorWorker:
                 record.finished_at = finished_at
                 self.execution_store.record_execution(record)
                 self._update_event_delivery_state(record.event_id)
+                self._notify_prompt_lifecycle(record)
                 continue
 
             record.outputs = outputs

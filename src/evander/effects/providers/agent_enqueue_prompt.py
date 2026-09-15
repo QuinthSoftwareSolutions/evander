@@ -118,6 +118,7 @@ def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
 
 
 class AgentEnqueuePromptEffectProvider(EffectProviderBase):
+    supports_waiting_slices = True
     capability = NodeCapability(
         min_inbound=1,
         max_inbound=1,
@@ -1002,7 +1003,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             return 0
         completed = 0
         vm_records: list[Any] = []
-        for record in _waiting_execution_records(worker, cls.node_type()):
+        records = (
+            kwargs["records"]
+            if "records" in kwargs
+            else _waiting_execution_records(worker, cls.node_type())
+        )
+        for record in records:
             if not cls._publish_queued_started_event_before_reconciliation(
                 worker=worker,
                 record=record,

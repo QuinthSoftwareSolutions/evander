@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 
 from evander.addons import addon_storage_path
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
+from evander.orchestration.maintenance import MaintenanceBudget, MaintenanceResult
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
@@ -237,6 +238,7 @@ from .provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from .repository import TeamStateConflictError, TeamStateRepository
+from .lifecycle_candidates import LifecycleCandidate
 from .outbox_publication import (
     publish_team_wake_events_with_outbox_recovery,
     request_team_outbox_publication_for_records,
@@ -5497,41 +5499,239 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
 
     _LEASE_RENEWAL_SECONDS = MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS
     _LEASE_RENEWAL_WINDOW_SECONDS = 300
+    maintenance_priority = -100  # Lease work precedes other broad recovery.
 
-    def on_waiting_reconciliation(self, *, worker: Any) -> int:
+    def __init__(self) -> None:
+        self._lease_cursor = ""
+        self._completion_cursor = ""
+        self._history_cursor = ""
+        self._completion_lane = "completion"
+        self._queue_cursor = ""
+        self._queue_validated = False
+
+    def on_waiting_reconciliation_slice(
+        self, *, worker: Any, budget: MaintenanceBudget
+    ) -> MaintenanceResult:
+        return self._renew_lease_candidates(worker=worker, budget=budget)
+
+    def on_post_completion_dispatch_slice(
+        self, *, worker: Any, budget: MaintenanceBudget
+    ) -> MaintenanceResult:
         runtime_dir = _runtime_dir_from_worker(worker)
         if runtime_dir is None:
-            return 0
+            return MaintenanceResult(examined=0)
         repo = TeamStateRepository(runtime_dir)
-        state = repo.read()
-        now = datetime.now(UTC)
-        state, queue_reconciled_count = _reconcile_team_queued_prompt_reservations(
-            worker,
-            repo=repo,
-            state=state,
-            now=now,
+        queued = MaintenanceResult(examined=0)
+        if not self._queue_validated:
+            queued = self._reconcile_queue_slice(worker=worker, repo=repo, budget=budget)
+            if queued.remaining:
+                return queued
+            self._queue_validated = True
+        kind = self._completion_lane
+        cursor = self._completion_cursor if kind == "completion" else self._history_cursor
+        page = repo.lifecycle_candidates(kind=kind, after=cursor)
+        records = _agent_prompt_records_for_dispatches(
+            worker, {c.dispatch_id for c in page.candidates}
         )
-        renewal_due_at = now + timedelta(seconds=self._LEASE_RENEWAL_WINDOW_SECONDS)
-        due_dispatches = {
-            dispatch_id: (agent_id, state.agents[agent_id].session_id)
-            for agent_id, runtime in state.agent_runtimes.items()
-            if agent_id in state.agents
-            and (dispatch_id := _optional_text(runtime.active_dispatch_id)) is not None
-            and (dispatch := state.dispatches.get(dispatch_id)) is not None
-            and dispatch.status.value == "leased"
-            and dispatch.agent_id == agent_id
-            and dispatch.lease_expires_at is not None
-            and runtime.wake_leased_until is not None
+        changes = queued.changes
+        for candidate in page.candidates:
+            if not budget.take():
+                return MaintenanceResult(changes, budget.examined, True)
+            changes += self._reconcile_candidate(worker, repo, candidate, records)
+            if kind == "completion":
+                self._completion_cursor = candidate.cursor
+            else:
+                self._history_cursor = candidate.dispatch_id
+        if kind == "completion":
+            if page.next_cursor is None:
+                self._completion_cursor = ""
+                self._completion_lane = "history"
+            return MaintenanceResult(changes, budget.examined, True)
+        # One historical page per recovery pass; current owners/active work
+        # always get their own lane first, regardless of retained history size.
+        self._history_cursor = page.next_cursor or ""
+        self._completion_lane = "completion"
+        self._queue_validated = False
+        return MaintenanceResult(changes, budget.examined)
+
+    def on_prompt_execution_changed(self, *, worker: Any, record: Any) -> None:
+        dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
+        runtime_dir = _runtime_dir_from_worker(worker)
+        if not dispatch_id or runtime_dir is None:
+            return
+        repo = TeamStateRepository(runtime_dir)
+        page = repo.lifecycle_candidates(dispatch_ids=[dispatch_id])
+        # Query every receipt for this immutable dispatch, not only the event
+        # that woke us: a delayed old success must not undo a newer failure.
+        records = _agent_prompt_records_for_dispatches(worker, {dispatch_id})
+        for candidate in page.candidates:
+            self._reconcile_candidate(worker, repo, candidate, records)
+
+    def on_completion_fan_out(self, *, worker: Any, queue_record: Any, graph: Any) -> int:
+        del graph
+        payload = getattr(queue_record, "payload", {}) or {}
+        try:
+            self.on_prompt_execution_changed(worker=worker, record=SimpleNamespace(outputs=payload))
+        except Exception:
+            # A transient add-on read must not block the core completion fan-out.
+            logger.exception("Targeted Team completion reconciliation failed; recovery will retry")
+        return 0
+
+    def _reconcile_candidate(
+        self,
+        worker: Any,
+        repo: TeamStateRepository,
+        candidate: LifecycleCandidate,
+        records: list[Any],
+    ) -> int:
+        matching = [
+            r
+            for r in records
+            if _optional_text(_record_outputs(r).get("dispatch_id")) == candidate.dispatch_id
+            and _completed_prompt_session_id(r) == candidate.session_id
+        ]
+        actionable = candidate.mirror_due or bool(
+            matching
             and (
-                _team_datetime_utc(dispatch.lease_expires_at) <= renewal_due_at
-                or _team_datetime_utc(runtime.wake_leased_until) <= renewal_due_at
+                candidate.governance_group_id is not None
+                or candidate.status == "preparing"
+                or (candidate.status == "leased" and candidate.activation_completed_at is None)
+                or (
+                    candidate.active
+                    and any(getattr(r, "status", None) in {"succeeded", "failed"} for r in matching)
+                )
             )
+        )
+        receipts = [
+            receipt
+            for r in [
+                *(r for r in matching if getattr(r, "status", None) == "waiting"),
+                *_completed_agent_prompt_records_from_records(matching),
+            ]
+            if (receipt := _team_native_thread_receipt(r)) is not None
+        ]
+        if receipts:
+            now = datetime.now(UTC)
+            # Match the transactional reconciler: waiting before completed,
+            # and last receipt wins for equal observation timestamps.
+            receipt = max(
+                enumerate(receipts), key=lambda pair: (pair[1].observed_at or now, pair[0])
+            )[1]
+            if receipt.missing_thread:
+                actionable |= candidate.lineage_thread_id == receipt.thread_id and (
+                    candidate.lineage_owner_id == candidate.dispatch_id
+                    or (candidate.lineage_owner_id is None and candidate.active)
+                )
+            else:
+                actionable |= bool(
+                    candidate.activation_completed_at is not None
+                    and candidate.current_session_id == candidate.session_id
+                    and (
+                        candidate.native_thread_observed_at is None
+                        or (receipt.observed_at or datetime.now(UTC))
+                        > candidate.native_thread_observed_at
+                    )
+                )
+        if not actionable:
+            return 0
+        return self._reconcile_selected_completion(
+            worker=worker,
+            repo=repo,
+            dispatch_ids={candidate.dispatch_id},
+            records=matching,
+        )
+
+    def validate_queued_prompt(self, *, worker: Any, record: Any) -> bool:
+        dispatch_id = _optional_text(getattr(record, "dispatch_id", None))
+        runtime_dir = _runtime_dir_from_worker(worker)
+        if not dispatch_id or runtime_dir is None:
+            return True
+        page = TeamStateRepository(runtime_dir).lifecycle_candidates(dispatch_ids=[dispatch_id])
+        if not page.candidates:
+            return not dispatch_id.startswith(("team-dispatch-", "team-chat:", "team-governance"))
+        candidate = page.candidates[0]
+        return bool(
+            candidate.active
+            and (candidate.status == "preparing" or candidate.governance_group_id)
+            and getattr(record, "session_id", None) in {None, "", candidate.session_id}
+        )
+
+    def _reconcile_queue_slice(
+        self, *, worker: Any, repo: TeamStateRepository, budget: MaintenanceBudget
+    ) -> MaintenanceResult:
+        queue_store = getattr(worker, "queued_agent_prompt_store", None)
+        read_all = getattr(queue_store, "read_all", None)
+        records = read_all() if callable(read_all) else {}
+        changes = 0
+        for key, record in sorted(records.items()):
+            if key <= self._queue_cursor:
+                continue
+            if not budget.take():
+                return MaintenanceResult(changes, budget.examined, True)
+            dispatch_id = _optional_text(getattr(record, "dispatch_id", None))
+            if dispatch_id:
+                page = repo.lifecycle_candidates(dispatch_ids=[dispatch_id])
+                candidate = page.candidates[0] if page.candidates else None
+                current = (
+                    candidate is not None
+                    and candidate.active
+                    and (
+                        candidate.status == "preparing" or candidate.governance_group_id is not None
+                    )
+                    and getattr(record, "session_id", None) in {None, "", candidate.session_id}
+                )
+                known_team = candidate is not None or dispatch_id.startswith(
+                    ("team-dispatch-", "team-chat:", "team-governance")
+                )
+                if known_team and (not current or candidate.queued_at is None):
+                    # Only actionable candidates load authoritative TeamState;
+                    # reuse the snapshot but preserve compare-delete and races.
+                    _state, count = _reconcile_team_queued_prompt_reservations(
+                        worker,
+                        repo=repo,
+                        state=repo.read(),
+                        now=datetime.now(UTC),
+                        queued_records={key: record},
+                    )
+                    changes += count
+            self._queue_cursor = key
+        self._queue_cursor = ""
+        return MaintenanceResult(changes, budget.examined)
+
+    def on_waiting_reconciliation(self, *, worker: Any) -> int:
+        result = self._renew_lease_candidates(worker=worker, budget=MaintenanceBudget())
+        runtime_dir = _runtime_dir_from_worker(worker)
+        if runtime_dir is not None:
+            result_queue = self._reconcile_queue_slice(
+                worker=worker, repo=TeamStateRepository(runtime_dir), budget=MaintenanceBudget()
+            )
+            return result.changes + result_queue.changes
+        return result.changes
+
+    def _renew_lease_candidates(
+        self, *, worker: Any, budget: MaintenanceBudget
+    ) -> MaintenanceResult:
+        runtime_dir = _runtime_dir_from_worker(worker)
+        if runtime_dir is None:
+            return MaintenanceResult(examined=0)
+        repo = TeamStateRepository(runtime_dir)
+        now = datetime.now(UTC)
+        renewal_due_at = now + timedelta(seconds=self._LEASE_RENEWAL_WINDOW_SECONDS)
+        page = repo.lifecycle_candidates(
+            kind="leases", after=self._lease_cursor, due_at=renewal_due_at
+        )
+        due_dispatches = {
+            c.dispatch_id: (c.agent_id, c.current_session_id) for c in page.candidates
+            if c.current_session_id is not None
         }
         if not due_dispatches:
-            return queue_reconciled_count
+            self._lease_cursor = ""
+            return MaintenanceResult(examined=0)
 
         records_by_dispatch: dict[str, Any] = {}
-        for record in _waiting_agent_prompt_records(worker):
+        for record in _agent_prompt_records_for_dispatches(worker, set(due_dispatches)):
+            if getattr(record, "status", None) != "waiting":
+                continue
             outputs = _record_outputs(record)
             dispatch_id = _optional_text(outputs.get("dispatch_id"))
             if dispatch_id is None or dispatch_id not in due_dispatches:
@@ -5544,6 +5744,9 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
 
         renewed_count = 0
         for dispatch_id, (agent_id, session_id) in due_dispatches.items():
+            if not budget.take():
+                return MaintenanceResult(renewed_count, budget.examined, True)
+            self._lease_cursor = dispatch_id
             record = records_by_dispatch.get(dispatch_id)
             if record is None or not _team_dispatch_execution_is_live(
                 worker,
@@ -5565,31 +5768,35 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 # The next reconciliation cycle will use the authoritative row.
                 continue
             renewed_count += int(renewed)
-        return queue_reconciled_count + renewed_count
+        self._lease_cursor = page.next_cursor or ""
+        return MaintenanceResult(renewed_count, budget.examined, page.next_cursor is not None)
 
     def on_post_completion_dispatch(self, *, worker: Any) -> int:
+        budget = MaintenanceBudget()
+        changes = 0
+        while True:
+            result = self.on_post_completion_dispatch_slice(worker=worker, budget=budget)
+            changes += result.changes
+            if not result.remaining or budget.examined >= 50 or budget.clock() >= budget.deadline:
+                return changes
+
+    def _reconcile_selected_completion(
+        self, *, worker: Any, repo: TeamStateRepository, dispatch_ids: set[str], records: list[Any]
+    ) -> int:
         runtime_dir = _runtime_dir_from_worker(worker)
         if runtime_dir is None:
             return 0
-        repo = TeamStateRepository(runtime_dir)
         state = repo.read()
         context = _effect_context_from_worker(worker, runtime_dir=runtime_dir)
         activated_count = 0
-        state, _queue_reconciled_count = _reconcile_team_queued_prompt_reservations(
-            worker,
-            repo=repo,
-            state=state,
-            now=datetime.now(UTC),
-        )
-        completed_records = _completed_agent_prompt_records(worker)
+        completed_records = _completed_agent_prompt_records_from_records(records)
         delivered_records = [
-            *_waiting_agent_prompt_records(worker),
-            *completed_records,
-        ]
+            r for r in records if getattr(r, "status", None) == "waiting"
+        ] + completed_records
         pending_governance = {
             runtime.active_dispatch_id: group_id
             for group_id, runtime in state.governance_runtimes.items()
-            if runtime.active_dispatch_id is not None and runtime.wake_leased_until is None
+            if runtime.active_dispatch_id in dispatch_ids and runtime.wake_leased_until is None
         }
         if pending_governance:
             for record in delivered_records:
@@ -5616,10 +5823,13 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         activation_candidates = {
             dispatch_id: dispatch
             for dispatch_id, dispatch in state.dispatches.items()
-            if dispatch.status == TeamDispatchStatus.PREPARING
-            or (
-                dispatch.status == TeamDispatchStatus.LEASED
-                and dispatch.activation_completed_at is None
+            if dispatch_id in dispatch_ids
+            and (
+                dispatch.status == TeamDispatchStatus.PREPARING
+                or (
+                    dispatch.status == TeamDispatchStatus.LEASED
+                    and dispatch.activation_completed_at is None
+                )
             )
         }
         if activation_candidates:
@@ -5726,7 +5936,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             )
         state = repo.read()
         for dispatch in sorted(
-            state.dispatches.values(),
+            (d for d in state.dispatches.values() if d.id in dispatch_ids),
             key=lambda item: (item.created_at, item.id),
         ):
             if not _dispatch_session_metadata_mirror_is_due(dispatch):
@@ -14452,6 +14662,7 @@ def _reconcile_team_queued_prompt_reservations(
     repo: TeamStateRepository,
     state: TeamState,
     now: datetime,
+    queued_records: Mapping[str, Any] | None = None,
 ) -> tuple[TeamState, int]:
     """Validate Team queue ownership before the generic replay phase runs."""
 
@@ -14462,7 +14673,8 @@ def _reconcile_team_queued_prompt_reservations(
     if not callable(read_all):
         return state, 0
     try:
-        queued_records = read_all()
+        if queued_records is None:
+            queued_records = read_all()
     except Exception:
         logger.exception("Team queued-prompt reservation reconciliation could not read the queue")
         return state, 0
@@ -14611,6 +14823,23 @@ def _reconcile_team_queued_prompt_reservations(
             reconciled_count += 1
 
     return state, reconciled_count
+
+
+def _agent_prompt_records_for_dispatches(worker: Any, dispatch_ids: set[str]) -> list[Any]:
+    if not dispatch_ids:
+        return []
+    query = getattr(
+        getattr(worker, "execution_store", None), "list_prompt_records_for_dispatches", None
+    )
+    if callable(query):
+        return [r for r in query(dispatch_ids) if not _record_is_queued_prompt_marker(r)]
+    # Compatibility for third-party repositories. Production SQLite uses the
+    # indexed lookup above and never deserializes unrelated terminal history.
+    return [
+        r
+        for r in [*_waiting_agent_prompt_records(worker), *_completed_agent_prompt_records(worker)]
+        if _optional_text(_record_outputs(r).get("dispatch_id")) in dispatch_ids
+    ]
 
 
 def _completed_agent_prompt_records(worker: Any) -> list[Any]:
