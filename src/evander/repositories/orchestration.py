@@ -374,6 +374,43 @@ class SqliteExecutionRepository(Generic[TRecord]):
             ).fetchall()
         return [self._record_from_row(row) for row in rows]
 
+    def list_prompt_records_for_dispatches(self, dispatch_ids: set[str]) -> list[TRecord]:
+        """Read all receipts for a bounded set of immutable dispatches.
+
+        Do not LIMIT receipts: a newer missing-thread receipt must supersede an
+        older success even when history/recovery is split across pages.
+        """
+        ids = sorted({str(value).strip() for value in dispatch_ids if str(value).strip()})
+        if not ids:
+            return []
+        if len(ids) > 50:
+            raise ValueError("prompt receipt lookup is limited to 50 dispatch IDs")
+        if self.table_name != "effect_executions":
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""SELECT payload_json FROM effect_executions
+                    WHERE effect_type = 'effect:agent:enqueue-prompt'
+                      AND json_extract(payload_json, '$.outputs.dispatch_id') IN ({placeholders})
+                      AND status IN ('waiting', 'succeeded', 'failed')
+                    ORDER BY COALESCE(finished_at, started_at), execution_id""",
+                ids,
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
+    def list_waiting_records_page(
+        self, *, node_type: str, after: str = "", limit: int = 50
+    ) -> list[TRecord]:
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""SELECT payload_json FROM {self.table_name}
+                    WHERE status = 'waiting' AND {self.node_type_field} = ? AND execution_id > ?
+                    ORDER BY execution_id LIMIT ?""",
+                (node_type, after, max(1, min(50, limit))),
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
     def list_waiting_records(self, node_type: str | None = None) -> list[TRecord]:
         params: list[Any] = []
         where = ["status = 'waiting'"]

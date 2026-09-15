@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS = 1_000
 SQLITE_WAL_CHECKPOINT_MIN_BYTES = 64 * 1024 * 1024
@@ -175,6 +175,10 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON effect_executions(status, finished_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_effect_executions_status_type
                 ON effect_executions(status, effect_type, finished_at, execution_id);
+            CREATE INDEX IF NOT EXISTS idx_effect_executions_prompt_dispatch
+                ON effect_executions(effect_type, json_extract(payload_json, '$.outputs.dispatch_id'), status);
+            CREATE INDEX IF NOT EXISTS idx_effect_executions_waiting_page
+                ON effect_executions(effect_type, execution_id) WHERE status = 'waiting';
             CREATE INDEX IF NOT EXISTS idx_effect_executions_effect
                 ON effect_executions(effect_id, effect_type, finished_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_effect_executions_node_failed_dismissed

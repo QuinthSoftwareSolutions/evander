@@ -24,6 +24,7 @@ from .sqlite_store import (
     TeamStateSqliteCommandTransaction,
     TeamStateSqliteStore,
 )
+from .lifecycle_candidates import LifecycleCandidatePage
 
 ADDON_ID = "team-addon"
 STATE_FILE = STATE_DB_FILE
@@ -52,6 +53,23 @@ class TeamStateRepository:
 
     def read_revision(self) -> int:
         return self.store.read_revision()
+
+    def lifecycle_candidates(
+        self,
+        *,
+        kind: str = "completion",
+        after: str = "",
+        limit: int = 50,
+        due_at: datetime | None = None,
+        dispatch_ids: Sequence[str] | None = None,
+    ) -> LifecycleCandidatePage:
+        return self.store.lifecycle_candidates(
+            kind=kind,
+            after=after,
+            limit=limit,
+            due_at=due_at,
+            dispatch_ids=dispatch_ids,
+        )
 
     def update(
         self,

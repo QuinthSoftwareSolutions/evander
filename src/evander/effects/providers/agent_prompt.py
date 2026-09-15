@@ -186,6 +186,7 @@ def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
 
 
 class AgentPromptEffectProvider(EffectProviderBase):
+    supports_waiting_slices = True
     capability = NodeCapability(
         min_inbound=1,
         max_inbound=1,
@@ -881,7 +882,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         worker = kwargs.get("worker")
         if worker is None:
             return 0
-        waiting_records = _waiting_execution_records(worker, cls.node_type())
+        waiting_records = (
+            kwargs["records"]
+            if "records" in kwargs
+            else _waiting_execution_records(worker, cls.node_type())
+        )
         if not waiting_records:
             return 0
 
@@ -895,7 +900,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if not vm_records:
             return completed
         try:
-            summaries = list_vm_summaries_for_agent_reconciliation(worker)
+            load_summaries = kwargs.get("vm_summaries_loader")
+            summaries = (
+                load_summaries()
+                if callable(load_summaries)
+                else list_vm_summaries_for_agent_reconciliation(worker)
+            )
         except Exception:
             logger.exception(
                 "AgentPromptEffectProvider inventory reconciliation skipped "
@@ -1760,9 +1770,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
         record.outputs = merged_outputs
         record.published_event_id = published_event_id
         record.completion_event_enqueued_at = finished_at
+        record.completion_published_at = datetime.now(UTC)
         record.finished_at = finished_at
         worker.execution_store.put(record)
         worker._update_event_delivery_state(record.event_id)
+        notify = getattr(worker, "_notify_prompt_lifecycle", None)
+        if callable(notify):
+            notify(record)
         dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
         runtime_dir = getattr(getattr(worker, "config", None), "runtime_dir", None)
         if runtime_dir is not None and dispatch_id:
