@@ -1377,13 +1377,15 @@ When enabled, the Team Add-on also registers an optional runtime-loop provider
 set:
 
 - `effect:team:wake-due-agents` leases due persistent agents, prompts their
-  Evander sessions, and mirrors a compact `metadata.team_addon` index into the
-  session manifest. When the agent's project has `project.git` configured, the
-  wake also prepares the project repo through `effect:agent:clone-repo` before
-  the resume prompt and includes the prepared guest checkout path in the Team
-  context. Repo preparation is reported in the wake node outputs as
-  `prepared_project_repos` or `failed_project_repo_preparations`; it is not a
-  separate workflow node because one wake tick can lease multiple agents.
+  Evander sessions, and seeds only stable Team identity and guidance metadata
+  into a new session manifest. Mutable work, permissions, and runtime context
+  remain authoritative in the Team store. When the agent's project has
+  `project.git` configured, the wake also prepares the project repo through
+  `effect:agent:clone-repo` before the resume prompt and includes the prepared
+  guest checkout path in the Team context. Repo preparation is reported in the
+  wake node outputs as `prepared_project_repos` or
+  `failed_project_repo_preparations`; it is not a separate workflow node
+  because one wake tick can lease multiple agents.
   Static Team operating rules are seeded as a managed Team Add-on section in
   `/home/agent/AGENTS.md`, so repeated same-context wakes only need to carry the
   dynamic dispatch context. Team state changes are made through Team-owned MCP

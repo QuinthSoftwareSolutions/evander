@@ -163,11 +163,9 @@ def _submit(env, lease, *, queued_activation=False):
         env.hook.on_post_completion_dispatch(worker=env.worker)
     else:
         _activate_delivered_team_prompt(
-            None,
             repo=env.repo,
             dispatch_id=lease["dispatch_id"],
             result_payload=result.model_dump(),
-            mirror_session_metadata=False,
         )
     records = env.worker.execution_store.list_waiting_records("effect:agent:enqueue-prompt")
     record = next(row for row in records if row.outputs["dispatch_id"] == lease["dispatch_id"])

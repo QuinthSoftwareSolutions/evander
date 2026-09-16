@@ -37,12 +37,9 @@ _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 # Applied after column migrations. Additive indexes need no state rewrite.
 _LIFECYCLE_INDEX_SQL = """
+DROP INDEX IF EXISTS idx_team_dispatches_pending_mirror;
 CREATE INDEX IF NOT EXISTS idx_team_dispatches_pending_activation
     ON team_dispatches(id) WHERE status IN ('preparing', 'leased') AND activation_completed_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_team_dispatches_pending_mirror
-    ON team_dispatches(id) WHERE COALESCE(completed_at, activation_completed_at) IS NOT NULL
-      AND (session_metadata_mirrored_at IS NULL OR
-        julianday(session_metadata_mirrored_at) < julianday(COALESCE(completed_at, activation_completed_at)));
 CREATE INDEX IF NOT EXISTS idx_team_dispatches_receipt_recovery
     ON team_dispatches(id) WHERE activation_completed_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_active_dispatch
@@ -190,10 +187,6 @@ class TeamStateSqliteStore:
                   WHERE status IN ('preparing', 'leased') AND activation_completed_at IS NULL
                 UNION SELECT j.value AS id, 1 FROM team_agent_runtimes r,
                   json_each(r.work_lineage_thread_dispatch_ids_json) j
-                UNION SELECT id, 2 FROM team_dispatches
-                  WHERE activation_completed_at IS NOT NULL
-                    AND (session_metadata_mirrored_at IS NULL OR
-                      julianday(session_metadata_mirrored_at) < julianday(COALESCE(completed_at, activation_completed_at)))
             """
         else:
             raise ValueError(f"unknown lifecycle candidate kind: {kind}")
@@ -204,7 +197,7 @@ class TeamStateSqliteStore:
         if kind == "completion":
             governance = """
                 UNION ALL SELECT g.active_dispatch_id, a.session_id, a.id, NULL, 1,
-                  NULL, NULL, NULL, NULL, NULL, a.session_id, 0, g.queued_at,
+                  NULL, NULL, NULL, NULL, NULL, a.session_id, g.queued_at,
                   g.governance_group_id, 0
                 FROM team_governance_runtimes g
                 JOIN team_governance_groups gg ON gg.id = g.governance_group_id
@@ -229,9 +222,6 @@ class TeamStateSqliteStore:
                 (SELECT value FROM json_each(r.work_lineage_thread_ids_json) WHERE key = d.work_lineage_id) AS lineage_thread_id,
                 (SELECT value FROM json_each(r.work_lineage_thread_dispatch_ids_json) WHERE key = d.work_lineage_id) AS lineage_owner_id,
                 a.session_id AS current_session_id,
-                (d.activation_completed_at IS NOT NULL AND
-                 (d.session_metadata_mirrored_at IS NULL OR
-                  julianday(d.session_metadata_mirrored_at) < julianday(COALESCE(d.completed_at, d.activation_completed_at)))) AS mirror_due,
                 d.queued_at, NULL AS governance_group_id, {priority} AS recovery_priority
               FROM team_dispatches d JOIN ids ON ids.id = d.id
               LEFT JOIN team_agent_runtimes r ON r.agent_id = d.agent_id
@@ -262,7 +252,6 @@ class TeamStateSqliteStore:
                 if data[name] is not None:
                     data[name] = data[name].replace(tzinfo=data[name].tzinfo or UTC).astimezone(UTC)
             data["active"] = bool(data["active"])
-            data["mirror_due"] = bool(data["mirror_due"])
             candidates.append(LifecycleCandidate(**data))
         return LifecycleCandidatePage(
             revision=int(revision_row["value"]) if revision_row else 0,

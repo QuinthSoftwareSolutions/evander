@@ -148,6 +148,39 @@ def test_busy_foreground_spaces_recovery_continuations_but_idle_drains_immediate
     assert calls == [0, 5, 5]
 
 
+def test_busy_foreground_reserves_progress_beyond_urgent_lease_renewal(
+    tmp_path, monkeypatch
+):
+    worker = _worker(tmp_path)
+    clock = Clock()
+    worker._recovery_schedule = RecoverySchedule(clock=clock)
+    worker._recovery_schedule.next_due = 0
+    calls = []
+
+    def sliced(name):
+        def run(**kwargs):
+            calls.append((name, clock.now))
+            return MaintenanceResult(examined=1, remaining=True)
+
+        return run
+
+    worker._lifecycle_reconciliation_hooks = (
+        SimpleNamespace(maintenance_priority=-100, run_maintenance_slice=sliced("lease")),
+        SimpleNamespace(maintenance_priority=0, run_maintenance_slice=sliced("reconcile")),
+    )
+    worker._completion_dispatch_hooks = (
+        SimpleNamespace(maintenance_priority=0, run_maintenance_slice=sliced("queue")),
+    )
+    monkeypatch.setattr("evander.daemons.effect_orchestrator.time.monotonic", clock)
+
+    for clock.now in range(0, 31, 5):
+        assert worker._run_due_recovery(graph=None, foreground_pending=True)[0]
+
+    assert [name for name, _when in calls].count("lease") == 7
+    assert [name for name, _when in calls].count("reconcile") >= 3
+    assert [name for name, _when in calls].count("queue") >= 3
+
+
 def test_maintenance_budgets_are_cooperative_and_bounded():
     clock = Clock()
     budget = MaintenanceBudget(clock=clock)
@@ -569,7 +602,6 @@ def test_native_receipt_preflight_matches_last_wins_timestamp_ties(monkeypatch):
         lineage_thread_id="native",
         lineage_owner_id="dispatch",
         current_session_id="session",
-        mirror_due=False,
         queued_at=None,
     )
     records = [
@@ -663,18 +695,23 @@ def test_lifecycle_projection_cannot_mix_revisions(tmp_path, monkeypatch):
     assert repo.read_revision() == revision + 1
 
 
-def test_lifecycle_indexes_are_added_after_legacy_column_migration(tmp_path):
+def test_lifecycle_indexes_drop_obsolete_mirror_index(tmp_path):
     store = TeamStateSqliteStore(tmp_path)
     revision = store.read_revision()
     with sqlite3.connect(store.path) as connection:
-        connection.execute("DROP INDEX idx_team_dispatches_pending_mirror")
-        connection.execute("ALTER TABLE team_dispatches DROP COLUMN session_metadata_mirrored_at")
+        connection.execute(
+            """CREATE INDEX idx_team_dispatches_pending_mirror
+               ON team_dispatches(id) WHERE session_metadata_mirrored_at IS NULL"""
+        )
     reopened = TeamStateSqliteStore(tmp_path)
     assert reopened.read_revision() == revision
     assert reopened.lifecycle_candidates().candidates == ()
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute(
+        assert not connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name='idx_team_dispatches_pending_mirror'"
+        ).fetchone()
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='idx_team_dispatches_receipt_recovery'"
         ).fetchone()
 
 

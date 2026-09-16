@@ -4,12 +4,17 @@
 
 - Consume durable Teams notifications in the notification service independently of serial
   fallback polling, with processor health and queue-lag visibility.
-- Pace recovery continuations behind foreground events while guaranteeing a bounded slice every
-  five seconds, and stop failed-before-activation Team dispatches from recurring mirror scans.
+- Pace recovery continuations behind foreground events while reserving bounded progress for both
+  urgent lease renewal and ordinary recovery every five seconds.
 - Commit terminal gate records and their successor events atomically, then continue short FIFO
   gate chains within a bounded foreground burst.
 - Reuse worker-verified file and reference-repository preparation receipts while invalidating
-  them on guest changes, configuration changes, refreshes, or session deletion.
+  them on guest changes, configuration changes, refreshes, or session deletion; inspect cached
+  worktrees with a host-owned Git directory and index so guest-defined filters cannot run on the
+  worker host.
+- Stop copying dynamic Team state into core session metadata and remove its mirror-due recovery
+  projection; authoritative wake context and permissions continue to come from Team state, while
+  stable guidance and repository-preparation receipts remain session-local.
 
 ## 2026-09-15 - Lower orchestration handoff latency (0.41.1)
 

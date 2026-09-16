@@ -3467,7 +3467,9 @@ def test_immediate_wake_can_skip_global_maintenance(
     assert result["worktree_cleanup"] == {}
 
 
-def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
+def test_wake_due_agents_provider_prompts_and_seeds_stable_session_metadata(
+    tmp_path: Path,
+) -> None:
     repo = _seed_team(tmp_path)
     _team_admin_service(repo).set_agent_avatar(
         agent_id="backend",
@@ -3668,7 +3670,9 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "inactive_reason": None,
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH],
     }
-    assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls[0]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls[0]["metadata"]["team_addon"]["team_id"] == "team"
+    assert len(session_store.calls) == 1
 
 
 def test_wake_due_agents_provider_preserves_active_governance_tools(
@@ -7597,9 +7601,10 @@ def test_wake_due_agents_provider_rotates_context_when_pending(
     assert runtime.context_handoff_preparation_status == "recorded"
     assert runtime.last_context_rotated_at is not None
     assert runtime.last_thread_id == "thread-rotated"
-    assert session_store.sessions["session-backend"].metadata["team_addon"][
+    assert (
         "last_context_rotated_at"
-    ]
+        not in session_store.sessions["session-backend"].metadata["team_addon"]
+    )
 
 
 def test_wake_due_agents_provider_rotates_every_wake_policy(
@@ -7644,8 +7649,8 @@ def test_wake_due_agents_provider_rotates_every_wake_policy(
     assert runtime.last_agent_handoff_summary is None
     assert runtime.last_thread_id == "thread-every-wake"
     assert (
-        session_store.sessions["session-backend"].metadata["team_addon"]["context_clearing_policy"]
-        == "every_wake"
+        "context_clearing_policy"
+        not in session_store.sessions["session-backend"].metadata["team_addon"]
     )
 
 
@@ -11804,7 +11809,7 @@ def test_agent_prompt_hook_leases_preparing_dispatch_after_queued_prompt_is_deli
     runtime = leased.agent_runtimes["backend"]
     assert dispatch.status == TeamDispatchStatus.LEASED
     assert dispatch.activation_completed_at is not None
-    assert dispatch.session_metadata_mirrored_at is not None
+    assert dispatch.session_metadata_mirrored_at is None
     assert dispatch.leased_at is not None
     assert dispatch.lease_expires_at is not None
     assert dispatch.lease_expires_at - dispatch.leased_at == timedelta(seconds=37)
@@ -11817,7 +11822,7 @@ def test_agent_prompt_hook_leases_preparing_dispatch_after_queued_prompt_is_deli
     action_record = leased.action_records["queued-action-feedback"]
     assert action_record.feedback_delivered_by_dispatch_id == dispatch_id
     assert action_record.feedback_delivered_at is not None
-    assert session_store.calls[-1]["target"] == "session-backend"
+    assert session_store.calls == []
 
 
 def test_delivered_team_activation_is_atomic_and_retryable_after_injected_failure(
@@ -11958,7 +11963,7 @@ def test_reconciliation_repairs_legacy_leased_dispatch_missing_activation_bookke
     feedback = repaired.action_records["legacy-partial-feedback"]
     assert dispatch.status == TeamDispatchStatus.LEASED
     assert dispatch.activation_completed_at is not None
-    assert dispatch.session_metadata_mirrored_at is not None
+    assert dispatch.session_metadata_mirrored_at is None
     assert agent_runtime.last_delivered_role_description_fingerprint == (
         dispatch.role_description_fingerprint
     )
@@ -11968,7 +11973,7 @@ def test_reconciliation_repairs_legacy_leased_dispatch_missing_activation_bookke
     assert feedback.feedback_delivered_at is not None
 
 
-def test_session_metadata_mirror_retries_after_activation_survives_worker_restart(
+def test_activation_does_not_copy_dynamic_team_state_into_session_metadata(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -11996,20 +12001,18 @@ def test_session_metadata_mirror_retries_after_activation_survives_worker_restar
         },
     )
 
-    class _FailingMetadataStore(FakeSessionStore):
+    class _RejectingMetadataStore(FakeSessionStore):
         def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
-            raise RuntimeError("injected metadata mirror outage")
+            raise AssertionError("dispatch activation must not update session metadata")
 
-    failed_worker = SimpleNamespace(
+    worker = SimpleNamespace(
         config=GatewayConfig(runtime_dir=tmp_path),
         execution_store=FakeExecutionStore([record]),
-        provider_factory=SimpleNamespace(admin_service=_FailingMetadataStore()),
+        provider_factory=SimpleNamespace(admin_service=_RejectingMetadataStore()),
     )
 
-    assert (
-        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=failed_worker)
-        == 1
-    )
+    hook = TeamAgentPromptCompletionFinalizeHook()
+    assert hook.on_post_completion_dispatch(worker=worker) == 1
 
     activated = repo.read()
     dispatch = activated.dispatches[dispatch_id]
@@ -12023,22 +12026,8 @@ def test_session_metadata_mirror_retries_after_activation_survives_worker_restar
         dispatch.role_description_fingerprint
     )
 
-    recovered_session_store = FakeSessionStore()
-    restarted_worker = SimpleNamespace(
-        config=GatewayConfig(runtime_dir=tmp_path),
-        execution_store=FakeExecutionStore([record]),
-        provider_factory=SimpleNamespace(admin_service=recovered_session_store),
-    )
-
-    assert (
-        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=restarted_worker)
-        == 0
-    )
-
-    mirrored = repo.read().dispatches[dispatch_id]
-    assert mirrored.activation_completed_at is not None
-    assert mirrored.session_metadata_mirrored_at is not None
-    assert recovered_session_store.calls[-1]["target"] == "session-backend"
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    assert repo.read().dispatches[dispatch_id].session_metadata_mirrored_at is None
 
 
 def test_terminal_queued_prompt_is_activated_before_team_finalization(
@@ -12178,7 +12167,7 @@ def test_queued_chat_replay_applies_full_activation_bookkeeping(
     runtime = activated.agent_runtimes["backend"]
     assert dispatch.status == TeamDispatchStatus.LEASED
     assert dispatch.activation_completed_at is not None
-    assert dispatch.session_metadata_mirrored_at is not None
+    assert dispatch.session_metadata_mirrored_at is None
     assert dispatch.lease_expires_at is not None
     assert dispatch.leased_at is not None
     assert dispatch.lease_expires_at - dispatch.leased_at == timedelta(seconds=71)
@@ -12189,7 +12178,7 @@ def test_queued_chat_replay_applies_full_activation_bookkeeping(
     assert runtime.last_delivered_role_description_fingerprint == (
         dispatch.role_description_fingerprint
     )
-    assert session_store.calls[-1]["target"] == "session-backend"
+    assert session_store.calls == []
 
 
 def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails(
@@ -12318,8 +12307,7 @@ def test_finalize_agent_dispatch_provider_closes_from_activity_and_publishes_cha
     assert result["finalized"] is True
     assert result["progress_made"] is True
     assert result["published_event_ids"]
-    assert session_store.calls[-1]["target"] == "session-backend"
-    assert session_store.sessions["session-backend"].metadata["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls == []
     reread = TeamStateRepository(tmp_path).read()
     assert reread.agent_runtimes["backend"].active_dispatch_id is None
     assert reread.agent_runtimes["backend"].no_progress_count == 0
@@ -12405,8 +12393,7 @@ def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
     assert runtime.active_dispatch_id is None
     assert runtime.wake_leased_until is None
     assert runtime.no_progress_count == 0
-    assert session_store.calls
-    assert session_store.sessions["session-backend"].metadata["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls == []
     events = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
     chat_events = [event for event in events if event.event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE]
     assert len(chat_events) == 1

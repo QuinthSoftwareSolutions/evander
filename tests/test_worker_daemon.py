@@ -208,14 +208,16 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
 
 def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "source-receipt"
     source.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
     subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / ".gitattributes").write_text("README.md filter=attacker\n", encoding="utf-8")
     (source / "README.md").write_text("one\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "add", ".gitattributes", "README.md"], cwd=source, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=source, check=True)
     commit_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -242,14 +244,81 @@ def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
     )
 
     first = daemon.prepare_reference_repo("session-receipt", request)
-    reused = daemon.prepare_reference_repo("session-receipt", request)
     checkout = (
         tmp_path / "worker-root" / "sessions" / "session-receipt" / "agent_home" / "repos" / "repo"
     )
+    filter_marker = tmp_path / "cached-filter-ran-on-host"
+    filter_program = tmp_path / "cached-filter.sh"
+    filter_program.write_text(
+        f"#!/bin/sh\nprintf ran > {filter_marker}\ncat\n",
+        encoding="utf-8",
+    )
+    filter_program.chmod(0o755)
+    subprocess.run(
+        ["git", "config", "extensions.worktreeConfig", "true"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--worktree", "filter.attacker.clean", str(filter_program)],
+        cwd=checkout,
+        check=True,
+    )
+    os.utime(checkout / "README.md", None)
+
+    reused = daemon.prepare_reference_repo("session-receipt", request)
+    subprocess.run(
+        ["git", "config", "--worktree", "--unset-all", "filter.attacker.clean"],
+        cwd=checkout,
+        check=True,
+    )
+    original_run = subprocess.run
+    injected_filter = False
+
+    def add_filter_after_local_config(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal injected_filter
+        command = args[0] if args else kwargs.get("args")
+        if (
+            not injected_filter
+            and command
+            == [
+                "git",
+                "-C",
+                str(checkout),
+                "config",
+                "--local",
+                "--name-only",
+                "--get-regexp",
+                r"^filter\..*\.(clean|smudge|process|required)$",
+            ]
+        ):
+            original_run(
+                ["git", "config", "--worktree", "filter.attacker.clean", str(filter_program)],
+                cwd=checkout,
+                check=True,
+            )
+            injected_filter = True
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", add_filter_after_local_config)
+    raced_reuse = daemon.prepare_reference_repo("session-receipt", request)
     (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
 
     assert first.preparation_reused is False
     assert reused.preparation_reused is True
+    assert raced_reuse.preparation_reused is True
+    assert injected_filter is True
+    assert not filter_marker.exists()
+    assert (
+        subprocess.run(
+            ["git", "config", "--worktree", "--get", "filter.attacker.clean"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == str(filter_program)
+    )
     with pytest.raises(ValueError, match="checkout is dirty"):
         daemon.prepare_reference_repo("session-receipt", request)
 

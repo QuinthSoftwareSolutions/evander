@@ -464,9 +464,9 @@ Troubleshooting:
 
 - **Active lease mismatch** — if a completed session's dispatch does not match
   the active Team lease, do not force it through Team finalization. Inspect the
-  active lease row, the session manifest `metadata.team_addon`, and the trigger
-  event that reported completion. Clear or repair only the stale lease after
-  preserving any useful operator context.
+  active lease row, the trigger event that reported completion, and the stable
+  Team session identity/guidance metadata if it is present. Clear or repair
+  only the stale lease after preserving any useful operator context.
 - **Idempotency conflict** — `request_id` identifies one create, append,
   message, or async-intent operation. Reusing the same key with different
   payload is rejected without mutation. Retry with the original payload to read

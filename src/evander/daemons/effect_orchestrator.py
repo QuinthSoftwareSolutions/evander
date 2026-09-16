@@ -1278,6 +1278,10 @@ class EffectOrchestratorWorker:
         changes = 0
         while schedule.pending:
             phase, hook = schedule.pending[0]
+            urgent = (
+                phase == "waiting_reconciliation"
+                and getattr(hook, "maintenance_priority", 0) < 0
+            )
             started = time.perf_counter()
             result = MaintenanceResult()
             try:
@@ -1309,9 +1313,25 @@ class EffectOrchestratorWorker:
             changes += result.changes
             if not result.remaining:
                 schedule.pending.popleft()
-            if time.monotonic() >= deadline:
-                break
             if foreground_pending:
+                # A newly due lease-renewal hook is deliberately first, but it
+                # must not consume the whole reserved recovery opportunity.
+                # Give the next ordinary hook one bounded slice as well.
+                # Rotate every continuation temporarily so one ordinary hook
+                # cannot monopolize that slot; begin_if_due() restores urgent
+                # lease priority next interval.
+                if result.remaining:
+                    schedule.pending.rotate(-1)
+                if urgent and any(
+                    not (
+                        pending_phase == "waiting_reconciliation"
+                        and getattr(pending_hook, "maintenance_priority", 0) < 0
+                    )
+                    for pending_phase, pending_hook in schedule.pending
+                ):
+                    continue
+                break
+            if time.monotonic() >= deadline:
                 break
         return True, changes
 

@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -1363,7 +1364,6 @@ class WorkerDaemon:
                 paths=paths,
                 request=request,
                 target_dir=target_dir,
-                git_env=git_env,
             )
             if reused is not None:
                 return reused
@@ -1399,7 +1399,11 @@ class WorkerDaemon:
                 f"reference repo {request.repo_name} is missing and no cached commit is "
                 "available; set refresh_upstream=true"
             )
-        has_user_changes = self._reference_repo_has_user_changes(target_dir, git_env=git_env)
+        has_user_changes = self._reference_repo_has_user_changes(
+            paths=paths,
+            target_dir=target_dir,
+            expected_commit=current_commit,
+        )
         if has_user_changes:
             raise ValueError(
                 f"reference repo checkout is dirty and cannot be prepared: {request.repo_name}"
@@ -1604,7 +1608,6 @@ class WorkerDaemon:
         paths: WorkerSessionPaths,
         request: WorkerReferenceRepoPrepareRequest,
         target_dir: Path,
-        git_env: dict[str, str],
     ) -> WorkerReferenceRepoPrepareRecord | None:
         fingerprint = request.preparation_fingerprint
         if fingerprint is None or request.update_existing:
@@ -1624,8 +1627,17 @@ class WorkerDaemon:
             or receipt.get("configuration_version") != request.configuration_version
         ):
             return None
-        if self._reference_repo_has_user_changes(target_dir, git_env=git_env):
+        # The checkout is guest-writable. Inspect its worktree with a fresh,
+        # host-owned Git directory rather than its guest-owned configuration.
+        # In particular, `git status` can invoke a configured clean/process
+        # filter while comparing against the index.
+        if self._reference_repo_has_user_changes(
+            paths=paths,
+            target_dir=target_dir,
+            expected_commit=expected_commit,
+        ):
             return None
+        git_env = _reference_repo_git_environment(target_dir, agent_home=paths.agent_home)
         try:
             current_commit = self._git_commit_sha(target_dir, paths.agent_home)
         except subprocess.CalledProcessError:
@@ -1814,21 +1826,86 @@ class WorkerDaemon:
             label="reference repo trusted state",
         )
 
-    @staticmethod
     def _reference_repo_has_user_changes(
-        target_dir: Path,
+        self,
         *,
-        git_env: dict[str, str],
+        paths: WorkerSessionPaths,
+        target_dir: Path,
+        expected_commit: str | None,
     ) -> bool:
-        completed = subprocess.run(
-            ["git", "-C", str(target_dir), "status", "--porcelain", "--untracked-files=all"],
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        """Return whether a guest checkout differs from a trusted tree.
+
+        The check deliberately does not run Git against the checkout's own
+        Git directory.  Both its local and per-worktree configuration are
+        guest writable, and ``git status`` may run a configured filter while
+        it refreshes an index.  A temporary Git directory under the
+        host-owned session root supplies the index and configuration; the
+        checked-out commit is made available only as an alternate object
+        directory.
+        """
+        base_env = _git_subprocess_env(paths.agent_home)
+        git_dir = _resolved_git_dir_within_checkout(target_dir, env=base_env)
+        if git_dir is None:
+            raise ValueError("reference repo Git metadata is missing or unsafe")
+        object_dir = git_dir / "objects"
+        try:
+            object_dir_stat = object_dir.lstat()
+        except OSError as exc:
+            raise ValueError("reference repo Git object storage is unavailable") from exc
+        if not stat.S_ISDIR(object_dir_stat.st_mode) or stat.S_ISLNK(object_dir_stat.st_mode):
+            raise ValueError("reference repo Git object storage is unsafe")
+
+        with tempfile.TemporaryDirectory(
+            prefix="reference-status-",
+            dir=paths.root,
+        ) as temporary_dir:
+            isolated_worktree = Path(temporary_dir) / "repository"
+            subprocess.run(
+                ["git", "init", "--quiet", str(isolated_worktree)],
+                env=base_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            isolated_git_dir = isolated_worktree / ".git"
+            isolated_env = base_env | {
+                "GIT_DIR": str(isolated_git_dir),
+                "GIT_WORK_TREE": str(target_dir),
+                "GIT_INDEX_FILE": str(isolated_git_dir / "index"),
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(object_dir),
+            }
+            if expected_commit:
+                subprocess.run(
+                    ["git", "update-ref", "HEAD", expected_commit],
+                    env=isolated_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            subprocess.run(
+                (
+                    ["git", "read-tree", "HEAD"]
+                    if expected_commit is not None
+                    else ["git", "read-tree", "--empty"]
+                ),
+                env=isolated_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            completed = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                env=isolated_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         return any(
-            line and not (line.startswith("?? ") and line[3:].startswith(".evander/"))
+            line
+            and not (
+                line.startswith("?? ")
+                and line[3:].startswith((".evander/", ".git/"))
+            )
             for line in completed.stdout.splitlines()
         )
 

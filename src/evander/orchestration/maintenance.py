@@ -77,8 +77,9 @@ class RecoverySchedule:
         if not self.pending:
             return False
         # Pending continuations drain immediately while idle. Under a durable
-        # event backlog they receive one bounded slice per recovery interval,
-        # instead of running again after every foreground event slice.
+        # event backlog one reserved recovery opportunity runs per interval;
+        # the executor gives urgent lease work and ordinary recovery separate
+        # bounded progress within that opportunity.
         return due or not foreground_pending
 
     def deferred_seconds(self, *, foreground_pending: bool) -> float:
