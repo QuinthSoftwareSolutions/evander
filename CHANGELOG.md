@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-16 - Accept large Freshservice attachment IDs (0.42.2)
+
+- Accept positive Freshservice ticket and attachment identifiers up to the signed 64-bit limit,
+  including attachment IDs larger than the previous 32-bit ceiling.
+
 ## 2026-09-15 - Prioritize live communication workflows (0.42.1)
 
 - Consume durable Teams notifications in the notification service independently of serial
