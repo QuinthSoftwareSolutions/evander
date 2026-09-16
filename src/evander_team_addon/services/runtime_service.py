@@ -22,6 +22,7 @@ from .domain.role_task_queue import (
     set_unstarted_role_task_owner,
 )
 from .domain import common as _team_common
+from .case_context_dispatch import prepare_case_context, dispatch_case_contexts
 from ..repository import (
     TeamStateConflictError,
     TeamStateRepository,
@@ -1219,11 +1220,13 @@ class TeamRuntimeService:
                         requested_at=effective_now,
                         request_note=None,
                     )
-                if wakeable_low_priority_inbox_ids and {
-                    item.id for item in low_priority_inbox
-                } == wakeable_low_priority_inbox_ids:
+                if (
+                    wakeable_low_priority_inbox_ids
+                    and {item.id for item in low_priority_inbox} == wakeable_low_priority_inbox_ids
+                ):
                     _clear_low_priority_batch(runtime)
                 runtime.active_dispatch_id = dispatch_id
+                prepare_case_context(self._repository, state_model, durable_dispatch)
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
                 runtime.wake_leased_until = (
@@ -1313,6 +1316,10 @@ class TeamRuntimeService:
                             for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
                             if snapshot_id in state_model.external_source_evidence_snapshots
                         ],
+                        "case_contexts": dispatch_case_contexts(state_model, dispatch_id),
+                        "case_contexts_delta": dispatch_case_contexts(
+                            state_model, dispatch_id, delta=True
+                        ),
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "blockers": scoped_blockers,
                         "reviews": [review.model_dump(mode="json") for review in pending_reviews],
@@ -1791,6 +1798,7 @@ class TeamRuntimeService:
                 )
                 state_model.dispatches[dispatch_id] = durable_dispatch
                 manager_runtime.active_dispatch_id = dispatch_id
+                prepare_case_context(self._repository, state_model, durable_dispatch)
                 manager_runtime.wake_reason = "manager_fallback"
                 manager_runtime.last_wake_at = effective_now
                 manager_runtime.wake_leased_until = (
@@ -1867,6 +1875,10 @@ class TeamRuntimeService:
                             for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
                             if snapshot_id in state_model.external_source_evidence_snapshots
                         ],
+                        "case_contexts": dispatch_case_contexts(state_model, dispatch_id),
+                        "case_contexts_delta": dispatch_case_contexts(
+                            state_model, dispatch_id, delta=True
+                        ),
                         "inbox": [item.model_dump(mode="json") for item in manager_inbox],
                         "blockers": scoped_blockers,
                         "reviews": [review.model_dump(mode="json") for review in manager_reviews],

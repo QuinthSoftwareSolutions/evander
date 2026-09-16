@@ -947,6 +947,12 @@ may set `case_id`, and a case may list `task_ids`; the repository validates that
 the link is bidirectional, same-team, and same-project when the case has a
 project scope.
 
+Cases also have a structured journal and configurable context views. See
+[Case context](case-context.md) for note attribution, automatic wake deltas,
+source capture, immutable snapshots, workflow queries and operator controls.
+Explicit source-capture effects can now preserve ADO item content and discussion;
+case creation alone does not fetch external content.
+
 Case status values are `open`, `triage`, `in_progress`, `waiting`, `resolved`,
 and `closed`. Case priority values use the existing Team inbox priority set:
 `low`, `normal`, and `high`.

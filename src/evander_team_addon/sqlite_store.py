@@ -29,10 +29,11 @@ from .models import (
     summarize_worktree_cleanup_inventory,
 )
 from .lifecycle_candidates import LifecycleCandidate, LifecycleCandidatePage
+from .case_context_store import CaseContextStoreMixin, CONTEXT_SCHEMA_SQL
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 77
+SQLITE_SCHEMA_VERSION = 78
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 # Applied after column migrations. Additive indexes need no state rewrite.
@@ -101,7 +102,7 @@ def normalized_payload_digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(_json_dumps(normalized).encode("utf-8")).hexdigest()
 
 
-class TeamStateSqliteStore:
+class TeamStateSqliteStore(CaseContextStoreMixin):
     def __init__(self, runtime_dir: str | Path) -> None:
         self.runtime_dir = Path(runtime_dir)
         self.path = addon_storage_path(self.runtime_dir, ADDON_ID, STATE_DB_FILE)
@@ -1267,6 +1268,14 @@ class TeamStateSqliteStore:
         with self._lock:
             with self._connect() as connection:
                 connection.executescript(_SCHEMA_SQL)
+                connection.executescript(CONTEXT_SCHEMA_SQL)
+                for context_column in ("case_note_ids_json", "context_snapshot_ids_json"):
+                    _ensure_column(
+                        connection,
+                        table_name="team_deliverables",
+                        column_name=context_column,
+                        definition="TEXT NOT NULL DEFAULT '[]'",
+                    )
                 schema_version_row = connection.execute(
                     """
                     SELECT value
@@ -2333,6 +2342,7 @@ class TeamStateSqliteStore:
         self._read_dependency_composition_recoveries(connection, payload)
         self._read_blocker_events(connection, payload)
         self._read_action_records(connection, payload)
+        self._read_case_context(connection, payload)
         self._read_memories(connection, payload)
         self._read_conversations(connection, payload)
         self._read_conversation_messages(connection, payload)
@@ -2390,6 +2400,9 @@ class TeamStateSqliteStore:
         )
         self._write_blocker_events(connection, payload["blocker_events"])
         self._write_action_records(connection, payload["action_records"])
+        self._write_notes(connection, payload["notes"])
+        self._write_case_context_views(connection, payload["case_context_views"])
+        self._write_case_context_snapshots(connection, payload["case_context_snapshots"])
         self._write_memories(connection, payload["memories"])
         self._write_conversations(connection, payload["conversations"])
         self._write_conversation_messages(connection, payload["conversation_messages"])
@@ -3491,6 +3504,8 @@ class TeamStateSqliteStore:
                 "task_id": row["task_id"],
                 "producer_agent_id": row["producer_agent_id"],
                 "artifact_refs": artifacts.get(row["id"], []),
+                "case_note_ids": _json_loads(row["case_note_ids_json"]),
+                "context_snapshot_ids": _json_loads(row["context_snapshot_ids_json"]),
                 "summary": row["summary"],
                 "state": row["state"],
                 "review_request_ids": reviews.get(row["id"], []),
@@ -3651,6 +3666,14 @@ class TeamStateSqliteStore:
                 deliverable["id"],
                 "artifact_ref",
                 deliverable.get("artifact_refs", []),
+            )
+            connection.execute(
+                "UPDATE team_deliverables SET case_note_ids_json = ?, context_snapshot_ids_json = ? WHERE id = ?",
+                (
+                    _json_dumps(deliverable.get("case_note_ids", [])),
+                    _json_dumps(deliverable.get("context_snapshot_ids", [])),
+                    deliverable["id"],
+                ),
             )
             _insert_position_values(
                 connection,
@@ -8136,6 +8159,9 @@ def _grouped_rows(
 
 
 _STATE_TABLES = (
+    "team_notes",
+    "team_case_context_views",
+    "team_case_context_snapshots",
     "team_governance_group_members",
     "team_governance_group_goals",
     "team_governance_agenda",
@@ -8221,6 +8247,17 @@ _STATE_TABLES = (
 # Each normalized TeamState table belongs to exactly one persistence group.  The
 # field name on each delete spec identifies the record IDs that own those rows.
 _PERSISTENCE_GROUPS = (
+    (("notes",), (("team_notes", "id", "notes"),), "_write_notes"),
+    (
+        ("case_context_views",),
+        (("team_case_context_views", "id", "case_context_views"),),
+        "_write_case_context_views",
+    ),
+    (
+        ("case_context_snapshots",),
+        (("team_case_context_snapshots", "id", "case_context_snapshots"),),
+        "_write_case_context_snapshots",
+    ),
     (
         ("teams",),
         (("team_team_projects", "team_id", "teams"), ("team_teams", "id", "teams")),

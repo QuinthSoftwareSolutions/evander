@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-15 - Prioritize live communication workflows (0.41.2)
+## 2026-09-15 - Prioritize live communication workflows (0.42.1)
 
 - Consume durable Teams notifications in the notification service independently of serial
   fallback polling, with processor health and queue-lag visibility.
@@ -16,6 +16,24 @@
 - Stop copying dynamic Team state into core session metadata and remove its mirror-due recovery
   projection; authoritative wake context and permissions continue to come from Team state, while
   stable guidance and repository-preparation receipts remain session-local.
+
+## 2026-09-15 - General case context (0.42.0)
+
+- Evolve Team notes into an attributed, linked case journal with decision rationale,
+  append-only supersession, scoped retrieval and conservative legacy backfill.
+- Assemble case requirements, captured sources, plans, decisions, delivery, reviews,
+  corrections and verification through configurable, revisioned context views.
+- Add read-only workflow queries, immutable context snapshots and exact-session grants
+  for detached consumers, plus bounded host-side ADO discussion capture.
+- Supply bounded baseline briefs on fresh wakes and record-level changes on retained
+  wakes, using completed dispatches on the same native thread as the comparison baseline.
+- Add an operator context panel with recipe preview/version history and snapshot browsing.
+  Keep note-taking advisory, existing completion gates unchanged and Team Memory separate.
+- Preserve resolved/closed case evidence in review wakes and freeze the displayed saved
+  recipe version when browsing history.
+- Enforce release-directory scope before collecting associated review/verification evidence,
+  and include contributed child task history in contexts captured before a release exists.
+- Document the staged APP integration; deployment and live workflow edits remain separate.
 
 ## 2026-09-15 - Lower orchestration handoff latency (0.41.1)
 

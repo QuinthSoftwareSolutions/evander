@@ -1,0 +1,33 @@
+{
+  "pack_id": "case-context-example",
+  "pack_version": "v1",
+  "description": "Opt-in case context example. Configure a trusted event source, directory and fixed consumer before importing; this file is not a live workflow update.",
+  "graphs": [{
+    "id": "case-context-example",
+    "name": "Capture case context",
+    "directory_path": "root/example",
+    "node_ids": ["case-context-request", "case-context-query", "case-source-refresh", "case-context-snapshot", "case-context-read"]
+  }],
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {"id": "case-context-request", "display_name": "Trusted case context request", "type": "trigger:event",
+       "config": {"event_type": "example.case.context_requested"}},
+      {"id": "case-context-query", "display_name": "Read case context", "type": "query:team:case-context",
+       "config": {"case_id": "${{case-context-request.payload.case_id}}", "view_id": "case-overview"}},
+      {"id": "case-source-refresh", "display_name": "Refresh supported sources", "type": "effect:team:refresh-case-sources",
+       "config": {"case_ids": "${{case-context-query.case_ids}}"}},
+      {"id": "case-context-snapshot", "display_name": "Freeze full selected evidence", "type": "effect:team:snapshot-case-context",
+       "config": {"request_id": "${{case-context-request.event_id}}", "case_ids": "${{case-context-query.case_ids}}",
+                  "view_id": "case-overview", "recipient_session_id": "case-context-reader"}},
+      {"id": "case-context-read", "display_name": "Read frozen context", "type": "query:team:case-context-snapshot",
+       "config": {"snapshot_id": "${{case-context-snapshot.snapshot_id}}"}}
+    ],
+    "edges": [
+      {"source_id": "case-context-request", "target_id": "case-context-query"},
+      {"source_id": "case-context-query", "target_id": "case-source-refresh"},
+      {"source_id": "case-source-refresh", "target_id": "case-context-snapshot"},
+      {"source_id": "case-context-snapshot", "target_id": "case-context-read"}
+    ]
+  }
+}
