@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-16 - Resolve PR attachment identities (0.43.1)
+
+- Resolve Azure DevOps project and repository GUIDs from the authorized pull request when
+  validating PR-feedback attachment URLs, including for PRs that are not present in
+  `pr-map.json`, while retaining canonical route and feedback-stream enforcement.
+
 ## 2026-09-16 - Read PR feedback attachments (0.43.0)
 
 - Add policy-controlled tools that list and download files linked from authorized Azure DevOps PR

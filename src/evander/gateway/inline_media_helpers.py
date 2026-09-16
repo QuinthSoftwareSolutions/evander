@@ -9,6 +9,7 @@ import os
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.gateway.communication_artifact_helpers import CommunicationArtifactHelpers
@@ -44,8 +45,10 @@ from evander.models import (
 from evander.policy import PolicyError
 from evander.pr_feedback.providers import (
     ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY,
+    AzureDevOpsPrAttachmentScope,
     AzureDevOpsFeedbackAdapter,
     GitHubFeedbackAdapter,
+    ado_pr_attachment_scope_from_pull_request,
     extract_ado_pr_feedback_attachments,
     require_ado_pr_feedback_attachment_url,
 )
@@ -133,6 +136,62 @@ class InlineMediaHelpers:
         token = os.environ.get(resolved_config.github_token_env, "").strip()
         adapter_cls = _compat_gateway_attr("GitHubFeedbackAdapter", GitHubFeedbackAdapter)
         return adapter_cls(token=token)
+
+    @staticmethod
+    def _contains_ado_git_attachment_route(values: list[str]) -> bool:
+        return any("/_apis/git/repositories/" in value.casefold() for value in values)
+
+    def ado_pr_attachment_scope(
+        self,
+        *,
+        session_id: str,
+        repo: str,
+        pr_id: str,
+        candidate_values: list[str],
+    ) -> AzureDevOpsPrAttachmentScope | None:
+        if not self._contains_ado_git_attachment_route(candidate_values):
+            return None
+        resolved_config = self.context.resolve_provider_config_for_session(session_id)
+        try:
+            response = self.context.pr_query_service_for_session(session_id).get_pull_request(
+                provider="azure_devops",
+                repo=repo,
+                pr_id=pr_id,
+                include_reviewers=False,
+                include_commits=False,
+            )
+            if (
+                normalize_inline_media_provider(response.provider) != "azure_devops"
+                or str(response.pr_id).strip() != pr_id
+            ):
+                raise ValueError(
+                    "Azure DevOps pull request lookup returned a different feedback stream"
+                )
+            return ado_pr_attachment_scope_from_pull_request(
+                payload=response.raw,
+                organization_url=resolved_config.azure_devops_organization_url,
+                project=resolved_config.azure_devops_project,
+                repo=repo,
+                pr_id=pr_id,
+            )
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ToolError(
+                "Unable to verify the Azure DevOps repository identity for this authorized "
+                "PR feedback stream"
+            ) from exc
+
+    @staticmethod
+    def ado_pr_attachment_scope_metadata(
+        *,
+        repo: str,
+        pr_id: str,
+        scope: AzureDevOpsPrAttachmentScope | None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"repo": repo, "pr_id": pr_id}
+        if scope is not None:
+            metadata["project_identifiers"] = list(scope.project_identifiers)
+            metadata["repository_identifiers"] = list(scope.repository_identifiers)
+        return metadata
 
     def inline_media_provider_for_request(
         self,
@@ -327,6 +386,17 @@ class InlineMediaHelpers:
         repo = str(raw_feedback.get("repo") or "").strip()
         pr_id = str(raw_feedback.get("pr_id") or "").strip()
         resolved_config = self.context.resolve_provider_config_for_session(request.session_id)
+        attachment_scope = self.ado_pr_attachment_scope(
+            session_id=request.session_id,
+            repo=repo,
+            pr_id=pr_id,
+            candidate_values=[ref.url for ref, _raw in media if ref.url],
+        )
+        scope_metadata = self.ado_pr_attachment_scope_metadata(
+            repo=repo,
+            pr_id=pr_id,
+            scope=attachment_scope,
+        )
         scoped: list[tuple[InlineMediaRef, dict[str, Any]]] = []
         for ref, raw in media:
             if ref.url:
@@ -337,6 +407,16 @@ class InlineMediaHelpers:
                         project=resolved_config.azure_devops_project,
                         repo=repo,
                         pr_id=pr_id,
+                        project_identifiers=(
+                            attachment_scope.project_identifiers
+                            if attachment_scope is not None
+                            else None
+                        ),
+                        repository_identifiers=(
+                            attachment_scope.repository_identifiers
+                            if attachment_scope is not None
+                            else None
+                        ),
                     )
                 except ValueError:
                     continue
@@ -346,10 +426,7 @@ class InlineMediaHelpers:
                         update={
                             "metadata": {
                                 **ref.metadata,
-                                ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY: {
-                                    "repo": repo,
-                                    "pr_id": pr_id,
-                                },
+                                ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY: scope_metadata,
                             }
                         }
                     ),
@@ -388,8 +465,20 @@ class InlineMediaHelpers:
             )
 
         resolved_config = self.context.resolve_provider_config_for_session(request.session_id)
+        body = str(raw_item.get("body") or "")
+        attachment_scope = self.ado_pr_attachment_scope(
+            session_id=request.session_id,
+            repo=repo,
+            pr_id=pr_id,
+            candidate_values=[body],
+        )
+        scope_metadata = self.ado_pr_attachment_scope_metadata(
+            repo=repo,
+            pr_id=pr_id,
+            scope=attachment_scope,
+        )
         refs = extract_ado_pr_feedback_attachments(
-            content=str(raw_item.get("body") or ""),
+            content=body,
             organization_url=resolved_config.azure_devops_organization_url,
             project=resolved_config.azure_devops_project,
             feedback_id=request.feedback_id,
@@ -397,6 +486,12 @@ class InlineMediaHelpers:
             pr_id=pr_id,
             thread_id=str(raw_item.get("thread_id") or "").strip() or None,
             comment_id=str(raw_item.get("comment_id") or "").strip() or None,
+            project_identifiers=(
+                attachment_scope.project_identifiers if attachment_scope is not None else None
+            ),
+            repository_identifiers=(
+                attachment_scope.repository_identifiers if attachment_scope is not None else None
+            ),
         )
         safe_refs: list[PrFeedbackAttachmentRef] = []
         for ref in refs:
@@ -407,10 +502,29 @@ class InlineMediaHelpers:
                     project=resolved_config.azure_devops_project,
                     repo=repo,
                     pr_id=pr_id,
+                    project_identifiers=(
+                        attachment_scope.project_identifiers
+                        if attachment_scope is not None
+                        else None
+                    ),
+                    repository_identifiers=(
+                        attachment_scope.repository_identifiers
+                        if attachment_scope is not None
+                        else None
+                    ),
                 )
             except ValueError:
                 continue
-            safe_refs.append(ref)
+            safe_refs.append(
+                ref.model_copy(
+                    update={
+                        "metadata": {
+                            **ref.metadata,
+                            ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY: scope_metadata,
+                        }
+                    }
+                )
+            )
         return ListPrFeedbackAttachmentsResponse(
             provider=provider,
             feedback_id=request.feedback_id,
@@ -447,6 +561,11 @@ class InlineMediaHelpers:
             metadata={
                 **ref.metadata,
                 ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY: {
+                    **(
+                        ref.metadata.get(ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY)
+                        if isinstance(ref.metadata.get(ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY), dict)
+                        else {}
+                    ),
                     "repo": ref.repo,
                     "pr_id": ref.pr_id,
                 },
