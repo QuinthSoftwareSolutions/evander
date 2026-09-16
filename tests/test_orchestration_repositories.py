@@ -13,6 +13,7 @@ from evander.daemons.effect_orchestrator import (
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
+from evander.events.models import TriggerEvent
 from evander.repositories.orchestration import (
     JsonEffectCursorRepository,
     JsonGateCursorRepository,
@@ -23,6 +24,7 @@ from evander.repositories.orchestration_db import (
     connect_orchestration_db,
     maybe_checkpoint_orchestration_wal,
 )
+from evander.triggers.queue import SqliteTriggerEventQueue
 
 
 def _effect_record(
@@ -261,6 +263,69 @@ def test_execution_repository_supports_semantic_idempotency_and_gate_queries(
     assert execution_store.find_execution_by_idempotency_key("idem-1") == running
     assert execution_store.get_execution("exec-1") == running
     assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
+
+
+def test_gate_completion_and_successor_event_commit_atomically(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "orchestration.db"
+    gate_store = SqliteGateExecutionStore(path)
+    queue = SqliteTriggerEventQueue(path)
+    now = datetime(2026, 4, 23, 12, 0, tzinfo=UTC)
+    record = _gate_record(
+        execution_id="gate-atomic",
+        idempotency_key="gate-atomic-key",
+        gate_id="map-1",
+        finished_at=now,
+    )
+    event = TriggerEvent(
+        event_id="event-after-gate",
+        trigger_id="map-1",
+        trigger_type="gate:map",
+        trace_id="trace-1",
+        occurred_at=now,
+        payload={"ok": True},
+    )
+    record.published_event_id = event.event_id
+
+    assert (
+        gate_store.record_completion_and_publish(
+            record=record,
+            event_queue=queue,
+            event=event,
+            idempotency_key=record.idempotency_key,
+        )
+        == event.event_id
+    )
+    assert gate_store.get_execution(record.execution_id) == record
+    assert queue.read_all()[event.event_id].delivery_state == "pending"
+    # Replaying the same deterministic transaction is idempotent.
+    gate_store.record_completion_and_publish(
+        record=record,
+        event_queue=queue,
+        event=event,
+        idempotency_key=record.idempotency_key,
+    )
+    assert list(queue.read_all()) == [event.event_id]
+
+    failed_record = _gate_record(
+        execution_id="gate-rollback",
+        idempotency_key="gate-rollback-key",
+        gate_id="map-2",
+        finished_at=now,
+    )
+    failed_event = event.model_copy(update={"event_id": "event-rolled-back", "trigger_id": "map-2"})
+
+    def fail_record(_connection, _record):
+        raise RuntimeError("synthetic gate persistence failure")
+
+    monkeypatch.setattr(gate_store, "_upsert_record", fail_record)
+    with pytest.raises(RuntimeError, match="synthetic gate persistence failure"):
+        gate_store.record_completion_and_publish(
+            record=failed_record,
+            event_queue=queue,
+            event=failed_event,
+            idempotency_key=failed_record.idempotency_key,
+        )
+    assert "event-rolled-back" not in queue.read_all()
 
 
 def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) -> None:

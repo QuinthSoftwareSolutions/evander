@@ -893,7 +893,7 @@ Implementation tasks:
   - update `last_progress_at` and context-rotation state for
     context/activity-producing tools
   - queue pending chat retry events when applicable
-  - mirror session metadata after finalization
+  - keep mutable Team state authoritative in the Team repository rather than copying it into core session metadata
   - avoid next-wake failed-action feedback for synchronous validation failures
 - Add behavior for a completed dispatch with no Team tool calls: close the lease
   and count no progress.

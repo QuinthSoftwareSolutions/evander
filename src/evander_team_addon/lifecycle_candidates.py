@@ -19,7 +19,6 @@ class LifecycleCandidate:
     lineage_thread_id: str | None
     lineage_owner_id: str | None
     current_session_id: str | None
-    mirror_due: bool
     queued_at: datetime | None
     governance_group_id: str | None = None
     recovery_priority: int = 0

@@ -56,10 +56,6 @@ from ..models import (
     TeamRecordState,
     TeamState,
     agent_has_project_assignment,
-    agent_lead_project_ids,
-    agent_project_assignment_payloads,
-    agent_project_ids,
-    effective_role_permissions,
     external_source_evidence_snapshot_payload,
     wake_work_changed_since_latest_attempt,
     wake_work_fingerprint,
@@ -2451,26 +2447,6 @@ class TeamRuntimeService:
                 observed_at=_ensure_utc(receipt.observed_at) if receipt.observed_at else None,
             )
 
-    def mark_agent_dispatch_session_metadata_mirrored(
-        self,
-        *,
-        dispatch_id: str,
-        now: datetime | None = None,
-    ) -> TeamState:
-        """Acknowledge an idempotent external session-metadata mirror."""
-
-        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
-        effective_now = _ensure_utc(now or utc_now())
-
-        def _mutate(state: TeamState) -> TeamState:
-            dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
-            if dispatch.activation_completed_at is None:
-                raise ValueError(f"dispatch {dispatch.id} activation bookkeeping is not complete")
-            dispatch.session_metadata_mirrored_at = effective_now
-            return state
-
-        return self._repository.update(_mutate)
-
     def invalidate_agent_work_lineage_thread_binding(
         self,
         *,
@@ -3611,69 +3587,6 @@ class TeamRuntimeService:
             return state, result
 
         return self._repository.store.update_state_with_command_transaction(_transaction)
-
-    def mirror_session_metadata_payload(
-        self,
-        *,
-        state: TeamState,
-        agent_id: str,
-    ) -> dict[str, Any]:
-        agent = _require_present(state.agents, agent_id, "agent")
-        runtime = state.agent_runtimes.get(agent_id)
-        active_task_ids = [task.id for task in _active_tasks_for_agent(state, agent_id)]
-        pending_inbox_ids = [item.id for item in _pending_inbox_for_agent(state, agent_id)]
-        role = state.roles.get(agent.role_id)
-        active_stand_downs = _active_stand_downs_for_agent(state, agent_id)
-        return {
-            "team_addon": {
-                "agent_id": agent.id,
-                "team_id": agent.team_id,
-                "project_ids": agent_project_ids(state, agent.id),
-                "lead_project_ids": agent_lead_project_ids(state, agent.id),
-                "project_assignments": agent_project_assignment_payloads(state, agent.id),
-                "role_id": agent.role_id,
-                "role_name": role.name if role is not None else None,
-                "role_permissions": [
-                    permission.value for permission in effective_role_permissions(state, agent)
-                ],
-                "effective_role_permissions": [
-                    permission.value for permission in effective_role_permissions(state, agent)
-                ],
-                "reports_to_agent_id": agent.reports_to_agent_id,
-                "subordinate_agent_ids": list(agent.subordinate_agent_ids),
-                "active_task_ids": active_task_ids,
-                "pending_inbox_item_ids": pending_inbox_ids,
-                "stand_down_active": bool(active_stand_downs),
-                "effective_stand_downs": [
-                    stand_down.model_dump(mode="json") for stand_down in active_stand_downs
-                ],
-                "context_clearing_policy": (
-                    runtime.context_clearing_policy.value
-                    if runtime is not None
-                    else AgentContextClearingPolicy.OFF.value
-                ),
-                "context_clearing_idle_grace_seconds": (
-                    runtime.context_clearing_idle_grace_seconds if runtime is not None else 0
-                ),
-                "context_idle_rotation_due_at": (
-                    runtime.context_idle_rotation_due_at.isoformat()
-                    if runtime is not None and runtime.context_idle_rotation_due_at is not None
-                    else None
-                ),
-                "auto_context_clearing_enabled": (
-                    runtime.auto_context_clearing_enabled if runtime is not None else False
-                ),
-                "context_rotation_pending": (
-                    runtime.context_rotation_pending if runtime is not None else False
-                ),
-                "last_context_rotated_at": (
-                    runtime.last_context_rotated_at.isoformat()
-                    if runtime is not None and runtime.last_context_rotated_at is not None
-                    else None
-                ),
-            }
-        }
-
 
 def _action_feedback_cause_id(
     action_feedback: list[dict[str, Any]],

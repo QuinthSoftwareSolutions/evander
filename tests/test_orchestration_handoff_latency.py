@@ -16,7 +16,7 @@ from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEff
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.lifecycle_hooks import ProviderCompletionLifecycleHook
 from evander.events.models import TriggerEvent
-from evander.orchestration.maintenance import MaintenanceBudget, RecoverySchedule
+from evander.orchestration.maintenance import MaintenanceBudget, MaintenanceResult, RecoverySchedule
 from evander.repositories.orchestration_db import connect_orchestration_db
 from evander_team_addon.providers import TeamAgentPromptCompletionFinalizeHook
 from evander_team_addon.sqlite_store import TeamStateSqliteStore
@@ -117,6 +117,68 @@ def test_recovery_continuations_and_due_leases_preempt_long_pass():
     clock.now = 10
     assert schedule.begin_if_due(tasks)
     assert list(schedule.pending) == tasks  # no duplicate continuation/lease
+
+
+def test_busy_foreground_spaces_recovery_continuations_but_idle_drains_immediately(
+    tmp_path, monkeypatch
+):
+    worker = _worker(tmp_path)
+    clock = Clock()
+    worker._recovery_schedule = RecoverySchedule(clock=clock)
+    worker._recovery_schedule.next_due = 0
+    calls = []
+
+    def sliced(**kwargs):
+        calls.append(clock.now)
+        return MaintenanceResult(examined=1, remaining=len(calls) < 3)
+
+    worker._lifecycle_reconciliation_hooks = (SimpleNamespace(run_maintenance_slice=sliced),)
+    worker._completion_dispatch_hooks = ()
+    monkeypatch.setattr("evander.daemons.effect_orchestrator.time.monotonic", clock)
+
+    assert worker._run_due_recovery(graph=None, foreground_pending=True) == (True, 0)
+    assert calls == [0]
+    assert worker._run_due_recovery(graph=None, foreground_pending=True) == (False, 0)
+    clock.now = 4.99
+    assert worker._run_due_recovery(graph=None, foreground_pending=True) == (False, 0)
+    clock.now = 5
+    assert worker._run_due_recovery(graph=None, foreground_pending=True) == (True, 0)
+    assert calls == [0, 5]
+    assert worker._run_due_recovery(graph=None, foreground_pending=False) == (True, 0)
+    assert calls == [0, 5, 5]
+
+
+def test_busy_foreground_reserves_progress_beyond_urgent_lease_renewal(
+    tmp_path, monkeypatch
+):
+    worker = _worker(tmp_path)
+    clock = Clock()
+    worker._recovery_schedule = RecoverySchedule(clock=clock)
+    worker._recovery_schedule.next_due = 0
+    calls = []
+
+    def sliced(name):
+        def run(**kwargs):
+            calls.append((name, clock.now))
+            return MaintenanceResult(examined=1, remaining=True)
+
+        return run
+
+    worker._lifecycle_reconciliation_hooks = (
+        SimpleNamespace(maintenance_priority=-100, run_maintenance_slice=sliced("lease")),
+        SimpleNamespace(maintenance_priority=0, run_maintenance_slice=sliced("reconcile")),
+    )
+    worker._completion_dispatch_hooks = (
+        SimpleNamespace(maintenance_priority=0, run_maintenance_slice=sliced("queue")),
+    )
+    monkeypatch.setattr("evander.daemons.effect_orchestrator.time.monotonic", clock)
+
+    for clock.now in range(0, 31, 5):
+        assert worker._run_due_recovery(graph=None, foreground_pending=True)[0]
+
+    assert [name for name, _when in calls].count("lease") == 7
+    assert [name for name, _when in calls].count("reconcile") >= 3
+    assert [name for name, _when in calls].count("queue") >= 3
 
 
 def test_maintenance_budgets_are_cooperative_and_bounded():
@@ -500,6 +562,29 @@ def test_noop_team_recovery_uses_projections_not_full_state(tmp_path, monkeypatc
     assert seen == [{dispatch_id}]
 
 
+def test_failed_before_activation_is_not_a_completion_or_history_candidate(tmp_path):
+    repo = _seed_team(tmp_path)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend", defer_activation=True
+    )
+    dispatch_id = leases[0]["dispatch_id"]
+    with repo.store._connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """UPDATE team_dispatches
+               SET status = 'failed', completed_at = ?, activation_completed_at = NULL,
+                   session_metadata_mirrored_at = NULL
+               WHERE id = ?""",
+            (datetime.now(UTC).isoformat(), dispatch_id),
+        )
+        connection.execute(
+            "UPDATE team_agent_runtimes SET active_dispatch_id = NULL WHERE agent_id = 'backend'"
+        )
+
+    assert repo.lifecycle_candidates(kind="completion").candidates == ()
+    assert repo.lifecycle_candidates(kind="history").candidates == ()
+
+
 def test_native_receipt_preflight_matches_last_wins_timestamp_ties(monkeypatch):
     from evander_team_addon.lifecycle_candidates import LifecycleCandidate
     from evander_team_addon.services.runtime_service import AgentDispatchNativeThreadReceipt
@@ -517,7 +602,6 @@ def test_native_receipt_preflight_matches_last_wins_timestamp_ties(monkeypatch):
         lineage_thread_id="native",
         lineage_owner_id="dispatch",
         current_session_id="session",
-        mirror_due=False,
         queued_at=None,
     )
     records = [
@@ -611,18 +695,23 @@ def test_lifecycle_projection_cannot_mix_revisions(tmp_path, monkeypatch):
     assert repo.read_revision() == revision + 1
 
 
-def test_lifecycle_indexes_are_added_after_legacy_column_migration(tmp_path):
+def test_lifecycle_indexes_drop_obsolete_mirror_index(tmp_path):
     store = TeamStateSqliteStore(tmp_path)
     revision = store.read_revision()
     with sqlite3.connect(store.path) as connection:
-        connection.execute("DROP INDEX idx_team_dispatches_pending_mirror")
-        connection.execute("ALTER TABLE team_dispatches DROP COLUMN session_metadata_mirrored_at")
+        connection.execute(
+            """CREATE INDEX idx_team_dispatches_pending_mirror
+               ON team_dispatches(id) WHERE session_metadata_mirrored_at IS NULL"""
+        )
     reopened = TeamStateSqliteStore(tmp_path)
     assert reopened.read_revision() == revision
     assert reopened.lifecycle_candidates().candidates == ()
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute(
+        assert not connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name='idx_team_dispatches_pending_mirror'"
+        ).fetchone()
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='idx_team_dispatches_receipt_recovery'"
         ).fetchone()
 
 

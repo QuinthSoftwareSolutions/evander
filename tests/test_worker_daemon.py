@@ -35,6 +35,7 @@ from evander.worker.service import (
     _git_subprocess_env,
 )
 from evander.worker.models import (
+    WorkerFileWriteRequest,
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
     WorkerReferenceRepoPrepareRequest,
@@ -204,6 +205,141 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
                 configuration_version="1",
             ),
         )
+
+
+def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source-receipt"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / ".gitattributes").write_text("README.md filter=attacker\n", encoding="utf-8")
+    (source / "README.md").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitattributes", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=source, check=True)
+    commit_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    request = WorkerReferenceRepoPrepareRequest(
+        repo_source=str(source),
+        repo_name="repo",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        configuration_version="1",
+        update_existing=False,
+        preparation_fingerprint="b" * 64,
+    )
+
+    first = daemon.prepare_reference_repo("session-receipt", request)
+    checkout = (
+        tmp_path / "worker-root" / "sessions" / "session-receipt" / "agent_home" / "repos" / "repo"
+    )
+    filter_marker = tmp_path / "cached-filter-ran-on-host"
+    filter_program = tmp_path / "cached-filter.sh"
+    filter_program.write_text(
+        f"#!/bin/sh\nprintf ran > {filter_marker}\ncat\n",
+        encoding="utf-8",
+    )
+    filter_program.chmod(0o755)
+    subprocess.run(
+        ["git", "config", "extensions.worktreeConfig", "true"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--worktree", "filter.attacker.clean", str(filter_program)],
+        cwd=checkout,
+        check=True,
+    )
+    os.utime(checkout / "README.md", None)
+
+    reused = daemon.prepare_reference_repo("session-receipt", request)
+    subprocess.run(
+        ["git", "config", "--worktree", "--unset-all", "filter.attacker.clean"],
+        cwd=checkout,
+        check=True,
+    )
+    original_run = subprocess.run
+    injected_filter = False
+
+    def add_filter_after_local_config(
+        *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal injected_filter
+        command = args[0] if args else kwargs.get("args")
+        if command and command[:2] == ["git", "read-tree"]:
+            pytest.fail("warm reference checkout rebuilt its host-owned status index")
+        if not injected_filter and command == [
+            "git",
+            "-C",
+            str(checkout),
+            "config",
+            "--local",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process|required)$",
+        ]:
+            original_run(
+                ["git", "config", "--worktree", "filter.attacker.clean", str(filter_program)],
+                cwd=checkout,
+                check=True,
+            )
+            injected_filter = True
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", add_filter_after_local_config)
+    raced_reuse = daemon.prepare_reference_repo("session-receipt", request)
+    (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
+
+    assert first.preparation_reused is False
+    assert reused.preparation_reused is True
+    assert raced_reuse.preparation_reused is True
+    assert injected_filter is True
+    assert not filter_marker.exists()
+    assert subprocess.run(
+        ["git", "config", "--worktree", "--get", "filter.attacker.clean"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == str(filter_program)
+    (checkout / "README.md").write_text("staged guest change\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "restore", "--source=HEAD", "--worktree", "README.md"],
+        cwd=checkout,
+        check=True,
+    )
+    assert (
+        subprocess.run(
+            ["git", "status", "--porcelain", "--", "README.md"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == "MM README.md\n"
+    )
+    with pytest.raises(ValueError, match="checkout is dirty"):
+        daemon.prepare_reference_repo("session-receipt", request)
+    subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=checkout, check=True)
+    with pytest.raises(ValueError, match="checkout is dirty"):
+        (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
+        daemon.prepare_reference_repo("session-receipt", request)
 
 
 @pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
@@ -4372,6 +4508,115 @@ def test_session_file_write_skips_identical_existing_content_and_mode(tmp_path: 
     target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
     assert target.read_text(encoding="utf-8") == "# Agent\n"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_session_file_preparation_receipt_reuses_and_invalidates_on_guest_change(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    payload = {
+        "preparation_fingerprint": "a" * 64,
+        "files": [
+            {
+                "destination_path": "/home/agent/AGENTS.md",
+                "content": "# Agent\n",
+                "mode": "0644",
+            }
+        ],
+    }
+
+    first = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    second = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    target.write_text("guest changed\n", encoding="utf-8")
+    repaired = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+
+    assert first.json()["preparation_reused"] is False
+    assert second.json()["preparation_reused"] is True
+    assert repaired.json()["preparation_reused"] is False
+    assert repaired.json()["copied_count"] == 1
+    assert target.read_text(encoding="utf-8") == "# Agent\n"
+
+
+@pytest.mark.parametrize("race", ["replace", "delete", "chmod"])
+def test_session_file_preparation_receipt_requires_requested_postcondition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    race: str,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1"))
+    request = WorkerFileWriteRequest(
+        preparation_fingerprint="c" * 64,
+        files=[
+            {
+                "destination_path": "/home/agent/AGENTS.md",
+                "content": "# Agent\n",
+                "mode": "0644",
+            }
+        ],
+    )
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    original_write = daemon._write_container_file
+    raced = False
+
+    def write_then_race(**kwargs: Any) -> None:
+        nonlocal raced
+        original_write(**kwargs)
+        if raced:
+            return
+        raced = True
+        if race == "replace":
+            target.write_text("guest changed\n", encoding="utf-8")
+        elif race == "delete":
+            target.unlink()
+        else:
+            target.chmod(0o600)
+
+    monkeypatch.setattr(daemon, "_write_container_file", write_then_race)
+
+    first = daemon.write_files("session-1", request)
+    receipt = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "preparation-receipts"
+        / "files-managed.json"
+    )
+    assert not receipt.exists()
+    if race == "delete":
+        receipt.parent.mkdir(mode=0o700)
+        receipt.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "request_fingerprint": request.preparation_fingerprint,
+                    "observations": [{"path": "/home/agent/AGENTS.md", "missing": True}],
+                }
+            ),
+            encoding="utf-8",
+        )
+    second = daemon.write_files("session-1", request)
+    third = daemon.write_files("session-1", request)
+
+    assert first.preparation_reused is False
+    assert second.preparation_reused is False
+    assert second.copied_count == 1
+    assert third.preparation_reused is True
+    assert receipt.is_file()
+    assert target.read_text(encoding="utf-8") == "# Agent\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
 def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:

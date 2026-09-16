@@ -1359,6 +1359,13 @@ class WorkerDaemon:
                     checkout_updated=False,
                     configuration_updated=False,
                 )
+            reused = self._reuse_reference_repo_preparation(
+                paths=paths,
+                request=request,
+                target_dir=target_dir,
+            )
+            if reused is not None:
+                return reused
 
         self._sync_git_ssh_into_agent_home(
             paths, required=_repo_source_requires_git_ssh(request.repo_source)
@@ -1391,7 +1398,11 @@ class WorkerDaemon:
                 f"reference repo {request.repo_name} is missing and no cached commit is "
                 "available; set refresh_upstream=true"
             )
-        has_user_changes = self._reference_repo_has_user_changes(target_dir, git_env=git_env)
+        has_user_changes = self._reference_repo_has_user_changes(
+            paths=paths,
+            target_dir=target_dir,
+            expected_commit=current_commit,
+        )
         if has_user_changes:
             raise ValueError(
                 f"reference repo checkout is dirty and cannot be prepared: {request.repo_name}"
@@ -1562,7 +1573,7 @@ class WorkerDaemon:
             )
         if stored_trusted_commit != resolved_commit:
             self._write_reference_repo_trusted_commit(paths, request, resolved_commit)
-        return WorkerReferenceRepoPrepareRecord(
+        record = WorkerReferenceRepoPrepareRecord(
             session_id=paths.session_id,
             target_dir=f"/home/agent/repos/{request.repo_name}",
             guest_repo_name=request.repo_name,
@@ -1572,6 +1583,168 @@ class WorkerDaemon:
             cloned=cloned,
             checkout_updated=checkout_updated,
             configuration_updated=configuration_updated,
+        )
+        if request.preparation_fingerprint is not None:
+            self._write_preparation_receipt(
+                paths,
+                kind="reference-repo",
+                name=request.repo_name,
+                payload={
+                    "version": 1,
+                    "request_fingerprint": request.preparation_fingerprint,
+                    "repo_source": request.repo_source,
+                    "repo_name": request.repo_name,
+                    "source_ref": request.source_ref,
+                    "commit_sha": resolved_commit,
+                    "configuration_version": request.configuration_version,
+                },
+            )
+        return record
+
+    def _reuse_reference_repo_preparation(
+        self,
+        *,
+        paths: WorkerSessionPaths,
+        request: WorkerReferenceRepoPrepareRequest,
+        target_dir: Path,
+    ) -> WorkerReferenceRepoPrepareRecord | None:
+        fingerprint = request.preparation_fingerprint
+        if fingerprint is None or request.update_existing:
+            return None
+        receipt = self._read_preparation_receipt(
+            paths,
+            kind="reference-repo",
+            name=request.repo_name,
+        )
+        if receipt is None or receipt.get("request_fingerprint") != fingerprint:
+            return None
+        expected_commit = str(receipt.get("commit_sha") or "").strip().lower()
+        if (
+            expected_commit != request.commit_sha
+            or receipt.get("repo_source") != request.repo_source
+            or receipt.get("source_ref") != request.source_ref
+            or receipt.get("configuration_version") != request.configuration_version
+        ):
+            return None
+        # The checkout is guest-writable. Inspect its worktree with a fresh,
+        # host-owned Git directory rather than its guest-owned configuration.
+        # In particular, `git status` can invoke a configured clean/process
+        # filter while comparing against the index.
+        if self._reference_repo_has_user_changes(
+            paths=paths,
+            target_dir=target_dir,
+            expected_commit=expected_commit,
+        ):
+            return None
+        git_env = _reference_repo_git_environment(target_dir, agent_home=paths.agent_home)
+        try:
+            current_commit = self._git_commit_sha(target_dir, paths.agent_home)
+        except subprocess.CalledProcessError:
+            return None
+        if current_commit != expected_commit:
+            return None
+        if self._read_reference_repo_trusted_commit(paths, request) != expected_commit:
+            return None
+        if (
+            subprocess.run(
+                ["git", "-C", str(target_dir), "symbolic-ref", "-q", "HEAD"],
+                env=git_env,
+                check=False,
+                capture_output=True,
+                text=True,
+            ).returncode
+            == 0
+        ):
+            return None
+        current_version = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(target_dir),
+                "config",
+                "--get",
+                "evander.referenceRepoConfigVersion",
+            ],
+            env=git_env,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if current_version != request.configuration_version:
+            return None
+        return WorkerReferenceRepoPrepareRecord(
+            session_id=paths.session_id,
+            target_dir=f"/home/agent/repos/{request.repo_name}",
+            guest_repo_name=request.repo_name,
+            remote_url=request.repo_source,
+            source_ref=request.source_ref,
+            commit_sha=current_commit,
+            cloned=False,
+            checkout_updated=False,
+            configuration_updated=False,
+            preparation_reused=True,
+        )
+
+    def _preparation_receipt_path(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        kind: str,
+        name: str,
+    ) -> Path:
+        safe_kind = str(validate_worker_component_id(kind, field_name="receipt kind"))
+        safe_name = str(validate_worker_component_id(name, field_name="receipt name"))
+        path = paths.root / "preparation-receipts" / f"{safe_kind}-{safe_name}.json"
+        ensure_resolved_path_within(
+            base=paths.root,
+            candidate=path,
+            description="session preparation receipt",
+        )
+        return path
+
+    def _read_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        kind: str,
+        name: str,
+    ) -> dict[str, Any] | None:
+        path = self._preparation_receipt_path(paths, kind=kind, name=name)
+        try:
+            raw = self._read_managed_text_file_no_follow(
+                path,
+                label="session preparation receipt",
+            )
+            payload = json.loads(raw)
+        except (FileNotFoundError, OSError, ValueError):
+            return None
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            return None
+        return payload
+
+    def _write_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        kind: str,
+        name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        path = self._preparation_receipt_path(paths, kind=kind, name=name)
+        directory = path.parent
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        directory_stat = directory.lstat()
+        if not stat.S_ISDIR(directory_stat.st_mode) or stat.S_ISLNK(directory_stat.st_mode):
+            raise ValueError("session preparation receipt directory must be a directory")
+        directory.chmod(0o700)
+        self._write_managed_text_file_no_follow(
+            path,
+            json.dumps(payload, sort_keys=True) + "\n",
+            mode=0o600,
+            label="session preparation receipt",
         )
 
     def _reference_repo_trust_state_path(
@@ -1587,6 +1760,42 @@ class WorkerDaemon:
             description="reference repo trusted state",
         )
         return state_path
+
+    def _reference_repo_status_git_dir(
+        self,
+        paths: WorkerSessionPaths,
+        repo_name: str,
+    ) -> Path:
+        state_dir = paths.root / "reference-repository-state"
+        status_git_dir = state_dir / f"{repo_name}.status.git"
+        ensure_resolved_path_within(
+            base=paths.root,
+            candidate=status_git_dir,
+            description="reference repo status cache",
+        )
+        try:
+            state_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        state_dir_stat = state_dir.lstat()
+        if not stat.S_ISDIR(state_dir_stat.st_mode) or stat.S_ISLNK(state_dir_stat.st_mode):
+            raise ValueError("reference repo trusted state directory must be a directory")
+        state_dir.chmod(0o700)
+        try:
+            status_dir_stat = status_git_dir.lstat()
+        except FileNotFoundError:
+            subprocess.run(
+                ["git", "init", "--quiet", "--bare", str(status_git_dir)],
+                env=_git_subprocess_env(paths.agent_home),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            status_dir_stat = status_git_dir.lstat()
+        if not stat.S_ISDIR(status_dir_stat.st_mode) or stat.S_ISLNK(status_dir_stat.st_mode):
+            raise ValueError("reference repo status cache must be a directory")
+        status_git_dir.chmod(0o700)
+        return status_git_dir
 
     def _read_reference_repo_trusted_commit(
         self,
@@ -1652,21 +1861,108 @@ class WorkerDaemon:
             label="reference repo trusted state",
         )
 
-    @staticmethod
     def _reference_repo_has_user_changes(
-        target_dir: Path,
+        self,
         *,
-        git_env: dict[str, str],
+        paths: WorkerSessionPaths,
+        target_dir: Path,
+        expected_commit: str | None,
     ) -> bool:
+        """Return whether a guest checkout differs from a trusted tree.
+
+        The check deliberately does not run Git against the checkout's own
+        Git directory.  Both its local and per-worktree configuration are
+        guest writable, and ``git status`` may run a configured filter while
+        it refreshes an index.  A persistent Git directory under the
+        host-owned session root supplies the index, stat cache, and
+        configuration; the checked-out commit is made available only as an
+        alternate object directory.
+        """
+        base_env = _git_subprocess_env(paths.agent_home)
+        git_dir = _resolved_git_dir_within_checkout(target_dir, env=base_env)
+        if git_dir is None:
+            raise ValueError("reference repo Git metadata is missing or unsafe")
+        object_dir = git_dir / "objects"
+        try:
+            object_dir_stat = object_dir.lstat()
+        except OSError as exc:
+            raise ValueError("reference repo Git object storage is unavailable") from exc
+        if not stat.S_ISDIR(object_dir_stat.st_mode) or stat.S_ISLNK(object_dir_stat.st_mode):
+            raise ValueError("reference repo Git object storage is unsafe")
+
+        isolated_git_dir = self._reference_repo_status_git_dir(paths, target_dir.name)
+        isolated_env = base_env | {
+            "GIT_DIR": str(isolated_git_dir),
+            "GIT_WORK_TREE": str(target_dir),
+            "GIT_INDEX_FILE": str(isolated_git_dir / "index"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(object_dir),
+        }
+        if expected_commit is not None:
+            subprocess.run(
+                ["git", "update-ref", "HEAD", expected_commit],
+                env=isolated_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            checkout_index = git_dir / "index"
+            try:
+                checkout_index_stat = checkout_index.lstat()
+            except FileNotFoundError:
+                return True
+            if not stat.S_ISREG(checkout_index_stat.st_mode) or stat.S_ISLNK(
+                checkout_index_stat.st_mode
+            ):
+                return True
+            checkout_index_env = isolated_env | {"GIT_INDEX_FILE": str(checkout_index)}
+            checkout_index_check = subprocess.run(
+                ["git", "diff-index", "--cached", "--quiet", expected_commit, "--"],
+                env=checkout_index_env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if checkout_index_check.returncode != 0:
+                return True
+            cached_tree_check = subprocess.run(
+                ["git", "diff-index", "--cached", "--quiet", expected_commit, "--"],
+                env=isolated_env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if cached_tree_check.returncode != 0:
+                subprocess.run(
+                    ["git", "read-tree", expected_commit],
+                    env=isolated_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+        else:
+            subprocess.run(
+                ["git", "update-ref", "-d", "HEAD"],
+                env=isolated_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "read-tree", "--empty"],
+                env=isolated_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         completed = subprocess.run(
-            ["git", "-C", str(target_dir), "status", "--porcelain", "--untracked-files=all"],
-            env=git_env,
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            env=isolated_env,
             check=True,
             capture_output=True,
             text=True,
         )
         return any(
-            line and not (line.startswith("?? ") and line[3:].startswith(".evander/"))
+            line and not (line.startswith("?? ") and line[3:].startswith((".evander/", ".git/")))
             for line in completed.stdout.splitlines()
         )
 
@@ -3456,12 +3752,18 @@ class WorkerDaemon:
         request: WorkerFileWriteRequest,
     ) -> WorkerFileWriteRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        reused = self._reuse_file_preparation(paths=paths, request=request)
+        if reused is not None:
+            return reused
         copied_paths: list[str] = []
+        intended_files: dict[str, tuple[Path, Path, bytes, int | None]] = {}
+        requested_paths: list[str] = []
         for entry in request.files:
             root, relative_path, container_path = self._resolve_container_destination(
                 paths=paths,
                 destination_path=entry.destination_path,
             )
+            requested_paths.append(container_path)
             existing_snapshot = (
                 self._read_container_file_snapshot(
                     root=root,
@@ -3490,6 +3792,15 @@ class WorkerDaemon:
             desired_mode = (
                 int(self._normalize_mode(entry.mode), 8) if entry.mode is not None else None
             )
+            intended_mode = desired_mode
+            if intended_mode is None and existing_snapshot is not None:
+                intended_mode = stat.S_IMODE(existing_snapshot.mode)
+            intended_files[container_path] = (
+                root,
+                relative_path,
+                desired_content,
+                intended_mode,
+            )
             if existing_snapshot is not None and entry.overwrite:
                 content_matches = existing_snapshot.content == desired_content
                 mode_matches = (
@@ -3515,11 +3826,92 @@ class WorkerDaemon:
                 container_path=container_path,
             )
             copied_paths.append(container_path)
-        return WorkerFileWriteRecord(
+        record = WorkerFileWriteRecord(
             session_id=session_id,
             copied_count=len(copied_paths),
             copied_paths=copied_paths,
             roots={"agent_home": "/home/agent", "repo_root": "/home/agent/repos"},
+        )
+        if request.preparation_fingerprint is not None:
+            observations_by_path: dict[str, dict[str, Any]] = {}
+            for container_path, (
+                root,
+                relative_path,
+                intended_content,
+                intended_mode,
+            ) in intended_files.items():
+                snapshot = self._read_container_file_snapshot(
+                    root=root,
+                    relative_path=relative_path,
+                )
+                if snapshot is None or snapshot.content != intended_content:
+                    break
+                actual_mode = stat.S_IMODE(snapshot.mode)
+                if intended_mode is not None and actual_mode != intended_mode:
+                    break
+                observations_by_path[container_path] = {
+                    "path": container_path,
+                    "sha256": hashlib.sha256(intended_content).hexdigest(),
+                    "mode": actual_mode,
+                }
+            else:
+                self._write_preparation_receipt(
+                    paths,
+                    kind="files",
+                    name="managed",
+                    payload={
+                        "version": 1,
+                        "request_fingerprint": request.preparation_fingerprint,
+                        "observations": [
+                            observations_by_path[container_path]
+                            for container_path in requested_paths
+                        ],
+                    },
+                )
+        return record
+
+    def _reuse_file_preparation(
+        self,
+        *,
+        paths: WorkerSessionPaths,
+        request: WorkerFileWriteRequest,
+    ) -> WorkerFileWriteRecord | None:
+        fingerprint = request.preparation_fingerprint
+        if fingerprint is None:
+            return None
+        receipt = self._read_preparation_receipt(paths, kind="files", name="managed")
+        if receipt is None or receipt.get("request_fingerprint") != fingerprint:
+            return None
+        observations = receipt.get("observations")
+        if not isinstance(observations, list) or len(observations) != len(request.files):
+            return None
+        for entry, raw_observation in zip(request.files, observations, strict=True):
+            if not isinstance(raw_observation, dict):
+                return None
+            root, relative_path, container_path = self._resolve_container_destination(
+                paths=paths,
+                destination_path=entry.destination_path,
+            )
+            if raw_observation.get("path") != container_path:
+                return None
+            snapshot = self._read_container_file_snapshot(
+                root=root,
+                relative_path=relative_path,
+            )
+            if raw_observation.get("missing") is True:
+                return None
+            if snapshot is None:
+                return None
+            if hashlib.sha256(snapshot.content).hexdigest() != raw_observation.get("sha256"):
+                return None
+            if stat.S_IMODE(snapshot.mode) != raw_observation.get("mode"):
+                return None
+        return WorkerFileWriteRecord(
+            session_id=paths.session_id,
+            copied_count=0,
+            copied_paths=[],
+            roots={"agent_home": "/home/agent", "repo_root": "/home/agent/repos"},
+            preparation_reused=True,
         )
 
     def read_session_artifact_text(self, session_id: str, relative_path: str) -> str:

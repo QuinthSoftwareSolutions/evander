@@ -3137,7 +3137,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     )
                     continue
                 state, activation = _activate_delivered_team_prompt(
-                    context,
                     repo=repo,
                     dispatch_id=lease["dispatch_id"],
                     result_payload=result_payload,
@@ -3466,7 +3465,6 @@ def _dispatch_queued_team_chat_messages(
                 )
                 continue
             state, activation = _activate_delivered_team_prompt(
-                context,
                 repo=repo,
                 dispatch_id=dispatch_id,
                 result_payload=result_payload,
@@ -3620,27 +3618,17 @@ def _team_chat_wake_lease(
 
 
 def _activate_delivered_team_prompt(
-    context: Any,
     *,
     repo: TeamStateRepository,
     dispatch_id: str,
     result_payload: Mapping[str, Any],
-    mirror_session_metadata: bool = True,
 ) -> tuple[TeamState, dict[str, Any]]:
     """Apply the same durable transitions for immediate and replayed prompts."""
 
-    state, activation = TeamRuntimeService(repo).activate_delivered_agent_dispatch(
+    return TeamRuntimeService(repo).activate_delivered_agent_dispatch(
         dispatch_id=dispatch_id,
         thread_id=_optional_text(result_payload.get("thread_id")),
     )
-    if mirror_session_metadata:
-        state, _mirrored = _try_mirror_activated_dispatch_session_metadata(
-            context,
-            repo=repo,
-            state=state,
-            dispatch_id=dispatch_id,
-        )
-    return state, activation
 
 
 def build_voice_reconciliation_context(
@@ -4038,14 +4026,6 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
                 "current_revision": exc.current_revision,
             }
         agent_id = result.get("agent_id")
-        if result.get("finalized") and isinstance(agent_id, str) and agent_id in state.agents:
-            _mirror_session_metadata(
-                self.runtime_context,
-                repo=repo,
-                state=state,
-                agent_id=agent_id,
-                session_id=state.agents[agent_id].session_id,
-            )
         published_event_ids = _publish_team_events(
             self.runtime_context,
             result.get("events"),
@@ -5590,7 +5570,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if _optional_text(_record_outputs(r).get("dispatch_id")) == candidate.dispatch_id
             and _completed_prompt_session_id(r) == candidate.session_id
         ]
-        actionable = candidate.mirror_due or bool(
+        actionable = bool(
             matching
             and (
                 candidate.governance_group_id is not None
@@ -5844,11 +5824,9 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 was_preparing = dispatch.status == TeamDispatchStatus.PREPARING
                 try:
                     state, _activation = _activate_delivered_team_prompt(
-                        context,
                         repo=repo,
                         dispatch_id=dispatch_id,
                         result_payload=outputs,
-                        mirror_session_metadata=False,
                     )
                 except (RuntimeError, ValueError, TeamStateConflictError):
                     continue
@@ -5933,19 +5911,6 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 limit=25,
                 claim_ttl_seconds=300,
                 retry_after_seconds=60,
-            )
-        state = repo.read()
-        for dispatch in sorted(
-            (d for d in state.dispatches.values() if d.id in dispatch_ids),
-            key=lambda item: (item.created_at, item.id),
-        ):
-            if not _dispatch_session_metadata_mirror_is_due(dispatch):
-                continue
-            state, _mirrored = _try_mirror_activated_dispatch_session_metadata(
-                context,
-                repo=repo,
-                state=state,
-                dispatch_id=dispatch.id,
             )
         return activated_count + finalized_count
 
@@ -12736,6 +12701,10 @@ def _mark_agent_guidance_seeded(
     if not callable(update_fn):
         return
     team_metadata: dict[str, Any] = {
+        # Stable identity lets generic session consumers recognize Team-owned
+        # sessions without caching mutable tasks, permissions, or runtime state.
+        "agent_id": _required_text(agent.get("id"), "agent.id"),
+        "team_id": _required_text(agent.get("team_id"), "agent.team_id"),
         "agent_guidance": {
             "seeded": True,
             "guidance_version": TEAM_AGENT_GUIDANCE_VERSION,
@@ -12836,77 +12805,6 @@ def _mark_project_repos_prepared(
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, indent=2)
-
-
-def _mirror_session_metadata(
-    context: Any,
-    *,
-    repo: TeamStateRepository,
-    state: Any,
-    agent_id: str,
-    session_id: str,
-) -> None:
-    updater = getattr(context, "session_metadata_updater", None)
-    update_fn = getattr(updater, "session_update_metadata", None)
-    if not callable(update_fn):
-        return
-    update_fn(
-        target=session_id,
-        metadata=TeamRuntimeService(repo).mirror_session_metadata_payload(
-            state=state, agent_id=agent_id
-        ),
-    )
-
-
-def _try_mirror_activated_dispatch_session_metadata(
-    context: Any,
-    *,
-    repo: TeamStateRepository,
-    state: TeamState,
-    dispatch_id: str,
-) -> tuple[TeamState, bool]:
-    """Retry-safe bridge from durable activation to external session metadata."""
-
-    dispatch = state.dispatches.get(dispatch_id)
-    if (
-        dispatch is None
-        or dispatch.activation_completed_at is None
-        or not _dispatch_session_metadata_mirror_is_due(dispatch)
-    ):
-        return state, False
-    agent = state.agents.get(dispatch.agent_id)
-    if agent is None:
-        return state, False
-    updater = getattr(context, "session_metadata_updater", None)
-    if not callable(getattr(updater, "session_update_metadata", None)):
-        return state, False
-    try:
-        _mirror_session_metadata(
-            context,
-            repo=repo,
-            state=state,
-            agent_id=agent.id,
-            session_id=agent.session_id,
-        )
-        state = TeamRuntimeService(repo).mark_agent_dispatch_session_metadata_mirrored(
-            dispatch_id=dispatch.id,
-        )
-    except Exception:
-        logger.exception(
-            "Team session metadata mirror remains pending dispatch_id=%s session_id=%s",
-            dispatch.id,
-            agent.session_id,
-        )
-        return repo.read(), False
-    return state, True
-
-
-def _dispatch_session_metadata_mirror_is_due(dispatch: TeamDispatch) -> bool:
-    required_at = dispatch.completed_at or dispatch.activation_completed_at
-    if required_at is None:
-        return False
-    mirrored_at = dispatch.session_metadata_mirrored_at
-    return mirrored_at is None or _team_datetime_utc(mirrored_at) < _team_datetime_utc(required_at)
 
 
 def _cost_guard_blocked_teams(

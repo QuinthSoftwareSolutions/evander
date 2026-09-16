@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -55,6 +56,44 @@ class _ResolvedReferenceRepository:
 class _PreparedReferenceRepository:
     record: Any
     trust_reconciled: bool
+
+
+def _reference_preparation_fingerprint(
+    *,
+    repository: _ResolvedReferenceRepository,
+    clone_source: str,
+) -> str | None:
+    if repository.commit_sha is None:
+        return None
+    payload = {
+        "version": 1,
+        "managed_repo_id": repository.managed_repo_id,
+        "repo_name": repository.repo_name,
+        "repo_source": clone_source,
+        "source_ref": repository.source_ref,
+        "commit_sha": repository.commit_sha,
+        "configuration_version": _REFERENCE_REPO_CONFIG_VERSION,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _prepare_reference_repo_on_backend(
+    *,
+    backend: Any,
+    kwargs: dict[str, Any],
+    preparation_fingerprint: str | None,
+) -> Any:
+    try:
+        return backend.prepare_reference_repo(
+            **kwargs,
+            preparation_fingerprint=preparation_fingerprint,
+        )
+    except TypeError as exc:
+        if "preparation_fingerprint" not in str(exc):
+            raise
+        return backend.prepare_reference_repo(**kwargs)
 
 
 class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
@@ -180,6 +219,14 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                     repository=repository,
                     clone_source=clone_source,
                     refresh_upstream=refresh_upstream,
+                    preparation_fingerprint=(
+                        None
+                        if refresh_upstream
+                        else _reference_preparation_fingerprint(
+                            repository=repository,
+                            clone_source=clone_source,
+                        )
+                    ),
                 ): (repository, access_reused)
                 for repository, clone_source, access_reused in prepared_inputs
             }
@@ -216,6 +263,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                     "configuration_updated": bool(record.configuration_updated),
                     "access_reused": access_reused,
                     "trust_reconciled": prepared.trust_reconciled,
+                    "preparation_reused": bool(getattr(record, "preparation_reused", False)),
                 }
                 logger.info(
                     "metric_agent_prepare_reference_repository "
@@ -258,6 +306,8 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
             "success": True,
             "session_id": session_id,
             "repositories": ordered_results,
+            "preparation_reused": bool(ordered_results)
+            and all(item["preparation_reused"] for item in ordered_results),
         }
 
     def _prepare_reference_repository(
@@ -269,16 +319,21 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
         repository: _ResolvedReferenceRepository,
         clone_source: str,
         refresh_upstream: bool,
+        preparation_fingerprint: str | None,
     ) -> _PreparedReferenceRepository:
         try:
-            record = backend.prepare_reference_repo(
-                session_id=session_id,
-                repo_source=clone_source,
-                repo_name=repository.repo_name,
-                source_ref=repository.source_ref,
-                commit_sha=repository.commit_sha,
-                configuration_version=_REFERENCE_REPO_CONFIG_VERSION,
-                update_existing=refresh_upstream,
+            record = _prepare_reference_repo_on_backend(
+                backend=backend,
+                kwargs={
+                    "session_id": session_id,
+                    "repo_source": clone_source,
+                    "repo_name": repository.repo_name,
+                    "source_ref": repository.source_ref,
+                    "commit_sha": repository.commit_sha,
+                    "configuration_version": _REFERENCE_REPO_CONFIG_VERSION,
+                    "update_existing": refresh_upstream,
+                },
+                preparation_fingerprint=preparation_fingerprint,
             )
         except ContainerWorkerClientError as exc:
             transition = (
@@ -322,14 +377,18 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                     "managed Git reference-repository trust verification returned an "
                     "unexpected commit"
                 )
-            record = backend.prepare_reference_repo(
-                session_id=session_id,
-                repo_source=clone_source,
-                repo_name=repository.repo_name,
-                source_ref=repository.source_ref,
-                commit_sha=current_commit,
-                configuration_version=_REFERENCE_REPO_CONFIG_VERSION,
-                update_existing=True,
+            record = _prepare_reference_repo_on_backend(
+                backend=backend,
+                kwargs={
+                    "session_id": session_id,
+                    "repo_source": clone_source,
+                    "repo_name": repository.repo_name,
+                    "source_ref": repository.source_ref,
+                    "commit_sha": current_commit,
+                    "configuration_version": _REFERENCE_REPO_CONFIG_VERSION,
+                    "update_existing": True,
+                },
+                preparation_fingerprint=None,
             )
             return _PreparedReferenceRepository(record=record, trust_reconciled=True)
         return _PreparedReferenceRepository(record=record, trust_reconciled=False)

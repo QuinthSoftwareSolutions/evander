@@ -2369,7 +2369,11 @@ Teams Graph change notifications are optional and disabled by default. Set
 discovered one-on-one chat. `evander-teams-notifications.service` listens only on
 `change_notification_listener_host` and `change_notification_listener_port` (defaults
 `127.0.0.1:11882`); the managed Caddy configuration exposes only `/msgraph/teams/*` when a public
-callback base URL is configured. The defaults request a 48-hour subscription, renew 24 hours before
+callback base URL is configured. The listener acknowledges each durably queued callback and drains
+the notification queue in an independent background processor, so a slow serial fallback poll does
+not delay exact-message retrieval. The ingest worker also retains queue leasing as a restart-safe
+fallback. `/healthz` reports processor state and the oldest queued notification age. The defaults
+request a 48-hour subscription, renew 24 hours before
 expiry, and retain a 60-second reconciliation poll for healthy targets. Targets without a confirmed
 healthy subscription continue polling at `poll_interval_seconds` (two seconds by default) without a
 restart. Turning notifications off restores fast polling immediately, stops creation and renewal,

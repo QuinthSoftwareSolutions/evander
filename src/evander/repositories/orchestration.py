@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, Generic, Protocol, TypeVar
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -699,6 +700,122 @@ class SqliteExecutionRepository(Generic[TRecord]):
 
 
 class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
+    def record_completion_and_publish(
+        self,
+        *,
+        record: TRecord,
+        event_queue: Any,
+        event: Any,
+        idempotency_key: str,
+    ) -> str:
+        """Commit a terminal gate and its durable successor in one transaction."""
+
+        from evander.triggers.queue import TriggerQueueRecord
+
+        queue_path = Path(getattr(event_queue, "path", ""))
+        if queue_path != self.path:
+            raise ValueError("gate execution and trigger event stores must share one database")
+        queue_lock = getattr(event_queue, "_lock", None)
+        fetch_by_key = getattr(event_queue, "_fetch_record_by_idempotency_key", None)
+        fetch_by_id = getattr(event_queue, "_fetch_record", None)
+        insert_record = getattr(event_queue, "_insert_record", None)
+        if queue_lock is None or not all(
+            callable(item) for item in (fetch_by_key, fetch_by_id, insert_record)
+        ):
+            raise TypeError("trigger event queue does not support atomic gate publication")
+
+        normalized_key = str(idempotency_key or "").strip()
+        if not normalized_key:
+            raise ValueError("gate completion idempotency_key is required")
+        event_id = str(getattr(event, "event_id", "") or "").strip()
+        if not event_id:
+            raise ValueError("gate completion event_id is required")
+
+        created_event = False
+        with self._lock, queue_lock, connect_orchestration_db(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = fetch_by_key(connection, normalized_key)
+            if existing is None:
+                existing = fetch_by_id(connection, event_id)
+            if existing is None:
+                queued = TriggerQueueRecord(
+                    event_id=event_id,
+                    trigger_id=str(event.trigger_id),
+                    trigger_type=str(event.trigger_type),
+                    trace_id=str(event.trace_id),
+                    occurred_at=event.occurred_at,
+                    payload=dict(event.payload),
+                    delivery_state="pending",
+                    idempotency_key=normalized_key,
+                )
+                insert_record(connection, queued)
+                created_event = True
+            elif existing.event_id != event_id:
+                raise ValueError("gate completion idempotency key belongs to another event")
+
+            self._upsert_record(connection, record)
+            now = datetime.now(UTC)
+            if created_event and getattr(event_queue, "_journal", None) is not None:
+                self._append_journal_row(
+                    connection,
+                    event_id=str(uuid4()),
+                    event_type="workflow.trigger_event.published",
+                    source="trigger_queue",
+                    subject_id=event_id,
+                    occurred_at=now,
+                    payload={
+                        "trigger_id": str(event.trigger_id),
+                        "trigger_type": str(event.trigger_type),
+                    },
+                )
+            if self._journal is not None and self._journal_source is not None:
+                self._append_journal_row(
+                    connection,
+                    event_id=str(uuid4()),
+                    event_type="workflow.execution.updated",
+                    source=self._journal_source,
+                    subject_id=str(getattr(record, "execution_id")),
+                    occurred_at=now,
+                    payload={
+                        "event_id": str(getattr(record, "event_id", "")),
+                        "status": str(getattr(record, "status", "")),
+                    },
+                )
+        return event_id
+
+    @staticmethod
+    def _append_journal_row(
+        connection: Any,
+        *,
+        event_id: str,
+        event_type: str,
+        source: str,
+        subject_id: str | None,
+        occurred_at: datetime,
+        payload: dict[str, Any],
+    ) -> None:
+        journal_payload = {
+            "event_id": event_id,
+            "event_type": event_type,
+            "occurred_at": occurred_at.isoformat(),
+            "source": source,
+            "subject_id": subject_id,
+            "payload": payload,
+        }
+        connection.execute(
+            """INSERT INTO workflow_events(
+                   event_id, event_type, source, subject_id, occurred_at, payload_json
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                event_id,
+                event_type,
+                source,
+                subject_id,
+                datetime_to_storage(occurred_at),
+                json_dumps(journal_payload),
+            ),
+        )
+
     def find_latest_by_gate_id(self, gate_id: str) -> TRecord | None:
         return self.find_latest_execution_for_gate(gate_id)
 

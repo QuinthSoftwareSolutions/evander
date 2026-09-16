@@ -141,6 +141,8 @@ __all__ = [
 
 _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
+_GATE_CONTINUATION_MAX_EVENTS = 8
+_GATE_CONTINUATION_SLICE_SECONDS = 0.5
 _PHASE_LOG_THRESHOLD_SECONDS = 0.25
 _MANAGED_GIT_RECONCILE_INTERVAL_SECONDS = 300.0
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
@@ -904,7 +906,8 @@ class EffectOrchestratorWorker:
             queue_record: TriggerQueueRecord,
             dependency: tuple[ExecutionGraph, str, dict[str, Any]],
         ) -> EffectLoopExecution:
-            nonlocal effect_executions_started
+            nonlocal effect_executions_started, last_trigger_type
+            last_trigger_type = queue_record.trigger_type
             resolved_graph, resolved_config_revision, _cursor = dependency
             phase_started = time.perf_counter()
             execution_count = self._process_event_record(
@@ -930,6 +933,9 @@ class EffectOrchestratorWorker:
             1, int(getattr(active_config, "max_events_per_cycle", _DEFAULT_MAX_EVENTS_PER_CYCLE))
         )
         event_deadline = time.monotonic() + EVENT_SLICE_SECONDS
+        gate_continuation_deadline = time.monotonic() + _GATE_CONTINUATION_SLICE_SECONDS
+        consecutive_gate_events = 0
+        last_trigger_type = ""
         executions_recorded = 0
         while events_processed < max_events:
             # Reaping only publishes to the durable FIFO. Never call successors
@@ -939,8 +945,23 @@ class EffectOrchestratorWorker:
             loop_result = loop.run_once(max_events=1, resolve_and_execute=_resolve_and_execute)
             events_processed += loop_result.events_scanned
             executions_recorded += loop_result.executions_recorded
-            if not loop_result.events_scanned or time.monotonic() >= event_deadline:
+            if not loop_result.events_scanned:
                 break
+            if last_trigger_type.startswith("gate:"):
+                consecutive_gate_events += 1
+            else:
+                consecutive_gate_events = 0
+            now_monotonic = time.monotonic()
+            if now_monotonic < event_deadline:
+                continue
+            if (
+                consecutive_gate_events > 0
+                and consecutive_gate_events < _GATE_CONTINUATION_MAX_EVENTS
+                and now_monotonic < gate_continuation_deadline
+                and self.event_queue.list_pending(limit=1)
+            ):
+                continue
+            break
         pending_events_scanned = events_processed
         self._log_phase_duration(
             "event_loop",
@@ -966,7 +987,11 @@ class EffectOrchestratorWorker:
         completion_events_published += published_count
         # Gate deadlines remain independent of broad recovery cadence.
         completion_events_published += self._reconcile_gate_providers(graph=graph)
-        recovery_ran, recovered = self._run_due_recovery(graph=graph)
+        foreground_pending = bool(self.event_queue.list_pending(limit=1))
+        recovery_ran, recovered = self._run_due_recovery(
+            graph=graph,
+            foreground_pending=foreground_pending,
+        )
         completion_events_published += recovered
         with self._inflight_lock:
             has_inflight = bool(self._inflight)
@@ -1226,7 +1251,12 @@ class EffectOrchestratorWorker:
         published += count
         return published
 
-    def _run_due_recovery(self, *, graph: ExecutionGraph) -> tuple[bool, int]:
+    def _run_due_recovery(
+        self,
+        *,
+        graph: ExecutionGraph,
+        foreground_pending: bool = False,
+    ) -> tuple[bool, int]:
         schedule = getattr(self, "_recovery_schedule", None)
         if schedule is None:
             schedule = self._recovery_schedule = RecoverySchedule()
@@ -1242,12 +1272,16 @@ class EffectOrchestratorWorker:
                 self._completion_dispatch_hooks, key=lambda h: getattr(h, "maintenance_priority", 0)
             )
         ]
-        if not schedule.begin_if_due(tasks):
+        if not schedule.begin_if_due(tasks, foreground_pending=foreground_pending):
             return False, 0
         deadline = time.monotonic() + MAINTENANCE_SLICE_SECONDS
         changes = 0
         while schedule.pending:
             phase, hook = schedule.pending[0]
+            urgent = (
+                phase == "waiting_reconciliation"
+                and getattr(hook, "maintenance_priority", 0) < 0
+            )
             started = time.perf_counter()
             result = MaintenanceResult()
             try:
@@ -1271,10 +1305,32 @@ class EffectOrchestratorWorker:
                 changes=result.changes,
                 remaining=result.remaining,
                 budget_overrun=time.perf_counter() - started > MAINTENANCE_SLICE_SECONDS,
+                foreground_pending=foreground_pending,
+                recovery_deferred_seconds=schedule.deferred_seconds(
+                    foreground_pending=foreground_pending
+                ),
             )
             changes += result.changes
             if not result.remaining:
                 schedule.pending.popleft()
+            if foreground_pending:
+                # A newly due lease-renewal hook is deliberately first, but it
+                # must not consume the whole reserved recovery opportunity.
+                # Give the next ordinary hook one bounded slice as well.
+                # Rotate every continuation temporarily so one ordinary hook
+                # cannot monopolize that slot; begin_if_due() restores urgent
+                # lease priority next interval.
+                if result.remaining:
+                    schedule.pending.rotate(-1)
+                if urgent and any(
+                    not (
+                        pending_phase == "waiting_reconciliation"
+                        and getattr(pending_hook, "maintenance_priority", 0) < 0
+                    )
+                    for pending_phase, pending_hook in schedule.pending
+                ):
+                    continue
+                break
             if time.monotonic() >= deadline:
                 break
         return True, changes
@@ -2281,10 +2337,55 @@ class EffectOrchestratorWorker:
             **_effect_failure_outputs(failure),
         }
         finished_at = datetime.now(UTC)
+        try:
+            completion_event, completion_key, completion_event_id = (
+                self._build_gate_completion_event_from_record(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=AGENT_PROMPT_ERROR_PORT,
+                    preserved_context_node_ids=_gate_completion_preserved_context_node_ids(
+                        graph=graph,
+                        gate_id=gate.id,
+                        gate_type=gate.type,
+                    ),
+                )
+            )
+            atomic_publish = getattr(
+                self.gate_execution_store,
+                "record_completion_and_publish",
+                None,
+            )
+            queue_publish = getattr(self.event_queue, "publish", None)
+            atomic_queue = getattr(queue_publish, "__self__", None) is self.event_queue
+            if callable(atomic_publish) and atomic_queue:
+                record.status = "error_routed"
+                record.completion_pending_status = "error_routed"
+                record.completion_event_branch_port = AGENT_PROMPT_ERROR_PORT
+                record.outputs = outputs
+                record.published_event_id = completion_event_id
+                record.completion_event_enqueued_at = finished_at
+                record.finished_at = finished_at
+                record.error = error_message
+                atomic_publish(
+                    record=record,
+                    event_queue=self.event_queue,
+                    event=completion_event,
+                    idempotency_key=completion_key,
+                )
+                return True
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Atomic gate error-branch publication failed; preserving retry state "
+                "event_id=%s gate_id=%s",
+                record.event_id,
+                record.gate_id,
+            )
         record.status = COMPLETION_PENDING_STATUS
         record.completion_pending_status = "error_routed"
         record.completion_event_branch_port = AGENT_PROMPT_ERROR_PORT
         record.outputs = outputs
+        record.published_event_id = None
+        record.completion_event_enqueued_at = None
         record.finished_at = finished_at
         record.error = error_message
         self.gate_execution_store.record_execution(record)
@@ -2798,10 +2899,49 @@ class EffectOrchestratorWorker:
             config_revision=config_revision,
         )
         if publish_completion_event:
-            record.status = COMPLETION_PENDING_STATUS
-            record.completion_pending_status = status
             record.completion_event_branch_port = branch_port
             record.completion_event_for_execution_ids = for_execution_ids
+            try:
+                completion_event, completion_key, completion_event_id = (
+                    self._build_gate_completion_event_from_record(
+                        record=record,
+                        outputs=outputs,
+                        branch_port=branch_port,
+                        for_execution_ids=for_execution_ids,
+                        preserved_context_node_ids=preserved_context_node_ids,
+                    )
+                )
+                record.published_event_id = completion_event_id
+                record.completion_event_enqueued_at = finished_at
+                atomic_publish = getattr(
+                    self.gate_execution_store,
+                    "record_completion_and_publish",
+                    None,
+                )
+                queue_publish = getattr(self.event_queue, "publish", None)
+                atomic_queue = getattr(queue_publish, "__self__", None) is self.event_queue
+                if callable(atomic_publish) and atomic_queue:
+                    atomic_publish(
+                        record=record,
+                        event_queue=self.event_queue,
+                        event=completion_event,
+                        idempotency_key=completion_key,
+                    )
+                    return
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Atomic gate completion publication failed; preserving retry state "
+                    "event_id=%s gate_id=%s",
+                    record.event_id,
+                    record.gate_id,
+                )
+                record.published_event_id = None
+                record.completion_event_enqueued_at = None
+
+            record.published_event_id = None
+            record.completion_event_enqueued_at = None
+            record.status = COMPLETION_PENDING_STATUS
+            record.completion_pending_status = status
             self.gate_execution_store.record_execution(record)
             self._update_event_delivery_state(record.event_id)
             published_event_id = self._publish_gate_completion_event_or_mark_pending(
