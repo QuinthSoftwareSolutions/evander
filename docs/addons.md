@@ -1229,6 +1229,14 @@ is supplied by the delegating operator or workflow; it is not inferred from an a
 Host-side feature, release, and recovery consolidations remain
 governed separately by the managed repository's host commit identity.
 
+The same task-creation interfaces accept an optional full `git_base_commit_sha`.
+When a new integration boundary belongs to a Git-backed project and no commit is
+supplied, Team resolves its selected `git_base_branch` through the managed repository
+and stores that commit as an immutable baseline. Creation fails closed when the branch
+cannot be resolved. When a caller supplies a commit, Team first verifies that the object
+exists in the managed repository and is an ancestor of the selected branch tip. Ordinary
+coordination and leaf tasks retain branch-only behavior.
+
 For Azure DevOps intake, `effect:team:create-task` accepts `ado_work_item_id` and
 optional `ado_project`. The host fetches the work item in the Team project's directory
 and captures `System.AssignedTo` on initial creation. Its display name and email become
@@ -1957,6 +1965,14 @@ contracts may name required contribution tasks. The contract has two controls:
   that the final deliverable must cover. Each named task must be either a direct
   child or a declared dependency of the integration task; incidental children,
   descendants, and lineage-only `originating_task_id` links do not count.
+
+For new Git-backed work, keep the long-lived orchestration task coordination-only.
+After every required contribution has a current accepted deliverable, create a fresh
+integration boundary with those tasks as dependencies and required contributions. The
+fresh task snapshots the current base commit, composes the accepted commits above that
+baseline, and carries the consolidated deliverable through review. Do not repurpose the
+older coordination task as the aggregate submission boundary; Team rejects a Git-backed
+`integration_boundary: false` to `true` task update.
 
 An integration boundary cannot resolve through
 `team_update_task state=finished`. It resolves only when a current deliverable

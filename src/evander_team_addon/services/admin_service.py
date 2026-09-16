@@ -109,10 +109,12 @@ from .domain.case_task import (
     _correction_case_git_base_branch,
     _case_can_link_task,
     _link_task_to_case,
+    _normalized_task_git_base_commit,
     _resolve_new_task_git_base_branch,
     _set_task_git_base_branch,
     _sync_case_task_link,
     _task_graph_edit_error,
+    _task_integration_boundary_transition_error,
     _task_deliverable_contract_scope_error,
     _unlink_task_from_case,
     _validate_generic_case_source,
@@ -745,6 +747,38 @@ class TeamAdminService:
         if not isinstance(record, Mapping):
             raise RuntimeError("managed Git repository lookup returned an invalid record")
         return record.get("default_branch")
+
+    def _resolve_managed_git_branch_commit(
+        self,
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+        branch: str,
+        required_ancestor_shas: Sequence[str] | None = None,
+    ) -> object:
+        managed_git = self._managed_git_admin
+        if managed_git is None:
+            raise RuntimeError("managed Git branch-commit resolution is unavailable")
+        resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
+        if not callable(resolve_branch_commit):
+            raise RuntimeError("managed Git branch-commit resolution is unavailable")
+        commit_sha = resolve_branch_commit(
+            managed_repo_id,
+            directory_path=directory_path,
+            branch=branch,
+        )
+        if required_ancestor_shas and commit_sha is not None:
+            verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
+            if not callable(verify_ancestry):
+                raise RuntimeError("managed Git ancestry verification is unavailable")
+            verify_ancestry(
+                managed_repo_id,
+                directory_path=directory_path,
+                branch=branch,
+                commit_sha=commit_sha,
+                required_ancestor_shas=required_ancestor_shas,
+            )
+        return commit_sha
 
     def _set_project_repository_binding(
         self,
@@ -4304,6 +4338,13 @@ class TeamAdminService:
                     proposed_integration_boundary != task.integration_boundary
                     or proposed_deliverable_contract != task.deliverable_contract
                 )
+                transition_error = _task_integration_boundary_transition_error(
+                    state_model,
+                    task=task,
+                    proposed_integration_boundary=proposed_integration_boundary,
+                )
+                if transition_error is not None:
+                    raise ValueError(transition_error)
                 if task.mutation_policy is not None:
                     locked_fields = set(task.mutation_policy.locked_fields)
                     changed_locked_fields: list[str] = []
@@ -4500,6 +4541,66 @@ class TeamAdminService:
                 originating_task_id=normalized_originating_task_id,
                 parent_task_id=normalized_parent_task_id,
             )
+            resolved_git_base_branch = _resolve_new_task_git_base_branch(
+                state_model,
+                project_id=normalized_project_id,
+                explicit_git_base_branch=normalized_git_base_branch,
+                parent_task_id=normalized_parent_task_id,
+                case_id=inherited_case_id,
+                git_default_branch_resolver=(self._resolve_managed_git_default_branch),
+            )
+            effective_git_base_commit_sha = normalized_git_base_commit_sha
+            project = _require_present(
+                state_model.projects,
+                normalized_project_id,
+                "project",
+            )
+            if (
+                project.git is not None
+                and (
+                    effective_integration_boundary
+                    or effective_git_base_commit_sha is not None
+                )
+            ):
+                if resolved_git_base_branch is None:
+                    raise ValueError(
+                        f"integration boundary task {effective_task_id} has no concrete "
+                        "Git base branch to pin"
+                    )
+                try:
+                    resolved_branch_commit = _normalized_task_git_base_commit(
+                        self._resolve_managed_git_branch_commit(
+                            managed_repo_id=project.git.managed_repo_id,
+                            directory_path=project.git.directory_path,
+                            branch=resolved_git_base_branch,
+                            required_ancestor_shas=(
+                                [effective_git_base_commit_sha]
+                                if effective_git_base_commit_sha is not None
+                                else None
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"could not validate supplied Git base commit "
+                        f"{effective_git_base_commit_sha} against managed branch "
+                        f"{resolved_git_base_branch} for task {effective_task_id}: {exc}"
+                        if effective_git_base_commit_sha is not None
+                        else f"could not resolve immutable Git base commit for integration "
+                        f"boundary task {effective_task_id}: {exc}"
+                    ) from exc
+                if resolved_branch_commit is None:
+                    raise ValueError(
+                        f"managed branch {resolved_git_base_branch} has no commit against "
+                        f"which to validate supplied Git base commit "
+                        f"{effective_git_base_commit_sha} for task {effective_task_id}"
+                        if effective_git_base_commit_sha is not None
+                        else f"managed branch {resolved_git_base_branch} has no commit to pin "
+                        f"for integration boundary task {effective_task_id}"
+                    )
+                effective_git_base_commit_sha = (
+                    effective_git_base_commit_sha or resolved_branch_commit
+                )
             state_model.tasks[effective_task_id] = AgentTask(
                 id=effective_task_id,
                 owner_agent_id=normalized_owner_agent_id,
@@ -4525,15 +4626,8 @@ class TeamAdminService:
                     originating_task_id=normalized_originating_task_id,
                     parent_task_id=normalized_parent_task_id,
                 ),
-                git_base_branch=_resolve_new_task_git_base_branch(
-                    state_model,
-                    project_id=normalized_project_id,
-                    explicit_git_base_branch=normalized_git_base_branch,
-                    parent_task_id=normalized_parent_task_id,
-                    case_id=inherited_case_id,
-                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
-                ),
-                git_base_commit_sha=normalized_git_base_commit_sha,
+                git_base_branch=resolved_git_base_branch,
+                git_base_commit_sha=effective_git_base_commit_sha,
                 dependency_task_ids=normalized_dependency_task_ids or [],
                 task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
                 outcome_contract=effective_outcome_contract,
@@ -4716,6 +4810,13 @@ class TeamAdminService:
                     proposed_integration_boundary != task.integration_boundary
                     or proposed_deliverable_contract != task.deliverable_contract
                 )
+                transition_error = _task_integration_boundary_transition_error(
+                    state_model,
+                    task=task,
+                    proposed_integration_boundary=proposed_integration_boundary,
+                )
+                if transition_error is not None:
+                    raise ValueError(transition_error)
             if task.mutation_policy is not None:
                 locked_fields = set(task.mutation_policy.locked_fields)
                 changed_locked_fields: list[str] = []

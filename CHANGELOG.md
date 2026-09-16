@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-16 - Pin final integration provenance (0.43.1)
+
+- Snapshot the managed base-branch commit when a Git-backed integration boundary is created,
+  validate caller-supplied pins against managed branch ancestry, and keep the immutable review
+  baseline distinct from both the dependency-composed checkout receipt and prepared head.
+- Guide managers to coordinate long-running work separately and create the final integration task
+  only after its required contributions have current accepted deliverables; reject converting an
+  existing Git-backed coordination task into an unpinned integration boundary.
+
 ## 2026-09-16 - Read PR feedback attachments (0.43.0)
 
 - Add policy-controlled tools that list and download files linked from authorized Azure DevOps PR
