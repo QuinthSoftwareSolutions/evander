@@ -38,18 +38,10 @@ def previous_context_snapshot(state, dispatch):
 
 
 def prepare_case_context(repository, state, dispatch):
-    from .domain.wake import _dispatch_case_payloads
+    from .domain.wake import _dispatch_case_ids
 
     agent = state.agents[dispatch.agent_id]
-    scoped = _dispatch_case_payloads(state, agent=agent, dispatch=dispatch)
-    case_ids = sorted(
-        {case["id"] for case in scoped["cases"]}
-        | {
-            state.tasks[t].case_id
-            for t in dispatch.task_ids
-            if t in state.tasks and state.tasks[t].case_id
-        }
-    )
+    case_ids = sorted(_dispatch_case_ids(state, agent=agent, dispatch=dispatch))
     if not case_ids:
         return
     projects = [state.projects[p] for p in dispatch.project_ids if p in state.projects]
@@ -71,6 +63,8 @@ def prepare_case_context(repository, state, dispatch):
 
 
 def dispatch_case_contexts(state, dispatch_id, *, delta=False):
+    from .domain.wake import _dispatch_case_ids
+
     contexts = [
         {
             "snapshot_id": s.id,
@@ -98,7 +92,7 @@ def dispatch_case_contexts(state, dispatch_id, *, delta=False):
     if (
         not contexts
         and dispatch
-        and any(state.tasks[t].case_id for t in dispatch.task_ids if t in state.tasks)
+        and _dispatch_case_ids(state, agent=state.agents[dispatch.agent_id], dispatch=dispatch)
     ):
         return [
             {

@@ -93,18 +93,13 @@ def _case_payloads_for_team(state: TeamState, team_id: str) -> list[dict[str, An
     return [case.model_dump(mode="json") for case in cases]
 
 
-def _dispatch_case_payloads(
+def _dispatch_case_ids(
     state: TeamState,
     *,
     agent: PersistentAgent,
     dispatch: TeamDispatch,
-) -> dict[str, Any]:
-    """Partition active cases into dispatch detail and a bounded-prompt index source.
-
-    The dispatch is the authority for full case detail. A broader case index is
-    useful only for management and Chat wakes where an operator can refer to a
-    case by name without first supplying a durable record id.
-    """
+) -> set[str]:
+    """Resolve explicit dispatch links regardless of the linked case's status."""
 
     task_ids = set(dispatch.task_ids)
     related_case_ids: set[str] = set()
@@ -195,6 +190,26 @@ def _dispatch_case_payloads(
     related_case_ids.update(
         case.id for case in state.cases.values() if set(case.task_ids).intersection(task_ids)
     )
+    return {
+        case.id
+        for case in state.cases.values()
+        if case.team_id == agent.team_id and case.id in related_case_ids
+    }
+
+
+def _dispatch_case_payloads(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    dispatch: TeamDispatch,
+) -> dict[str, Any]:
+    """Partition active cases into dispatch detail and a bounded-prompt index source.
+
+    The dispatch is the authority for full case detail. A broader case index is
+    useful only for management and Chat wakes where an operator can refer to a
+    case by name without first supplying a durable record id.
+    """
+    related_case_ids = _dispatch_case_ids(state, agent=agent, dispatch=dispatch)
 
     active_cases = [
         case

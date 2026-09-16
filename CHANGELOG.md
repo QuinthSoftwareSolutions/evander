@@ -12,6 +12,8 @@
   wakes, using completed dispatches on the same native thread as the comparison baseline.
 - Add an operator context panel with recipe preview/version history and snapshot browsing.
   Keep note-taking advisory, existing completion gates unchanged and Team Memory separate.
+- Preserve resolved/closed case evidence in review wakes and freeze the displayed saved
+  recipe version when browsing history.
 - Document the staged APP integration; deployment and live workflow edits remain separate.
 
 ## 2026-09-15 - Lower orchestration handoff latency (0.41.1)

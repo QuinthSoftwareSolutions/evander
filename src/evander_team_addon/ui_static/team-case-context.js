@@ -11,6 +11,7 @@ export function safeSourceUrl(value) {
 
 export function createCaseContextController({ documentRoot, teamFetch, apiBase, getState, canMutate }) {
   let dialog, caseId, directoryPath, revision, recipes, selectedSnapshot = null;
+  let savedView = null;
   let generation = 0;
   const element = (tag, text = "") => {
     const node = documentRoot.createElement(tag);
@@ -97,11 +98,15 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     selectedSnapshot = null;
     const params = new URLSearchParams({ view_id: view.view_id, view_version: String(view.version), directory_path: directoryPath });
     const data = await request(`/cases/${encodeURIComponent(caseId)}/context?${params}`);
-    if (token === generation) render(data);
+    if (token === generation) {
+      savedView = data.view;
+      render(data);
+    }
   }
   async function open(id) {
     const token = ++generation;
     caseId = id;
+    savedView = null;
     const state = getState();
     const item = state.cases[id];
     directoryPath = state.projects[item?.project_id]?.directory_path || "root";
@@ -159,7 +164,8 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     }
     controls.append(edit, history, button("Freeze selected saved view", async () => {
       if (!canMutate("snapshot case context")) return;
-      const view = selected();
+      const view = savedView;
+      if (!view) throw new Error("Load a saved view before freezing it.");
       const data = await request("/case-context/snapshots", { case_id: caseId, directory_path: directoryPath,
         view_id: view.view_id, view_version: view.version, expected_revision: revision, request_id: crypto.randomUUID() });
       selectedSnapshot = data.snapshot_id; render(data.context); revision = data.revision;

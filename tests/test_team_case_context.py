@@ -332,6 +332,68 @@ def test_dispatch_brief_is_preserved_and_read_in_both_prompt_modes(case_repo):
         assert compact["case_contexts"] == contexts
 
 
+@pytest.mark.parametrize("status", ["resolved", "closed"])
+@pytest.mark.parametrize("review_target", ["deliverable", "release"])
+def test_review_dispatch_preserves_terminal_case_context(case_repo, status, review_target):
+    from evander_team_addon.models import Deliverable, ReleasePackage, ReviewRequest, TeamCaseStatus
+    from evander_team_addon.services.case_context_dispatch import (
+        dispatch_case_contexts,
+        prepare_case_context,
+    )
+    from evander_team_addon.services.domain.wake import _dispatch_case_payloads
+
+    record(case_repo, kind="decision")
+
+    def seed(state):
+        state.cases["case"].status = TeamCaseStatus(status)
+        state.cases["unrelated"] = TeamCase(
+            id="unrelated",
+            team_id="team",
+            project_id="project",
+            title="Unrelated closed case",
+            owner_agent_id="lead",
+            status=TeamCaseStatus.CLOSED,
+        )
+        state.deliverables["delivery"] = Deliverable(
+            id="delivery", task_id="task", producer_agent_id="worker", summary="Delivered"
+        )
+        state.tasks["task"].deliverable_ids = ["delivery"]
+        target = {"deliverable_id": "delivery"}
+        if review_target == "release":
+            state.release_packages["release"] = ReleasePackage(
+                id="release",
+                project_id="project",
+                deliverable_ids=["delivery"],
+                summary="Release",
+                candidate_commit_sha="1" * 40,
+            )
+            target = {"release_package_id": "release", "candidate_commit_sha": "1" * 40}
+        state.review_requests["review"] = ReviewRequest(
+            id="review", reviewer_agent_id="lead", **target
+        )
+
+    case_repo.update(seed)
+    _lease_agent_dispatch(case_repo, agent_id="lead", dispatch_id="review-dispatch")
+    case_repo.update(lambda s: prepare_case_context(case_repo, s, s.dispatches["review-dispatch"]))
+    state = case_repo.read()
+    dispatch = state.dispatches["review-dispatch"]
+    assert not dispatch.task_ids and dispatch.review_request_ids == ["review"]
+    contexts = dispatch_case_contexts(state, dispatch.id)
+    assert len(contexts) == 1
+    assert contexts[0]["case_ids"] == ["case"]
+    assert "Choose additive compatibility" in contexts[0]["text"]
+    snapshot = state.case_context_snapshots[contexts[0]["snapshot_id"]]
+    assert snapshot.view.view_id == "review-brief"
+    # Closed cases stay out of the active work/index projection.
+    active = _dispatch_case_payloads(state, agent=state.agents["lead"], dispatch=dispatch)
+    assert active["cases"] == [] and active["case_index"] == []
+    # If capture fails, review-only wakes must expose the retrieval fallback too.
+    state.case_context_snapshots.clear()
+    assert dispatch_case_contexts(state, dispatch.id)[0]["omissions"] == [
+        {"kind": "unavailable", "section": "case_context"}
+    ]
+
+
 def test_case_history_includes_reviews_verification_and_release_focus(case_repo):
     from evander_team_addon.models import (
         Deliverable,
