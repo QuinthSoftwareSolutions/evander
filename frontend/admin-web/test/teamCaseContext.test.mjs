@@ -217,8 +217,31 @@ test("loading complete evidence replaces a shortened preview and keeps only safe
             content: {
               id: "source-1",
               title: "Customer work item",
-              summary: "The complete captured request and discussion.",
+              provider_type: "azure_devops",
+              source_type: "work_item",
+              external_identifier: "14760",
+              external_version: "9",
+              fetched_at: "2026-09-15T08:30:00Z",
+              freshness_status: "current",
               effective_freshness_status: "current",
+              body: {
+                content: "Operators need a safe route when pallet fullness is unknown.",
+                format: "markdown",
+                metadata: {},
+              },
+              acceptance_criteria: [{
+                text: "Unknown fullness may proceed to pickup.",
+                external_id: "criterion-1",
+                status: "approved",
+                metadata: {},
+              }],
+              discussion: [{
+                body: "The customer confirmed the post-pickup hold behavior.",
+                external_id: "comment-1",
+                author: "Ada Operator",
+                occurred_at: "2026-09-15T09:00:00Z",
+                metadata: {},
+              }],
               links: [
                 { label: "Open work item", url: "https://dev.azure.com/example/item/14760" },
                 { label: "Unsafe", url: "javascript:alert(1)" },
@@ -261,7 +284,12 @@ test("loading complete evidence replaces a shortened preview and keeps only safe
 
   const text = visibleText(doc.body);
   assert.match(text, /Customer work item/);
-  assert.match(text, /The complete captured request and discussion/);
+  assert.match(text, /Freshness: Current/);
+  assert.match(text, /Operators need a safe route when pallet fullness is unknown/);
+  assert.match(text, /Unknown fullness may proceed to pickup/);
+  assert.match(text, /Approved/);
+  assert.match(text, /Ada Operator/);
+  assert.match(text, /The customer confirmed the post-pickup hold behavior/);
   assert.doesNotMatch(text, /preview ends before/);
   const links = [...doc.body.walk()].filter(node => node.tag === "a");
   assert.deepEqual(links.map(link => link.textContent), ["Open work item", "https://dev.azure.com/example/item/14760"]);
@@ -275,4 +303,15 @@ test("case context labels preserve common technical acronyms", () => {
     caseContextWarningText({ kind: "restricted", section: "verification" }),
     "Some verification evidence is outside your access scope.",
   );
+  const artifactWarning = caseContextWarningText({
+    kind: "artifact_omission",
+    section: "plans",
+    artifact_ref: "artifact-space:/teams/team/large-plan",
+    detail: "document too large: report.md",
+  });
+  assert.equal(
+    artifactWarning,
+    "Some content from the artifact bundle was omitted while it was read (artifact-space:/teams/team/large-plan): document too large: report.md.",
+  );
+  assert.doesNotMatch(artifactWarning, /Load complete records/);
 });

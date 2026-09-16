@@ -1084,6 +1084,49 @@ def test_artifact_plan_is_captured_with_provenance_and_scope(case_repo):
     assert "retain compatibility" in artifact["content"]["documents"][0]["content"]
 
 
+def test_artifact_bundle_omissions_are_distinct_from_preview_truncation(case_repo):
+    from evander_team_addon.models import Deliverable
+
+    artifact_ref = "artifact-space:/teams/team/plans/large"
+
+    def seed(state):
+        state.tasks["task"].deliverable_ids = ["plan"]
+        state.deliverables["plan"] = Deliverable(
+            id="plan",
+            task_id="task",
+            producer_agent_id="worker",
+            summary="Large plan",
+            artifact_refs=[artifact_ref],
+        )
+
+    case_repo.update(seed)
+    service = CaseContextService(
+        case_repo,
+        artifact_reader=lambda _ref, _item: {
+            "id": "artifact-version",
+            "artifact_ref": artifact_ref,
+            "documents": [{"path": "summary.md", "content": "Summary"}],
+            "omissions": ["document too large: report.md"],
+        },
+    )
+
+    context = service.assemble(case_ids=["case"])
+
+    artifact_warning = next(
+        warning for warning in context["omissions"] if warning.get("artifact_ref") == artifact_ref
+    )
+    assert artifact_warning == {
+        "kind": "artifact_omission",
+        "section": "plans",
+        "artifact_ref": artifact_ref,
+        "detail": "document too large: report.md",
+    }
+    assert not any(
+        warning["kind"] == "truncated" and warning.get("artifact_ref") == artifact_ref
+        for warning in context["omissions"]
+    )
+
+
 def test_detached_mcp_snapshot_grant_and_expired_session_policy(tmp_path):
     from datetime import UTC, datetime, timedelta
     from evander.gateway import create_server

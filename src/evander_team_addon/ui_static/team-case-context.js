@@ -41,6 +41,12 @@ export function caseContextWarningText(warning = {}) {
   const suffix = subject ? ` (${subject})` : "";
   switch (warning.kind) {
     case "truncated": return `${section} evidence was shortened in this overview${suffix}. Load complete records to read it all.`;
+    case "artifact_omission": {
+      const detail = typeof warning.detail === "string" && warning.detail.trim()
+        ? `: ${warning.detail.trim()}`
+        : "";
+      return `Some content from the artifact bundle was omitted while it was read${suffix}${detail}.`;
+    }
     case "paginated": return `${section} has ${warning.omitted_count || "more"} additional record${warning.omitted_count === 1 ? "" : "s"} not shown yet.`;
     case "restricted": return `Some ${section.toLowerCase()} evidence is outside your access scope.`;
     case "missing": return `No captured source evidence is linked to this case${suffix}.`;
@@ -133,6 +139,47 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     }
     return [`${humanizeCaseContextToken(record.entity_type)} record`, null];
   }
+  function appendNarrativeBlock(parent, label, content) {
+    const block = classed("div", "case-context-narrative-block");
+    block.append(classed("div", "case-context-field-label", label), content);
+    parent.append(block);
+  }
+  function appendSourceNarrative(parent, content) {
+    const body = content?.body;
+    if (body && typeof body === "object" && typeof body.content === "string" && body.content.trim()) {
+      appendNarrativeBlock(parent, "Captured content", classed("div", "case-context-field-text", body.content));
+    }
+
+    const criteria = Array.isArray(content?.acceptance_criteria)
+      ? content.acceptance_criteria.filter((criterion) => typeof criterion?.text === "string" && criterion.text.trim())
+      : [];
+    if (criteria.length) {
+      const list = classed("ul", "case-context-value-list");
+      for (const criterion of criteria) {
+        const row = element("li");
+        row.append(classed("span", "case-context-field-text", criterion.text));
+        if (criterion.status) row.append(pill(criterion.status));
+        list.append(row);
+      }
+      appendNarrativeBlock(parent, "Acceptance criteria", list);
+    }
+
+    const discussion = Array.isArray(content?.discussion)
+      ? content.discussion.filter((entry) => typeof entry?.body === "string" && entry.body.trim())
+      : [];
+    if (discussion.length) {
+      const list = classed("ul", "case-context-value-list");
+      for (const entry of discussion) {
+        const row = element("li");
+        const attribution = [entry.author, entry.occurred_at ? formatTimestamp(entry.occurred_at) : null]
+          .filter(Boolean).join(" · ");
+        if (attribution) row.append(classed("div", "case-context-record-meta", attribution));
+        row.append(classed("div", "case-context-field-text", entry.body));
+        list.append(row);
+      }
+      appendNarrativeBlock(parent, "Discussion", list);
+    }
+  }
   function renderRecord(record, { complete = false } = {}) {
     const card = classed("article", "case-context-record");
     const content = recordContent(record);
@@ -141,8 +188,9 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     const title = element("h4", heading);
     const badges = classed("div", "case-context-record-badges");
     badges.append(pill(record.entity_type, "neutral"));
-    const status = content?.status ?? content?.state;
-    if (status) badges.append(pill(status));
+    const freshness = record.entity_type === "source" ? content?.effective_freshness_status : null;
+    const status = freshness ?? content?.status ?? content?.state;
+    if (status) badges.append(pill(freshness ? `Freshness: ${freshness}` : status, tokenClass(status)));
     if (record.truncated && !complete) badges.append(pill("Shortened", "warning"));
     header.append(title, badges);
     card.append(header);
@@ -163,6 +211,7 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
         block.append(classed("div", "case-context-field-text", value));
         narrative.append(block);
       }
+      if (record.entity_type === "source") appendSourceNarrative(narrative, content);
       if (narrative.children.length) card.append(narrative);
 
       const links = Array.isArray(content.links) ? content.links : [];
