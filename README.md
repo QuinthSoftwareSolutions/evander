@@ -8,6 +8,8 @@ package, Git, and HTTP relays.
 
 For Team task-board filtering, progress permalinks and ADO intake setup, see
 [Case progress boards](docs/case-progress-boards.md).
+For decision journals, bounded wake deltas and configurable workflow context, see
+[Case context](docs/case-context.md).
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - Directory-scoped named connectors for approved REST and add-on operations, including

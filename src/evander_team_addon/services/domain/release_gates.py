@@ -668,6 +668,9 @@ def _materialize_candidate_verification_correction(
             state_entered_at=now,
         )
         state.tasks[task.id] = task
+        from .case_context_links import link_release_correction_case
+
+        link_release_correction_case(state, task, release)
         ensure_task_work_lineage(state, task)
         result.setdefault("created_task_ids", []).append(task.id)
     elif (
@@ -1048,6 +1051,9 @@ def materialize_release_review_rejection_correction(
             state_entered_at=now,
         )
         state.tasks[task.id] = task
+        from .case_context_links import link_release_correction_case
+
+        link_release_correction_case(state, task, release)
         ensure_task_work_lineage(state, task)
         result.setdefault("created_task_ids", []).append(task.id)
     elif (
@@ -2448,6 +2454,8 @@ def _candidate_manifest(
             ReleaseCandidateDeliverableEvidence(
                 deliverable_id=deliverable.id,
                 artifact_refs=list(deliverable.artifact_refs),
+                case_note_ids=list(deliverable.case_note_ids),
+                context_snapshot_ids=list(deliverable.context_snapshot_ids),
                 verification=deliverable.verification,
                 verification_waiver=waivers.get(deliverable.id),
                 accepted_reviews=review_evidence,
