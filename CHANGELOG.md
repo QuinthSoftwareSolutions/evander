@@ -3,7 +3,8 @@
 ## 2026-09-16 - Read PR feedback attachments (0.43.0)
 
 - Add policy-controlled tools that list and download files linked from authorized Azure DevOps PR
-  feedback, using host credentials and opaque staged artifacts for guest workspace copies.
+  feedback, using host credentials, canonical feedback-scoped attachment routes, and opaque staged
+  artifacts for guest workspace copies.
 - Grant the attachment flow to PR-tracked sessions and document it in the built-in agent workflow
   prompts without exposing provider URLs or credentials to agents.
 

@@ -43,9 +43,11 @@ from evander.models import (
 )
 from evander.policy import PolicyError
 from evander.pr_feedback.providers import (
+    ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY,
     AzureDevOpsFeedbackAdapter,
     GitHubFeedbackAdapter,
     extract_ado_pr_feedback_attachments,
+    require_ado_pr_feedback_attachment_url,
 )
 from evander.runtime import RuntimeContext
 from evander.services import TeamsInlineMediaProvider
@@ -279,14 +281,18 @@ class InlineMediaHelpers:
                 comment_id=comment_id,
             )
             if refs:
-                return [
-                    (
-                        ref,
-                        self.raw_inline_media_for_id(raw_item, ref.media_id)
-                        or ref.model_dump(mode="json"),
-                    )
-                    for ref in refs
-                ]
+                return self.scope_pr_feedback_media(
+                    request,
+                    raw_item,
+                    [
+                        (
+                            ref,
+                            self.raw_inline_media_for_id(raw_item, ref.media_id)
+                            or ref.model_dump(mode="json"),
+                        )
+                        for ref in refs
+                    ],
+                )
         media: list[tuple[InlineMediaRef, dict[str, Any]]] = []
         media.extend(
             self.inline_media_refs_from_raw(
@@ -307,7 +313,50 @@ class InlineMediaHelpers:
                 comment_id=comment_id,
             )
         )
-        return media
+        return self.scope_pr_feedback_media(request, raw_item, media)
+
+    def scope_pr_feedback_media(
+        self,
+        request: ListInlineMediaRequest,
+        raw_feedback: dict[str, Any],
+        media: list[tuple[InlineMediaRef, dict[str, Any]]],
+    ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
+        provider = normalize_inline_media_provider(str(raw_feedback.get("provider") or ""))
+        if provider != "azure_devops":
+            return media
+        repo = str(raw_feedback.get("repo") or "").strip()
+        pr_id = str(raw_feedback.get("pr_id") or "").strip()
+        resolved_config = self.context.resolve_provider_config_for_session(request.session_id)
+        scoped: list[tuple[InlineMediaRef, dict[str, Any]]] = []
+        for ref, raw in media:
+            if ref.url:
+                try:
+                    require_ado_pr_feedback_attachment_url(
+                        url=ref.url,
+                        organization_url=resolved_config.azure_devops_organization_url,
+                        project=resolved_config.azure_devops_project,
+                        repo=repo,
+                        pr_id=pr_id,
+                    )
+                except ValueError:
+                    continue
+            scoped.append(
+                (
+                    ref.model_copy(
+                        update={
+                            "metadata": {
+                                **ref.metadata,
+                                ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY: {
+                                    "repo": repo,
+                                    "pr_id": pr_id,
+                                },
+                            }
+                        }
+                    ),
+                    raw,
+                )
+            )
+        return scoped
 
     def pr_feedback_attachments(
         self,
@@ -338,23 +387,26 @@ class InlineMediaHelpers:
                 "PR feedback attachment download currently supports Azure DevOps feedback"
             )
 
+        resolved_config = self.context.resolve_provider_config_for_session(request.session_id)
         refs = extract_ado_pr_feedback_attachments(
             content=str(raw_item.get("body") or ""),
+            organization_url=resolved_config.azure_devops_organization_url,
+            project=resolved_config.azure_devops_project,
             feedback_id=request.feedback_id,
             repo=repo,
             pr_id=pr_id,
             thread_id=str(raw_item.get("thread_id") or "").strip() or None,
             comment_id=str(raw_item.get("comment_id") or "").strip() or None,
         )
-        resolved_config = self.context.resolve_provider_config_for_session(request.session_id)
-        allowed_host = urlparse(resolved_config.azure_devops_organization_url).hostname
         safe_refs: list[PrFeedbackAttachmentRef] = []
         for ref in refs:
             try:
-                require_provider_media_url(
-                    provider=ref.provider,
+                require_ado_pr_feedback_attachment_url(
                     url=ref.url,
-                    allowed_hosts=[allowed_host] if allowed_host else [],
+                    organization_url=resolved_config.azure_devops_organization_url,
+                    project=resolved_config.azure_devops_project,
+                    repo=repo,
+                    pr_id=pr_id,
                 )
             except ValueError:
                 continue
@@ -392,7 +444,13 @@ class InlineMediaHelpers:
             mime_type=ref.mime_type,
             byte_count=ref.byte_count,
             url=ref.url,
-            metadata=ref.metadata,
+            metadata={
+                **ref.metadata,
+                ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY: {
+                    "repo": ref.repo,
+                    "pr_id": ref.pr_id,
+                },
+            },
         )
         return self.download_inline_media_bytes(
             inline_request,

@@ -36,6 +36,8 @@ _ADO_COMPACT_MENTION_ID_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\s*>"
 )
 _INLINE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+_MAX_ADO_PATH_DECODE_PASSES = 5
+ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY = "ado_pr_feedback_attachment_scope"
 
 
 class _HtmlInlineMediaParser(HTMLParser):
@@ -217,6 +219,128 @@ def _looks_like_ado_attachment_url(url: str) -> bool:
     path = parsed.path.lower()
     return "/_apis/wit/attachments/" in path or (
         "/_apis/git/repositories/" in path and "/pullrequests/" in path and "/attachments/" in path
+    )
+
+
+def _fully_unquote_ado_path_segment(segment: str) -> str:
+    decoded = segment
+    for _ in range(_MAX_ADO_PATH_DECODE_PASSES):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            return decoded
+        decoded = next_decoded
+    if unquote(decoded) != decoded:
+        raise ValueError("Azure DevOps attachment URL path is too deeply percent-encoded")
+    return decoded
+
+
+def _canonical_ado_path_segments(path: str) -> list[str]:
+    if not path.startswith("/") or path.startswith("//") or path.endswith("/"):
+        raise ValueError("Azure DevOps attachment URL path is not canonical")
+    raw_segments = path[1:].split("/")
+    if not raw_segments or any(not segment for segment in raw_segments):
+        raise ValueError("Azure DevOps attachment URL path is not canonical")
+    segments: list[str] = []
+    for raw_segment in raw_segments:
+        segment = _fully_unquote_ado_path_segment(raw_segment)
+        if segment in {".", ".."}:
+            raise ValueError("Azure DevOps attachment URL path must not contain dot segments")
+        if "/" in segment or "\\" in segment:
+            raise ValueError(
+                "Azure DevOps attachment URL path must not contain encoded path separators"
+            )
+        segments.append(segment)
+    return segments
+
+
+def _ado_expected_segment(value: str, *, field_name: str) -> str:
+    segment = _fully_unquote_ado_path_segment(str(value or "").strip())
+    if not segment or segment in {".", ".."} or "/" in segment or "\\" in segment:
+        raise ValueError(f"Azure DevOps {field_name} is not a canonical path segment")
+    return segment
+
+
+def require_ado_pr_feedback_attachment_url(
+    *,
+    url: str,
+    organization_url: str,
+    project: str,
+    repo: str,
+    pr_id: str,
+) -> None:
+    """Require one canonical, feedback-scoped Azure DevOps attachment endpoint."""
+
+    configured = urlparse(organization_url)
+    candidate = urlparse(url)
+    allowed_host = configured.hostname
+    require_provider_media_url(
+        provider="azure_devops",
+        url=url,
+        allowed_hosts=[allowed_host] if allowed_host else [],
+    )
+    try:
+        candidate_port = candidate.port
+    except ValueError as exc:
+        raise ValueError("Azure DevOps attachment URL has an invalid port") from exc
+    if (
+        candidate.username is not None
+        or candidate.password is not None
+        or candidate_port is not None
+        or candidate.params
+        or candidate.fragment
+    ):
+        raise ValueError("Azure DevOps attachment URL contains unsupported authority or URL parts")
+
+    configured_segments = (
+        _canonical_ado_path_segments(configured.path.rstrip("/"))
+        if configured.path.rstrip("/")
+        else []
+    )
+    if (configured.hostname or "").casefold() == "dev.azure.com":
+        if len(configured_segments) != 1:
+            raise ValueError("Azure DevOps organization URL must identify exactly one organization")
+        root_segments = [configured_segments[0]]
+    elif (configured.hostname or "").casefold().endswith(".visualstudio.com"):
+        if configured_segments:
+            raise ValueError("Azure DevOps organization URL must not include a path")
+        root_segments = []
+    else:
+        raise ValueError("Azure DevOps organization URL host is not supported")
+
+    expected_project = _ado_expected_segment(project, field_name="project")
+    expected_repo = _ado_expected_segment(
+        _normalize_azure_devops_repo_identifier(repo),
+        field_name="repository",
+    )
+    expected_pr_id = _ado_expected_segment(pr_id, field_name="pull request id")
+    segments = _canonical_ado_path_segments(candidate.path)
+    if [segment.casefold() for segment in segments[: len(root_segments)]] != [
+        segment.casefold() for segment in root_segments
+    ]:
+        raise ValueError(
+            "Azure DevOps attachment URL organization does not match the feedback stream"
+        )
+    route = segments[len(root_segments) :]
+    folded_route = [segment.casefold() for segment in route]
+    if len(route) == 4 and folded_route[:3] == ["_apis", "wit", "attachments"]:
+        return
+    if not route or route[0].casefold() != expected_project.casefold():
+        raise ValueError("Azure DevOps attachment URL project does not match the feedback stream")
+    route = route[1:]
+    folded_route = [segment.casefold() for segment in route]
+    if len(route) == 4 and folded_route[:3] == ["_apis", "wit", "attachments"]:
+        return
+    if (
+        len(route) == 8
+        and folded_route[:3] == ["_apis", "git", "repositories"]
+        and route[3].casefold() == expected_repo.casefold()
+        and folded_route[4] == "pullrequests"
+        and route[5].casefold() == expected_pr_id.casefold()
+        and folded_route[6] == "attachments"
+    ):
+        return
+    raise ValueError(
+        "Azure DevOps attachment URL is not a canonical attachment route for the feedback stream"
     )
 
 
@@ -482,6 +606,8 @@ def _extract_ado_inline_media(
 def extract_ado_pr_feedback_attachments(
     *,
     content: str,
+    organization_url: str,
+    project: str,
     feedback_id: str,
     repo: str,
     pr_id: str,
@@ -523,6 +649,16 @@ def extract_ado_pr_feedback_attachments(
         if url in seen_urls:
             continue
         seen_urls.add(url)
+        try:
+            require_ado_pr_feedback_attachment_url(
+                url=url,
+                organization_url=organization_url,
+                project=project,
+                repo=repo,
+                pr_id=pr_id,
+            )
+        except ValueError:
+            continue
         filename = _filename_from_url(url, fallback=fallback)
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
         refs.append(
@@ -612,6 +748,7 @@ def _download_url_with_optional_headers(
     max_bytes: int | None = None,
     provider: str | None = None,
     allowed_hosts: Iterable[str] | None = None,
+    url_validator: Callable[[str], None] | None = None,
 ) -> tuple[bytes, str | None]:
     return download_url_with_limit(
         url=url,
@@ -620,6 +757,7 @@ def _download_url_with_optional_headers(
         max_bytes=max_bytes,
         provider=provider,
         allowed_hosts=allowed_hosts,
+        url_validator=url_validator,
     )
 
 
@@ -911,17 +1049,33 @@ class AzureDevOpsFeedbackAdapter:
         if not media.url:
             raise ValueError("Azure DevOps inline media does not include a download URL")
         allowed_host = urlparse(self.organization_url).hostname
-        require_provider_media_url(
-            provider=self.provider_name,
-            url=media.url,
-            allowed_hosts=[allowed_host] if allowed_host else [],
-        )
+        url_validator: Callable[[str], None] | None = None
+        if media.source_kind in {"pr_feedback", "pr_feedback_attachment"}:
+            scope = media.metadata.get(ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY)
+            if not isinstance(scope, dict):
+                raise ValueError("Azure DevOps PR feedback media is missing attachment scope")
+            scope_repo = str(scope.get("repo") or "").strip()
+            scope_pr_id = str(scope.get("pr_id") or "").strip()
+            if not scope_repo or not scope_pr_id:
+                raise ValueError("Azure DevOps PR feedback media has incomplete attachment scope")
+
+            def validate_scoped_url(candidate_url: str) -> None:
+                require_ado_pr_feedback_attachment_url(
+                    url=candidate_url,
+                    organization_url=self.organization_url,
+                    project=self.project,
+                    repo=scope_repo,
+                    pr_id=scope_pr_id,
+                )
+
+            url_validator = validate_scoped_url
         content, mime_type = _download_url_with_optional_headers(
             url=media.url,
             headers=self._headers(),
             max_bytes=max_bytes,
             provider=self.provider_name,
             allowed_hosts=[allowed_host] if allowed_host else [],
+            url_validator=url_validator,
         )
         return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 

@@ -170,3 +170,53 @@ def test_download_inline_media_rejects_unvalidated_redirect(
             url="https://github.com/user-attachments/assets/abc",
             provider="github",
         )
+
+
+def test_download_inline_media_applies_resource_validator_to_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allowed_url = "https://dev.azure.com/example/Project/_apis/wit/attachments/trace-id"
+    redirected_url = "https://dev.azure.com/example/Project/_apis/git/repositories"
+    calls: list[str] = []
+
+    class FakeResponse:
+        status_code = 302
+        url = allowed_url
+        headers = {"location": redirected_url}
+        is_redirect = True
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def stream(self, method: str, url: str, **kwargs: object) -> FakeResponse:
+            calls.append(url)
+            return FakeResponse()
+
+    def validate_attachment_url(url: str) -> None:
+        if url != allowed_url:
+            raise ValueError("not the authorized attachment resource")
+
+    monkeypatch.setattr("evander.inline_media.httpx.Client", FakeClient)
+
+    with pytest.raises(ValueError, match="not the authorized attachment resource"):
+        download_url_with_limit(
+            url=allowed_url,
+            provider="azure_devops",
+            allowed_hosts=["dev.azure.com"],
+            url_validator=validate_attachment_url,
+        )
+
+    assert calls == [allowed_url]

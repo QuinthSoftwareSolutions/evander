@@ -606,6 +606,14 @@ def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
         "https://attacker.example/Project/_apis/git/repositories/repo-1/"
         "pullRequests/9299/attachments/forged.pdf"
     )
+    traversal_url = (
+        "https://dev.azure.com/example/Project/_apis/wit/attachments/"
+        "../../git/repositories?api-version=7.1"
+    )
+    cross_repo_url = (
+        "https://dev.azure.com/example/Project/_apis/git/repositories/other-repo/"
+        "pullRequests/9299/attachments/other.pdf"
+    )
     download_calls: list[str | None] = []
 
     class FakeAzureDevOpsFeedbackAdapter:
@@ -646,11 +654,12 @@ def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
             allowed_tools=[
                 ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
                 ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+                ToolName.LIST_INLINE_MEDIA,
             ],
             communication_file_receive_enabled=True,
             communication_file_max_bytes=1024,
-            communication_file_allowed_mime_types=["application/pdf"],
-            communication_file_allowed_extensions=[".pdf"],
+            communication_file_allowed_mime_types=["application/json", "application/pdf"],
+            communication_file_allowed_extensions=[".json", ".pdf"],
             metadata={
                 "pr_feedback_streams": [
                     {"provider": "azure_devops", "repo": "repo-1", "pr_id": "9299"}
@@ -668,8 +677,33 @@ def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
             thread_id="45",
             comment_id="93",
             author="reviewer",
-            body=f"[review notes]({attachment_url}) [forged]({forged_url})",
+            body=(
+                f"[review notes]({attachment_url}) [forged]({forged_url}) "
+                f"[repos.json]({traversal_url}) [other]({cross_repo_url})"
+            ),
             created_at=datetime.now(UTC),
+            inline_media=[
+                {
+                    "source_kind": "pr_feedback",
+                    "provider": "azure_devops",
+                    "resource_id": "azure_devops:thread_comment:45:93",
+                    "comment_id": "93",
+                    "media_id": "valid-inline",
+                    "filename": "review notes.pdf",
+                    "mime_type": "application/pdf",
+                    "url": attachment_url,
+                },
+                {
+                    "source_kind": "pr_feedback",
+                    "provider": "azure_devops",
+                    "resource_id": "azure_devops:thread_comment:45:93",
+                    "comment_id": "93",
+                    "media_id": "traversal-inline",
+                    "filename": "repos.json",
+                    "mime_type": "application/json",
+                    "url": traversal_url,
+                },
+            ],
         )
     )
     server = create_server(context)
@@ -693,6 +727,18 @@ def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
     assert attachment["filename"] == "review notes.pdf"
     assert attachment["mime_type"] == "application/pdf"
     assert "url" not in attachment
+
+    inline_media = call_tool(
+        server,
+        "list_inline_media",
+        {
+            "session_id": "session-1",
+            "source_kind": "pr_feedback",
+            "provider": "azure_devops",
+            "resource_id": "azure_devops:thread_comment:45:93",
+        },
+    )
+    assert [item["media_id"] for item in inline_media["media"]] == ["valid-inline"]
 
     downloaded = call_tool(
         server,
