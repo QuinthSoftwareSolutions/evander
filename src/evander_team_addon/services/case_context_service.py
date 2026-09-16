@@ -81,6 +81,14 @@ class CaseContextAccess:
             and (self.reader is None or self.reader._task_visible(task))
         )
 
+    def release_visible(self, release_id):
+        release = self.state.release_packages.get(release_id)
+        return bool(
+            release
+            and self.project_visible(release.project_id)
+            and (self.reader is None or self.reader.get_release_package(release_id) is not None)
+        )
+
     def source_visible(self, source_id):
         source = self.state.external_source_evidence_snapshots.get(source_id)
         if source is None:
@@ -340,16 +348,34 @@ def resolve_scope(state, *, case_ids=(), task_id=None, release_package_id=None):
             for run in state.release_verification_runs.values()
             if run.release_package_id == rid and run.correction_task_id
         )
-    pending_deliverables = list(deliverables)
-    while pending_deliverables:
-        did = pending_deliverables.pop()
-        item = state.deliverables.get(did)
-        if item:
-            tasks.add(item.task_id)
-            for sid in item.source_deliverable_ids:
-                if sid not in deliverables:
-                    deliverables.add(sid)
-                    pending_deliverables.append(sid)
+    if not release_package_id:
+        # Task-scoped work can already include contributions before a release exists.
+        # Explicit release scope must remain pinned to its selected deliverables.
+        deliverables.update(
+            did for tid in tasks if tid in state.tasks for did in state.tasks[tid].deliverable_ids
+        )
+    traversed_deliverables = set()
+
+    def include_contributions(seed_ids):
+        seed_ids = set(seed_ids)
+        deliverables.update(seed_ids)
+        pending_deliverables = list(seed_ids - traversed_deliverables)
+        contributing_tasks = set()
+        while pending_deliverables:
+            did = pending_deliverables.pop()
+            if did in traversed_deliverables:
+                continue
+            traversed_deliverables.add(did)
+            item = state.deliverables.get(did)
+            if item:
+                contributing_tasks.add(item.task_id)
+                deliverables.update(item.source_deliverable_ids)
+                pending_deliverables.extend(
+                    sid for sid in item.source_deliverable_ids if sid not in traversed_deliverables
+                )
+        return contributing_tasks
+
+    tasks.update(include_contributions(deliverables))
     if not release_package_id and requested_cases:
         tasks = {
             t
@@ -371,7 +397,21 @@ def resolve_scope(state, *, case_ids=(), task_id=None, release_package_id=None):
                 tasks.add(ancestor)
                 queue.append(ancestor)
         if not release_package_id:
-            deliverables.update(task.deliverable_ids)
+            # Ancestors/dependencies can introduce more contributions; visit their
+            # tasks too, retaining the case boundary used for the initial traversal.
+            for related_id in include_contributions(task.deliverable_ids):
+                related = state.tasks.get(related_id)
+                if (
+                    related_id not in tasks
+                    and related
+                    and (
+                        not requested_cases
+                        or not related.case_id
+                        or related.case_id in requested_cases
+                    )
+                ):
+                    tasks.add(related_id)
+                    queue.append(related_id)
     if not cases:
         raise ValueError("context scope has no linked case")
     if len(cases) > 100:
@@ -413,13 +453,14 @@ def collect_evidence(
         raise PermissionError("case context is unavailable in this scope")
     if task_id and not access.task_visible(task_id):
         raise PermissionError("task context is unavailable in this scope")
-    if (
-        release_package_id
-        and access.reader
-        and (access.reader.get_release_package(release_package_id) is None)
-    ):
+    if release_package_id and not access.release_visible(release_package_id):
         raise PermissionError("release context is unavailable in this scope")
     warnings = []
+    # Filter roots before using them to select any associated review/verification evidence.
+    visible_releases = {rid for rid in releases if access.release_visible(rid)}
+    if visible_releases != releases:
+        warnings.append({"kind": "restricted", "section": "verification"})
+    releases = visible_releases
     visible_cases = {c for c in cases if access.case_visible(c)}
     if visible_cases != cases:
         warnings.append({"kind": "restricted", "section": "request"})
@@ -430,6 +471,14 @@ def collect_evidence(
     if visible_tasks != tasks:
         warnings.append({"kind": "restricted", "section": "tasks"})
     tasks = visible_tasks
+    visible_deliverables = {
+        did
+        for did in deliverables
+        if did in state.deliverables and state.deliverables[did].task_id in tasks
+    }
+    if visible_deliverables != deliverables:
+        warnings.append({"kind": "unavailable", "section": "delivery"})
+    deliverables = visible_deliverables
     evidence = {s: [] for s in SECTION_NAMES}
     sources = set()
     for cid in sorted(cases):

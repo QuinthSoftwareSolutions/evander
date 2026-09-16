@@ -444,6 +444,384 @@ def test_case_history_includes_reviews_verification_and_release_focus(case_repo)
         )
 
 
+@pytest.fixture
+def scoped_release_repo(case_repo):
+    from evander_team_addon.models import (
+        Deliverable,
+        HumanReviewDecision,
+        HumanReviewFinding,
+        HumanReviewRequest,
+        ReleasePackage,
+        ReleaseVerificationRun,
+        ReviewRequest,
+    )
+    from evander_team_addon.services.admin_service import TeamAdminService
+
+    TeamAdminService(case_repo).create_project(
+        project_id="private-project",
+        team_id="team",
+        name="Private project",
+        lead_agent_id="private-lead",
+        lead_session_id="session-private-lead",
+        directory_path="root/b",
+    )
+
+    def seed(state):
+        state.projects["project"].directory_path = "root/a"
+        state.cases["private-case"] = state.cases["case"].model_copy(
+            update={
+                "id": "private-case",
+                "project_id": "private-project",
+                "task_ids": ["private-task"],
+            }
+        )
+        state.tasks["private-task"] = state.tasks["task"].model_copy(
+            update={
+                "id": "private-task",
+                "project_id": "private-project",
+                "case_id": "private-case",
+                "owner_agent_id": "private-lead",
+                "created_by_agent_id": "private-lead",
+            }
+        )
+        for prefix, project, task in (
+            ("", "project", "task"),
+            ("private-", "private-project", "private-task"),
+        ):
+            text = "OUT_OF_SCOPE_EVIDENCE" if prefix else "Authorized review evidence"
+            state.deliverables[prefix + "delivery"] = Deliverable(
+                id=prefix + "delivery", task_id=task, producer_agent_id="worker", summary=text
+            )
+            state.tasks[task].deliverable_ids = [prefix + "delivery"]
+            state.release_packages[prefix + "release"] = ReleasePackage(
+                id=prefix + "release",
+                project_id=project,
+                deliverable_ids=[prefix + "delivery"],
+                summary=text,
+                candidate_commit_sha="1" * 40,
+                candidate_tree_hash="2" * 40,
+            )
+            for target in ("release", "delivery"):
+                values = (
+                    {"release_package_id": prefix + "release", "candidate_commit_sha": "1" * 40}
+                    if target == "release"
+                    else {"deliverable_id": prefix + "delivery"}
+                )
+                state.review_requests[prefix + target + "-review"] = ReviewRequest(
+                    id=prefix + target + "-review",
+                    reviewer_agent_id="lead",
+                    findings=[text],
+                    **values,
+                )
+            state.release_verification_runs[prefix + "verification"] = ReleaseVerificationRun(
+                id=prefix + "verification",
+                release_package_id=prefix + "release",
+                candidate_commit_sha="1" * 40,
+                session_id="verifier",
+                error=text,
+            )
+            state.human_review_requests[prefix + "human"] = HumanReviewRequest(
+                id=prefix + "human",
+                release_package_id=prefix + "release",
+                candidate_commit_sha="1" * 40,
+                candidate_tree_hash="2" * 40,
+                state="preparing",
+                requirement_snapshot={
+                    "directory_path": state.projects[project].directory_path,
+                    "configured_group_ids": ["reviewers"],
+                    "initially_eligible_user_ids": [],
+                    "test_instructions": text,
+                },
+            )
+            state.human_review_decisions[prefix + "decision"] = HumanReviewDecision(
+                id=prefix + "decision",
+                human_review_request_id=prefix + "human",
+                reviewer_user_id="operator",
+                reviewer_display_name_snapshot="Operator",
+                decision="blocked",
+                request_id=prefix + "decision",
+                summary=text,
+            )
+            state.human_review_findings[prefix + "finding"] = HumanReviewFinding(
+                id=prefix + "finding",
+                source_human_review_request_id=prefix + "human",
+                text=text,
+                correction_task_id=task,
+            )
+
+    case_repo.update(seed)
+    return case_repo
+
+
+def test_operator_context_rejects_cross_directory_release_and_snapshot(scoped_release_repo):
+    import asyncio
+    import httpx
+    from evander.addons import AddonContext
+    from evander_team_addon.api import admin_api_routes
+    from starlette.applications import Starlette
+    from test_team_external_source_evidence import _PrivilegedAuth
+
+    repo = scoped_release_repo
+
+    class DirectoryOwnerAuth(_PrivilegedAuth):
+        @staticmethod
+        def can(_request, permission, directory_path=None):
+            return permission == "admin.owner" and directory_path == "root/a"
+
+    async def exercise():
+        app = Starlette(
+            routes=admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=repo.runtime_dir,
+                    addon_runtime_dir=repo.runtime_dir / "addons/team-addon",
+                    auth=DirectoryOwnerAuth(),
+                )
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            direct = await client.get("/cases/private-case/context")
+            assert direct.status_code == 403
+            before = repo.read().revision
+            response = await client.get("/cases/case/context?release_package_id=private-release")
+            assert response.status_code == 403, response.text
+            recipe = {"view_id": "preview", "title": "Preview", "sections": [{"name": "review"}]}
+            preview = await client.post(
+                "/case-context/preview",
+                json={
+                    "case_id": "case",
+                    "release_package_id": "private-release",
+                    "view": recipe,
+                },
+            )
+            assert preview.status_code == 403, preview.text
+            frozen = await client.post(
+                "/case-context/snapshots",
+                json={
+                    "case_id": "case",
+                    "release_package_id": "private-release",
+                    "request_id": "denied",
+                    "expected_revision": before,
+                },
+            )
+            assert frozen.status_code == 403, frozen.text
+            assert repo.read().revision == before
+            assert not repo.read().case_context_snapshots
+            for denied in (response, preview, frozen):
+                assert "OUT_OF_SCOPE_EVIDENCE" not in denied.text
+            allowed = await client.get("/cases/case/context?release_package_id=release")
+            assert allowed.status_code == 200, allowed.text
+            assert "Authorized review evidence" in allowed.text
+            saved = await client.post(
+                "/case-context/snapshots",
+                json={
+                    "case_id": "case",
+                    "release_package_id": "release",
+                    "request_id": "allowed",
+                    "expected_revision": before,
+                },
+            )
+            assert saved.status_code == 201, saved.text
+            detail = await client.get(
+                f"/case-context/snapshots/{saved.json()['snapshot_id']}?section=review"
+            )
+            assert detail.status_code == 200, detail.text
+            assert "Authorized review evidence" in detail.text
+            assert "OUT_OF_SCOPE_EVIDENCE" not in detail.text
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("operation", ["query", "snapshot"])
+def test_workflow_context_rejects_cross_directory_release(scoped_release_repo, operation):
+    from types import SimpleNamespace
+    from evander_team_addon.case_context_providers import (
+        CaseContextQueryDefinition,
+        CaseContextQueryProvider,
+        CaseContextSnapshotEffectDefinition,
+        CaseContextSnapshotEffectProvider,
+    )
+
+    repo = scoped_release_repo
+    runtime = SimpleNamespace(
+        resolved_config=SimpleNamespace(runtime_dir=repo.runtime_dir),
+        metadata={"directory_path": "root/a"},
+    )
+    selection = dict(
+        id="context", display_name="Context", case_id="case", release_package_id="private-release"
+    )
+    if operation == "query":
+        provider = CaseContextQueryProvider()
+        definition = CaseContextQueryDefinition(type="query:team:case-context", **selection)
+    else:
+        provider = CaseContextSnapshotEffectProvider()
+        definition = CaseContextSnapshotEffectDefinition(
+            type="effect:team:snapshot-case-context", request_id="workflow", **selection
+        )
+    provider.initialize(definition, runtime)
+    before = repo.read().revision
+    with pytest.raises(PermissionError, match="release context"):
+        provider.execute()
+    assert repo.read().revision == before
+    assert not repo.read().case_context_snapshots
+    allowed = provider.execute(resolved_config={"release_package_id": "release"})
+    assert allowed["success"]
+    assert "Authorized review evidence" in allowed["text"]
+    assert "OUT_OF_SCOPE_EVIDENCE" not in allowed["text"]
+
+
+@pytest.mark.parametrize("link", ["predecessor", "implicit"])
+@pytest.mark.parametrize("actor_id", [None, "worker"])
+def test_context_filters_related_release_evidence_before_collection(
+    scoped_release_repo, link, actor_id
+):
+    from evander_team_addon.models import ReleaseCandidateManifest
+
+    repo = scoped_release_repo
+
+    def link_private_release(state):
+        if link == "predecessor":
+            state.release_packages["release"].manifest = ReleaseCandidateManifest(
+                project_id="project",
+                release_package_id="release",
+                candidate_commit_sha="1" * 40,
+                release_branch="release/test",
+                deliverables=[{"deliverable_id": "delivery"}],
+                predecessor_release_package_id="private-release",
+            )
+        else:
+            state.tasks["task"].release_base_package_id = "private-release"
+
+    repo.update(link_private_release)
+    service = CaseContextService(repo)
+    scope = {"case_ids": ["case"], "directory_path": "root/a", "actor_id": actor_id}
+    if link == "predecessor":
+        scope["release_package_id"] = "release"
+    context = service.assemble(**scope)
+    snapshot = service.create_snapshot(request_id="scoped", **scope)
+    assert "OUT_OF_SCOPE_EVIDENCE" not in str(context)
+    assert "OUT_OF_SCOPE_EVIDENCE" not in str(snapshot.evidence)
+    assert not context["complete"]
+    assert any(w["kind"] == "restricted" for w in context["omissions"])
+    assert {r["id"] for r in snapshot.evidence["review"]} >= {"release-review", "delivery-review"}
+    assert {r["id"] for r in snapshot.evidence["verification"]} == {"release", "verification"}
+    if actor_id is None:
+        assert {r["id"] for r in snapshot.evidence["review"]} >= {"human", "decision", "finding"}
+    for section in ("review", "verification"):
+        page = service.evidence_page(
+            section=section, **{k: v for k, v in scope.items() if k != "release_package_id"}
+        )
+        assert "OUT_OF_SCOPE_EVIDENCE" not in str(page)
+
+
+@pytest.mark.parametrize("cycle", [False, True])
+@pytest.mark.parametrize("entry", ["task", "dependency", "ancestor"])
+def test_task_context_follows_contributed_child_history_without_release(case_repo, cycle, entry):
+    from evander_team_addon.models import Deliverable
+
+    def seed(state):
+        for task_id in ("task", "child", "grandchild", "sibling"):
+            if task_id != "task":
+                state.tasks[task_id] = state.tasks["task"].model_copy(
+                    update={
+                        "id": task_id,
+                        "parent_task_id": "task",
+                        "description": f"Plan for {task_id}",
+                    }
+                )
+                state.cases["case"].task_ids.append(task_id)
+                note = make_note(
+                    state,
+                    note_id=task_id + "-note",
+                    agent_id="worker",
+                    dispatch_id="dispatch-command",
+                    body=f"Decision for {task_id}",
+                    kind="decision",
+                    task_ids=[task_id],
+                )
+                state.notes[note.id] = note
+            state.tasks[task_id].deliverable_ids = [task_id + "-delivery"]
+            sources = {"task": ["child-delivery"], "child": ["grandchild-delivery"]}.get(
+                task_id, []
+            )
+            if task_id == "grandchild" and cycle:
+                sources = ["task-delivery"]
+            state.deliverables[task_id + "-delivery"] = Deliverable(
+                id=task_id + "-delivery",
+                task_id=task_id,
+                producer_agent_id="worker",
+                summary=f"Work by {task_id}",
+                source_deliverable_ids=sources,
+                artifact_refs=[task_id + "-plan"],
+            )
+        if entry != "task":
+            state.tasks["selected"] = state.tasks["task"].model_copy(
+                update={
+                    "id": "selected",
+                    "deliverable_ids": [],
+                    "parent_task_id": "task" if entry == "ancestor" else None,
+                    "dependency_task_ids": ["task"] if entry == "dependency" else [],
+                }
+            )
+            state.cases["case"].task_ids.append("selected")
+
+    case_repo.update(seed)
+    service = CaseContextService(
+        case_repo, artifact_reader=lambda ref, _item: {"id": ref, "text": f"Artifact {ref}"}
+    )
+    selected_task_id = "task" if entry == "task" else "selected"
+    context = service.assemble(task_id=selected_task_id)
+    snapshot = service.create_snapshot(request_id="parent-task", task_id=selected_task_id)
+    for task_id in ("child", "grandchild"):
+        assert f"Decision for {task_id}" in context["text"]
+        assert f"Plan for {task_id}" in context["text"]
+    expected_plans = {
+        "task",
+        "child",
+        "grandchild",
+        "task-plan",
+        "child-plan",
+        "grandchild-plan",
+    }
+    if entry != "task":
+        expected_plans.add("selected")
+    assert {r["id"] for r in snapshot.evidence["plans"]} == expected_plans
+    assert {r["id"] for r in snapshot.evidence["delivery"]} == {
+        "task-delivery",
+        "child-delivery",
+        "grandchild-delivery",
+    }
+    assert {r["id"] for r in snapshot.evidence["decisions"]} == {"child-note", "grandchild-note"}
+    assert context["complete"] and snapshot.context["complete"]
+    assert not case_repo.read().release_packages
+
+
+def test_explicit_release_context_keeps_delivery_pinned(scoped_release_repo):
+    from evander_team_addon.models import Deliverable
+
+    def seed(state):
+        state.deliverables["later-delivery"] = Deliverable(
+            id="later-delivery",
+            task_id="task",
+            producer_agent_id="worker",
+            summary="Later work outside the selected release",
+            artifact_refs=["later-plan"],
+        )
+        state.tasks["task"].deliverable_ids.append("later-delivery")
+
+    scoped_release_repo.update(seed)
+    service = CaseContextService(
+        scoped_release_repo, artifact_reader=lambda ref, _item: {"id": ref, "text": "Plan"}
+    )
+    snapshot = service.create_snapshot(
+        request_id="pinned", release_package_id="release", directory_path="root/a"
+    )
+    assert {r["id"] for r in snapshot.evidence["delivery"]} == {"delivery"}
+    assert {r["id"] for r in snapshot.evidence["plans"]} == {"task", "later-plan"}
+
+
 def test_operator_context_api_preview_history_snapshot_and_permissions(case_repo):
     import asyncio
     import httpx

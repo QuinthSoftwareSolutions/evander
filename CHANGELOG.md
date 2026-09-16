@@ -14,6 +14,8 @@
   Keep note-taking advisory, existing completion gates unchanged and Team Memory separate.
 - Preserve resolved/closed case evidence in review wakes and freeze the displayed saved
   recipe version when browsing history.
+- Enforce release-directory scope before collecting associated review/verification evidence,
+  and include contributed child task history in contexts captured before a release exists.
 - Document the staged APP integration; deployment and live workflow edits remain separate.
 
 ## 2026-09-15 - Lower orchestration handoff latency (0.41.1)
