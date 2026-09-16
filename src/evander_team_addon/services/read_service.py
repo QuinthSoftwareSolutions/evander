@@ -367,6 +367,8 @@ class TeamReadService:
             for project_id in dispatch.project_ids
             if (payload := self.get_project(project_id)) is not None
         ]
+        from .case_context_dispatch import dispatch_case_contexts
+
         payload = _without_none(
             {
                 "dispatch": dispatch.model_dump(mode="json"),
@@ -375,6 +377,7 @@ class TeamReadService:
                 "reviews": reviews,
                 "inbox": inbox,
                 "projects": projects,
+                "case_contexts": dispatch_case_contexts(self._state, dispatch.id),
                 "external_source_evidence_snapshots": [
                     external_source_evidence_snapshot_payload(
                         self._state.external_source_evidence_snapshots[snapshot_id]

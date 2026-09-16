@@ -20,13 +20,14 @@ from pydantic import (
 
 from evander.models import DirectoryPath, utc_now
 from evander.worker.models import WorkerFailureCause, WorkerResourceLimits
+from .case_context_models import CaseContextSnapshot, CaseContextView, TeamNote
 from evander_team_addon.git_naming import (
     DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX,
     normalize_canonical_release_branch_prefix,
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -2286,6 +2287,8 @@ class Deliverable(TeamModel):
     task_id: str
     producer_agent_id: str
     artifact_refs: list[str] = Field(default_factory=list)
+    case_note_ids: list[str] = Field(default_factory=list)
+    context_snapshot_ids: list[str] = Field(default_factory=list)
     summary: str
     state: TeamRecordState = TeamRecordState.PENDING
     review_request_ids: list[str] = Field(default_factory=list)
@@ -4483,6 +4486,8 @@ class ReleaseCandidateReviewEvidence(TeamModel):
 class ReleaseCandidateDeliverableEvidence(TeamModel):
     deliverable_id: str
     artifact_refs: list[str] = Field(default_factory=list)
+    case_note_ids: list[str] = Field(default_factory=list)
+    context_snapshot_ids: list[str] = Field(default_factory=list)
     verification: DeliverableVerification | None = None
     verification_waiver: ReleaseVerificationWaiver | None = None
     accepted_reviews: list[ReleaseCandidateReviewEvidence] = Field(default_factory=list)
@@ -5284,6 +5289,9 @@ class TeamState(TeamModel):
     )
     blocker_events: dict[str, TeamBlockerEvent] = Field(default_factory=dict)
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
+    notes: dict[str, TeamNote] = Field(default_factory=dict)
+    case_context_views: dict[str, CaseContextView] = Field(default_factory=dict)
+    case_context_snapshots: dict[str, CaseContextSnapshot] = Field(default_factory=dict)
     memories: dict[str, TeamMemoryRecord] = Field(default_factory=dict)
     conversations: dict[str, TeamConversation] = Field(default_factory=dict)
     conversation_messages: dict[str, TeamConversationMessage] = Field(default_factory=dict)
@@ -5534,6 +5542,9 @@ class TeamState(TeamModel):
             "dependency_composition_recoveries",
             "blocker_events",
             "action_records",
+            "notes",
+            "case_context_views",
+            "case_context_snapshots",
             "memories",
             "conversations",
             "conversation_messages",
@@ -8350,7 +8361,9 @@ def team_state_payload(
 
     if include_agent_voice_profiles is None:
         include_agent_voice_profiles = include_agent_avatars
-    payload = state.model_dump(mode="json")
+    private_context_fields = {"notes", "case_context_views", "case_context_snapshots"}
+    payload = state.model_dump(mode="json", exclude=private_context_fields)
+    payload.update({field: {} for field in private_context_fields})
     payload["available_role_permissions"] = [permission.value for permission in RolePermission]
     payload["agents"] = {
         agent_id: _agent_payload_with_role(

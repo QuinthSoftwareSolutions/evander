@@ -8074,3 +8074,8 @@ label textarea {
     background: var(--panel);
   }
 }
+:where(.case-context-dialog) { width: min(1000px, 92vw); max-height: 90vh; overflow: auto; }
+:where(.case-context-dialog) pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow: auto; }
+:where(.case-context-dialog) textarea { display: block; width: 100%; font-family: monospace; }
+:where(.case-context-dialog) details { margin: 0.8rem 0; padding: 0.6rem; border: 1px solid #7776; border-radius: 0.4rem; }
+:where(.case-context-dialog) button { margin: 0.25rem; }

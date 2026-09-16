@@ -250,6 +250,15 @@ Omission is intentionally different from explicitly setting `true`. All three
 modes retain the same state, reference, repository, branch, commit, and
 dirty-file safety checks.
 
+### Case context
+
+For directory-scoped case-context recipes and the `query:team:case-context`,
+`query:team:case-context-snapshot`, `effect:team:snapshot-case-context`,
+`effect:team:record-source-evidence`, `effect:team:capture-ado-case-source` and
+`effect:team:refresh-case-sources` nodes, see [Case context](case-context.md).
+Recipes are revisioned Team state, not provider overlays. Wake injection has a
+separate, fixed 6,000-character ceiling including serialized metadata.
+
 ### Communication-to-Team Chat bridge
 
 Use `effect:team:enqueue-operator-chat-message` after a

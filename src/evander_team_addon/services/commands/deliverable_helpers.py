@@ -189,9 +189,7 @@ def _require_current_dependency_composition_manifest(
                 "deliverable_id": deliverable_id,
                 "task_id": task.id,
                 "manifest_contribution_deliverable_ids": manifest_contribution_ids,
-                "required_contribution_deliverable_ids": (
-                    required_contribution_git_source_ids
-                ),
+                "required_contribution_deliverable_ids": (required_contribution_git_source_ids),
                 "manifest_dependency_deliverable_ids": manifest_dependency_ids,
                 "current_dependency_deliverable_ids": expected_dependency_ids,
                 "required_action": "reprepare_from_current_task_specification",
@@ -872,8 +870,7 @@ def _apply_command_deliverable_submission(
             },
             deep=True,
         )
-        if branch_context is not None
-        and branch_context.dependency_composition_manifest is not None
+        if branch_context is not None and branch_context.dependency_composition_manifest is not None
         else None
     )
     if suppress_superior_notice:
@@ -890,6 +887,17 @@ def _apply_command_deliverable_submission(
         producer_agent_id=agent.id,
         summary=summary,
         artifact_refs=artifact_refs,
+        case_note_ids=sorted(
+            n.id
+            for n in state.notes.values()
+            if task.id in n.task_ids
+            or (task.case_id and n.case_id == task.case_id and not n.task_ids)
+        ),
+        context_snapshot_ids=sorted(
+            s.id
+            for s in state.case_context_snapshots.values()
+            if s.dispatch_id == state.agent_runtimes[agent.id].active_dispatch_id
+        ),
         git_refs=git_refs,
         verification=verification,
         outcomes=outcomes,

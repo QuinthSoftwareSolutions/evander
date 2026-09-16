@@ -78,6 +78,7 @@ from .services.memory_service import (
 from .services.human_review_assignment_service import (
     human_review_eligibility_resolver,
 )
+from .case_context_mcp import CASE_CONTEXT_TOOLS, register_case_context_tools
 
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,7 @@ GOVERNANCE_TEAM_MCP_TOOL_NAMES = (
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
 )
 READ_TEAM_MCP_TOOL_NAMES = (
+    *CASE_CONTEXT_TOOLS,
     TEAM_GET_SOURCE_EVIDENCE_SNAPSHOT_TOOL,
     TEAM_LIST_TASKS_TOOL,
     TEAM_GET_TASK_TOOL,
@@ -430,6 +432,11 @@ MCP_TOOL_CATALOG = tuple(
 
 def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...]:
     repo = TeamStateRepository(context.runtime_dir)
+    register_case_context_tools(
+        server,
+        TeamMcpContextResolver(repo=repo, context=context),
+        repo,
+    )
     managed_git = _team_mcp_managed_git_admin(context)
     note_commands = TeamNoteCommandService(repo)
     memory_commands = TeamMemoryCommandService(repo)
@@ -676,6 +683,16 @@ def _register_slice5_tools(
         correlation_id: str | None = None,
         causation_id: str | None = None,
         session_id: str | None = None,
+        kind: str = "note",
+        summary: str = "",
+        rationale: str = "",
+        case_id: str | None = None,
+        task_ids: list[str] | None = None,
+        deliverable_ids: list[str] | None = None,
+        review_request_ids: list[str] | None = None,
+        source_evidence_snapshot_ids: list[str] | None = None,
+        source_refs: list[str] | None = None,
+        supersedes_note_id: str | None = None,
     ) -> dict[str, Any]:
         caller = resolver.require_persistent_action_context(
             session_id=session_id,
@@ -689,6 +706,16 @@ def _register_slice5_tools(
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
                 causation_id=causation_id,
+                kind=kind,
+                summary=summary,
+                rationale=rationale,
+                case_id=case_id,
+                task_ids=task_ids or [],
+                deliverable_ids=deliverable_ids or [],
+                review_request_ids=review_request_ids or [],
+                source_evidence_snapshot_ids=source_evidence_snapshot_ids or [],
+                source_refs=source_refs or [],
+                supersedes_note_id=supersedes_note_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -699,7 +726,9 @@ def _register_slice5_tools(
         name=TEAM_RECORD_NOTE_TOOL,
         description=(
             "Record a durable non-progress note for the current Team dispatch. "
-            "Requires body and request_id."
+            "Requires body and request_id. Link significant decisions to case/tasks; "
+            "use kind=decision and concise rationale. Supersede rather than overwrite. "
+            "Recording is guidance, not a completion requirement."
         ),
     )
 
@@ -4431,9 +4460,7 @@ def _team_mcp_result_with_attention(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
         )
-        queued_message_ids = [
-            message.id for message in messages if message.status == "queued"
-        ]
+        queued_message_ids = [message.id for message in messages if message.status == "queued"]
         if queued_message_ids:
             state, _delivered_messages = TeamChatService(
                 repository
@@ -4467,9 +4494,7 @@ def _team_mcp_result_with_attention(
                 "conversation_id": message.conversation_id,
                 "body": message.body,
                 "created_at": message.created_at.isoformat(),
-                "operator_user_id": state.conversations[
-                    message.conversation_id
-                ].operator_user_id,
+                "operator_user_id": state.conversations[message.conversation_id].operator_user_id,
                 "operator_display_name": state.conversations[
                     message.conversation_id
                 ].operator_display_name,

@@ -1,5 +1,6 @@
 import { createTeamMailController } from "./team-mail.js";
 import { createTeamActivityController } from "./team-activity.js";
+import { createCaseContextController } from "./team-case-context.js";
 import {
   caseTaskIds,
   caseBoardPermalink,
@@ -898,6 +899,8 @@ const activityController = createTeamActivityController({
   escapeAttr,
   humanizeToken,
 });
+createCaseContextController({ documentRoot: document, teamFetch, apiBase: API_BASE,
+  getState: () => state, canMutate: guardTeamMutation });
 
 const timelineTypeOrder = [
   "task",
@@ -13116,6 +13119,7 @@ function renderCaseItem(item) {
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(item.status || "open")}">${escapeHtml(humanizeToken(item.status || "open"))}</span>
           ${editButton("case", item.id)}
+          <button type="button" class="record-action secondary" data-open-case-context="${escapeAttr(item.id)}">Context</button>
           ${item.project_id ? `<button type="button" class="record-action secondary" data-open-case-board="${escapeAttr(item.id)}">View task board</button>` : ""}
         </div>
       </div>

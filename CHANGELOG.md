@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-15 - General case context (0.42.0)
+
+- Evolve Team notes into an attributed, linked case journal with decision rationale,
+  append-only supersession, scoped retrieval and conservative legacy backfill.
+- Assemble case requirements, captured sources, plans, decisions, delivery, reviews,
+  corrections and verification through configurable, revisioned context views.
+- Add read-only workflow queries, immutable context snapshots and exact-session grants
+  for detached consumers, plus bounded host-side ADO discussion capture.
+- Supply bounded baseline briefs on fresh wakes and record-level changes on retained
+  wakes, using completed dispatches on the same native thread as the comparison baseline.
+- Add an operator context panel with recipe preview/version history and snapshot browsing.
+  Keep note-taking advisory, existing completion gates unchanged and Team Memory separate.
+- Document the staged APP integration; deployment and live workflow edits remain separate.
+
 ## 2026-09-15 - Lower orchestration handoff latency (0.41.1)
 
 - Drain ready effect completions through the durable event queue between bounded event slices;

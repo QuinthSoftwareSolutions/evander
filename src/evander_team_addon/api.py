@@ -489,6 +489,8 @@ def _team_costs_payload(
 
 
 def admin_api_routes(context: AddonContext) -> Sequence[Route]:
+    from .case_context_api import case_context_routes
+
     repository = TeamStateRepository(context.runtime_dir)
     admin_service = TeamAdminService(
         repository,
@@ -4414,6 +4416,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return Route(path, _with_errors(protected_handler), methods=methods)
 
     return [
+        *case_context_routes(context, repository, route),
         route("/bootstrap", get_bootstrap, methods=["GET"]),
         route("/views/{view}", get_view, methods=["GET"]),
         route("/state", get_state, methods=["GET"]),
