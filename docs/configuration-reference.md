@@ -5,6 +5,13 @@ and `communication_copy_artifact_to_workspace`, plus `communication_file_receive
 in its session or effective directory policy. Existing file size/type limits apply. See the
 [image viewing runbook](operations.md#view-images-in-azure-devops-work-items) for the full flow.
 
+For files linked from Azure DevOps PR feedback, grant `list_pr_feedback_attachments`,
+`download_pr_feedback_attachment`, and `communication_copy_artifact_to_workspace`. The same
+`communication_file_receive_enabled`, `communication_file_max_bytes`, MIME, extension, and blocked
+extension settings apply. The list/download calls are also restricted to the session's
+`metadata.pr_feedback_streams` entries and use the directory-scoped Azure DevOps organization,
+project, and `azure_devops_pr_pat_env` credential.
+
 This document lists the **user-configurable parameters** in this repository, where each parameter is defined, and where it is consumed.
 
 Scope included:

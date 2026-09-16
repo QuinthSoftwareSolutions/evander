@@ -2364,6 +2364,12 @@ without exposing provider credentials in the VM.
 2. Unread fetch when pending is true:
    - `list_unread_feedback(last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
    - `list_all_feedback(limit)` when you need full PR comment history, including already-read items
+   - `list_pr_feedback_attachments(feedback_id)` when an Azure DevOps feedback body references a
+     file. Select an `attachment_id`, call
+     `download_pr_feedback_attachment(feedback_id, attachment_id)`, then pass the returned
+     `artifact_id` to `communication_copy_artifact_to_workspace` if the guest needs to inspect it.
+     The session must allow all three tools and effective policy must enable inbound file reception
+     with a matching MIME, extension, and size allowance.
    - `list_pull_requests(provider, repo, status?, statuses?, creator_id?, reviewer_id?, project?,
      min_time?, max_time?, query_time_range_type?, source_ref_name?, target_ref_name?, tags?, top?,
      skip?, cursor?)` to enumerate PRs directly from the provider. Azure DevOps status values are

@@ -2043,6 +2043,9 @@ def test_pr_tracking_persists_map_and_session_feedback_binding(tmp_path: Path) -
         {"provider": "github", "repo": "example/repo", "pr_id": "42"}
     ]
     assert ToolName.LIST_UNREAD_FEEDBACK in session.allowed_tools
+    assert ToolName.LIST_PR_FEEDBACK_ATTACHMENTS in session.allowed_tools
+    assert ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT in session.allowed_tools
+    assert ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE in session.allowed_tools
     assert ToolName.POST_PR_FEEDBACK_REPLY in session.allowed_tools
 
 

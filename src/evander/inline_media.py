@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -155,6 +155,7 @@ def download_url_with_limit(
     max_bytes: int | None = None,
     provider: str | None = None,
     allowed_hosts: Iterable[str] | None = None,
+    url_validator: Callable[[str], None] | None = None,
     max_redirects: int = 5,
 ) -> tuple[bytes, str | None]:
     """Download a provider-validated URL while enforcing a streaming byte cap.
@@ -167,6 +168,14 @@ def download_url_with_limit(
     request_headers = dict(headers or {})
     current_url = url
     redirects_seen = 0
+    if provider is not None:
+        require_provider_media_url(
+            provider=provider,
+            url=current_url,
+            allowed_hosts=allowed_hosts,
+        )
+    if url_validator is not None:
+        url_validator(current_url)
     with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
         while True:
             with client.stream("GET", current_url, headers=request_headers) as response:
@@ -185,6 +194,8 @@ def download_url_with_limit(
                         url=next_url,
                         allowed_hosts=allowed_hosts,
                     )
+                    if url_validator is not None:
+                        url_validator(next_url)
                     if urlparse(current_url).hostname != urlparse(next_url).hostname:
                         request_headers = {
                             key: value

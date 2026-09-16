@@ -1043,6 +1043,9 @@
             "has_pending_feedback",
             "list_unread_feedback",
             "list_all_feedback",
+            "list_pr_feedback_attachments",
+            "download_pr_feedback_attachment",
+            "communication_copy_artifact_to_workspace",
             "post_pr_feedback_reply",
             "set_issue_plan",
             "stage_artifact"
@@ -1400,6 +1403,9 @@
             "post_pr_feedback_reply",
             "list_unread_feedback",
             "list_all_feedback",
+            "list_pr_feedback_attachments",
+            "download_pr_feedback_attachment",
+            "communication_copy_artifact_to_workspace",
             "submit_pr_review",
             "stage_artifact"
           ],
@@ -1756,7 +1762,7 @@
       {
         "config": {
           "model": "gpt-5.4",
-          "prompt": "You have received PR feedback and must handle this exact feedback item before finishing.\n\nFeedback ID: ${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}\nProvider: ${{trigger-pull-request-new-feedback-1.feedback.provider}}\nRepo: ${{trigger-pull-request-new-feedback-1.feedback.repo}}\nPR: ${{trigger-pull-request-new-feedback-1.feedback.pr_id}}\nThread ID: ${{trigger-pull-request-new-feedback-1.feedback.thread_id}}\nComment ID: ${{trigger-pull-request-new-feedback-1.feedback.comment_id}}\nAuthor: ${{trigger-pull-request-new-feedback-1.feedback.author}}\nCreated: ${{trigger-pull-request-new-feedback-1.feedback.created_at}}\n\nFeedback body:\n${{trigger-pull-request-new-feedback-1.feedback.body}}\n\nUse list_all_feedback if you need surrounding PR context. You may also call list_unread_feedback to catch any other unread feedback, but do not skip the feedback item above just because it is no longer returned as unread. Always respond to this feedback with post_pr_feedback_reply using the thread/comment identifiers above, even if it is just to acknowledge it. If code changes are needed, stage, commit, and push them before replying.",
+          "prompt": "You have received PR feedback and must handle this exact feedback item before finishing.\n\nFeedback ID: ${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}\nProvider: ${{trigger-pull-request-new-feedback-1.feedback.provider}}\nRepo: ${{trigger-pull-request-new-feedback-1.feedback.repo}}\nPR: ${{trigger-pull-request-new-feedback-1.feedback.pr_id}}\nThread ID: ${{trigger-pull-request-new-feedback-1.feedback.thread_id}}\nComment ID: ${{trigger-pull-request-new-feedback-1.feedback.comment_id}}\nAuthor: ${{trigger-pull-request-new-feedback-1.feedback.author}}\nCreated: ${{trigger-pull-request-new-feedback-1.feedback.created_at}}\n\nFeedback body:\n${{trigger-pull-request-new-feedback-1.feedback.body}}\n\nUse list_all_feedback if you need surrounding PR context. You may also call list_unread_feedback to catch any other unread feedback, but do not skip the feedback item above just because it is no longer returned as unread. If the feedback references an attached file and the attachment tools are available, call list_pr_feedback_attachments with the Feedback ID, download the selected file with download_pr_feedback_attachment, and copy its artifact with communication_copy_artifact_to_workspace before inspecting it. Always respond to this feedback with post_pr_feedback_reply using the thread/comment identifiers above, even if it is just to acknowledge it. If code changes are needed, stage, commit, and push them before replying.",
           "queue_key": "pr-feedback:${{trigger-pull-request-new-feedback-1.session_id}}:${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}",
           "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id ?? null}}",
           "target": "${{trigger-pull-request-new-feedback-1.session_id}}",

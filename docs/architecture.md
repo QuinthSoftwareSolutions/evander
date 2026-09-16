@@ -233,7 +233,13 @@ boundaries.
 
 Per PR feedback polling loop, the host worker processes streams allowlisted in active session manifests and updates the shared feedback store.
 
-Guests continue to use MCP tools (`has_pending_feedback`, `list_unread_feedback`, `list_all_feedback`, `post_pr_feedback_reply`) for consumption and reply actions.
+Guests continue to use MCP tools (`has_pending_feedback`, `list_unread_feedback`,
+`list_all_feedback`, `post_pr_feedback_reply`) for consumption and reply actions. Azure DevOps
+feedback attachments are a separate, policy-controlled path:
+`list_pr_feedback_attachments` resolves safe metadata from the authorized host-stored feedback,
+`download_pr_feedback_attachment` re-resolves and downloads the selected file with host credentials,
+and `communication_copy_artifact_to_workspace` copies the resulting opaque artifact into the guest.
+Provider URLs and credentials are not returned to the agent.
 
 This sequence minimizes payload volume when there is no new feedback and supports explicit at-least-once processing semantics.
 

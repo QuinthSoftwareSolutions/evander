@@ -2880,6 +2880,9 @@ def create_session(
             ToolName.GET_PULL_REQUEST,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
+            ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+            ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+            ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
             ToolName.POST_PR_FEEDBACK_REPLY,
         ],
         approval_required_tools=list(policy.approval_required_tools),
@@ -4743,6 +4746,9 @@ def attach_pr_feedback(
         ToolName.GET_PULL_REQUEST,
         ToolName.LIST_UNREAD_FEEDBACK,
         ToolName.LIST_ALL_FEEDBACK,
+        ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+        ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+        ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
         ToolName.POST_PR_FEEDBACK_REPLY,
     ):
         if tool not in manifest.allowed_tools:

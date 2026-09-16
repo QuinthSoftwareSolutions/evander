@@ -145,6 +145,12 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT: (
         "Download an inbound attachment into the host communication artifact store."
     ),
+    ToolName.LIST_PR_FEEDBACK_ATTACHMENTS: (
+        "List Azure DevOps file attachments referenced by an authorized PR feedback item."
+    ),
+    ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT: (
+        "Download an authorized PR feedback attachment into the host artifact store."
+    ),
     ToolName.LIST_INLINE_MEDIA: (
         "List images in Azure DevOps work items, PR feedback, or inbound communications; "
         "requires file reception."

@@ -1183,6 +1183,12 @@ Use this when you want the guest to wake only for new review feedback and post t
 4. `evander-discord-wake.service` and `evander-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. Azure DevOps PR feedback ingestion runs in `evander-ado-worker`.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
+   When Azure DevOps feedback links an attached file, call
+   `list_pr_feedback_attachments(feedback_id)` and
+   `download_pr_feedback_attachment(feedback_id, attachment_id)`, then copy the returned opaque
+   artifact with `communication_copy_artifact_to_workspace`. These calls require inbound file
+   reception plus the configured MIME, extension, and size policy; Azure DevOps credentials remain
+   on the host.
    Use `list_pull_requests(provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
    when you need provider-backed PR discovery; `status` maps to provider status filtering (for Azure DevOps:
    `searchCriteria.status`), and pagination continues with `next_cursor`.
@@ -1488,6 +1494,10 @@ adapters perform provider API calls under the active session policy.
   type, extension, and byte size before it stages the blob. Use
   `communication_copy_artifact_to_workspace` only when the guest needs a local copy; provider
   filenames are normalized and copied under `/home/agent/communication-artifacts/`.
+  Azure DevOps PR-comment files use the PR-specific
+  `list_pr_feedback_attachments` and `download_pr_feedback_attachment` tools instead. They resolve
+  the selected attachment only from an authorized stored feedback item, authenticate on the host,
+  and produce the same opaque artifact for workspace copy.
 - **Outbound file send:** outbound sends reuse staged artifact IDs rather than arbitrary guest
   paths. Use `communication_stage_workspace_file` to stage an agent-created file from under
   `/home/agent`; the provider-specific tools are `discord_post_file`, `teams_post_file`,

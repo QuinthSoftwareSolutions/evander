@@ -129,6 +129,8 @@ class ToolName(str, Enum):
     HAS_PENDING_FEEDBACK = "has_pending_feedback"
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
     LIST_ALL_FEEDBACK = "list_all_feedback"
+    LIST_PR_FEEDBACK_ATTACHMENTS = "list_pr_feedback_attachments"
+    DOWNLOAD_PR_FEEDBACK_ATTACHMENT = "download_pr_feedback_attachment"
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
     LIST_PULL_REQUESTS = "list_pull_requests"
     GET_PULL_REQUEST = "get_pull_request"
@@ -1498,6 +1500,46 @@ class InlineMediaRef(BaseModel):
     byte_count: int | None = Field(default=None, ge=0)
     url: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PrFeedbackAttachmentRef(BaseModel):
+    provider: str = Field(min_length=1)
+    feedback_id: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    thread_id: str | None = None
+    comment_id: str | None = None
+    attachment_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    mime_type: str | None = None
+    byte_count: int | None = Field(default=None, ge=0)
+    url: str = Field(min_length=1, exclude=True, repr=False)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListPrFeedbackAttachmentsRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    feedback_id: str = Field(min_length=1)
+
+
+class ListPrFeedbackAttachmentsResponse(BaseModel):
+    provider: str = Field(min_length=1)
+    feedback_id: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    thread_id: str | None = None
+    comment_id: str | None = None
+    attachments: list[PrFeedbackAttachmentRef] = Field(default_factory=list)
+
+
+class DownloadPrFeedbackAttachmentRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    feedback_id: str = Field(min_length=1)
+    attachment_id: str = Field(min_length=1)
+
+
+class DownloadPrFeedbackAttachmentResponse(BaseModel):
+    artifact: "CommunicationFileArtifact"
 
 
 class ListInlineMediaRequest(BaseModel):
