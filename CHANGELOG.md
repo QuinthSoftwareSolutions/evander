@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-16 - Reuse retained reference repositories (0.42.2)
+
+- Keep the managed-mirror commit requested for reference preparation separate from the trusted
+  checkout commit retained by a persistent worker, allowing receipt reuse when the mirror has
+  advanced but `refresh_upstream` remains disabled.
+
 ## 2026-09-15 - Prioritize live communication workflows (0.42.1)
 
 - Consume durable Teams notifications in the notification service independently of serial
