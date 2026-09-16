@@ -384,6 +384,7 @@ class ContainerWorkerVmExecutionBackend:
         commit_sha: str | None,
         configuration_version: str,
         update_existing: bool = True,
+        preparation_fingerprint: str | None = None,
     ) -> WorkerReferenceRepoPrepareRecord:
         return self._client_for_session(session_id).prepare_reference_repo(
             session_id,
@@ -394,6 +395,7 @@ class ContainerWorkerVmExecutionBackend:
                 commit_sha=commit_sha,
                 configuration_version=configuration_version,
                 update_existing=update_existing,
+                preparation_fingerprint=preparation_fingerprint,
             ),
         )
 
@@ -499,10 +501,16 @@ class ContainerWorkerVmExecutionBackend:
         *,
         session_id: str,
         files: list[dict[str, Any]],
+        preparation_fingerprint: str | None = None,
     ) -> WorkerFileWriteRecord:
         return self._client_for_session(session_id).write_files(
             session_id,
-            WorkerFileWriteRequest.model_validate({"files": files}),
+            WorkerFileWriteRequest.model_validate(
+                {
+                    "files": files,
+                    "preparation_fingerprint": preparation_fingerprint,
+                }
+            ),
         )
 
     def read_session_artifact_text(

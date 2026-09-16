@@ -1359,6 +1359,14 @@ class WorkerDaemon:
                     checkout_updated=False,
                     configuration_updated=False,
                 )
+            reused = self._reuse_reference_repo_preparation(
+                paths=paths,
+                request=request,
+                target_dir=target_dir,
+                git_env=git_env,
+            )
+            if reused is not None:
+                return reused
 
         self._sync_git_ssh_into_agent_home(
             paths, required=_repo_source_requires_git_ssh(request.repo_source)
@@ -1562,7 +1570,7 @@ class WorkerDaemon:
             )
         if stored_trusted_commit != resolved_commit:
             self._write_reference_repo_trusted_commit(paths, request, resolved_commit)
-        return WorkerReferenceRepoPrepareRecord(
+        record = WorkerReferenceRepoPrepareRecord(
             session_id=paths.session_id,
             target_dir=f"/home/agent/repos/{request.repo_name}",
             guest_repo_name=request.repo_name,
@@ -1572,6 +1580,160 @@ class WorkerDaemon:
             cloned=cloned,
             checkout_updated=checkout_updated,
             configuration_updated=configuration_updated,
+        )
+        if request.preparation_fingerprint is not None:
+            self._write_preparation_receipt(
+                paths,
+                kind="reference-repo",
+                name=request.repo_name,
+                payload={
+                    "version": 1,
+                    "request_fingerprint": request.preparation_fingerprint,
+                    "repo_source": request.repo_source,
+                    "repo_name": request.repo_name,
+                    "source_ref": request.source_ref,
+                    "commit_sha": resolved_commit,
+                    "configuration_version": request.configuration_version,
+                },
+            )
+        return record
+
+    def _reuse_reference_repo_preparation(
+        self,
+        *,
+        paths: WorkerSessionPaths,
+        request: WorkerReferenceRepoPrepareRequest,
+        target_dir: Path,
+        git_env: dict[str, str],
+    ) -> WorkerReferenceRepoPrepareRecord | None:
+        fingerprint = request.preparation_fingerprint
+        if fingerprint is None or request.update_existing:
+            return None
+        receipt = self._read_preparation_receipt(
+            paths,
+            kind="reference-repo",
+            name=request.repo_name,
+        )
+        if receipt is None or receipt.get("request_fingerprint") != fingerprint:
+            return None
+        expected_commit = str(receipt.get("commit_sha") or "").strip().lower()
+        if (
+            expected_commit != request.commit_sha
+            or receipt.get("repo_source") != request.repo_source
+            or receipt.get("source_ref") != request.source_ref
+            or receipt.get("configuration_version") != request.configuration_version
+        ):
+            return None
+        if self._reference_repo_has_user_changes(target_dir, git_env=git_env):
+            return None
+        try:
+            current_commit = self._git_commit_sha(target_dir, paths.agent_home)
+        except subprocess.CalledProcessError:
+            return None
+        if current_commit != expected_commit:
+            return None
+        if self._read_reference_repo_trusted_commit(paths, request) != expected_commit:
+            return None
+        if (
+            subprocess.run(
+                ["git", "-C", str(target_dir), "symbolic-ref", "-q", "HEAD"],
+                env=git_env,
+                check=False,
+                capture_output=True,
+                text=True,
+            ).returncode
+            == 0
+        ):
+            return None
+        current_version = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(target_dir),
+                "config",
+                "--get",
+                "evander.referenceRepoConfigVersion",
+            ],
+            env=git_env,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if current_version != request.configuration_version:
+            return None
+        return WorkerReferenceRepoPrepareRecord(
+            session_id=paths.session_id,
+            target_dir=f"/home/agent/repos/{request.repo_name}",
+            guest_repo_name=request.repo_name,
+            remote_url=request.repo_source,
+            source_ref=request.source_ref,
+            commit_sha=current_commit,
+            cloned=False,
+            checkout_updated=False,
+            configuration_updated=False,
+            preparation_reused=True,
+        )
+
+    def _preparation_receipt_path(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        kind: str,
+        name: str,
+    ) -> Path:
+        safe_kind = str(validate_worker_component_id(kind, field_name="receipt kind"))
+        safe_name = str(validate_worker_component_id(name, field_name="receipt name"))
+        path = paths.root / "preparation-receipts" / f"{safe_kind}-{safe_name}.json"
+        ensure_resolved_path_within(
+            base=paths.root,
+            candidate=path,
+            description="session preparation receipt",
+        )
+        return path
+
+    def _read_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        kind: str,
+        name: str,
+    ) -> dict[str, Any] | None:
+        path = self._preparation_receipt_path(paths, kind=kind, name=name)
+        try:
+            raw = self._read_managed_text_file_no_follow(
+                path,
+                label="session preparation receipt",
+            )
+            payload = json.loads(raw)
+        except (FileNotFoundError, OSError, ValueError):
+            return None
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            return None
+        return payload
+
+    def _write_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        kind: str,
+        name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        path = self._preparation_receipt_path(paths, kind=kind, name=name)
+        directory = path.parent
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        directory_stat = directory.lstat()
+        if not stat.S_ISDIR(directory_stat.st_mode) or stat.S_ISLNK(directory_stat.st_mode):
+            raise ValueError("session preparation receipt directory must be a directory")
+        directory.chmod(0o700)
+        self._write_managed_text_file_no_follow(
+            path,
+            json.dumps(payload, sort_keys=True) + "\n",
+            mode=0o600,
+            label="session preparation receipt",
         )
 
     def _reference_repo_trust_state_path(
@@ -3456,6 +3618,9 @@ class WorkerDaemon:
         request: WorkerFileWriteRequest,
     ) -> WorkerFileWriteRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        reused = self._reuse_file_preparation(paths=paths, request=request)
+        if reused is not None:
+            return reused
         copied_paths: list[str] = []
         for entry in request.files:
             root, relative_path, container_path = self._resolve_container_destination(
@@ -3515,11 +3680,89 @@ class WorkerDaemon:
                 container_path=container_path,
             )
             copied_paths.append(container_path)
-        return WorkerFileWriteRecord(
+        record = WorkerFileWriteRecord(
             session_id=session_id,
             copied_count=len(copied_paths),
             copied_paths=copied_paths,
             roots={"agent_home": "/home/agent", "repo_root": "/home/agent/repos"},
+        )
+        if request.preparation_fingerprint is not None:
+            observations: list[dict[str, Any]] = []
+            for entry in request.files:
+                root, relative_path, container_path = self._resolve_container_destination(
+                    paths=paths,
+                    destination_path=entry.destination_path,
+                )
+                snapshot = self._read_container_file_snapshot(
+                    root=root,
+                    relative_path=relative_path,
+                )
+                if snapshot is None:
+                    observations.append({"path": container_path, "missing": True})
+                else:
+                    observations.append(
+                        {
+                            "path": container_path,
+                            "sha256": hashlib.sha256(snapshot.content).hexdigest(),
+                            "mode": stat.S_IMODE(snapshot.mode),
+                        }
+                    )
+            self._write_preparation_receipt(
+                paths,
+                kind="files",
+                name="managed",
+                payload={
+                    "version": 1,
+                    "request_fingerprint": request.preparation_fingerprint,
+                    "observations": observations,
+                },
+            )
+        return record
+
+    def _reuse_file_preparation(
+        self,
+        *,
+        paths: WorkerSessionPaths,
+        request: WorkerFileWriteRequest,
+    ) -> WorkerFileWriteRecord | None:
+        fingerprint = request.preparation_fingerprint
+        if fingerprint is None:
+            return None
+        receipt = self._read_preparation_receipt(paths, kind="files", name="managed")
+        if receipt is None or receipt.get("request_fingerprint") != fingerprint:
+            return None
+        observations = receipt.get("observations")
+        if not isinstance(observations, list) or len(observations) != len(request.files):
+            return None
+        for entry, raw_observation in zip(request.files, observations, strict=True):
+            if not isinstance(raw_observation, dict):
+                return None
+            root, relative_path, container_path = self._resolve_container_destination(
+                paths=paths,
+                destination_path=entry.destination_path,
+            )
+            if raw_observation.get("path") != container_path:
+                return None
+            snapshot = self._read_container_file_snapshot(
+                root=root,
+                relative_path=relative_path,
+            )
+            if snapshot is None:
+                if raw_observation.get("missing") is True:
+                    continue
+                return None
+            if raw_observation.get("missing") is True:
+                return None
+            if hashlib.sha256(snapshot.content).hexdigest() != raw_observation.get("sha256"):
+                return None
+            if stat.S_IMODE(snapshot.mode) != raw_observation.get("mode"):
+                return None
+        return WorkerFileWriteRecord(
+            session_id=paths.session_id,
+            copied_count=0,
+            copied_paths=[],
+            roots={"agent_home": "/home/agent", "repo_root": "/home/agent/repos"},
+            preparation_reused=True,
         )
 
     def read_session_artifact_text(self, session_id: str, relative_path: str) -> str:

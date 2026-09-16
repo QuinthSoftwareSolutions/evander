@@ -191,7 +191,7 @@ class TeamStateSqliteStore:
                 UNION SELECT j.value AS id, 1 FROM team_agent_runtimes r,
                   json_each(r.work_lineage_thread_dispatch_ids_json) j
                 UNION SELECT id, 2 FROM team_dispatches
-                  WHERE COALESCE(completed_at, activation_completed_at) IS NOT NULL
+                  WHERE activation_completed_at IS NOT NULL
                     AND (session_metadata_mirrored_at IS NULL OR
                       julianday(session_metadata_mirrored_at) < julianday(COALESCE(completed_at, activation_completed_at)))
             """
@@ -229,7 +229,7 @@ class TeamStateSqliteStore:
                 (SELECT value FROM json_each(r.work_lineage_thread_ids_json) WHERE key = d.work_lineage_id) AS lineage_thread_id,
                 (SELECT value FROM json_each(r.work_lineage_thread_dispatch_ids_json) WHERE key = d.work_lineage_id) AS lineage_owner_id,
                 a.session_id AS current_session_id,
-                (COALESCE(d.completed_at, d.activation_completed_at) IS NOT NULL AND
+                (d.activation_completed_at IS NOT NULL AND
                  (d.session_metadata_mirrored_at IS NULL OR
                   julianday(d.session_metadata_mirrored_at) < julianday(COALESCE(d.completed_at, d.activation_completed_at)))) AS mirror_due,
                 d.queued_at, NULL AS governance_group_id, {priority} AS recovery_priority

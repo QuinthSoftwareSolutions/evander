@@ -5590,7 +5590,12 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             if _optional_text(_record_outputs(r).get("dispatch_id")) == candidate.dispatch_id
             and _completed_prompt_session_id(r) == candidate.session_id
         ]
-        actionable = candidate.mirror_due or bool(
+        # A dispatch that failed before activation has no session metadata to
+        # mirror. Historical rows used to remain permanently actionable here,
+        # causing every recovery pass to reconstruct the full TeamState even
+        # though the mirror helper could never change anything.
+        mirror_due = candidate.mirror_due and candidate.activation_completed_at is not None
+        actionable = mirror_due or bool(
             matching
             and (
                 candidate.governance_group_id is not None
@@ -5934,7 +5939,8 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 claim_ttl_seconds=300,
                 retry_after_seconds=60,
             )
-        state = repo.read()
+        if finalized_count:
+            state = repo.read()
         for dispatch in sorted(
             (d for d in state.dispatches.values() if d.id in dispatch_ids),
             key=lambda item: (item.created_at, item.id),

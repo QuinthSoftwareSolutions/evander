@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -70,10 +72,20 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
         if not files:
             raise ValueError("effect:agent:copy-files requires at least one file entry")
         worker_files = [self._worker_file_entry(entry) for entry in files]
-        result = container_backend(context, config).write_files(
-            session_id=session_id,
-            files=worker_files,
-        )
+        preparation_fingerprint = hashlib.sha256(
+            json.dumps(worker_files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        backend = container_backend(context, config)
+        try:
+            result = backend.write_files(
+                session_id=session_id,
+                files=worker_files,
+                preparation_fingerprint=preparation_fingerprint,
+            )
+        except TypeError as exc:
+            if "preparation_fingerprint" not in str(exc):
+                raise
+            result = backend.write_files(session_id=session_id, files=worker_files)
         return {
             "success": True,
             "message": (
@@ -84,6 +96,7 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
             "vm_name": None,
             "copied_count": result.copied_count,
             "copied_paths": result.copied_paths,
+            "preparation_reused": bool(getattr(result, "preparation_reused", False)),
         }
 
     def _execute_libvirt(

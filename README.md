@@ -24,9 +24,9 @@ For Team task-board filtering, progress permalinks and ADO intake setup, see
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
-- A host-side Teams ingest worker that uses Microsoft Graph polling by default, with optional
-  change notifications and per-target polling fallback, and feeds `trigger:teams:new-message`
-  and `trigger:teams:direct-message` orchestration
+- Host-side Teams workers that consume optional Microsoft Graph change notifications independently
+  from per-target polling fallback, and feed `trigger:teams:new-message` and
+  `trigger:teams:direct-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - Optional host-local Qdrant semantic store primitives for workflow-visible health, collection setup, and explicit-ID text point upsert/search/get/delete
 - File-backed session, approval, audit, and draft storage for local development

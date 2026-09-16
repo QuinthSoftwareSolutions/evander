@@ -50,8 +50,15 @@ class RecoverySchedule:
         self.next_due = clock() + RECOVERY_INTERVAL_SECONDS
         self.pending: deque[tuple[str, Any]] = deque()
 
-    def begin_if_due(self, tasks: list[tuple[str, Any]]) -> bool:
-        if self.clock() >= self.next_due:
+    def begin_if_due(
+        self,
+        tasks: list[tuple[str, Any]],
+        *,
+        foreground_pending: bool = False,
+    ) -> bool:
+        now = self.clock()
+        due = now >= self.next_due
+        if due:
             if not self.pending:
                 self.pending.extend(tasks)
             else:
@@ -66,8 +73,18 @@ class RecoverySchedule:
                     if task in self.pending:
                         self.pending.remove(task)
                     self.pending.appendleft(task)
-            self.next_due = self.clock() + RECOVERY_INTERVAL_SECONDS
-        return bool(self.pending)
+            self.next_due = now + RECOVERY_INTERVAL_SECONDS
+        if not self.pending:
+            return False
+        # Pending continuations drain immediately while idle. Under a durable
+        # event backlog they receive one bounded slice per recovery interval,
+        # instead of running again after every foreground event slice.
+        return due or not foreground_pending
+
+    def deferred_seconds(self, *, foreground_pending: bool) -> float:
+        if not foreground_pending or not self.pending:
+            return 0.0
+        return max(0.0, self.next_due - self.clock())
 
     def sleep_limit(self) -> float:
         return 0.0 if self.pending else max(0.0, self.next_due - self.clock())

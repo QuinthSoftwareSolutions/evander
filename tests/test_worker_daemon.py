@@ -206,6 +206,54 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
         )
 
 
+def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-receipt"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=source, check=True)
+    commit_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    request = WorkerReferenceRepoPrepareRequest(
+        repo_source=str(source),
+        repo_name="repo",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        configuration_version="1",
+        update_existing=False,
+        preparation_fingerprint="b" * 64,
+    )
+
+    first = daemon.prepare_reference_repo("session-receipt", request)
+    reused = daemon.prepare_reference_repo("session-receipt", request)
+    checkout = (
+        tmp_path / "worker-root" / "sessions" / "session-receipt" / "agent_home" / "repos" / "repo"
+    )
+    (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
+
+    assert first.preparation_reused is False
+    assert reused.preparation_reused is True
+    with pytest.raises(ValueError, match="checkout is dirty"):
+        daemon.prepare_reference_repo("session-receipt", request)
+
+
 @pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
 def test_worker_reference_prepare_reuses_ordinary_checkout_without_mutation(
     tmp_path: Path,
@@ -4372,6 +4420,39 @@ def test_session_file_write_skips_identical_existing_content_and_mode(tmp_path: 
     target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
     assert target.read_text(encoding="utf-8") == "# Agent\n"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_session_file_preparation_receipt_reuses_and_invalidates_on_guest_change(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    payload = {
+        "preparation_fingerprint": "a" * 64,
+        "files": [
+            {
+                "destination_path": "/home/agent/AGENTS.md",
+                "content": "# Agent\n",
+                "mode": "0644",
+            }
+        ],
+    }
+
+    first = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    second = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    target.write_text("guest changed\n", encoding="utf-8")
+    repaired = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+
+    assert first.json()["preparation_reused"] is False
+    assert second.json()["preparation_reused"] is True
+    assert repaired.json()["preparation_reused"] is False
+    assert repaired.json()["copied_count"] == 1
+    assert target.read_text(encoding="utf-8") == "# Agent\n"
 
 
 def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:

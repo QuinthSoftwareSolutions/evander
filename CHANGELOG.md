@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-15 - Prioritize live communication workflows (0.41.2)
+
+- Consume durable Teams notifications in the notification service independently of serial
+  fallback polling, with processor health and queue-lag visibility.
+- Pace recovery continuations behind foreground events while guaranteeing a bounded slice every
+  five seconds, and stop failed-before-activation Team dispatches from recurring mirror scans.
+- Commit terminal gate records and their successor events atomically, then continue short FIFO
+  gate chains within a bounded foreground burst.
+- Reuse worker-verified file and reference-repository preparation receipts while invalidating
+  them on guest changes, configuration changes, refreshes, or session deletion.
+
 ## 2026-09-15 - Lower orchestration handoff latency (0.41.1)
 
 - Drain ready effect completions through the durable event queue between bounded event slices;

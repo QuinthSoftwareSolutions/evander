@@ -3182,11 +3182,12 @@ and do not accept caller-selected session IDs or arbitrary URLs in this ingress 
   message store consumed by trigger orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
 - Optional Teams Graph change notifications use the loopback-only
-  `evander-teams-notifications.service`. The callback durably queues deliveries; the ingest worker
-  is signalled through its host wake socket immediately after a new queue row commits, and owns
-  subscription reconciliation and exact-message retrieval. A missing or failed wake signal does
-  not affect the callback acknowledgement; the worker's periodic cycle still drains the durable
-  queue. Polling remains the automatic per-target fallback when notification mode is disabled,
+  `evander-teams-notifications.service`. The callback durably queues deliveries and its independent
+  background processor performs exact-message retrieval without waiting for serial fallback polls.
+  The ingest worker is still signalled after a new queue row commits, owns subscription
+  reconciliation, and retains restart-safe queue draining. A missing or failed wake signal does not
+  affect the callback acknowledgement. Polling remains the automatic per-target fallback when
+  notification mode is disabled,
   creation or renewal fails, a lifecycle event marks a subscription unhealthy, or the subscription
   expires.
 - Graph retry cooldowns are stored per logical endpoint/target. Inspect the Teams inbox

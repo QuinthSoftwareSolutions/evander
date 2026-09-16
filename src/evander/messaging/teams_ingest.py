@@ -271,7 +271,7 @@ class TeamsIngestWorker:
     def run_once_with_lock(self) -> TeamsIngestCycleResult:
         return self._kernel.run_once_with_lock()
 
-    def run_once(self) -> TeamsIngestCycleResult:
+    def _reset_cycle_metrics(self) -> None:
         with self._cycle_state_lock:
             self._cycle_trigger_wake_notified = False
             self._cycle_effect_wake_notified = False
@@ -284,6 +284,9 @@ class TeamsIngestWorker:
             self._cycle_events_deduplicated = 0
             self._cycle_publication_failures = 0
             self._cycle_auth_failures = set()
+
+    def run_once(self) -> TeamsIngestCycleResult:
+        self._reset_cycle_metrics()
         now = datetime.now(UTC)
         trigger_snapshot = self._capture_trigger_config_snapshot(captured_at=now)
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
@@ -371,6 +374,27 @@ class TeamsIngestWorker:
             workflow_config_revision=trigger_snapshot.revision,
             notifications_processed=notifications_processed,
         )
+
+    def process_notification_queue_once(self) -> int:
+        """Consume durable Graph callbacks without running fallback target polls."""
+
+        self._reset_cycle_metrics()
+        now = datetime.now(UTC)
+        trigger_snapshot = self._capture_trigger_config_snapshot(captured_at=now)
+        active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
+        directories = self._directories_to_scan(
+            active_sessions,
+            include_default_directory=bool(trigger_snapshot.direct_sender_refs),
+            include_directories=set(trigger_snapshot.poll_targets_by_directory),
+        )
+        try:
+            return self._process_notification_queue(
+                active_sessions=active_sessions,
+                trigger_snapshot=trigger_snapshot,
+                directories=directories,
+            )
+        finally:
+            self._notify_effect_orchestrator_if_needed(trigger_snapshot=trigger_snapshot)
 
     def _log_start(self) -> None:
         logger.info(
