@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCaseContextController } from "../../../src/evander_team_addon/ui_static/team-case-context.js";
+import {
+  caseContextWarningText,
+  createCaseContextController,
+  humanizeCaseContextToken,
+} from "../../../src/evander_team_addon/ui_static/team-case-context.js";
 
 class Element {
   constructor(tag) {
@@ -119,3 +123,156 @@ for (const historicalId of ["case-overview", "customer-handoff"]) {
     assert.equal(lastFreeze().view_version, 2);
   });
 }
+
+function visibleText(root) {
+  return [...root.walk()].map(node => node.textContent).filter(Boolean).join("\n");
+}
+
+test("case context presents evidence as readable records with plain-language warnings", async () => {
+  const view = { ...recipe("case-overview", 3, "request"), title: "Case overview" };
+  const doc = {
+    body: new Element("body"), createElement: tag => new Element(tag), addEventListener() {},
+  };
+  const context = {
+    revision: 42,
+    view,
+    complete: false,
+    omissions: [{ kind: "stale", section: "sources", source_id: "ado-14760" }],
+    sections: [{
+      name: "request",
+      total: 1,
+      next_cursor: null,
+      records: [{
+        entity_type: "case",
+        id: "case-14760",
+        text: JSON.stringify({
+          id: "case-14760",
+          title: "Export pallets are routed incorrectly",
+          status: "open",
+          description: "Operators need a safe route when fullness is unknown.",
+          created_at: "2026-09-15T08:30:00Z",
+        }),
+        truncated: false,
+        provenance: { digest: "digest-case", created_at: "2026-09-15T08:30:00Z" },
+      }],
+    }],
+  };
+  const controller = createCaseContextController({
+    documentRoot: doc,
+    apiBase: "",
+    getState: () => ({
+      cases: { case: { title: "Routing incident", project_id: "project" } },
+      projects: { project: { directory_path: "root" } },
+    }),
+    canMutate: () => true,
+    teamFetch: async (url) => ({
+      ok: true,
+      json: async () => url.startsWith("/case-context/views?")
+        ? { revision: 42, views: [view], history: [] }
+        : context,
+    }),
+  });
+
+  await controller.open("case");
+
+  const text = visibleText(doc.body);
+  assert.match(text, /Case context: Routing incident/);
+  assert.match(text, /Case overview/);
+  assert.match(text, /Live context · View version 3 · Evidence revision 42/);
+  assert.match(text, /Needs Attention/);
+  assert.match(text, /A captured source may be out of date \(ado-14760\)/);
+  assert.match(text, /Request/);
+  assert.match(text, /The case request, scope and current case details/);
+  assert.match(text, /Export pallets are routed incorrectly/);
+  assert.match(text, /Open/);
+  assert.match(text, /Operators need a safe route when fullness is unknown/);
+  assert.match(text, /Record fields and provenance/);
+  assert.match(text, /Evidence digest/);
+});
+
+test("loading complete evidence replaces a shortened preview and keeps only safe source links", async () => {
+  const view = { ...recipe("case-overview", 1, "sources"), title: "Case overview" };
+  const doc = {
+    body: new Element("body"), createElement: tag => new Element(tag), addEventListener() {},
+  };
+  const requests = [];
+  const controller = createCaseContextController({
+    documentRoot: doc,
+    apiBase: "",
+    getState: () => ({
+      cases: { case: { title: "Source check", project_id: "project" } },
+      projects: { project: { directory_path: "root" } },
+    }),
+    canMutate: () => true,
+    teamFetch: async (url) => {
+      requests.push(url);
+      let payload;
+      if (url.startsWith("/case-context/views?")) {
+        payload = { revision: 7, views: [view], history: [] };
+      } else if (url.startsWith("/cases/case/context/evidence?")) {
+        payload = {
+          records: [{
+            entity_type: "source",
+            id: "source-1",
+            content: {
+              id: "source-1",
+              title: "Customer work item",
+              summary: "The complete captured request and discussion.",
+              effective_freshness_status: "current",
+              links: [
+                { label: "Open work item", url: "https://dev.azure.com/example/item/14760" },
+                { label: "Unsafe", url: "javascript:alert(1)" },
+              ],
+            },
+            provenance: { digest: "digest-source" },
+          }],
+          next_cursor: null,
+        };
+      } else {
+        payload = {
+          revision: 7,
+          view,
+          complete: false,
+          omissions: [{ kind: "truncated", section: "sources", id: "source-1" }],
+          sections: [{
+            name: "sources",
+            total: 1,
+            next_cursor: null,
+            records: [{
+              entity_type: "source",
+              id: "source-1",
+              text: "{\"title\":\"Customer work item\",\"summary\":",
+              truncated: true,
+              provenance: { digest: "digest-source" },
+            }],
+          }],
+        };
+      }
+      return { ok: true, json: async () => payload };
+    },
+  });
+
+  await controller.open("case");
+  assert.match(visibleText(doc.body), /preview ends before the record can be formatted/i);
+  const load = [...doc.body.walk()].find(node => node.tag === "button" && node.textContent === "Load complete records");
+  assert.ok(load);
+  load.listeners.click();
+  await new Promise(setImmediate);
+
+  const text = visibleText(doc.body);
+  assert.match(text, /Customer work item/);
+  assert.match(text, /The complete captured request and discussion/);
+  assert.doesNotMatch(text, /preview ends before/);
+  const links = [...doc.body.walk()].filter(node => node.tag === "a");
+  assert.deepEqual(links.map(link => link.textContent), ["Open work item", "https://dev.azure.com/example/item/14760"]);
+  assert.equal(requests.filter(url => url.startsWith("/cases/case/context/evidence?")).length, 1);
+});
+
+test("case context labels preserve common technical acronyms", () => {
+  assert.equal(humanizeCaseContextToken("candidate_commit_sha"), "Candidate Commit SHA");
+  assert.equal(humanizeCaseContextToken("source_evidence_snapshot_ids"), "Source Evidence Snapshot IDs");
+  assert.equal(
+    caseContextWarningText({ kind: "restricted", section: "verification" }),
+    "Some verification evidence is outside your access scope.",
+  );
+});

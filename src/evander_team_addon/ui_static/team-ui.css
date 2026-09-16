@@ -8074,8 +8074,404 @@ label textarea {
     background: var(--panel);
   }
 }
-:where(.case-context-dialog) { width: min(1000px, 92vw); max-height: 90vh; overflow: auto; }
-:where(.case-context-dialog) pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow: auto; }
-:where(.case-context-dialog) textarea { display: block; width: 100%; font-family: monospace; }
-:where(.case-context-dialog) details { margin: 0.8rem 0; padding: 0.6rem; border: 1px solid #7776; border-radius: 0.4rem; }
-:where(.case-context-dialog) button { margin: 0.25rem; }
+:where(.case-context-dialog) {
+  width: min(1080px, 94vw);
+  max-height: 92vh;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 24px 70px rgba(14, 32, 33, 0.28);
+  overflow: auto;
+}
+
+:where(.case-context-dialog)::backdrop {
+  background: rgba(9, 24, 25, 0.58);
+  backdrop-filter: blur(2px);
+}
+
+:where(.case-context-dialog) pre {
+  max-height: 32rem;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+:where(.case-context-dialog) textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.case-context-dialog-header {
+  position: sticky;
+  z-index: 3;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.85rem 1rem;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.case-context-dialog-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.case-context-dialog-header button {
+  flex: 0 0 auto;
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.case-context-status {
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 0.55rem 1rem;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.case-context-controls,
+.case-context-output {
+  margin: 1rem;
+}
+
+.case-context-controls {
+  display: grid;
+  grid-template-columns: minmax(15rem, 1fr) minmax(0, 2fr);
+  gap: 0.65rem 0.8rem;
+  align-items: end;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.8rem;
+  background: var(--panel);
+}
+
+.case-context-field {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.case-context-configuration {
+  align-self: stretch;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  background: var(--panel-alt);
+}
+
+.case-context-configuration summary,
+.case-context-technical summary,
+.case-context-raw-disclosure summary,
+.case-context-warnings summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.case-context-configuration p {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.case-context-actions,
+.case-context-section-actions,
+.case-context-source-links,
+.case-context-snapshot-list {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.case-context-actions {
+  grid-column: 1 / -1;
+}
+
+.case-context-snapshot-list {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.case-context-output {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.case-context-overview {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.8rem 0.9rem;
+  background: var(--panel);
+}
+
+.case-context-overview h3,
+.case-context-record h4 {
+  margin: 0;
+}
+
+.case-context-overview-meta,
+.case-context-record-meta {
+  margin: 0.22rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.case-context-overview-badges,
+.case-context-record-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.case-context-warnings {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--amber) 38%, var(--line));
+  border-radius: 10px;
+  padding: 0.65rem 0.8rem;
+  background: color-mix(in srgb, var(--amber) 8%, var(--panel));
+}
+
+.case-context-warnings ul {
+  margin: 0.55rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.case-context-section {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.case-context-section-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 3.2rem;
+  padding: 0.65rem 0.8rem;
+  cursor: pointer;
+}
+
+.case-context-section-heading {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.case-context-section-heading small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.case-context-record-list {
+  display: grid;
+  gap: 0.65rem;
+  border-top: 1px solid var(--line);
+  padding: 0.75rem;
+  background: var(--surface);
+}
+
+.case-context-record {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0.75rem;
+  background: var(--panel);
+  box-shadow: 0 4px 14px var(--shadow);
+}
+
+.case-context-record-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.case-context-record h4 {
+  font-size: 1rem;
+  line-height: 1.3;
+}
+
+.case-context-record-narrative {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+}
+
+.case-context-narrative-block {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 58%, var(--line));
+  padding-left: 0.65rem;
+}
+
+.case-context-field-label {
+  margin-bottom: 0.12rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.case-context-field-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.case-context-source-links {
+  margin-top: 0.65rem;
+}
+
+.case-context-source-links a {
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 6px;
+  padding: 0.32rem 0.55rem;
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.case-context-source-links a:hover {
+  background: var(--panel-alt);
+}
+
+.case-context-technical {
+  margin-top: 0.7rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.55rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.case-context-field-grid {
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.35fr) minmax(0, 1fr);
+  gap: 0;
+  margin: 0.55rem 0 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.case-context-field-grid dt,
+.case-context-field-grid dd {
+  min-width: 0;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 0.42rem 0.5rem;
+}
+
+.case-context-field-grid dt {
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.case-context-field-grid > :nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.case-context-field-grid.nested {
+  color: var(--ink);
+}
+
+.case-context-field-grid .case-context-field-grid {
+  margin: 0;
+}
+
+.case-context-value-list {
+  display: grid;
+  gap: 0.28rem;
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.case-context-code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.case-context-empty-value,
+.case-context-empty-section,
+.case-context-draft-note,
+.case-context-truncated-copy {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.case-context-empty-section {
+  margin: 0;
+}
+
+.case-context-section-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 0.75rem;
+}
+
+.case-context-raw-disclosure {
+  margin-top: 0.55rem;
+}
+
+.case-context-raw {
+  margin-top: 0.45rem !important;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0.6rem;
+  background: var(--panel-alt);
+  color: var(--ink);
+  font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+@media (max-width: 720px) {
+  .case-context-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .case-context-overview,
+  .case-context-record-header,
+  .case-context-section-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .case-context-overview-badges,
+  .case-context-record-badges {
+    justify-content: flex-start;
+  }
+
+  .case-context-field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .case-context-field-grid dt,
+  .case-context-field-grid dd {
+    border-bottom: 0;
+  }
+
+  .case-context-field-grid dd {
+    border-bottom: 1px solid var(--line);
+  }
+}
