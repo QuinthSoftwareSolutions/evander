@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-16 - Readable Team case context (0.42.4)
+
+- Present case context as a scannable case file with plain-language warnings, named sections,
+  record titles, status and timestamps, narrative fields, safe source links, and responsive
+  styling while retaining exact fields, provenance and raw JSON in secondary disclosures.
+
 ## 2026-09-16 - Accept large Freshservice attachment IDs (0.42.3)
 
 - Accept positive Freshservice ticket and attachment identifiers up to the signed 64-bit limit,

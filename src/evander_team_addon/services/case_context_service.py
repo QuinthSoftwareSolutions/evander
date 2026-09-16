@@ -560,8 +560,13 @@ def collect_evidence(
                     }
                     evidence["plans"].append(_row("artifact", document))
                     warnings.extend(
-                        {"kind": "truncated", "section": "plans", "artifact_ref": ref}
-                        for _ in document.get("omissions", [])
+                        {
+                            "kind": "artifact_omission",
+                            "section": "plans",
+                            "artifact_ref": ref,
+                            "detail": str(omission),
+                        }
+                        for omission in document.get("omissions", [])
                     )
                     continue
             warnings.append({"kind": "unavailable", "section": "plans", "artifact_ref": ref})
