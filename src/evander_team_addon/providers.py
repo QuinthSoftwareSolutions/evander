@@ -4777,6 +4777,7 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
             "ado_work_item_id",
             "ado_project",
             "git_base_branch",
+            "git_base_commit_sha",
             "dependency_task_ids",
             "integration_boundary",
             "deliverable_contract",
@@ -4877,6 +4878,7 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                     resolved_fields=resolved_fields,
                 ),
                 git_base_branch=_optional_text(payload.get("git_base_branch")),
+                git_base_commit_sha=_optional_text(payload.get("git_base_commit_sha")),
                 set_git_base_branch=git_base_configured,
                 dependency_task_ids=(
                     _string_list(payload.get("dependency_task_ids"), "dependency_task_ids")
@@ -8134,9 +8136,15 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "parent work is supervision of a child blocker, rejection, handoff, "
         "reassignment, cancellation, or integration-ready transition.\n"
         "- When you are the acceptance recipient, decide each direct-child handoff. "
-        "After every non-cancelled direct child resolves, integrate the exact current "
-        "accepted child deliverables through source_deliverable_ids and submit one "
-        "consolidated parent deliverable. Do not copy child state into the parent. "
+        "For new Git-backed work, coordinate first and integrate last: after every "
+        "required contribution has a current accepted deliverable, create a fresh "
+        "integration_boundary task with those tasks in dependency_task_ids and "
+        "deliverable_contract.required_contribution_task_ids. Let that fresh task "
+        "snapshot the current base commit and own the consolidated deliverable; do "
+        "not submit the aggregate from the long-lived coordination task. A legacy "
+        "non-integration parent may consolidate only when its immutable dispatch "
+        "explicitly requires that compatibility path. Do not copy child state into "
+        "the parent. "
         "The system-created human-review correction coordination parent is the "
         "exception: it produces no deliverable and Team finishes it after creating "
         "the automatic successor release.\n"
@@ -10296,6 +10304,20 @@ def _create_project_repo_git_work_contexts(
                         }
                     )
                 raise
+            composed_head_commit = _optional_text(
+                composition_result.get("composed_commit_sha")
+            )
+            task_base_commit_pin = _optional_text(task.get("git_base_commit_sha"))
+            recorded_work_context_base_commit = base_commit
+            if continuation_sources and pinned_base_commit is not None:
+                recorded_work_context_base_commit = pinned_base_commit
+            if task_base_commit_pin is not None:
+                recorded_work_context_base_commit = task_base_commit_pin
+            prepared_head_commit = (
+                _optional_text(preparation_receipt_result.get("head_commit_sha"))
+                or composed_head_commit
+                or base_commit
+            )
             if use_preparation_receipt:
                 preparation_receipt_result.setdefault(
                     "request_fingerprint",
@@ -10306,25 +10328,27 @@ def _create_project_repo_git_work_contexts(
                                 "attempt_id": preparation_attempt_id,
                                 "worktree_path": worktree_path,
                                 "base_commit": base_commit,
+                                "head_commit": prepared_head_commit,
                             },
                             sort_keys=True,
                             separators=(",", ":"),
                         ).encode("utf-8")
                     ).hexdigest(),
                 )
-                preparation_receipt_result.setdefault("head_commit_sha", base_commit)
+                preparation_receipt_result.setdefault(
+                    "head_commit_sha",
+                    prepared_head_commit,
+                )
                 state = _record_project_repo_git_preparation_receipt(
                     repo,
                     attempt_id=preparation_attempt_id,
                     receipt=preparation_receipt_result,
+                    # The preparation receipt describes the physical checkout.
+                    # A pinned provenance root can intentionally differ from
+                    # evander.baseCommit after dependency composition.
                     base_commit_sha=base_commit,
                     worktree_path=worktree_path,
                 )
-            recorded_work_context_base_commit = (
-                pinned_base_commit
-                if continuation_sources and pinned_base_commit is not None
-                else base_commit
-            )
             dependency_composition_manifest = _build_dependency_composition_manifest(
                 context,
                 task_id=task_id,

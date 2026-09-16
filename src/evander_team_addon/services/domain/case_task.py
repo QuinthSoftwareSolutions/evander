@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Protocol
@@ -75,6 +75,7 @@ class _TaskCreationPlan:
     parent_task_id: str | None
     originating_task_id: str | None
     git_base_branch: str | None
+    git_base_commit_sha: str | None
     dependency_task_ids: list[str]
     priority: int
     title: str
@@ -103,9 +104,32 @@ class TaskGitDefaultBranchResolver(Protocol):
     ) -> object: ...
 
 
+class TaskGitBaseCommitResolver(Protocol):
+    def __call__(
+        self,
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+        branch: str,
+        required_ancestor_shas: Sequence[str] | None = None,
+    ) -> object: ...
+
+
 def _normalized_task_git_base_branch(value: object) -> str | None:
     normalized = _optional_text(value)
     return validate_branch_name(normalized) if normalized is not None else None
+
+
+def _normalized_task_git_base_commit(value: object) -> str | None:
+    normalized = _optional_text(value)
+    if normalized is None:
+        return None
+    normalized = normalized.casefold()
+    if len(normalized) not in {40, 64} or any(
+        char not in "0123456789abcdef" for char in normalized
+    ):
+        raise ValueError("git_base_commit_sha must be a full Git object ID")
+    return normalized
 
 
 def _project_default_task_git_base_branch(
@@ -341,6 +365,7 @@ def _resolve_task_creation_plan_git_bases(
     plans: list[_TaskCreationPlan],
     *,
     git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
+    git_base_commit_resolver: TaskGitBaseCommitResolver | None = None,
 ) -> list[_TaskCreationPlan]:
     """Resolve cases, Git bases and task authors across a creation batch atomically."""
 
@@ -455,11 +480,115 @@ def _resolve_task_creation_plan_git_bases(
         return inherited_work_item_attributions(state, project_id=plan.project_id,
             originating_task_id=plan.originating_task_id, parent_task_id=plan.parent_task_id)
 
-    return [
+    resolved_plans = [
         replace(plan, git_base_branch=_resolve(plan), authored_by=_resolve_author(plan),
                 work_item_attributions=_resolve_attribution(plan))
         for plan in plans
     ]
+    pinned_plans: list[_TaskCreationPlan] = []
+    for plan in resolved_plans:
+        project = _require_present(state.projects, plan.project_id, "project")
+        supplied_commit = _normalized_task_git_base_commit(plan.git_base_commit_sha)
+        requires_automatic_pin = plan.integration_boundary and project.git is not None
+        if not requires_automatic_pin and supplied_commit is None:
+            pinned_plans.append(plan)
+            continue
+        if project.git is None:
+            raise TaskGitBaseValidationError(
+                code="git_base_commit_invalid",
+                message=(
+                    f"task {plan.task_id} cannot pin a Git base commit because project "
+                    f"{project.id} has no managed Git repository"
+                ),
+            )
+        if plan.git_base_branch is None:
+            raise TaskGitBaseValidationError(
+                code="git_base_commit_unavailable",
+                message=(
+                    f"integration boundary task {plan.task_id} has no concrete Git "
+                    "base branch to pin"
+                ),
+            )
+        if git_base_commit_resolver is None:
+            raise TaskGitBaseValidationError(
+                code="git_base_commit_unavailable",
+                message=(
+                    f"integration boundary task {plan.task_id} requires an immutable "
+                    "Git base commit, but managed branch resolution is unavailable"
+                ),
+            )
+        try:
+            resolved_branch_commit = _normalized_task_git_base_commit(
+                git_base_commit_resolver(
+                    managed_repo_id=project.git.managed_repo_id,
+                    directory_path=project.git.directory_path,
+                    branch=plan.git_base_branch,
+                    **(
+                        {"required_ancestor_shas": [supplied_commit]}
+                        if supplied_commit is not None
+                        else {}
+                    ),
+                )
+            )
+        except Exception as exc:
+            raise TaskGitBaseValidationError(
+                code=(
+                    "git_base_commit_invalid"
+                    if supplied_commit is not None
+                    else "git_base_commit_unavailable"
+                ),
+                message=(
+                    f"could not validate supplied Git base commit {supplied_commit} "
+                    f"against managed branch {plan.git_base_branch} for task "
+                    f"{plan.task_id}: {exc}"
+                    if supplied_commit is not None
+                    else f"could not resolve immutable Git base commit for integration "
+                    f"boundary task {plan.task_id}: {exc}"
+                ),
+            ) from exc
+        if resolved_branch_commit is None:
+            raise TaskGitBaseValidationError(
+                code=(
+                    "git_base_commit_invalid"
+                    if supplied_commit is not None
+                    else "git_base_commit_unavailable"
+                ),
+                message=(
+                    f"managed branch {plan.git_base_branch} has no commit against which "
+                    f"to validate supplied Git base commit {supplied_commit} for task "
+                    f"{plan.task_id}"
+                    if supplied_commit is not None
+                    else f"managed branch {plan.git_base_branch} has no commit to pin for "
+                    f"integration boundary task {plan.task_id}"
+                ),
+            )
+        pinned_plans.append(
+            replace(
+                plan,
+                git_base_commit_sha=supplied_commit or resolved_branch_commit,
+            )
+        )
+    return pinned_plans
+
+
+def _task_integration_boundary_transition_error(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    proposed_integration_boundary: bool,
+) -> str | None:
+    """Require a fresh, server-pinned task for a new Git integration boundary."""
+
+    if task.integration_boundary or not proposed_integration_boundary:
+        return None
+    project = state.projects.get(task.project_id)
+    if project is None or project.git is None:
+        return None
+    return (
+        f"Git-backed task {task.id} cannot be converted into an integration boundary; "
+        "create a fresh integration-boundary task so the server can snapshot its "
+        "immutable base commit"
+    )
 
 
 def _validate_case_status_transition(
@@ -980,8 +1109,11 @@ def _plan_task_creation(
         return None
     try:
         git_base_branch = _normalized_task_git_base_branch(creation.get("git_base_branch"))
+        git_base_commit_sha = _normalized_task_git_base_commit(
+            creation.get("git_base_commit_sha")
+        )
     except ValueError as exc:
-        result["errors"].append(f"task creation has invalid git_base_branch: {exc}")
+        result["errors"].append(f"task creation has invalid Git base: {exc}")
         return None
     originating_task_id = _optional_text(creation.get("originating_task_id"))
     if originating_task_id is not None:
@@ -1087,6 +1219,7 @@ def _plan_task_creation(
         parent_task_id=parent_task_id,
         originating_task_id=originating_task_id,
         git_base_branch=git_base_branch,
+        git_base_commit_sha=git_base_commit_sha,
         dependency_task_ids=dependency_task_ids,
         priority=int(priority) if priority is not None else 0,
         title=_required_text(creation.get("title"), "title"),
@@ -1167,6 +1300,7 @@ def _apply_task_creation_plan(
         authored_by=plan.authored_by,
         work_item_attributions=plan.work_item_attributions,
         git_base_branch=plan.git_base_branch,
+        git_base_commit_sha=plan.git_base_commit_sha,
         dependency_task_ids=plan.dependency_task_ids,
         created_at=now,
         updated_at=now,

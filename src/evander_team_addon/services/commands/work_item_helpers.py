@@ -127,6 +127,7 @@ def _normalize_task_creation_command_payload(
     originating_task_id: str | None,
     authored_by: Mapping[str, Any] | None = None,
     git_base_branch: str | None,
+    git_base_commit_sha: str | None,
     dependency_task_ids: Sequence[str] | None,
     task_kind: str = "support",
     outcome_contract: Mapping[str, Any] | None = None,
@@ -147,6 +148,7 @@ def _normalize_task_creation_command_payload(
             "originating_task_id": originating_task_id,
             "authored_by": authored_by,
             "git_base_branch": git_base_branch,
+            "git_base_commit_sha": git_base_commit_sha,
             "dependency_task_ids": list(dependency_task_ids or []),
             "task_kind": task_kind,
             "outcome_contract": (dict(outcome_contract) if outcome_contract is not None else None),
@@ -179,6 +181,7 @@ def _normalize_task_creation_mapping(
         "originating_task_id": _optional_text(item.get("originating_task_id")),
         **({"authored_by": item["authored_by"]} if item.get("authored_by") is not None else {}),
         "git_base_branch": _optional_text(item.get("git_base_branch")),
+        "git_base_commit_sha": _optional_text(item.get("git_base_commit_sha")),
         "dependency_task_ids": _unique_text_list(
             item.get("dependency_task_ids") or [],
             "dependency_task_ids",

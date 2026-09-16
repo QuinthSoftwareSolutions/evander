@@ -2252,8 +2252,9 @@ def test_team_addon_mcp_reopens_finished_task_for_reviewed_rework(
     assert rework_item.payload["required_tool"] == ("team_submit_deliverable_for_review")
 
 
-def test_team_addon_mcp_designates_existing_task_as_integration_boundary(
+def test_team_addon_mcp_requires_fresh_git_integration_boundary(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _runtime(tmp_path, allowed_tools=[])
     repo = _seed_planning_state(context.config.runtime_dir)
@@ -2280,6 +2281,29 @@ def test_team_addon_mcp_designates_existing_task_as_integration_boundary(
     admin.update_task(
         task_id="implementation",
         state=TeamTaskState.FINISHED,
+    )
+
+    def _configure_integration_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_configure_integration_git)
+    ancestry_checks: list[dict[str, object]] = []
+
+    class _ManagedGit:
+        def resolve_branch_commit(self, *_args, **_kwargs):
+            return "b" * 40
+
+        def verify_branch_commit_ancestry(self, *args, **kwargs):
+            ancestry_checks.append({"args": args, **kwargs})
+            return {}
+
+    monkeypatch.setattr(
+        "evander_team_addon.mcp._team_mcp_managed_git_admin",
+        lambda _context: _ManagedGit(),
     )
     _upsert_session(
         context,
@@ -2308,12 +2332,12 @@ def test_team_addon_mcp_designates_existing_task_as_integration_boundary(
         _make_request_context(session_id="session-lead"),
     )
 
-    assert result["success"] is True, result
+    assert result["success"] is False, result
+    assert result["errors"][0]["code"] == "integration_boundary_requires_fresh_task"
     task = repo.read().tasks["clarification"]
-    assert task.integration_boundary is True
-    assert task.deliverable_contract is not None
-    assert task.deliverable_contract.require_git_provenance is True
-    assert task.deliverable_contract.required_contribution_task_ids == ["implementation"]
+    assert task.integration_boundary is False
+    assert task.deliverable_contract is None
+    assert task.git_base_commit_sha is None
 
     admin.create_or_reprioritize_task(
         task_id="ordinary-after-submission",
@@ -2368,6 +2392,8 @@ def test_team_addon_mcp_designates_existing_task_as_integration_boundary(
             "priority": 1,
             "title": "Final integration",
             "description": "Compose the accepted implementation.",
+            "git_base_branch": "main",
+            "git_base_commit_sha": "a" * 40,
             "dependency_task_ids": ["implementation"],
             "integration_boundary": True,
             "deliverable_contract": {
@@ -2379,7 +2405,18 @@ def test_team_addon_mcp_designates_existing_task_as_integration_boundary(
         _make_request_context(session_id="session-lead"),
     )
     assert created["success"] is True, created
-    assert repo.read().tasks["final-integration"].integration_boundary is True
+    integration = repo.read().tasks["final-integration"]
+    assert integration.integration_boundary is True
+    assert integration.git_base_commit_sha == "a" * 40
+    assert ancestry_checks == [
+        {
+            "args": ("mr_0123456789abcdefabcd",),
+            "directory_path": "root",
+            "branch": "main",
+            "commit_sha": "b" * 40,
+            "required_ancestor_shas": ["a" * 40],
+        }
+    ]
 
 
 def test_team_addon_mcp_slice6_tool_requires_active_lease_without_mutation(

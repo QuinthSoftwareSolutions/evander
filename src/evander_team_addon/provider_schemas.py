@@ -176,6 +176,7 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
     ado_work_item_id: ConfigValue | None = None
     ado_project: ConfigValue | None = None
     git_base_branch: ConfigValue | None = None
+    git_base_commit_sha: ConfigValue | None = None
     dependency_task_ids: ConfigValue | None = None
     integration_boundary: ConfigValue | None = None
     deliverable_contract: ConfigValue | None = None

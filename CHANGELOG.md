@@ -1,10 +1,19 @@
 # Changelog
 
-## 2026-09-16 - Resolve PR attachment identities (0.43.1)
+## 2026-09-16 - Resolve PR attachment identities (0.43.2)
 
 - Resolve Azure DevOps project and repository GUIDs from the authorized pull request when
   validating PR-feedback attachment URLs, including for PRs that are not present in
   `pr-map.json`, while retaining canonical route and feedback-stream enforcement.
+
+## 2026-09-16 - Pin final integration provenance (0.43.1)
+
+- Snapshot the managed base-branch commit when a Git-backed integration boundary is created,
+  validate caller-supplied pins against managed branch ancestry, and keep the immutable review
+  baseline distinct from both the dependency-composed checkout receipt and prepared head.
+- Guide managers to coordinate long-running work separately and create the final integration task
+  only after its required contributions have current accepted deliverables; reject converting an
+  existing Git-backed coordination task into an unpinned integration boundary.
 
 ## 2026-09-16 - Read PR feedback attachments (0.43.0)
 

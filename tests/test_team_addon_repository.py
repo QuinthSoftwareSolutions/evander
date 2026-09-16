@@ -8043,6 +8043,10 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
 
     repo.update(_configure_unset_base)
     lookups: list[tuple[str, str]] = []
+    commit_lookups: list[tuple[str, str, str]] = []
+    pinned_commit = "a" * 40
+    supplied_commit = "b" * 40
+    ancestry_checks: list[dict[str, object]] = []
 
     class _ManagedGit:
         def get_repository(
@@ -8054,7 +8058,55 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
             lookups.append((managed_repo_id, directory_path))
             return {"default_branch": "trunk"}
 
+        def resolve_branch_commit(
+            self,
+            managed_repo_id: str,
+            *,
+            directory_path: str,
+            branch: str,
+        ) -> str:
+            commit_lookups.append((managed_repo_id, directory_path, branch))
+            return pinned_commit
+
+        def verify_branch_commit_ancestry(
+            self,
+            managed_repo_id: str,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            ancestry_checks.append({"managed_repo_id": managed_repo_id, **kwargs})
+            return {}
+
     admin = TeamAdminService(repo, managed_git_admin=_ManagedGit())
+    admin.create_or_reprioritize_task(
+        task_id="existing-coordination-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Coordinate accepted contributions",
+        description="This long-lived task must not become the final boundary.",
+        created_by_agent_id="lead",
+        git_base_branch="trunk",
+    )
+    with pytest.raises(ValueError, match="cannot be converted into an integration boundary"):
+        admin.update_task(
+            task_id="existing-coordination-task",
+            integration_boundary=True,
+            deliverable_contract={"require_git_provenance": True},
+        )
+    with pytest.raises(ValueError, match="cannot be converted into an integration boundary"):
+        admin.create_or_reprioritize_task(
+            task_id="existing-coordination-task",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            title="Do not repurpose coordination",
+            description="Create a fresh integration task instead.",
+            created_by_agent_id="lead",
+            integration_boundary=True,
+            deliverable_contract={"require_git_provenance": True},
+        )
+    assert repo.read().tasks["existing-coordination-task"].integration_boundary is False
+
     state = admin.create_or_reprioritize_task(
         task_id="resolved-admin-default",
         owner_agent_id="backend",
@@ -8068,12 +8120,55 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
     assert state.projects["project"].git is not None
     assert state.projects["project"].git.base_branch is None
 
+    state = admin.create_or_reprioritize_task(
+        task_id="resolved-admin-integration",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Snapshot the integration baseline",
+        description="Create the final integration task after coordination.",
+        created_by_agent_id="lead",
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert state.tasks["resolved-admin-integration"].git_base_branch == "trunk"
+    assert state.tasks["resolved-admin-integration"].git_base_commit_sha == pinned_commit
+
+    state = admin.create_or_reprioritize_task(
+        task_id="validated-admin-integration",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Validate an explicit integration baseline",
+        description="Accept only a managed ancestor of the selected branch.",
+        created_by_agent_id="lead",
+        git_base_branch="trunk",
+        git_base_commit_sha=supplied_commit,
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert state.tasks["validated-admin-integration"].git_base_commit_sha == supplied_commit
+
+    def _resolve_task_base(**kwargs: object) -> object:
+        required_ancestor_shas = kwargs.pop("required_ancestor_shas", None)
+        commit_sha = _ManagedGit().resolve_branch_commit(**kwargs)
+        if required_ancestor_shas:
+            _ManagedGit().verify_branch_commit_ancestry(
+                kwargs["managed_repo_id"],
+                directory_path=kwargs["directory_path"],
+                branch=kwargs["branch"],
+                commit_sha=commit_sha,
+                required_ancestor_shas=required_ancestor_shas,
+            )
+        return commit_sha
+
     _lease_agent_dispatch(repo, agent_id="lead")
     command = TeamTaskCreationCommandService(
         repo,
         git_default_branch_resolver=lambda **kwargs: _ManagedGit().get_repository(**kwargs)[
             "default_branch"
         ],
+        git_base_commit_resolver=_resolve_task_base,
     )
     state, result = command.create_task_command(
         session_id="session-lead",
@@ -8087,10 +8182,107 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
 
     assert result["success"] is True
     assert state.tasks["resolved-command-default"].git_base_branch == "trunk"
+    state, result = command.create_task_command(
+        session_id="session-lead",
+        task_id="resolved-command-integration",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Resolve a pinned integration boundary",
+        description="Snapshot the current managed branch commit.",
+        request_id="request-resolve-managed-integration",
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert result["success"] is True
+    assert state.tasks["resolved-command-integration"].git_base_branch == "trunk"
+    assert state.tasks["resolved-command-integration"].git_base_commit_sha == pinned_commit
+    state, result = command.create_task_command(
+        session_id="session-lead",
+        task_id="validated-command-integration",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Validate an explicit command baseline",
+        description="Persist the supplied pin only after ancestry verification.",
+        request_id="request-validate-managed-integration",
+        git_base_branch="trunk",
+        git_base_commit_sha=supplied_commit,
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert result["success"] is True
+    assert state.tasks["validated-command-integration"].git_base_commit_sha == supplied_commit
     assert lookups == [
         (MANAGED_REPO_ID, "root/team-project"),
         (MANAGED_REPO_ID, "root/team-project"),
+        (MANAGED_REPO_ID, "root/team-project"),
+        (MANAGED_REPO_ID, "root/team-project"),
     ]
+    assert commit_lookups == [
+        (MANAGED_REPO_ID, "root/team-project", "trunk"),
+        (MANAGED_REPO_ID, "root/team-project", "trunk"),
+        (MANAGED_REPO_ID, "root/team-project", "trunk"),
+        (MANAGED_REPO_ID, "root/team-project", "trunk"),
+    ]
+    assert ancestry_checks == [
+        {
+            "managed_repo_id": MANAGED_REPO_ID,
+            "directory_path": "root/team-project",
+            "branch": "trunk",
+            "commit_sha": pinned_commit,
+            "required_ancestor_shas": [supplied_commit],
+        },
+        {
+            "managed_repo_id": MANAGED_REPO_ID,
+            "directory_path": "root/team-project",
+            "branch": "trunk",
+            "commit_sha": pinned_commit,
+            "required_ancestor_shas": [supplied_commit],
+        },
+    ]
+
+    rejecting_command = TeamTaskCreationCommandService(
+        repo,
+        git_default_branch_resolver=lambda **kwargs: _ManagedGit().get_repository(**kwargs)[
+            "default_branch"
+        ],
+        git_base_commit_resolver=lambda **_kwargs: (_ for _ in ()).throw(
+            ValueError("supplied commit is not an ancestor of the selected branch")
+        ),
+    )
+    state, rejected = rejecting_command.create_task_command(
+        session_id="session-lead",
+        task_id="invalid-explicit-pin",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Reject an unrelated integration baseline",
+        description="Do not persist an invalid caller-supplied object ID.",
+        request_id="request-reject-invalid-explicit-pin",
+        git_base_branch="trunk",
+        git_base_commit_sha="c" * 40,
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "git_base_commit_invalid"
+    assert "invalid-explicit-pin" not in state.tasks
+
+    with pytest.raises(
+        ValueError,
+        match="immutable Git base commit.*branch-commit resolution is unavailable",
+    ):
+        TeamAdminService(repo).create_or_reprioritize_task(
+            task_id="unresolved-integration",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            title="Reject an unpinned integration boundary",
+            description="Fail closed when the managed branch cannot be resolved.",
+            created_by_agent_id="lead",
+            git_base_branch="trunk",
+            integration_boundary=True,
+            deliverable_contract={"require_git_provenance": True},
+        )
+    assert "unresolved-integration" not in repo.read().tasks
 
 
 @pytest.mark.parametrize("lock_kind", ["context", "deliverable", "promotion"])
@@ -22440,15 +22632,21 @@ def test_integration_feature_promotion_acknowledges_idempotently_without_synthet
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
     _seed_task(repo, task_id="task")
-    _team_admin_service(repo).update_task(
-        task_id="task",
-        integration_boundary=True,
-        deliverable_contract={
+
+    def _seed_existing_integration(state: TeamState) -> TeamState:
+        task = state.tasks["task"]
+        task.git_base_branch = "main"
+        task.git_base_commit_sha = "a" * 40
+        task.integration_boundary = True
+        task.deliverable_contract = TaskDeliverableContract.model_validate(
+            {
             "require_git_provenance": True,
             "required_contribution_task_ids": [],
-        },
-        expected_revision=repo.read().revision,
-    )
+            }
+        )
+        return state
+
+    repo.update(_seed_existing_integration)
 
     def _seed_promotion(state):
         state.git_promotions["promotion-integration"] = GitPromotionRecord(

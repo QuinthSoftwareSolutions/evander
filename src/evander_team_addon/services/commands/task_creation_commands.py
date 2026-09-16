@@ -31,6 +31,7 @@ from ...models import (
     _unique_text_list,
 )
 from ..domain.case_task import (
+    TaskGitBaseValidationError,
     _TaskCreationPlan,
     _apply_task_creation_plan,
     _resolve_task_creation_plan_git_bases,
@@ -71,6 +72,34 @@ def _creation_with_outcome_definition_snapshots(
     return enriched
 
 
+def _resolve_creation_plan_git_bases(
+    state: TeamState,
+    plans: list[_TaskCreationPlan],
+    *,
+    git_default_branch_resolver,
+    git_base_commit_resolver,
+) -> list[_TaskCreationPlan]:
+    try:
+        return _resolve_task_creation_plan_git_bases(
+            state,
+            plans,
+            git_default_branch_resolver=git_default_branch_resolver,
+            git_base_commit_resolver=git_base_commit_resolver,
+        )
+    except TaskGitBaseValidationError as exc:
+        raise TeamCommandValidationError(
+            code=exc.code,
+            message=exc.message,
+            correction_context={
+                "task_ids": [plan.task_id for plan in plans],
+                "recommended_action": (
+                    "select a commit that exists on the managed base branch or omit "
+                    "git_base_commit_sha so the server snapshots the branch tip"
+                ),
+            },
+        ) from None
+
+
 class TeamTaskCreationCommandService(TeamCommandExecutor):
     def create_task_command(
         self,
@@ -89,6 +118,7 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
         originating_task_id: str | None = None,
         authored_by: Mapping[str, Any] | None = None,
         git_base_branch: str | None = None,
+        git_base_commit_sha: str | None = None,
         dependency_task_ids: Sequence[str] | None = None,
         task_kind: str = "support",
         outcome_contract: Mapping[str, Any] | None = None,
@@ -113,6 +143,7 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             originating_task_id=originating_task_id,
             authored_by=authored_by,
             git_base_branch=git_base_branch,
+            git_base_commit_sha=git_base_commit_sha,
             dependency_task_ids=dependency_task_ids,
             task_kind=task_kind,
             outcome_contract=outcome_contract,
@@ -152,10 +183,11 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 ),
                 reserved_task_ids=set(),
             )
-            plan = _resolve_task_creation_plan_git_bases(
+            plan = _resolve_creation_plan_git_bases(
                 state,
                 [plan],
                 git_default_branch_resolver=self.git_default_branch_resolver,
+                git_base_commit_resolver=self.git_base_commit_resolver,
             )[0]
             graph_errors = _task_creation_batch_graph_errors(
                 state,
@@ -225,6 +257,7 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
         originating_task_id: str | None = None,
         authored_by: Mapping[str, Any] | None = None,
         git_base_branch: str | None = None,
+        git_base_commit_sha: str | None = None,
         dependency_task_ids: Sequence[str] | None = None,
         task_kind: str = "support",
         outcome_contract: Mapping[str, Any] | None = None,
@@ -252,6 +285,7 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 "originating_task_id": originating_task_id,
                 "authored_by": authored_by,
                 "git_base_branch": git_base_branch,
+                "git_base_commit_sha": git_base_commit_sha,
                 "dependency_task_ids": list(dependency_task_ids or []),
                 "task_kind": task_kind,
                 "outcome_contract": (
@@ -330,10 +364,11 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 ),
                 reserved_task_ids=set(),
             )
-            plan = _resolve_task_creation_plan_git_bases(
+            plan = _resolve_creation_plan_git_bases(
                 state_model,
                 [plan],
                 git_default_branch_resolver=self.git_default_branch_resolver,
+                git_base_commit_resolver=self.git_base_commit_resolver,
             )[0]
             graph_errors = _task_creation_batch_graph_errors(
                 state_model,
@@ -446,10 +481,11 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 )
                 reserved_task_ids.add(plan.task_id)
                 plans.append(plan)
-            plans = _resolve_task_creation_plan_git_bases(
+            plans = _resolve_creation_plan_git_bases(
                 state,
                 plans,
                 git_default_branch_resolver=self.git_default_branch_resolver,
+                git_base_commit_resolver=self.git_base_commit_resolver,
             )
             graph_errors = _task_creation_batch_graph_errors(
                 state,
