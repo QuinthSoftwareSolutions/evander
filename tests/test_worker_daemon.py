@@ -267,7 +267,26 @@ def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
     )
     os.utime(checkout / "README.md", None)
 
-    reused = daemon.prepare_reference_repo("session-receipt", request)
+    cached_tip_request = request.model_copy(
+        update={
+            # The managed mirror can advance while refresh_upstream=false
+            # deliberately retains the worker's trusted checkout.
+            "commit_sha": "c" * 40,
+            "preparation_fingerprint": "d" * 64,
+        }
+    )
+    retained = daemon.prepare_reference_repo("session-receipt", cached_tip_request)
+    receipt = json.loads(
+        (
+            tmp_path
+            / "worker-root"
+            / "sessions"
+            / "session-receipt"
+            / "preparation-receipts"
+            / "reference-repo-repo.json"
+        ).read_text(encoding="utf-8")
+    )
+    reused = daemon.prepare_reference_repo("session-receipt", cached_tip_request)
     subprocess.run(
         ["git", "config", "--worktree", "--unset-all", "filter.attacker.clean"],
         cwd=checkout,
@@ -302,12 +321,16 @@ def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
         return original_run(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", add_filter_after_local_config)
-    raced_reuse = daemon.prepare_reference_repo("session-receipt", request)
+    raced_reuse = daemon.prepare_reference_repo("session-receipt", cached_tip_request)
     (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
 
     assert first.preparation_reused is False
+    assert retained.preparation_reused is False
+    assert retained.commit_sha == commit_sha
     assert reused.preparation_reused is True
     assert raced_reuse.preparation_reused is True
+    assert receipt["requested_commit_sha"] == "c" * 40
+    assert receipt["checkout_commit_sha"] == commit_sha
     assert injected_filter is True
     assert not filter_marker.exists()
     assert subprocess.run(
@@ -335,11 +358,11 @@ def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
         == "MM README.md\n"
     )
     with pytest.raises(ValueError, match="checkout is dirty"):
-        daemon.prepare_reference_repo("session-receipt", request)
+        daemon.prepare_reference_repo("session-receipt", cached_tip_request)
     subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=checkout, check=True)
     with pytest.raises(ValueError, match="checkout is dirty"):
         (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
-        daemon.prepare_reference_repo("session-receipt", request)
+        daemon.prepare_reference_repo("session-receipt", cached_tip_request)
 
 
 @pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
