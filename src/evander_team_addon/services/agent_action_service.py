@@ -152,11 +152,13 @@ class TeamAgentActionService:
         *,
         human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
         git_default_branch_resolver: Callable[..., object] | None = None,
+        git_base_commit_resolver: Callable[..., object] | None = None,
         session_lookup: Any | None = None,
     ) -> None:
         self._repository = repository
         self._human_review_eligibility_resolver = human_review_eligibility_resolver
         self._git_default_branch_resolver = git_default_branch_resolver
+        self._git_base_commit_resolver = git_base_commit_resolver
         self._session_lookup = session_lookup
 
     @property
@@ -597,6 +599,7 @@ class TeamAgentActionService:
                     state_model,
                     task_creation_plans,
                     git_default_branch_resolver=(self._git_default_branch_resolver),
+                    git_base_commit_resolver=(self._git_base_commit_resolver),
                 )
             except ValueError as exc:
                 result["errors"].append(f"task_creations: {exc}")

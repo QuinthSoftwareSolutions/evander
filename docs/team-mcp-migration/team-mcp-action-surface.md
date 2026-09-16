@@ -282,6 +282,7 @@ Arguments:
 | `state` | enum | no | `pending`, `in_progress`, `blocked`, or `waiting_for_review`. Defaults to `pending`. |
 | `parent_task_id` | string or null | no | Parent task. Required for agents lacking `create_root_task`. |
 | `git_base_branch` | string or null | no | Durable Git starting branch. Explicit value wins, otherwise a child inherits its parent and a root snapshots the project default. |
+| `git_base_commit_sha` | string or null | no | Full immutable Git baseline. A supplied commit must exist in the managed repository and be an ancestor of the selected branch; a new Git-backed integration boundary resolves and stores the branch tip automatically when omitted. |
 | `dependency_task_ids` | string[] | no | Same-project dependencies. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
@@ -296,6 +297,10 @@ Semantics:
   cycles.
 - The Git base can be changed only before any Git work context, deliverable, or
   promotion exists; later attempts return `git_base_locked`.
+- Git-backed integration-boundary creation fails closed if its selected branch cannot
+  be resolved to an immutable commit.
+- `team_update_task` cannot convert an existing Git-backed task into an integration
+  boundary; create a fresh boundary so its immutable base is snapshotted atomically.
 - Returns `task_id`.
 
 ### `team_create_tasks`

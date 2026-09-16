@@ -45,6 +45,7 @@ from ..domain.case_task import (
     _subordinate_task_finish_allowed,
     _task_deliverable_contract_scope_error,
     _task_graph_edit_error,
+    _task_integration_boundary_transition_error,
     _task_owner_reassignment_error,
 )
 from ..domain.blockers import (
@@ -1490,6 +1491,24 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 next_integration_boundary != task.integration_boundary
                 or next_deliverable_contract != task.deliverable_contract
             )
+            transition_error = _task_integration_boundary_transition_error(
+                state_model,
+                task=task,
+                proposed_integration_boundary=next_integration_boundary,
+            )
+            if transition_error is not None:
+                raise TeamCommandValidationError(
+                    code="integration_boundary_requires_fresh_task",
+                    message=transition_error,
+                    correction_context={
+                        "task_id": task.id,
+                        "project_id": task.project_id,
+                        "recommended_action": (
+                            "create a fresh task with team_create_task and "
+                            "integration_boundary=true"
+                        ),
+                    },
+                )
             if task.mutation_policy is not None:
                 changed_locked_fields: list[str] = []
                 locked_fields = set(task.mutation_policy.locked_fields)

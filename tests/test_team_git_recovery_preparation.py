@@ -21,6 +21,7 @@ from evander_team_addon.models import (
     TeamGitPreparationAttemptState,
     TeamState,
     TeamTaskState,
+    TaskDeliverableContract,
 )
 from evander_team_addon.providers import (
     DependencyGitPreparationError,
@@ -319,7 +320,14 @@ def test_explicit_contribution_contract_prepares_fresh_worktree_after_inputs_acc
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd", base_branch="main",
         )
-        state.tasks["task"].git_base_branch = "main"
+        task = state.tasks["task"]
+        task.git_base_branch = "main"
+        # This fixture models a legacy boundary whose contract is expanded
+        # after accepted children arrive; new boundaries must be fresh tasks.
+        task.integration_boundary = True
+        task.deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True,
+        )
 
     repo.update(seed_git)
     daemon = WorkerDaemon(

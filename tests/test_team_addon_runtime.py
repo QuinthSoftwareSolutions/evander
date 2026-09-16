@@ -5866,6 +5866,8 @@ def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec
     assert "Do not use dotted access such as tools.team_decide_review(...)" in prompt
     assert "repeat the exact-name lookup" in prompt
     assert "Do not declare the Team interface unavailable" in prompt
+    assert "coordinate first and integrate last" in prompt
+    assert "do not submit the aggregate from the long-lived coordination task" in prompt
 
     non_review_prompt = _build_prompt(
         {
@@ -9680,6 +9682,148 @@ def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
     assert next(iter(result_state.git_work_contexts.values())).base_commit == pinned_commit
 
 
+def test_pinned_dependency_composition_receipt_retries_from_prepared_checkout_base(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    pinned_commit = "a" * 40
+    composed_commit = "b" * 40
+    dependency_commit = "c" * 40
+    dependency_sources = [
+        {
+            "dependency_task_id": "source-task",
+            "deliverable_id": "source-deliverable",
+            "relationship_kind": "required_contribution",
+            "branch": "agents/source/tasks/source-task",
+            "commit_sha": dependency_commit,
+        }
+    ]
+
+    def _seed_pin(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            base_branch="main",
+        )
+        task = state.tasks["task"]
+        task.git_base_branch = "main"
+        task.git_base_commit_sha = pinned_commit
+        task.dependency_task_ids = ["source-task"]
+        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-pinned-composition"
+        return state
+
+    state = repo.update(_seed_pin)
+
+    prior_base_commits: list[object] = []
+    preparation_attempt_ids: list[str] = []
+
+    def _prepare(_context: object, **kwargs: object) -> tuple[str, str]:
+        prior_base_commits.append(kwargs["prior_base_commit"])
+        preparation_attempt_ids.append(str(kwargs["preparation_attempt_id"]))
+        kwargs["composition_result"].update(
+            {
+                "root_commit_sha": pinned_commit,
+                "composed_commit_sha": composed_commit,
+                "composed_tree_hash": "d" * 40,
+            }
+        )
+        kwargs["preparation_receipt_result"].update(
+            {
+                "request_fingerprint": "f" * 64,
+                "head_commit_sha": composed_commit,
+                "receipt_reused": len(preparation_attempt_ids) > 1,
+                "verified_clean": True,
+            }
+        )
+        # Reproduce the container-worker response that exposed the original bug:
+        # its returned commit identifies the prepared composed checkout, not the
+        # immutable task baseline.
+        return (
+            f"/home/agent/worktrees/repo/{kwargs['worktree_name']}",
+            composed_commit,
+        )
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        lambda *_args, **_kwargs: dependency_sources,
+    )
+    original_create = TeamAdminService.create_git_work_context_with_id
+    conflict_calls = 0
+
+    def _conflict_then_create(self: TeamAdminService, **kwargs: object):
+        nonlocal conflict_calls
+        if conflict_calls < 3:
+            conflict_calls += 1
+            raise TeamStateConflictError(expected_revision=1, current_revision=2)
+        return original_create(self, **kwargs)
+
+    monkeypatch.setattr(
+        TeamAdminService,
+        "create_git_work_context_with_id",
+        _conflict_then_create,
+    )
+
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": str(tmp_path)},
+        admin_service=SimpleNamespace(managed_git_admin=None),
+    )
+    arguments = {
+        "state": state,
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "project_id": "project",
+        "project_repo": {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        "dispatch_id": "dispatch-pinned-composition",
+        "tasks": [
+            {
+                "id": "task",
+                "project_id": "project",
+                "owner_agent_id": "backend",
+                "git_base_branch": "main",
+                "git_base_commit_sha": pinned_commit,
+            }
+        ],
+        "base_branch": "main",
+    }
+
+    with pytest.raises(TeamStateConflictError):
+        _create_project_repo_git_work_contexts(context, repo, **arguments)
+
+    after_failure = repo.read()
+    attempt = next(iter(after_failure.git_preparation_attempts.values()))
+    assert attempt.state == TeamGitPreparationAttemptState.PREPARED
+    assert attempt.base_commit_sha == composed_commit
+    assert attempt.head_commit_sha == composed_commit
+    assert after_failure.git_work_contexts == {}
+
+    arguments["state"] = after_failure
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        context,
+        repo,
+        **arguments,
+    )
+
+    assert len(rows) == 1
+    git_context = next(iter(result_state.git_work_contexts.values()))
+    assert git_context.base_commit == pinned_commit
+    committed_attempt = result_state.git_preparation_attempts[attempt.id]
+    assert committed_attempt.base_commit_sha == composed_commit
+    assert committed_attempt.head_commit_sha == composed_commit
+    assert committed_attempt.state == TeamGitPreparationAttemptState.COMMITTED
+    assert preparation_attempt_ids == [attempt.id, attempt.id]
+    assert prior_base_commits == [None, composed_commit]
+
+
 def test_git_preparation_receipt_survives_context_commit_conflict_and_retries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -13154,6 +13298,15 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
 
 def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
+    ancestry_checks: list[dict[str, object]] = []
+
+    class _ManagedGit:
+        def resolve_branch_commit(self, *_args, **_kwargs):
+            return "b" * 40
+
+        def verify_branch_commit_ancestry(self, *args, **kwargs):
+            ancestry_checks.append({"args": args, **kwargs})
+            return {}
 
     def _configure_git(state):
         state.projects["project"].git = ProjectGitConfig(
@@ -13194,6 +13347,7 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
             parent_task_id="task",
             authored_by={"name": "Workflow User", "email": "workflow@example.test"},
             git_base_branch="feature/workflow",
+            git_base_commit_sha="a" * 40,
             dependency_task_ids=["workflow-dependency"],
             integration_boundary=True,
             deliverable_contract={
@@ -13203,7 +13357,10 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
             created_by="workflow:intake",
             expected_revision=repo.read().revision,
         ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=_ManagedGit()),
+        ),
     )
 
     result = provider.execute()
@@ -13223,12 +13380,22 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
     assert task.parent_task_id == "task"
     assert task.authored_by == ProjectGitIdentity(name="Workflow User", email="workflow@example.test")
     assert task.git_base_branch == "feature/workflow"
+    assert task.git_base_commit_sha == "a" * 40
     assert task.dependency_task_ids == ["workflow-dependency"]
     assert task.integration_boundary is True
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
     assert task.deliverable_contract.required_contribution_task_ids == ["workflow-dependency"]
     assert reread.cases["case"].task_ids == ["workflow-task"]
+    assert ancestry_checks == [
+        {
+            "args": ("mr_0123456789abcdefabcd",),
+            "directory_path": "root",
+            "branch": "feature/workflow",
+            "commit_sha": "b" * 40,
+            "required_ancestor_shas": ["a" * 40],
+        }
+    ]
 
 
 def test_create_task_effect_reports_generated_id_from_atomic_mutation(

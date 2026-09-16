@@ -77,6 +77,18 @@ MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 LEASE_NOW = datetime(2098, 1, 1, tzinfo=UTC)
 
 
+class _TaskPinManagedGit:
+    def resolve_branch_commit(self, *_args, **_kwargs) -> str:
+        return "f" * 40
+
+    def verify_branch_commit_ancestry(self, *_args, **_kwargs) -> dict[str, object]:
+        return {}
+
+
+def _task_pin_admin(repository: TeamStateRepository) -> TeamAdminService:
+    return TeamAdminService(repository, managed_git_admin=_TaskPinManagedGit())
+
+
 def _authorized_chat_mutation(repository: TeamStateRepository, agent_id: str):
     state = repository.read()
     return project_scoped_team_chat_authorization(
@@ -1919,7 +1931,7 @@ def test_task_replacement_respects_dependent_mutation_policy(
     integration_boundary: bool,
 ) -> None:
     repository = _seed_agent_with_task(tmp_path)
-    admin = TeamAdminService(repository)
+    admin = _task_pin_admin(repository)
     admin.create_or_reprioritize_task(
         task_id="successor",
         owner_agent_id="worker",
@@ -1939,6 +1951,7 @@ def test_task_replacement_respects_dependent_mutation_policy(
         description="Its workflow-owned topology is immutable.",
         created_by_agent_id="lead",
         dependency_task_ids=["task"],
+        git_base_commit_sha="a" * 40 if integration_boundary else None,
         integration_boundary=integration_boundary,
         deliverable_contract=(
             {"required_contribution_task_ids": ["task"]}
@@ -1989,7 +2002,7 @@ def test_task_replacement_rearms_stale_integration_preparation_without_rewriting
     tmp_path: Path,
 ) -> None:
     repository = _seed_agent_with_task(tmp_path)
-    admin = TeamAdminService(repository)
+    admin = _task_pin_admin(repository)
     admin.create_or_reprioritize_task(
         task_id="successor",
         owner_agent_id="worker",
@@ -2009,6 +2022,7 @@ def test_task_replacement_rearms_stale_integration_preparation_without_rewriting
         description="Prepare the retained contribution frontier.",
         created_by_agent_id="lead",
         dependency_task_ids=["task"],
+        git_base_commit_sha="a" * 40,
         integration_boundary=True,
         deliverable_contract={
             "require_git_provenance": True,
@@ -2126,7 +2140,7 @@ def test_task_replacement_does_not_rewrite_submitted_integration_frontier(
     tmp_path: Path,
 ) -> None:
     repository = _seed_agent_with_task(tmp_path)
-    admin = TeamAdminService(repository)
+    admin = _task_pin_admin(repository)
     admin.create_or_reprioritize_task(
         task_id="successor",
         owner_agent_id="worker",
@@ -2146,6 +2160,7 @@ def test_task_replacement_does_not_rewrite_submitted_integration_frontier(
         description="Its submitted frontier is immutable.",
         created_by_agent_id="lead",
         dependency_task_ids=["task"],
+        git_base_commit_sha="a" * 40,
         integration_boundary=True,
         deliverable_contract={"required_contribution_task_ids": ["task"]},
         expected_revision=repository.read().revision,
@@ -2204,7 +2219,7 @@ def _seed_submitted_integration_boundary_recovery(
     *,
     require_git_provenance: bool = True,
 ) -> None:
-    admin = TeamAdminService(repository)
+    admin = _task_pin_admin(repository)
     if not require_git_provenance:
 
         def _remove_project_git(state):
@@ -2232,6 +2247,7 @@ def _seed_submitted_integration_boundary_recovery(
         description="Rebuild this boundary without rewriting its submitted history.",
         created_by_agent_id="lead",
         dependency_task_ids=["task"],
+        git_base_commit_sha="a" * 40,
         integration_boundary=True,
         deliverable_contract={
             "require_git_provenance": require_git_provenance,

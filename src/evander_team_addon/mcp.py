@@ -449,9 +449,14 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         context,
         managed_git=managed_git,
     )
+    git_base_commit_resolver = _team_mcp_git_base_commit_resolver(
+        context,
+        managed_git=managed_git,
+    )
     task_creation_commands = TeamTaskCreationCommandService(
         repo,
         git_default_branch_resolver=git_default_branch_resolver,
+        git_base_commit_resolver=git_base_commit_resolver,
     )
     outcome_catalog_commands = TeamOutcomeCatalogCommandService(repo)
     task_update_commands = TeamTaskUpdateCommandService(
@@ -1565,6 +1570,7 @@ def _register_slice6_tools(
         originating_task_id: str | None = None,
         authored_by: dict[str, str] | None = None,
         git_base_branch: str | None = None,
+        git_base_commit_sha: str | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: str = "support",
         outcome_contract: dict[str, Any] | None = None,
@@ -1594,6 +1600,7 @@ def _register_slice6_tools(
                 originating_task_id=originating_task_id,
                 authored_by=authored_by,
                 git_base_branch=git_base_branch,
+                git_base_commit_sha=git_base_commit_sha,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -1620,7 +1627,10 @@ def _register_slice6_tools(
             "with no contribution task IDs when it must resolve through an accepted "
             "deliverable. git_base_branch optionally selects this task's immutable "
             "starting workstream; otherwise a child inherits its parent and a root "
-            "snapshots the project default. authored_by optionally supplies {name, email}; "
+            "snapshots the project default. A Git-backed integration boundary snapshots "
+            "that branch's current commit automatically; git_base_commit_sha may supply "
+            "an already verified full commit instead. authored_by optionally supplies "
+            "{name, email}; "
             "otherwise the originating task or parent author is copied, with project fallback. "
             "originating_task_id does not "
             "seed Git content; when a correction must edit accepted predecessor "
@@ -1643,6 +1653,7 @@ def _register_slice6_tools(
         originating_task_id: str | None = None,
         authored_by: dict[str, str] | None = None,
         git_base_branch: str | None = None,
+        git_base_commit_sha: str | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: str = "support",
         outcome_contract: dict[str, Any] | None = None,
@@ -1673,6 +1684,7 @@ def _register_slice6_tools(
                 originating_task_id=originating_task_id,
                 authored_by=authored_by,
                 git_base_branch=git_base_branch,
+                git_base_commit_sha=git_base_commit_sha,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -1944,9 +1956,10 @@ def _register_slice6_tools(
         description=(
             "Update a Team task without accepting or rejecting review work. "
             "Before any deliverable submission, an authorized task-graph editor "
-            "can supply a deliverable_contract to require accepted work, and can "
-            "also designate a composite as an integration boundary with "
-            "integration_boundary=true. authored_by sets the author of future task commits; "
+            "can supply a deliverable_contract to require accepted work. A Git-backed "
+            "task cannot be converted into an integration boundary; create a fresh task "
+            "with integration_boundary=true so its base commit is snapshotted. "
+            "authored_by sets the author of future task commits; "
             "clear_authored_by restores the project fallback. "
             "git_base_branch may be changed only before "
             "Git preparation, deliverable submission, or promotion creation."
@@ -3235,6 +3248,45 @@ def _team_mcp_git_default_branch_resolver(
         if not isinstance(record, Mapping):
             raise RuntimeError("managed Git repository lookup returned an invalid record")
         return record.get("default_branch")
+
+    return _resolve
+
+
+def _team_mcp_git_base_commit_resolver(
+    context: AddonContext,
+    *,
+    managed_git=None,
+):
+    if managed_git is None:
+        managed_git = _team_mcp_managed_git_admin(context)
+
+    def _resolve(
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+        branch: str,
+        required_ancestor_shas: Sequence[str] | None = None,
+    ) -> object:
+        resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
+        if not callable(resolve_branch_commit):
+            raise RuntimeError("managed Git branch-commit resolution is unavailable")
+        commit_sha = resolve_branch_commit(
+            managed_repo_id,
+            directory_path=directory_path,
+            branch=branch,
+        )
+        if required_ancestor_shas and commit_sha is not None:
+            verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
+            if not callable(verify_ancestry):
+                raise RuntimeError("managed Git ancestry verification is unavailable")
+            verify_ancestry(
+                managed_repo_id,
+                directory_path=directory_path,
+                branch=branch,
+                commit_sha=commit_sha,
+                required_ancestor_shas=required_ancestor_shas,
+            )
+        return commit_sha
 
     return _resolve
 
