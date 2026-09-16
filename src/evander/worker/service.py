@@ -1595,7 +1595,8 @@ class WorkerDaemon:
                     "repo_source": request.repo_source,
                     "repo_name": request.repo_name,
                     "source_ref": request.source_ref,
-                    "commit_sha": resolved_commit,
+                    "requested_commit_sha": request.commit_sha,
+                    "checkout_commit_sha": resolved_commit,
                     "configuration_version": request.configuration_version,
                 },
             )
@@ -1618,9 +1619,12 @@ class WorkerDaemon:
         )
         if receipt is None or receipt.get("request_fingerprint") != fingerprint:
             return None
-        expected_commit = str(receipt.get("commit_sha") or "").strip().lower()
+        requested_commit = str(request.commit_sha or "").strip().lower()
+        expected_commit = str(receipt.get("checkout_commit_sha") or "").strip().lower()
         if (
-            expected_commit != request.commit_sha
+            not requested_commit
+            or receipt.get("requested_commit_sha") != requested_commit
+            or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected_commit) is None
             or receipt.get("repo_source") != request.repo_source
             or receipt.get("source_ref") != request.source_ref
             or receipt.get("configuration_version") != request.configuration_version

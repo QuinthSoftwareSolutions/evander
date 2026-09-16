@@ -1,9 +1,15 @@
 # Changelog
 
-## 2026-09-16 - Accept large Freshservice attachment IDs (0.42.2)
+## 2026-09-16 - Accept large Freshservice attachment IDs (0.42.3)
 
 - Accept positive Freshservice ticket and attachment identifiers up to the signed 64-bit limit,
   including attachment IDs larger than the previous 32-bit ceiling.
+
+## 2026-09-16 - Reuse retained reference repositories (0.42.2)
+
+- Keep the managed-mirror commit requested for reference preparation separate from the trusted
+  checkout commit retained by a persistent worker, allowing receipt reuse when the mirror has
+  advanced but `refresh_upstream` remains disabled.
 
 ## 2026-09-15 - Prioritize live communication workflows (0.42.1)
 
