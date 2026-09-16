@@ -557,6 +557,8 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
         "has_pending_feedback",
         "list_unread_feedback",
         "list_all_feedback",
+        "list_pr_feedback_attachments",
+        "download_pr_feedback_attachment",
         "schedule_resume",
         "cancel_scheduled_wake",
         "run_script",

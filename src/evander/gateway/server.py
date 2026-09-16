@@ -832,6 +832,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         artifact_audit_summaries=artifact_helpers.artifact_audit_summaries,
         ado_artifacts_for_ids=artifact_helpers.ado_artifacts_for_ids,
         ado_artifact_approval_payload=artifact_helpers.ado_artifact_approval_payload,
+        pr_feedback_attachment_helpers=inline_media_helpers,
     )
     register_reference_repository_tools(
         server,

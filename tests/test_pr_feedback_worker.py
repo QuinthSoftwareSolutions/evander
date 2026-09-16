@@ -25,6 +25,7 @@ from evander.pr_feedback import (
     annotate_agent_directed_feedback,
     pr_feedback_item_payload,
 )
+from evander.pr_feedback.providers import extract_ado_pr_feedback_attachments
 from evander.models import PrFeedbackItem
 from evander.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
@@ -513,6 +514,47 @@ def test_ado_mapping_extracts_markdown_pr_attachment_images() -> None:
     assert media[0].url == attachment_url
     assert media[0].metadata["source"] == "ado_markdown_image"
     assert media[0].metadata["alt"] == "image (2).png"
+
+
+def test_ado_pr_feedback_attachment_extractor_includes_non_image_files() -> None:
+    pdf_url = (
+        "https://dev.azure.com/example/Project/_apis/git/repositories/repo-1/"
+        "pullRequests/9299/attachments/review%20notes.pdf"
+    )
+    text_url = (
+        "https://dev.azure.com/example/Project/_apis/wit/attachments/trace-id?fileName=trace.txt"
+    )
+
+    attachments = extract_ado_pr_feedback_attachments(
+        content=(
+            f"<p><a href='{pdf_url}'>review notes.pdf</a></p>"
+            f"[duplicate]({pdf_url})\n"
+            f"[trace output]({text_url})"
+        ),
+        feedback_id="azure_devops:thread_comment:45:93",
+        repo="repo-1",
+        pr_id="9299",
+        thread_id="45",
+        comment_id="93",
+    )
+
+    assert [item.filename for item in attachments] == ["review notes.pdf", "trace.txt"]
+    assert [item.mime_type for item in attachments] == ["application/pdf", "text/plain"]
+    assert attachments[0].metadata["source"] == "ado_attachment_link"
+    assert attachments[1].metadata["source"] == "ado_markdown_attachment"
+    assert attachments[0].attachment_id.startswith("ado-attachment-")
+    assert (
+        attachments[0].attachment_id
+        == extract_ado_pr_feedback_attachments(
+            content=f"[notes]({pdf_url})",
+            feedback_id="azure_devops:thread_comment:45:93",
+            repo="repo-1",
+            pr_id="9299",
+            thread_id="45",
+            comment_id="93",
+        )[0].attachment_id
+    )
+    assert "url" not in attachments[0].model_dump(mode="json")
 
 
 def test_ado_mapping_thread_edge_cases() -> None:

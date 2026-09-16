@@ -20,6 +20,7 @@ from evander.config import GatewayConfig
 from evander.directory_config import DirectoryConfigStore
 from evander.directories import DirectoryService
 from evander.gateway import create_server
+from evander.inline_media import InlineMediaDownload
 from evander.models import SessionManifest, ToolName
 from evander.issues.service import AzureDevOpsIssueAdapter
 from evander.runtime import build_runtime
@@ -157,6 +158,8 @@ def test_create_server_registers_extracted_communication_tools(tmp_path: Path) -
         "email_create_draft",
         "list_inline_media",
         "download_inline_media",
+        "list_pr_feedback_attachments",
+        "download_pr_feedback_attachment",
         "communication_list_attachments",
         "communication_download_attachment",
         "stage_artifact",
@@ -587,6 +590,173 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
         .files[0]
         .source_path.endswith(f"{artifact['artifact_id']}.bin")
     )
+
+
+def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from evander.pr_feedback import FeedbackEnvelope
+
+    attachment_url = (
+        "https://dev.azure.com/example/Project/_apis/git/repositories/repo-1/"
+        "pullRequests/9299/attachments/review%20notes.pdf"
+    )
+    forged_url = (
+        "https://attacker.example/Project/_apis/git/repositories/repo-1/"
+        "pullRequests/9299/attachments/forged.pdf"
+    )
+    download_calls: list[str | None] = []
+
+    class FakeAzureDevOpsFeedbackAdapter:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+        def download_inline_media(
+            self,
+            *,
+            media: object,
+            raw: object = None,
+            max_bytes: int | None = None,
+        ) -> InlineMediaDownload:
+            del raw
+            url = getattr(media, "url", None)
+            download_calls.append(url)
+            assert url == attachment_url
+            assert max_bytes == 1024
+            return InlineMediaDownload(
+                content=b"%PDF-1.7 test attachment",
+                filename="review notes.pdf",
+                mime_type="application/pdf",
+            )
+
+    monkeypatch.setattr(
+        gateway,
+        "AzureDevOpsFeedbackAdapter",
+        FakeAzureDevOpsFeedbackAdapter,
+    )
+    context = make_context(
+        tmp_path,
+        azure_devops_organization_url="https://dev.azure.com/example",
+        azure_devops_project="Project",
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+                ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+            ],
+            communication_file_receive_enabled=True,
+            communication_file_max_bytes=1024,
+            communication_file_allowed_mime_types=["application/pdf"],
+            communication_file_allowed_extensions=[".pdf"],
+            metadata={
+                "pr_feedback_streams": [
+                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "9299"}
+                ]
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    context.pr_feedback_service.store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="azure_devops:thread_comment:45:93",
+            provider="azure_devops",
+            repo="repo-1",
+            pr_id="9299",
+            thread_id="45",
+            comment_id="93",
+            author="reviewer",
+            body=f"[review notes]({attachment_url}) [forged]({forged_url})",
+            created_at=datetime.now(UTC),
+        )
+    )
+    server = create_server(context)
+
+    listed = call_tool(
+        server,
+        "list_pr_feedback_attachments",
+        {
+            "session_id": "session-1",
+            "feedback_id": "azure_devops:thread_comment:45:93",
+        },
+    )
+
+    assert listed["provider"] == "azure_devops"
+    assert listed["repo"] == "repo-1"
+    assert listed["pr_id"] == "9299"
+    assert listed["thread_id"] == "45"
+    assert listed["comment_id"] == "93"
+    assert len(listed["attachments"]) == 1
+    attachment = listed["attachments"][0]
+    assert attachment["filename"] == "review notes.pdf"
+    assert attachment["mime_type"] == "application/pdf"
+    assert "url" not in attachment
+
+    downloaded = call_tool(
+        server,
+        "download_pr_feedback_attachment",
+        {
+            "session_id": "session-1",
+            "feedback_id": "azure_devops:thread_comment:45:93",
+            "attachment_id": attachment["attachment_id"],
+        },
+    )
+
+    artifact = downloaded["artifact"]
+    assert download_calls == [attachment_url]
+    assert artifact["provider"] == "azure_devops"
+    assert artifact["source_message_id"] == "azure_devops:thread_comment:45:93"
+    assert artifact["source_attachment_id"] == attachment["attachment_id"]
+    assert artifact["filename"] == "review-notes.pdf"
+    assert artifact["mime_type"] == "application/pdf"
+    assert artifact["metadata"]["source_kind"] == "pr_feedback_attachment"
+    assert "url" not in artifact["metadata"]["attachment"]
+    staged = CommunicationArtifactStore(tmp_path).get(artifact["artifact_id"])
+    assert staged.blob_path.read_bytes() == b"%PDF-1.7 test attachment"
+    assert attachment_url not in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+
+
+def test_pr_feedback_attachment_tools_require_receive_permission(tmp_path: Path) -> None:
+    from evander.pr_feedback import FeedbackEnvelope
+
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_PR_FEEDBACK_ATTACHMENTS],
+            metadata={
+                "pr_feedback_streams": [
+                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "9299"}
+                ]
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    context.pr_feedback_service.store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="azure_devops:thread_comment:45:93",
+            provider="azure_devops",
+            repo="repo-1",
+            pr_id="9299",
+            comment_id="93",
+            author="reviewer",
+            body="attachment",
+            created_at=datetime.now(UTC),
+        )
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Inbound communication file receive is disabled"):
+        call_tool(
+            server,
+            "list_pr_feedback_attachments",
+            {
+                "session_id": "session-1",
+                "feedback_id": "azure_devops:thread_comment:45:93",
+            },
+        )
 
 
 def test_inline_media_ado_backlog_uses_issue_service_and_content_policy(

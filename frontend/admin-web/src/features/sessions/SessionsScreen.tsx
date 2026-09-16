@@ -329,6 +329,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   add_message_reaction: "Add a reaction to an approved Discord or Teams message from the host side.",
   communication_list_attachments: "List inbound attachment metadata from an allowlisted Discord, Teams, or email source.",
   communication_download_attachment: "Download one inbound attachment into the host communication artifact store.",
+  list_pr_feedback_attachments: "List Azure DevOps files linked from an authorized pull request feedback item.",
+  download_pr_feedback_attachment: "Download one authorized pull request feedback file into the host artifact store.",
   communication_copy_artifact_to_workspace: "Copy a staged communication artifact into the agent workspace.",
   discord_post_file: "Post staged communication file artifacts to an allowlisted Discord channel.",
   teams_get_messages: "Read Microsoft Teams messages made available to the session by the host ingest worker.",
@@ -627,6 +629,8 @@ function groupToolOption(tool: ToolOption): string {
   if ([
     "communication_list_attachments",
     "communication_download_attachment",
+    "list_pr_feedback_attachments",
+    "download_pr_feedback_attachment",
     "stage_artifact",
     "communication_copy_artifact_to_workspace",
     "communication_stage_workspace_file",

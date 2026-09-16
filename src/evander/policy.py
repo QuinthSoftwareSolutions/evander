@@ -576,6 +576,8 @@ class PolicyEngine:
             ToolName.HAS_PENDING_FEEDBACK,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
+            ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+            ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
         }:
             try:
                 self.require_pr_feedback_streams(session)

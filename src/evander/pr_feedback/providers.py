@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import mimetypes
 import re
@@ -18,7 +19,7 @@ from evander.inline_media import (
     require_provider_media_url,
     sanitize_inline_media_metadata,
 )
-from evander.models import InlineMediaRef
+from evander.models import InlineMediaRef, PrFeedbackAttachmentRef
 from evander.pr_feedback.store import (
     FeedbackEnvelope,
     FeedbackProviderAuthError,
@@ -29,6 +30,7 @@ from evander.pr_feedback.store import (
 )
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_MARKDOWN_LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _ADO_COMPACT_MENTION_ID_RE = re.compile(
     r"@<\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\s*>"
@@ -474,6 +476,70 @@ def _extract_ado_inline_media(
         url_filter=lambda url: _looks_like_ado_attachment_url(url) and url not in seen_urls,
     )
     refs.extend(markdown_refs)
+    return refs
+
+
+def extract_ado_pr_feedback_attachments(
+    *,
+    content: str,
+    feedback_id: str,
+    repo: str,
+    pr_id: str,
+    thread_id: str | None,
+    comment_id: str | None,
+) -> list[PrFeedbackAttachmentRef]:
+    """Extract stable Azure DevOps attachment references from one feedback body."""
+
+    parser = _HtmlInlineMediaParser()
+    parser.feed(content or "")
+    candidates: list[tuple[str, str, str]] = []
+    for item in parser.items:
+        url = item["url"].strip()
+        if not _looks_like_ado_attachment_url(url):
+            continue
+        fallback = (
+            item.get("alt") or item.get("title") or item.get("text") or "azure-devops-attachment"
+        ).strip()
+        source = "html_image" if item.get("tag") == "img" else "ado_attachment_link"
+        candidates.append((url, fallback, source))
+
+    for match in _MARKDOWN_LINK_RE.finditer(content or ""):
+        is_image = bool(match.group(1))
+        label = match.group(2).strip()
+        url = match.group(3).strip()
+        if not _looks_like_ado_attachment_url(url):
+            continue
+        candidates.append(
+            (
+                url,
+                label or "azure-devops-attachment",
+                "ado_markdown_image" if is_image else "ado_markdown_attachment",
+            )
+        )
+
+    refs: list[PrFeedbackAttachmentRef] = []
+    seen_urls: set[str] = set()
+    for url, fallback, source in candidates:
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        filename = _filename_from_url(url, fallback=fallback)
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        refs.append(
+            PrFeedbackAttachmentRef(
+                provider="azure_devops",
+                feedback_id=feedback_id,
+                repo=repo,
+                pr_id=pr_id,
+                thread_id=thread_id,
+                comment_id=comment_id,
+                attachment_id=f"ado-attachment-{digest}",
+                filename=filename,
+                mime_type=_mime_type_from_filename(filename),
+                url=url,
+                metadata={"source": source},
+            )
+        )
     return refs
 
 

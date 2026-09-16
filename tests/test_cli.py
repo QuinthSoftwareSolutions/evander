@@ -2361,6 +2361,9 @@ def test_attach_pr_feedback_updates_existing_session(tmp_path: Path) -> None:
     assert "get_pull_request" in manifest["allowed_tools"]
     assert "list_unread_feedback" in manifest["allowed_tools"]
     assert "list_all_feedback" in manifest["allowed_tools"]
+    assert "list_pr_feedback_attachments" in manifest["allowed_tools"]
+    assert "download_pr_feedback_attachment" in manifest["allowed_tools"]
+    assert "communication_copy_artifact_to_workspace" in manifest["allowed_tools"]
     assert "post_pr_feedback_reply" in manifest["allowed_tools"]
 
 

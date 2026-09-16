@@ -1358,6 +1358,8 @@ function groupToolOption(option: WorkflowFieldOption): string {
   if ([
     "communication_list_attachments",
     "communication_download_attachment",
+    "list_pr_feedback_attachments",
+    "download_pr_feedback_attachment",
     "stage_artifact",
     "communication_copy_artifact_to_workspace",
     "communication_stage_workspace_file",
