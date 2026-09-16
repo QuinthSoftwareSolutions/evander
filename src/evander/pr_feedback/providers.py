@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 import hashlib
 import html
 import mimetypes
@@ -20,6 +21,7 @@ from evander.inline_media import (
     sanitize_inline_media_metadata,
 )
 from evander.models import InlineMediaRef, PrFeedbackAttachmentRef
+from evander.pr_feedback.identity import azure_devops_repository_scope
 from evander.pr_feedback.store import (
     FeedbackEnvelope,
     FeedbackProviderAuthError,
@@ -38,6 +40,13 @@ _ADO_COMPACT_MENTION_ID_RE = re.compile(
 _INLINE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _MAX_ADO_PATH_DECODE_PASSES = 5
 ADO_PR_FEEDBACK_ATTACHMENT_SCOPE_KEY = "ado_pr_feedback_attachment_scope"
+
+
+@dataclass(frozen=True)
+class AzureDevOpsPrAttachmentScope:
+    project_identifiers: tuple[str, ...]
+    repository_identifiers: tuple[str, ...]
+    pr_id: str
 
 
 class _HtmlInlineMediaParser(HTMLParser):
@@ -260,6 +269,128 @@ def _ado_expected_segment(value: str, *, field_name: str) -> str:
     return segment
 
 
+def _ado_expected_identifiers(
+    primary: str,
+    aliases: Iterable[str] | None,
+    *,
+    field_name: str,
+) -> tuple[str, ...]:
+    identifiers: list[str] = []
+    seen: set[str] = set()
+    for value in (primary, *(aliases or ())):
+        identifier = _ado_expected_segment(value, field_name=field_name)
+        folded = identifier.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        identifiers.append(identifier)
+    return tuple(identifiers)
+
+
+def _ado_scope_identifiers(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(item) for item in value)
+
+
+def _ado_organization_identifier(organization_url: str) -> str:
+    configured = urlparse(organization_url)
+    configured_segments = (
+        _canonical_ado_path_segments(configured.path.rstrip("/"))
+        if configured.path.rstrip("/")
+        else []
+    )
+    hostname = (configured.hostname or "").casefold()
+    if hostname == "dev.azure.com":
+        if len(configured_segments) != 1:
+            raise ValueError("Azure DevOps organization URL must identify exactly one organization")
+        return configured_segments[0]
+    if hostname.endswith(".visualstudio.com"):
+        if configured_segments:
+            raise ValueError("Azure DevOps organization URL must not include a path")
+        return hostname.split(".", 1)[0]
+    raise ValueError("Azure DevOps organization URL host is not supported")
+
+
+def ado_pr_attachment_scope_from_pull_request(
+    *,
+    payload: dict[str, Any],
+    organization_url: str,
+    project: str,
+    repo: str,
+    pr_id: str,
+) -> AzureDevOpsPrAttachmentScope:
+    """Build trusted attachment path aliases from one authenticated PR response."""
+
+    expected_pr_id = _ado_expected_segment(pr_id, field_name="pull request id")
+    returned_pr_id = str(payload.get("pullRequestId") or "").strip()
+    if returned_pr_id != expected_pr_id:
+        raise ValueError("Azure DevOps pull request lookup returned a different pull request")
+
+    repository = payload.get("repository")
+    if not isinstance(repository, dict):
+        raise ValueError("Azure DevOps pull request lookup did not include a repository")
+    returned_repository_identifiers = _ado_expected_identifiers(
+        str(repository.get("id") or "").strip(),
+        [str(repository.get("name") or "").strip()],
+        field_name="repository",
+    )
+    expected_repository = _ado_expected_segment(
+        _normalize_azure_devops_repo_identifier(repo),
+        field_name="repository",
+    )
+    if expected_repository.casefold() not in {
+        item.casefold() for item in returned_repository_identifiers
+    }:
+        raise ValueError("Azure DevOps pull request lookup returned a different repository")
+
+    scoped_repository = azure_devops_repository_scope(repo)
+    if scoped_repository is not None:
+        scoped_organization, _scoped_project, scoped_repository_name = scoped_repository
+        if scoped_organization != _ado_organization_identifier(organization_url).casefold():
+            raise ValueError(
+                "Azure DevOps pull request lookup organization does not match the feedback stream"
+            )
+        if scoped_repository_name != expected_repository.casefold():
+            raise ValueError(
+                "Azure DevOps pull request lookup repository does not match the feedback stream"
+            )
+
+    returned_project = repository.get("project")
+    if not isinstance(returned_project, dict):
+        raise ValueError("Azure DevOps pull request lookup did not include a project")
+    returned_project_identifiers = _ado_expected_identifiers(
+        str(returned_project.get("id") or "").strip(),
+        [str(returned_project.get("name") or "").strip()],
+        field_name="project",
+    )
+    expected_project = _ado_expected_segment(project, field_name="project")
+    if expected_project.casefold() not in {
+        item.casefold() for item in returned_project_identifiers
+    }:
+        raise ValueError("Azure DevOps pull request lookup returned a different project")
+    if scoped_repository is not None and scoped_repository[1] not in {
+        item.casefold() for item in returned_project_identifiers
+    }:
+        raise ValueError(
+            "Azure DevOps pull request lookup project does not match the feedback stream"
+        )
+
+    return AzureDevOpsPrAttachmentScope(
+        project_identifiers=_ado_expected_identifiers(
+            expected_project,
+            returned_project_identifiers,
+            field_name="project",
+        ),
+        repository_identifiers=_ado_expected_identifiers(
+            expected_repository,
+            returned_repository_identifiers,
+            field_name="repository",
+        ),
+        pr_id=expected_pr_id,
+    )
+
+
 def require_ado_pr_feedback_attachment_url(
     *,
     url: str,
@@ -267,6 +398,8 @@ def require_ado_pr_feedback_attachment_url(
     project: str,
     repo: str,
     pr_id: str,
+    project_identifiers: Iterable[str] | None = None,
+    repository_identifiers: Iterable[str] | None = None,
 ) -> None:
     """Require one canonical, feedback-scoped Azure DevOps attachment endpoint."""
 
@@ -307,9 +440,14 @@ def require_ado_pr_feedback_attachment_url(
     else:
         raise ValueError("Azure DevOps organization URL host is not supported")
 
-    expected_project = _ado_expected_segment(project, field_name="project")
-    expected_repo = _ado_expected_segment(
+    expected_projects = _ado_expected_identifiers(
+        project,
+        project_identifiers,
+        field_name="project",
+    )
+    expected_repositories = _ado_expected_identifiers(
         _normalize_azure_devops_repo_identifier(repo),
+        repository_identifiers,
         field_name="repository",
     )
     expected_pr_id = _ado_expected_segment(pr_id, field_name="pull request id")
@@ -323,8 +461,8 @@ def require_ado_pr_feedback_attachment_url(
     route = segments[len(root_segments) :]
     folded_route = [segment.casefold() for segment in route]
     if len(route) == 4 and folded_route[:3] == ["_apis", "wit", "attachments"]:
-        return
-    if not route or route[0].casefold() != expected_project.casefold():
+        raise ValueError("Azure DevOps attachment URL must include the feedback stream project")
+    if not route or route[0].casefold() not in {item.casefold() for item in expected_projects}:
         raise ValueError("Azure DevOps attachment URL project does not match the feedback stream")
     route = route[1:]
     folded_route = [segment.casefold() for segment in route]
@@ -333,7 +471,7 @@ def require_ado_pr_feedback_attachment_url(
     if (
         len(route) == 8
         and folded_route[:3] == ["_apis", "git", "repositories"]
-        and route[3].casefold() == expected_repo.casefold()
+        and route[3].casefold() in {item.casefold() for item in expected_repositories}
         and folded_route[4] == "pullrequests"
         and route[5].casefold() == expected_pr_id.casefold()
         and folded_route[6] == "attachments"
@@ -613,6 +751,8 @@ def extract_ado_pr_feedback_attachments(
     pr_id: str,
     thread_id: str | None,
     comment_id: str | None,
+    project_identifiers: Iterable[str] | None = None,
+    repository_identifiers: Iterable[str] | None = None,
 ) -> list[PrFeedbackAttachmentRef]:
     """Extract stable Azure DevOps attachment references from one feedback body."""
 
@@ -656,6 +796,8 @@ def extract_ado_pr_feedback_attachments(
                 project=project,
                 repo=repo,
                 pr_id=pr_id,
+                project_identifiers=project_identifiers,
+                repository_identifiers=repository_identifiers,
             )
         except ValueError:
             continue
@@ -1066,6 +1208,10 @@ class AzureDevOpsFeedbackAdapter:
                     project=self.project,
                     repo=scope_repo,
                     pr_id=scope_pr_id,
+                    project_identifiers=_ado_scope_identifiers(scope.get("project_identifiers")),
+                    repository_identifiers=_ado_scope_identifiers(
+                        scope.get("repository_identifiers")
+                    ),
                 )
 
             url_validator = validate_scoped_url

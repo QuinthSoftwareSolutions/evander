@@ -21,7 +21,7 @@ from evander.directory_config import DirectoryConfigStore
 from evander.directories import DirectoryService
 from evander.gateway import create_server
 from evander.inline_media import InlineMediaDownload
-from evander.models import SessionManifest, ToolName
+from evander.models import GetPullRequestResponse, SessionManifest, ToolName
 from evander.issues.service import AzureDevOpsIssueAdapter
 from evander.runtime import build_runtime
 
@@ -592,14 +592,17 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
     )
 
 
-def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
+def test_ado_pr_feedback_attachment_tools_resolve_guid_scope_without_pr_map(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from evander.pr_feedback import FeedbackEnvelope
 
+    project_id = "70a1569b-16ac-476e-a6b5-44830b54dcc7"
+    repository_id = "d30d0ddf-69c9-4a6b-98e4-1bc60506b8a1"
+    other_repository_id = "11111111-2222-3333-4444-555555555555"
     attachment_url = (
-        "https://dev.azure.com/example/Project/_apis/git/repositories/repo-1/"
+        f"https://dev.azure.com/example/{project_id}/_apis/git/repositories/{repository_id}/"
         "pullRequests/9299/attachments/review%20notes.pdf"
     )
     forged_url = (
@@ -611,10 +614,29 @@ def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
         "../../git/repositories?api-version=7.1"
     )
     cross_repo_url = (
-        "https://dev.azure.com/example/Project/_apis/git/repositories/other-repo/"
+        f"https://dev.azure.com/example/{project_id}/_apis/git/repositories/"
+        f"{other_repository_id}/"
         "pullRequests/9299/attachments/other.pdf"
     )
     download_calls: list[str | None] = []
+    pr_lookup_calls: list[dict[str, object]] = []
+
+    class FakePrQueryService:
+        def get_pull_request(self, **kwargs: object) -> GetPullRequestResponse:
+            pr_lookup_calls.append(kwargs)
+            return GetPullRequestResponse(
+                provider="azure_devops",
+                repo="repo-1",
+                pr_id="9299",
+                raw={
+                    "pullRequestId": 9299,
+                    "repository": {
+                        "id": repository_id,
+                        "name": "repo-1",
+                        "project": {"id": project_id, "name": "Project"},
+                    },
+                },
+            )
 
     class FakeAzureDevOpsFeedbackAdapter:
         def __init__(self, **kwargs: object) -> None:
@@ -632,6 +654,9 @@ def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
             download_calls.append(url)
             assert url == attachment_url
             assert max_bytes == 1024
+            scope = getattr(media, "metadata")["ado_pr_feedback_attachment_scope"]
+            assert scope["project_identifiers"] == ["Project", project_id]
+            assert scope["repository_identifiers"] == ["repo-1", repository_id]
             return InlineMediaDownload(
                 content=b"%PDF-1.7 test attachment",
                 filename="review notes.pdf",
@@ -647,7 +672,10 @@ def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
         tmp_path,
         azure_devops_organization_url="https://dev.azure.com/example",
         azure_devops_project="Project",
+        pr_map_path=tmp_path / "pr-map.json",
     )
+    context.pr_query_service = FakePrQueryService()
+    assert not context.config.pr_map_path.exists()
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -751,6 +779,18 @@ def test_ado_pr_feedback_attachment_tools_stage_authorized_file(
     )
 
     artifact = downloaded["artifact"]
+    assert len(pr_lookup_calls) == 3
+    assert all(
+        call
+        == {
+            "provider": "azure_devops",
+            "repo": "repo-1",
+            "pr_id": "9299",
+            "include_reviewers": False,
+            "include_commits": False,
+        }
+        for call in pr_lookup_calls
+    )
     assert download_calls == [attachment_url]
     assert artifact["provider"] == "azure_devops"
     assert artifact["source_message_id"] == "azure_devops:thread_comment:45:93"

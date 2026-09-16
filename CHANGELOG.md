@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-16 - Resolve PR attachment identities (0.43.2)
+
+- Resolve Azure DevOps project and repository GUIDs from the authorized pull request when
+  validating PR-feedback attachment URLs, including for PRs that are not present in
+  `pr-map.json`, while retaining canonical route and feedback-stream enforcement.
+
 ## 2026-09-16 - Pin final integration provenance (0.43.1)
 
 - Snapshot the managed base-branch commit when a Git-backed integration boundary is created,
