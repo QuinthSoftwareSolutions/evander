@@ -12,7 +12,6 @@ import shutil
 import sqlite3
 import stat
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -1762,6 +1761,42 @@ class WorkerDaemon:
         )
         return state_path
 
+    def _reference_repo_status_git_dir(
+        self,
+        paths: WorkerSessionPaths,
+        repo_name: str,
+    ) -> Path:
+        state_dir = paths.root / "reference-repository-state"
+        status_git_dir = state_dir / f"{repo_name}.status.git"
+        ensure_resolved_path_within(
+            base=paths.root,
+            candidate=status_git_dir,
+            description="reference repo status cache",
+        )
+        try:
+            state_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        state_dir_stat = state_dir.lstat()
+        if not stat.S_ISDIR(state_dir_stat.st_mode) or stat.S_ISLNK(state_dir_stat.st_mode):
+            raise ValueError("reference repo trusted state directory must be a directory")
+        state_dir.chmod(0o700)
+        try:
+            status_dir_stat = status_git_dir.lstat()
+        except FileNotFoundError:
+            subprocess.run(
+                ["git", "init", "--quiet", "--bare", str(status_git_dir)],
+                env=_git_subprocess_env(paths.agent_home),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            status_dir_stat = status_git_dir.lstat()
+        if not stat.S_ISDIR(status_dir_stat.st_mode) or stat.S_ISLNK(status_dir_stat.st_mode):
+            raise ValueError("reference repo status cache must be a directory")
+        status_git_dir.chmod(0o700)
+        return status_git_dir
+
     def _read_reference_repo_trusted_commit(
         self,
         paths: WorkerSessionPaths,
@@ -1838,10 +1873,10 @@ class WorkerDaemon:
         The check deliberately does not run Git against the checkout's own
         Git directory.  Both its local and per-worktree configuration are
         guest writable, and ``git status`` may run a configured filter while
-        it refreshes an index.  A temporary Git directory under the
-        host-owned session root supplies the index and configuration; the
-        checked-out commit is made available only as an alternate object
-        directory.
+        it refreshes an index.  A persistent Git directory under the
+        host-owned session root supplies the index, stat cache, and
+        configuration; the checked-out commit is made available only as an
+        alternate object directory.
         """
         base_env = _git_subprocess_env(paths.agent_home)
         git_dir = _resolved_git_dir_within_checkout(target_dir, env=base_env)
@@ -1855,57 +1890,79 @@ class WorkerDaemon:
         if not stat.S_ISDIR(object_dir_stat.st_mode) or stat.S_ISLNK(object_dir_stat.st_mode):
             raise ValueError("reference repo Git object storage is unsafe")
 
-        with tempfile.TemporaryDirectory(
-            prefix="reference-status-",
-            dir=paths.root,
-        ) as temporary_dir:
-            isolated_worktree = Path(temporary_dir) / "repository"
+        isolated_git_dir = self._reference_repo_status_git_dir(paths, target_dir.name)
+        isolated_env = base_env | {
+            "GIT_DIR": str(isolated_git_dir),
+            "GIT_WORK_TREE": str(target_dir),
+            "GIT_INDEX_FILE": str(isolated_git_dir / "index"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(object_dir),
+        }
+        if expected_commit is not None:
             subprocess.run(
-                ["git", "init", "--quiet", str(isolated_worktree)],
-                env=base_env,
+                ["git", "update-ref", "HEAD", expected_commit],
+                env=isolated_env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            isolated_git_dir = isolated_worktree / ".git"
-            isolated_env = base_env | {
-                "GIT_DIR": str(isolated_git_dir),
-                "GIT_WORK_TREE": str(target_dir),
-                "GIT_INDEX_FILE": str(isolated_git_dir / "index"),
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(object_dir),
-            }
-            if expected_commit:
+            checkout_index = git_dir / "index"
+            try:
+                checkout_index_stat = checkout_index.lstat()
+            except FileNotFoundError:
+                return True
+            if not stat.S_ISREG(checkout_index_stat.st_mode) or stat.S_ISLNK(
+                checkout_index_stat.st_mode
+            ):
+                return True
+            checkout_index_env = isolated_env | {"GIT_INDEX_FILE": str(checkout_index)}
+            checkout_index_check = subprocess.run(
+                ["git", "diff-index", "--cached", "--quiet", expected_commit, "--"],
+                env=checkout_index_env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if checkout_index_check.returncode != 0:
+                return True
+            cached_tree_check = subprocess.run(
+                ["git", "diff-index", "--cached", "--quiet", expected_commit, "--"],
+                env=isolated_env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if cached_tree_check.returncode != 0:
                 subprocess.run(
-                    ["git", "update-ref", "HEAD", expected_commit],
+                    ["git", "read-tree", expected_commit],
                     env=isolated_env,
                     check=True,
                     capture_output=True,
                     text=True,
                 )
+        else:
             subprocess.run(
-                (
-                    ["git", "read-tree", "HEAD"]
-                    if expected_commit is not None
-                    else ["git", "read-tree", "--empty"]
-                ),
+                ["git", "update-ref", "-d", "HEAD"],
                 env=isolated_env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            completed = subprocess.run(
-                ["git", "status", "--porcelain", "--untracked-files=all"],
+            subprocess.run(
+                ["git", "read-tree", "--empty"],
                 env=isolated_env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
+        completed = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            env=isolated_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         return any(
-            line
-            and not (
-                line.startswith("?? ")
-                and line[3:].startswith((".evander/", ".git/"))
-            )
+            line and not (line.startswith("?? ") and line[3:].startswith((".evander/", ".git/")))
             for line in completed.stdout.splitlines()
         )
 
@@ -3699,11 +3756,14 @@ class WorkerDaemon:
         if reused is not None:
             return reused
         copied_paths: list[str] = []
+        intended_files: dict[str, tuple[Path, Path, bytes, int | None]] = {}
+        requested_paths: list[str] = []
         for entry in request.files:
             root, relative_path, container_path = self._resolve_container_destination(
                 paths=paths,
                 destination_path=entry.destination_path,
             )
+            requested_paths.append(container_path)
             existing_snapshot = (
                 self._read_container_file_snapshot(
                     root=root,
@@ -3731,6 +3791,15 @@ class WorkerDaemon:
                 desired_content = content_text.encode("utf-8")
             desired_mode = (
                 int(self._normalize_mode(entry.mode), 8) if entry.mode is not None else None
+            )
+            intended_mode = desired_mode
+            if intended_mode is None and existing_snapshot is not None:
+                intended_mode = stat.S_IMODE(existing_snapshot.mode)
+            intended_files[container_path] = (
+                root,
+                relative_path,
+                desired_content,
+                intended_mode,
             )
             if existing_snapshot is not None and entry.overwrite:
                 content_matches = existing_snapshot.content == desired_content
@@ -3764,36 +3833,41 @@ class WorkerDaemon:
             roots={"agent_home": "/home/agent", "repo_root": "/home/agent/repos"},
         )
         if request.preparation_fingerprint is not None:
-            observations: list[dict[str, Any]] = []
-            for entry in request.files:
-                root, relative_path, container_path = self._resolve_container_destination(
-                    paths=paths,
-                    destination_path=entry.destination_path,
-                )
+            observations_by_path: dict[str, dict[str, Any]] = {}
+            for container_path, (
+                root,
+                relative_path,
+                intended_content,
+                intended_mode,
+            ) in intended_files.items():
                 snapshot = self._read_container_file_snapshot(
                     root=root,
                     relative_path=relative_path,
                 )
-                if snapshot is None:
-                    observations.append({"path": container_path, "missing": True})
-                else:
-                    observations.append(
-                        {
-                            "path": container_path,
-                            "sha256": hashlib.sha256(snapshot.content).hexdigest(),
-                            "mode": stat.S_IMODE(snapshot.mode),
-                        }
-                    )
-            self._write_preparation_receipt(
-                paths,
-                kind="files",
-                name="managed",
-                payload={
-                    "version": 1,
-                    "request_fingerprint": request.preparation_fingerprint,
-                    "observations": observations,
-                },
-            )
+                if snapshot is None or snapshot.content != intended_content:
+                    break
+                actual_mode = stat.S_IMODE(snapshot.mode)
+                if intended_mode is not None and actual_mode != intended_mode:
+                    break
+                observations_by_path[container_path] = {
+                    "path": container_path,
+                    "sha256": hashlib.sha256(intended_content).hexdigest(),
+                    "mode": actual_mode,
+                }
+            else:
+                self._write_preparation_receipt(
+                    paths,
+                    kind="files",
+                    name="managed",
+                    payload={
+                        "version": 1,
+                        "request_fingerprint": request.preparation_fingerprint,
+                        "observations": [
+                            observations_by_path[container_path]
+                            for container_path in requested_paths
+                        ],
+                    },
+                )
         return record
 
     def _reuse_file_preparation(
@@ -3824,11 +3898,9 @@ class WorkerDaemon:
                 root=root,
                 relative_path=relative_path,
             )
-            if snapshot is None:
-                if raw_observation.get("missing") is True:
-                    continue
-                return None
             if raw_observation.get("missing") is True:
+                return None
+            if snapshot is None:
                 return None
             if hashlib.sha256(snapshot.content).hexdigest() != raw_observation.get("sha256"):
                 return None

@@ -9,9 +9,10 @@
 - Commit terminal gate records and their successor events atomically, then continue short FIFO
   gate chains within a bounded foreground burst.
 - Reuse worker-verified file and reference-repository preparation receipts while invalidating
-  them on guest changes, configuration changes, refreshes, or session deletion; inspect cached
-  worktrees with a host-owned Git directory and index so guest-defined filters cannot run on the
-  worker host.
+  them on guest changes, configuration changes, refreshes, or session deletion; verify requested
+  file content and modes before recording receipts, and inspect both cached worktrees and staged
+  state with a persistent host-owned Git index so guest-defined filters cannot run on the worker
+  host.
 - Stop copying dynamic Team state into core session metadata and remove its mirror-due recovery
   projection; authoritative wake context and permissions continue to come from Team state, while
   stable guidance and repository-preparation receipts remain session-local.
