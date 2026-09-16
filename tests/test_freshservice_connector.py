@@ -240,9 +240,10 @@ def test_freshservice_search_scans_recent_tickets_and_returns_exact_subject_matc
     assert requests[0].headers["Authorization"].startswith("Basic ")
 
 
-def test_freshservice_download_resolves_conversation_attachment_and_strips_auth(
+def test_freshservice_download_accepts_large_conversation_attachment_id_and_strips_auth(
     tmp_path: Path,
 ) -> None:
+    attachment_id = 26_123_915_210
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -258,7 +259,7 @@ def test_freshservice_download_resolves_conversation_attachment_and_strips_auth(
                             "id": 8,
                             "attachments": [
                                 {
-                                    "id": 9,
+                                    "id": attachment_id,
                                     "name": "daily-report.csv",
                                     "content_type": "text/csv",
                                     "attachment_url": (
@@ -292,7 +293,7 @@ def test_freshservice_download_resolves_conversation_attachment_and_strips_auth(
             session=_session(["download_ticket_attachment"]),
             connector_id="freshservice",
             operation_name="download_ticket_attachment",
-            arguments={"ticket_id": 42, "attachment_id": 9},
+            arguments={"ticket_id": 42, "attachment_id": attachment_id},
         )
     )
 

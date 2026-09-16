@@ -50,6 +50,7 @@ _OPERATION_CONFIG_KEYS = {
     "list_ticket_conversations": {"action"},
     "search_tickets_by_subject": {"action"},
 }
+_MAX_FRESHSERVICE_ID = 9_223_372_036_854_775_807
 
 
 class FreshserviceConnectorDriver:
@@ -393,7 +394,7 @@ def _required_text(value: object, field_name: str, *, maximum: int) -> str:
 
 
 def _positive_int(value: object, field_name: str) -> int:
-    return _bounded_int(value, field_name, minimum=1, maximum=2_147_483_647)
+    return _bounded_int(value, field_name, minimum=1, maximum=_MAX_FRESHSERVICE_ID)
 
 
 def _bounded_int(value: object, field_name: str, *, minimum: int, maximum: int) -> int:
