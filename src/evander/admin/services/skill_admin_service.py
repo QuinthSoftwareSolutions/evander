@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -7,6 +8,7 @@ from evander.repositories.skills_library import (
     SkillLibraryEntry,
     SkillLibraryMetadata,
     SkillLibraryRepository,
+    codex_skill_install_vm_user,
     normalize_skill_names,
     validate_skill_name,
 )
@@ -42,10 +44,19 @@ class SkillPropagationError(RuntimeError):
                 "to reconcile installed copies."
             )
         else:
+            failed_session_ids = [
+                str(failure.get("session_id") or "").strip()
+                for failure in failures
+                if str(failure.get("session_id") or "").strip()
+            ]
+            failed_sessions = (
+                f" Failed sessions: {', '.join(failed_session_ids)}." if failed_session_ids else ""
+            )
             message = (
                 f"Managed skill {skill_name} was replaced, but automatic propagation "
                 f"failed for {len(failures)} of {target_count} active agent sessions. "
                 "The replacement remains saved; retry Replace to reconcile the failed sessions."
+                f"{failed_sessions}"
             )
         super().__init__(message)
         self.skill_name = skill_name
@@ -78,6 +89,8 @@ class SkillAdminService:
         self._list_active_sessions: Callable[[], list[Any]] | None = None
         self._install_agent_skills: Callable[..., Mapping[str, Any]] | None = None
         self._is_container_session: Callable[[Any], bool] | None = None
+        self._replacement_locks_guard = threading.Lock()
+        self._replacement_locks: dict[str, threading.Lock] = {}
 
     def configure_agent_skill_propagation(
         self,
@@ -99,16 +112,32 @@ class SkillAdminService:
             raise ValueError("Skill name is required.")
         if "content" not in payload:
             raise ValueError("Skill content is required.")
+        normalized_name = validate_skill_name(name)
         replace = bool(payload.get("replace", False))
-        existed = self._skill_library.has_skill(name)
-        metadata = self._skill_library.create_skill(
-            name=name,
-            content=payload.get("content"),
-            replace=replace,
-        )
-        if replace and existed:
-            self._propagate_replaced_skill(metadata.name)
-        return metadata
+        if not replace:
+            return self._skill_library.create_skill(
+                name=normalized_name,
+                content=payload.get("content"),
+                replace=False,
+            )
+        with self._replacement_lock(normalized_name):
+            existed = self._skill_library.has_skill(normalized_name)
+            metadata = self._skill_library.create_skill(
+                name=normalized_name,
+                content=payload.get("content"),
+                replace=True,
+            )
+            if existed:
+                self._propagate_replaced_skill(metadata.name)
+            return metadata
+
+    def _replacement_lock(self, skill_name: str) -> threading.Lock:
+        with self._replacement_locks_guard:
+            lock = self._replacement_locks.get(skill_name)
+            if lock is None:
+                lock = threading.Lock()
+                self._replacement_locks[skill_name] = lock
+            return lock
 
     def _propagate_replaced_skill(self, skill_name: str) -> None:
         if (
@@ -147,9 +176,7 @@ class SkillAdminService:
             session_id = str(getattr(session, "session_id", "") or "").strip()
             backend = "container_worker_vm" if self._is_container_session(session) else "libvirt_vm"
             metadata = getattr(session, "metadata", None)
-            vm_user = "agent"
-            if isinstance(metadata, Mapping):
-                vm_user = str(metadata.get("vm_user") or "").strip() or "agent"
+            vm_user = codex_skill_install_vm_user(metadata, skill_name)
             try:
                 result = self._install_agent_skills(
                     session_id,

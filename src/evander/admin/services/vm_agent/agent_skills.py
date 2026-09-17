@@ -3,27 +3,28 @@ from __future__ import annotations
 from evander.admin.services.vm_agent.common import (
     Any,
     SkillLibraryEntry,
-    UTC,
-    datetime,
-    normalize_skill_names,
 )
+from evander.repositories.skills_library import record_codex_skill_installations
 
 
 class VmAgentSkillInstallMixin:
-    def _record_installed_codex_skills(self, session_id: str, skill_names: list[str]) -> None:
+    def _record_installed_codex_skills(
+        self,
+        session_id: str,
+        skill_names: list[str],
+        *,
+        backend: str,
+        vm_user: str | None = None,
+    ) -> None:
         session = self.runtime.session_repository.get_session(session_id)
         if session is None:
             return
-        metadata = dict(session.metadata)
-        existing = metadata.get("codex_skills")
-        merged: list[str] = []
-        if isinstance(existing, list):
-            for item in existing:
-                if isinstance(item, str) and item.strip():
-                    merged.append(item)
-        merged.extend(skill_names)
-        metadata["codex_skills"] = normalize_skill_names(merged)
-        metadata["codex_skills_updated_at"] = datetime.now(UTC).isoformat()
+        metadata = record_codex_skill_installations(
+            session.metadata,
+            skill_names,
+            backend=backend,
+            vm_user=vm_user,
+        )
         self.runtime.session_repository.upsert_session(
             session.model_copy(update={"metadata": metadata})
         )
@@ -80,7 +81,12 @@ class VmAgentSkillInstallMixin:
             message = str(result.get("message") or "Failed to copy Codex skills")
             raise RuntimeError(message)
         copied_paths = list(result.get("copied_paths") or [])
-        self._record_installed_codex_skills(session.session_id, skill_names)
+        self._record_installed_codex_skills(
+            session.session_id,
+            skill_names,
+            backend="libvirt_vm",
+            vm_user=vm_user,
+        )
         return {
             "success": True,
             "agent_id": agent_id,
@@ -122,7 +128,11 @@ class VmAgentSkillInstallMixin:
         files = self.resolve_container_codex_skill_files(skill_names)
         result = worker_backend.write_files(session_id=session.session_id, files=files)
         copied_paths = list(getattr(result, "copied_paths", []) or [])
-        self._record_installed_codex_skills(session.session_id, skill_names)
+        self._record_installed_codex_skills(
+            session.session_id,
+            skill_names,
+            backend="container_worker_vm",
+        )
         return {
             "success": True,
             "agent_id": agent_id,

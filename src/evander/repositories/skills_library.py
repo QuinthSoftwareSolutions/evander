@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from evander.storage import JsonStore
 
 _SKILL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _CONTAINER_CODEX_SKILLS_ROOT = "/home/agent/.config/evander/codex/skills"
+CODEX_SKILL_INSTALLATIONS_METADATA_KEY = "codex_skill_installations"
 
 
 class SkillLibraryMetadata(BaseModel):
@@ -52,6 +54,67 @@ def normalize_skill_names(skill_names: list[str] | tuple[str, ...] | None) -> li
         seen.add(name)
         normalized.append(name)
     return normalized
+
+
+def record_codex_skill_installations(
+    metadata: Mapping[str, Any] | None,
+    skill_names: list[str] | tuple[str, ...] | None,
+    *,
+    backend: str,
+    vm_user: str | None = None,
+) -> dict[str, Any]:
+    names = normalize_skill_names(skill_names)
+    normalized_backend = str(backend or "").strip()
+    if not normalized_backend:
+        raise ValueError("Codex skill installation backend is required.")
+    normalized_vm_user = str(vm_user or "").strip()
+    updated = dict(metadata or {})
+    existing_names = updated.get("codex_skills")
+    merged_names = (
+        [str(item).strip() for item in existing_names if isinstance(item, str) and item.strip()]
+        if isinstance(existing_names, list)
+        else []
+    )
+    merged_names.extend(names)
+    updated["codex_skills"] = normalize_skill_names(merged_names)
+
+    existing_installations = updated.get(CODEX_SKILL_INSTALLATIONS_METADATA_KEY)
+    installations = (
+        {
+            str(name): dict(target)
+            for name, target in existing_installations.items()
+            if isinstance(name, str) and name.strip() and isinstance(target, Mapping)
+        }
+        if isinstance(existing_installations, Mapping)
+        else {}
+    )
+    for name in names:
+        target: dict[str, str] = {"backend": normalized_backend}
+        if normalized_backend == "libvirt_vm":
+            target["vm_user"] = normalized_vm_user or "agent"
+        installations[name] = target
+    updated[CODEX_SKILL_INSTALLATIONS_METADATA_KEY] = installations
+    updated["codex_skills_updated_at"] = datetime.now(UTC).isoformat()
+    return updated
+
+
+def codex_skill_install_vm_user(
+    metadata: Mapping[str, Any] | None,
+    skill_name: str,
+) -> str:
+    normalized_name = validate_skill_name(skill_name)
+    if isinstance(metadata, Mapping):
+        installations = metadata.get(CODEX_SKILL_INSTALLATIONS_METADATA_KEY)
+        if isinstance(installations, Mapping):
+            target = installations.get(normalized_name)
+            if isinstance(target, Mapping):
+                vm_user = str(target.get("vm_user") or "").strip()
+                if vm_user:
+                    return vm_user
+        legacy_vm_user = str(metadata.get("vm_user") or "").strip()
+        if legacy_vm_user:
+            return legacy_vm_user
+    return "agent"
 
 
 class SkillLibraryRepository:
@@ -163,9 +226,12 @@ class SkillLibraryRepository:
 
 
 __all__ = [
+    "CODEX_SKILL_INSTALLATIONS_METADATA_KEY",
     "SkillLibraryEntry",
     "SkillLibraryMetadata",
     "SkillLibraryRepository",
+    "codex_skill_install_vm_user",
     "normalize_skill_names",
+    "record_codex_skill_installations",
     "validate_skill_name",
 ]

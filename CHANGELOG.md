@@ -3,7 +3,8 @@
 ## 2026-09-17 - Propagate managed skill replacements (0.43.3)
 
 - Reinstall a replaced managed Codex skill into every active VM and container session that already
-  declares it, so subsequent agent turns use the centrally administered content.
+  declares it, including skills installed during VM creation; preserve each skill's VM user and
+  serialize replacements so subsequent agent turns use the latest centrally administered content.
 - Preserve the updated library copy while reporting partial propagation failures with exact failed
   sessions, allowing operators to retry reconciliation safely with another replacement.
 

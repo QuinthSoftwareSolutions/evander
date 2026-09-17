@@ -3238,6 +3238,7 @@ def test_admin_web_replace_skill_reports_propagation_failure(
             }
         ],
     }
+    assert "Failed sessions: container-session." in payload["error"]
     assert client.get("/api/admin/skills/demo.skill").json()["skill"]["content"] == ("# Updated\n")
 
 

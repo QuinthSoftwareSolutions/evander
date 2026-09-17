@@ -3359,7 +3359,7 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
         "lab-vm",
         "install-skills",
         backend="libvirt_vm",
-        payload={"codex_skills": ["demo.skill"], "vm_user": "agent"},
+        payload={"codex_skills": ["demo.skill"], "vm_user": "reviewer"},
     )
 
     assert result["success"] is True
@@ -3375,12 +3375,15 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
                     "overwrite": True,
                 }
             ],
-            "agent",
+            "reviewer",
         )
     ]
     updated = service.runtime.session_repository.get_session("lab-session")
     assert updated is not None
     assert updated.metadata["codex_skills"] == ["demo.skill"]
+    assert updated.metadata["codex_skill_installations"] == {
+        "demo.skill": {"backend": "libvirt_vm", "vm_user": "reviewer"}
+    }
 
 
 def test_replace_managed_skill_propagates_to_active_container_and_vm_sessions(
@@ -3389,6 +3392,29 @@ def test_replace_managed_skill_propagates_to_active_container_and_vm_sessions(
     service = build_admin_runtime(write_config(tmp_path))
     service.skill_admin.create_skill({"name": "demo.skill", "content": "# Original\n"})
     expires_at = datetime.now(UTC) + timedelta(hours=1)
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda _vm_name, _field_name: None
+    )
+
+    def fake_create_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, stdout="created", stderr="")
+
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", fake_create_run)
+    create_result = service.vm_agent_admin.create_vm(
+        vm_name="lab-vm",
+        session_id="vm-session",
+        vm_user="reviewer",
+        codex_skills=["demo.skill"],
+    )
+    assert create_result.success is True
+    created_vm_session = service.runtime.session_repository.get_session("vm-session")
+    assert created_vm_session is not None
+    assert created_vm_session.metadata["codex_skills"] == ["demo.skill"]
+    assert created_vm_session.metadata["codex_skill_installations"] == {
+        "demo.skill": {"backend": "libvirt_vm", "vm_user": "reviewer"}
+    }
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
@@ -3401,15 +3427,6 @@ def test_replace_managed_skill_propagates_to_active_container_and_vm_sessions(
                 "target_name": "container-target",
                 "codex_skills": ["demo.skill"],
             },
-        )
-    )
-    service.runtime.session_repository.upsert_session(
-        SessionManifest(
-            session_id="vm-session",
-            vm_id="lab-vm",
-            allowed_tools=[],
-            expires_at=expires_at,
-            metadata={"codex_skills": ["demo.skill"], "vm_user": "reviewer"},
         )
     )
     service.runtime.session_repository.upsert_session(
@@ -3447,6 +3464,7 @@ def test_replace_managed_skill_propagates_to_active_container_and_vm_sessions(
         self: AdminRuntimeComponents, target: str, **kwargs: object
     ) -> dict[str, object]:
         assert target == "vm-session"
+        assert kwargs["vm_user"] == "reviewer"
         return {"success": True, "stdout": "/custom/codex\n"}
 
     def fake_vm_copy_files(
@@ -13135,6 +13153,7 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(
     tmp_path: Path, monkeypatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.skill_admin.create_skill({"name": "issue.skill", "content": "# Issue skill\n"})
     create_result = service.directory_admin.create_child(parent="root", name="team")
     assert create_result.ok is True and create_result.data is not None
     team_path = create_result.data.details.directory.path
@@ -13162,9 +13181,17 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(
         session_id="issue-123-session",
         directory_path=team_path,
         model="gpt-5.2-codex",
+        vm_user="reviewer",
+        codex_skills=["issue.skill"],
     )
 
     assert result.success is True
+    manifest = service.runtime.session_repository.get_session("issue-123-session")
+    assert manifest is not None
+    assert manifest.metadata["codex_skills"] == ["issue.skill"]
+    assert manifest.metadata["codex_skill_installations"] == {
+        "issue.skill": {"backend": "libvirt_vm", "vm_user": "reviewer"}
+    }
     assert captured_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
     assert captured_env["LLM_BASE_URL"] == "http://10.20.30.40:12000/v1"
     assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.20.30.40:13000"
