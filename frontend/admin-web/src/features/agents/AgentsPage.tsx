@@ -127,7 +127,6 @@ type StatusFilter = "active" | "inactive" | "all";
 type AgentPolicyFormState = {
   codexAuthMode: string;
   subscriptionProfileId: string;
-  initialEffectiveCodexAuthMode: "metered_api" | "chatgpt_subscription";
 };
 
 type AgentSkillInstallFormState = {
@@ -198,7 +197,6 @@ function emptyPolicyForm(): AgentPolicyFormState {
   return {
     codexAuthMode: "",
     subscriptionProfileId: "",
-    initialEffectiveCodexAuthMode: "metered_api",
   };
 }
 
@@ -825,13 +823,11 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   return {
     codexAuthMode: policy?.codex_auth_mode ?? "",
     subscriptionProfileId: policy?.subscription_profile_id ?? "",
-    initialEffectiveCodexAuthMode: policy?.effective_codex_auth_mode ?? "metered_api",
   };
 }
 
-function formTransitionsToSubscription(form: AgentPolicyFormState): boolean {
-  return form.codexAuthMode === "chatgpt_subscription"
-    && form.initialEffectiveCodexAuthMode !== "chatgpt_subscription";
+function formUsesSubscription(form: AgentPolicyFormState): boolean {
+  return form.codexAuthMode === "chatgpt_subscription";
 }
 
 function buildCodexUsagePayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
@@ -841,7 +837,7 @@ function buildCodexUsagePayload(form: AgentPolicyFormState): AgentPolicyUpdateRe
         ? form.codexAuthMode
         : null,
   };
-  if (formTransitionsToSubscription(form) && form.subscriptionProfileId.trim()) {
+  if (formUsesSubscription(form) && form.subscriptionProfileId.trim()) {
     payload.subscription_profile_id = form.subscriptionProfileId.trim();
   }
   return payload;
@@ -1830,7 +1826,7 @@ export function AgentsPage() {
   async function handleEditAgent() {
     if (!selectedAgent || !selectedAgentCodexUsage) return;
     if (
-      formTransitionsToSubscription(editForm)
+      formUsesSubscription(editForm)
       && !editForm.subscriptionProfileId.trim()
     ) {
       setInlineValidation("Select a ChatGPT subscription profile.");
@@ -2430,7 +2426,6 @@ export function AgentsPage() {
                     <span>Codex usage</span>
                     <select
                       value={editForm.codexAuthMode}
-                      disabled={Boolean(selectedAgentPolicy?.effective_subscription_profile_id)}
                       onChange={(event) =>
                         setEditForm((current) => ({
                           ...current,
@@ -2443,12 +2438,10 @@ export function AgentsPage() {
                       <option value="chatgpt_subscription">ChatGPT subscription</option>
                     </select>
                     <span className="field-description">
-                      {selectedAgentPolicy?.effective_subscription_profile_id
-                        ? `Profile ${selectedAgentPolicy.effective_subscription_profile_id} is immutable. Create a new agent to change it.`
-                        : "Applies on the next turn. Existing Codex thread history is preserved."}
+                      Applies on the next turn. A running turn keeps the route it started with.
                     </span>
                   </label>
-                  {formTransitionsToSubscription(editForm) ? (
+                  {formUsesSubscription(editForm) ? (
                     <label className="field-stack">
                       <span>Subscription profile</span>
                       <select
@@ -2472,7 +2465,7 @@ export function AgentsPage() {
                           ? "Loading profiles..."
                           : editSubscriptionProfiles.length === 0
                             ? "No enabled profiles are available on this worker. Create or enable one on Subscriptions."
-                            : "This profile binding is fixed for the lifetime of the agent session."}
+                            : "You can change the profile later without replacing the agent session."}
                       </span>
                     </label>
                   ) : null}

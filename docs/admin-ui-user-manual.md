@@ -205,10 +205,10 @@ Common tasks:
    named HTTP(S) base URL through the host relay; it does not enable general internet access or
    supply target credentials. Container-worker Codex agents can also choose **Metered API** or
    **ChatGPT subscription** as their usage source. A new subscription agent must also select one
-   enabled worker profile; this binding cannot be changed after creation.
+   enabled worker profile.
 8. Use the policy edit action to adjust an existing agent's host-side policy. HTTP targets and Host
-   Directory capabilities can be added, changed, or removed here. A profile-bound agent cannot
-   switch profiles or return to metered mode; create a replacement agent instead.
+   Directory capabilities can be added, changed, or removed here. You can also switch Codex usage
+   between metered API and enabled subscription profiles without replacing the agent session.
 9. Use the skill install action to copy managed Codex skills into an existing session.
 10. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
    multiline prompt and an optional resume thread ID, prefilled from the session's latest known

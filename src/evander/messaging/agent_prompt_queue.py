@@ -369,3 +369,38 @@ class AgentPromptQueueStore:
             return changed
 
         return self.store.update_all(updater)
+
+    def reroute_session(
+        self,
+        session_id: str,
+        *,
+        subscription_profile_id: str | None,
+    ) -> int:
+        """Retarget queued prompts and release old subscription deferrals."""
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return 0
+        normalized_profile_id = str(subscription_profile_id or "").strip() or None
+        now = utc_now()
+
+        def updater(records: dict[str, QueuedAgentPromptRecord]) -> int:
+            changed = 0
+            for record in records.values():
+                if str(record.session_id or "").strip() != normalized_session_id:
+                    continue
+                record_changed = False
+                if record.subscription_profile_id != normalized_profile_id:
+                    record.subscription_profile_id = normalized_profile_id
+                    record_changed = True
+                if str(record.queue_reason or "").startswith("subscription_"):
+                    record.queue_reason = None
+                    record.retry_not_before = None
+                    record.capacity_deferral_count = 0
+                    record_changed = True
+                if record_changed:
+                    record.updated_at = now
+                    changed += 1
+            return changed
+
+        return self.store.update_all(updater)

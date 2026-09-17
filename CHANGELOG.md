@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-17 - Switch Codex usage without replacing sessions (0.44.0)
+
+- Let operators move a container Codex agent between metered API usage and enabled ChatGPT
+  subscription profiles while retaining the Evander session, and release prompts deferred by the
+  previous subscription route so they can run under the new selection.
+
 ## 2026-09-16 - Pin final integration provenance (0.43.1)
 
 - Snapshot the managed base-branch commit when a Git-backed integration boundary is created,

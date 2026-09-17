@@ -6320,7 +6320,7 @@ def test_agent_create_preserves_subscription_preference_for_local_openai_fallbac
     assert turn.auth_mode is CodexAuthMode.METERED_API
 
 
-def test_agent_create_named_subscription_profiles_are_persisted_and_write_once(
+def test_agent_create_upsert_can_switch_auth_modes_and_subscription_profiles(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6437,19 +6437,39 @@ def test_agent_create_named_subscription_profiles_are_persisted_and_write_once(
     ).execute()
     assert len(profile_status_calls) == status_calls_before_same_profile_upsert
 
-    with pytest.raises(ValueError, match="write-once"):
-        factory.build(
-            AgentCreateEffectDefinition(
-                id="agent-create-upsert-reassign",
-                display_name="Reassign",
-                type="effect:agent:create",
-                execution_backend="container_worker_vm",
-                session_id="workflow-a",
-                existing_agent_behavior="upsert",
-                codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
-                subscription_profile_id="team-b",
-            )
-        ).execute()
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-upsert-reassign",
+            display_name="Reassign",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="workflow-a",
+            existing_agent_behavior="upsert",
+            model_provider_mode="openai_public",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-b",
+        )
+    ).execute()
+    reassigned = session_repository.get_session("workflow-a")
+    assert reassigned is not None
+    assert reassigned.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert reassigned.subscription_profile_id == "team-b"
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-upsert-metered",
+            display_name="Return to metered API",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="workflow-a",
+            existing_agent_behavior="upsert",
+            codex_auth_mode=CodexAuthMode.METERED_API,
+        )
+    ).execute()
+    metered_again = session_repository.get_session("workflow-a")
+    assert metered_again is not None
+    assert metered_again.codex_auth_mode is CodexAuthMode.METERED_API
+    assert metered_again.subscription_profile_id is None
 
     factory.build(
         AgentCreateEffectDefinition(
@@ -6487,18 +6507,21 @@ def test_agent_create_named_subscription_profiles_are_persisted_and_write_once(
             codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
         )
     ).execute()
-    with pytest.raises(ValueError, match="profile-bound"):
-        factory.build(
-            AgentCreateEffectDefinition(
-                id="agent-create-legacy-switch",
-                display_name="Switch legacy binding",
-                type="effect:agent:create",
-                execution_backend="container_worker_vm",
-                session_id="legacy-default",
-                existing_agent_behavior="upsert",
-                codex_auth_mode=CodexAuthMode.METERED_API,
-            )
-        ).execute()
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-legacy-switch",
+            display_name="Switch legacy binding",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="legacy-default",
+            existing_agent_behavior="upsert",
+            codex_auth_mode=CodexAuthMode.METERED_API,
+        )
+    ).execute()
+    legacy_metered = session_repository.get_session("legacy-default")
+    assert legacy_metered is not None
+    assert legacy_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert legacy_metered.subscription_profile_id is None
 
 
 def test_agent_create_subscription_profile_selector_is_not_bindable() -> None:

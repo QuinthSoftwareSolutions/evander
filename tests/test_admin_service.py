@@ -14603,7 +14603,7 @@ def test_update_session_policy_and_agent_validate_approval_notification_targets(
         )
 
 
-def test_update_container_agent_assigns_first_profile_and_preserves_write_once_binding(
+def test_update_container_agent_can_switch_auth_modes_and_subscription_profiles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14674,18 +14674,38 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
     assert preserved is not None
     assert preserved.subscription_profile_id == "team-a"
 
-    with pytest.raises(ValueError, match="write-once"):
-        service.vm_agent_admin.update_admin_agent(
-            "metered-session",
-            backend="container_worker_vm",
-            payload={"subscription_profile_id": "team-b"},
-        )
-    with pytest.raises(ValueError, match="cannot switch away"):
-        service.vm_agent_admin.update_admin_agent(
-            "metered-session",
-            backend="container_worker_vm",
-            payload={"codex_auth_mode": "metered_api"},
-        )
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={"subscription_profile_id": "team-b"},
+    )
+    reassigned = service.runtime.session_repository.get_session("metered-session")
+    assert reassigned is not None
+    assert reassigned.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert reassigned.subscription_profile_id == "team-b"
+
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={"codex_auth_mode": "metered_api"},
+    )
+    returned_to_metered = service.runtime.session_repository.get_session("metered-session")
+    assert returned_to_metered is not None
+    assert returned_to_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert returned_to_metered.subscription_profile_id is None
+
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={
+            "codex_auth_mode": "chatgpt_subscription",
+            "subscription_profile_id": "team-a",
+        },
+    )
+    returned_to_subscription = service.runtime.session_repository.get_session("metered-session")
+    assert returned_to_subscription is not None
+    assert returned_to_subscription.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert returned_to_subscription.subscription_profile_id == "team-a"
 
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -14702,12 +14722,15 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
             },
         )
     )
-    with pytest.raises(ValueError, match="cannot switch away"):
-        service.vm_agent_admin.update_admin_agent(
-            "legacy-default",
-            backend="container_worker_vm",
-            payload={"codex_auth_mode": "metered_api"},
-        )
+    service.vm_agent_admin.update_admin_agent(
+        "legacy-default",
+        backend="container_worker_vm",
+        payload={"codex_auth_mode": "metered_api"},
+    )
+    legacy_metered = service.runtime.session_repository.get_session("legacy-default")
+    assert legacy_metered is not None
+    assert legacy_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert legacy_metered.subscription_profile_id is None
 
     backend.config.container_worker_codex_auth_mode = "metered_api"
     service.runtime.session_repository.upsert_session(
@@ -15054,6 +15077,57 @@ def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
     assert result.session_id == "issue-13303-session"
     assert updated is not None
     assert updated.model == "gpt-5.5"
+
+
+def test_set_session_codex_auth_mode_returns_profile_bound_session_to_metered(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"agent_provider": "codex"},
+        ),
+    )
+    queue_store = AgentPromptQueueStore(
+        service.config.runtime_dir / "queued-agent-prompts.json"
+    )
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-delayed",
+            target="container-session",
+            vm_name="container-target",
+            session_id="container-session",
+            prompt="Continue after capacity returns",
+            effect_id="effect-subscription-delayed",
+            queue_reason="subscription_rate_limited",
+            subscription_profile_id="team-a",
+            retry_not_before=datetime.now(UTC) + timedelta(hours=1),
+            capacity_deferral_count=2,
+        )
+    )
+
+    result = service.operations_admin.set_session_codex_auth_mode(
+        "container-session", "metered_api"
+    )
+
+    updated = service.runtime.session_repository.get_session("container-session")
+    queued = queue_store.get("subscription-delayed")
+    assert result.success is True
+    assert updated is not None
+    assert updated.codex_auth_mode is CodexAuthMode.METERED_API
+    assert updated.subscription_profile_id is None
+    assert queued is not None
+    assert queued.subscription_profile_id is None
+    assert queued.queue_reason is None
+    assert queued.retry_not_before is None
+    assert queued.capacity_deferral_count == 0
 
 
 def test_set_session_model_rejects_empty_value(tmp_path: Path) -> None:

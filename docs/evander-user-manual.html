@@ -4492,8 +4492,10 @@ or signed out only by an authenticated operator with privileged
 operations unlocked and effective <code>admin.owner</code> permission at
 <code>root</code>. Ownership of only a child directory is insufficient
 because directories select infrastructure, not profile access. Each
-session&#39;s profile binding is immutable, and the first successful login
-pins that profile&#39;s OpenAI account ID.</p>
+session&#39;s profile selection may be changed between turns. The first
+successful login still pins each profile&#39;s OpenAI account ID, so
+changing a session&#39;s selection never changes the account represented by
+a profile.</p>
 <h3 id="privileged-operation-lock-implementation">Privileged-operation
 lock implementation</h3>
 <p>Authentication and RBAC answer whether an operator <em>may</em>
@@ -6302,11 +6304,11 @@ directory-resolved compatibility default, while a session&#39;s nullable
 <code>codex_auth_mode</code> is an explicit override. Directory
 configuration chooses the effective worker but never chooses, grants, or
 restricts its profiles. New UI-created subscription agents select an
-enabled named profile. That binding is fixed for the session; replace
-the agent to change it. A metered session may receive its first profile
-only while explicitly switching to subscription mode. Existing
-profile-less subscription sessions use reserved profile
-<code>default</code>.</p>
+enabled named profile. Operators can later select another enabled
+profile or return the same session to metered API usage. A running turn
+keeps its launch-time route; later turns and deferred prompts use the
+updated selection. Existing profile-less subscription sessions use
+reserved profile <code>default</code>.</p>
 <p>The subscription selection is effective only for a turn whose model
 provider mode is <code>openai_public</code>. A local OpenAI-compatible
 or Azure OpenAI turn keeps using its configured private endpoint and

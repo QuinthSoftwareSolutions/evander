@@ -1102,8 +1102,9 @@ Add-on dependency.
 
 Container-worker Codex agents whose effective `model_provider_mode` is `openai_public` can select
 metered API usage or an explicitly named, worker-owned ChatGPT subscription profile. A profile is
-fixed when the session is created; it may be assigned once while explicitly switching an unbound
-metered session to subscription mode, but a bound session must be replaced to use another profile.
+selected per session and can be changed later, including switching back to metered API usage,
+without replacing the session. A running turn keeps the route it started with; later turns use the
+updated selection.
 Directory configuration still selects the effective worker and inherited auth mode, but it does
 not choose, grant, or restrict profiles. The reserved `default` profile keeps legacy profile-less
 sessions and the existing `<worker-root>/codex-auth/auth.json` login compatible.

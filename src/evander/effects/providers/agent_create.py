@@ -6,7 +6,6 @@ from typing import Any
 
 from evander.container_worker_images import resolve_container_worker_image_selector
 from evander.codex_auth import (
-    DEFAULT_SUBSCRIPTION_PROFILE_ID,
     CodexAuthMode,
     normalize_codex_auth_mode,
     normalize_subscription_profile_id,
@@ -437,33 +436,23 @@ class AgentCreateEffectProvider(EffectProviderBase):
         existing_auth_mode = normalize_codex_auth_mode(
             getattr(existing_session, "codex_auth_mode", None)
         )
-        existing_binding = existing_profile_id
-        if (
-            existing_binding is None
-            and existing_session is not None
-            and existing_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
-        ):
-            existing_binding = DEFAULT_SUBSCRIPTION_PROFILE_ID
         requested_profile_id = (
             normalize_subscription_profile_id(payload.get("subscription_profile_id"))
             if payload.get("_subscription_profile_id_provided")
             else None
         )
         if (
-            existing_binding is not None
-            and requested_profile_id is not None
-            and requested_profile_id != existing_binding
-        ):
-            raise ValueError(
-                "subscription_profile_id is write-once for an agent session; create a new "
-                "agent to use a different profile"
-            )
-        subscription_profile_id = existing_profile_id or requested_profile_id
-        if (
-            existing_binding is not None
+            requested_profile_id is not None
             and codex_auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION
         ):
-            raise ValueError("A profile-bound agent cannot switch away from subscription mode")
+            raise ValueError(
+                "subscription_profile_id requires codex_auth_mode='chatgpt_subscription'"
+            )
+        subscription_profile_id = (
+            (requested_profile_id or existing_profile_id)
+            if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            else None
+        )
         if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
             raise ValueError("chatgpt_subscription is supported only for Codex agents")
         if (
@@ -504,7 +493,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         if (
             requested_profile_id is not None
-            and existing_binding is None
+            and requested_profile_id != existing_profile_id
             and codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
             and effective_model_provider_mode != "openai_public"
         ):
@@ -517,7 +506,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         else:
             resolved_allowed_tools = allowed_tools_for_profile(capability_profile)
         backend = container_backend(context, config)
-        if requested_profile_id is not None and existing_binding is None:
+        if requested_profile_id is not None and requested_profile_id != existing_profile_id:
             status_reader = getattr(backend.client, "codex_auth_profile_status", None)
             if not callable(status_reader):
                 raise RuntimeError(
@@ -661,6 +650,18 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ],
         )
         session_repository.upsert_session(manifest)
+        if existing_session is not None and (
+            manifest.codex_auth_mode != existing_auth_mode
+            or manifest.subscription_profile_id != existing_profile_id
+        ):
+            from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+            AgentPromptQueueStore(
+                config.runtime_dir / "queued-agent-prompts.json"
+            ).reroute_session(
+                manifest.session_id,
+                subscription_profile_id=manifest.subscription_profile_id,
+            )
         _sync_added_discord_session_cursors_from_context(
             context,
             previous_session=existing_session,

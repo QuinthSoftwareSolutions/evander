@@ -235,6 +235,10 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
                 profile_id: "team-a",
                 display_name: "Team A",
               },
+              {
+                profile_id: "team-b",
+                display_name: "Team B",
+              },
             ],
           },
         }),
@@ -265,10 +269,22 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
           agentRecord.host.codex_usage.effective_codex_auth_mode = "chatgpt_subscription";
           agentRecord.host.session_policy.codex_auth_mode = "chatgpt_subscription";
           agentRecord.host.session_policy.effective_codex_auth_mode = "chatgpt_subscription";
-          agentRecord.host.session_policy.subscription_profile_id = null;
-          agentRecord.host.session_policy.effective_subscription_profile_id = "default";
+          agentRecord.host.session_policy.subscription_profile_id = "team-a";
+          agentRecord.host.session_policy.effective_subscription_profile_id = "team-a";
+        } else if (patchBodies.length === 2) {
+          assert.deepEqual(body, {
+            codex_auth_mode: "chatgpt_subscription",
+            subscription_profile_id: "team-b",
+          });
+          agentRecord.host.session_policy.subscription_profile_id = "team-b";
+          agentRecord.host.session_policy.effective_subscription_profile_id = "team-b";
         } else {
-          assert.deepEqual(body, { codex_auth_mode: "chatgpt_subscription" });
+          assert.deepEqual(body, { codex_auth_mode: "metered_api" });
+          agentRecord.host.codex_usage.effective_codex_auth_mode = "metered_api";
+          agentRecord.host.session_policy.codex_auth_mode = "metered_api";
+          agentRecord.host.session_policy.effective_codex_auth_mode = "metered_api";
+          agentRecord.host.session_policy.subscription_profile_id = null;
+          agentRecord.host.session_policy.effective_subscription_profile_id = null;
         }
         await route.fulfill(jsonResponse({ message: "Updated Codex usage.", target_name: "Dispatch agent" }));
         return;
@@ -325,11 +341,16 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
 
   await editButton.click();
   await editDialog.waitFor({ state: "visible" });
-  assert.equal(
-    await editDialog.getByRole("combobox", { name: "Subscription profile" }).count(),
-    0,
-  );
+  const replacementProfileSelect = editDialog.getByRole("combobox", { name: "Subscription profile" });
+  assert.equal(await replacementProfileSelect.inputValue(), "team-a");
+  await replacementProfileSelect.selectOption("team-b");
   await editDialog.getByRole("button", { name: "Save" }).click();
   await editDialog.waitFor({ state: "hidden" });
-  assert.equal(patchBodies.length, 2);
+
+  await editButton.click();
+  await editDialog.waitFor({ state: "visible" });
+  await editDialog.getByRole("combobox", { name: "Codex usage" }).selectOption("metered_api");
+  await editDialog.getByRole("button", { name: "Save" }).click();
+  await editDialog.waitFor({ state: "hidden" });
+  assert.equal(patchBodies.length, 3);
 });
