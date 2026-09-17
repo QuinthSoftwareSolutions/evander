@@ -7,6 +7,9 @@
   skills to prepare data and explain how to test. Missing, stale, failed and busy deployments
   receive deterministic replies; duplicate comment delivery is suppressed.
 - Add directory-scoped ADO build lookup/wait providers and additive agent skill installation.
+- Keep command syntax, environment rules, routing, messages and prompts in declarative workflow
+  configuration. Provide generic text-regex and build-filter queries and a revision-safe patch
+  installer instead of a APP-specific runtime provider or Python workflow builder.
 - Route terminal agent execution failures and timeouts through an explicitly connected prompt
   `error` port, while preserving legacy behavior for workflows without one.
 

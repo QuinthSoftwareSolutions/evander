@@ -166,16 +166,19 @@ class AdoBuildsQueryDefinition(QueryDefinition):
     directory_path: ConfigValue
     pipeline_id: ConfigValue
     repository_id: ConfigValue
-    pr_id: ConfigValue
-    source_branch: ConfigValue
-    source_commit: ConfigValue
-    merge_commit: ConfigValue | None = None
+    filters: ConfigValue
+    limit: ConfigValue = 100
+    repository_type: ConfigValue = "TfsGit"
     project: ConfigValue | None = None
 
 
-class MesTestContextQueryDefinition(QueryDefinition):
-    type: Literal["query:app:test-context"]
-    body: ConfigValue
+class TextRegexQueryDefinition(QueryDefinition):
+    type: Literal["query:text:regex"]
+    text: ConfigValue
+    pattern: ConfigValue
+    operation: ConfigValue = "fullmatch"
+    replacement: ConfigValue = ""
+    require_match: ConfigValue = False
 
 
 class AdoWorkItemsQueryDefinition(QueryDefinition):

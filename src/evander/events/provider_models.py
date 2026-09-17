@@ -71,7 +71,7 @@ from evander.events.provider_types import (
 )
 from evander.queries.providers.schemas import (
     AdoBuildsQueryDefinition,
-    MesTestContextQueryDefinition,
+    TextRegexQueryDefinition,
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
     ArtifactSpaceLatestQueryDefinition,
@@ -131,6 +131,8 @@ from evander.triggers.providers.schemas import (
 
 __all__ = [
     "AdoAddWorkItemTagEffectDefinition",
+    "AdoBuildsQueryDefinition",
+    "AdoBuildWaitEffectDefinition",
     "AdoPipelineRunEffectDefinition",
     "AdoPostWorkItemCommentEffectDefinition",
     "AdoRemoveWorkItemTagEffectDefinition",
@@ -150,6 +152,7 @@ __all__ = [
     "AgentDestroyEffectDefinition",
     "AgentEnqueuePromptEffectDefinition",
     "AgentExecEffectDefinition",
+    "AgentInstallSkillsEffectDefinition",
     "AgentPromptEffectDefinition",
     "AgentPromptNewTriggerDefinition",
     "AgentRunCompletedTriggerDefinition",
@@ -231,6 +234,7 @@ __all__ = [
     "TeamsMeetingNewTranscriptTriggerDefinition",
     "TeamsNewMessageTriggerDefinition",
     "TeamsTargetDefinition",
+    "TextRegexQueryDefinition",
     "TicketChangedTriggerDefinition",
     "TicketCreatedTriggerDefinition",
     "VmBootstrapFrontendEffectDefinition",

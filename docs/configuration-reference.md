@@ -1175,8 +1175,8 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:artifact-space:latest` | `space_path` | `artifact_id`, `subject`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
-| `query:ado:builds` | `directory_path`, `pipeline_id`, `repository_id`, `pr_id`, `source_branch`, `source_commit` | `project`, `merge_commit`, `outputs` |
-| `query:app:test-context` | `body` | `outputs` |
+| `query:ado:builds` | `directory_path`, `pipeline_id`, `repository_id`, `filters` | `project`, `repository_type`, `limit`, `outputs` |
+| `query:text:regex` | `text`, `pattern` | `operation`, `replacement`, `require_match`, `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
 
 `query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
@@ -1337,9 +1337,15 @@ deployment pipeline, then uses `gate:map` to derive fields such as `app_base_url
 `session_metadata_patch` is stored with `effect:session:update-metadata` before the originating
 agent session is resumed.
 
-For PR-driven demo testing, see [APP PR testing](app-pr-testing.md). `query:ado:builds`
-returns `found`, `build` and `branch_name`; it selects the newest attempt for the
-pinned source/merge revision without filtering out queued or unsuccessful runs.
+`query:ado:builds` returns `builds` and `count`, newest queue time first. Supply
+`filters` as an array of `{ "branch": "refs/tags/v1", "source_version": "<sha>" }`
+objects. An omitted `source_version` accepts any revision; an explicit null or
+empty version disables that filter, preventing an unresolved pin from selecting
+an arbitrary build. Filters are unioned and runs deduplicated by ID. `limit`
+defaults to 100 (maximum 1000); the query paginates until enough matches are found.
+It does not derive PR refs or apply a successful-build policy. Workflows specify
+their own refs, commits and result handling. `repository_type` defaults to `TfsGit`.
+
 `effect:ado:build-wait` polls that exact run and routes unsuccessful completion,
 API failure or timeout to its `error` edge. Both use the directory's configured
 `azure_devops_pat_env` (Build Read required), never a credential from PR text.
@@ -1351,9 +1357,20 @@ not an atomic environment lock. Omit it to retain the normal queue behavior.
 
 `effect:agent:install-skills` resolves the existing session's execution backend
 and installs managed skills additively. It does not recreate the agent or replace
-its tool grants, model selection, or thread. `query:app:test-context` accepts only
-the bounded `!TEST <environment>` command (with an optional ADO mention), derives
-the named-demo API/UI targets, and never accepts a caller-provided URL.
+its tool grants, model selection, or thread.
+
+`query:text:regex` performs a configured `fullmatch` (default) or `replace` and
+returns `value`, `matched` and named capture `groups`. For full matching, `value`
+is unchanged; for replacement it is the substituted text. `require_match: true`
+turns a full-match miss into a query error; otherwise it returns `matched: false`.
+Patterns use Python regular expressions, including inline flags and replacement
+backreferences. Text is bounded to 32768 characters and patterns to 4096. Use
+`gate:map` to construct targets from captures and `gate:switch` for validation or
+business decisions. Command syntax and URL naming are not provider behavior.
+
+The optional [APP PR testing example](app-pr-testing.md) composes these primitives
+entirely in JSON. [Workflow document patches](workflow-document-patches.md) install
+such node/edge configurations with revision-safe Admin saves.
 
 ### Graph examples
 

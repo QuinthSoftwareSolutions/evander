@@ -1522,15 +1522,13 @@ _QUERY_OUTPUT_SCHEMAS = {
         "merge_base_commit_sha": {"type": "string"},
     },
     "query:ado:builds": {
-        "found": {"type": "boolean"},
-        "build": {"type": ["object", "null"]},
-        "branch_name": {"type": "string"},
+        "builds": {"type": "array", "items": {"type": "object"}},
+        "count": {"type": "integer"},
     },
-    "query:app:test-context": {
-        "environment": {"type": "string"},
-        "public_url": {"type": "string"},
-        "api_url": {"type": "string"},
-        "session_metadata": {"type": "object"},
+    "query:text:regex": {
+        "value": {"type": "string"},
+        "matched": {"type": "boolean"},
+        "groups": {"type": "object"},
     },
     "query:session-context": {
         "session_id": {"type": "string"},

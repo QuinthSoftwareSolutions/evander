@@ -64,10 +64,11 @@ def query(tmp_path, **overrides):
         directory_path="root/app",
         pipeline_id=44,
         repository_id="repository",
-        pr_id=17,
-        source_branch="refs/heads/feature",
-        source_commit="source-current",
-        merge_commit="merge-current",
+        filters=[
+            {"branch": "refs/heads/feature", "source_version": "source-current"},
+            {"branch": "refs/pull/17/merge", "source_version": "merge-current"},
+        ],
+        limit=1,
     )
     provider = AdoBuildsQueryProvider()
     provider.initialize(node, context(tmp_path))
@@ -100,10 +101,10 @@ def test_selects_latest_attempt_without_success_filter(monkeypatch, tmp_path, st
 
     install_transport(monkeypatch, handler)
     output = query(tmp_path)
-    assert output["found"]
-    assert output["build"]["run_id"] == "9"
-    assert output["build"]["status"] == status.lower()
-    assert output["build"]["success"] == (result == "succeeded")
+    assert output["count"] == 1
+    assert output["builds"][0]["run_id"] == "9"
+    assert output["builds"][0]["status"] == status.lower()
+    assert output["builds"][0]["success"] == (result == "succeeded")
     assert len(requests) == 2
     assert "do-not-print-me" not in str(output)
 
@@ -123,14 +124,57 @@ def test_finds_current_revision_across_pages_and_both_ref_types(monkeypatch, tmp
         )
 
     install_transport(monkeypatch, handler)
-    assert query(tmp_path)["build"]["run_id"] == "9"
+    assert query(tmp_path)["builds"][0]["run_id"] == "9"
 
 
 def test_no_build_for_revision_is_an_explicit_empty_result(monkeypatch, tmp_path):
     install_transport(
         monkeypatch, lambda request: httpx.Response(200, json={"value": [build(3, sha="old")]})
     )
-    assert query(tmp_path) == {"found": False, "build": None, "branch_name": "feature"}
+    assert query(tmp_path) == {"count": 0, "builds": []}
+
+
+def test_filters_support_non_pr_refs_and_return_multiple_builds(monkeypatch, tmp_path):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.url.params["branchName"] == "refs/tags/release-v2"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    build(9, branch="refs/tags/release-v2", sha="abc"),
+                    build(8, branch="refs/tags/release-v2", sha="def"),
+                ]
+            },
+        )
+
+    install_transport(monkeypatch, handler)
+    result = query(tmp_path, filters=[{"branch": "refs/tags/release-v2"}], limit=10)
+    assert [build["run_id"] for build in result["builds"]] == ["9", "8"]
+    assert result["count"] == 2
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("version", [None, "", " "])
+def test_explicit_unknown_version_is_not_treated_as_any_version(monkeypatch, tmp_path, version):
+    def handler(request):
+        pytest.fail("Disabled filters must not send a request")
+
+    install_transport(monkeypatch, handler)
+    assert query(
+        tmp_path, filters=[{"branch": "refs/tags/release-v2", "source_version": version}]
+    ) == {"count": 0, "builds": []}
+
+
+@pytest.mark.parametrize("version", [False, 0, 123, []])
+def test_invalid_version_type_is_not_silently_disabled(monkeypatch, tmp_path, version):
+    install_transport(
+        monkeypatch, lambda request: pytest.fail("Invalid filter must not send a request")
+    )
+    with pytest.raises(ValueError, match="source_version"):
+        query(tmp_path, filters=[{"branch": "refs/tags/release-v2", "source_version": version}])
 
 
 @pytest.mark.parametrize("status", [401, 403, 404, 500])

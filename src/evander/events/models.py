@@ -576,7 +576,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
 
     models_by_type: dict[str, type[BaseModel]] = {
         "query:ado:builds": provider_models.AdoBuildsQueryDefinition,
-        "query:app:test-context": provider_models.MesTestContextQueryDefinition,
+        "query:text:regex": provider_models.TextRegexQueryDefinition,
         "effect:ado:build-wait": provider_models.AdoBuildWaitEffectDefinition,
         "effect:agent:install-skills": provider_models.AgentInstallSkillsEffectDefinition,
         "trigger:event": provider_models.EventTriggerDefinition,

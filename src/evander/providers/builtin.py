@@ -127,7 +127,7 @@ from evander.queries.providers.artifact_space import (
 )
 from evander.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from evander.queries.providers.ado_builds import AdoBuildsQueryProvider
-from evander.queries.providers.app_test_context import MesTestContextQueryProvider
+from evander.queries.providers.text_regex import TextRegexQueryProvider
 from evander.queries.providers.communication_messages import (
     CommunicationMessagesQueryProvider,
 )
@@ -341,7 +341,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:issue:list": IssueListQueryProvider,
             "query:ado:work-items": AdoWorkItemsQueryProvider,
             "query:ado:builds": AdoBuildsQueryProvider,
-            "query:app:test-context": MesTestContextQueryProvider,
+            "query:text:regex": TextRegexQueryProvider,
             "query:remote-issues": RemoteIssuesQueryProvider,
             "query:pull-request:list": PullRequestListQueryProvider,
             "query:pull-request:feedback": PullRequestFeedbackQueryProvider,

@@ -9,38 +9,52 @@ from .base import QueryProviderBase, scoped_query_directory_path
 
 
 class AdoBuildsQueryProvider(QueryProviderBase):
-    """Find the newest build attempt for a pinned pull request revision."""
+    """List builds by explicit repository, definition and branch/version filters."""
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = self.query_definition.model_dump()
         payload.update(resolved_config or {})
         directory = scoped_query_directory_path(self.runtime_context, payload.get("directory_path"))
         pipeline_id = positive_id(payload["pipeline_id"], "pipeline_id")
-        pr_id = positive_id(payload["pr_id"], "pr_id")
-        repository_id = str(payload["repository_id"]).strip()
-        source_branch = str(payload["source_branch"]).strip()
-        source_commit = str(payload["source_commit"]).strip()
-        merge_commit = str(payload.get("merge_commit") or "").strip()
-        if not repository_id or not source_commit or not source_branch.startswith("refs/heads/"):
+        repository_id = payload["repository_id"]
+        filters = payload["filters"]
+        limit = positive_id(payload.get("limit", 100), "limit")
+        if (
+            limit > 1000
+            or not isinstance(repository_id, str)
+            or not repository_id.strip()
+            or not isinstance(filters, list)
+            or not filters
+        ):
             raise ValueError(
-                "repository_id, source_commit and a full source_branch ref are required"
+                "repository_id, nonempty filters and a limit of at most 1000 are required"
             )
-
-        candidates: list[dict[str, Any]] = []
-        branches = {source_branch: source_commit}
-        if merge_commit:
-            branches[f"refs/pull/{pr_id}/merge"] = merge_commit
+        repository_id = repository_id.strip()
+        candidates: dict[str, dict[str, Any]] = {}
         with AdoBuildClient(
             self.runtime_context, directory_path=directory, project=payload.get("project")
         ) as client:
-            for branch, commit in branches.items():
+            for selector in filters:
+                if (
+                    not isinstance(selector, Mapping)
+                    or not isinstance(selector.get("branch"), str)
+                    or not selector["branch"].strip()
+                ):
+                    raise ValueError("Each build filter requires a branch ref")
+                branch = selector["branch"]
+                commit = selector.get("source_version")
+                if commit is not None and not isinstance(commit, str):
+                    raise ValueError("source_version must be a string or null")
+                if "source_version" in selector and (commit is None or not commit.strip()):
+                    continue
                 continuation = None
                 seen: set[str] = set()
+                matching_count = 0
                 while True:
                     params = {
                         "definitions": pipeline_id,
                         "repositoryId": repository_id,
-                        "repositoryType": "TfsGit",
+                        "repositoryType": payload.get("repository_type", "TfsGit"),
                         "branchName": branch,
                         "queryOrder": "queueTimeDescending",
                         "$top": 100,
@@ -52,13 +66,19 @@ class AdoBuildsQueryProvider(QueryProviderBase):
                         build
                         for build in page
                         if build.get("sourceBranch") == branch
-                        and str(build.get("sourceVersion") or "").lower() == commit.lower()
+                        and (
+                            commit is None
+                            or str(build.get("sourceVersion") or "").lower() == commit.lower()
+                        )
                         and str(build.get("repository", {}).get("id")) == repository_id
                         and str(build.get("definition", {}).get("id")) == str(pipeline_id)
                         and not build.get("deleted")
                     ]
-                    if matching:
-                        candidates.extend(client.output(build) for build in matching)
+                    for build in matching:
+                        output = client.output(build)
+                        candidates[output["run_id"]] = output
+                    matching_count += len(matching)
+                    if matching_count >= limit:
                         break
                     if not continuation:
                         break
@@ -66,11 +86,9 @@ class AdoBuildsQueryProvider(QueryProviderBase):
                         raise RuntimeError("Azure DevOps build pagination could not be completed")
                     seen.add(continuation)
 
-        newest = max(
-            candidates, key=lambda run: (run["queue_time"], int(run["run_id"])), default=None
-        )
-        return {
-            "found": newest is not None,
-            "build": newest,
-            "branch_name": source_branch.removeprefix("refs/heads/"),
-        }
+        builds = sorted(
+            candidates.values(),
+            key=lambda run: (run["queue_time"], int(run["run_id"])),
+            reverse=True,
+        )[:limit]
+        return {"builds": builds, "count": len(builds)}

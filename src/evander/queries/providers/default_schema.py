@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from evander.queries.providers.schemas import (
     AdoBuildsQueryDefinition,
-    MesTestContextQueryDefinition,
+    TextRegexQueryDefinition,
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
     ArtifactSpaceLatestQueryDefinition,
@@ -41,7 +41,7 @@ from evander.workflow.contracts import WorkflowNodeEnvelope, register_node_outpu
 
 _QUERY_MODEL_BY_TYPE = {
     "query:ado:builds": AdoBuildsQueryDefinition,
-    "query:app:test-context": MesTestContextQueryDefinition,
+    "query:text:regex": TextRegexQueryDefinition,
     "query:code-index:status": CodeIndexStatusDefinition,
     "query:code-index:search": CodeIndexSearchDefinition,
     "query:code-index:navigate": CodeIndexNavigateDefinition,
