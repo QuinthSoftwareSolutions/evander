@@ -70,6 +70,7 @@ const taskAssessmentResolutionReasonMessages = Object.freeze({
   active_formal_review: "A formal review is still in progress.",
   cancelled_by_authorized_disposition:
     "The task was cancelled by an authorized decision.",
+  coordination_task_finished: "The coordination task has finished.",
   intrinsic_blocker_open: "An active blocker is preventing this task from progressing.",
   awaiting_external_input: "The task is paused until its workflow receives external input.",
   outcome_deliverable_accepted: "The outcome deliverable was accepted.",
@@ -574,9 +575,11 @@ const fieldTooltips = {
   "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
   "create-task-form:title": "Short task title shown in project and agent task lists.",
   "create-task-form:description": "Work instructions for the owning agent.",
+  "create-task-form:task_kind": "Support work may produce a deliverable. Coordination supervises children, finishes directly, and never receives a Git integration context.",
   "create-task-form:created_by_agent_id": "Agent credited as the task creator in task history and timeline attribution.",
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
+  "create-task-form:originating_task_id": "Optional provenance link. Final integration for coordinated work must use the coordination task as its origin while leaving Parent task empty.",
   "create-task-form:git_base_branch": "Optional Git starting branch. Blank inherits the parent task snapshot or the project default when the root task is created.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
   "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
@@ -4235,6 +4238,9 @@ function bindTaskBoardSelectors() {
   teamSelect?.addEventListener("change", updateTeam);
   projectSelect?.addEventListener("input", updateProject);
   projectSelect?.addEventListener("change", updateProject);
+  document.querySelectorAll("[data-task-board-create-form]").forEach((form) => {
+    syncTaskBoardTaskKindControls(form);
+  });
 
   document.addEventListener("submit", (event) => {
     const createForm = event.target?.closest?.("[data-task-board-create-form]");
@@ -4254,6 +4260,13 @@ function bindTaskBoardSelectors() {
   });
 
   document.addEventListener("change", (event) => {
+    const taskKindSelect = event.target?.closest?.(
+      '[data-task-board-create-form] [name="task_kind"]',
+    );
+    if (taskKindSelect) {
+      syncTaskBoardTaskKindControls(taskKindSelect.form);
+      return;
+    }
     const completedToggle = event.target?.closest?.("[data-task-board-show-completed]");
     if (completedToggle instanceof HTMLInputElement) {
       taskBoardShowCompleted = completedToggle.checked;
@@ -4388,6 +4401,27 @@ function bindTaskBoardSelectors() {
       focusTaskBoardControl(taskId, "[data-task-board-toggle-children-id]");
     }
   });
+}
+
+function syncTaskBoardTaskKindControls(form) {
+  if (!form) return;
+  const coordination = text(form.elements.task_kind?.value) === "coordination";
+  for (const fieldName of [
+    "integration_boundary",
+    "require_git_provenance",
+    "required_contribution_task_ids",
+  ]) {
+    const control = form.elements[fieldName];
+    if (!control) continue;
+    control.disabled = coordination;
+    if (coordination) {
+      if (control instanceof HTMLInputElement && control.type === "checkbox") {
+        control.checked = false;
+      } else {
+        control.value = "";
+      }
+    }
+  }
 }
 
 async function submitTaskBoardCreateForm(form) {
@@ -13455,6 +13489,12 @@ function renderTaskBoardCreateForm(project, projectTasks) {
           <label>Priority <input name="priority" type="number" min="0" value="0" required /></label>
           <label>Title <input name="title" required /></label>
           <label>Description <textarea name="description" rows="3" required></textarea></label>
+          <label>Task kind
+            <select name="task_kind">
+              <option value="support">Support work</option>
+              <option value="coordination">Coordination only</option>
+            </select>
+          </label>
           <label>Commit author name <input name="task_author_name" placeholder="Inherit task or project author" /></label>
           <label>Commit author email <input name="task_author_email" type="email" placeholder="Inherit task or project author" /></label>
           <label>Git base branch
@@ -13462,6 +13502,9 @@ function renderTaskBoardCreateForm(project, projectTasks) {
           </label>
           <label>Parent task
             <select name="parent_task_id">${renderSelectOptions(taskOptions, { placeholder: "No parent" })}</select>
+          </label>
+          <label>Originating task
+            <select name="originating_task_id">${renderSelectOptions(taskOptions, { placeholder: "No provenance origin" })}</select>
           </label>
           <label>Dependency task IDs
             <textarea name="dependency_task_ids" rows="2" placeholder="One per line or comma-separated"></textarea>
@@ -15417,8 +15460,9 @@ function planningTaskLifecycleStages(task) {
   const resolution = text(task.resolution_status || assessment.resolution_status || "unresolved");
   const executionComplete = ["finished", "waiting_for_review", "accepted", "rejected"].includes(stateValue);
   const reviewComplete = ["accepted", "rejected"].includes(stateValue);
-  const reviewNotRequired =
-    text(assessment.resolution_reason) === "support_task_finished";
+  const reviewNotRequired = ["support_task_finished", "coordination_task_finished"].includes(
+    text(assessment.resolution_reason),
+  );
   return [
     {
       label: "Created",
@@ -23889,12 +23933,14 @@ function payloadForForm(form, data = formData(form)) {
     return payload;
   }
   if (formId === "create-task-form") {
+    const taskKind = text(data.task_kind) || "support";
     const payload = {
       owner_agent_id: text(data.owner_agent_id),
       project_id: text(data.project_id),
       priority: numberOrZero(data.priority),
       title: text(data.title),
       description: text(data.description),
+      task_kind: taskKind,
       created_by_agent_id: text(data.created_by_agent_id),
     };
     const authoredBy = taskAuthoredByForForm(data);
@@ -23913,6 +23959,10 @@ function payloadForForm(form, data = formData(form)) {
     if (parentTaskId) {
       payload.parent_task_id = parentTaskId;
     }
+    const originatingTaskId = text(data.originating_task_id);
+    if (originatingTaskId) {
+      payload.originating_task_id = originatingTaskId;
+    }
     payload.dependency_task_ids = splitList(data.dependency_task_ids);
     const integrationBoundary = Boolean(
       form.elements.integration_boundary?.checked,
@@ -23924,9 +23974,12 @@ function payloadForForm(form, data = formData(form)) {
       data.required_contribution_task_ids,
     );
     if (
+      taskKind !== "coordination"
+      && (
       integrationBoundary
       || requireGitProvenance
       || requiredContributionTaskIds.length > 0
+      )
     ) {
       payload.integration_boundary = integrationBoundary;
       payload.deliverable_contract = {

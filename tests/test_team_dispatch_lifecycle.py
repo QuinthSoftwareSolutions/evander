@@ -1037,7 +1037,8 @@ def test_parent_owner_cancels_child_from_exact_supervision_handoff(
         and item.payload.get("parent_task_id") == "task"
         and "child-task" in item.payload.get("child_task_ids", [])
     }
-    assert {"resolution", "integration_ready"} <= parent_transitions
+    assert "resolution" in parent_transitions
+    assert "integration_ready" not in parent_transitions
     resolution = next(
         item
         for item in state.inbox.values()

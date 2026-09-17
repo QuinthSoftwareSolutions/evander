@@ -113,6 +113,7 @@ from .domain.case_task import (
     _resolve_new_task_git_base_branch,
     _set_task_git_base_branch,
     _sync_case_task_link,
+    _task_coordination_handoff_error,
     _task_graph_edit_error,
     _task_integration_boundary_transition_error,
     _task_deliverable_contract_scope_error,
@@ -4252,6 +4253,15 @@ class TeamAdminService:
             if deliverable_contract is not None
             else None
         )
+        if normalized_task_kind == TeamTaskKind.COORDINATION:
+            if normalized_outcome_contract is not None:
+                raise ValueError("coordination task cannot define outcome_contract")
+            if integration_boundary:
+                raise ValueError("coordination task cannot be an integration boundary")
+            if normalized_deliverable_contract is not None:
+                raise ValueError("coordination task cannot define deliverable_contract")
+            if normalized_git_base_commit_sha is not None:
+                raise ValueError("coordination task cannot pin a Git base commit")
         effective_requested_kind = normalized_task_kind or TeamTaskKind.SUPPORT
         if state in {TeamTaskState.ACCEPTED, TeamTaskState.CANCELLED}:
             raise ValueError(
@@ -4304,6 +4314,15 @@ class TeamAdminService:
                     raise ValueError(
                         f"task {task.id} git_base_commit_sha is immutable after creation"
                     )
+                proposed_task_kind = normalized_task_kind or task.task_kind
+                if (
+                    proposed_task_kind != task.task_kind
+                    and TeamTaskKind.COORDINATION in {proposed_task_kind, task.task_kind}
+                ):
+                    raise ValueError(
+                        f"task {task.id} cannot change to or from coordination after creation; "
+                        "create a fresh task with the intended task_kind"
+                    )
                 proposed_parent_task_id = (
                     normalized_parent_task_id
                     if set_parent_task_id or parent_task_id is not None
@@ -4334,6 +4353,24 @@ class TeamAdminService:
                         if set_deliverable_contract or deliverable_contract is not None
                         else task.deliverable_contract
                     )
+                if proposed_task_kind == TeamTaskKind.COORDINATION:
+                    if proposed_integration_boundary:
+                        raise ValueError("coordination task cannot be an integration boundary")
+                    if proposed_deliverable_contract is not None:
+                        raise ValueError("coordination task cannot define deliverable_contract")
+                    if normalized_outcome_contract is not None:
+                        raise ValueError("coordination task cannot define outcome_contract")
+                    if normalized_git_base_commit_sha is not None:
+                        raise ValueError("coordination task cannot pin a Git base commit")
+                coordination_handoff_error = _task_coordination_handoff_error(
+                    state_model,
+                    integration_boundary=proposed_integration_boundary,
+                    parent_task_id=proposed_parent_task_id,
+                    originating_task_id=task.originating_task_id,
+                    deliverable_contract=proposed_deliverable_contract,
+                )
+                if coordination_handoff_error is not None:
+                    raise ValueError(coordination_handoff_error)
                 deliverable_policy_edit = deliverable_policy_request and (
                     proposed_integration_boundary != task.integration_boundary
                     or proposed_deliverable_contract != task.deliverable_contract
@@ -4524,6 +4561,15 @@ class TeamAdminService:
             if graph_error is not None:
                 raise ValueError(graph_error)
             effective_integration_boundary = bool(integration_boundary)
+            coordination_handoff_error = _task_coordination_handoff_error(
+                state_model,
+                integration_boundary=effective_integration_boundary,
+                parent_task_id=normalized_parent_task_id,
+                originating_task_id=normalized_originating_task_id,
+                deliverable_contract=normalized_deliverable_contract,
+            )
+            if coordination_handoff_error is not None:
+                raise ValueError(coordination_handoff_error)
             contract_error = _task_deliverable_contract_scope_error(
                 state_model,
                 task_id=effective_task_id,
@@ -5738,7 +5784,11 @@ class TeamAdminService:
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
-            if enforce_task_assessment or task.integration_boundary:
+            if (
+                enforce_task_assessment
+                or task.integration_boundary
+                or task.task_kind == TeamTaskKind.COORDINATION
+            ):
                 try:
                     require_deliverable_submission(
                         state_model,

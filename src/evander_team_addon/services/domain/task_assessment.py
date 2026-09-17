@@ -208,7 +208,7 @@ class TaskAssessmentService:
                 )
             )
 
-            integration_task_ids = _required_contribution_task_ids(
+            integration_task_ids = _integration_readiness_task_ids(
                 self._state,
                 task,
                 direct_child_ids=direct_child_ids,
@@ -802,7 +802,7 @@ def require_task_can_finish(
                 ],
             },
         )
-    if task.task_kind != TeamTaskKind.SUPPORT:
+    if task.task_kind not in {TeamTaskKind.SUPPORT, TeamTaskKind.COORDINATION}:
         raise TaskAssessmentBoundaryError(
             code="outcome_task_direct_finish_forbidden",
             message=(
@@ -943,6 +943,24 @@ def require_deliverable_submission(
     task_id: str,
     source_deliverable_ids: Sequence[str],
 ) -> TaskAssessment:
+    task = state.tasks.get(task_id)
+    if task is not None and task.task_kind == TeamTaskKind.COORDINATION:
+        raise TaskAssessmentBoundaryError(
+            code="coordination_task_deliverable_forbidden",
+            message=(
+                f"coordination task {task_id} cannot submit a deliverable; "
+                "finish it directly or create a fresh top-level integration boundary"
+            ),
+            correction_context={
+                "task_id": task_id,
+                "required_action": (
+                    "create a top-level integration boundary with parent_task_id unset, "
+                    "originating_task_id set to this coordination task, and exact accepted "
+                    "contribution tasks declared as dependencies and required contributions"
+                ),
+                "supported_tools": ["team_create_task", "team_create_task_for_role"],
+            },
+        )
     current_assessment = assess_task(state, task_id)
     if current_assessment.resolution_status == TaskResolutionStatus.RESOLVED:
         raise _boundary_error(
@@ -1492,7 +1510,7 @@ def _local_lifecycle_invalid_reason_codes(
         elif task.completion is not None:
             invalid.add("outcome_completion_without_acceptance")
     elif task.state == TeamTaskState.ACCEPTED:
-        invalid.add("support_task_accepted_instead_of_finished")
+        invalid.add(f"{task.task_kind.value}_task_accepted_instead_of_finished")
 
     if task.deliverable_contract is not None and task.state in {
         TeamTaskState.FINISHED,
@@ -1622,8 +1640,15 @@ def _task_resolution_reason(
         TeamTaskState.ACCEPTED,
     }:
         return "integration_deliverable_accepted"
-    if task.task_kind == TeamTaskKind.SUPPORT and task.state == TeamTaskState.FINISHED:
-        return "support_task_finished"
+    if (
+        task.task_kind in {TeamTaskKind.SUPPORT, TeamTaskKind.COORDINATION}
+        and task.state == TeamTaskState.FINISHED
+    ):
+        return (
+            "coordination_task_finished"
+            if task.task_kind == TeamTaskKind.COORDINATION
+            else "support_task_finished"
+        )
     if (
         task.task_kind == TeamTaskKind.OUTCOME
         and task.state == TeamTaskState.ACCEPTED
@@ -1891,6 +1916,28 @@ def _required_contribution_task_ids(
     return []
 
 
+def _integration_readiness_task_ids(
+    state: TeamState,
+    task: AgentTask,
+    *,
+    direct_child_ids: Sequence[str],
+) -> list[str]:
+    """Return work whose resolution makes a parent ready for its next handoff.
+
+    Coordination children drive supervision only. They are deliberately not Git
+    composition inputs; a fresh integration boundary must name the accepted
+    source-producing tasks explicitly.
+    """
+
+    if task.task_kind == TeamTaskKind.COORDINATION:
+        return sorted(set(direct_child_ids))
+    return _required_contribution_task_ids(
+        state,
+        task,
+        direct_child_ids=direct_child_ids,
+    )
+
+
 def _uses_legacy_direct_child_contributions(
     state: TeamState,
     task: AgentTask,
@@ -1904,10 +1951,8 @@ def _uses_legacy_direct_child_contributions(
     to bootstrap aggregate semantics.
     """
 
-    if task.integration_boundary:
+    if task.integration_boundary or task.task_kind == TeamTaskKind.COORDINATION:
         return False
-    if task.deliverable_contract is None:
-        return True
     return any(
         deliverable.task_id == task.id and bool(deliverable.source_deliverable_ids)
         for deliverable in state.deliverables.values()
@@ -1985,6 +2030,8 @@ def required_source_deliverable_ids_for_task(
     task = state.tasks.get(task_id)
     if task is None:
         raise ValueError(f"task {task_id} does not exist")
+    if task.task_kind == TeamTaskKind.COORDINATION:
+        return []
     direct_child_ids = sorted(
         child.id for child in state.tasks.values() if child.parent_task_id == task.id
     )

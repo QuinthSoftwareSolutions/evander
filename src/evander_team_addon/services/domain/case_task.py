@@ -591,6 +591,60 @@ def _task_integration_boundary_transition_error(
     )
 
 
+def _task_coordination_handoff_error(
+    state: TeamState,
+    *,
+    integration_boundary: bool,
+    parent_task_id: str | None,
+    originating_task_id: str | None,
+    deliverable_contract: TaskDeliverableContract | None,
+) -> str | None:
+    """Keep coordination supervision separate from the final integration root."""
+
+    if not integration_boundary:
+        return None
+    parent = state.tasks.get(parent_task_id or "")
+    if parent is not None and parent.task_kind == TeamTaskKind.COORDINATION:
+        return (
+            f"integration boundary cannot be a child of coordination task {parent.id}; "
+            "leave parent_task_id unset and set originating_task_id to that coordination task"
+        )
+
+    coordination_source_ids: set[str] = set()
+    if deliverable_contract is not None:
+        for contribution_task_id in deliverable_contract.required_contribution_task_ids:
+            contribution = state.tasks.get(contribution_task_id)
+            if contribution is None:
+                continue
+            if contribution.task_kind == TeamTaskKind.COORDINATION:
+                coordination_source_ids.add(contribution.id)
+            contribution_parent = state.tasks.get(contribution.parent_task_id or "")
+            if (
+                contribution_parent is not None
+                and contribution_parent.task_kind == TeamTaskKind.COORDINATION
+            ):
+                coordination_source_ids.add(contribution_parent.id)
+    if len(coordination_source_ids) == 1:
+        coordination_task_id = next(iter(coordination_source_ids))
+        if originating_task_id != coordination_task_id:
+            return (
+                f"integration boundary for coordination task {coordination_task_id} must set "
+                f"originating_task_id to {coordination_task_id}"
+            )
+
+    origin = state.tasks.get(originating_task_id or "")
+    if (
+        origin is not None
+        and origin.task_kind == TeamTaskKind.COORDINATION
+        and parent_task_id is not None
+    ):
+        return (
+            "an integration boundary originating from coordination must be top-level; "
+            "leave parent_task_id unset"
+        )
+    return None
+
+
 def _validate_case_status_transition(
     *,
     source: str | None,
@@ -1116,6 +1170,7 @@ def _plan_task_creation(
         result["errors"].append(f"task creation has invalid Git base: {exc}")
         return None
     originating_task_id = _optional_text(creation.get("originating_task_id"))
+    origin: AgentTask | None = None
     if originating_task_id is not None:
         origin = state.tasks.get(originating_task_id)
         if origin is None:
@@ -1183,8 +1238,8 @@ def _plan_task_creation(
         )
         if task_kind == TeamTaskKind.OUTCOME and outcome_contract is None:
             raise ValueError("outcome task requires outcome_contract")
-        if task_kind == TeamTaskKind.SUPPORT and outcome_contract is not None:
-            raise ValueError("support task cannot define outcome_contract")
+        if task_kind != TeamTaskKind.OUTCOME and outcome_contract is not None:
+            raise ValueError(f"{task_kind.value} task cannot define outcome_contract")
         integration_boundary = creation.get("integration_boundary", False)
         if not isinstance(integration_boundary, bool):
             raise ValueError("integration_boundary must be a boolean")
@@ -1194,6 +1249,22 @@ def _plan_task_creation(
             if raw_deliverable_contract is not None
             else None
         )
+        if task_kind == TeamTaskKind.COORDINATION:
+            if integration_boundary:
+                raise ValueError("coordination task cannot be an integration boundary")
+            if deliverable_contract is not None:
+                raise ValueError("coordination task cannot define deliverable_contract")
+            if git_base_commit_sha is not None:
+                raise ValueError("coordination task cannot pin a Git base commit")
+        coordination_handoff_error = _task_coordination_handoff_error(
+            state,
+            integration_boundary=integration_boundary,
+            parent_task_id=parent_task_id,
+            originating_task_id=originating_task_id,
+            deliverable_contract=deliverable_contract,
+        )
+        if coordination_handoff_error is not None:
+            raise ValueError(coordination_handoff_error)
         if integration_boundary and deliverable_contract is None:
             raise ValueError("integration boundary task requires deliverable_contract")
         if (
@@ -1902,6 +1973,7 @@ __all__ = [
     "_dependency_path_exists",
     "_has_dependency_cycle",
     "_task_graph_edit_error",
+    "_task_coordination_handoff_error",
     "_task_deliverable_contract_scope_error",
     "_apply_goal_update",
 ]

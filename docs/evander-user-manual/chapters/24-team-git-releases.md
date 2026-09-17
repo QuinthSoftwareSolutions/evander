@@ -157,7 +157,10 @@ Git inputs must also share one authoritative task base branch and exact base
 commit. Team returns <code>mixed_git_base_branches</code> before creating a
 package when they do not. To merge workstreams deliberately, create an explicit
 integration task on the chosen base and release only its accepted integrated
-deliverable. A task based on <code>feature/foo</code> does not publish there by
+deliverable. For coordinated work, that integration task is a fresh top-level
+task: leave <code>parent_task_id</code> unset, link the coordination task through
+<code>originating_task_id</code>, and declare the exact accepted source tasks as
+dependencies and required contributions. A task based on <code>feature/foo</code> does not publish there by
 implication. Agent release requests cannot override <code>canonical_branch</code>;
 Team derives it from the project's canonical release branch policy. An
 authenticated operator may explicitly select a different destination for an

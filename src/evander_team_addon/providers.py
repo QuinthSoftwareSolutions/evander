@@ -180,6 +180,7 @@ from .models import (
     TeamGitPreparationAttempt,
     TeamGitPreparationAttemptState,
     TeamState,
+    TeamTaskKind,
     TeamTaskState,
     WorktreeCleanupCandidate,
     agent_project_ids,
@@ -372,7 +373,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 44
+TEAM_AGENT_GUIDANCE_VERSION = 45
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -1284,6 +1285,17 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Initial task state for new tasks. Leave blank for pending.",
                 default_value="pending",
                 placeholder="pending",
+            ),
+            _catalog_field(
+                "task_kind",
+                "Task kind",
+                "string",
+                description=(
+                    "support for ordinary work, outcome for contracted outcomes, or "
+                    "coordination for supervision that must never own a deliverable."
+                ),
+                default_value="support",
+                placeholder="support",
             ),
             _catalog_field(
                 "parent_task_id",
@@ -4771,6 +4783,7 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
             "task_id",
             "case_id",
             "state",
+            "task_kind",
             "parent_task_id",
             "originating_task_id",
             "authored_by",
@@ -4867,6 +4880,7 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 description=_required_text(payload.get("description"), "description"),
                 created_by_actor=_optional_text(payload.get("created_by")) or "workflow",
                 state=TeamTaskState(_optional_text(payload.get("state")) or "pending"),
+                task_kind=_optional_text(payload.get("task_kind")),
                 parent_task_id=_optional_text(payload.get("parent_task_id")),
                 set_parent_task_id=parent_configured,
                 originating_task_id=_optional_text(payload.get("originating_task_id")),
@@ -8041,7 +8055,8 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         f"or other work with no assessable work product by calling {TEAM_UPDATE_TASK_TOOL} "
         "with state: finished. Creating or handing off the required child task is "
         "enough to finish a delegation-only parent; do not manufacture a routing "
-        "report deliverable as a completion ritual. This finish path does not "
+        "report deliverable as a completion ritual. A task whose task_kind is "
+        "coordination never owns a deliverable or Git integration context. This finish path does not "
         "apply when integration_boundary is true or the task is a generated "
         "human-review correction finding child; those tasks must resolve through "
         "accepted deliverables.\n"
@@ -8049,7 +8064,7 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "source references, priority, owner, lifecycle, and case-task links.\n"
         "- A human-review correction inbox whose payload.kind is "
         "human_review_correction_work uses a system-created graph: one "
-        "coordination-only parent and one finding child. The finding child is "
+        "task_kind=coordination parent and one finding child. The finding child is "
         "support-typed but is not completion-only: implement its exact finding "
         "from the runtime-prepared rejected candidate, submit one assessable "
         "correction deliverable, and complete any required review. Do not finish "
@@ -8129,7 +8144,9 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Git context, wait for the fresh prepared generation, and submit the "
         "requested replacement from that context.\n\n"
         "Parent and child lifecycle:\n"
-        "- A parent owner creates constituent children for delegated work. If the "
+        "- Use task_kind=coordination for a long-lived supervision parent. It creates "
+        "and supervises constituent children but never submits a deliverable or receives "
+        "a Git work context. If the "
         "parent owner also has substantive implementation work, model that work as "
         "a self-owned child instead of editing invisibly on the coordination parent.\n"
         "- While children are merely running, the parent stays quiet. Wake-worthy "
@@ -8138,12 +8155,15 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- When you are the acceptance recipient, decide each direct-child handoff. "
         "For new Git-backed work, coordinate first and integrate last: after every "
         "required contribution has a current accepted deliverable, create a fresh "
-        "integration_boundary task with those tasks in dependency_task_ids and "
+        "top-level integration_boundary task. Leave parent_task_id unset, set "
+        "originating_task_id to the coordination task, and put the exact accepted "
+        "source-producing tasks in both dependency_task_ids and "
         "deliverable_contract.required_contribution_task_ids. Let that fresh task "
         "snapshot the current base commit and own the consolidated deliverable; do "
         "not submit the aggregate from the long-lived coordination task. A legacy "
-        "non-integration parent may consolidate only when its immutable dispatch "
-        "explicitly requires that compatibility path. Do not copy child state into "
+        "non-integration parent may consolidate only when it already has a persisted "
+        "source-bearing aggregate deliverable and its immutable dispatch explicitly "
+        "requires that compatibility path. Do not copy child state into "
         "the parent. "
         "The system-created human-review correction coordination parent is the "
         "exception: it produces no deliverable and Team finishes it after creating "
@@ -8480,8 +8500,10 @@ def _deliverable_review_procedure() -> str:
         "exposes required_contribution_task_ids or child_task_ids, treat the "
         "specification as distributed. For an integration boundary, use "
         "deliverable_contract.required_contribution_task_ids as the declared "
-        "contribution set; for a legacy non-integration parent, use its direct "
-        "child_task_ids. Fetch every declared contribution task and every required "
+        "contribution set; for a legacy non-integration parent that already has a "
+        "persisted source-bearing aggregate deliverable, use its direct child_task_ids. "
+        "A task_kind=coordination parent is never a composite review target. Fetch "
+        "every declared contribution task and every required "
         "current accepted source deliverable named by "
         "assessment.contribution_coverage.required_source_deliverable_ids. If a "
         "contribution task is itself composite, repeat this procedure recursively "
@@ -9937,6 +9959,11 @@ def _create_project_repo_git_work_contexts(
     ):
         task_id = _required_text(task.get("id"), "task.id")
         task_record = state.tasks.get(task_id)
+        if (
+            task_record is not None
+            and task_record.task_kind == TeamTaskKind.COORDINATION
+        ):
+            continue
         task_author = (
             _resolved_project_git_identity(task_record.authored_by)
             if task_record is not None and task_record.authored_by is not None
@@ -12407,6 +12434,8 @@ def _project_repo_context_tasks(
         if _optional_text(task.get("project_id")) != project_id:
             continue
         if _optional_text(task.get("owner_agent_id")) != agent_id:
+            continue
+        if _optional_text(task.get("task_kind")) == TeamTaskKind.COORDINATION.value:
             continue
         seen.add(task_id)
         rows.append(task)
