@@ -373,18 +373,14 @@ class SessionAdminService:
             }
         )
         self._session_repository().upsert_session(updated)
-        if (
-            updated.codex_auth_mode != manifest.codex_auth_mode
-            or updated.subscription_profile_id != manifest.subscription_profile_id
-        ):
-            from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+        from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 
-            AgentPromptQueueStore(
-                self._deps.config.runtime_dir / "queued-agent-prompts.json"
-            ).reroute_session(
-                updated.session_id,
-                subscription_profile_id=updated.subscription_profile_id,
-            )
+        AgentPromptQueueStore(
+            self._deps.config.runtime_dir / "queued-agent-prompts.json"
+        ).reroute_session(
+            updated.session_id,
+            subscription_profile_id=updated.subscription_profile_id,
+        )
         effective = normalized.value if normalized is not None else "directory default"
         return SessionActionResult(
             success=True,

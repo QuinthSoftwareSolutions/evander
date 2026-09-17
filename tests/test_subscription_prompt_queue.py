@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 from evander.codex_auth import CodexAuthMode
 from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
-from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
+from evander.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    QueuedAgentPromptRecord,
+    agent_prompt_replay_queue_key,
+    queued_agent_prompt_dispatch_id,
+)
 
 
 def _record(
@@ -121,6 +126,58 @@ def test_auth_route_change_releases_only_that_sessions_subscription_deferrals(
     assert unchanged.subscription_profile_id == "team-a"
     assert unchanged.queue_reason == "subscription_rate_limited"
     assert unchanged.retry_not_before is not None
+
+
+def test_stale_capacity_deferral_cannot_overwrite_rerouted_claim(tmp_path: Path) -> None:
+    store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    record = _record(
+        queue_key="queued",
+        profile_id="team-a",
+        created_at=datetime.now(UTC),
+    )
+    record.session_id = "session-a"
+    store.put(record)
+    dispatch_id = queued_agent_prompt_dispatch_id(record)
+    claimed = store.claim_for_replay(
+        record.queue_key,
+        dispatch_id,
+        claimed_queue_key=agent_prompt_replay_queue_key(record),
+    )
+    assert claimed is not None
+
+    assert store.reroute_session("session-a", subscription_profile_id="team-b") == 1
+    claimed.subscription_profile_id = "team-a"
+    persisted = store.defer_capacity(
+        claimed,
+        queue_reason="subscription_rate_limited",
+        retry_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert persisted.subscription_profile_id == "team-b"
+    assert persisted.queue_reason is None
+    assert persisted.retry_not_before is None
+    assert store.get(claimed.queue_key) == persisted
+
+
+def test_retrying_same_route_does_not_release_current_route_deferral(tmp_path: Path) -> None:
+    store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    record = _record(
+        queue_key="queued",
+        profile_id="team-b",
+        created_at=datetime.now(UTC),
+    )
+    record.session_id = "session-a"
+    deferred = store.defer_capacity(
+        record,
+        queue_reason="subscription_rate_limited",
+        retry_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert store.reroute_session("session-a", subscription_profile_id="team-b") == 0
+    persisted = store.get("queued")
+    assert persisted is not None
+    assert persisted.queue_reason == "subscription_rate_limited"
+    assert persisted.retry_not_before == deferred.retry_not_before
 
 
 def _fifo_worker(

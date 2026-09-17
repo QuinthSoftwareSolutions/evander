@@ -311,10 +311,7 @@ class VmAgentMutationMixin:
 
         updated = session.model_copy(update=update)
         self.runtime.session_repository.upsert_session(updated)
-        if (
-            updated.codex_auth_mode != session.codex_auth_mode
-            or updated.subscription_profile_id != session.subscription_profile_id
-        ):
+        if "codex_auth_mode" in body or "subscription_profile_id" in body:
             from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 
             AgentPromptQueueStore(

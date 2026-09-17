@@ -14674,15 +14674,63 @@ def test_update_container_agent_can_switch_auth_modes_and_subscription_profiles(
     assert preserved is not None
     assert preserved.subscription_profile_id == "team-a"
 
+    queue_store = AgentPromptQueueStore(
+        service.config.runtime_dir / "queued-agent-prompts.json"
+    )
+    queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-delayed",
+            target="metered-session",
+            vm_name="metered-target",
+            session_id="metered-session",
+            prompt="Continue after capacity returns",
+            effect_id="effect-subscription-delayed",
+            subscription_profile_id="team-a",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    original_reroute = AgentPromptQueueStore.reroute_session
+    reroute_attempts = 0
+
+    def fail_first_reroute(
+        store: AgentPromptQueueStore,
+        session_id: str,
+        *,
+        subscription_profile_id: str | None,
+    ) -> int:
+        nonlocal reroute_attempts
+        reroute_attempts += 1
+        if reroute_attempts == 1:
+            raise OSError("queue unavailable")
+        return original_reroute(
+            store,
+            session_id,
+            subscription_profile_id=subscription_profile_id,
+        )
+
+    monkeypatch.setattr(AgentPromptQueueStore, "reroute_session", fail_first_reroute)
+    with pytest.raises(OSError, match="queue unavailable"):
+        service.vm_agent_admin.update_admin_agent(
+            "metered-session",
+            backend="container_worker_vm",
+            payload={"subscription_profile_id": "team-b"},
+        )
     service.vm_agent_admin.update_admin_agent(
         "metered-session",
         backend="container_worker_vm",
         payload={"subscription_profile_id": "team-b"},
     )
     reassigned = service.runtime.session_repository.get_session("metered-session")
+    reconciled = queue_store.get("subscription-delayed")
+    assert reroute_attempts == 2
     assert reassigned is not None
     assert reassigned.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
     assert reassigned.subscription_profile_id == "team-b"
+    assert reconciled is not None
+    assert reconciled.subscription_profile_id == "team-b"
+    assert reconciled.queue_reason is None
+    assert reconciled.retry_not_before is None
 
     service.vm_agent_admin.update_admin_agent(
         "metered-session",
@@ -14780,6 +14828,90 @@ def test_update_container_agent_can_switch_auth_modes_and_subscription_profiles(
     assert inherited is not None
     assert inherited.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
     assert inherited.subscription_profile_id is None
+
+
+def test_agent_create_options_uses_existing_sessions_assigned_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from evander.admin.services.container_worker_assignment_service import (
+        ContainerWorkerAssignmentService,
+    )
+
+    service = build_admin_runtime(
+        write_config(
+            tmp_path,
+            container_worker_base_url="http://default.test",
+            container_worker_default_image="default:latest",
+            container_workers={
+                "fast": {
+                    "display_name": "Fast worker",
+                    "base_url": "http://fast.test",
+                    "token_env": "FAST_TOKEN",
+                    "default_image": "fast:latest",
+                    "images": {"special": "fast:special"},
+                }
+            },
+        )
+    )
+    directory_config = service.runtime.provider_config.resolve_for_directory("root")
+    ContainerWorkerAssignmentService(directory_config).resolve(
+        "assigned-session",
+        directory_path="root",
+        worker_id="fast",
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assigned-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+    backend_calls: list[dict[str, object]] = []
+
+    def assigned_backend(self, **kwargs):
+        backend_calls.append(dict(kwargs))
+        return SimpleNamespace(
+            client=SimpleNamespace(
+                list_codex_auth_profiles=lambda: {
+                    "profiles": [
+                        {
+                            "profile_id": "fast-account",
+                            "display_name": "Fast account",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(assigned_backend, service.vm_agent_admin),
+    )
+
+    options = service.vm_agent_admin.agent_create_options(
+        "root",
+        session_id="assigned-session",
+    )
+
+    assert backend_calls == [
+        {"directory_path": "root", "session_id": "assigned-session"}
+    ]
+    assert options["container_worker"]["selected_worker_id"] == "fast"
+    assert options["container_worker"]["default_image"] == "fast:latest"
+    assert options["container_worker"]["images"] == [
+        {"alias": "special", "image_ref": "fast:special"}
+    ]
+    assert options["container_worker"]["subscription_profiles"] == [
+        {
+            "profile_id": "fast-account",
+            "display_name": "Fast account",
+            "enabled": True,
+        }
+    ]
 
 
 def test_effective_tool_policy_payload_combines_directory_and_session_rules(

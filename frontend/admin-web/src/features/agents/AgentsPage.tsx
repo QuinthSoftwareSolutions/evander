@@ -1752,7 +1752,7 @@ export function AgentsPage() {
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
     setInlineValidation("");
-    void loadAgentCreateOptions(selectedAgent.directory_path)
+    void loadAgentCreateOptions(selectedAgent.directory_path, "", policy.session_id)
       .then((options) => {
         setEditSubscriptionProfiles(options.container_worker.subscription_profiles ?? []);
       })

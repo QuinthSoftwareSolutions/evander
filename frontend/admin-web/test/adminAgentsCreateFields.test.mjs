@@ -150,6 +150,10 @@ test("worker auth is profile-aware and agent usage allows route changes", () => 
   assert.match(agentsPage, /Subscription profile/);
   assert.match(agentsPage, /effective_subscription_profile_id/);
   assert.match(agentsPage, /You can change the profile later without replacing the agent session/);
+  assert.match(
+    agentsPage,
+    /loadAgentCreateOptions\(selectedAgent\.directory_path, "", policy\.session_id\)/,
+  );
   assert.doesNotMatch(agentsPage, /is immutable\. Create a new agent to change it/);
   assert.match(agentsPage, /function codexUsageForAgent\(/);
   assert.match(agentsPage, /hostRecord\(agent\.host, "codex_usage"\)/);

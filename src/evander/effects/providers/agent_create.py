@@ -433,9 +433,6 @@ class AgentCreateEffectProvider(EffectProviderBase):
         existing_profile_id = normalize_subscription_profile_id(
             getattr(existing_session, "subscription_profile_id", None)
         )
-        existing_auth_mode = normalize_codex_auth_mode(
-            getattr(existing_session, "codex_auth_mode", None)
-        )
         requested_profile_id = (
             normalize_subscription_profile_id(payload.get("subscription_profile_id"))
             if payload.get("_subscription_profile_id_provided")
@@ -651,8 +648,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         session_repository.upsert_session(manifest)
         if existing_session is not None and (
-            manifest.codex_auth_mode != existing_auth_mode
-            or manifest.subscription_profile_id != existing_profile_id
+            payload.get("_codex_auth_mode_provided")
+            or payload.get("_subscription_profile_id_provided")
         ):
             from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 

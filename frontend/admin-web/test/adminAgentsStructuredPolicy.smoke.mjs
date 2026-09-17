@@ -36,6 +36,7 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   const page = await context.newPage();
 
   const patchBodies = [];
+  const createOptionSessionIds = [];
   const agentRecord = {
     agent_id: "agent-1",
     backend: "container_worker_vm",
@@ -214,6 +215,7 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
     }
 
     if (pathname === "/api/admin/agents/create-options") {
+      createOptionSessionIds.push(url.searchParams.get("session_id"));
       await route.fulfill(
         jsonResponse({
           directory_path: "root",
@@ -353,4 +355,5 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   await editDialog.getByRole("button", { name: "Save" }).click();
   await editDialog.waitFor({ state: "hidden" });
   assert.equal(patchBodies.length, 3);
+  assert.ok(createOptionSessionIds.includes("session-1"));
 });

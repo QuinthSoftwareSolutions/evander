@@ -4,7 +4,9 @@
 
 - Let operators move a container Codex agent between metered API usage and enabled ChatGPT
   subscription profiles while retaining the Evander session, and release prompts deferred by the
-  previous subscription route so they can run under the new selection.
+  previous subscription route so they can run under the new selection. Profile choices come from
+  the session's assigned worker, and route reconciliation is safe to retry during concurrent queue
+  dispatch.
 
 ## 2026-09-16 - Pin final integration provenance (0.43.1)
 

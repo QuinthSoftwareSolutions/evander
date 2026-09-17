@@ -325,7 +325,6 @@ class AgentPromptQueueStore:
         """Persist a capacity deferral without touching the ordinary retry ledger."""
 
         now = utc_now()
-        fallback_seconds = min(15 * 60, 15 * (2 ** min(record.capacity_deferral_count, 6)))
         reported_retry_at = retry_at
         if reported_retry_at is not None:
             if reported_retry_at.tzinfo is None:
@@ -334,12 +333,35 @@ class AgentPromptQueueStore:
                 reported_retry_at = reported_retry_at.astimezone(UTC)
             if reported_retry_at <= now:
                 reported_retry_at = None
-        retry_not_before = reported_retry_at or (now + timedelta(seconds=fallback_seconds))
-        record.queue_reason = queue_reason
-        record.retry_not_before = retry_not_before
-        record.capacity_deferral_count += 1
-        record.updated_at = now
-        return self.put(record, count_retry=False, coalesce=False)
+        incoming_dispatch_id = queued_agent_prompt_dispatch_id(record)
+        incoming_profile_id = str(record.subscription_profile_id or "").strip() or None
+
+        def updater(
+            records: dict[str, QueuedAgentPromptRecord],
+        ) -> QueuedAgentPromptRecord:
+            current = records.get(record.queue_key)
+            if current is not None and (
+                queued_agent_prompt_dispatch_id(current) != incoming_dispatch_id
+                or (str(current.subscription_profile_id or "").strip() or None)
+                != incoming_profile_id
+            ):
+                return current
+            previous_deferrals = max(
+                record.capacity_deferral_count,
+                current.capacity_deferral_count if current is not None else 0,
+            )
+            fallback_seconds = min(15 * 60, 15 * (2 ** min(previous_deferrals, 6)))
+            deferred = record.model_copy(deep=True)
+            deferred.queue_reason = queue_reason
+            deferred.retry_not_before = reported_retry_at or (
+                now + timedelta(seconds=fallback_seconds)
+            )
+            deferred.capacity_deferral_count = previous_deferrals + 1
+            deferred.updated_at = now
+            records[deferred.queue_key] = deferred
+            return deferred
+
+        return self.store.update_all(updater)
 
     def make_subscription_profile_ready(
         self,
@@ -389,16 +411,13 @@ class AgentPromptQueueStore:
             for record in records.values():
                 if str(record.session_id or "").strip() != normalized_session_id:
                     continue
-                record_changed = False
-                if record.subscription_profile_id != normalized_profile_id:
+                route_changed = record.subscription_profile_id != normalized_profile_id
+                if route_changed:
                     record.subscription_profile_id = normalized_profile_id
-                    record_changed = True
-                if str(record.queue_reason or "").startswith("subscription_"):
-                    record.queue_reason = None
-                    record.retry_not_before = None
-                    record.capacity_deferral_count = 0
-                    record_changed = True
-                if record_changed:
+                    if str(record.queue_reason or "").startswith("subscription_"):
+                        record.queue_reason = None
+                        record.retry_not_before = None
+                        record.capacity_deferral_count = 0
                     record.updated_at = now
                     changed += 1
             return changed
