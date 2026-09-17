@@ -794,6 +794,7 @@ Type-specific keys:
 | `effect:agent:prepare-reference-repositories` | one of `target`, `session_id`, `vm_name`; `directory_path`; `repositories` | `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
+| `effect:agent:install-skills` | `target`, `codex_skills` | `vm_user`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:agent:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `allowed_source_roots`, `outputs` |
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
@@ -818,7 +819,8 @@ Type-specific keys:
 | `effect:ado:add-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:post-work-item-comment` | `directory_path`, `project`, `work_item_id`, `comment` | `mentions`, `idempotency_key`, `outputs` |
-| `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
+| `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `reject_running_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
+| `effect:ado:build-wait` | `directory_path`, `run_id` | `project`, `timeout_seconds`, `poll_interval_seconds`, `outputs` |
 | `effect:ado:sync-activity-index` | `since` | `until`, `directory_path`, `scope`, `actor`, `project`, `repo`, `states`, `types`, `tags_any`, `statuses`, `include_system_comments`, `outputs` |
 | `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `ado_organization`, `project`, `outputs` |
 | `effect:pull-request:remove-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `ado_organization`, `project`, `outputs` |
@@ -1055,12 +1057,15 @@ scheduled-event deadlines.
 
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have three named
 outgoing ports: `started` emits after the prompt is dispatched, `completed`
-emits after the agent run completes, and `error` emits only for supported
-prompt dispatch failures when the workflow wires an outbound error edge. Use
+emits after the agent run completes, and `error` emits for supported
+prompt dispatch failures, terminal execution failures, and container job timeouts
+when the workflow wires an outbound error edge. Context-exhaustion retries happen
+before a terminal execution error is routed. Use
 the `error` branch for notification, retry, or cleanup paths that should see a
-redacted failure payload. When no `error` edge exists, the prompt node remains
-failed as before, and successful `started` / `completed` paths do not populate
-error fields.
+redacted failure payload. When no `error` edge exists, legacy behavior is retained:
+dispatch failures and container timeouts fail the node, while completed runs still
+emit `completed` even if their execution result is unsuccessful. Successful
+`started` / `completed` paths do not populate error fields.
 For `effect:agent:enqueue-prompt`, routed dispatch failures include the queued
 retry context (`queued`, `queue_key`, and `coalesced_count`) when the prompt was
 written to the durable retry queue before dispatch failed. The prompt queue also
@@ -1170,6 +1175,8 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:artifact-space:latest` | `space_path` | `artifact_id`, `subject`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
+| `query:ado:builds` | `directory_path`, `pipeline_id`, `repository_id`, `pr_id`, `source_branch`, `source_commit` | `project`, `merge_commit`, `outputs` |
+| `query:app:test-context` | `body` | `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
 
 `query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
@@ -1329,6 +1336,24 @@ deployment pipeline, then uses `gate:map` to derive fields such as `app_base_url
 `app_public_url`, `app_api_alias`, `app_ui_alias`, and `public_domain`. The mapped
 `session_metadata_patch` is stored with `effect:session:update-metadata` before the originating
 agent session is resumed.
+
+For PR-driven demo testing, see [APP PR testing](app-pr-testing.md). `query:ado:builds`
+returns `found`, `build` and `branch_name`; it selects the newest attempt for the
+pinned source/merge revision without filtering out queued or unsuccessful runs.
+`effect:ado:build-wait` polls that exact run and routes unsuccessful completion,
+API failure or timeout to its `error` edge. Both use the directory's configured
+`azure_devops_pat_env` (Build Read required), never a credential from PR text.
+
+`effect:ado:pipeline-run.reject_running_parameters` optionally rejects queueing
+when a nonterminal run of the same pipeline has matching template parameters.
+Unreadable active-run parameters fail closed. This is a best-effort preflight,
+not an atomic environment lock. Omit it to retain the normal queue behavior.
+
+`effect:agent:install-skills` resolves the existing session's execution backend
+and installs managed skills additively. It does not recreate the agent or replace
+its tool grants, model selection, or thread. `query:app:test-context` accepts only
+the bounded `!TEST <environment>` command (with an optional ADO mention), derives
+the named-demo API/UI targets, and never accepts a caller-provided URL.
 
 ### Graph examples
 

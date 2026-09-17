@@ -575,6 +575,10 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
     from evander.events import provider_models
 
     models_by_type: dict[str, type[BaseModel]] = {
+        "query:ado:builds": provider_models.AdoBuildsQueryDefinition,
+        "query:app:test-context": provider_models.MesTestContextQueryDefinition,
+        "effect:ado:build-wait": provider_models.AdoBuildWaitEffectDefinition,
+        "effect:agent:install-skills": provider_models.AgentInstallSkillsEffectDefinition,
         "trigger:event": provider_models.EventTriggerDefinition,
         "trigger:agent:artifact-staged": provider_models.AgentArtifactStagedTriggerDefinition,
         "trigger:http:webhook": provider_models.WebhookTriggerDefinition,

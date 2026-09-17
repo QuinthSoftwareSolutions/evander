@@ -161,6 +161,23 @@ class IssueGetQueryDefinition(QueryDefinition):
     issue_id: ConfigValue
 
 
+class AdoBuildsQueryDefinition(QueryDefinition):
+    type: Literal["query:ado:builds"]
+    directory_path: ConfigValue
+    pipeline_id: ConfigValue
+    repository_id: ConfigValue
+    pr_id: ConfigValue
+    source_branch: ConfigValue
+    source_commit: ConfigValue
+    merge_commit: ConfigValue | None = None
+    project: ConfigValue | None = None
+
+
+class MesTestContextQueryDefinition(QueryDefinition):
+    type: Literal["query:app:test-context"]
+    body: ConfigValue
+
+
 class AdoWorkItemsQueryDefinition(QueryDefinition):
     type: Literal["query:ado:work-items"]
     directory_path: ConfigValue | None = None

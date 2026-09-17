@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from evander.effects.providers.schemas import (
+    AdoBuildWaitEffectDefinition,
+    AgentInstallSkillsEffectDefinition,
     AdoAddWorkItemTagEffectDefinition,
     AdoPipelineRunEffectDefinition,
     AdoPostWorkItemCommentEffectDefinition,
@@ -68,6 +70,8 @@ from evander.events.provider_types import (
     validate_pr_feedback_provider,
 )
 from evander.queries.providers.schemas import (
+    AdoBuildsQueryDefinition,
+    MesTestContextQueryDefinition,
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
     ArtifactSpaceLatestQueryDefinition,
