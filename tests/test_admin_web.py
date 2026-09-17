@@ -3185,6 +3185,63 @@ def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     assert client.get("/api/admin/skills/demo.skill").status_code == 404
 
 
+def test_admin_web_replace_skill_reports_propagation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.skill_admin.create_skill({"name": "demo.skill", "content": "# Original\n"})
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "codex_skills": ["demo.skill"],
+            },
+        )
+    )
+
+    def fail_install(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("worker unavailable")
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "install_admin_agent_skills",
+        fail_install,
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    response = client.post(
+        "/api/admin/skills",
+        json={"name": "demo.skill", "content": "# Updated\n", "replace": True},
+    )
+
+    assert response.status_code == 502
+    payload = response.json()
+    assert payload["details"] == {
+        "skill_name": "demo.skill",
+        "replacement_saved": True,
+        "target_count": 1,
+        "updated_session_ids": [],
+        "failures": [
+            {
+                "stage": "install_skill",
+                "session_id": "container-session",
+                "backend": "container_worker_vm",
+                "error_class": "RuntimeError",
+                "error": "worker unavailable",
+            }
+        ],
+    }
+    assert "Failed sessions: container-session." in payload["error"]
+    assert client.get("/api/admin/skills/demo.skill").json()["skill"]["content"] == ("# Updated\n")
+
+
 def test_admin_web_delete_skill_blocks_inline_workflow_references(
     tmp_path: Path,
 ) -> None:

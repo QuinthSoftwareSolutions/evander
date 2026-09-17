@@ -389,6 +389,12 @@ Common tasks:
 Skill names should be stable and descriptive because they are selected during agent creation and
 skill installation.
 
+Replacing a skill automatically reinstalls the saved content into every active VM and container
+session that already declares that skill. The replacement remains saved if an agent cannot be
+reached; Admin Web reports the failed sessions, and using **Replace** again safely retries their
+reconciliation. An agent turn that is already running keeps its existing context until its next
+turn.
+
 ## VMs
 
 The VMs tab is visible when the selected execution backend is `libvirt_vm`.

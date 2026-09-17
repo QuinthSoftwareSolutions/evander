@@ -26,6 +26,7 @@ from evander.pr_feedback import (
     pr_feedback_item_payload,
 )
 from evander.pr_feedback.providers import (
+    ado_pr_attachment_scope_from_pull_request,
     extract_ado_pr_feedback_attachments,
     require_ado_pr_feedback_attachment_url,
 )
@@ -601,6 +602,7 @@ def test_ado_pr_feedback_attachment_extractor_rejects_traversal_route() -> None:
         ),
         "https://dev.azure.com/other/Project/_apis/wit/attachments/trace-id",
         "https://dev.azure.com/example/Other/_apis/wit/attachments/trace-id",
+        "https://dev.azure.com/example/_apis/wit/attachments/trace-id",
         (
             "https://dev.azure.com/example/Project/_apis/git/repositories/other-repo/"
             "pullRequests/9299/attachments/review.pdf"
@@ -632,7 +634,6 @@ def test_ado_pr_feedback_attachment_url_rejects_unscoped_or_noncanonical_paths(
             "pullRequests/9299/attachments/review%20notes.pdf?api-version=7.1"
         ),
         ("https://dev.azure.com/example/Project/_apis/wit/attachments/trace-id?fileName=trace.txt"),
-        ("https://dev.azure.com/example/_apis/wit/attachments/trace-id?fileName=trace.txt"),
     ],
 )
 def test_ado_pr_feedback_attachment_url_accepts_scoped_attachment_routes(url: str) -> None:
@@ -643,6 +644,118 @@ def test_ado_pr_feedback_attachment_url_accepts_scoped_attachment_routes(url: st
         repo="repo-1",
         pr_id="9299",
     )
+
+
+def test_ado_pr_feedback_attachment_url_accepts_authenticated_pr_identity_aliases() -> None:
+    project_id = "70a1569b-16ac-476e-a6b5-44830b54dcc7"
+    repository_id = "d30d0ddf-69c9-4a6b-98e4-1bc60506b8a1"
+    url = (
+        f"https://dev.azure.com/example/{project_id}/_apis/git/repositories/"
+        f"{repository_id}/pullRequests/9299/attachments/review.pdf"
+    )
+
+    with pytest.raises(ValueError):
+        require_ado_pr_feedback_attachment_url(
+            url=url,
+            organization_url="https://dev.azure.com/example",
+            project="Project",
+            repo="repo-1",
+            pr_id="9299",
+        )
+
+    scope = ado_pr_attachment_scope_from_pull_request(
+        payload={
+            "pullRequestId": 9299,
+            "repository": {
+                "id": repository_id,
+                "name": "repo-1",
+                "project": {"id": project_id, "name": "Project"},
+            },
+        },
+        organization_url="https://dev.azure.com/example",
+        project="Project",
+        repo="example/Project/repo-1",
+        pr_id="9299",
+    )
+    require_ado_pr_feedback_attachment_url(
+        url=url,
+        organization_url="https://dev.azure.com/example",
+        project="Project",
+        repo="example/Project/repo-1",
+        pr_id="9299",
+        project_identifiers=scope.project_identifiers,
+        repository_identifiers=scope.repository_identifiers,
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "pullRequestId": 9300,
+            "repository": {
+                "id": "d30d0ddf-69c9-4a6b-98e4-1bc60506b8a1",
+                "name": "repo-1",
+                "project": {
+                    "id": "70a1569b-16ac-476e-a6b5-44830b54dcc7",
+                    "name": "Project",
+                },
+            },
+        },
+        {
+            "pullRequestId": 9299,
+            "repository": {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "name": "other-repo",
+                "project": {
+                    "id": "70a1569b-16ac-476e-a6b5-44830b54dcc7",
+                    "name": "Project",
+                },
+            },
+        },
+        {
+            "pullRequestId": 9299,
+            "repository": {
+                "id": "d30d0ddf-69c9-4a6b-98e4-1bc60506b8a1",
+                "name": "repo-1",
+                "project": {
+                    "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "name": "Other",
+                },
+            },
+        },
+    ],
+)
+def test_ado_pr_attachment_scope_rejects_mismatched_lookup(payload: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        ado_pr_attachment_scope_from_pull_request(
+            payload=payload,
+            organization_url="https://dev.azure.com/example",
+            project="Project",
+            repo="repo-1",
+            pr_id="9299",
+        )
+
+
+def test_ado_pr_attachment_scope_rejects_scoped_repo_from_other_provider_context() -> None:
+    with pytest.raises(ValueError, match="organization|project"):
+        ado_pr_attachment_scope_from_pull_request(
+            payload={
+                "pullRequestId": 9299,
+                "repository": {
+                    "id": "d30d0ddf-69c9-4a6b-98e4-1bc60506b8a1",
+                    "name": "repo-1",
+                    "project": {
+                        "id": "70a1569b-16ac-476e-a6b5-44830b54dcc7",
+                        "name": "Project",
+                    },
+                },
+            },
+            organization_url="https://dev.azure.com/example",
+            project="Project",
+            repo="other/OtherProject/repo-1",
+            pr_id="9299",
+        )
 
 
 def test_ado_pr_feedback_download_rejects_traversal_before_http(
@@ -680,6 +793,64 @@ def test_ado_pr_feedback_download_rejects_traversal_before_http(
 
     with pytest.raises(ValueError, match="dot segments"):
         adapter.download_inline_media(media=media)
+
+
+def test_ado_pr_feedback_download_revalidates_authenticated_identity_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "70a1569b-16ac-476e-a6b5-44830b54dcc7"
+    repository_id = "d30d0ddf-69c9-4a6b-98e4-1bc60506b8a1"
+    attachment_url = (
+        f"https://dev.azure.com/example/{project_id}/_apis/git/repositories/"
+        f"{repository_id}/pullRequests/9299/attachments/review.pdf"
+    )
+    adapter = AzureDevOpsFeedbackAdapter(
+        "https://dev.azure.com/example",
+        "Project",
+        pat="test-pat",
+    )
+    media = InlineMediaRef(
+        source_kind="pr_feedback_attachment",
+        provider="azure_devops",
+        resource_id="azure_devops:thread_comment:45:93",
+        comment_id="93",
+        media_id="attachment",
+        filename="review.pdf",
+        mime_type="application/pdf",
+        url=attachment_url,
+        metadata={
+            "ado_pr_feedback_attachment_scope": {
+                "repo": "repo-1",
+                "pr_id": "9299",
+                "project_identifiers": ["Project", project_id],
+                "repository_identifiers": ["repo-1", repository_id],
+            }
+        },
+    )
+
+    def fake_download(**kwargs: object) -> tuple[bytes, str]:
+        validator = kwargs["url_validator"]
+        assert callable(validator)
+        validator(attachment_url)
+        with pytest.raises(ValueError, match="feedback stream"):
+            validator(
+                attachment_url.replace(
+                    repository_id,
+                    "11111111-2222-3333-4444-555555555555",
+                )
+            )
+        return b"%PDF", "application/pdf"
+
+    monkeypatch.setattr(
+        "evander.pr_feedback.providers._download_url_with_optional_headers",
+        fake_download,
+    )
+
+    downloaded = adapter.download_inline_media(media=media)
+
+    assert downloaded.content == b"%PDF"
+    assert downloaded.filename == "review.pdf"
+    assert downloaded.mime_type == "application/pdf"
 
 
 def test_ado_mapping_thread_edge_cases() -> None:

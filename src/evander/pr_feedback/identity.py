@@ -35,7 +35,7 @@ def pr_feedback_stream_aliases(
         return aliases
 
     requested_name = _azure_devops_repository_name(normalized["repo"])
-    requested_scope = _azure_devops_repository_scope(normalized["repo"])
+    requested_scope = azure_devops_repository_scope(normalized["repo"])
     if requested_scope is None and not _azure_devops_repository_is_short(normalized["repo"]):
         return aliases
     matching_entries = [
@@ -47,7 +47,7 @@ def pr_feedback_stream_aliases(
     scoped_entries = [
         (entry, scope)
         for entry in matching_entries
-        if (scope := _azure_devops_repository_scope(entry.repo)) is not None
+        if (scope := azure_devops_repository_scope(entry.repo)) is not None
     ]
     known_scopes = {scope for _, scope in scoped_entries}
     has_unscoped_binding = len(scoped_entries) != len(matching_entries)
@@ -107,7 +107,7 @@ def _azure_devops_repository_name(repo: str) -> str:
     return normalized
 
 
-def _azure_devops_repository_scope(repo: str) -> tuple[str, str, str] | None:
+def azure_devops_repository_scope(repo: str) -> tuple[str, str, str] | None:
     normalized = unquote(str(repo or "").strip()).rstrip("/")
     if not normalized:
         return None

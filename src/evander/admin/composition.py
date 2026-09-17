@@ -772,6 +772,13 @@ def _build_admin_runtime_components(
         agent_create_executor=agent_create_executor,
         project_dir_provider=lambda: project_dir,
     )
+    skill_admin.configure_agent_skill_propagation(
+        list_active_sessions=runtime.session_repository.list_active_sessions,
+        install_agent_skills=lambda *args, **kwargs: vm_agent_admin.install_admin_agent_skills(
+            *args, **kwargs
+        ),
+        is_container_session=vm_agent_admin.is_container_session,
+    )
 
     components = AdminRuntimeComponents(
         runtime_dir=runtime_dir_path,
