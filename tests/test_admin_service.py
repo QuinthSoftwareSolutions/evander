@@ -3383,6 +3383,133 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
     assert updated.metadata["codex_skills"] == ["demo.skill"]
 
 
+def test_replace_managed_skill_propagates_to_active_container_and_vm_sessions(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.skill_admin.create_skill({"name": "demo.skill", "content": "# Original\n"})
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=expires_at,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "codex_skills": ["demo.skill"],
+            },
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="vm-session",
+            vm_id="lab-vm",
+            allowed_tools=[],
+            expires_at=expires_at,
+            metadata={"codex_skills": ["demo.skill"], "vm_user": "reviewer"},
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="expired-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="expired-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "expired-target",
+                "codex_skills": ["demo.skill"],
+            },
+        )
+    )
+    container_writes: list[tuple[str, list[dict[str, object]]]] = []
+    vm_writes: list[tuple[str, list[dict[str, object]], str]] = []
+
+    class FakeContainerBackend:
+        def write_files(
+            self,
+            *,
+            session_id: str,
+            files: list[dict[str, object]],
+        ) -> WorkerFileWriteRecord:
+            container_writes.append((session_id, files))
+            return WorkerFileWriteRecord(
+                session_id=session_id,
+                copied_count=len(files),
+                copied_paths=[str(file["destination_path"]) for file in files],
+            )
+
+    def fake_vm_exec(
+        self: AdminRuntimeComponents, target: str, **kwargs: object
+    ) -> dict[str, object]:
+        assert target == "vm-session"
+        return {"success": True, "stdout": "/custom/codex\n"}
+
+    def fake_vm_copy_files(
+        self: AdminRuntimeComponents,
+        target: str,
+        *,
+        files: list[dict[str, object]],
+        vm_user: str = "agent",
+    ) -> dict[str, object]:
+        vm_writes.append((target, files, vm_user))
+        return {
+            "success": True,
+            "copied_paths": [str(file["destination_path"]) for file in files],
+        }
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        lambda **_kwargs: FakeContainerBackend(),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin, "vm_exec", MethodType(fake_vm_exec, service.vm_agent_admin)
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "vm_copy_files",
+        MethodType(fake_vm_copy_files, service.vm_agent_admin),
+    )
+
+    service.skill_admin.create_skill(
+        {"name": "demo.skill", "content": "# Updated\n", "replace": True}
+    )
+
+    assert container_writes == [
+        (
+            "container-session",
+            [
+                {
+                    "destination_path": (
+                        "/home/agent/.config/evander/codex/skills/demo.skill/SKILL.md"
+                    ),
+                    "mode": "0644",
+                    "content": "# Updated\n",
+                }
+            ],
+        )
+    ]
+    assert vm_writes == [
+        (
+            "vm-session",
+            [
+                {
+                    "destination_path": "/custom/codex/skills/demo.skill/SKILL.md",
+                    "mode": "0644",
+                    "content": "# Updated\n",
+                    "overwrite": True,
+                }
+            ],
+            "reviewer",
+        )
+    ]
+
+
 def test_run_admin_agent_action_prompt_agent_queues_running_vm_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

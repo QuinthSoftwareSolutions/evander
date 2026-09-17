@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 
 from evander.admin.services import SkillAdminService
-from evander.admin.services.skill_admin_service import SkillDeletionBlockedByWorkflowReferences
+from evander.admin.services.skill_admin_service import (
+    SkillDeletionBlockedByWorkflowReferences,
+    SkillPropagationError,
+)
 from evander.repositories.skills_library import SkillLibraryRepository
 
 
@@ -44,6 +47,67 @@ def test_skill_admin_service_rejects_unknown_managed_skill(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="Unknown Codex skill: missing"):
         service.validate_managed_codex_skills(["missing"])
+
+
+def test_skill_admin_service_reports_partial_replacement_propagation(
+    tmp_path: Path,
+) -> None:
+    class Session:
+        def __init__(self, session_id: str, *, container: bool, skills: list[str]) -> None:
+            self.session_id = session_id
+            self.container = container
+            self.metadata = {"codex_skills": skills}
+
+    repository = SkillLibraryRepository(tmp_path)
+    service = SkillAdminService(repository)
+    service.create_skill({"name": "skill-a", "content": "# Original\n"})
+    sessions = [
+        Session("container-session", container=True, skills=["skill-a"]),
+        Session("other-session", container=True, skills=["other-skill"]),
+        Session("vm-session", container=False, skills=["skill-a"]),
+    ]
+    installed: list[tuple[str, str]] = []
+
+    def install_agent_skills(
+        session_id: str,
+        *,
+        backend: str,
+        skill_names: list[str],
+        vm_user: str,
+    ) -> dict[str, object]:
+        assert skill_names == ["skill-a"]
+        assert vm_user == "agent"
+        if session_id == "vm-session":
+            raise RuntimeError("VM is offline")
+        installed.append((session_id, backend))
+        return {"success": True}
+
+    service.configure_agent_skill_propagation(
+        list_active_sessions=lambda: sessions,
+        install_agent_skills=install_agent_skills,
+        is_container_session=lambda session: session.container,
+    )
+
+    with pytest.raises(SkillPropagationError) as exc_info:
+        service.create_skill({"name": "skill-a", "content": "# Updated\n", "replace": True})
+
+    assert repository.get_skill("skill-a").content == "# Updated\n"
+    assert installed == [("container-session", "container_worker_vm")]
+    assert exc_info.value.details == {
+        "skill_name": "skill-a",
+        "replacement_saved": True,
+        "target_count": 2,
+        "updated_session_ids": ["container-session"],
+        "failures": [
+            {
+                "stage": "install_skill",
+                "session_id": "vm-session",
+                "backend": "libvirt_vm",
+                "error_class": "RuntimeError",
+                "error": "VM is offline",
+            }
+        ],
+    }
 
 
 def test_skill_admin_service_blocks_delete_when_workflow_references_skill(

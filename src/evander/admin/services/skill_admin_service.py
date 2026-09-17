@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from evander.repositories.skills_library import (
@@ -26,6 +26,44 @@ class SkillDeletionBlockedByWorkflowReferences(ValueError):
         }
 
 
+class SkillPropagationError(RuntimeError):
+    def __init__(
+        self,
+        skill_name: str,
+        *,
+        target_count: int | None,
+        updated_session_ids: list[str],
+        failures: list[dict[str, object]],
+    ) -> None:
+        if target_count is None:
+            message = (
+                f"Managed skill {skill_name} was replaced, but active agent sessions "
+                "could not be discovered. The replacement remains saved; retry Replace "
+                "to reconcile installed copies."
+            )
+        else:
+            message = (
+                f"Managed skill {skill_name} was replaced, but automatic propagation "
+                f"failed for {len(failures)} of {target_count} active agent sessions. "
+                "The replacement remains saved; retry Replace to reconcile the failed sessions."
+            )
+        super().__init__(message)
+        self.skill_name = skill_name
+        self.target_count = target_count
+        self.updated_session_ids = updated_session_ids
+        self.failures = failures
+
+    @property
+    def details(self) -> dict[str, object]:
+        return {
+            "skill_name": self.skill_name,
+            "replacement_saved": True,
+            "target_count": self.target_count,
+            "updated_session_ids": self.updated_session_ids,
+            "failures": self.failures,
+        }
+
+
 class SkillAdminService:
     """Admin service for managed Codex skill-library operations."""
 
@@ -37,6 +75,20 @@ class SkillAdminService:
     ) -> None:
         self._skill_library = skill_library
         self._workflow_config_admin = workflow_config_admin
+        self._list_active_sessions: Callable[[], list[Any]] | None = None
+        self._install_agent_skills: Callable[..., Mapping[str, Any]] | None = None
+        self._is_container_session: Callable[[Any], bool] | None = None
+
+    def configure_agent_skill_propagation(
+        self,
+        *,
+        list_active_sessions: Callable[[], list[Any]],
+        install_agent_skills: Callable[..., Mapping[str, Any]],
+        is_container_session: Callable[[Any], bool],
+    ) -> None:
+        self._list_active_sessions = list_active_sessions
+        self._install_agent_skills = install_agent_skills
+        self._is_container_session = is_container_session
 
     def list_skills(self) -> list[SkillLibraryMetadata]:
         return self._skill_library.list_skills()
@@ -47,11 +99,99 @@ class SkillAdminService:
             raise ValueError("Skill name is required.")
         if "content" not in payload:
             raise ValueError("Skill content is required.")
-        return self._skill_library.create_skill(
+        replace = bool(payload.get("replace", False))
+        existed = self._skill_library.has_skill(name)
+        metadata = self._skill_library.create_skill(
             name=name,
             content=payload.get("content"),
-            replace=bool(payload.get("replace", False)),
+            replace=replace,
         )
+        if replace and existed:
+            self._propagate_replaced_skill(metadata.name)
+        return metadata
+
+    def _propagate_replaced_skill(self, skill_name: str) -> None:
+        if (
+            self._list_active_sessions is None
+            or self._install_agent_skills is None
+            or self._is_container_session is None
+        ):
+            return
+
+        try:
+            sessions = sorted(
+                self._list_active_sessions(),
+                key=lambda session: str(getattr(session, "session_id", "")),
+            )
+        except Exception as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            raise SkillPropagationError(
+                skill_name,
+                target_count=None,
+                updated_session_ids=[],
+                failures=[
+                    {
+                        "stage": "discover_sessions",
+                        "error_class": type(exc).__name__,
+                        "error": detail,
+                    }
+                ],
+            ) from exc
+
+        targets = [
+            session for session in sessions if self._session_declares_skill(session, skill_name)
+        ]
+        updated_session_ids: list[str] = []
+        failures: list[dict[str, object]] = []
+        for session in targets:
+            session_id = str(getattr(session, "session_id", "") or "").strip()
+            backend = "container_worker_vm" if self._is_container_session(session) else "libvirt_vm"
+            metadata = getattr(session, "metadata", None)
+            vm_user = "agent"
+            if isinstance(metadata, Mapping):
+                vm_user = str(metadata.get("vm_user") or "").strip() or "agent"
+            try:
+                result = self._install_agent_skills(
+                    session_id,
+                    backend=backend,
+                    skill_names=[skill_name],
+                    vm_user=vm_user,
+                )
+                if result.get("success") is False:
+                    raise RuntimeError(
+                        str(result.get("message") or "Skill installation was unsuccessful.")
+                    )
+            except Exception as exc:
+                detail = str(exc).strip() or type(exc).__name__
+                failures.append(
+                    {
+                        "stage": "install_skill",
+                        "session_id": session_id,
+                        "backend": backend,
+                        "error_class": type(exc).__name__,
+                        "error": detail,
+                    }
+                )
+            else:
+                updated_session_ids.append(session_id)
+
+        if failures:
+            raise SkillPropagationError(
+                skill_name,
+                target_count=len(targets),
+                updated_session_ids=updated_session_ids,
+                failures=failures,
+            )
+
+    @staticmethod
+    def _session_declares_skill(session: Any, skill_name: str) -> bool:
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, Mapping):
+            return False
+        installed = metadata.get("codex_skills")
+        if not isinstance(installed, (list, tuple)):
+            return False
+        return any(str(item or "").strip() == skill_name for item in installed)
 
     def get_skill(self, name: str) -> SkillLibraryEntry:
         return self._skill_library.get_skill(name)
