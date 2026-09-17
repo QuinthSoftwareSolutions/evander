@@ -22,6 +22,7 @@ from evander.repositories.session_manifests import (
 from evander.repositories.skills_library import (
     SkillLibraryRepository,
     normalize_skill_names,
+    record_codex_skill_installations,
 )
 from evander.session_auth import ensure_session_mcp_auth_token
 from evander.managed_sections import normalize_managed_section_id
@@ -1014,6 +1015,13 @@ def _libvirt_create_vm(
         manifest.metadata = session_helpers.deep_merge_mapping(
             manifest.metadata,
             metadata,
+        )
+    if normalized_codex_skills:
+        manifest.metadata = record_codex_skill_installations(
+            manifest.metadata,
+            normalized_codex_skills,
+            backend="libvirt_vm",
+            vm_user=vm_user,
         )
     manifest.vm_provider = provider or "libvirt"
     manifest.vm_provider_id = resolved_vm_name
