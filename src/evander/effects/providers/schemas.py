@@ -1009,6 +1009,22 @@ class AdoPostWorkItemCommentEffectDefinition(EffectDefinition):
         )
 
 
+class AdoBuildWaitEffectDefinition(EffectDefinition):
+    type: Literal["effect:ado:build-wait"]
+    directory_path: ConfigValue
+    run_id: ConfigValue
+    project: ConfigValue | None = None
+    timeout_seconds: ConfigValue = 3600
+    poll_interval_seconds: ConfigValue = 10
+
+
+class AgentInstallSkillsEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:install-skills"]
+    target: ConfigValue
+    codex_skills: ConfigValue
+    vm_user: ConfigValue | None = None
+
+
 class AdoPipelineRunEffectDefinition(EffectDefinition):
     type: Literal["effect:ado:pipeline-run"]
     directory_path: ConfigValue
@@ -1017,18 +1033,19 @@ class AdoPipelineRunEffectDefinition(EffectDefinition):
     branch: ConfigValue | None = None
     variables: ConfigValue | None = None
     template_parameters: ConfigValue | None = None
+    reject_running_parameters: ConfigValue | None = None
     timeout_seconds: ConfigValue | None = None
     poll_interval_seconds: ConfigValue | None = None
     check: ConfigValue | None = True
 
-    @field_validator("variables", "template_parameters")
+    @field_validator("variables", "template_parameters", "reject_running_parameters")
     @classmethod
     def validate_mapping_field(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None:
             return None
         if not isinstance(value, (Mapping, str)):
             raise ValueError(
-                "effect:ado:pipeline-run variables and template_parameters must be JSON objects"
+                "effect:ado:pipeline-run parameter and variable fields must be JSON objects"
             )
         return value
 

@@ -161,6 +161,26 @@ class IssueGetQueryDefinition(QueryDefinition):
     issue_id: ConfigValue
 
 
+class AdoBuildsQueryDefinition(QueryDefinition):
+    type: Literal["query:ado:builds"]
+    directory_path: ConfigValue
+    pipeline_id: ConfigValue
+    repository_id: ConfigValue
+    filters: ConfigValue
+    limit: ConfigValue = 100
+    repository_type: ConfigValue = "TfsGit"
+    project: ConfigValue | None = None
+
+
+class TextRegexQueryDefinition(QueryDefinition):
+    type: Literal["query:text:regex"]
+    text: ConfigValue
+    pattern: ConfigValue
+    operation: ConfigValue = "fullmatch"
+    replacement: ConfigValue = ""
+    require_match: ConfigValue = False
+
+
 class AdoWorkItemsQueryDefinition(QueryDefinition):
     type: Literal["query:ado:work-items"]
     directory_path: ConfigValue | None = None

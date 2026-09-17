@@ -56,6 +56,126 @@ def _install_mock_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.MockT
     monkeypatch.setattr("evander.effects.providers.ado_pipeline_run.httpx.Client", _client_factory)
 
 
+@pytest.mark.parametrize("status", ["notStarted", "inProgress", "postponed", "cancelling"])
+def test_rejects_active_deployment_for_same_environment_without_queueing(
+    tmp_path, monkeypatch, status
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.params["definitions"] == "42"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 100,
+                        "status": status,
+                        "templateParameters": {"resourceBaseName": "demo7"},
+                    }
+                ]
+            },
+        )
+
+    _install_mock_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AdoPipelineRunEffectProvider()
+    provider.initialize(
+        _effect_definition(reject_running_parameters={"resourceBaseName": "demo7"}),
+        _runtime_context(tmp_path),
+    )
+    with pytest.raises(EffectProviderExecutionError, match="already queued or running") as failure:
+        provider.execute()
+    assert failure.value.outputs["queued"] is False
+    assert failure.value.outputs["busy"] is True
+    assert len(requests) == 1
+
+
+def test_busy_check_paginates_and_loads_missing_parameters(tmp_path, monkeypatch):
+    def handler(request):
+        assert request.method == "GET"
+        if request.url.path.endswith("/runs/100"):
+            return httpx.Response(200, json={"templateParameters": {"resourceBaseName": "demo7"}})
+        if request.url.params.get("continuationToken"):
+            return httpx.Response(200, json={"value": [{"id": 100, "status": "inProgress"}]})
+        return httpx.Response(
+            200,
+            headers={"x-ms-continuationtoken": "next"},
+            json={
+                "value": [
+                    {
+                        "id": 101,
+                        "status": "inProgress",
+                        "templateParameters": {"resourceBaseName": "different"},
+                    }
+                ]
+            },
+        )
+
+    _install_mock_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AdoPipelineRunEffectProvider()
+    provider.initialize(
+        _effect_definition(reject_running_parameters={"resourceBaseName": "demo7"}),
+        _runtime_context(tmp_path),
+    )
+    with pytest.raises(EffectProviderExecutionError, match="already queued or running"):
+        provider.execute()
+
+
+@pytest.mark.parametrize(
+    "payload", [{}, {"value": None}, {"value": [{"id": 100, "status": "inProgress"}]}]
+)
+def test_unreadable_busy_check_never_queues(tmp_path, monkeypatch, payload):
+    def handler(request):
+        assert request.method == "GET"
+        return httpx.Response(200, json=payload)
+
+    _install_mock_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AdoPipelineRunEffectProvider()
+    provider.initialize(
+        _effect_definition(reject_running_parameters={"resourceBaseName": "demo7"}),
+        _runtime_context(tmp_path),
+    )
+    with pytest.raises(RuntimeError):
+        provider.execute()
+
+
+@pytest.mark.parametrize("status", ["completed", "inProgress"])
+def test_other_or_completed_deployments_do_not_block_queueing(tmp_path, monkeypatch, status):
+    methods = []
+
+    def handler(request):
+        methods.append(request.method)
+        if request.method == "POST":
+            return httpx.Response(
+                200, json={"id": 701, "state": "completed", "result": "succeeded"}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 100,
+                        "status": status,
+                        "templateParameters": {
+                            "resourceBaseName": "demo7" if status == "completed" else "different"
+                        },
+                    }
+                ]
+            },
+        )
+
+    _install_mock_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AdoPipelineRunEffectProvider()
+    provider.initialize(
+        _effect_definition(reject_running_parameters={"resourceBaseName": "demo7"}),
+        _runtime_context(tmp_path),
+    )
+    assert provider.execute()["success"]
+    assert methods == ["GET", "POST"]
+
+
 def test_ado_pipeline_run_queues_and_polls_to_success(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -455,6 +455,10 @@ For private PR feedback polling, the service environment must provide `GITHUB_TO
 
 ### Azure DevOps worker and work-item workflows
 
+The opt-in [APP PR testing workflow](docs/app-pr-testing.md) handles
+`!TEST <environment>` comments by waiting for the current PR build, redeploying
+an existing named demo, and asking the same PR reviewer to prepare test data.
+
 `evander-ado-worker` now owns Azure DevOps PR feedback and completion polling only. For
 foreground operation, run:
 
