@@ -825,11 +825,17 @@ def ensure_human_correction_aggregation(
         or aggregation_task.parent_task_id is not None
     ):
         raise ValueError("correction aggregation task has invalid case lineage")
+    if _upgrade_system_human_review_coordination_task(
+        aggregation_task,
+        now=effective_now,
+    ):
+        result.setdefault("migrated_coordination_task_ids", []).append(aggregation_task.id)
+        changed = True
     if case.metadata.get(HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY) != aggregation_task.id:
         case.metadata[HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY] = aggregation_task.id
         changed = True
-    if case.metadata.get("human_correction_graph_version") != 1:
-        case.metadata["human_correction_graph_version"] = 1
+    if case.metadata.get("human_correction_graph_version") != 2:
+        case.metadata["human_correction_graph_version"] = 2
         changed = True
     for finding in case_findings:
         correction_task = state.tasks.get(finding.correction_task_id)
@@ -846,6 +852,40 @@ def ensure_human_correction_aggregation(
         case.updated_at = effective_now
     result["correction_aggregation_task_id"] = aggregation_task.id
     return aggregation_task
+
+
+def _upgrade_system_human_review_coordination_task(
+    task: AgentTask,
+    *,
+    now: datetime,
+) -> bool:
+    """Upgrade a deterministic pre-coordination correction parent in place."""
+
+    if task.task_kind == TeamTaskKind.COORDINATION:
+        return False
+    if task.created_by_actor != "system:human-review" or task.task_kind != TeamTaskKind.SUPPORT:
+        raise ValueError("correction aggregation task is not a system-created support task")
+    incompatible_reasons: list[str] = []
+    if task.integration_boundary:
+        incompatible_reasons.append("integration boundary")
+    if task.deliverable_contract is not None:
+        incompatible_reasons.append("deliverable contract")
+    if task.outcome_contract is not None or task.completion is not None:
+        incompatible_reasons.append("outcome contract")
+    if task.git_base_commit_sha is not None:
+        incompatible_reasons.append("Git base commit pin")
+    if task.deliverable_ids:
+        incompatible_reasons.append("deliverables")
+    if task.state == TeamTaskState.ACCEPTED:
+        incompatible_reasons.append("accepted state")
+    if incompatible_reasons:
+        raise ValueError(
+            f"legacy correction aggregation task {task.id} cannot be upgraded to "
+            "coordination because it has " + ", ".join(incompatible_reasons)
+        )
+    task.task_kind = TeamTaskKind.COORDINATION
+    task.updated_at = now
+    return True
 
 
 def close_post_release_feedback_case(

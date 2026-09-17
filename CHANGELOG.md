@@ -6,6 +6,11 @@
   deliverable, integration contract, or prepared Git context.
 - Require coordinated Git work to hand off into a fresh top-level, SHA-pinned integration task,
   while retaining direct-child aggregation only for historical source-bearing deliverables.
+- Reject integration tasks parented to coordination even when the caller omits the provenance
+  link, expose that link in Task Board creation, and require coordinated contributions to name
+  their coordination origin.
+- Upgrade eligible pre-0.44.1 system-created human-review aggregation parents to coordination
+  tasks during reconciliation so existing correction workflows gain the same protections.
 
 ## 2026-09-17 - Test APP feature branches from PR comments (0.45.0)
 

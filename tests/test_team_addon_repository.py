@@ -26089,6 +26089,49 @@ def test_apply_agent_action_creates_child_task_with_graph_fields(tmp_path: Path)
     assert state.child_task_ids("parent") == ["child"]
 
 
+def test_apply_agent_action_rejects_integration_child_of_coordination_without_origin(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="coordination",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Coordinate work",
+        description="Supervise contribution tasks.",
+        created_by_agent_id="lead",
+        task_kind=TeamTaskKind.COORDINATION,
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "nested-integration",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Nested integration",
+                    "description": "Must instead be a provenance-linked root task.",
+                    "parent_task_id": "coordination",
+                    "integration_boundary": True,
+                    "deliverable_contract": {
+                        "required_contribution_task_ids": [],
+                    },
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("cannot be a child of coordination task" in error for error in result["errors"])
+    assert any("set originating_task_id" in error for error in result["errors"])
+    assert "nested-integration" not in state.tasks
+
+
 def test_apply_agent_action_rejects_batch_child_under_subordinate_parent(
     tmp_path: Path,
 ) -> None:

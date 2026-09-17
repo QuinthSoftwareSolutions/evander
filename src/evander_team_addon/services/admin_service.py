@@ -113,6 +113,7 @@ from .domain.case_task import (
     _resolve_new_task_git_base_branch,
     _set_task_git_base_branch,
     _sync_case_task_link,
+    _task_coordination_handoff_error,
     _task_graph_edit_error,
     _task_integration_boundary_transition_error,
     _task_deliverable_contract_scope_error,
@@ -4361,17 +4362,15 @@ class TeamAdminService:
                         raise ValueError("coordination task cannot define outcome_contract")
                     if normalized_git_base_commit_sha is not None:
                         raise ValueError("coordination task cannot pin a Git base commit")
-                origin_task = state_model.tasks.get(task.originating_task_id or "")
-                if (
-                    proposed_integration_boundary
-                    and origin_task is not None
-                    and origin_task.task_kind == TeamTaskKind.COORDINATION
-                    and proposed_parent_task_id is not None
-                ):
-                    raise ValueError(
-                        "an integration boundary originating from coordination must be "
-                        "top-level; leave parent_task_id unset"
-                    )
+                coordination_handoff_error = _task_coordination_handoff_error(
+                    state_model,
+                    integration_boundary=proposed_integration_boundary,
+                    parent_task_id=proposed_parent_task_id,
+                    originating_task_id=task.originating_task_id,
+                    deliverable_contract=proposed_deliverable_contract,
+                )
+                if coordination_handoff_error is not None:
+                    raise ValueError(coordination_handoff_error)
                 deliverable_policy_edit = deliverable_policy_request and (
                     proposed_integration_boundary != task.integration_boundary
                     or proposed_deliverable_contract != task.deliverable_contract
@@ -4562,17 +4561,15 @@ class TeamAdminService:
             if graph_error is not None:
                 raise ValueError(graph_error)
             effective_integration_boundary = bool(integration_boundary)
-            origin_task = state_model.tasks.get(normalized_originating_task_id or "")
-            if (
-                effective_integration_boundary
-                and origin_task is not None
-                and origin_task.task_kind == TeamTaskKind.COORDINATION
-                and normalized_parent_task_id is not None
-            ):
-                raise ValueError(
-                    "an integration boundary originating from coordination must be top-level; "
-                    "leave parent_task_id unset"
-                )
+            coordination_handoff_error = _task_coordination_handoff_error(
+                state_model,
+                integration_boundary=effective_integration_boundary,
+                parent_task_id=normalized_parent_task_id,
+                originating_task_id=normalized_originating_task_id,
+                deliverable_contract=normalized_deliverable_contract,
+            )
+            if coordination_handoff_error is not None:
+                raise ValueError(coordination_handoff_error)
             contract_error = _task_deliverable_contract_scope_error(
                 state_model,
                 task_id=effective_task_id,

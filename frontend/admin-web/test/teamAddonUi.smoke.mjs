@@ -12152,6 +12152,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   await createTaskForm.locator('[name="task_author_email"]').fill("alice@example.test");
   await createTaskForm.locator('[name="git_base_branch"]').fill("feature/demo");
   await createTaskForm.locator('[name="parent_task_id"]').selectOption("task-planned");
+  await createTaskForm.locator('[name="originating_task_id"]').selectOption("task-open");
   await createTaskForm.locator('[name="require_git_provenance"]').check();
   await createTaskForm.getByRole("button", { name: "Create task" }).click();
   await waitForCondition(
@@ -12171,6 +12172,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   assert.equal(createRequest.payload.task_kind, "support");
   assert.deepEqual(createRequest.payload.authored_by, { name: "Alice Example", email: "alice@example.test" });
   assert.equal(createRequest.payload.parent_task_id, "task-planned");
+  assert.equal(createRequest.payload.originating_task_id, "task-open");
   assert.equal(createRequest.payload.integration_boundary, false);
   assert.deepEqual(createRequest.payload.deliverable_contract, {
     require_git_provenance: true,

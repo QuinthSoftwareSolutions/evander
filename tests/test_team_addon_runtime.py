@@ -13510,7 +13510,24 @@ def test_create_task_effect_persists_coordination_kind_and_rejects_reclassificat
     assert task.task_kind == TeamTaskKind.COORDINATION
     assert task.title == "Coordinate accepted work"
 
-    def _boundary(*, task_id: str, parent_task_id: str | None) -> dict[str, object]:
+    _add_task(
+        repo,
+        task_id="coordination-contribution",
+        owner_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
+    _set_task_graph(
+        repo,
+        task_id="coordination-contribution",
+        parent_task_id="workflow-coordination",
+    )
+
+    def _boundary(
+        *,
+        task_id: str,
+        parent_task_id: str | None,
+        originating_task_id: str | None,
+    ) -> dict[str, object]:
         provider = TeamCreateTaskEffectProvider()
         provider.initialize(
             TeamCreateTaskEffectDefinition(
@@ -13525,11 +13542,11 @@ def test_create_task_effect_persists_coordination_kind_and_rejects_reclassificat
                 description="Create the consolidated reviewed candidate.",
                 task_id=task_id,
                 parent_task_id=parent_task_id,
-                originating_task_id="workflow-coordination",
-                dependency_task_ids=["task"],
+                originating_task_id=originating_task_id,
+                dependency_task_ids=["coordination-contribution"],
                 integration_boundary=True,
                 deliverable_contract={
-                    "required_contribution_task_ids": ["task"],
+                    "required_contribution_task_ids": ["coordination-contribution"],
                 },
                 expected_revision=repo.read().revision,
             ),
@@ -13537,14 +13554,36 @@ def test_create_task_effect_persists_coordination_kind_and_rejects_reclassificat
         )
         return provider.execute()
 
+    converted_child = _boundary(
+        task_id="coordination-contribution",
+        parent_task_id="workflow-coordination",
+        originating_task_id=None,
+    )
     nested = _boundary(
         task_id="nested-integration",
         parent_task_id="workflow-coordination",
+        originating_task_id=None,
     )
-    root = _boundary(task_id="root-integration", parent_task_id=None)
+    missing_origin = _boundary(
+        task_id="root-integration-without-origin",
+        parent_task_id=None,
+        originating_task_id=None,
+    )
+    root = _boundary(
+        task_id="root-integration",
+        parent_task_id=None,
+        originating_task_id="workflow-coordination",
+    )
 
+    assert converted_child["success"] is False
+    assert "cannot be a child of coordination task" in str(converted_child["error"])
     assert nested["success"] is False
-    assert "must be top-level" in str(nested["error"])
+    assert "cannot be a child of coordination task" in str(nested["error"])
+    assert "set originating_task_id" in str(nested["error"])
+    assert missing_origin["success"] is False
+    assert "must set originating_task_id to workflow-coordination" in str(
+        missing_origin["error"]
+    )
     assert root["success"] is True
     root_task = repo.read().tasks["root-integration"]
     assert root_task.parent_task_id is None

@@ -579,6 +579,7 @@ const fieldTooltips = {
   "create-task-form:created_by_agent_id": "Agent credited as the task creator in task history and timeline attribution.",
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
+  "create-task-form:originating_task_id": "Optional provenance link. Final integration for coordinated work must use the coordination task as its origin while leaving Parent task empty.",
   "create-task-form:git_base_branch": "Optional Git starting branch. Blank inherits the parent task snapshot or the project default when the root task is created.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
   "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
@@ -13502,6 +13503,9 @@ function renderTaskBoardCreateForm(project, projectTasks) {
           <label>Parent task
             <select name="parent_task_id">${renderSelectOptions(taskOptions, { placeholder: "No parent" })}</select>
           </label>
+          <label>Originating task
+            <select name="originating_task_id">${renderSelectOptions(taskOptions, { placeholder: "No provenance origin" })}</select>
+          </label>
           <label>Dependency task IDs
             <textarea name="dependency_task_ids" rows="2" placeholder="One per line or comma-separated"></textarea>
           </label>
@@ -23954,6 +23958,10 @@ function payloadForForm(form, data = formData(form)) {
     const parentTaskId = text(data.parent_task_id);
     if (parentTaskId) {
       payload.parent_task_id = parentTaskId;
+    }
+    const originatingTaskId = text(data.originating_task_id);
+    if (originatingTaskId) {
+      payload.originating_task_id = originatingTaskId;
     }
     payload.dependency_task_ids = splitList(data.dependency_task_ids);
     const integrationBoundary = Boolean(
