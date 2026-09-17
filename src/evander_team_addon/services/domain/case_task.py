@@ -1116,6 +1116,7 @@ def _plan_task_creation(
         result["errors"].append(f"task creation has invalid Git base: {exc}")
         return None
     originating_task_id = _optional_text(creation.get("originating_task_id"))
+    origin: AgentTask | None = None
     if originating_task_id is not None:
         origin = state.tasks.get(originating_task_id)
         if origin is None:
@@ -1183,8 +1184,8 @@ def _plan_task_creation(
         )
         if task_kind == TeamTaskKind.OUTCOME and outcome_contract is None:
             raise ValueError("outcome task requires outcome_contract")
-        if task_kind == TeamTaskKind.SUPPORT and outcome_contract is not None:
-            raise ValueError("support task cannot define outcome_contract")
+        if task_kind != TeamTaskKind.OUTCOME and outcome_contract is not None:
+            raise ValueError(f"{task_kind.value} task cannot define outcome_contract")
         integration_boundary = creation.get("integration_boundary", False)
         if not isinstance(integration_boundary, bool):
             raise ValueError("integration_boundary must be a boolean")
@@ -1194,6 +1195,23 @@ def _plan_task_creation(
             if raw_deliverable_contract is not None
             else None
         )
+        if task_kind == TeamTaskKind.COORDINATION:
+            if integration_boundary:
+                raise ValueError("coordination task cannot be an integration boundary")
+            if deliverable_contract is not None:
+                raise ValueError("coordination task cannot define deliverable_contract")
+            if git_base_commit_sha is not None:
+                raise ValueError("coordination task cannot pin a Git base commit")
+        if (
+            integration_boundary
+            and origin is not None
+            and origin.task_kind == TeamTaskKind.COORDINATION
+            and parent_task_id is not None
+        ):
+            raise ValueError(
+                "an integration boundary originating from coordination must be top-level; "
+                "leave parent_task_id unset"
+            )
         if integration_boundary and deliverable_contract is None:
             raise ValueError("integration boundary task requires deliverable_contract")
         if (

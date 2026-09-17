@@ -48,6 +48,7 @@ from evander_team_addon.services.domain.task_assessment import (
     require_deliverable_acceptance,
     require_deliverable_submission,
     require_release_scope,
+    required_source_deliverable_ids_for_task,
     require_task_can_finish,
     task_payload_with_assessment,
 )
@@ -587,7 +588,14 @@ def test_direct_child_composition_and_recursive_lineage() -> None:
         parent_task_id="root",
         source_deliverable_ids=[leaf_deliverable.id],
     )
-    state.tasks["root"] = _outcome_task("root")
+    state.tasks["root"] = _outcome_task("root").model_copy(
+        update={
+            "integration_boundary": True,
+            "deliverable_contract": TaskDeliverableContract(
+                required_contribution_task_ids=["child"],
+            ),
+        }
+    )
 
     root = assess_task(state, "root")
     exact = contribution_coverage_for_sources(
@@ -626,7 +634,14 @@ def test_submission_boundary_returns_exact_missing_contribution_ids() -> None:
         "child",
         parent_task_id="root",
     )
-    state.tasks["root"] = _outcome_task("root")
+    state.tasks["root"] = _outcome_task("root").model_copy(
+        update={
+            "integration_boundary": True,
+            "deliverable_contract": TaskDeliverableContract(
+                required_contribution_task_ids=["child"],
+            ),
+        }
+    )
 
     with pytest.raises(TaskAssessmentBoundaryError) as raised:
         require_deliverable_submission(
@@ -639,6 +654,72 @@ def test_submission_boundary_returns_exact_missing_contribution_ids() -> None:
     assert raised.value.correction_context["contribution_coverage"][
         "missing_source_deliverable_ids"
     ] == [child_deliverable.id]
+
+
+def test_coordination_readiness_never_becomes_git_composition_input() -> None:
+    state = _state()
+    _child, child_deliverable = _accepted_outcome(
+        state,
+        "child",
+        parent_task_id="coordination",
+    )
+    state.tasks["coordination"] = _support_task("coordination").model_copy(
+        update={"task_kind": TeamTaskKind.COORDINATION}
+    )
+
+    assessment = assess_task(state, "coordination")
+
+    assert assessment.integration_ready is True
+    assert assessment.contribution_coverage["required_source_deliverable_ids"] == []
+    assert required_source_deliverable_ids_for_task(
+        state,
+        task_id="coordination",
+    ) == []
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_deliverable_submission(
+            state,
+            task_id="coordination",
+            source_deliverable_ids=[child_deliverable.id],
+        )
+    assert raised.value.code == "coordination_task_deliverable_forbidden"
+    assert "top-level integration boundary" in raised.value.message
+
+
+def test_new_support_parent_cannot_bootstrap_legacy_aggregation() -> None:
+    state = _state()
+    _accepted_outcome(state, "child", parent_task_id="parent")
+    state.tasks["parent"] = _support_task("parent")
+
+    assessment = assess_task(state, "parent")
+
+    assert assessment.integration_ready is False
+    assert required_source_deliverable_ids_for_task(state, task_id="parent") == []
+
+
+def test_historical_source_bearing_parent_retains_legacy_aggregation() -> None:
+    state = _state()
+    _child, child_deliverable = _accepted_outcome(
+        state,
+        "child",
+        parent_task_id="parent",
+    )
+    state.tasks["parent"] = _support_task("parent")
+    historical = Deliverable(
+        id="historical-aggregate",
+        task_id="parent",
+        producer_agent_id="owner-parent",
+        summary="Persisted aggregate from before explicit integration contracts.",
+        source_deliverable_ids=[child_deliverable.id],
+        state=TeamRecordState.REJECTED,
+    )
+    state.deliverables[historical.id] = historical
+    state.tasks["parent"].deliverable_ids = [historical.id]
+
+    assert assess_task(state, "parent").integration_ready is True
+    assert required_source_deliverable_ids_for_task(
+        state,
+        task_id="parent",
+    ) == [child_deliverable.id]
 
 
 @pytest.mark.parametrize(
@@ -750,7 +831,9 @@ def test_mixed_hierarchy_dependency_cycle_is_invalid_without_recursion_failure()
 
 def test_finish_boundary_allows_resolved_children_but_forbids_outcome_direct_finish() -> None:
     state = _state()
-    state.tasks["parent"] = _support_task("parent")
+    state.tasks["parent"] = _support_task("parent").model_copy(
+        update={"task_kind": TeamTaskKind.COORDINATION}
+    )
     state.tasks["child"] = _support_task(
         "child",
         state=TeamTaskState.FINISHED,
@@ -1477,6 +1560,42 @@ def test_ephemeral_acceptance_cannot_synthesize_incomplete_integration_deliverab
     assert task.deliverable_ids == []
     assert assignment.state == EphemeralAssignmentState.COMPLETED
     assert assignment.metadata == {}
+
+
+def test_ephemeral_acceptance_cannot_synthesize_coordination_deliverable() -> None:
+    state = _state()
+    task = AgentTask(
+        **{
+            **_support_task("coordination").model_dump(),
+            "task_kind": TeamTaskKind.COORDINATION,
+        }
+    )
+    state.tasks[task.id] = task
+    assignment = EphemeralAssignment(
+        id="assignment",
+        parent_agent_id=task.owner_agent_id,
+        project_id="project",
+        task_id=task.id,
+        session_id="session-ephemeral",
+        title="Worker",
+        prompt="Help coordinate work.",
+        state=EphemeralAssignmentState.COMPLETED,
+        summary="Coordination result.",
+    )
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        _apply_ephemeral_acceptance(
+            state,
+            assignment=assignment,
+            accepted=True,
+            deliverable_id="deliverable-ephemeral",
+            rejection_reason=None,
+        )
+
+    assert raised.value.code == "coordination_task_deliverable_forbidden"
+    assert state.deliverables == {}
+    assert task.deliverable_ids == []
+    assert assignment.state == EphemeralAssignmentState.COMPLETED
 
 
 def test_feature_consolidation_acknowledges_success_without_synthesizing_contract_deliverable() -> (

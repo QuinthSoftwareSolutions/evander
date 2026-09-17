@@ -1572,7 +1572,7 @@ def _register_slice6_tools(
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
         dependency_task_ids: list[str] | None = None,
-        task_kind: str = "support",
+        task_kind: Literal["support", "outcome", "coordination"] = "support",
         outcome_contract: dict[str, Any] | None = None,
         integration_boundary: bool = False,
         deliverable_contract: dict[str, Any] | None = None,
@@ -1620,6 +1620,8 @@ def _register_slice6_tools(
         name=TEAM_CREATE_TASK_TOOL,
         description=(
             "Create one Team task after permission and graph validation. Set "
+            "task_kind=coordination for supervision-only work that must finish "
+            "directly and must never own a deliverable or Git integration context. Set "
             "integration_boundary=true with deliverable_contract to declare an "
             "explicit final-integration boundary. The contract may require Git "
             "provenance and explicitly name direct-child or dependency task "
@@ -1655,7 +1657,7 @@ def _register_slice6_tools(
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
         dependency_task_ids: list[str] | None = None,
-        task_kind: str = "support",
+        task_kind: Literal["support", "outcome", "coordination"] = "support",
         outcome_contract: dict[str, Any] | None = None,
         integration_boundary: bool = False,
         deliverable_contract: dict[str, Any] | None = None,
@@ -1703,6 +1705,8 @@ def _register_slice6_tools(
         name=TEAM_CREATE_TASK_FOR_ROLE_TOOL,
         description=(
             "Queue one pending Team task for an exact team or project role. "
+            "task_kind=coordination creates supervision-only work with no deliverable "
+            "or Git integration context. "
             "The owner is null until dependencies are satisfied and an eligible "
             "agent has execution capacity. The platform atomically assigns an owner "
             "when reserving the dispatch and audits candidate scores. Existing "

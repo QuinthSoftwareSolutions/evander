@@ -12,6 +12,7 @@ from ...models import (
     TeamInboxItemType,
     TeamInboxPriority,
     TeamState,
+    TeamTaskKind,
 )
 from .task_assessment import TaskAssessmentService
 from .work_due import _mark_agent_work_due
@@ -161,7 +162,7 @@ def queue_parent_task_transition(
         "summary": summary,
         "next_action": _parent_transition_next_action(
             transition,
-            parent_task_id=parent.id,
+            parent_task=parent,
         ),
         **normalized_references,
     }
@@ -220,7 +221,14 @@ def queue_parent_resolution_transitions(
     )
     if resolution_notice is not None:
         notices.append(resolution_notice)
-    if TaskAssessmentService(state).assess(parent.id).integration_ready:
+    system_managed_coordination = (
+        parent.task_kind == TeamTaskKind.COORDINATION
+        and parent.created_by_actor == "system:human-review"
+    )
+    if (
+        TaskAssessmentService(state).assess(parent.id).integration_ready
+        and not system_managed_coordination
+    ):
         ready_notice = queue_parent_task_transition(
             state,
             child_task_id=child.id,
@@ -352,7 +360,7 @@ def queue_root_task_resolution(
 def _parent_transition_next_action(
     transition: str,
     *,
-    parent_task_id: str,
+    parent_task: AgentTask,
 ) -> str:
     if transition == "blocker":
         return "Review the child blocker, resolve, delegate, or escalate it."
@@ -362,7 +370,15 @@ def _parent_transition_next_action(
         return "Supervise the child rework without treating it as resolved."
     if transition == "resolution":
         return "Review the resolved child contribution and remaining direct children."
-    return f"Integrate the accepted direct-child sources into parent task {parent_task_id}."
+    if parent_task.task_kind == TeamTaskKind.COORDINATION:
+        return (
+            "If accepted child deliverables require consolidation, create a fresh top-level "
+            "integration boundary with parent_task_id unset, originating_task_id set to "
+            f"coordination task {parent_task.id}, and the exact accepted contribution tasks "
+            "listed as both dependencies and required contributions; otherwise finish the "
+            "coordination task directly."
+        )
+    return f"Integrate the accepted direct-child sources into parent task {parent_task.id}."
 
 
 def _append_wake_event_for_notice(

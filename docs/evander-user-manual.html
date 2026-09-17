@@ -10669,9 +10669,10 @@ work context cannot silently migrate a task to another project.</p>
 ordering, provenance, and grouping</h3>
 <p>Use the relationship that describes the real lifecycle:</p>
 <ul>
-<li><code>parent_task_id</code> means the child contributes to the
-parent&#39;s combined outcome. It recursively gates parent submission,
-acceptance, resolution, and release.</li>
+<li><code>parent_task_id</code> means the child is constituent work
+supervised by the parent. It recursively gates parent resolution. An
+explicit integration boundary owns combined submission, acceptance, and
+release; a <code>task_kind=coordination</code> parent never does.</li>
 <li><code>dependency_task_ids</code> means this task must wait for
 another task to resolve. It does not transfer ownership. For Git-backed
 work, preparation also verifies and composes the accepted current Git
@@ -10693,12 +10694,22 @@ feedback story. A case is not a hidden parent task.</li>
 <p>For example, an investigation child whose result must be integrated
 belongs under the incident outcome. A newly discovered, separately
 releasable improvement is an independent root with optional provenance.
-Human review corrections use one coordination-only parent inside the
-correction case and one child per immutable finding. Those children may
-retain provenance to the historical source task, but they never rewrite
-or become children of that accepted historical task.</p>
+Human review corrections use one <code>task_kind=coordination</code>
+parent inside the correction case and one child per immutable finding.
+Those children may retain provenance to the historical source task, but
+they never rewrite or become children of that accepted historical
+task.</p>
 <h3 id="explicit-integration-and-final-acceptance-boundaries">Explicit
 integration and final-acceptance boundaries</h3>
+<p>Use <code>task_kind=coordination</code> for long-lived orchestration.
+It may own and supervise children, but it cannot own a deliverable,
+outcome contract, deliverable contract, integration boundary, or Git
+work context. When its source-producing children are accepted, create a
+fresh top-level integration task with no <code>parent_task_id</code>,
+the coordination task in <code>originating_task_id</code>, and the exact
+accepted contribution tasks in both <code>dependency_task_ids</code> and
+the deliverable contract. Finish the coordination task directly after
+that handoff.</p>
 <p>When a leaf task must produce an accepted Git deliverable but does
 not integrate other tasks, select <code>require_git_provenance</code>
 without making it an integration boundary. This contracted leaf cannot
@@ -14178,7 +14189,11 @@ its publication identity.</p>
 exact base commit. Team returns <code>mixed_git_base_branches</code>
 before creating a package when they do not. To merge workstreams
 deliberately, create an explicit integration task on the chosen base and
-release only its accepted integrated deliverable. A task based on
+release only its accepted integrated deliverable. For coordinated work,
+that integration task is a fresh top-level task: leave
+<code>parent_task_id</code> unset, link the coordination task through
+<code>originating_task_id</code>, and declare the exact accepted source
+tasks as dependencies and required contributions. A task based on
 <code>feature/foo</code> does not publish there by implication. Agent
 release requests cannot override <code>canonical_branch</code>; Team
 derives it from the project&#39;s canonical release branch policy. An

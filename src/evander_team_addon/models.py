@@ -136,6 +136,7 @@ class ReviewBlockKind(str, Enum):
 class TeamTaskKind(str, Enum):
     OUTCOME = "outcome"
     SUPPORT = "support"
+    COORDINATION = "coordination"
 
 
 class TaskCompletionKind(str, Enum):
@@ -1908,10 +1909,21 @@ class AgentTask(TeamModel):
             raise ValueError("git_base_commit_sha requires git_base_branch")
         if self.task_kind == TeamTaskKind.OUTCOME and self.outcome_contract is None:
             raise ValueError("outcome task requires outcome_contract")
-        if self.task_kind == TeamTaskKind.SUPPORT and self.outcome_contract is not None:
-            raise ValueError("support task cannot define outcome_contract")
-        if self.task_kind == TeamTaskKind.SUPPORT and self.completion is not None:
-            raise ValueError("support task cannot define structured completion")
+        if self.task_kind != TeamTaskKind.OUTCOME and self.outcome_contract is not None:
+            raise ValueError(f"{self.task_kind.value} task cannot define outcome_contract")
+        if self.task_kind != TeamTaskKind.OUTCOME and self.completion is not None:
+            raise ValueError(f"{self.task_kind.value} task cannot define structured completion")
+        if self.task_kind == TeamTaskKind.COORDINATION:
+            if self.integration_boundary:
+                raise ValueError("coordination task cannot be an integration boundary")
+            if self.deliverable_contract is not None:
+                raise ValueError("coordination task cannot define deliverable_contract")
+            if self.git_base_commit_sha is not None:
+                raise ValueError("coordination task cannot pin a Git base commit")
+            if self.deliverable_ids:
+                raise ValueError("coordination task cannot carry deliverables")
+            if self.state == TeamTaskState.ACCEPTED:
+                raise ValueError("coordination task must finish directly, not be accepted")
         if self.integration_boundary and self.deliverable_contract is None:
             raise ValueError("integration boundary task requires deliverable_contract")
         if (

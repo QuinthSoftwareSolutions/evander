@@ -111,6 +111,7 @@ from evander_team_addon.models import (
     TeamRecordState,
     TeamRole,
     TeamState,
+    TeamTaskKind,
     TeamTaskState,
     TaskCancellation,
     TaskDeliverableContract,
@@ -5851,7 +5852,11 @@ def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec
     assert "Leaf review path:" in prompt
     assert "Composite review path:" in prompt
     assert "deliverable_contract.required_contribution_task_ids" in prompt
-    assert "for a legacy non-integration parent, use its direct child_task_ids" in prompt
+    assert (
+        "for a legacy non-integration parent that already has a persisted "
+        "source-bearing aggregate deliverable, use its direct child_task_ids"
+    ) in prompt
+    assert "A task_kind=coordination parent is never a composite review target" in prompt
     assert ("assessment.contribution_coverage.required_source_deliverable_ids") in prompt
     assert "repeat this procedure recursively" in prompt
     assert "coverage alone is not proof of correct integration" in prompt
@@ -9682,6 +9687,59 @@ def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
     assert next(iter(result_state.git_work_contexts.values())).base_commit == pinned_commit
 
 
+def test_coordination_task_is_excluded_from_git_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _mark_coordination(state: TeamState) -> TeamState:
+        state.tasks["task"].task_kind = TeamTaskKind.COORDINATION
+        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-coordination"
+        return state
+
+    state = repo.update(_mark_coordination)
+
+    def _unexpected_prepare(*_args: object, **_kwargs: object) -> tuple[str, str]:
+        raise AssertionError("coordination tasks must not prepare Git worktrees")
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _unexpected_prepare,
+    )
+
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=None),
+        ),
+        repo,
+        state=state,
+        agent_id="backend",
+        session_id="session-backend",
+        project_id="project",
+        project_repo={
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        dispatch_id="dispatch-coordination",
+        # Deliberately omit task_kind to prove the authoritative state guard is used.
+        tasks=[
+            {
+                "id": "task",
+                "project_id": "project",
+                "owner_agent_id": "backend",
+            }
+        ],
+        base_branch="main",
+    )
+
+    assert rows == []
+    assert result_state.git_work_contexts == {}
+
+
 def test_pinned_dependency_composition_receipt_retries_from_prepared_checkout_base(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -13396,6 +13454,101 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
             "required_ancestor_shas": ["a" * 40],
         }
     ]
+
+
+def test_create_task_effect_persists_coordination_kind_and_rejects_reclassification(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _provider(
+        *,
+        task_kind: str,
+        title: str,
+        git_base_commit_sha: str | None = None,
+    ) -> TeamCreateTaskEffectProvider:
+        provider = TeamCreateTaskEffectProvider()
+        provider.initialize(
+            TeamCreateTaskEffectDefinition(
+                id="create-coordination",
+                display_name="Create coordination",
+                type="effect:team:create-task",
+                team_id="team",
+                project_id="project",
+                owner_agent_id="lead",
+                priority=1,
+                title=title,
+                description="Supervise implementation children.",
+                task_id="workflow-coordination",
+                task_kind=task_kind,
+                git_base_branch="main" if git_base_commit_sha is not None else None,
+                git_base_commit_sha=git_base_commit_sha,
+                created_by="workflow:plan-handoff",
+                expected_revision=repo.read().revision,
+            ),
+            EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        )
+        return provider
+
+    created = _provider(task_kind="coordination", title="Coordinate work").execute()
+    replayed = _provider(task_kind="coordination", title="Coordinate accepted work").execute()
+    rejected = _provider(task_kind="support", title="Reclassify work").execute()
+    pinned = _provider(
+        task_kind="coordination",
+        title="Misleading pinned coordination",
+        git_base_commit_sha="a" * 40,
+    ).execute()
+
+    assert created["success"] is True
+    assert replayed["success"] is True
+    assert replayed["created"] is False
+    assert rejected["success"] is False
+    assert "cannot change to or from coordination" in rejected["error"]
+    assert pinned["success"] is False
+    assert "cannot pin a Git base commit" in pinned["error"]
+    task = repo.read().tasks["workflow-coordination"]
+    assert task.task_kind == TeamTaskKind.COORDINATION
+    assert task.title == "Coordinate accepted work"
+
+    def _boundary(*, task_id: str, parent_task_id: str | None) -> dict[str, object]:
+        provider = TeamCreateTaskEffectProvider()
+        provider.initialize(
+            TeamCreateTaskEffectDefinition(
+                id=f"create-{task_id}",
+                display_name="Create final integration",
+                type="effect:team:create-task",
+                team_id="team",
+                project_id="project",
+                owner_agent_id="lead",
+                priority=1,
+                title="Integrate accepted work",
+                description="Create the consolidated reviewed candidate.",
+                task_id=task_id,
+                parent_task_id=parent_task_id,
+                originating_task_id="workflow-coordination",
+                dependency_task_ids=["task"],
+                integration_boundary=True,
+                deliverable_contract={
+                    "required_contribution_task_ids": ["task"],
+                },
+                expected_revision=repo.read().revision,
+            ),
+            EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        )
+        return provider.execute()
+
+    nested = _boundary(
+        task_id="nested-integration",
+        parent_task_id="workflow-coordination",
+    )
+    root = _boundary(task_id="root-integration", parent_task_id=None)
+
+    assert nested["success"] is False
+    assert "must be top-level" in str(nested["error"])
+    assert root["success"] is True
+    root_task = repo.read().tasks["root-integration"]
+    assert root_task.parent_task_id is None
+    assert root_task.originating_task_id == "workflow-coordination"
 
 
 def test_create_task_effect_reports_generated_id_from_atomic_mutation(

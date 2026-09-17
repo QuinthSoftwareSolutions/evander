@@ -1740,8 +1740,9 @@ policy review is needed, or `team_report_blocker` when evidence or a dependency
 prevents a decision. Once formal review is attached, `team_decide_deliverable`
 cannot bypass it; assigned reviewers must use `team_decide_review`. A top-level
 agent with no direct superior must use formal review for a deliverable, or use
-`team_update_task state=finished` for support/coordination work that produces no
-reviewable result.
+`team_update_task state=finished` for support work that produces no reviewable
+result or for an explicit `task_kind: coordination` task. Coordination tasks
+supervise children, never submit deliverables, and receive no Git work context.
 
 For an operator-owned workflow that must await a customer or another external
 system, use `effect:team:set-task-work-state` with `state: waiting_for_input`.
@@ -1966,13 +1967,16 @@ contracts may name required contribution tasks. The contract has two controls:
   child or a declared dependency of the integration task; incidental children,
   descendants, and lineage-only `originating_task_id` links do not count.
 
-For new Git-backed work, keep the long-lived orchestration task coordination-only.
-After every required contribution has a current accepted deliverable, create a fresh
-integration boundary with those tasks as dependencies and required contributions. The
-fresh task snapshots the current base commit, composes the accepted commits above that
-baseline, and carries the consolidated deliverable through review. Do not repurpose the
-older coordination task as the aggregate submission boundary; Team rejects a Git-backed
-`integration_boundary: false` to `true` task update.
+For new Git-backed work, create the long-lived orchestration task with
+`task_kind: coordination`. After every required contribution has a current
+accepted deliverable, create a fresh top-level integration boundary with
+`parent_task_id` unset, `originating_task_id` set to the coordination task, and
+the exact accepted source-producing tasks listed as both dependencies and
+required contributions. The fresh task snapshots the current base commit,
+composes the accepted commits above that baseline, and carries the consolidated
+deliverable through review. Do not repurpose or submit from the coordination
+task; Team rejects deliverables, integration contracts, and Git preparation for
+that task kind.
 
 An integration boundary cannot resolve through
 `team_update_task state=finished`. It resolves only when a current deliverable
@@ -2001,9 +2005,11 @@ reason code and explanation, source, accountable owner/delegate, route, and
 escalation context. The projection deduplicates shared blockers and scoped
 agent reads omit rows whose upstream task or blocker is not visible.
 
-Support tasks resolve as `finished`. Outcome tasks resolve only as `accepted`
+Support and coordination tasks resolve as `finished`. A coordination task may
+own children but cannot own a deliverable, outcome contract, deliverable
+contract, or integration boundary. Outcome tasks resolve only as `accepted`
 through a current contract-compatible delivered result or accepted
-`evidenced_noop`. Either kind may resolve as `cancelled` through an authorized,
+`evidenced_noop`. Any task kind may resolve as `cancelled` through an authorized,
 reason-coded disposition that records actor, time, and optional same-project
 successor. `team_cancel_task` and the Admin cancellation endpoint accept
 `rebind_dependents=true` only with that successor; this atomically replaces the
@@ -2177,7 +2183,7 @@ Unknown or archived kinds are rejected. Deliverables carry structured outcome
 kinds, durable reference IDs, evidence references, and the applicable definition
 snapshot. A report-only deliverable cannot satisfy an outcome task, and a review
 profile can require specific active catalog kinds before review is requested or
-accepted. Ordinary coordination tasks remain `task_kind: support` and finish
+accepted. Ordinary coordination tasks use `task_kind: coordination` and finish
 without inventing a deliverable. When several profiles apply to the same
 reviewer role, their required outcome kinds also select the implicit profile;
 callers still pass `review_profile_id` when more than one matching profile

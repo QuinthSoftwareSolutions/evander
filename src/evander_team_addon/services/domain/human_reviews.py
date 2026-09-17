@@ -815,6 +815,7 @@ def ensure_human_correction_aggregation(
             release_base_package_id=None,
             git_base_branch=(_release_candidate_branch(release) or release.git_base_branch),
             now=effective_now,
+            task_kind=TeamTaskKind.COORDINATION,
         )
         result.setdefault("created_task_ids", []).append(aggregation_task.id)
         changed = True
@@ -1401,6 +1402,7 @@ def _ensure_system_task(
     now: datetime,
     authored_by: object = None,
     work_item_attributions: object = None,
+    task_kind: TeamTaskKind = TeamTaskKind.SUPPORT,
 ) -> AgentTask:
     existing = state.tasks.get(task_id)
     if existing is not None:
@@ -1412,7 +1414,7 @@ def _ensure_system_task(
         case_id=case.id,
         priority=0,
         state=TeamTaskState.PENDING,
-        task_kind=TeamTaskKind.SUPPORT,
+        task_kind=task_kind,
         title=title,
         description=description,
         created_by_actor="system:human-review",

@@ -5065,6 +5065,57 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
     asyncio.run(_exercise())
 
 
+def test_team_addon_admin_api_creates_coordination_task_without_deliverable_policy(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+
+    async def _exercise() -> None:
+        app = create_app(build_admin_runtime(_write_config(tmp_path, enable_team_addon=True)))
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            unlock = await client.post("/api/admin/privileged/unlock")
+            assert unlock.status_code == 200
+            response = await client.post(
+                "/api/addons/team-addon/tasks",
+                json={
+                    "id": "coordination-task",
+                    "owner_agent_id": "lead",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Coordinate implementation",
+                    "description": "Supervise children and create a fresh final boundary.",
+                    "created_by_agent_id": "lead",
+                    "task_kind": "coordination",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+
+            assert response.status_code == 201, response.text
+            task = response.json()["tasks"]["coordination-task"]
+            assert task["task_kind"] == "coordination"
+            assert task["integration_boundary"] is False
+            assert task["deliverable_contract"] is None
+
+            rejected = await client.post(
+                "/api/addons/team-addon/deliverables",
+                json={
+                    "id": "coordination-deliverable",
+                    "task_id": "coordination-task",
+                    "producer_agent_id": "lead",
+                    "summary": "A coordination task must not manufacture a deliverable.",
+                    "expected_revision": repo.read().revision,
+                },
+            )
+            assert rejected.status_code == 400
+            assert "cannot submit a deliverable" in rejected.text
+
+    asyncio.run(_exercise())
+
+
 def test_team_addon_admin_api_designates_explicit_integration_boundary(
     tmp_path: Path,
 ) -> None:

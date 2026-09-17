@@ -170,6 +170,7 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
     task_id: ConfigValue | None = None
     case_id: ConfigValue | None = None
     state: ConfigValue | None = None
+    task_kind: ConfigValue | None = None
     parent_task_id: ConfigValue | None = None
     originating_task_id: ConfigValue | None = None
     authored_by: ConfigValue | None = None

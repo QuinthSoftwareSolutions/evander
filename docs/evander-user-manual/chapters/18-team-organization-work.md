@@ -143,9 +143,10 @@ Task graphs cannot contain parent or dependency cycles. Dependencies and parents
 
 Use the relationship that describes the real lifecycle:
 
-- <code>parent_task_id</code> means the child contributes to the parent's
-  combined outcome. It recursively gates parent submission, acceptance,
-  resolution, and release.
+- <code>parent_task_id</code> means the child is constituent work supervised by
+  the parent. It recursively gates parent resolution. An explicit integration
+  boundary owns combined submission, acceptance, and release; a
+  <code>task_kind=coordination</code> parent never does.
 - <code>dependency_task_ids</code> means this task must wait for another task to
   resolve. It does not transfer ownership. For Git-backed work, preparation
   also verifies and composes the accepted current Git deliverables of direct
@@ -164,12 +165,21 @@ Use the relationship that describes the real lifecycle:
 For example, an investigation child whose result must be integrated belongs
 under the incident outcome. A newly discovered, separately releasable
 improvement is an independent root with optional provenance. Human review
-corrections use one coordination-only parent inside the correction case and one
+corrections use one <code>task_kind=coordination</code> parent inside the correction case and one
 child per immutable finding. Those children may retain provenance to the
 historical source task, but they never rewrite or become children of that
 accepted historical task.
 
 ### Explicit integration and final-acceptance boundaries
+
+Use <code>task_kind=coordination</code> for long-lived orchestration. It may own
+and supervise children, but it cannot own a deliverable, outcome contract,
+deliverable contract, integration boundary, or Git work context. When its
+source-producing children are accepted, create a fresh top-level integration
+task with no <code>parent_task_id</code>, the coordination task in
+<code>originating_task_id</code>, and the exact accepted contribution tasks in
+both <code>dependency_task_ids</code> and the deliverable contract. Finish the
+coordination task directly after that handoff.
 
 When a leaf task must produce an accepted Git deliverable but does not
 integrate other tasks, select <code>require_git_provenance</code> without making

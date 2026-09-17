@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-17 - Separate coordination from Git integration (0.44.1)
+
+- Add an explicit coordination task kind that supervises child work but cannot own a
+  deliverable, integration contract, or prepared Git context.
+- Require coordinated Git work to hand off into a fresh top-level, SHA-pinned integration task,
+  while retaining direct-child aggregation only for historical source-bearing deliverables.
+
 ## 2026-09-17 - Switch Codex usage without replacing sessions (0.44.0)
 
 - Let operators move a container Codex agent between metered API usage and enabled ChatGPT
