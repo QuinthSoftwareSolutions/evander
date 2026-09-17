@@ -53,10 +53,11 @@ network admits its private port only from the worker subnet, and the worker's `D
 allows containers to reach that endpoint without granting them direct public egress.
 
 The profile identifier, never its credentials, flows from `effect:agent:create` into the session,
-Codex turn, worker job metadata, agent summaries, and durable prompt queue. Assignment is
-write-once because changing accounts underneath a resumable session would mix identity and usage
-history. The first successful login pins the upstream account ID; a later login as another account
-is logged out and rejected.
+Codex turn, worker job metadata, agent summaries, and durable prompt queue. An operator can change
+the session's usage source or selected profile; running turns retain their launch-time route and
+later turns use the updated selection. Prompts deferred by the old subscription route become
+eligible immediately under the new route. The first successful login still pins each profile's
+upstream account ID; a later login as another account is logged out and rejected.
 
 Before launching a public-OpenAI subscription turn, the worker checks enabled state, login,
 broker availability, and rate limits. A capacity failure returns a structured deferral rather than

@@ -946,18 +946,17 @@ effective only when `model_provider_mode` resolves to `openai_public`.
 routes without rewriting the stored preference. Missing credentials fail
 closed only when a public Codex turn actually selects subscription mode.
 
-`effect:agent:create.subscription_profile_id` is a fixed, non-bindable profile
+`effect:agent:create.subscription_profile_id` is a non-bindable profile
 slug. It is valid only with `execution_backend: container_worker_vm`,
 `agent_provider: codex`, `model_provider_mode: openai_public`, and
 `codex_auth_mode: chatgpt_subscription`. The workflow editor obtains every
 enabled option from the node's effective worker; directory configuration does
 not default, grant, or restrict the list. The session persists the selection.
-Omitting the field on an existing-agent upsert preserves its binding, and a
-bound session cannot change profiles. A metered session can receive its first
-profile only in the same explicit update that switches it to subscription
-mode. Legacy profile-less subscription sessions resolve to reserved profile
-`default`; newly created subscription agents in Admin Web require a named
-selection.
+Omitting the field on an existing-agent upsert preserves its current profile.
+An upsert can select another enabled profile, and setting `codex_auth_mode` to
+`metered_api` clears the stored profile. Legacy profile-less subscription
+sessions resolve to reserved profile `default`; newly created subscription
+agents in Admin Web require a named selection.
 
 `effect:agent:create.worker_id` selects a named `container_workers` entry from the
 effective directory provider configuration. It supports a literal ID or runtime

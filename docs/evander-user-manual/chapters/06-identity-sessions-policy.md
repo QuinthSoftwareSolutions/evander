@@ -198,7 +198,8 @@ subscription profiles on a container worker can be created, enabled or disabled,
 cancelled during login, or signed out only by an authenticated operator with privileged operations
 unlocked and effective `admin.owner` permission at `root`. Ownership of only a child directory is
 insufficient because directories select infrastructure, not profile access. Each session's profile
-binding is immutable, and the first successful login pins that profile's OpenAI account ID.
+selection may be changed between turns. The first successful login still pins each profile's OpenAI
+account ID, so changing a session's selection never changes the account represented by a profile.
 
 ### Privileged-operation lock implementation
 

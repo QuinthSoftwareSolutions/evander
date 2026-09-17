@@ -608,10 +608,12 @@ Creation, rename, enable/disable, login, cancellation, and logout are privileged
 ownership of a child directory is insufficient. Mutations are audited without recording tokens.
 
 Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent. New UI
-subscription agents must select one enabled profile. The binding is written to the session and
-cannot change: create a replacement session for another profile. An existing unbound metered
-session may receive its first profile only when explicitly switched to subscription mode. An
-existing-agent upsert that omits the profile preserves its current binding.
+subscription agents must select one enabled profile. An existing session can switch between
+metered API usage and subscription usage, or select another enabled subscription profile, without
+being replaced. The new selection applies to the next turn; a turn already running keeps the route
+with which it started. An existing-agent upsert that omits the profile preserves its current
+subscription selection. Changing the route also releases that session's prompts from any delay
+caused by the previous subscription profile so they can be reconsidered immediately.
 
 `chatgpt_subscription` is effective only for a container Codex turn on the public OpenAI route.
 If the effective `model_provider_mode` is `local_openai` or `azure_openai`, Evander runs the turn

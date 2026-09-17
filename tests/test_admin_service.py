@@ -14757,7 +14757,7 @@ def test_update_session_policy_and_agent_validate_approval_notification_targets(
         )
 
 
-def test_update_container_agent_assigns_first_profile_and_preserves_write_once_binding(
+def test_update_container_agent_can_switch_auth_modes_and_subscription_profiles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14828,18 +14828,86 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
     assert preserved is not None
     assert preserved.subscription_profile_id == "team-a"
 
-    with pytest.raises(ValueError, match="write-once"):
+    queue_store = AgentPromptQueueStore(
+        service.config.runtime_dir / "queued-agent-prompts.json"
+    )
+    queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-delayed",
+            target="metered-session",
+            vm_name="metered-target",
+            session_id="metered-session",
+            prompt="Continue after capacity returns",
+            effect_id="effect-subscription-delayed",
+            subscription_profile_id="team-a",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    original_reroute = AgentPromptQueueStore.reroute_session
+    reroute_attempts = 0
+
+    def fail_first_reroute(
+        store: AgentPromptQueueStore,
+        session_id: str,
+        *,
+        subscription_profile_id: str | None,
+    ) -> int:
+        nonlocal reroute_attempts
+        reroute_attempts += 1
+        if reroute_attempts == 1:
+            raise OSError("queue unavailable")
+        return original_reroute(
+            store,
+            session_id,
+            subscription_profile_id=subscription_profile_id,
+        )
+
+    monkeypatch.setattr(AgentPromptQueueStore, "reroute_session", fail_first_reroute)
+    with pytest.raises(OSError, match="queue unavailable"):
         service.vm_agent_admin.update_admin_agent(
             "metered-session",
             backend="container_worker_vm",
             payload={"subscription_profile_id": "team-b"},
         )
-    with pytest.raises(ValueError, match="cannot switch away"):
-        service.vm_agent_admin.update_admin_agent(
-            "metered-session",
-            backend="container_worker_vm",
-            payload={"codex_auth_mode": "metered_api"},
-        )
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={"subscription_profile_id": "team-b"},
+    )
+    reassigned = service.runtime.session_repository.get_session("metered-session")
+    reconciled = queue_store.get("subscription-delayed")
+    assert reroute_attempts == 2
+    assert reassigned is not None
+    assert reassigned.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert reassigned.subscription_profile_id == "team-b"
+    assert reconciled is not None
+    assert reconciled.subscription_profile_id == "team-b"
+    assert reconciled.queue_reason is None
+    assert reconciled.retry_not_before is None
+
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={"codex_auth_mode": "metered_api"},
+    )
+    returned_to_metered = service.runtime.session_repository.get_session("metered-session")
+    assert returned_to_metered is not None
+    assert returned_to_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert returned_to_metered.subscription_profile_id is None
+
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={
+            "codex_auth_mode": "chatgpt_subscription",
+            "subscription_profile_id": "team-a",
+        },
+    )
+    returned_to_subscription = service.runtime.session_repository.get_session("metered-session")
+    assert returned_to_subscription is not None
+    assert returned_to_subscription.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert returned_to_subscription.subscription_profile_id == "team-a"
 
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -14856,12 +14924,15 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
             },
         )
     )
-    with pytest.raises(ValueError, match="cannot switch away"):
-        service.vm_agent_admin.update_admin_agent(
-            "legacy-default",
-            backend="container_worker_vm",
-            payload={"codex_auth_mode": "metered_api"},
-        )
+    service.vm_agent_admin.update_admin_agent(
+        "legacy-default",
+        backend="container_worker_vm",
+        payload={"codex_auth_mode": "metered_api"},
+    )
+    legacy_metered = service.runtime.session_repository.get_session("legacy-default")
+    assert legacy_metered is not None
+    assert legacy_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert legacy_metered.subscription_profile_id is None
 
     backend.config.container_worker_codex_auth_mode = "metered_api"
     service.runtime.session_repository.upsert_session(
@@ -14911,6 +14982,90 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
     assert inherited is not None
     assert inherited.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
     assert inherited.subscription_profile_id is None
+
+
+def test_agent_create_options_uses_existing_sessions_assigned_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from evander.admin.services.container_worker_assignment_service import (
+        ContainerWorkerAssignmentService,
+    )
+
+    service = build_admin_runtime(
+        write_config(
+            tmp_path,
+            container_worker_base_url="http://default.test",
+            container_worker_default_image="default:latest",
+            container_workers={
+                "fast": {
+                    "display_name": "Fast worker",
+                    "base_url": "http://fast.test",
+                    "token_env": "FAST_TOKEN",
+                    "default_image": "fast:latest",
+                    "images": {"special": "fast:special"},
+                }
+            },
+        )
+    )
+    directory_config = service.runtime.provider_config.resolve_for_directory("root")
+    ContainerWorkerAssignmentService(directory_config).resolve(
+        "assigned-session",
+        directory_path="root",
+        worker_id="fast",
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assigned-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+    backend_calls: list[dict[str, object]] = []
+
+    def assigned_backend(self, **kwargs):
+        backend_calls.append(dict(kwargs))
+        return SimpleNamespace(
+            client=SimpleNamespace(
+                list_codex_auth_profiles=lambda: {
+                    "profiles": [
+                        {
+                            "profile_id": "fast-account",
+                            "display_name": "Fast account",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(assigned_backend, service.vm_agent_admin),
+    )
+
+    options = service.vm_agent_admin.agent_create_options(
+        "root",
+        session_id="assigned-session",
+    )
+
+    assert backend_calls == [
+        {"directory_path": "root", "session_id": "assigned-session"}
+    ]
+    assert options["container_worker"]["selected_worker_id"] == "fast"
+    assert options["container_worker"]["default_image"] == "fast:latest"
+    assert options["container_worker"]["images"] == [
+        {"alias": "special", "image_ref": "fast:special"}
+    ]
+    assert options["container_worker"]["subscription_profiles"] == [
+        {
+            "profile_id": "fast-account",
+            "display_name": "Fast account",
+            "enabled": True,
+        }
+    ]
 
 
 def test_effective_tool_policy_payload_combines_directory_and_session_rules(
@@ -15208,6 +15363,57 @@ def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
     assert result.session_id == "issue-13303-session"
     assert updated is not None
     assert updated.model == "gpt-5.5"
+
+
+def test_set_session_codex_auth_mode_returns_profile_bound_session_to_metered(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"agent_provider": "codex"},
+        ),
+    )
+    queue_store = AgentPromptQueueStore(
+        service.config.runtime_dir / "queued-agent-prompts.json"
+    )
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-delayed",
+            target="container-session",
+            vm_name="container-target",
+            session_id="container-session",
+            prompt="Continue after capacity returns",
+            effect_id="effect-subscription-delayed",
+            queue_reason="subscription_rate_limited",
+            subscription_profile_id="team-a",
+            retry_not_before=datetime.now(UTC) + timedelta(hours=1),
+            capacity_deferral_count=2,
+        )
+    )
+
+    result = service.operations_admin.set_session_codex_auth_mode(
+        "container-session", "metered_api"
+    )
+
+    updated = service.runtime.session_repository.get_session("container-session")
+    queued = queue_store.get("subscription-delayed")
+    assert result.success is True
+    assert updated is not None
+    assert updated.codex_auth_mode is CodexAuthMode.METERED_API
+    assert updated.subscription_profile_id is None
+    assert queued is not None
+    assert queued.subscription_profile_id is None
+    assert queued.queue_reason is None
+    assert queued.retry_not_before is None
+    assert queued.capacity_deferral_count == 0
 
 
 def test_set_session_model_rejects_empty_value(tmp_path: Path) -> None:

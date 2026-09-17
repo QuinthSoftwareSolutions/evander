@@ -16129,6 +16129,16 @@ def test_admin_web_agent_creation_selects_configured_worker(tmp_path, monkeypatc
             "container_worker_token_env": "REPLACEMENT_TOKEN",
         },
     ).ok
+    assigned_options = client.get(
+        "/api/admin/agents/create-options",
+        params={"directory_path": "root", "session_id": "chosen"},
+    )
+    assert assigned_options.status_code == 200, assigned_options.text
+    assigned_worker = assigned_options.json()["container_worker"]
+    assert assigned_worker["selected_worker_id"] == "fast"
+    assert assigned_worker["subscription_profiles"] == [
+        {"profile_id": "fast-account", "display_name": "fast-account", "enabled": True}
+    ]
     retried = client.post("/api/admin/agents", json=retry_payload)
     assert retried.status_code == 201, retried.text
     assert calls[-1] == ("files", "http://fast.test", "FAST_TOKEN")

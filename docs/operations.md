@@ -559,10 +559,11 @@ or restricts subscription profiles. The selected worker supplies the profile cat
 creation uses the directory's `container_worker_base_url` when no worker override is provided.
 
 New subscription agents created in Admin Web must select an enabled named profile. The selection
-is persisted on the session and is write-once: an unbound metered session may receive its first
-profile only while explicitly switching to subscription mode, while a bound session must be
-replaced to use another profile. Existing profile-less subscription sessions resolve to the
-reserved `default` profile, whose credentials remain at the legacy worker auth home.
+is persisted on the session and can later be changed to another enabled profile or back to metered
+API usage without replacing the session. Running turns retain their launch-time route; later turns
+and deferred prompts use the updated selection. Existing profile-less subscription sessions
+resolve to the reserved `default` profile, whose credentials remain at the legacy worker auth
+home.
 
 The subscription selection is effective only for container Codex turns whose effective
 `model_provider_mode` is `openai_public`. If `local_openai` or `azure_openai` is effective, the
