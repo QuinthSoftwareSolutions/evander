@@ -540,6 +540,8 @@ class _CustomSchemaProvider(EffectProviderBase):
 
 def test_default_registry_includes_all_known_effect_types() -> None:
     assert set(DEFAULT_EFFECT_PROVIDER_REGISTRY) == {
+        "effect:ado:build-wait",
+        "effect:agent:install-skills",
         "effect:vm:create",
         "effect:vm:clone-repo",
         "effect:vm:bootstrap-python",

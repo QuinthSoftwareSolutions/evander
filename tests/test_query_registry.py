@@ -102,6 +102,8 @@ class _RecordingProvider(QueryProviderBase):
 
 def test_default_registry_includes_known_query_types() -> None:
     assert set(DEFAULT_QUERY_PROVIDER_REGISTRY) == {
+        "query:ado:builds",
+        "query:text:regex",
         "query:vm:run-state",
         "query:artifact-space:list",
         "query:artifact-space:latest",

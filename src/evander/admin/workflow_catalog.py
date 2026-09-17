@@ -792,6 +792,8 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:ado:pipeline-run": (
         "Queue an Azure DevOps pipeline run and wait for its terminal result."
     ),
+    "effect:ado:build-wait": "Wait for a pinned Azure DevOps build and fail if it does not succeed.",
+    "effect:agent:install-skills": "Install managed skills additively in an existing VM or container agent session.",
     "effect:ado:update-work-item": (
         "Update an Azure DevOps work item with an optional expected-state guard."
     ),
@@ -872,6 +874,8 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:issue:get": "Read a local issue record by id.",
     "query:issue:list": "List tracked local and proxy issues from the local issue store.",
     "query:ado:work-items": "Query Azure DevOps work items.",
+    "query:ado:builds": "List Azure DevOps builds using explicit branch and version filters, newest first.",
+    "query:text:regex": "Match or replace text with a configured regular expression and expose named captures.",
     "query:remote-issues": "Query Azure DevOps work items or GitHub issues.",
     "query:semantic:store-status": "Read Qdrant health and semantic collection status.",
     "query:semantic:search": "Search a semantic collection with an embedded text query.",
@@ -3280,7 +3284,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 AGENT_PROMPT_ERROR_PORT,
                 "Error",
                 description=(
-                    "Emits when prompt dispatch fails and the node is handled by an error route."
+                    "Emits on dispatch or terminal execution failure, including container timeout, when an error route is connected."
                 ),
             ),
         ],
@@ -3345,7 +3349,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 AGENT_PROMPT_ERROR_PORT,
                 "Error",
                 description=(
-                    "Emits when prompt dispatch fails and the node is handled by an error route."
+                    "Emits on dispatch or terminal execution failure, including container timeout, when an error route is connected."
                 ),
             ),
         ],
@@ -3899,6 +3903,42 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
             _field("poll_interval_seconds", "Poll interval seconds", "number", bindable=True),
             _field("check", "Check result", "boolean", bindable=True),
+            _field(
+                "reject_running_parameters",
+                "Reject matching active runs",
+                "json",
+                bindable=True,
+                json_value_type="object",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:ado:build-wait",
+        label="Wait for ADO build",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("run_id", "Build run ID", "string", required=True, bindable=True),
+            _field(
+                "timeout_seconds", "Timeout seconds", "number", bindable=True, default_value=3600
+            ),
+            _field(
+                "poll_interval_seconds", "Poll interval seconds", "number", bindable=True, default_value=10
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:install-skills",
+        label="Install managed agent skills",
+        fields=[
+            _field("target", "Session", "string", required=True, bindable=True),
+            _field(
+                "codex_skills", "Managed skills", "json",
+                required=True, bindable=True, json_value_type="array",
+            ),
+            _field("vm_user", "VM user", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -4923,6 +4963,32 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 bindable=True,
                 description="Directory path used to resolve the communication target.",
             ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:ado:builds",
+        label="List ADO builds",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("pipeline_id", "Build definition ID", "number", required=True, bindable=True),
+            _field("repository_id", "Repository ID", "string", required=True, bindable=True),
+            _field("filters", "Branch/version filters", "json", required=True, bindable=True, json_value_type="array"),
+            _field("repository_type", "Repository type", "string", bindable=True, default_value="TfsGit"),
+            _field("limit", "Result limit", "number", bindable=True, default_value=100),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:text:regex",
+        label="Match or replace text",
+        fields=[
+            _field("text", "Text", "string", required=True, bindable=True),
+            _field("pattern", "Pattern", "string", required=True, bindable=True),
+            _field("operation", "Operation", "string", bindable=True, default_value="fullmatch"),
+            _field("replacement", "Replacement", "string", bindable=True, default_value=""),
+            _field("require_match", "Require a match", "boolean", bindable=True, default_value=False),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

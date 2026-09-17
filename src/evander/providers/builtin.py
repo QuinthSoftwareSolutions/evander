@@ -29,6 +29,8 @@ from evander.effects.providers.agent_repo_access import (
 )
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from evander.effects.providers.agent_create import AgentCreateEffectProvider
+from evander.effects.providers.agent_install_skills import AgentInstallSkillsEffectProvider
+from evander.effects.providers.ado_build_wait import AdoBuildWaitEffectProvider
 from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from evander.effects.providers.artifacts import (
     ArtifactImportPublishedEffectProvider,
@@ -124,6 +126,8 @@ from evander.queries.providers.artifact_space import (
     ArtifactSpaceListQueryProvider,
 )
 from evander.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
+from evander.queries.providers.ado_builds import AdoBuildsQueryProvider
+from evander.queries.providers.text_regex import TextRegexQueryProvider
 from evander.queries.providers.communication_messages import (
     CommunicationMessagesQueryProvider,
 )
@@ -288,6 +292,8 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:issue:update-metadata": IssueUpdateMetadataEffectProvider,
             "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectProvider,
             "effect:ado:pipeline-run": AdoPipelineRunEffectProvider,
+            "effect:ado:build-wait": AdoBuildWaitEffectProvider,
+            "effect:agent:install-skills": AgentInstallSkillsEffectProvider,
             "effect:ado:post-work-item-comment": AdoPostWorkItemCommentEffectProvider,
             "effect:ado:add-work-item-tag": AdoAddWorkItemTagEffectProvider,
             "effect:ado:remove-work-item-tag": AdoRemoveWorkItemTagEffectProvider,
@@ -334,6 +340,8 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:issue:get": IssueGetQueryProvider,
             "query:issue:list": IssueListQueryProvider,
             "query:ado:work-items": AdoWorkItemsQueryProvider,
+            "query:ado:builds": AdoBuildsQueryProvider,
+            "query:text:regex": TextRegexQueryProvider,
             "query:remote-issues": RemoteIssuesQueryProvider,
             "query:pull-request:list": PullRequestListQueryProvider,
             "query:pull-request:feedback": PullRequestFeedbackQueryProvider,

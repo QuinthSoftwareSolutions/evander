@@ -1,11 +1,24 @@
 # Changelog
 
-## 2026-09-17 - Separate coordination from Git integration (0.44.1)
+## 2026-09-17 - Separate coordination from Git integration (0.45.1)
 
 - Add an explicit coordination task kind that supervises child work but cannot own a
   deliverable, integration contract, or prepared Git context.
 - Require coordinated Git work to hand off into a fresh top-level, SHA-pinned integration task,
   while retaining direct-child aggregation only for historical source-bearing deliverables.
+
+## 2026-09-17 - Test APP feature branches from PR comments (0.45.0)
+
+- Add an opt-in APP `!TEST <environment>` workflow migration: acknowledge the pinned PR build,
+  wait for it, redeploy an existing named demo, and resume the same PR reviewer with managed demo
+  skills to prepare data and explain how to test. Missing, stale, failed and busy deployments
+  receive deterministic replies; duplicate comment delivery is suppressed.
+- Add directory-scoped ADO build lookup/wait providers and additive agent skill installation.
+- Keep command syntax, environment rules, routing, messages and prompts in declarative workflow
+  configuration. Provide generic text-regex and build-filter queries and a revision-safe patch
+  installer instead of a APP-specific runtime provider or Python workflow builder.
+- Route terminal agent execution failures and timeouts through an explicitly connected prompt
+  `error` port, while preserving legacy behavior for workflows without one.
 
 ## 2026-09-17 - Switch Codex usage without replacing sessions (0.44.0)
 

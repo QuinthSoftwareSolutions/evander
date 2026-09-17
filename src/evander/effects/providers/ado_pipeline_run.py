@@ -7,6 +7,8 @@ from urllib.parse import quote
 
 import httpx
 
+from evander.ado_builds import AdoBuildClient, positive_id
+
 from .base import EffectProviderBase, EffectProviderExecutionError
 
 _ADO_API_VERSION = "7.1-preview.1"
@@ -71,6 +73,13 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
             variables=variables,
             template_parameters=template_parameters,
         )
+        reject_parameters = self._coerce_mapping(
+            payload.get("reject_running_parameters"), field_name="reject_running_parameters"
+        )
+        if reject_parameters:
+            self._reject_matching_active_run(
+                directory_path, project, pipeline_id, reject_parameters
+            )
         project_segment = quote(project, safe="")
         base_url = (
             f"{organization_url.rstrip('/')}/{project_segment}/_apis/pipelines/{pipeline_id}/runs"
@@ -149,6 +158,7 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
             "branch",
             "variables",
             "template_parameters",
+            "reject_running_parameters",
             "timeout_seconds",
             "poll_interval_seconds",
             "check",
@@ -156,6 +166,57 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
             if effect is not None and hasattr(effect, field_name):
                 payload[field_name] = getattr(effect, field_name)
         return payload
+
+    def _reject_matching_active_run(self, directory_path, project, pipeline_id, parameters):
+        # This is a best-effort busy check, not an exclusive environment lease.
+        with AdoBuildClient(
+            self._context(), directory_path=directory_path, project=project
+        ) as client:
+            continuation = None
+            seen = set()
+            while True:
+                params = {
+                    "definitions": pipeline_id,
+                    "statusFilter": "notStarted,inProgress,postponed,cancelling",
+                    "$top": 100,
+                }
+                if continuation:
+                    params["continuationToken"] = continuation
+                page, continuation = client.list_builds(**params)
+                for build in page:
+                    if str(build.get("status")).lower() == "completed":
+                        continue
+                    run_id = positive_id(build.get("id"), "active run id")
+                    supplied = build.get("templateParameters")
+                    if not isinstance(supplied, Mapping) or any(
+                        key not in supplied for key in parameters
+                    ):
+                        run, _ = client.get(f"pipelines/{pipeline_id}/runs/{run_id}")
+                        supplied = run.get("templateParameters")
+                    if not isinstance(supplied, Mapping) or any(
+                        key not in supplied for key in parameters
+                    ):
+                        raise RuntimeError(
+                            "Could not determine the target of an active deployment; no run queued"
+                        )
+                    if all(str(supplied[key]) == str(value) for key, value in parameters.items()):
+                        raise EffectProviderExecutionError(
+                            "A matching deployment is already queued or running; no run queued",
+                            outputs={
+                                "success": False,
+                                "queued": False,
+                                "busy": True,
+                                "run_id": str(run_id),
+                                "run_url": f"{client.base_url}/_build/results?buildId={run_id}",
+                            },
+                        )
+                if not continuation:
+                    break
+                if continuation in seen or len(seen) >= 100:
+                    raise RuntimeError(
+                        "Active deployment pagination could not be completed; no run queued"
+                    )
+                seen.add(continuation)
 
     def _resolve_directory_config(self, directory_path: str) -> Any:
         context = self._context()
