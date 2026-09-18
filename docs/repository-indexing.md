@@ -74,6 +74,9 @@ Open **Managed Git → repository → Repository indexing** in Admin Web. Direct
 owners can view coverage and export published snapshots. Unlock privileged operations
 to change settings, build, rebuild or cancel. Settings saves require the revision
 shown by the last load; concurrent edits return HTTP 409.
+Snapshot history is ordered newest first and defaults to ready, downloadable indexes.
+Each entry shows its creation time, build ID and exact commit. Use the filter to include
+partial or non-downloadable builds and the pager to browse retained history in groups of 20.
 
 **SCIP symbol navigation** is off by default (`scip=false`). Enable it to index
 definitions, references and implementations using the language tools and project

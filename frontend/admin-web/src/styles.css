@@ -6766,6 +6766,51 @@ select {
   resize: vertical;
 }
 
+.managed-git-index-history-heading {
+  align-items: end;
+  margin: 0.35rem 0 0;
+}
+
+.managed-git-index-history-heading h4 {
+  margin: 0 0 0.2rem;
+}
+
+.managed-git-index-history-heading .field-stack {
+  min-width: 12rem;
+}
+
+.managed-git-index-build-heading {
+  align-items: flex-start;
+}
+
+.managed-git-index-build-meta {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(15rem, 1fr) minmax(15rem, 1.5fr);
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.managed-git-index-build-meta div {
+  min-width: 0;
+}
+
+.managed-git-index-build-meta dt {
+  color: #6d5c4c;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.managed-git-index-build-meta dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.managed-git-index-pagination {
+  padding-top: 0.25rem;
+}
+
 .managed-git-register-form,
 .managed-git-identity-form {
   display: grid;
@@ -10917,6 +10962,7 @@ button.mobile-record-card:focus-visible,
   .split-layout,
   .detail-grid,
   .managed-git-binding-groups,
+  .managed-git-index-build-meta,
   .checkbox-grid,
   .form-grid,
   .report-period-form,
@@ -11137,6 +11183,7 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .feature-list-meta,
 :root[data-theme="dark"] .managed-git-list-summary,
 :root[data-theme="dark"] .managed-git-binding-group li span,
+:root[data-theme="dark"] .managed-git-index-build-meta dt,
 :root[data-theme="dark"] .path-note,
 :root[data-theme="dark"] .inspector-summary,
 :root[data-theme="dark"] .runtime-summary,

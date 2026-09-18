@@ -440,6 +440,49 @@ async function createAdminPage(t, options = {}) {
         (item) => item.managed_repo_id === repositoryId,
       );
       const method = route.request().method();
+      if (suffix.endsWith("/indexing") && method === "GET") {
+        const buildFilter = url.searchParams.get("build_filter") ?? "all";
+        const limit = Number(url.searchParams.get("limit") ?? "200");
+        const offset = Number(url.searchParams.get("offset") ?? "0");
+        options.indexBuildRequests?.push({ repositoryId, buildFilter, limit, offset });
+        const allBuilds = options.indexBuilds ?? [];
+        const filteredBuilds = allBuilds.filter((build) => {
+          if (buildFilter === "ready") return build.status === "ready";
+          if (buildFilter === "downloadable") return ["ready", "partial"].includes(build.status);
+          return true;
+        });
+        await route.fulfill(jsonResponse({
+          managed_repo_id: repositoryId,
+          revision: 1,
+          settings: {
+            enabled: true,
+            worker_id: null,
+            image: "code-index",
+            tracked_ref: "main",
+            refresh_on_git_change: true,
+            refresh_interval_seconds: 3600,
+            worker_cpus: 1,
+            index_task_commits: false,
+            includes: ["**/*.cs"],
+            excludes: [],
+            dotnet_projects: [],
+            typescript_projects: [],
+            scip: true,
+            semantic: true,
+            npm_restore: "locked",
+            timeout_seconds: 3600,
+            retention_days: 30,
+            max_file_bytes: 524288,
+          },
+          builds: filteredBuilds.slice(offset, offset + limit),
+          builds_total: filteredBuilds.length,
+          builds_limit: limit,
+          builds_offset: offset,
+          build_filter: buildFilter,
+          status: allBuilds[0]?.status ?? "unavailable",
+        }));
+        return;
+      }
       if (suffix.endsWith("/refresh") && method === "POST") {
         options.gitRepositoryMutations?.push({ action: "refresh", repositoryId });
         await route.fulfill(jsonResponse({ repository: { ...repository, refreshed_at: "2026-08-05T10:00:00Z" } }));
@@ -717,6 +760,82 @@ test("managed Git page registers and maintains repositories through the Admin AP
     name: "Repository Bot",
     email: "repository-bot@example.com",
   });
+});
+
+test("repository index history defaults to newest ready snapshots and pages through all builds", async (t) => {
+  const indexBuildRequests = [];
+  const readyBuilds = Array.from({ length: 25 }, (_, index) => ({
+    id: `idx-ready-${String(index).padStart(2, "0")}`,
+    sha: (index + 1).toString(16).padStart(40, "0"),
+    status: "ready",
+    created: new Date(Date.UTC(2026, 8, 17, 12, 0 - index)).toISOString(),
+    coverage: {
+      lexical: "ready",
+      semantic: "ready",
+      navigation: "ready",
+      documents: 100 - index,
+      chunks: 200 - index,
+      projects: [],
+    },
+    diagnostics: [],
+    metrics: {},
+  }));
+  const indexBuilds = [
+    {
+      id: "idx-failed-newest",
+      sha: "f".repeat(40),
+      status: "failed",
+      created: "2026-09-17T13:00:00.000Z",
+      coverage: {},
+      diagnostics: ["Build failed"],
+      metrics: {},
+    },
+    ...readyBuilds,
+  ];
+  const gitRepositories = [{
+    managed_repo_id: "mr_existing",
+    directory_path: "root",
+    canonical_repository_identity: "github:example/existing",
+    canonical_repository_url: "https://github.com/example/existing.git",
+    provider: "github",
+    display_name: "example/existing",
+    default_branch: "main",
+    host_commit_identity: { name: "Truman Bot", email: "truman@example.com" },
+    bindings: [],
+  }];
+  const { address, page } = await createAdminPage(t, {
+    gitRepositories,
+    indexBuilds,
+    indexBuildRequests,
+  });
+  page.setDefaultTimeout(5_000);
+
+  await page.goto(`http://127.0.0.1:${address.port}/#git-repositories`, {
+    waitUntil: "domcontentloaded",
+  });
+  const panel = page.locator(".managed-git-index-panel");
+  await panel.getByText("1–20 of 25", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await panel.locator(".managed-git-index-build").count(), 20);
+  const newestReady = panel.locator(".managed-git-index-build").first();
+  await newestReady.getByText("Newest ready", { exact: true }).waitFor({ state: "visible" });
+  assert.match(await newestReady.innerText(), /Build ID\s*idx-ready-00/i);
+  assert.match(await newestReady.innerText(), /Created/i);
+  assert.deepEqual(indexBuildRequests[0], {
+    repositoryId: "mr_existing",
+    buildFilter: "ready",
+    limit: 20,
+    offset: 0,
+  });
+
+  await panel.getByRole("button", { name: "Next", exact: true }).click();
+  await panel.getByText("21–25 of 25", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await panel.locator(".managed-git-index-build").count(), 5);
+  assert.ok(indexBuildRequests.some((request) => request.buildFilter === "ready" && request.offset === 20));
+
+  await panel.locator("label").filter({ hasText: /^Show/ }).locator("select").selectOption("all");
+  await panel.getByText("1–20 of 26", { exact: true }).waitFor({ state: "visible" });
+  assert.match(await panel.locator(".managed-git-index-build").first().innerText(), /idx-failed-newest/);
+  await panel.locator(".managed-git-index-build").first().getByText("Newest", { exact: true }).waitFor({ state: "visible" });
 });
 
 test("quick navigator filters destinations and supports keyboard navigation", async (t) => {
