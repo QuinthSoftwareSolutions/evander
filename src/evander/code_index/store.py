@@ -163,6 +163,7 @@ class IndexStore:
         *,
         active: bool = False,
         sha: str | None = None,
+        statuses: tuple[str, ...] | None = None,
         limit: int = 200,
         offset: int = 0,
     ) -> list[dict]:
@@ -175,12 +176,15 @@ class IndexStore:
         if sha:
             clauses.append("sha=?")
             args.append(sha)
+        if statuses:
+            clauses.append("status IN (" + ",".join("?" for _ in statuses) + ")")
+            args.extend(statuses)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         order = (
             "CASE WHEN status='running' OR json_extract(metrics,'$.compiler_submission_pending')=1 "
-            "THEN 0 WHEN status='importing' THEN 1 ELSE 2 END, created ASC"
+            "THEN 0 WHEN status='importing' THEN 1 ELSE 2 END, created ASC, id ASC"
             if active
-            else "created DESC"
+            else "created DESC, id DESC"
         )
         with self.connect() as db:
             rows = db.execute(
@@ -188,6 +192,28 @@ class IndexStore:
                 [*args, limit, offset],
             ).fetchall()
         return [self.payload(row) for row in rows]
+
+    def count(
+        self,
+        repo: str | None = None,
+        *,
+        sha: str | None = None,
+        statuses: tuple[str, ...] | None = None,
+    ) -> int:
+        clauses, args = [], []
+        if repo:
+            clauses.append("repo=?")
+            args.append(repo)
+        if sha:
+            clauses.append("sha=?")
+            args.append(sha)
+        if statuses:
+            clauses.append("status IN (" + ",".join("?" for _ in statuses) + ")")
+            args.extend(statuses)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as db:
+            row = db.execute("SELECT COUNT(*) count FROM snapshots" + where, args).fetchone()
+        return int(row["count"])
 
     def update(self, build_id: str, **values) -> None:
         allowed = {

@@ -112,14 +112,40 @@ class RepositoryIndexService:
             not in {"embedding", "session_id", "worker_job_id", "semantic_collection", "identity"}
         }
 
-    def status(self, repo: str, directory: str, sha: str | None = None) -> dict:
+    def status(
+        self,
+        repo: str,
+        directory: str,
+        sha: str | None = None,
+        *,
+        build_statuses: tuple[str, ...] | None = None,
+        builds_limit: int = 200,
+        builds_offset: int = 0,
+    ) -> dict:
         self.authorize(repo, directory)
-        builds = self.store.list(repo, sha=commit_id(sha) if sha is not None else None)
+        if not 1 <= builds_limit <= 200:
+            raise ValueError("builds_limit must be 1..200")
+        if builds_offset < 0:
+            raise ValueError("builds_offset must be non-negative")
+        normalized_sha = commit_id(sha) if sha is not None else None
+        builds = self.store.list(
+            repo,
+            sha=normalized_sha,
+            statuses=build_statuses,
+            limit=builds_limit,
+            offset=builds_offset,
+        )
+        latest = self.store.list(repo, sha=normalized_sha, limit=1)
         result = {
             "managed_repo_id": repo,
             **self.store.settings(repo),
             "builds": [self.public(b) for b in builds],
-            "status": builds[0]["status"] if builds else "unavailable",
+            "builds_total": self.store.count(
+                repo, sha=normalized_sha, statuses=build_statuses
+            ),
+            "builds_limit": builds_limit,
+            "builds_offset": builds_offset,
+            "status": latest[0]["status"] if latest else "unavailable",
         }
         if sha is not None:
             result["available_index"] = self.query_status(repo, directory, sha)

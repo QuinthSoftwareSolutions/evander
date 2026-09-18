@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-18 - Browse repository index history (0.46.0)
+
+- Show repository index creation times, build IDs, exact commits and a clear newest marker in
+  Admin Web; default to ready snapshots while retaining filters for partial and operational builds.
+- Page index history newest-first through the Admin API so retained snapshots beyond the previous
+  200-entry display ceiling remain reachable.
+
 ## 2026-09-17 - Separate coordination from Git integration (0.45.1)
 
 - Add an explicit coordination task kind that supervises child work but cannot own a

@@ -80,7 +80,28 @@ def repository_index_routes(components, auth):
                     service.cancel, repo, directory, request.path_params["build_id"]
                 )
             elif request.method == "GET":
-                result = await run_in_threadpool(service.status, repo, directory)
+                build_filter = request.query_params.get("build_filter", "all")
+                status_filters = {
+                    "all": None,
+                    "ready": ("ready",),
+                    "downloadable": ("ready", "partial"),
+                }
+                if build_filter not in status_filters:
+                    raise ValueError("build_filter must be all, ready or downloadable")
+                try:
+                    builds_limit = int(request.query_params.get("limit", "200"))
+                    builds_offset = int(request.query_params.get("offset", "0"))
+                except ValueError as exc:
+                    raise ValueError("limit and offset must be integers") from exc
+                result = await run_in_threadpool(
+                    service.status,
+                    repo,
+                    directory,
+                    build_statuses=status_filters[build_filter],
+                    builds_limit=builds_limit,
+                    builds_offset=builds_offset,
+                )
+                result["build_filter"] = build_filter
             elif request.method == "PATCH":
                 body = IndexSettingsRequest.model_validate(await request.json())
                 result = await run_in_threadpool(

@@ -541,6 +541,19 @@ def test_admin_controls_authorization_revision_cancel_and_export(service, monkey
             transport=httpx.ASGITransport(app), base_url="http://test"
         ) as client:
             assert (await client.get(base)).status_code == 200
+            ready_page = (
+                await client.get(base + "?build_filter=ready&limit=1&offset=0")
+            ).json()
+            assert ready_page["build_filter"] == "ready"
+            assert ready_page["builds_total"] == 1
+            assert ready_page["builds"][0]["id"] == published["id"]
+            assert ready_page["status"] == "queued"
+            assert (
+                await client.get(base + "?build_filter=unknown&limit=20&offset=0")
+            ).status_code == 400
+            assert (
+                await client.get(base + "?build_filter=all&limit=none&offset=0")
+            ).status_code == 400
             assert (await client.post(base + "/builds", json={})).status_code == 403
             assert (await client.get(base + f"/builds/{queued['id']}/cancel")).status_code == 405
             assert service.store.get(queued["id"])["status"] == "queued"

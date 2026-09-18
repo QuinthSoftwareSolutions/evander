@@ -115,6 +115,47 @@ def test_revision_scope_and_deduplication(service):
         service.status(REPO, "root/sibling")
 
 
+def test_status_pages_newest_first_and_filters_ready_builds(service):
+    oldest_ready = publish(service, SHA)
+    newest_ready = publish(service, OTHER_SHA)
+    newest_failed = service.ensure(REPO, "root/app", "c" * 40)
+    service.store.update(newest_failed["id"], status="failed")
+    with service.store.connect(write=True) as db:
+        for created, build in (
+            ("2026-09-17T08:00:00+00:00", oldest_ready),
+            ("2026-09-17T09:00:00+00:00", newest_ready),
+            ("2026-09-17T10:00:00+00:00", newest_failed),
+        ):
+            db.execute("UPDATE snapshots SET created=? WHERE id=?", (created, build["id"]))
+
+    first_page = service.status(REPO, "root/app", builds_limit=2)
+    assert [build["id"] for build in first_page["builds"]] == [
+        newest_failed["id"],
+        newest_ready["id"],
+    ]
+    assert first_page["builds_total"] == 3
+    assert first_page["builds_offset"] == 0
+    assert first_page["status"] == "failed"
+
+    ready_page = service.status(
+        REPO,
+        "root/app",
+        build_statuses=("ready",),
+        builds_limit=1,
+        builds_offset=1,
+    )
+    assert [build["id"] for build in ready_page["builds"]] == [oldest_ready["id"]]
+    assert ready_page["builds_total"] == 2
+    assert ready_page["builds_limit"] == 1
+    assert ready_page["builds_offset"] == 1
+    assert ready_page["status"] == "failed"
+
+    with pytest.raises(ValueError, match="builds_limit"):
+        service.status(REPO, "root/app", builds_limit=0)
+    with pytest.raises(ValueError, match="builds_offset"):
+        service.status(REPO, "root/app", builds_offset=-1)
+
+
 def test_search_navigation_and_exact_commit(service):
     publish(service)
     result = service.search(REPO, "root/app", SHA, "durable retry", mode="lexical")
