@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-19 - Core classification with Jev (0.47.0)
+
+- Add a provider-neutral classification service with Jev as its first implementation,
+  supporting Choice, Score, and Boolean probability questions on shared input.
+- Add directory-scoped provider settings and fixed reusable profiles, the built-in
+  `query:classification:evaluate` workflow node, and ordinary grantable agent tools
+  `classification_evaluate` and `classification_list_profiles`.
+- Add structured Admin Web profile/workflow editors, sample evaluations, revision-aware
+  saves, atomic profile inheritance, and known answer fields in workflow binding suggestions.
+- Persist resolved classification definitions before workflow execution and attribute
+  bounded provider attempts through the existing model usage store. Keep classification
+  disabled by default, with host-owned credentials and no automatic session grants.
+- Document setup, recovery, an example workflow, and an explicit opt-in live smoke command.
+
 ## 2026-09-18 - Browse repository index history (0.46.0)
 
 - Show repository index creation times, build IDs, exact commits and a clear newest marker in

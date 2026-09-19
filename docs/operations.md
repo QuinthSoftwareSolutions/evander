@@ -166,6 +166,10 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 
 ## First Troubleshooting Step
 
+For the opt-in core classification capability, host credential setup, provider enablement,
+and an explicit live smoke command, see [Classification](classification.md). It uses the
+existing gateway, effect orchestrator, and Admin Web processes with no new guest ports.
+
 Before debugging individual scripts or services, run the consolidated host status command:
 
 - Human-readable summary:

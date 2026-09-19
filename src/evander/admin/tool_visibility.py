@@ -310,6 +310,8 @@ def _tool_category(tool_name: McpToolName) -> str:
         return "Feedback"
     if tool_name in _CONNECTOR_TOOLS:
         return "Connectors"
+    if tool_name in {ToolName.CLASSIFICATION_EVALUATE, ToolName.CLASSIFICATION_LIST_PROFILES}:
+        return "Classification"
     return "Other"
 
 

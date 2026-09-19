@@ -656,6 +656,9 @@ function groupToolOption(tool: ToolOption): string {
   if (["has_pending_feedback", "list_unread_feedback", "list_all_feedback"].includes(value)) {
     return "Feedback";
   }
+  if (value.startsWith("classification_")) {
+    return "Classification";
+  }
   if (value.startsWith("semantic_")) {
     return "Semantic store";
   }

@@ -312,6 +312,8 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Insert or update text points in an allowlisted semantic collection."
     ),
     ToolName.SEMANTIC_SEARCH: ("Search an allowlisted semantic collection for relevant points."),
+    ToolName.CLASSIFICATION_EVALUATE: "Evaluate named classification questions through an enabled host provider.",
+    ToolName.CLASSIFICATION_LIST_PROFILES: "List classification profiles available in the session directory.",
     ToolName.SEMANTIC_GET_POINTS: ("Read specific points from an allowlisted semantic collection."),
     ToolName.CODE_INDEX_STATUS: (
         "Read exact or reusable ancestor index coverage for a managed repository commit."

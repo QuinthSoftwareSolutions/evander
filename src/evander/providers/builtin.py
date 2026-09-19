@@ -145,6 +145,7 @@ from evander.queries.providers.pull_request_work_items import PullRequestWorkIte
 from evander.queries.providers.remote_issues import RemoteIssuesQueryProvider
 from evander.queries.providers.semantic_get import SemanticGetQueryProvider
 from evander.queries.providers.semantic_search import SemanticSearchQueryProvider
+from evander.queries.providers.classification_evaluate import ClassificationEvaluateQueryProvider
 from evander.queries.providers.semantic_store_status import SemanticStoreStatusQueryProvider
 from evander.queries.providers.state_get import StateGetQueryProvider
 from evander.queries.providers.session_context import SessionContextQueryProvider
@@ -350,6 +351,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:pull-request:work-items": PullRequestWorkItemsQueryProvider,
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
+            "query:classification:evaluate": ClassificationEvaluateQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,
             "query:state:get": StateGetQueryProvider,
         },

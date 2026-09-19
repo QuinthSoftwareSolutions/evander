@@ -1167,6 +1167,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:communication:messages` | `communication_target_id` | `directory_path`, `limit`, `cursor`, `before_cursor`, `thread_id`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
+| `query:classification:evaluate` | `state`, exactly one of `questions` / `profile_id` | `provider`, `model` (inline only), `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
 | `query:team:memory` | _none beyond envelope_ | `team_id`, `project_id`, `codebase_id`, `agent_id`, `query_text`, `semantic`, `kinds`, `statuses`, `tags_any`, `limit`, `directory_path`, `score_threshold`, `outputs` |
@@ -1825,6 +1826,21 @@ provider mode for that session while still inheriting the directory's endpoint
 and credential fields. This allows a single directory to host both public
 OpenAI Codex sessions and local OpenAI-compatible Codex sessions by setting
 session metadata to `openai_public` or `local_openai` per agent.
+
+### Classification keys
+
+The typed `classification` field in directory `providers.json` contains `enabled` (default
+`false`), `default_provider` (`jev`), `providers`, and `profiles`. Jev defaults to model
+`jev-1.13.0`, credential environment variable `TYPESAFE_API_KEY`, a 30-second total timeout,
+two transient retries, a 1 MiB request limit, and a 2 MiB response limit. Provider settings
+inherit by field; each profile ID replaces its entire inherited definition. A disabled profile
+can be represented as `{ "enabled": false }`. Removing a child override restores inheritance.
+
+Use the structured Classification utility in the Models configuration area, or the revisioned
+`GET/PUT /api/classification?directory_path=...` API. `POST /api/classification/evaluate` accepts
+sample requests and does not persist them. APIs require directory owner permission; saves and
+sample requests also require unlocked privileged operations. See [Classification](classification.md)
+for definitions, outputs, agent grants, retry behavior, and live verification.
 
 ### Semantic store keys
 
