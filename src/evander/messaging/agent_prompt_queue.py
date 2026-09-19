@@ -340,12 +340,20 @@ class AgentPromptQueueStore:
             records: dict[str, QueuedAgentPromptRecord],
         ) -> QueuedAgentPromptRecord:
             current = records.get(record.queue_key)
-            if current is not None and (
-                queued_agent_prompt_dispatch_id(current) != incoming_dispatch_id
-                or (str(current.subscription_profile_id or "").strip() or None)
-                != incoming_profile_id
-            ):
-                return current
+            if current is not None:
+                current_profile_id = str(current.subscription_profile_id or "").strip() or None
+                if (
+                    queued_agent_prompt_dispatch_id(current) != incoming_dispatch_id
+                    # A replay begins unprofiled and learns its profile only
+                    # from the subscription-capacity response.  Permit that
+                    # one-way transition, but never let an older replay
+                    # replace a profile selected by a concurrent reroute.
+                    or (
+                        current_profile_id is not None
+                        and current_profile_id != incoming_profile_id
+                    )
+                ):
+                    return current
             previous_deferrals = max(
                 record.capacity_deferral_count,
                 current.capacity_deferral_count if current is not None else 0,

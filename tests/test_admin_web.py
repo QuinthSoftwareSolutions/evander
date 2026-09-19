@@ -986,7 +986,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {
             "key": "error",
             "label": "Error",
-            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
+            "description": (
+                "Emits on dispatch or terminal execution failure, including container timeout, "
+                "when an error route is connected."
+            ),
         },
     ]
     agent_enqueue_prompt = next(
@@ -1021,7 +1024,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {
             "key": "error",
             "label": "Error",
-            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
+            "description": (
+                "Emits on dispatch or terminal execution failure, including container timeout, "
+                "when an error route is connected."
+            ),
         },
     ]
     tool_approval = next(
@@ -1061,6 +1067,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "poll_interval_seconds",
         "check",
+        "reject_running_parameters",
     ]
     http_request = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:http:request"

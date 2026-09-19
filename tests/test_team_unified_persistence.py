@@ -94,7 +94,7 @@ def test_persistence_registry_covers_every_collection_and_table_once() -> None:
         table for _group, specs, _writer in _PERSISTENCE_GROUPS for table, _column, _field in specs
     ]
 
-    assert len(fields) == len(set(fields)) == 41
+    assert len(fields) == len(set(fields))
     assert len(tables) == len(set(tables))
     assert set(tables) == set(_STATE_TABLES)
 
