@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-19 - Preserve subscription-capacity replay routing (0.50.1)
+
+- Preserve the selected ChatGPT subscription profile when an initially unprofiled queued replay
+  is deferred for capacity, while retaining stale-reroute protection.
+- Align workflow catalog, schema-migration, Team lifecycle, and gate-documentation coverage with
+  the current explicit contracts.
+
 ## 2026-09-19 - Route workflows with Smart switch (0.50.0)
 
 - Add Smart switch (`gate:classifier:switch`) with described branches, an explicit default,

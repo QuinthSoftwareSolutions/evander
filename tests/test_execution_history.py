@@ -26,6 +26,7 @@ from evander.repositories.execution_history import (
     search_node_executions,
 )
 from evander.repositories.orchestration_db import (
+    SCHEMA_VERSION,
     connect_orchestration_db,
     datetime_to_storage,
     ensure_orchestration_schema,
@@ -143,7 +144,7 @@ def test_execution_history_schema_upgrade_does_not_rewrite_v1_records(tmp_path) 
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ]
     assert upgraded == original
-    assert migration_versions == [1, 2, 3, 4]
+    assert migration_versions == list(range(1, SCHEMA_VERSION + 1))
 
 
 def test_execution_history_v3_timestamp_rewrite_runs_only_during_migration(

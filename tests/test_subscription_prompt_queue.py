@@ -159,6 +159,34 @@ def test_stale_capacity_deferral_cannot_overwrite_rerouted_claim(tmp_path: Path)
     assert store.get(claimed.queue_key) == persisted
 
 
+def test_capacity_deferral_assigns_profile_to_unprofiled_claim(tmp_path: Path) -> None:
+    store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    record = _record(
+        queue_key="queued",
+        profile_id=None,
+        created_at=datetime.now(UTC),
+    )
+    store.put(record)
+    dispatch_id = queued_agent_prompt_dispatch_id(record)
+    claimed = store.claim_for_replay(
+        record.queue_key,
+        dispatch_id,
+        claimed_queue_key=agent_prompt_replay_queue_key(record),
+    )
+    assert claimed is not None
+
+    claimed.subscription_profile_id = "team-a"
+    deferred = store.defer_capacity(
+        claimed,
+        queue_reason="subscription_rate_limited",
+        retry_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert deferred.subscription_profile_id == "team-a"
+    assert deferred.queue_reason == "subscription_rate_limited"
+    assert store.get(claimed.queue_key) == deferred
+
+
 def test_retrying_same_route_does_not_release_current_route_deferral(tmp_path: Path) -> None:
     store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
     record = _record(
