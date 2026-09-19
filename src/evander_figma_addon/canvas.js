@@ -1,5 +1,6 @@
 // Host-owned interpreter. Agent input is JSON data, never executable JavaScript.
 const reply = value => ({evander: 1, ...value});
+const MAX_NODES = 1000;
 const canonical = value => {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(
@@ -33,7 +34,7 @@ function tree(root) {
   const result = [], pending = [root];
   while (pending.length) {
     const node = pending.pop();
-    if (result.length >= 1000) throw new Error('Select a smaller design subtree');
+    if (result.length >= MAX_NODES) throw new Error('Select a smaller design subtree');
     result.push(serialize(node));
     if ('children' in node) pending.push(...Array.from(node.children).reverse());
   }
@@ -97,6 +98,73 @@ async function properties(node, props) {
   }
 }
 
+function fitsNodeLimit(root, operations) {
+  // Simulate topology only, before touching Figma. Later clones must include
+  // children added or moved into their source by earlier edits in this batch.
+  const originals = new Map(), exceeded = Symbol('node limit');
+  function read(node, budget={count:0}) {
+    if (originals.has(node.id)) return originals.get(node.id);
+    if (++budget.count > MAX_NODES) throw exceeded;
+    const copy = {parent:null, children:[], removed:false};
+    originals.set(node.id, copy);
+    copy.children = ('children' in node ? node.children : []).map(child => {
+      const nested = read(child, budget); nested.parent = copy; return nested;
+    });
+    return copy;
+  }
+  function duplicate(node, budget={count:0}) {
+    if (++budget.count > MAX_NODES) throw exceeded;
+    const copy = {parent:null, children:[], removed:false};
+    copy.children = node.children.map(child => {
+      const nested = duplicate(child, budget); nested.parent = copy; return nested;
+    });
+    return copy;
+  }
+  function detach(node) {
+    if (node.parent) node.parent.children = node.parent.children.filter(child => child !== node);
+    node.parent = null;
+  }
+  function remove(node) {
+    node.removed = true;
+    node.children.forEach(remove);
+  }
+  function check(node) {
+    const pending = [node];
+    let count = 0;
+    while (pending.length) {
+      if (++count > MAX_NODES) throw exceeded;
+      pending.push(...pending.pop().children);
+    }
+  }
+  try {
+    const projectedRoot = read(root);
+    for (const {node, component} of operations) {
+      if (node) read(node);
+      if (component) read(component);
+    }
+    for (const {edit, node, parent, component} of operations) {
+      let projected = node ? originals.get(node.id) : null;
+      const destination = parent ? originals.get(parent.id) : null;
+      if (projected?.removed || destination?.removed) throw new Error('Node removed earlier in batch');
+      if (edit.action === 'remove') {
+        detach(projected); remove(projected);
+      } else if (['create', 'clone', 'move'].includes(edit.action)) {
+        if (edit.action === 'create') projected = component ? duplicate(originals.get(component.id)) : {parent:null, children:[], removed:false};
+        if (edit.action === 'clone') projected = duplicate(projected);
+        for (let ancestor = destination; ancestor; ancestor = ancestor.parent) {
+          if (ancestor === projected) throw new Error('Cannot parent a node below itself');
+        }
+        detach(projected); projected.parent = destination; destination.children.push(projected);
+      }
+      check(projectedRoot);
+    }
+    return true;
+  } catch (error) {
+    if (error === exceeded) return false;
+    throw error;
+  }
+}
+
 if (input.action === 'pages') return reply({pages:figma.root.children.map(p => ({id:p.id, name:p.name}))});
 if (input.action === 'exists') return reply({exists:!!(await figma.getNodeByIdAsync(input.node_id))});
 let root = input.node_id ? await find(input.node_id) : null;
@@ -150,6 +218,7 @@ if (input.action === 'create_area') {
   if (root) {
     requireWrite(root);
     if (!('appendChild' in root)) throw new Error('Parent cannot hold children');
+    if (tree(root).length >= MAX_NODES) return reply({rejected:'node_limit'});
     area = figma.createFrame();
     root.appendChild(area);
     area.layoutMode = 'VERTICAL';
@@ -177,6 +246,7 @@ if (input.action === 'create_area') {
     if (component && component.type !== 'COMPONENT') throw new Error('Expected a component');
     operations.push({edit,node,parent,component});
   }
+  if (!fitsNodeLimit(root, operations)) return reply({rejected:'node_limit'});
   for (const item of operations) {
     const {edit,parent,component} = item;
     let node = item.node;

@@ -31,7 +31,7 @@ class Node {
   clone(){const clone=create(this.type);const children=this.children;
     state.nodes[clone.id]={...structuredClone(state.nodes[this.id]),id:clone.id,parent_id:currentPage,children:[]};
     for(const child of children)clone.appendChild(child.clone());return wrap(clone.id);}
-  createInstance(){if(this.type!=='COMPONENT')throw new Error('Not component');const n=create('INSTANCE');return n;}
+  createInstance(){if(this.type!=='COMPONENT')throw new Error('Not component');const n=this.clone();state.nodes[n.id].type='INSTANCE';return wrap(n.id);}
   async setTextStyleIdAsync(id){this.textStyleId=id;}
 }
 function create(type){const id=`1:${state.next++}`;

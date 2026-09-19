@@ -16,7 +16,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import Implementation
 
 from .auth import MCP_URL, OAuth
-from .models import FigmaError, FigmaUnavailable
+from .models import FigmaError, FigmaRejected, FigmaUnavailable
 
 MAX_BYTES = 8 * 1024 * 1024
 
@@ -107,6 +107,11 @@ class FigmaClient:
             value = value["result"]
         if not isinstance(value, dict) or value.get("evander") != 1:
             raise FigmaError("Figma returned an unrecognized result; inspect before retrying")
+        if value.get("rejected") == "node_limit":
+            raise FigmaRejected(
+                "Edit would exceed the 1000-node inspection limit; select a smaller area "
+                "or reduce the batch"
+            )
         if value.get("error"):
             raise FigmaError(
                 "Figma operation could not be completed; inspect its recorded operation"
@@ -178,6 +183,13 @@ class FigmaClient:
             raise FigmaUnavailable(
                 "Figma REST request failed; check access and authorization"
             ) from None
+
+    def user_id(self):
+        user = self.rest("GET", "me")
+        user_id = user.get("id") if isinstance(user, dict) else None
+        if not isinstance(user_id, str) or not user_id:
+            raise FigmaUnavailable("Figma did not identify the REST credential's account")
+        return user_id
 
     def comments(self, file_key):
         return self.rest("GET", "files/" + quote(file_key, safe="") + "/comments").get(

@@ -121,8 +121,15 @@ class Canvas:
             def versions(self, _):
                 return canvas.version_list
 
+            def user_id(self):
+                return "integration-user"
+
             def comment(self, _, message, node_id=None, comment_id=None):
-                item = {"id": str(len(canvas.comments_list)), "message": message}
+                item = {
+                    "id": str(len(canvas.comments_list)),
+                    "message": message,
+                    "user": {"id": self.user_id()},
+                }
                 canvas.comments_list.append(item)
                 return item
 
@@ -885,7 +892,11 @@ def test_comment_reconciliation_after_lost_response_and_missing_comment(studio, 
     observed = run(owner, "reconcile", operation_id=lost["operation_id"])
     assert observed["reconciliation"]["comments"] == []
     canvas.comments_list.append(
-        {"id": "1", "message": f"Review\n\n[Evander designer-a; operation {lost['operation_id']} ]"}
+        {
+            "id": "1",
+            "message": f"Review\n\n[Evander designer-a; operation {lost['operation_id']} ]",
+            "user": {"id": "integration-user"},
+        }
     )
     with pytest.raises(FigmaConflict, match="Comments changed"):
         owner.resolve_uncertain("mockups", lost["operation_id"], digest(observed["reconciliation"]))
@@ -995,3 +1006,235 @@ def test_example_packs_validate_with_registered_providers():
             for edge in pack.ir.edges
             if next(n for n in nodes if n.id == edge.source_id).type == "effect:agent:prompt"
         )
+
+
+def test_directory_switch_and_save_races():
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "fixtures" / "figma_ui.mjs")],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def populate_frame(service, node_id, count=20):
+    base = run(service, "inspect", node_id=node_id)
+    result = run(
+        service,
+        "edit",
+        node_id=node_id,
+        expected_revision=base["revision"],
+        request_id="populate-" + node_id,
+        edits=[{"action": "create", "kind": "RECTANGLE", "parent_id": node_id}] * count,
+    )
+    assert result["status"] == "succeeded", result
+
+
+@pytest.mark.parametrize("action", ["clone", "instance", "grow_source_then_clone"])
+def test_oversized_batches_are_rejected_before_mutation_and_do_not_block_writes(studio, action):
+    services, canvas = studio
+    author = services()
+    root = create_frame(author)
+    source = create_frame(author, "source", parent=root)
+    populate_frame(author, source)
+    edit = {"action": "clone", "node_id": source, "parent_id": root}
+    edits = [edit] * 49
+    if action in {"instance", "grow_source_then_clone"}:
+        component = create_frame(author, "component")
+        populate_frame(author, component)
+        canvas.state["nodes"][component]["type"] = "COMPONENT"
+        instance = {
+            "action": "create",
+            "kind": "INSTANCE",
+            "component_id": component,
+            "parent_id": root if action == "instance" else source,
+        }
+        edits = [instance] * 49 if action == "instance" else [instance, *([edit] * 30)]
+    base = run(author, "inspect", node_id=root)
+    original = json.dumps(canvas.state, sort_keys=True)
+    result = run(
+        author,
+        "edit",
+        node_id=root,
+        expected_revision=base["revision"],
+        request_id="oversized",
+        edits=edits,
+    )
+    assert result["status"] == "rejected", result
+    assert "1000-node" in result["error"]
+    assert json.dumps(canvas.state, sort_keys=True) == original
+    assert not author.store.unresolved("testFile123")
+    # The rejected batch must not leave the file requiring operator recovery.
+    next_result = run(
+        author,
+        "edit",
+        node_id=root,
+        expected_revision=base["revision"],
+        request_id="smaller-batch",
+        edits=[edit],
+    )
+    assert next_result["status"] == "succeeded", next_result
+
+
+def test_node_limit_accounts_for_removals_before_cloning(studio):
+    services, _ = studio
+    author = services()
+    root = create_frame(author)
+    source = create_frame(author, "source", parent=root)
+    payload = create_frame(author, "payload", parent=source)
+    populate_frame(author, payload)
+    base = run(author, "inspect", node_id=root)
+    result = run(
+        author,
+        "edit",
+        node_id=root,
+        expected_revision=base["revision"],
+        request_id="remove-then-clone",
+        edits=[
+            {"action": "remove", "node_id": payload},
+            *([{"action": "clone", "node_id": source, "parent_id": root}] * 49),
+        ],
+    )
+    assert result["status"] == "succeeded", result
+    assert len(run(author, "inspect", node_id=root)["nodes"]) == 51
+
+
+def test_oversized_composition_is_rejected_without_applying_any_proposals(studio):
+    services, canvas = studio
+    author = services()
+    source = create_frame(author, "source")
+    populate_frame(author, source, count=50)
+    snapshot = run(author, "snapshot", node_id=source, request_id="proposal")["result"]
+    destination = create_frame(author, "destination")
+    base = run(author, "inspect", node_id=destination)
+    original = json.dumps(canvas.state, sort_keys=True)
+    result = run(
+        author,
+        "compose",
+        node_id=destination,
+        expected_revision=base["revision"],
+        request_id="oversized-composition",
+        source_snapshot_ids=[snapshot["snapshot_id"]] * 20,
+    )
+    assert result["status"] == "rejected", result
+    assert json.dumps(canvas.state, sort_keys=True) == original
+    assert not author.store.unresolved("testFile123")
+
+
+@pytest.mark.parametrize("existing_count,expected_status", [(999, "succeeded"), (1000, "rejected")])
+def test_create_area_obeys_the_inspection_limit(studio, existing_count, expected_status):
+    services, canvas = studio
+    author = services()
+    root = create_frame(author)
+    # Seed an already populated file; only topology matters for this boundary.
+    for index in range(existing_count - 1):
+        node_id = f"2:{index}"
+        canvas.state["nodes"][node_id] = {
+            "id": node_id,
+            "type": "RECTANGLE",
+            "name": "Existing rectangle",
+            "parent_id": root,
+            "children": [],
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 1,
+        }
+        canvas.state["nodes"][root]["children"].append(node_id)
+    base = run(author, "inspect", node_id=root)
+    result = run(
+        author,
+        "create_area",
+        name="New area",
+        node_id=root,
+        expected_revision=base["revision"],
+        request_id="area-at-limit",
+    )
+    assert result["status"] == expected_status, result
+    assert not author.store.unresolved("testFile123")
+    assert len(run(author, "inspect", node_id=root)["nodes"]) == 1000
+
+
+def test_comment_recovery_requires_the_exact_message_and_pinned_rest_user(studio):
+    services, canvas = studio
+    author, owner = services(), services("owner", True)
+    original = canvas.client
+
+    def client_factory(*args):
+        client = original(*args)
+
+        def lost_response(*_):
+            raise FigmaError("Synthetic lost POST")
+
+        client.comment = lost_response
+        return client
+
+    author.client_factory = client_factory
+    owner.poll_external("mockups", interval=0)
+    result = run(author, "comment", message="Approved design A", request_id="lost-comment")
+    marker = f"[Evander designer-a; operation {result['operation_id']}]"
+    expected = f"Approved design A\n\n{marker}"
+    mismatches = [
+        {"id": "quote", "message": f"Did this fail? {marker}", "user": {"id": "integration-user"}},
+        {"id": "copy", "message": expected, "user": {"id": "human-user"}},
+        {"id": "no-author", "message": expected},
+    ]
+    for comment in mismatches:
+        canvas.comments_list[:] = [comment]
+        observed = run(owner, "reconcile", operation_id=result["operation_id"])
+        assert observed["status"] == "uncertain"
+        assert observed["reconciliation"]["requires_operator_resolution"]
+    canvas.comments_list[:] = mismatches
+    owner.poll_external("mockups", interval=0)
+    events = author.store.events("review", "root/design", "mockups")
+    assert {event["payload"]["item"]["id"] for event in events} == {"quote", "copy", "no-author"}
+    assert all(event["payload"]["origin"] == "external" for event in events)
+    canvas.comments_list.append(
+        {"id": "actual", "message": expected, "user": {"id": "integration-user"}}
+    )
+    found = run(owner, "reconcile", operation_id=result["operation_id"])
+    assert found["status"] == "succeeded"
+    assert found["result"]["id"] == "actual"
+    owner.poll_external("mockups", interval=0)
+    events = author.store.events("review", "root/design", "mockups")
+    assert len(events) == 4  # Three human comments and one recovered delivery, without an echo.
+
+
+def test_comment_user_lookup_failure_does_not_create_an_uncertain_write(studio):
+    services, canvas = studio
+    author = services()
+    original = canvas.client
+
+    def client_factory(*args):
+        client = original(*args)
+
+        def unauthorized():
+            raise FigmaError("Missing current_user:read scope")
+
+        client.user_id = unauthorized
+        return client
+
+    author.client_factory = client_factory
+    with pytest.raises(FigmaError, match="current_user:read"):
+        run(author, "comment", message="Review", request_id="missing-user-scope")
+    assert not author.store.unresolved("testFile123")
+    assert canvas.comments_list == []
+
+
+def test_rest_account_identity_uses_the_comment_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_FIGMA_REST", "synthetic-rest-token")
+
+    def handler(request):
+        assert str(request.url) == "https://api.figma.com/v1/me"
+        assert request.headers["X-Figma-Token"] == "synthetic-rest-token"
+        return httpx.Response(200, json={"id": "integration-user"})
+
+    client = FigmaClient(
+        None,
+        "root",
+        "studio",
+        settings().connections["studio"],
+        transport=httpx.MockTransport(handler),
+    )
+    assert client.user_id() == "integration-user"

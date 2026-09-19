@@ -1,12 +1,13 @@
 const $ = selector => document.querySelector(selector);
 let current = null;
 let loadedDirectory = null;
+let busy = false;
 const directory = () => loadedDirectory || $('#directory').value.trim();
 $('#directory').value = new URLSearchParams(location.search).get('directory') || 'root';
 const status = (text, error=false) => { $('#status').textContent=text; $('#status').classList.toggle('error',error); };
 const endpoint = (path, params={}) => `/api/addons/figma-addon${path}?${new URLSearchParams({directory:directory(),...params})}`;
 async function api(path, method='GET', body=null, params={}) {
-  if(method!=='GET' && $('#directory').value.trim()!==loadedDirectory)throw new Error('Open the selected directory before making changes.');
+  if(method!=='GET' && (!current || $('#directory').value.trim()!==loadedDirectory))throw new Error('Open the selected directory before making changes.');
   const response=await fetch(endpoint(path,params),{method,credentials:'same-origin',
     headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
   const result=await response.json();
@@ -15,10 +16,26 @@ async function api(path, method='GET', body=null, params={}) {
 }
 function element(tag,text,className) {const e=document.createElement(tag);if(text!=null)e.textContent=text;if(className)e.className=className;return e;}
 function button(text,fn) {const b=element('button',text,'secondary');b.type='button';b.addEventListener('click',()=>run(b,fn));return b;}
-async function run(control,fn) {control.disabled=true;status('Working…');try{await fn();status('Ready.');}catch(e){status(e.message,true);}finally{control.disabled=false;}}
+async function run(control,fn) {
+  if(busy)return;
+  busy=true;
+  const controls=Array.from(document.querySelectorAll('button, input, select'));
+  if(control && !controls.includes(control))controls.push(control);
+  const previous=controls.map(item=>item.disabled);
+  controls.forEach(item=>{item.disabled=true;});
+  status('Working…');
+  try{await fn();status('Ready.');}catch(e){status(e.message,true);}
+  finally{controls.forEach((item,index)=>{item.disabled=previous[index];});busy=false;}
+}
 function form(id,fn) {$(id).addEventListener('submit',event=>{event.preventDefault();const data=Object.fromEntries(new FormData(event.target));run(event.submitter,()=>fn(data,event.target));});}
-async function load() {
-  current=await api('/settings');render();
+async function load(selectedDirectory=loadedDirectory) {
+  const settings=await api('/settings','GET',null,{directory:selectedDirectory});
+  if(selectedDirectory!==loadedDirectory){
+    document.querySelectorAll('form:not(#directory-form)').forEach(item=>item.reset());
+    $('#operations').replaceChildren();$('#snapshots').replaceChildren();
+  }
+  current=settings;loadedDirectory=selectedDirectory;$('#directory').value=selectedDirectory;
+  render();
   $('[name=redirect_uri]').value=`${location.origin}/api/addons/figma-addon/oauth/callback`;
 }
 async function save(settings) {await api('/settings','PUT',{expected_revision:current.revision,settings});await load();}
@@ -53,9 +70,8 @@ function render() {
   document.querySelectorAll('.target-select').forEach(select=>options(select,current.settings.targets));
 }
 form('#directory-form',async()=>{
-  const previous=loadedDirectory;loadedDirectory=$('#directory').value.trim();
-  try{await load();}catch(error){loadedDirectory=previous;$('#directory').value=previous;throw error;}
-  history.replaceState(null,'',`?${new URLSearchParams({directory:directory()})}`);$('#operations').replaceChildren();$('#snapshots').replaceChildren();
+  try{await load($('#directory').value.trim());}catch(error){$('#directory').value=loadedDirectory||'root';throw error;}
+  history.replaceState(null,'',`?${new URLSearchParams({directory:directory()})}`);
 });
 form('#connection-form',async data=>{
   const settings=structuredClone(current.settings),{id,...config}=data;
@@ -88,5 +104,4 @@ async function loadHistory() {
     }));}card.append(detail);operations.append(card);}
 }
 form('#history-form',loadHistory);
-loadedDirectory=$('#directory').value.trim();
-load().then(()=>status('Ready.')).catch(error=>status(error.message,true));
+run(null,()=>load($('#directory').value.trim()));

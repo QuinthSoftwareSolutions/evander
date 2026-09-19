@@ -28,14 +28,17 @@ Provider references, checked September 2026:
 - [Native canvas editing and seat requirements](https://developers.figma.com/docs/figma-mcp-server/write-to-canvas/)
 - [Plugin API guidance](https://github.com/figma/mcp-server-guide/tree/main/skills/figma-use)
 - [Comment API](https://developers.figma.com/docs/rest-api/comments-endpoints/)
+- [REST account identity and scope](https://developers.figma.com/docs/rest-api/users-endpoints/)
 
 ## Setup
 
 1. Enable **Figma Add-on** in Admin Web **Add-ons** and restart the listed services, including
    Admin Web, gateway, and workflow orchestrators. No additional worker service or guest port is needed.
 2. Configure the approved client secret in the host service environment. Configure a separate,
-   scoped REST token if using comments or external feedback polling. Never put either value in
-   a session, workflow, prompt, configuration JSON, or repository.
+   scoped REST token if using comments or external feedback polling. Posting comments also requires
+   `current_user:read`: the add-on pins the REST account before posting so it can verify delivery
+   after a lost response. Never put either credential value in a session, workflow, prompt,
+   configuration JSON, or repository.
 3. Open **Figma**, select the exact directory, and add the approved client ID, secret setting name,
    and registered HTTPS callback ending in `/api/addons/figma-addon/oauth/callback`. Select
    **Connect** and complete Figma's consent flow. OAuth refresh tokens are retained on the host
@@ -108,6 +111,11 @@ retrieve the recorded outcome. Reusing an ID for different arguments is rejected
 the intended edit or its base, use a new request ID. A stale revision requires another inspection
 and a considered update to the intended edits.
 
+Before changing the canvas, the add-on checks each intermediate batch state against the
+1000-node inspection limit, including descendants introduced by clones, composition, and
+instances. Oversized batches return `rejected` without changing the canvas or blocking the file.
+Use a smaller batch or working area and a new request ID after such a rejection.
+
 ## Review snapshots and recovery
 
 A snapshot contains `preview.png`, `design.json`, and `README.md` in an immutable published
@@ -131,8 +139,10 @@ Revision checks cover the inspected node hierarchy and captured properties; they
 file-version locks and do not cover every Plugin API property or changes to external libraries.
 
 An uncertain write blocks further writes to the file. Inspect it with `reconcile` or **Inspect
-current state** in Admin Web. Comment POSTs can be reconciled automatically using their visible
-operation attribution. Canvas uncertainty requires an operator to review the returned evidence,
+current state** in Admin Web. Comment POSTs can be reconciled automatically only when one comment
+matches the complete posted message and the REST account recorded before posting. Quoted markers,
+copies by other users, and old records without a pinned account require operator resolution.
+Canvas uncertainty requires an operator to review the returned evidence,
 then **Accept current state and close operation**. This records `reconciled`, not a fabricated
 success. A new request can then implement any remaining work. If the canvas changes after the
 inspection, resolution is rejected. Snapshot failures are read failures and do not block authors.

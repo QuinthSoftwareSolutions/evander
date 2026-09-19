@@ -209,5 +209,9 @@ class FigmaConflict(FigmaError):
     pass
 
 
+class FigmaRejected(FigmaError):
+    """The host-owned interpreter rejected a batch before any canvas mutation."""
+
+
 class FigmaUnavailable(FigmaError):
     pass

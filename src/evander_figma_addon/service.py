@@ -18,7 +18,15 @@ from evander.published_artifacts import PublishedArtifactStore
 
 from .auth import OAuth
 from .client import FigmaClient
-from .models import DesignRequest, FigmaConflict, FigmaError, FigmaUnavailable, Grant, digest
+from .models import (
+    DesignRequest,
+    FigmaConflict,
+    FigmaError,
+    FigmaRejected,
+    FigmaUnavailable,
+    Grant,
+    digest,
+)
 from .state import Store
 
 CANVAS_WRITES = {"create_area", "edit", "compose"}
@@ -210,16 +218,22 @@ class FigmaService:
                 "request": request.model_dump(mode="json"),
                 "before": before,
             }
+            if request.operation == "comment":
+                # Pin the REST account before attempting the POST. A quoted marker or
+                # an exact copy from another user is not evidence of our delivery.
+                marker = f"[Evander {self.actor.session_id}; operation {operation_id}]"
+                record["expected_comment"] = {
+                    "message": request.message + "\n\n" + marker,
+                    "user_id": client.user_id(),
+                }
             self.store.put("operation", operation_id, *scope, record, immutable=True)
             try:
                 if request.operation == "snapshot":
                     result = self._snapshot(operation_id, scope, request.node_id, before, client)
                 elif request.operation == "comment":
-                    # Visible attribution also permits readback after a lost POST response.
-                    marker = f"[Evander {self.actor.session_id}; operation {operation_id}]"
                     result = client.comment(
                         target.file_key,
-                        request.message + "\n\n" + marker,
+                        record["expected_comment"]["message"],
                         request.node_id,
                         request.comment_id,
                     )
@@ -304,6 +318,8 @@ class FigmaService:
                         status="failed",
                         error="Snapshot could not be captured consistently; request a new snapshot",
                     )
+                if isinstance(exc, FigmaRejected):
+                    record.update(status="rejected", error=str(exc))
                 if (
                     isinstance(exc, FigmaConflict)
                     and request.operation == "compose"
@@ -426,6 +442,18 @@ class FigmaService:
             "next_step": "Use communication_copy_artifact_to_workspace for each artifact_id",
         }
 
+    @staticmethod
+    def _matches_comment(record, comment):
+        expected = record.get("expected_comment")
+        user = comment.get("user")
+        return bool(
+            expected
+            and isinstance(user, dict)
+            and expected.get("user_id")
+            and user.get("id") == expected["user_id"]
+            and comment.get("message") == expected["message"]
+        )
+
     def _reconcile(self, operation_id, scope, client):
         with self.store.file_lock(scope[2]):
             record = self.store.get("operation", operation_id, *scope)
@@ -435,9 +463,7 @@ class FigmaService:
             event = None
             if request["operation"] == "comment":
                 comments = client.comments(scope[2])
-                matches = [
-                    c for c in comments if f"operation {operation_id}]" in c.get("message", "")
-                ]
+                matches = [c for c in comments if self._matches_comment(record, c)]
                 if len(matches) == 1:
                     record.update(status="succeeded", result=matches[0], completed_at=now())
                     event = {
@@ -547,8 +573,9 @@ class FigmaService:
                 if kind == "comment.created" and "[Evander " in item.get("message", ""):
                     marker = item["message"].rsplit("operation ", 1)[-1].rstrip("]")
                     try:
-                        self.store.get("operation", marker, *scope)
-                        continue
+                        operation = self.store.get("operation", marker, *scope)
+                        if self._matches_comment(operation, item):
+                            continue
                     except FigmaConflict:
                         pass
                 self.store.event(

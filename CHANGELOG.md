@@ -11,6 +11,8 @@
   versions with durable delivery acknowledgements and self-feedback suppression.
 - Keep authoring disabled until an approved Figma client passes a live unattended
   create/edit/render/readback test. Figma client approval and credentials remain deployment prerequisites.
+- Prevent settings writes during directory changes, reject batches that would exceed the design
+  inspection limit before mutation, and verify comment content and account identity during recovery.
 
 ## 2026-09-18 - Browse repository index history (0.46.0)
 
