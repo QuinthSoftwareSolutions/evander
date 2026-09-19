@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from copy import deepcopy
 import re
@@ -10,7 +11,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 
-from .client import MiroClient, comment_page, svg_from_result, unwrap
+from .client import COMMENT_PAGE_SIZE, MiroClient, comment_page, svg_from_result, unwrap
 from .models import (
     Connection,
     MAX_CONTENT_BYTES,
@@ -46,6 +47,13 @@ def canvas(svg: str) -> tuple[str, list[str]]:
                 raise MiroError("invalid_canvas", "Active content is not supported in a canvas")
         if item_id := element.get("data-miro-id"):
             ids.append(identifier(item_id))
+        deletion = element.get("data-deleted")
+        if deletion not in {None, "true", "false"} or (
+            deletion == "true" and not element.get("data-miro-id")
+        ):
+            raise MiroError(
+                "invalid_canvas", "Deletion requires a stable item ID and a boolean marker"
+            )
     if len(ids) != len(set(ids)):
         raise MiroError("invalid_canvas", "Canvas contains duplicate Miro item IDs")
     return ET.canonicalize(svg), sorted(ids)
@@ -80,6 +88,69 @@ def item_states(snapshot: dict | None) -> dict[str, str]:
 
 def changed_items(before: dict[str, str], after: dict[str, str]) -> set[str]:
     return {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
+
+
+def authored_item_states(
+    operation: str, args: OperationInput, baseline: dict | None, observed: dict, result: Any
+) -> dict[str, str | None]:
+    """Retain only requested transitions confirmed by the observation.
+
+    The readback can contain concurrent human edits, even on a requested item.
+    New IDs also need the mutation's SVG receipt; a board-wide readback alone
+    cannot establish which items this call created.
+    """
+    if not baseline:
+        return {}
+    before, after = item_states(baseline), item_states(observed)
+    expected: dict[str, str | None] = {}
+    if observed["kind"] == "canvas":
+        requested = item_states({"kind": "canvas", "data": {"svg": args.svg}})
+        root = ET.fromstring(args.svg)
+        for element in root.iter():
+            item_id = element.get("data-miro-id")
+            if item_id and item_id in before:
+                value = None if element.get("data-deleted") == "true" else requested[item_id]
+                if value != before[item_id]:
+                    expected[item_id] = value
+
+        def without_ids(element):
+            element = deepcopy(element)
+            # A nested text span's tail belongs to its parent, not this element.
+            element.tail = None
+            for child in element.iter():
+                child.attrib.pop("data-miro-id", None)
+            return ET.canonicalize(ET.tostring(element, encoding="unicode"))
+
+        additions = Counter(
+            without_ids(element)
+            for element in root.iter()
+            if element is not root and not element.get("data-miro-id")
+        )
+        if additions:
+            try:
+                receipt_svg, _ = canvas(svg_from_result(result))
+            except MiroError:
+                # Missing or unrecognized mutation evidence must not hide human input.
+                receipt_svg = "<svg/>"
+            receipt = item_states({"kind": "canvas", "data": {"svg": receipt_svg}})
+            for element in ET.fromstring(receipt_svg).iter():
+                item_id = element.get("data-miro-id")
+                if item_id and item_id not in before:
+                    content = without_ids(element)
+                    if additions[content]:
+                        additions[content] -= 1
+                        expected[item_id] = receipt[item_id]
+    elif operation == "resolve_comment":
+        for comment in baseline["data"]["comments"]:
+            if str(comment["id"]) == args.comment_id:
+                expected[args.comment_id] = digest(comment | {"resolved": args.resolved})
+    # Reply responses without a documented, verifiable message receipt remain
+    # external_or_unknown instead of attributing a whole changed thread to us.
+    return {
+        key: value
+        for key, value in expected.items()
+        if before.get(key) != value and after.get(key) == value
+    }
 
 
 @dataclass(frozen=True)
@@ -185,10 +256,11 @@ class MiroService:
             data = {"svg": svg, "item_ids": ids}
             kind = "canvas"
         else:
-            comments, cursor, seen = [], None, set()
+            comments, offset = [], 0
             for _ in range(20):
-                page, next_cursor = comment_page(
-                    await client.call(operation, **values, cursor=cursor)
+                page, next_offset = comment_page(
+                    await client.call(operation, **values, limit=COMMENT_PAGE_SIZE, offset=offset),
+                    offset=offset,
                 )
                 comments.extend(page)
                 if len(encoded(comments).encode()) > MAX_CONTENT_BYTES:
@@ -196,14 +268,9 @@ class MiroService:
                         "response_too_large",
                         "Comment selection is too large; select a smaller frame",
                     )
-                if not next_cursor:
+                if next_offset is None:
                     break
-                if next_cursor in seen:
-                    raise MiroError(
-                        "incomplete_response", "Miro repeated a comment pagination cursor"
-                    )
-                seen.add(next_cursor)
-                cursor = next_cursor
+                offset = next_offset
             else:
                 raise MiroError(
                     "incomplete_response",
@@ -238,7 +305,8 @@ class MiroService:
         op_id = digest([record["key"], args.operation_key])
         fingerprint = digest([operation, request, self.access.actor])
         lock = "board:" + args.board_id if args.board_id else "create-board:" + record["key"]
-        async with self.store.lock(lock):
+        # The operation key is connection-wide, including writes on different boards.
+        async with self.store.lock("operation:" + op_id), self.store.lock(lock):
             current_record = self.authorize(args.connection_id, args.board_id, write=True)
             if current_record["key"] != record["key"]:
                 raise MiroError(
@@ -301,10 +369,14 @@ class MiroService:
                                 "forbidden",
                                 "Updated canvas references items outside the source snapshot",
                             )
-                        if old_ids - set(ids) and not args.allow_delete:
+                        deletes = any(
+                            element.get("data-deleted") == "true"
+                            for element in ET.fromstring(svg).iter()
+                        )
+                        if deletes and not args.allow_delete:
                             raise MiroError(
                                 "conflict",
-                                "Update would delete items; preserve them or explicitly allow deletion",
+                                "Update would delete marked items; explicitly allow deletion",
                             )
                 elif operation == "create_board":
                     values = {"title": require(args.title, "title")}
@@ -367,14 +439,13 @@ class MiroService:
                         else "read_canvas"
                     )
                     observed = await self.read(client, record, read_op, args)
+                    authored = authored_item_states(operation, args, baseline, observed, result)
                     entry.update(
                         status="applied",
                         result_snapshot_id=observed["snapshot_id"],
                         url=observed["url"],
-                        affected_item_ids=sorted(
-                            changed_items(item_states(baseline), item_states(observed))
-                            - {"$canvas"}
-                        ),
+                        affected_item_ids=sorted(authored),
+                        authored_item_states=authored,
                         completed_at=time.time(),
                     )
                 except Exception as exc:
@@ -434,6 +505,9 @@ class MiroService:
             else "read_canvas"
         )
         async with self.store.lock("board:" + args.board_id):
+            # A live writer or another reconciliation may have completed while
+            # this request waited. Preserve its durable outcome and evidence.
+            entry = self.store.get("operation", operation_id)
             async with self.client_factory(self.store, record).open() as client:
                 observed = await self.read(client, record, read_op, args)
             entry["reconciliation_snapshot_id"] = observed["snapshot_id"]
@@ -500,13 +574,14 @@ class MiroService:
             result = self.store.get("snapshot", op["result_snapshot_id"])
             if not source or not result or result["kind"] != observed["kind"]:
                 continue
-            op_before, op_after = item_states(source), item_states(result)
-            for key in changed & changed_items(op_before, op_after):
+            op_before = item_states(source)
+            authored = op.get("authored_item_states", {})
+            for key in changed & authored.keys():
                 # A human edit between observations breaks the chain. Do not hide
                 # that edit merely because a later Evander write read it back.
                 if tracked.get(key) == op_before.get(key):
-                    if key in op_after:
-                        tracked[key] = op_after[key]
+                    if authored[key] is not None:
+                        tracked[key] = authored[key]
                     else:
                         tracked.pop(key, None)
         return all(tracked.get(key) == after.get(key) for key in changed)

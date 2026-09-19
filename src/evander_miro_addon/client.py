@@ -22,16 +22,15 @@ from .state import MiroStore, encoded
 # Translate semantic inputs using only fields actually advertised by the server.
 # Unknown required fields fail closed rather than guessing an argument or destination.
 ALIASES = {
-    "board_url": ("board_url", "boardUrl", "boardURL", "url"),
+    "board_url": ("miro_url", "board_url", "boardUrl", "boardURL", "url"),
     "board_id": ("board_id", "boardId"),
     "svg": ("svg", "svg_content", "svgContent", "svg_document"),
     "title": ("title", "name", "board_name"),
     "text": ("text", "content", "body", "message"),
     "comment_id": ("comment_id", "commentId", "thread_id", "threadId"),
     "resolved": ("resolved", "is_resolved", "resolve"),
-    "item_ids": ("item_ids", "itemIds"),
+    "item_ids": ("widget_ids", "item_ids", "itemIds"),
     "frame_id": ("frame_id", "frameId", "parent_id", "parentId"),
-    "cursor": ("cursor", "next_cursor", "after"),
     "format_name": ("format_name", "format", "name", "formatName"),
 }
 
@@ -198,7 +197,10 @@ def svg_from_result(data: Any) -> str:
     candidates = (
         [data]
         if isinstance(data, str)
-        else [data.get(key) for key in ("svg", "svg_content", "svgContent", "text", "content")]
+        else [
+            data.get(key)
+            for key in ("svg", "result_svg", "svg_content", "svgContent", "text", "content")
+        ]
         if isinstance(data, dict)
         else []
     )
@@ -210,28 +212,58 @@ def svg_from_result(data: Any) -> str:
     raise MiroError("unsupported_response", "Miro did not return a readable SVG canvas")
 
 
-def comment_page(data: Any) -> tuple[list[dict], str | None]:
+COMMENT_PAGE_SIZE = 50
+
+
+def comment_page(
+    data: Any, *, offset: int = 0, limit: int = COMMENT_PAGE_SIZE
+) -> tuple[list[dict], int | None]:
+    """Read offset pagination without committing a partial observation.
+
+    A full page without metadata requires another request, including when the
+    final page is exactly full. Inconsistent metadata fails the whole read.
+    """
     data = unwrap(data)
     if isinstance(data, list):
-        items, cursor = data, None
+        items, paging = data, {}
     elif isinstance(data, dict):
         items = data.get("comments", data.get("items", data.get("data")))
         paging = data.get("pagination", {}) or {}
-        cursor = (
-            data.get("next_cursor")
-            or data.get("nextCursor")
-            or paging.get("next_cursor")
-            or paging.get("nextCursor")
-        )
-        if (data.get("has_more") or data.get("hasMore") or paging.get("has_more")) and not cursor:
+        if not isinstance(paging, dict):
+            raise MiroError("incomplete_response", "Miro returned invalid comment pagination")
+        paging = {**data, **paging}
+        if paging.get("next_cursor") or paging.get("nextCursor"):
             raise MiroError(
                 "incomplete_response",
-                "Miro comment page is incomplete without a continuation cursor",
+                "Miro returned unsupported cursor pagination for comments",
             )
     else:
-        items, cursor = None, None
+        items, paging = None, {}
     if not isinstance(items, list) or any(
         not isinstance(item, dict) or not item.get("id") for item in items
     ):
         raise MiroError("unsupported_response", "Miro comment response format is unsupported")
-    return items, str(cursor) if cursor else None
+    page_offset, page_limit = paging.get("offset", offset), paging.get("limit", limit)
+    total = paging.get("total", paging.get("total_count", paging.get("totalCount")))
+    more = paging.get("has_more", paging.get("hasMore"))
+    if (
+        type(page_offset) is not int
+        or page_offset != offset
+        or type(page_limit) is not int
+        or not 1 <= page_limit <= limit
+        or len(items) > page_limit
+        or (total is not None and (type(total) is not int or total < offset + len(items)))
+        or (more is not None and type(more) is not bool)
+    ):
+        raise MiroError("incomplete_response", "Miro returned inconsistent comment pagination")
+    next_offset = offset + len(items)
+    if total is not None:
+        expected_more = next_offset < total
+        if more is not None and more != expected_more:
+            raise MiroError("incomplete_response", "Miro returned inconsistent comment totals")
+        more = expected_more
+    elif more is None:
+        more = len(items) == page_limit
+    if more and not items:
+        raise MiroError("incomplete_response", "Miro comment pagination made no progress")
+    return items, next_offset if more else None

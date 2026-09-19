@@ -55,7 +55,7 @@ FIELD_DESCRIPTIONS = {
     "text": "Reply text for an existing thread.",
     "comment_id": "Thread ID from the source comment snapshot.",
     "source_refs": "Repository commits, task references, or artifact references explaining provenance.",
-    "allow_delete": "Explicitly permit deletion of omitted items within the source snapshot.",
+    "allow_delete": 'Permit deleting snapshot items explicitly marked data-deleted="true"; omitted items remain unchanged.',
     "resolved": "True resolves the thread; false reopens it.",
     "format_name": "Optional provider-advertised format to load, such as diagram guidance.",
 }

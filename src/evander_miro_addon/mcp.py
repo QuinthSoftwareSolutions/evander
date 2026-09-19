@@ -24,7 +24,7 @@ DESCRIPTIONS = {
     "get_operation": "Inspect a Miro write's durable outcome and artifact references; uncertain writes require operator reconciliation.",
     "create_board": "Create a Miro board using an explicitly granted connection, with a durable operation key. The board inherits Miro workspace sharing policy.",
     "create_canvas": "Create editable diagrams and explanations from Miro canvas SVG, optionally in a selected frame. Read the current format guidance first. Retry only with the same operation key.",
-    "update_canvas": "Update exactly the items in a source snapshot using Miro SVG IDs; rejects stale content and implicit deletion. Uncertain writes are never automatically replayed.",
+    "update_canvas": 'Update items from a source snapshot using Miro SVG IDs; rejects stale content. Omitted items remain unchanged. Deleting items marked data-deleted="true" requires allow_delete=true. Uncertain writes are never automatically replayed.',
     "reply_comment": "Reply to an existing comment thread in a current snapshot. Use board annotations for new questions. Requires an operation key.",
     "resolve_comment": "Resolve or reopen an existing comment thread in a current snapshot with a durable operation key.",
 }

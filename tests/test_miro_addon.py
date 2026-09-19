@@ -67,6 +67,7 @@ class Remote:
         self.active_writes = 0
         self.max_active_writes = 0
         self.delay = False
+        self.next_item_id = 0
 
     def client(self, store, record):
         remote = self
@@ -99,18 +100,45 @@ class Remote:
                 try:
                     if remote.delay:
                         await asyncio.sleep(0.08)
-                    if operation == "update_canvas":
-                        remote.svg = values["svg"]
-                    elif operation == "create_canvas":
-                        existing, new = ET.fromstring(remote.svg), ET.fromstring(values["svg"])
-                        for index, element in enumerate(list(new)):
-                            element.set("data-miro-id", "created" + str(index))
-                            existing.append(element)
+                    result = {"ok": True}
+                    if operation in {"create_canvas", "update_canvas"}:
+                        existing, submitted = (
+                            ET.fromstring(remote.svg),
+                            ET.fromstring(values["svg"]),
+                        )
+                        for element in list(submitted):
+                            item_id = element.get("data-miro-id")
+                            previous = (
+                                next(
+                                    (
+                                        item
+                                        for item in existing
+                                        if item.get("data-miro-id") == item_id
+                                    ),
+                                    None,
+                                )
+                                if item_id
+                                else None
+                            )
+                            if previous is not None:
+                                index = list(existing).index(previous)
+                                existing.remove(previous)
+                                if element.get("data-deleted") != "true":
+                                    existing.insert(index, element)
+                            elif not item_id:
+                                element.set("data-miro-id", f"created{remote.next_item_id}")
+                                remote.next_item_id += 1
+                                existing.append(element)
                         remote.svg = (
                             ET.tostring(existing, encoding="unicode")
                             .replace("ns0:", "")
                             .replace(":ns0", "")
                         )
+                        result = {
+                            "result_svg": ET.tostring(submitted, encoding="unicode")
+                            .replace("ns0:", "")
+                            .replace(":ns0", "")
+                        }
                     elif operation == "reply_comment":
                         remote.comments[0]["replies"].append(
                             {"id": "reply1", "text": values["text"]}
@@ -119,7 +147,7 @@ class Remote:
                         remote.comments[0]["resolved"] = values["resolved"]
                     if remote.fail_after_write:
                         raise TimeoutError("response lost after remote commit")
-                    return {"id": "created-board"} if operation == "create_board" else {"ok": True}
+                    return {"id": "created-board"} if operation == "create_board" else result
                 finally:
                     remote.active_writes -= 1
 
@@ -265,19 +293,21 @@ def test_human_edit_conflict_does_not_overwrite(setup):
     assert not any(op == "update_canvas" for op, _ in remote.calls)
 
 
-def test_scope_ids_and_implicit_deletes_fail_closed(setup):
-    _, _, _, service = setup
+def test_scope_ids_and_explicit_deletes_fail_closed(setup):
+    _, _, remote, service = setup
     before = read(service, frame_id="frame1")
     with pytest.raises(MiroError, match="selection must match"):
         run(service.execute("update_canvas", update_args(before)))
     before = read(service)
+    deleting = SVG.replace('data-miro-id="item2"', 'data-miro-id="item2" data-deleted="true"')
     with pytest.raises(MiroError, match="delete"):
         run(
             service.execute(
                 "update_canvas",
-                update_args(before, svg='<svg><text data-miro-id="item1">x</text></svg>'),
+                update_args(before, svg=deleting),
             )
         )
+    assert not any(op == "update_canvas" for op, _ in remote.calls)
     with pytest.raises(MiroError, match="outside"):
         run(
             service.execute(
@@ -665,9 +695,9 @@ def test_schema_negotiation_and_comment_pagination_fail_closed():
         bind_arguments({"$ref": "https://schemas.invalid/board"}, {})
     with pytest.raises(MiroError, match="scoped board"):
         bind_arguments({"properties": {"svg": {}}}, {"board_id": "b", "svg": NEW})
-    with pytest.raises(MiroError, match="incomplete"):
+    with pytest.raises(MiroError, match="no progress"):
         comment_page({"comments": [], "has_more": True})
-    assert comment_page({"comments": [{"id": "c"}], "nextCursor": "next"})[1] == "next"
+    assert comment_page({"comments": [{"id": "c"}], "total": 2, "limit": 1})[1] == 1
 
 
 def oauth_transport(captured):
@@ -870,8 +900,11 @@ def test_real_mcp_http_handshake_schema_binding_and_error_preservation(setup, mo
                         "name": "canvas_read_as_svg",
                         "inputSchema": {
                             "type": "object",
-                            "properties": {"board_url": {"type": "string"}},
-                            "required": ["board_url"],
+                            "properties": {
+                                "miro_url": {"type": "string"},
+                                "widget_ids": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["miro_url"],
                             "additionalProperties": False,
                         },
                     }
@@ -880,9 +913,10 @@ def test_real_mcp_http_handshake_schema_binding_and_error_preservation(setup, mo
         else:
             assert payload["method"] == "tools/call"
             assert payload["params"]["name"] == "canvas_read_as_svg"
-            assert payload["params"]["arguments"]["board_url"].endswith(
+            assert payload["params"]["arguments"]["miro_url"].endswith(
                 "/board1/?focusWidget=frame1"
             )
+            assert payload["params"]["arguments"]["widget_ids"] == ["item1"]
             result = {"content": [{"type": "text", "text": SVG}]}
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
 
@@ -890,7 +924,9 @@ def test_real_mcp_http_handshake_schema_binding_and_error_preservation(setup, mo
         async with MiroClient(
             store, record, http_transport=httpx.MockTransport(handle)
         ).open() as client:
-            result = await client.call("read_canvas", board_id="board1", frame_id="frame1")
+            result = await client.call(
+                "read_canvas", board_id="board1", frame_id="frame1", item_ids=["item1"]
+            )
             assert result["text"] == SVG
         with pytest.raises(MiroError, match="source snapshot"):
             async with MiroClient(store, record, http_transport=httpx.MockTransport(handle)).open():
@@ -918,8 +954,8 @@ def test_empty_canvas_required_empty_selection_and_incomplete_pages(setup):
         async def call(operation, **kwargs):
             if operation != "read_comments":
                 return await original(operation, **kwargs)
-            if not kwargs.get("cursor"):
-                return {"comments": [{"id": "first"}], "next_cursor": "second"}
+            if kwargs["offset"] == 0:
+                return {"comments": [{"id": "first"}], "total": 2, "limit": 1, "offset": 0}
             raise MiroError("upstream_unavailable", "Second page unavailable")
 
         client.call = call
@@ -946,9 +982,18 @@ def test_comment_pagination_completes_before_observation(setup):
         client = original_factory(store, record)
 
         async def call(operation, **kwargs):
-            if kwargs.get("cursor") == "next":
-                return {"comments": [{"id": "second", "text": "Second question"}]}
-            return {"comments": [{"id": "first", "text": "First question"}], "nextCursor": "next"}
+            if kwargs["offset"] == 1:
+                return {
+                    "comments": [{"id": "second", "text": "Second question"}],
+                    "total": 2,
+                    "offset": 1,
+                }
+            return {
+                "comments": [{"id": "first", "text": "First question"}],
+                "total": 2,
+                "limit": 1,
+                "offset": 0,
+            }
 
         client.call = call
         return client
@@ -1057,3 +1102,389 @@ def test_workflow_directory_is_derived_from_context(tmp_path):
     assert service.access.actor.endswith(":review")
     with pytest.raises(ValueError):
         OperationInput.model_validate({"connection_id": "architecture", "directory_path": "root"})
+
+
+@pytest.mark.parametrize("allow_delete", [False, True])
+def test_partial_canvas_update_preserves_omitted_items(setup, allow_delete):
+    _, _, remote, service = setup
+    before = read(service)
+    partial = '<svg xmlns="http://www.w3.org/2000/svg"><text data-miro-id="item1" x="10" y="20">Revised</text></svg>'
+    result = run(
+        service.execute(
+            "update_canvas", update_args(before, svg=partial, allow_delete=allow_delete)
+        )
+    )
+    assert result["status"] == "applied"
+    assert result["affected_item_ids"] == ["item1"]
+    assert "Revised" in remote.svg
+    assert 'data-miro-id="item2"' in remote.svg
+
+
+def test_approved_canvas_deletion_removes_only_marked_items(setup):
+    _, _, remote, service = setup
+    before = read(service)
+    deleting = SVG.replace('data-miro-id="item2"', 'data-miro-id="item2" data-deleted="true"')
+    result = run(
+        service.execute("update_canvas", update_args(before, svg=deleting, allow_delete=True))
+    )
+    assert result["status"] == "applied"
+    assert result["affected_item_ids"] == ["item2"]
+    assert 'data-miro-id="item2"' not in remote.svg
+    assert 'data-miro-id="item1"' in remote.svg
+
+
+def test_creation_receipt_supports_mixed_svg_text(setup):
+    _, _, remote, service = setup
+    result = run(
+        service.execute(
+            "create_canvas",
+            {
+                "connection_id": "architecture",
+                "board_id": "board1",
+                "operation_key": "formatted-text",
+                "svg": '<svg xmlns="http://www.w3.org/2000/svg"><text>Hello <tspan>world</tspan> today</text></svg>',
+            },
+        )
+    )
+    assert result["status"] == "applied"
+    assert result["affected_item_ids"] == ["created0"]
+    assert " today" in remote.svg
+
+
+@pytest.mark.parametrize(
+    "attributes", ['data-deleted="true"', 'data-miro-id="item1" data-deleted="TRUE"']
+)
+def test_canvas_deletion_marker_requires_an_id_and_boolean_value(attributes):
+    with pytest.raises(MiroError, match="Deletion requires"):
+        canvas(f"<svg><rect {attributes}/></svg>")
+
+
+@pytest.mark.parametrize("metadata,count", [(True, 55), (False, 55), (False, 100)])
+def test_real_client_reads_offset_comment_pages_before_snapshot(setup, metadata, count):
+    from evander_miro_addon.client import MiroClient
+
+    store, record, _, service = setup
+    comments = [{"id": f"thread{i}", "text": f"Question {i}"} for i in range(count)]
+    calls = []
+
+    class Session:
+        async def call_tool(self, tool, arguments):
+            calls.append(arguments)
+            assert tool == "comment_list_comments"
+            assert arguments["miro_url"] == "https://miro.com/app/board/board1/"
+            assert arguments["limit"] == 50
+            offset = arguments["offset"]
+            data = {"comments": comments[offset : offset + arguments["limit"]]}
+            if metadata:
+                data["pagination"] = {"offset": offset, "limit": 50, "total": count}
+            return SimpleNamespace(isError=False, structuredContent=data)
+
+    def factory(store, record):
+        client = MiroClient(store, record)
+        client.schemas["comment_list_comments"] = {
+            "type": "object",
+            "properties": {
+                "miro_url": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "offset": {"type": "integer", "minimum": 0},
+            },
+            "required": ["miro_url"],
+            "additionalProperties": False,
+        }
+        client.session = Session()
+
+        @asynccontextmanager
+        async def open_client():
+            yield client
+
+        client.open = open_client
+        return client
+
+    service.client_factory = factory
+    snapshot = read(service, "comments")
+    assert {item["id"] for item in snapshot["data"]["comments"]} == {
+        item["id"] for item in comments
+    }
+    assert [call["offset"] for call in calls] == ([0, 50, 100] if count == 100 else [0, 50])
+    assert store.usage(record) == len(calls)
+    assert len(store.list("snapshot")) == 1
+
+
+@pytest.mark.parametrize(
+    "paging",
+    [
+        {"offset": 1, "total": 2},
+        {"total": 2, "has_more": False},
+        {"total": 0},
+        {"limit": 0},
+        {"nextCursor": "unsupported"},
+    ],
+)
+def test_invalid_comment_pagination_never_advances_poll_checkpoint(setup, paging):
+    store, _, remote, service = setup
+
+    def factory(store, record):
+        client = remote.client(store, record)
+
+        async def call(operation, **values):
+            return {"comments": [{"id": "first"}], **paging}
+
+        client.call = call
+        return client
+
+    service.client_factory = factory
+    with pytest.raises(MiroError):
+        run(
+            service.poll(
+                "feedback", {"connection_id": "architecture", "board_id": "board1"}, kind="comments"
+            )
+        )
+    assert store.list("snapshot") == []
+    assert store.list("subscription")[0]["snapshot_id"] is None
+
+
+def test_shared_operation_key_is_serialized_across_boards_and_store_instances(setup):
+    store, record, remote, author = setup
+    store.save_connection(
+        config(
+            boards=[
+                {"board_id": "board1", "writable": True},
+                {"board_id": "board2", "writable": True},
+            ]
+        ),
+        record["revision"],
+    )
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        def factory(store, record):
+            client = remote.client(store, record)
+
+            @asynccontextmanager
+            async def open_client():
+                entered.set()
+                await release.wait()
+                yield client
+
+            client.open = open_client
+            return client
+
+        author.client_factory = factory
+        other = MiroService(MiroStore(store.root.parents[1]), author.access, factory)
+        args = {"connection_id": "architecture", "svg": NEW, "operation_key": "shared"}
+        first = asyncio.create_task(author.execute("create_canvas", args | {"board_id": "board1"}))
+        await entered.wait()
+        second = asyncio.create_task(other.execute("create_canvas", args | {"board_id": "board2"}))
+        await asyncio.sleep(0)
+        release.set()
+        return await asyncio.gather(first, second, return_exceptions=True)
+
+    first, second = run(asyncio.wait_for(scenario(), 2))
+    assert first["status"] == "applied"
+    assert isinstance(second, MiroError) and second.code == "conflict"
+    assert [values["board_id"] for op, values in remote.calls if op == "create_canvas"] == [
+        "board1"
+    ]
+    assert len(store.list("operation")) == 1
+    assert store.list("operation")[0]["board_id"] == "board1"
+
+
+def test_readback_waiting_on_writer_preserves_completed_operation(setup):
+    from evander_miro_addon.state import digest
+
+    store, record, remote, author = setup
+    before = read(author)
+    operation_id = digest([record["key"], "update-retries"])
+
+    async def scenario():
+        sent, finish, waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        def factory(store, record):
+            client = remote.client(store, record)
+            original = client.call
+
+            async def call(operation, **values):
+                if operation == "update_canvas":
+                    sent.set()
+                    await finish.wait()
+                return await original(operation, **values)
+
+            client.call = call
+            return client
+
+        author.client_factory = factory
+        operator = MiroService(store, Access("root/project", "operator:test", admin=True), factory)
+        original_lock = store.lock
+
+        @asynccontextmanager
+        async def watched_lock(name, **kwargs):
+            if asyncio.current_task().get_name() == "reconcile":
+                waiting.set()
+            async with original_lock(name, **kwargs):
+                yield
+
+        store.lock = watched_lock
+        writer = asyncio.create_task(author.execute("update_canvas", update_args(before)))
+        await sent.wait()
+        reconciler = asyncio.create_task(
+            operator.reconcile("architecture", operation_id), name="reconcile"
+        )
+        await waiting.wait()
+        finish.set()
+        return await writer, await reconciler
+
+    written, reconciled = run(asyncio.wait_for(scenario(), 2))
+    assert written["status"] == reconciled["operation"]["status"] == "applied"
+    saved = store.get("operation", operation_id)
+    assert saved["result_snapshot_id"] == written["result_snapshot_id"]
+    assert saved["completed_at"] == written["completed_at"]
+    assert saved["upstream_acknowledged"] is True
+    assert saved["reconciliation_snapshot_id"]
+    # The completed operation must not leave the board blocked for subsequent writes.
+    assert (
+        run(author.execute("update_canvas", update_args(read(author), operation_key="next")))[
+            "status"
+        ]
+        == "applied"
+    )
+
+
+@pytest.mark.parametrize(
+    "operation,human_change",
+    [
+        ("update_canvas", lambda svg: svg.replace('width="100"', 'width="120"')),
+        ("update_canvas", lambda svg: svg.replace("with retry", "with human feedback")),
+        (
+            "create_canvas",
+            lambda svg: svg.replace("</svg>", '<text data-miro-id="human">Human note</text></svg>'),
+        ),
+        ("create_canvas", lambda svg: svg.replace("Retry flow", "Human correction")),
+    ],
+)
+def test_polling_preserves_human_edits_between_write_and_readback(
+    setup, monkeypatch, operation, human_change
+):
+    _, _, remote, service = setup
+    clock = [100000.0]
+    monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
+    args = {"connection_id": "architecture", "board_id": "board1"}
+    run(service.poll("feedback", args, kind="canvas", interval=60))
+    baseline = read(service)
+
+    def factory(store, record):
+        client = remote.client(store, record)
+        original = client.call
+
+        async def call(name, **values):
+            result = await original(name, **values)
+            if name == operation:
+                remote.svg = human_change(remote.svg)
+            return result
+
+        client.call = call
+        return client
+
+    service.client_factory = factory
+    clock[0] += 10
+    inputs = (
+        update_args(baseline)
+        if operation == "update_canvas"
+        else args | {"svg": NEW, "operation_key": "add"}
+    )
+    written = run(service.execute(operation, inputs))
+    assert written["status"] == "applied"
+    assert "item2" not in written["affected_item_ids"]
+    assert "human" not in written["affected_item_ids"]
+    clock[0] += 61
+    events = run(service.poll("feedback", args, kind="canvas", interval=60))
+    assert len(events) == 1 and events[0]["origin"] == "external_or_unknown"
+
+
+def test_missing_creation_receipt_does_not_hide_observed_additions(setup, monkeypatch):
+    _, _, remote, service = setup
+    clock = [100000.0]
+    monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
+    args = {"connection_id": "architecture", "board_id": "board1"}
+    run(service.poll("feedback", args, kind="canvas", interval=60))
+
+    def factory(store, record):
+        client = remote.client(store, record)
+        original = client.call
+
+        async def call(operation, **values):
+            result = await original(operation, **values)
+            return {"ok": True} if operation == "create_canvas" else result
+
+        client.call = call
+        return client
+
+    service.client_factory = factory
+    clock[0] += 10
+    result = run(service.execute("create_canvas", args | {"svg": NEW, "operation_key": "add"}))
+    assert result["status"] == "applied" and result["affected_item_ids"] == []
+    clock[0] += 61
+    assert (
+        run(service.poll("feedback", args, kind="canvas", interval=60))[0]["origin"]
+        == "external_or_unknown"
+    )
+
+
+@pytest.mark.parametrize(
+    "operation,human_thread",
+    [
+        ("resolve_comment", None),
+        ("resolve_comment", 0),
+        ("resolve_comment", 1),
+        ("reply_comment", 0),
+        ("reply_comment", 1),
+    ],
+)
+def test_comment_write_attribution_preserves_concurrent_human_feedback(
+    setup, monkeypatch, operation, human_thread
+):
+    _, _, remote, service = setup
+    remote.comments.append(
+        {"id": "thread2", "text": "Another question", "replies": [], "resolved": False}
+    )
+    clock = [100000.0]
+    monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
+    args = {"connection_id": "architecture", "board_id": "board1"}
+    run(service.poll("feedback", args, kind="comments", interval=60))
+    before = read(service, "comments")
+
+    def factory(store, record):
+        client = remote.client(store, record)
+        original = client.call
+
+        async def call(name, **values):
+            result = await original(name, **values)
+            if name == operation and human_thread is not None:
+                remote.comments[human_thread]["text"] = "Human feedback during the write"
+            return result
+
+        client.call = call
+        return client
+
+    service.client_factory = factory
+    clock[0] += 10
+    result = run(
+        service.execute(
+            operation,
+            args
+            | {
+                "comment_id": "thread1",
+                "text": "Agent reply",
+                "snapshot_id": before["snapshot_id"],
+                "operation_key": "comment-update",
+            },
+        )
+    )
+    assert result["status"] == "applied"
+    assert "thread2" not in result["affected_item_ids"]
+    clock[0] += 61
+    events = run(service.poll("feedback", args, kind="comments", interval=60))
+    if human_thread is None:
+        assert events == []
+    else:
+        assert len(events) == 1 and events[0]["origin"] == "external_or_unknown"

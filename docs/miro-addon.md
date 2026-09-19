@@ -78,12 +78,14 @@ diagram publication does not grant source checkout transport or unrestricted fil
 
 Read a selection, then use its snapshot when updating. The service rereads exactly that selection
 before sending a write. If it has changed, the operation returns a conflict without writing. Updates
-may reference only IDs in the snapshot; omission requires explicit `allow_delete=true`. Creating
+may reference only IDs in the snapshot. Omitted items remain unchanged. Delete an item by keeping
+its ID, marking it `data-deleted="true"`, and explicitly setting `allow_delete=true`. Creating
 content requires fresh IDs. An SVG payload is limited to 1 MiB, rejects active content and XML
 entities, and is never rendered as trusted HTML in Admin Web.
 
 Writes to the same board are serialized across host processes, even through different connections.
-A durable `operation_key` identifies the caller's exact operation and arguments. Reusing it returns
+A durable `operation_key` identifies the caller's exact operation and arguments across all boards
+in a connection. Concurrent requests sharing a key are serialized. Reusing it returns
 the existing outcome; changing the payload or caller with the same key is a conflict. A write
 acknowledged by Miro is followed by a fresh readback snapshot. This is observation, not an atomic
 compare-and-swap guarantee: a human can still edit during the remote operation.
@@ -105,11 +107,16 @@ optional `frame_id`/`item_ids`, `poll_interval_seconds` (default 900, minimum 60
 a baseline. A changed observation produces a durable event with board/frame references, previous
 and current snapshot IDs, URL, origin, and observation time. Pending events survive process restarts
 and remain pending until publication acknowledgment. Changes to a subscription's selection establish
-a fresh baseline. Incomplete pagination and read failures never advance the snapshot checkpoint.
+a fresh baseline. Comment reads use Miro's `limit`/`offset` pagination, with at most 20 pages of
+50 comments per observation. Incomplete pagination and read failures never advance the snapshot
+checkpoint.
 
 Changes attributable to recorded Evander writes are suppressed by default, including across
 connections and frame selections. A human edit that breaks the recorded sequence of item states
-still emits an event. Unrecognized changes are conservatively treated as external. Enable
+still emits an event, including edits made between a write and its readback. Suppression requires
+an observed state matching the requested edit; new items also require the mutation's SVG receipt.
+Unrecognized changes, older operation records without this evidence, and comment replies without
+a verifiable message receipt are conservatively treated as external. Enable
 `include_self` deliberately when coordinating agents via board events, and add workflow-level
 routing/deduplication rules. Only the observed state is known: polling can miss edits that are
 reverted between observations. Miro [retired experimental webhooks](https://developers.miro.com/changelog/removed-experimental-webhooks-support),
