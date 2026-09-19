@@ -158,6 +158,13 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
 Removing `runtime/addons/<addon_id>/` must not corrupt Evander core state.
 
+## Figma Add-on Guidance
+
+For native UI mockups, the optional `figma-addon` registers agent tools, workflow providers,
+and a Figma operator page. It supports workflow-defined authorship and review, immutable snapshots,
+host-held OAuth, and guarded unattended authoring. See [Figma collaboration](figma.md) for client
+approval prerequisites, file grants, connection testing, and the three example collaboration packs.
+
 ## Freshservice Add-on Guidance
 
 The bundled `evander_freshservice_addon` is a headless connector add-on. It contributes the

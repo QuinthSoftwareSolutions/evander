@@ -36,6 +36,7 @@ BUNDLED_ADDON_MANIFESTS = {
     "ado-activity-addon": "evander_ado_activity_addon",
     "elastic-stack-addon": "evander_elastic_stack_addon",
     "freshservice-addon": "evander_freshservice_addon",
+    "figma-addon": "evander_figma_addon",
 }
 BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_team_addon": ["addon.json", "ui_static/*"],
@@ -45,6 +46,7 @@ BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_ado_activity_addon": ["addon.json"],
     "evander_elastic_stack_addon": ["addon.json"],
     "evander_freshservice_addon": ["addon.json"],
+    "evander_figma_addon": ["addon.json", "canvas.js", "ui_static/*"],
 }
 
 

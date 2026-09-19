@@ -1,0 +1,16 @@
+:root{color-scheme:light dark;font:15px/1.5 system-ui,sans-serif;color:#172234;background:#f4f6fa}
+*{box-sizing:border-box}body{margin:0}main{max-width:1080px;margin:auto;padding:32px 24px}
+h1{font-size:32px;letter-spacing:-.03em;margin:12px 0 0}h2{font-size:20px;margin:0 0 12px}
+header p{color:#566376}a{color:#2758b0}section{padding:24px;background:white;border:1px solid #dfe5ef;border-radius:12px;margin:22px 0}
+label{display:flex;flex-direction:column;gap:6px;font-weight:550}small{font-weight:400;color:#59677b}
+input,select,button{font:inherit;border:1px solid #b9c5d7;border-radius:6px;padding:9px 12px;background:white;color:inherit;min-width:0}
+button{background:#2758b0;border-color:#2758b0;color:white;cursor:pointer;align-self:end;width:fit-content}
+button:disabled{opacity:.55;cursor:wait}button.secondary{background:transparent;color:#2758b0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}.toolbar{display:flex;align-items:end;gap:12px;flex-wrap:wrap}
+details{margin-top:18px}summary{cursor:pointer;font-weight:550}fieldset{border:1px solid #dfe5ef;border-radius:6px}
+.check{display:inline-flex;flex-direction:row;margin-right:16px}.card{border-top:1px solid #dfe5ef;padding:16px 0;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.card>div:first-child{flex:1;min-width:180px}.badge{font-size:13px;color:#566376}.error{color:#ad263c}#status{min-height:24px}
+.snapshots{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.snapshot{border:1px solid #dfe5ef;border-radius:8px;padding:14px;overflow:hidden}.snapshot img{max-width:100%;max-height:260px;object-fit:contain}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:350px;overflow:auto;background:#f4f6fa;padding:12px;border-radius:6px;font-size:12px}
+@media(max-width:650px){.grid{grid-template-columns:1fr}main{padding:18px 12px}section{padding:18px}}
+@media(prefers-color-scheme:dark){:root{color:#e3eafa;background:#111722}section,input,select{background:#1a2332;color:#e3eafa}section,.card,.snapshot,fieldset{border-color:#334258}a,button.secondary{color:#91b6ff}header p,.badge,small{color:#a7b6cb}pre{background:#111722}.error{color:#ff9cac}}

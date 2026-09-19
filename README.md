@@ -12,6 +12,8 @@ For decision journals, bounded wake deltas and configurable workflow context, se
 [Case context](docs/case-context.md).
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
+- Optional [Figma collaboration](docs/figma.md) for native mockups, parallel design proposals,
+  shared editing, review, and immutable snapshots through agent tools and workflows
 - Directory-scoped named connectors for approved REST and add-on operations, including
   Freshservice, plus host file retrieval with host-owned authentication, per-session operation
   grants, approvals, and artifact results

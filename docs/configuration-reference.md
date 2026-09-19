@@ -29,6 +29,16 @@ if a file is absent. Runtime configuration comes from `runtime/host-config.json`
 `runtime/directory-config/root/...`, and secret values can also be supplied through the service
 manager environment or optional repo-root `secrets.env`.
 
+### Optional Figma collaboration
+
+The `figma-addon` stores revisioned settings per exact directory through its Admin Web page.
+[`config/figma/settings.json.example`](../config/figma/settings.json.example) documents approved
+OAuth client configuration, host credential setting names, registered files, and per-session
+`read`/`comment`/`edit` grants with optional edit roots. Credentials stay in the host service
+environment; guests receive only the Figma MCP tools allowed by their session policy. See
+[Figma setup and authoring verification](figma.md) before enabling it. No new firewall port or
+standalone service is required.
+
 ### Personal ADO OAuth (shared host environment)
 
 These settings are documented in `config/admin-web.env.example`, but must be supplied through

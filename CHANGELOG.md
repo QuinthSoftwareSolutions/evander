@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-19 - Collaborate on native Figma mockups (0.47.0)
+
+- Add an optional Figma add-on with shared agent tools, workflow providers, directory-scoped
+  file grants, and an operator page for host-held OAuth connections, previews, and operation history.
+- Support separate proposals, author/reviewer workflows, and coordinated edits to shared screens;
+  retain immutable design snapshots and compose only unchanged snapshot sources.
+- Serialize file writes across processes, reject stale revisions, and retain uncertain outcomes
+  for readback and explicit recovery instead of replaying writes. Poll external comments and named
+  versions with durable delivery acknowledgements and self-feedback suppression.
+- Keep authoring disabled until an approved Figma client passes a live unattended
+  create/edit/render/readback test. Figma client approval and credentials remain deployment prerequisites.
+
 ## 2026-09-18 - Browse repository index history (0.46.0)
 
 - Show repository index creation times, build IDs, exact commits and a clear newest marker in

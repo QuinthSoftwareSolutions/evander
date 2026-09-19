@@ -1,0 +1,95 @@
+{
+  "pack_id": "figma-review-example",
+  "pack_version": "v1",
+  "description": "One author and two reviewers of the same immutable snapshot.",
+  "graphs": [
+    {
+      "id": "figma-review-example",
+      "name": "One author and two reviewers of the same immutable snapshot.",
+      "directory_path": "root/design",
+      "node_ids": [
+        "review-request",
+        "author",
+        "review-snapshot",
+        "review-layout",
+        "review-usability"
+      ]
+    }
+  ],
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {
+        "id": "review-request",
+        "display_name": "review-request",
+        "type": "trigger:event",
+        "config": {
+          "event_type": "example.figma.review_requested"
+        }
+      },
+      {
+        "id": "author",
+        "display_name": "author",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "designer-a",
+          "prompt": "Create or refine the UI in target mockups, node ${{review-request.payload.node_id}}. Brief: ${{review-request.payload.brief}} Use figma_query inspect before each small figma_execute edit, include expected_revision, and use stable unique request IDs. On a stale revision, inspect and revise your edit. If an operation is uncertain, stop and report its operation_id; do not retry with a new ID. Stay within your granted design area.",
+          "vm_user": "agent"
+        }
+      },
+      {
+        "id": "review-snapshot",
+        "display_name": "review-snapshot",
+        "type": "effect:figma:execute",
+        "config": {
+          "session_id": "designer-a",
+          "request": {
+            "operation": "snapshot",
+            "target_id": "mockups",
+            "node_id": "${{review-request.payload.node_id}}",
+            "request_id": "${{review-request.event_id}}:review-snapshot"
+          }
+        }
+      },
+      {
+        "id": "review-layout",
+        "display_name": "review-layout",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "reviewer",
+          "prompt": "Review immutable Figma snapshot ${{review-snapshot.result.snapshot_id}}. Use figma_execute import_snapshot for target mockups and this snapshot ID, then communication_copy_artifact_to_workspace for each artifact_id. Inspect preview.png and design.json. Give actionable feedback with the snapshot ID and node IDs. Add a Figma comment if useful. Your task is review.",
+          "vm_user": "agent"
+        }
+      },
+      {
+        "id": "review-usability",
+        "display_name": "review-usability",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "reviewer-b",
+          "prompt": "Review immutable Figma snapshot ${{review-snapshot.result.snapshot_id}}. Use figma_execute import_snapshot for target mockups and this snapshot ID, then communication_copy_artifact_to_workspace for each artifact_id. Inspect preview.png and design.json. Give actionable feedback with the snapshot ID and node IDs. Add a Figma comment if useful. Your task is review.",
+          "vm_user": "agent"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source_id": "review-request",
+        "target_id": "author"
+      },
+      {
+        "source_id": "author",
+        "target_id": "review-snapshot",
+        "source_port": "completed"
+      },
+      {
+        "source_id": "review-snapshot",
+        "target_id": "review-layout"
+      },
+      {
+        "source_id": "review-snapshot",
+        "target_id": "review-usability"
+      }
+    ]
+  }
+}

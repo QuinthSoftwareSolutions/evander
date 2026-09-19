@@ -3,6 +3,12 @@
 For effect handoff timing, bounded recovery scheduling, and deployment verification, see
 [Orchestration latency and recovery](orchestration-latency.md).
 
+For native UI mockup collaboration, see [Figma setup and recovery](figma.md). Enable the optional
+add-on, connect an approved OAuth client, and pass its create/edit/render/readback/cleanup test in
+a disposable file before granting agent authoring. The same page shows snapshots and uncertain
+operations. Inspect and reconcile interrupted writes before resuming that file; never retry them
+under new request IDs to bypass recovery. This add-on uses existing host services and MCP ports.
+
 ## Personal Azure DevOps PR connections
 
 Users manage Microsoft OAuth and personal PATs through **My ADO connection** in Admin Web.
