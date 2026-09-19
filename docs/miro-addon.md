@@ -86,7 +86,8 @@ entities, and is never rendered as trusted HTML in Admin Web.
 Writes to the same board are serialized across host processes, even through different connections.
 A durable `operation_key` identifies the caller's exact operation and arguments across all boards
 in a connection. Concurrent requests sharing a key are serialized. Reusing it returns
-the existing outcome; changing the payload or caller with the same key is a conflict. A write
+the existing outcome, including board creation after reaching the connection's board limit;
+changing the payload or caller with the same key is a conflict. A write
 acknowledged by Miro is followed by a fresh readback snapshot. This is observation, not an atomic
 compare-and-swap guarantee: a human can still edit during the remote operation.
 
@@ -98,6 +99,8 @@ observed snapshot and live board, then record evidence and the outcome. **Mark n
 not automatically retry; schedule a fresh operation key only after verifying absence of the write.
 For an uncertain board creation without a returned ID, inspect the selected Miro team manually and
 include the identified board in the resolution evidence; bind it explicitly in connection settings.
+Operators may inspect and recover operations in their selected directory and its descendants.
+An inherited connection does not permit recovery of operations owned by an ancestor or sibling.
 
 ## Workflow-owned monitoring and examples
 
@@ -107,7 +110,10 @@ optional `frame_id`/`item_ids`, `poll_interval_seconds` (default 900, minimum 60
 a baseline. A changed observation produces a durable event with board/frame references, previous
 and current snapshot IDs, URL, origin, and observation time. Pending events survive process restarts
 and remain pending until publication acknowledgment. Changes to a subscription's selection establish
-a fresh baseline. Comment reads use Miro's `limit`/`offset` pagination, with at most 20 pages of
+a fresh baseline. When a child connection overrides the monitored connection, polling also resets
+the baseline and discards pending observations tied to the old connection. Event IDs remain unique
+across that change, so a delayed acknowledgment cannot consume a new event.
+Comment reads use Miro's `limit`/`offset` pagination, with at most 20 pages of
 50 comments per observation. Incomplete pagination and read failures never advance the snapshot
 checkpoint.
 

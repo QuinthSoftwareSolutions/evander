@@ -12,6 +12,8 @@
 - Use Miro's published tool parameters, offset comment pagination, and explicit SVG deletion
   markers. Serialize operation keys across boards, preserve completed writes during readback,
   and keep concurrent human edits visible to monitoring.
+- Enforce operation directory ownership during recovery, reset polling safely when connections
+  are overridden, and preserve idempotent board-creation retries at the connection's board limit.
 
 ## 2026-09-19 - Core classification with Jev (0.47.0)
 

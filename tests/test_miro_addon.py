@@ -476,6 +476,32 @@ def test_human_feedback_reply_and_resolution_keep_threads(setup):
     assert remote.comments[0]["resolved"]
 
 
+@pytest.mark.parametrize("fail_readback", [False, True])
+def test_create_board_retry_at_capacity_preserves_durable_outcome(setup, fail_readback):
+    store, record, remote, service = setup
+    store.save_connection(
+        config(boards=[{"board_id": f"board{i}", "writable": True} for i in range(199)]),
+        record["revision"],
+    )
+    remote.fail_read = fail_readback
+    arguments = {
+        "connection_id": "architecture",
+        "title": "Last available board",
+        "operation_key": "last-board",
+    }
+    result = run(service.execute("create_board", arguments))
+    assert result["status"] == ("uncertain" if fail_readback else "applied")
+    assert len(store.resolve_connection("root/project", "architecture")["config"]["boards"]) == 200
+    calls = list(remote.calls)
+
+    assert run(service.execute("create_board", arguments)) == result
+    with pytest.raises(MiroError, match="different arguments"):
+        run(service.execute("create_board", arguments | {"title": "Different board"}))
+    with pytest.raises(MiroError, match="board limit"):
+        run(service.execute("create_board", arguments | {"operation_key": "another-board"}))
+    assert remote.calls == calls
+
+
 def test_polling_baseline_restart_acknowledgment_and_repeated_transitions(setup, monkeypatch):
     store, _, remote, service = setup
     clock = [100000.0]
@@ -516,6 +542,203 @@ def test_polling_suppresses_own_changes_and_backs_off_failures(setup, monkeypatc
     assert run(service.poll("watch", args, kind="canvas", interval=60)) == []
     assert len(remote.calls) == count
     assert store.list("subscription")[0]["snapshot_id"] == checkpoint
+
+
+@pytest.mark.parametrize("emit_initial", [False, True])
+def test_polling_connection_override_resets_baseline_and_preserves_event_identity(
+    setup, emit_initial
+):
+    store, _, remote, _ = setup
+    service = MiroService(
+        store, Access("root/project/child", "workflow:child", workflow=True), remote.client
+    )
+    arguments = {"connection_id": "architecture", "board_id": "board1"}
+    previous_events = run(
+        service.poll("feedback", arguments, kind="canvas", emit_initial=emit_initial)
+    )
+    previous = store.list("subscription")[0]
+    child = store.save_connection(config(directory_path="root/project/child"), 0)
+    events = run(service.poll("feedback", arguments, kind="canvas", emit_initial=emit_initial))
+    state = store.list("subscription")[0]
+    assert state["connection_key"] == child["key"]
+    assert state["snapshot_id"] != previous["snapshot_id"]
+    snapshot = run(
+        service.execute(
+            "get_snapshot",
+            {"connection_id": "architecture", "snapshot_id": state["snapshot_id"]},
+        )
+    )
+    assert snapshot["data"]["item_ids"] == ["item1", "item2"]
+    if emit_initial:
+        assert len(events) == 1
+        assert events[0]["previous_snapshot_id"] is None
+        assert events[0]["event_id"] != previous_events[0]["event_id"]
+        # A late acknowledgment for the old connection cannot consume the new event.
+        run(service.acknowledge(previous["key"], previous_events[0]["event_id"]))
+        assert store.get("subscription", state["key"])["pending"] == events
+        run(service.acknowledge(state["key"], events[0]["event_id"]))
+    else:
+        assert events == []
+    calls = list(remote.calls)
+    restarted = MiroService(MiroStore(store.root.parents[1]), service.access, remote.client)
+    assert (
+        run(restarted.poll("feedback", arguments, kind="canvas", emit_initial=emit_initial)) == []
+    )
+    assert remote.calls == calls
+
+
+def test_polling_connection_override_does_not_replay_old_event_after_read_failure(
+    setup, monkeypatch
+):
+    store, _, remote, _ = setup
+    clock = [100000.0]
+    monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
+    service = MiroService(
+        store, Access("root/project/child", "workflow:child", workflow=True), remote.client
+    )
+    arguments = {"connection_id": "architecture", "board_id": "board1"}
+    previous = run(
+        service.poll("feedback", arguments, kind="canvas", interval=60, emit_initial=True)
+    )[0]
+    child = store.save_connection(config(directory_path="root/project/child"), 0)
+    remote.fail_read = True
+    with pytest.raises(MiroError, match="Offline"):
+        run(service.poll("feedback", arguments, kind="canvas", interval=60, emit_initial=True))
+    state = store.list("subscription")[0]
+    assert state["connection_key"] == child["key"]
+    assert state["snapshot_id"] is None and state["checked_at"] == 0
+    assert state["pending"] == []
+    assert state["last_error"] == "upstream_unavailable"
+    assert (
+        run(service.poll("feedback", arguments, kind="canvas", interval=60, emit_initial=True))
+        == []
+    )
+    remote.fail_read = False
+    clock[0] += 61
+    event = run(service.poll("feedback", arguments, kind="canvas", interval=60, emit_initial=True))[
+        0
+    ]
+    assert event["event_id"] != previous["event_id"]
+    assert event["previous_snapshot_id"] is None
+
+
+@pytest.mark.parametrize("wait_on", ["subscription", "board"])
+def test_polling_rechecks_connection_after_waiting_for_lock(setup, monkeypatch, wait_on):
+    store, _, remote, _ = setup
+    clock = [100000.0]
+    monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
+    service = MiroService(
+        store, Access("root/project/child", "workflow:child", workflow=True), remote.client
+    )
+    arguments = {"connection_id": "architecture", "board_id": "board1"}
+
+    async def poll():
+        return await service.poll(
+            "feedback", arguments, kind="canvas", interval=60, emit_initial=True
+        )
+
+    previous = run(poll())[0]
+    if wait_on == "board":
+        run(service.acknowledge(previous["subscription_key"], previous["event_id"]))
+        clock[0] += 61
+    lock_name = (
+        "subscription:" + previous["subscription_key"]
+        if wait_on == "subscription"
+        else "board:board1"
+    )
+    original_lock = store.lock
+    calls = list(remote.calls)
+
+    async def scenario():
+        waiting = asyncio.Event()
+
+        @asynccontextmanager
+        async def watched_lock(name, **kwargs):
+            if name == lock_name and asyncio.current_task().get_name() == "poll":
+                waiting.set()
+            async with original_lock(name, **kwargs):
+                yield
+
+        monkeypatch.setattr(store, "lock", watched_lock)
+        async with original_lock(lock_name):
+            pending = asyncio.create_task(poll(), name="poll")
+            await waiting.wait()
+            child = store.save_connection(config(directory_path="root/project/child"), 0)
+        if wait_on == "board":
+            with pytest.raises(MiroError, match="binding changed"):
+                await pending
+            assert remote.calls == calls
+            events = await poll()
+        else:
+            events = await pending
+        state = store.list("subscription")[0]
+        assert state["connection_key"] == child["key"]
+        assert events[0]["event_id"] != previous["event_id"]
+        assert events[0]["previous_snapshot_id"] is None
+        await service.execute(
+            "get_snapshot",
+            {"connection_id": "architecture", "snapshot_id": events[0]["snapshot_id"]},
+        )
+
+    run(asyncio.wait_for(scenario(), 2))
+
+
+def test_polling_rechecks_connection_after_remote_read(setup, monkeypatch):
+    store, parent, remote, _ = setup
+    clock = [100000.0]
+    monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
+    service = MiroService(
+        store, Access("root/project/child", "workflow:child", workflow=True), remote.client
+    )
+    arguments = {"connection_id": "architecture", "board_id": "board1"}
+
+    async def poll():
+        return await service.poll("feedback", arguments, kind="canvas", interval=60)
+
+    assert run(poll()) == []
+    previous = store.list("subscription")[0]
+    remote.svg = SVG.replace("Order service", "Human revision")
+    clock[0] += 61
+
+    async def scenario():
+        received, finish = asyncio.Event(), asyncio.Event()
+
+        def factory(store, record):
+            client = remote.client(store, record)
+            original = client.call
+
+            async def call(operation, **values):
+                result = await original(operation, **values)
+                if operation == "read_canvas" and record["key"] == parent["key"]:
+                    received.set()
+                    await finish.wait()
+                return result
+
+            client.call = call
+            return client
+
+        service.client_factory = factory
+        pending = asyncio.create_task(poll())
+        await received.wait()
+        child = store.save_connection(config(directory_path="root/project/child"), 0)
+        finish.set()
+        with pytest.raises(MiroError, match="binding changed"):
+            await pending
+        state = store.list("subscription")[0]
+        assert state["snapshot_id"] == previous["snapshot_id"]
+        assert state["checked_at"] == previous["checked_at"]
+        assert state["pending"] == []
+        # A retry establishes the child's baseline without emitting the old connection's edit.
+        assert await poll() == []
+        state = store.list("subscription")[0]
+        assert state["connection_key"] == child["key"]
+        snapshot = await service.execute(
+            "get_snapshot",
+            {"connection_id": "architecture", "snapshot_id": state["snapshot_id"]},
+        )
+        assert "Human revision" in snapshot["data"]["svg"]
+
+    run(asyncio.wait_for(scenario(), 2))
 
 
 def test_polling_attributes_scoped_writes_across_connections(setup, monkeypatch):
@@ -867,6 +1090,139 @@ def test_admin_routes_revision_rbac_and_no_secret_disclosure(tmp_path):
             assert (await client.get(path)).status_code == 403
 
     run(scenario())
+
+
+@pytest.mark.parametrize(
+    "operation_directory,allowed",
+    [
+        ("root/project", False),
+        ("root/project/sibling", False),
+        ("root/project/child-other", False),
+        ("root/project/child", True),
+        ("root/project/child/nested", True),
+    ],
+)
+@pytest.mark.parametrize("boardless", [False, True])
+@pytest.mark.parametrize("status", ["running", "uncertain"])
+def test_admin_recovery_enforces_operation_directory(
+    setup, monkeypatch, operation_directory, allowed, boardless, status
+):
+    from evander.admin.web.rbac import BUILTIN_GROUP_DEFINITIONS, can
+
+    store, _, remote, _ = setup
+    author = MiroService(
+        store, Access(operation_directory, "session:author", session_id="author"), remote.client
+    )
+    arguments = (
+        {"connection_id": "architecture", "title": "Uncertain board", "operation_key": "new"}
+        if boardless
+        else update_args(read(author))
+    )
+    remote.fail_after_write = True
+    operation = run(author.execute("create_board" if boardless else "update_canvas", arguments))
+    remote.fail_after_write = False
+    operation_id = operation["operation_id"]
+    entry = store.get("operation", operation_id) | {"status": status}
+    store.put("operation", operation_id, entry)
+    calls = list(remote.calls)
+
+    class ScopedOwner(AdminAuth):
+        def require_permission(self, request, permission, directory_path=None):
+            self.require(request)
+            if not can(
+                assignments=[("owner", "root/project/child")],
+                group_permissions={
+                    name: definition["permissions"]
+                    for name, definition in BUILTIN_GROUP_DEFINITIONS.items()
+                },
+                direct_workflow_grants=[],
+                permission=permission,
+                directory_path=directory_path,
+            ):
+                raise PermissionError()
+
+    monkeypatch.setattr(
+        "evander_miro_addon.api.MiroService",
+        lambda store, access: MiroService(store, access, remote.client),
+    )
+    context = AddonContext(
+        addon_id="miro-addon",
+        runtime_dir=store.root.parents[1],
+        addon_runtime_dir=store.root,
+        auth=ScopedOwner(),
+        service=SimpleNamespace(),
+    )
+    app = Starlette(routes=[Mount("/api/addons/miro-addon", routes=admin_api_routes(context))])
+
+    async def scenario():
+        path = "/api/addons/miro-addon/connections/architecture"
+        scope = "?directory_path=root/project/child"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://evander.example"
+        ) as client:
+            assert (
+                await client.get(path + "/activity?directory_path=root/project")
+            ).status_code == 403
+            activity = await client.get(path + "/activity" + scope)
+            assert activity.status_code == 200
+            assert bool(activity.json()["operations"]) is allowed
+            recovery_path = path + "/operations/" + operation_id
+            readback = await client.post(recovery_path + "/reconcile" + scope, json={})
+            resolution = await client.post(
+                recovery_path + "/resolve" + scope,
+                json={"outcome": "applied", "evidence": "Inspected the board in Miro"},
+            )
+            assert readback.status_code == resolution.status_code == (200 if allowed else 403)
+        saved = store.get("operation", operation_id)
+        if allowed:
+            assert saved["status"] == "applied"
+        else:
+            assert saved == entry
+            assert remote.calls == calls
+            with pytest.raises(MiroError, match="reconciliation"):
+                await author.execute(
+                    "create_board" if boardless else "update_canvas",
+                    arguments | {"operation_key": "after-denied-recovery"},
+                )
+
+    run(scenario())
+
+
+def test_recovery_preserves_shared_reads_and_removed_board_grants(setup):
+    store, record, remote, author = setup
+    baseline = read(author)
+    remote.fail_after_write = True
+    operation = run(author.execute("update_canvas", update_args(baseline)))
+    remote.fail_after_write = False
+    child_agent = MiroService(
+        store,
+        Access("root/project/child", "session:reviewer", session_id="reviewer"),
+        remote.client,
+    )
+    assert (
+        run(
+            child_agent.execute(
+                "get_operation",
+                {"connection_id": "architecture", "operation_id": operation["operation_id"]},
+            )
+        )
+        == operation
+    )
+
+    store.save_connection(config(boards=[]), record["revision"])
+    operator = MiroService(
+        store, Access("root/project", "operator:jonathan", admin=True), remote.client
+    )
+    observed = run(operator.reconcile("architecture", operation["operation_id"]))
+    assert "with retry" in observed["observed"]["data"]["svg"]
+    assert (
+        run(
+            operator.resolve_operation(
+                "architecture", operation["operation_id"], "applied", "Inspected"
+            )
+        )["status"]
+        == "applied"
+    )
 
 
 def test_real_mcp_http_handshake_schema_binding_and_error_preservation(setup, monkeypatch):

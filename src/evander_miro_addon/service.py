@@ -21,6 +21,7 @@ from .models import (
     WRITE_OPERATIONS,
     board_url,
     identifier,
+    in_directory,
     require,
 )
 from .state import MiroStore, digest, encoded
@@ -232,6 +233,12 @@ class MiroService:
         operation = self.store.get("operation", operation_id)
         if not operation or operation["connection_key"] != record["key"]:
             raise MiroError("forbidden", "Operation is unavailable in this connection")
+        operation_directory = operation.get("directory_path")
+        if self.access.admin and (
+            not isinstance(operation_directory, str)
+            or not in_directory(self.access.directory_path, operation_directory)
+        ):
+            raise MiroError("forbidden", "Operation is outside this operator directory")
         if operation.get("board_id") and not self.access.admin:
             self.authorize(record["config"]["id"], operation["board_id"])
         return {
@@ -315,10 +322,6 @@ class MiroService:
             record = current_record
             if operation == "create_board" and not record["config"]["allow_create_boards"]:
                 raise MiroError("forbidden", "Board creation is not granted on this connection")
-            if operation == "create_board" and len(record["config"]["boards"]) >= 200:
-                raise MiroError(
-                    "invalid_input", "Connection board limit reached; remove unused bindings first"
-                )
             previous = self.store.get("operation", op_id)
             if previous:
                 if previous["fingerprint"] != fingerprint:
@@ -332,6 +335,10 @@ class MiroService:
                     )
                     self.store.put("operation", op_id, previous)
                 return self.saved_operation(record, op_id)
+            if operation == "create_board" and len(record["config"]["boards"]) >= 200:
+                raise MiroError(
+                    "invalid_input", "Connection board limit reached; remove unused bindings first"
+                )
             unsettled = [
                 item
                 for item in self.store.list("operation")
@@ -603,7 +610,7 @@ class MiroService:
             )
         args = OperationInput.model_validate(arguments)
         require(args.board_id, "board_id")
-        record = self.authorize(args.connection_id, args.board_id)
+        self.authorize(args.connection_id, args.board_id)
         key = digest(
             [
                 self.access.directory_path,
@@ -615,17 +622,22 @@ class MiroService:
             ]
         )
         async with self.store.lock("subscription:" + key):
-            state = self.store.get("subscription", key) or {
-                "key": key,
-                "subscription_id": subscription_id,
-                "directory_path": self.access.directory_path,
-                "connection_key": record["key"],
-                "board_id": args.board_id,
-                "sequence": 0,
-                "snapshot_id": None,
-                "checked_at": 0,
-                "pending": [],
-            }
+            record = self.authorize(args.connection_id, args.board_id)
+            state = self.store.get("subscription", key)
+            if not state or state["connection_key"] != record["key"]:
+                # A shadowing connection cannot read the old connection's snapshots.
+                # Keep event IDs monotonic so delayed acknowledgments remain harmless.
+                state = {
+                    "key": key,
+                    "subscription_id": subscription_id,
+                    "directory_path": self.access.directory_path,
+                    "connection_key": record["key"],
+                    "board_id": args.board_id,
+                    "sequence": state["sequence"] if state else 0,
+                    "snapshot_id": None,
+                    "checked_at": 0,
+                    "pending": [],
+                }
             if state["pending"]:
                 return state["pending"]
             if time.time() < state["checked_at"] + interval:
@@ -634,8 +646,20 @@ class MiroService:
                 return []
             try:
                 async with self.store.lock("board:" + args.board_id):
+                    current_record = self.authorize(args.connection_id, args.board_id)
+                    if current_record["key"] != record["key"]:
+                        raise MiroError(
+                            "connection_changed",
+                            "Connection binding changed; retry the observation",
+                        )
+                    record = current_record
                     async with self.client_factory(self.store, record).open() as client:
                         observed = await self.read(client, record, "read_" + kind, args)
+                    if self.authorize(args.connection_id, args.board_id)["key"] != record["key"]:
+                        raise MiroError(
+                            "connection_changed",
+                            "Connection binding changed; retry the observation",
+                        )
             except MiroError as exc:
                 state.update(last_error=exc.code, last_attempt_at=time.time())
                 # Backoff attempts without advancing the observation checkpoint.
