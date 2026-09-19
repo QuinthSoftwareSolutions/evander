@@ -194,6 +194,9 @@ _LLM_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "voice_media_controller_token_env"),
     ("providers", "voice_media_controller_request_timeout_seconds"),
 )
+_CLASSIFICATION_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "classification"),
+)
 _SEMANTIC_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "semantic_store_provider"),
     ("providers", "qdrant_base_url"),
@@ -386,6 +389,7 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
     "models_assistant_knowledge": (
         *_LLM_PROVIDER_FIELDS,
         *_ASSISTANT_SETTINGS_FIELDS,
+        *_CLASSIFICATION_PROVIDER_FIELDS,
         *_SEMANTIC_PROVIDER_FIELDS,
     ),
     "agent_runtime_launch": (
@@ -479,6 +483,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
     "models_assistant_knowledge": (
         ("LLM providers", _LLM_PROVIDER_FIELDS, ("openai_", "voice_media_")),
         ("Assistant", _ASSISTANT_SETTINGS_FIELDS, ()),
+        ("Classification JSON", _CLASSIFICATION_PROVIDER_FIELDS, ("classification",)),
         ("Semantic store", _SEMANTIC_PROVIDER_FIELDS, ("semantic_", "qdrant_")),
     ),
     "agent_runtime_launch": (

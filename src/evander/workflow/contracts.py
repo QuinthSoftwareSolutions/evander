@@ -152,6 +152,14 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
                 if isinstance(value, Mapping)
             }
         )
+    if node_type == "query:classification:evaluate":
+        from evander.classification.models import answer_schema
+        if isinstance(node, Mapping):
+            questions = (node.get("config") or {}).get("questions", node.get("questions"))
+        else:
+            questions = getattr(node, "questions", None)
+        if isinstance(questions, dict):
+            schema["answers"] = answer_schema(questions)
     return _with_gate_failure_output_schema(node_type, schema)
 
 

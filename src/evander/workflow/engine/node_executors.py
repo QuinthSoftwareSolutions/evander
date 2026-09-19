@@ -108,6 +108,19 @@ class ProviderQueryNodeExecutor:
             return self._provider_factory_getter()
         return self._provider_factory
 
+    def prepare(self, **kwargs: Any) -> dict[str, Any]:
+        config = dict(kwargs.get("resolved_config") or {})
+        prepare = getattr(self.provider_factory, "prepare", None)
+        if not callable(prepare):
+            return config
+        graph_id, directory_path = _resolve_graph_metadata_values(
+            graph_metadata=kwargs.get("graph_metadata"), execution_context=kwargs.get("execution_context"),
+        )
+        return dict(prepare(
+            kwargs["query"], resolved_config=config, graph_id=graph_id,
+            directory_path=directory_path, execution_context=kwargs.get("execution_context"),
+        ))
+
     def execute(self, **kwargs: Any) -> dict[str, Any]:
         query = kwargs["query"]
         resolved_config = kwargs.get("resolved_config")
@@ -132,6 +145,12 @@ def _build_provider_with_graph_metadata(
         graph_metadata=graph_metadata, execution_context=execution_context
     )
     build_kwargs = _build_provider_kwargs(build, directory_path=directory_path, graph_id=graph_id)
+    if execution_context is not None:
+        try:
+            if "execution_context" in inspect.signature(build).parameters:
+                build_kwargs["execution_context"] = dict(execution_context)
+        except (TypeError, ValueError):
+            pass
     try:
         return build(node_definition, **build_kwargs)
     except TypeError as exc:

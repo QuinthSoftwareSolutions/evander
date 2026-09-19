@@ -1,3 +1,4 @@
+import { WorkflowClassificationEditor } from "./features/classification/WorkflowClassificationEditor";
 import {
   useEffect,
   useLayoutEffect,
@@ -8146,6 +8147,22 @@ export default function App() {
     }
   }
 
+  function updateClassificationFields(patch: Record<string, unknown>, answers?: Record<string, unknown>) {
+    const knownValues = {...inspectorKnownValues, ...patch};
+    const jsonDrafts = {...inspectorJsonDrafts};
+    if ("questions" in patch) {
+      jsonDrafts.questions = typeof patch.questions === "string" ? patch.questions : JSON.stringify(patch.questions ?? {}, null, 2);
+      if (patch.questions === undefined) jsonDrafts.questions = "";
+    }
+    const unknownValues = answers ? {...inspectorUnknownValues, outputs: {
+      ...(isRecord(inspectorUnknownValues.outputs) ? inspectorUnknownValues.outputs : {}), answers,
+    }} : inspectorUnknownValues;
+    setInspectorKnownValues(knownValues);
+    setInspectorJsonDrafts(jsonDrafts);
+    setInspectorUnknownValues(unknownValues);
+    stageInspectorDraft({knownValues, jsonDrafts, unknownValues});
+  }
+
   function updateAdoQueryModeField(value: string) {
     const next = { ...inspectorKnownValues };
     if (value) {
@@ -9562,6 +9579,13 @@ export default function App() {
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
     const isDisabled = field.read_only
       || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(field.key));
+
+    if (selectedNodeType === "query:classification:evaluate") {
+      if (["profile_id", "provider", "model"].includes(field.key)) return null;
+      if (field.key === "questions") return <WorkflowClassificationEditor key={selectedNode?.id}
+        value={inspectorKnownValues} directoryPath={selectedNodeGraph?.directory_path ?? selectedDirectoryPath}
+        nodeId={selectedNode?.id ?? "classify"} disabled={isDisabled} onChange={updateClassificationFields} />;
+    }
 
     if (selectedNodeType === "query:session:list" && isSessionListMetadataFieldKey(field.key)) {
       return field.key === "metadata_equals" ? renderSessionListMetadataRules(isDisabled) : null;

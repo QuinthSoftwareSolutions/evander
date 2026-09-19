@@ -27,6 +27,7 @@ export type ConfigurationUtilityKey =
   | "website-logins"
   | "teams-auth"
   | "model-pricing"
+  | "classification"
   | "validation"
   | "directory-overrides"
   | "effective-config"
@@ -99,6 +100,7 @@ export function configurationUtilitiesForTab(tabKey: string): ReadonlyArray<Conf
     });
   }
   if (tabKey === "models_assistant_knowledge") {
+    specialized.push({key: "classification", label: "Classification", description: "Configure providers, reusable classification profiles, and sample evaluations."});
     specialized.push({
       key: "model-pricing",
       label: "Model pricing catalog",

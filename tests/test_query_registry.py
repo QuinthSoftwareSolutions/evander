@@ -117,6 +117,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:issue:list",
         "query:ado:work-items",
         "query:remote-issues",
+        "query:classification:evaluate",
         "query:pull-request:list",
         "query:pull-request:feedback",
         "query:communication:messages",
