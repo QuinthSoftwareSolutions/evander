@@ -653,6 +653,7 @@ _TRIGGER_OUTPUT_SCHEMAS = {
 }
 
 _GATE_OUTPUT_SCHEMAS = {
+    "gate:classifier:switch": {},
     "gate:aggregate": {
         "count": {"type": "integer"},
     },

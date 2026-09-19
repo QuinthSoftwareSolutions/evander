@@ -59,7 +59,8 @@ def classification_routes(service, auth):
                     actor=actor,
                 )
             else:
-                result = await run_in_threadpool(admin.evaluate, scope, payload, actor=actor)
+                evaluate = admin.evaluate_switch if request.url.path.endswith("/switch/evaluate") else admin.evaluate
+                result = await run_in_threadpool(evaluate, scope, payload, actor=actor)
             return JSONResponse(result, headers=headers)
         except ClassificationRevisionConflict as exc:
             return error(str(exc), 409)
@@ -73,4 +74,5 @@ def classification_routes(service, auth):
     return [
         Route("/api/classification", handle, methods=["GET", "PUT"]),
         Route("/api/classification/evaluate", handle, methods=["POST"]),
+        Route("/api/classification/switch/evaluate", handle, methods=["POST"]),
     ]

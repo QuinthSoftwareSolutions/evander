@@ -79,6 +79,7 @@ class GateProviderFactory:
         )
         runtime_context = GateRuntimeContext(
             provider_config=gate_provider_config_blob(resolved_config),
+            provider_config_resolver=self.provider_config_resolver,
             vm_inventory=self._gate_adapter,
             env=self.env,
             secret_resolver=self.secret_resolver,

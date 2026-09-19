@@ -1,3 +1,4 @@
+import { WorkflowClassifierSwitchEditor } from "./features/classification/WorkflowClassifierSwitchEditor";
 import { WorkflowClassificationEditor } from "./features/classification/WorkflowClassificationEditor";
 import {
   useEffect,
@@ -95,6 +96,7 @@ import {
   type ParsedBindingReference,
 } from "./workflowBindings";
 import {
+  isSwitchGateType,
   normalizeWorkflowEdgeSourcePort,
   normalizeWorkflowSourcePort,
   workflowConnectionRouteOptions,
@@ -499,6 +501,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:serialize": "Serialize a bindable value as JSON or YAML text for downstream nodes.",
   "gate:merge": "Merge compatible inbound event streams into one downstream path.",
   "gate:switch": "Route activations to one of several downstream branches.",
+  "gate:classifier:switch": "Use classification to route input to a described branch.",
   "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
   "gate:buffer": "Collect activations by key and release them as a batch by count or timeout.",
   "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
@@ -1128,7 +1131,7 @@ function workflowSwitchEdgeRouteLabel(
   outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
 ): string | undefined {
   const routeLabel = workflowEdgeRouteLabel(sourcePort, outputPorts);
-  if (routeLabel !== undefined || sourceNode?.type !== "gate:switch") {
+  if (routeLabel !== undefined || !isSwitchGateType(sourceNode?.type)) {
     return routeLabel;
   }
   const normalizedSourcePort = normalizeWorkflowSourcePort(sourcePort);
@@ -1831,6 +1834,13 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "gate" && type === "gate:merge") {
     return workflowNode(id, "New merge", type, {}, {});
   }
+  if (kind === "gate" && type === "gate:classifier:switch") {
+    return workflowNode(id, "Smart switch", type, {
+      state: "", instructions: "Select the branch that best describes the input.",
+      cases: [{port: "matched", label: "Matched", description: "The input matches the desired intent."}],
+      default_port: "default", default_description: "None of the described routes clearly applies.",
+    }, {});
+  }
   if (kind === "gate" && type === "gate:switch") {
     return workflowNode(id, "Switch", type, {
       cases: [
@@ -2315,15 +2325,15 @@ function validateConnection(
   if (!targetNode) return "Target node does not exist.";
   const sourceCatalogEntry = getCatalogEntry(catalog, sourceNode.type);
   const allowedPorts = workflowOutputPortsForNode(sourceNode, sourceCatalogEntry?.output_ports ?? []);
-  if (sourceNode.type === "gate:switch" && allowedPorts.length === 0) {
+  if (isSwitchGateType(sourceNode.type) && allowedPorts.length === 0) {
     return `Node ${sourceId} does not have any configured output ports.`;
   }
   const selectedPort = sourcePort ?? (sourceNode.type === "gate:throttle" ? "default" : null);
   const allowsImplicitDefault = sourceNode.type.startsWith("gate:") &&
-    sourceNode.type !== "gate:switch" &&
+    !isSwitchGateType(sourceNode.type) &&
     allowedPorts.every((port) => port.key === "error");
   if (
-    (sourceNode.type === "gate:switch" || allowedPorts.length > 0) &&
+    (isSwitchGateType(sourceNode.type) || allowedPorts.length > 0) &&
     !(allowsImplicitDefault && selectedPort === null) &&
     !allowedPorts.some((port) => port.key === selectedPort)
   ) {
@@ -6768,9 +6778,9 @@ export default function App() {
     if (workflowMutationLocked) return;
     const sourcePoint = nodeCenterCanvasPoint(node);
     const implicitGateDefault = node.data.type.startsWith("gate:") &&
-      node.data.type !== "gate:switch" &&
+      !isSwitchGateType(node.data.type) &&
       node.data.outputPorts.every((port) => port.key === "error");
-    const routes = node.data.type === "gate:switch" && node.data.outputPorts.length === 0
+    const routes = isSwitchGateType(node.data.type) && node.data.outputPorts.length === 0
       ? []
       : workflowConnectionRouteOptions(node.data.outputPorts, implicitGateDefault);
     setProgrammaticSelection([node.id], node.id);
@@ -6929,12 +6939,12 @@ export default function App() {
       nodeId: node.id,
       position,
       sourcePoint: nodeCenterCanvasPoint(node),
-      routes: node.data.type === "gate:switch" && node.data.outputPorts.length === 0
+      routes: isSwitchGateType(node.data.type) && node.data.outputPorts.length === 0
         ? []
         : workflowConnectionRouteOptions(
             node.data.outputPorts,
             node.data.type.startsWith("gate:") &&
-              node.data.type !== "gate:switch" &&
+              !isSwitchGateType(node.data.type) &&
               node.data.outputPorts.every((port) => port.key === "error"),
           ),
       failedCount: node.data.statusBadges.find((badge) => badge.status === "failed")?.count ?? 0,
@@ -8150,6 +8160,7 @@ export default function App() {
   function updateClassificationFields(patch: Record<string, unknown>, answers?: Record<string, unknown>) {
     const knownValues = {...inspectorKnownValues, ...patch};
     const jsonDrafts = {...inspectorJsonDrafts};
+    if ("cases" in patch) jsonDrafts.cases = JSON.stringify(patch.cases ?? [], null, 2);
     if ("questions" in patch) {
       jsonDrafts.questions = typeof patch.questions === "string" ? patch.questions : JSON.stringify(patch.questions ?? {}, null, 2);
       if (patch.questions === undefined) jsonDrafts.questions = "";
@@ -9579,6 +9590,13 @@ export default function App() {
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
     const isDisabled = field.read_only
       || (workflowMutationLocked && !tutorialAllowsInspectorFieldEdit(field.key));
+
+    if (selectedNodeType === "gate:classifier:switch") {
+      if (["instructions", "default_port", "default_description", "provider", "model", "min_probability"].includes(field.key)) return null;
+      if (field.key === "cases") return <WorkflowClassifierSwitchEditor key={selectedNode?.id}
+        value={inspectorKnownValues} directoryPath={selectedNodeGraph?.directory_path ?? selectedDirectoryPath}
+        disabled={isDisabled} onChange={updateClassificationFields} />;
+    }
 
     if (selectedNodeType === "query:classification:evaluate") {
       if (["profile_id", "provider", "model"].includes(field.key)) return null;

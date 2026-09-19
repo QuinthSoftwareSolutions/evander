@@ -33,7 +33,7 @@ export type WorkflowNodeOutputContract = {
 };
 
 export function isPassThroughGateType(type: string | null | undefined): boolean {
-  return type === "gate:filter" || type === "gate:dedupe" || type === "gate:debounce" || type === "gate:throttle" || type === "gate:switch";
+  return type === "gate:filter" || type === "gate:dedupe" || type === "gate:debounce" || type === "gate:throttle" || type === "gate:switch" || type === "gate:classifier:switch";
 }
 
 function isCounterGateType(type: string | null | undefined): boolean {

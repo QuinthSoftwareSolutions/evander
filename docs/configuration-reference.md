@@ -1847,6 +1847,14 @@ and credential fields. This allows a single directory to host both public
 OpenAI Codex sessions and local OpenAI-compatible Codex sessions by setting
 session metadata to `openai_public` or `local_openai` per agent.
 
+### Smart switch gate
+
+`gate:classifier:switch` accepts `state`, `instructions`, `cases` (port, optional label, description),
+`default_port`, optional `default_description`, `provider`, `model`, and `min_probability`.
+It routes the unchanged input to one described branch or the default. The optional cutoff uses
+selected-option probability. Calls use the graph directory's classification settings and execute
+asynchronously with durable decisions. See [Smart switch](classification.md#smart-switch).
+
 ### Classification keys
 
 The typed `classification` field in directory `providers.json` contains `enabled` (default

@@ -128,6 +128,21 @@ class ClassificationAdminService:
         self._audit(scope, "test", actor)
         return result
 
+    def evaluate_switch(self, scope: str, payload: Any, *, actor=None):
+        from evander.classification.switch import prepare_switch, execute_switch
+
+        settings = self.resolver.resolve_for_directory(scope).classification
+        try:
+            if not isinstance(payload, dict) or set(payload) != {"config"}:
+                raise ClassificationError("Smart switch tests require a config object")
+            prepared = prepare_switch(self.service, settings, payload["config"])
+            result = execute_switch(self.service, settings, prepared, attribution={"directory_path": scope})
+        except Exception:
+            self._audit(scope, "switch_test_failed", actor)
+            raise
+        self._audit(scope, "switch_test", actor)
+        return result
+
     def _audit(self, scope, action, actor):
         self.audit.log(
             AuditEvent(
