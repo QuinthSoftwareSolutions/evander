@@ -42,6 +42,8 @@ For decision journals, bounded wake deltas and configurable workflow context, se
 - Opt-in [repository indexing](docs/repository-indexing.md) with scoped source search,
   reusable baseline coverage, bounded compiler scheduling, C#/TypeScript navigation,
   Admin Web controls and portable SQLite/SCIP exports
+- An optional [Miro Add-on](docs/miro-addon.md) for editable diagrams, explanations, comment
+  collaboration, and workflow-owned board monitoring through host-managed OAuth connections
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`

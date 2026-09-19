@@ -1,5 +1,15 @@
 # Operations
 
+## Miro visual collaboration
+
+Enable `miro-addon` in **Add-ons**, restart the listed gateway/Admin Web/orchestrator services,
+and configure an OAuth connection and explicit board/session grants in **Miro**. Only workflows
+that include a Miro polling trigger monitor boards. Use the connection activity view for budget
+and polling failures. For an uncertain write, use **Read back**, inspect Miro, and record the
+evidence with **Mark applied** or **Mark not applied** before scheduling further writes.
+See [Miro setup and workflow examples](miro-addon.md); examples are never installed into live
+workflow packs automatically.
+
 For effect handoff timing, bounded recovery scheduling, and deployment verification, see
 [Orchestration latency and recovery](orchestration-latency.md).
 

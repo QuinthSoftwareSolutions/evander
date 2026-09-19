@@ -144,6 +144,14 @@ session's unrestricted environment or arbitrary agent headers; the core resolves
 and validates the operation before invoking it. Adding or removing a connector driver requires a
 gateway restart.
 
+## Miro Add-on
+
+The bundled `miro-addon` exposes editable canvas and comment tools, corresponding workflow
+queries/effects, and opt-in board/comment polling triggers. Its Admin Web page manages named
+OAuth connections, directory/session and board grants, daily call budgets, and uncertain-write
+recovery. No polling or agent wake workflow is installed automatically. See
+[Miro Add-on](miro-addon.md) for setup, operation contracts, examples, and limitations.
+
 ## Storage
 
 Use the add-on storage helpers from `evander.addons` so state remains

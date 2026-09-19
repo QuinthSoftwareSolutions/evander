@@ -36,6 +36,7 @@ BUNDLED_ADDON_MANIFESTS = {
     "ado-activity-addon": "evander_ado_activity_addon",
     "elastic-stack-addon": "evander_elastic_stack_addon",
     "freshservice-addon": "evander_freshservice_addon",
+    "miro-addon": "evander_miro_addon",
 }
 BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_team_addon": ["addon.json", "ui_static/*"],
@@ -45,6 +46,7 @@ BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_ado_activity_addon": ["addon.json"],
     "evander_elastic_stack_addon": ["addon.json"],
     "evander_freshservice_addon": ["addon.json"],
+    "evander_miro_addon": ["addon.json", "ui_static/*"],
 }
 
 
@@ -228,6 +230,7 @@ def test_bundled_mcp_addons_declare_every_registered_tool_in_the_ui_catalog() ->
         "evander_mssql_seed_addon",
         "evander_ado_activity_addon",
         "evander_elastic_stack_addon",
+        "evander_miro_addon",
     ):
         registration = importlib.import_module(module_name).register_addon()
         mcp_module = importlib.import_module(f"{module_name}.mcp")

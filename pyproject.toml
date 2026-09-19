@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander"
-version = "0.47.0"
+version = "0.48.0"
 description = "Host-side MCP gateway and libvirt orchestration for isolated agent VMs."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,7 +14,7 @@ dependencies = [
   "httpx>=0.28.1",
   "jsonschema>=4.26.0",
   "markdown-it-py>=3.0.0",
-  "mcp>=1.9.0",
+  "mcp>=1.27.0",
   "Pillow>=10.2.0",
   "pypdf>=5.0.0",
   "pydantic>=2.8.0",
@@ -44,6 +44,7 @@ mssql_seed = "evander_mssql_seed_addon:register_addon"
 ado_activity = "evander_ado_activity_addon:register_addon"
 elastic_stack = "evander_elastic_stack_addon:register_addon"
 freshservice = "evander_freshservice_addon:register_addon"
+miro = "evander_miro_addon:register_addon"
 
 [project.scripts]
 evander-gateway = "evander.gateway:main"
@@ -83,6 +84,7 @@ evander_mssql_seed_addon = ["addon.json", "ui_static/*"]
 evander_ado_activity_addon = ["addon.json"]
 evander_elastic_stack_addon = ["addon.json"]
 evander_freshservice_addon = ["addon.json"]
+evander_miro_addon = ["addon.json", "ui_static/*"]
 
 [tool.ruff]
 line-length = 100
