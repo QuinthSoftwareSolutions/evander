@@ -1,5 +1,8 @@
 # Operations
 
+For effect handoff timing, bounded recovery scheduling, and deployment verification, see
+[Orchestration latency and recovery](orchestration-latency.md).
+
 ## Miro visual collaboration
 
 Enable `miro-addon` in **Add-ons**, restart the listed gateway/Admin Web/orchestrator services,
@@ -10,8 +13,13 @@ evidence with **Mark applied** or **Mark not applied** before scheduling further
 See [Miro setup and workflow examples](miro-addon.md); examples are never installed into live
 workflow packs automatically.
 
-For effect handoff timing, bounded recovery scheduling, and deployment verification, see
-[Orchestration latency and recovery](orchestration-latency.md).
+## Figma mockup collaboration
+
+For native UI mockup collaboration, see [Figma setup and recovery](figma.md). Enable the optional
+add-on, connect an approved OAuth client, and pass its create/edit/render/readback/cleanup test in
+a disposable file before granting agent authoring. The same page shows snapshots and uncertain
+operations. Inspect and reconcile interrupted writes before resuming that file; never retry them
+under new request IDs to bypass recovery. This add-on uses existing host services and MCP ports.
 
 ## Personal Azure DevOps PR connections
 

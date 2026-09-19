@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-19 - Collaborate on native Figma mockups (0.49.0)
+
+- Add an optional Figma add-on with shared agent tools, workflow providers, directory-scoped
+  file grants, and an operator page for host-held OAuth connections, previews, and operation history.
+- Support separate proposals, author/reviewer workflows, and coordinated edits to shared screens;
+  retain immutable design snapshots and compose only unchanged snapshot sources.
+- Serialize file writes across processes, reject stale revisions, and retain uncertain outcomes
+  for readback and explicit recovery instead of replaying writes. Poll external comments and named
+  versions with durable delivery acknowledgements and self-feedback suppression.
+- Keep authoring disabled until an approved Figma client passes a live unattended
+  create/edit/render/readback test. Figma client approval and credentials remain deployment prerequisites.
+- Prevent settings writes during directory changes, reject batches that would exceed the design
+  inspection limit before mutation, and verify comment content and account identity during recovery.
+- Keep large text nodes readable during inspection, snapshot capture, and uncertain-write recovery;
+  interrupted snapshots no longer block canvas authors after a process restart.
+- Suppress self-authored comment feedback across registrations of the same file, and preserve
+  unspecified font attributes while loading fonts introduced by existing text styles.
+
 ## 2026-09-19 - Collaborate visually through Miro (0.48.0)
 
 - Add an opt-in Miro integration with editable canvas diagrams, scoped snapshots, comment
