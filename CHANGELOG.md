@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-19 - Collaborate visually through Miro (0.48.0)
+
+- Add an opt-in Miro integration with editable canvas diagrams, scoped snapshots, comment
+  collaboration, agent tools, and matching workflow queries, effects, and polling triggers.
+- Manage named, directory-scoped OAuth connections, board/session grants, call budgets,
+  capability checks, and uncertain-write recovery through Admin Web. Credentials stay encrypted
+  on the host; overlapping writes are serialized and stale snapshots cannot overwrite observed edits.
+- Keep publishing, feedback routing, monitoring cadence, and agent coordination in operator-authored
+  workflows, with optional examples and durable polling checkpoints that survive restarts.
+
 ## 2026-09-19 - Core classification with Jev (0.47.0)
 
 - Add a provider-neutral classification service with Jev as its first implementation,
