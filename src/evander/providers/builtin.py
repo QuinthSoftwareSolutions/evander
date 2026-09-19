@@ -116,6 +116,7 @@ from evander.gates.providers.for_gate import ForGateProvider
 from evander.gates.providers.map_gate import MapGateProvider
 from evander.gates.providers.merge_gate import MergeGateProvider
 from evander.gates.providers.serialize_gate import SerializeGateProvider
+from evander.gates.providers.classifier_switch import ClassifierSwitchGateProvider
 from evander.gates.providers.switch_gate import SwitchGateProvider
 from evander.gates.providers.throttle_gate import ThrottleGateProvider
 from evander.gates.providers.validate_gate import ValidateGateProvider
@@ -250,6 +251,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "gate:serialize": SerializeGateProvider,
             "gate:throttle": ThrottleGateProvider,
             "gate:switch": SwitchGateProvider,
+            "gate:classifier:switch": ClassifierSwitchGateProvider,
             "gate:while": WhileGateProvider,
             "gate:validate": ValidateGateProvider,
         },

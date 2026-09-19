@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-19 - Route workflows with Smart switch (0.50.0)
+
+- Add Smart switch (`gate:classifier:switch`) with described branches, an explicit default,
+  and an optional probability cutoff using the shared classification service.
+- Run classification asynchronously with durable recovery and preserve the original payload
+  on the selected branch. Resolve provider settings from the workflow's trusted directory.
+- Add structured workflow editing, sample evaluation, an assistant-level routing example,
+  and an explicit opt-in live smoke check.
+
 ## 2026-09-19 - Collaborate on native Figma mockups (0.49.0)
 
 - Add an optional Figma add-on with shared agent tools, workflow providers, directory-scoped

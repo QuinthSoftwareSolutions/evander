@@ -156,6 +156,7 @@ class QueryProviderConfig(BaseModel):
 
 class GateProviderConfig(BaseModel):
     runtime_dir: Path
+    classification: ClassificationSettings = Field(default_factory=ClassificationSettings)
 
 
 class ProviderSessionManifest(BaseModel):

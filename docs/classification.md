@@ -128,6 +128,70 @@ be repeated and billed again because Jev does not expose a request-idempotency c
 Provider/configuration errors take the ordinary query failure path; they are not converted to a
 classification choice.
 
+## Smart switch
+
+**Smart switch** (`gate:classifier:switch`) selects a workflow branch directly using
+classification. In the workflow editor, bind **Input and context**, enter routing instructions,
+describe each branch, and choose a default port. The gate builds a single Choice question from
+those branches, including the default. Provider and model settings inherit from the graph's
+directory unless overridden on the node. Branches are defined in the node, not in a profile.
+
+```json
+{
+  "id": "choose-level",
+  "display_name": "Select assistant level",
+  "type": "gate:classifier:switch",
+  "config": {
+    "state": {"message": "${{incoming.message}}"},
+    "instructions": "Select level 2 only for a current explicit request to use it. Questions, quotations, and negated requests continue normal chat.",
+    "cases": [{"port": "terra", "label": "Level 2", "description": "Requests assistant level 2"}],
+    "default_port": "standard",
+    "default_description": "No clear request to change to level 2"
+  }
+}
+```
+
+Connect downstream nodes using the branch's `source_port`. Port IDs must be unique, static,
+nonempty, and distinct from `error`. At least one described branch and a distinct default are
+required. The selected branch receives the original upstream payload; classification results
+do not replace or add fields to it. The default description may be omitted, in which case it
+means “None of the described routes clearly applies.”
+
+The optional `min_probability` cutoff is off by default. With it enabled, a selected option's
+probability below the cutoff routes to the default; equality passes. This uses the option's
+probability, not the separate confidence metric. Missing probability data with a cutoff enabled
+is an error. Provider/configuration failures use `error` when connected, otherwise the node fails;
+they do not become a default classification.
+
+**Test with sample input** replaces the bound state with your sample and shows the selected
+choice, routed port, routing reason, probabilities, usage, and latency. It uses the same routing
+logic as execution and incurs provider usage without saving or running downstream nodes.
+The API is `POST /api/classification/switch/evaluate?directory_path=root`, with body
+`{"config": { ...node configuration with literal sample state... }}`. It requires directory owner
+access and unlocked privileged operations, like other classification tests.
+
+Smart switch calls run on the worker executor so unrelated workflows can continue. Execution
+history retains the prepared input, branches, cutoff, model, trusted directory, and configuration
+revision before the call. Restart resumes that snapshot and rechecks directory/provider enablement.
+The decision is stored under `resolved_config.decision`, including `selected_choice`,
+`selected_port`, and `routing_reason` (`choice`, `default`, or `below_probability`). Completed
+decisions and pending completion publications are reused. An interrupted upstream call can be
+repeated and billed again. Usage records attribute attempts to the workflow directory and node.
+
+The [disabled assistant-level example](examples/classifier-level-switch.json) routes levels 1–4
+to `luna`, `terra`, `sol`, and `astra`, unsupported level requests to `invalid`, and other messages
+to `standard`. Its downstream nodes only expose the route. It does not change an assistant or
+enable classification. The [labeled English/Swedish samples](examples/classifier-level-samples.json)
+include commands, natural requests, questions, negation, quotations, and unsupported levels.
+
+To evaluate that corpus against your configured provider explicitly (one billable request per sample):
+
+```bash
+./.venv/bin/python scripts/smoke_classifier_switch.py --live --runtime-dir runtime --directory-path root
+```
+
+Mocked tests verify routing and recovery, not the accuracy of the provider on these language examples.
+
 ## Agents
 
 Grant `classification_evaluate` and, optionally, `classification_list_profiles` through ordinary

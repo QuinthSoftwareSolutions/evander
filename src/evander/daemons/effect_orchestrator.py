@@ -336,6 +336,7 @@ class EffectOrchestratorCycleResult:
 class InflightExecution:
     future: Future[dict[str, Any]]
     config_revision: str
+    kind: str = "effect"
 
 
 class _WorkerAgentPromptActivity(AgentPromptActivityRuntime):
@@ -616,11 +617,13 @@ class EffectOrchestratorWorker:
         idempotency_key: str,
         future: Future[dict[str, Any]],
         config_revision: str,
+        kind: str = "effect",
     ) -> None:
         with self._inflight_lock:
             self._inflight[idempotency_key] = InflightExecution(
                 future=future,
                 config_revision=config_revision,
+                kind=kind,
             )
         future.add_done_callback(self._notify_inflight_completion)
 
@@ -2250,7 +2253,11 @@ class EffectOrchestratorWorker:
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
         existing = self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key)
-        if existing is not None:
+        resume_async = (
+            existing is not None and existing.status == "running"
+            and getattr(self._get_gate_provider(gate.type), "asynchronous", False)
+        )
+        if existing is not None and not resume_async:
             if existing.status == "failed":
                 self._route_recorded_gate_failure_to_error_branch(
                     queue_record=queue_record,
@@ -2496,15 +2503,21 @@ class EffectOrchestratorWorker:
         completed_count = 0
         published_count = 0
         graph_for_error_routing: ExecutionGraph | None = None
-        to_finalize: list[tuple[str, Future[dict[str, Any]]]] = []
+        to_finalize: list[tuple[str, InflightExecution]] = []
         with self._inflight_lock:
             for idempotency_key, inflight in list(self._inflight.items()):
                 if inflight.future.done():
-                    to_finalize.append((idempotency_key, inflight.future))
+                    to_finalize.append((idempotency_key, inflight))
                     self._inflight.pop(idempotency_key, None)
 
-        for idempotency_key, future in to_finalize:
+        for idempotency_key, inflight in to_finalize:
             completed_count += 1
+            future = inflight.future
+            if inflight.kind == "gate":
+                from evander.workflow.engine.async_gates import finalize_async_gate
+
+                published_count += finalize_async_gate(self, idempotency_key, future)
+                continue
             record = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
             if record is None:
                 continue
@@ -2893,9 +2906,11 @@ class EffectOrchestratorWorker:
         branch_port: str | None = None,
         for_execution_ids: dict[str, str] | None = None,
         preserved_context_node_ids: set[str] | None = None,
+        replace_running: bool = False,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
-        if self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
+        existing = self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key)
+        if existing is not None and not (replace_running and existing.status == "running"):
             return
         finished_at = datetime.now(UTC)
         record = GateExecutionRecord(
