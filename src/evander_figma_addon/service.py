@@ -572,12 +572,9 @@ class FigmaService:
                     continue
                 if kind == "comment.created" and "[Evander " in item.get("message", ""):
                     marker = item["message"].rsplit("operation ", 1)[-1].rstrip("]")
-                    try:
-                        operation = self.store.get("operation", marker, *scope)
-                        if self._matches_comment(operation, item):
-                            continue
-                    except FigmaConflict:
-                        pass
+                    operation = self.store.operation_for_file(marker, target.file_key)
+                    if operation and self._matches_comment(operation, item):
+                        continue
                 self.store.event(
                     event_id,
                     scope[0],

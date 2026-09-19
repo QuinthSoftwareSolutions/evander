@@ -110,6 +110,7 @@ class Canvas:
                 canvas.state = payload["state"]
                 if payload.get("error"):
                     raise FigmaError(payload["error"])
+                assert len(json.dumps(payload["result"]).encode()) < 20000, "MCP output limit"
                 if canvas.lose_next_write and '"action": "edit"' in arguments["code"]:
                     canvas.lose_next_write = False
                     raise FigmaError("Simulated lost response after the mutation")
@@ -1238,3 +1239,314 @@ def test_rest_account_identity_uses_the_comment_credential(tmp_path, monkeypatch
         transport=httpx.MockTransport(handler),
     )
     assert client.user_id() == "integration-user"
+
+
+@pytest.mark.parametrize(
+    "characters", ['\t"x"\n' * 1500, "Å漢😀\\\n" * 1800], ids=["escaped_text", "unicode_text"]
+)
+def test_large_text_remains_readable_snapshotable_and_recoverable(studio, characters):
+    services, canvas = studio
+    author, owner = services(), services("owner", True)
+    frame = create_frame(author)
+    base = run(author, "inspect", node_id=frame)
+    created = run(
+        author,
+        "edit",
+        node_id=frame,
+        expected_revision=base["revision"],
+        request_id="large-text",
+        edits=[
+            {
+                "action": "create",
+                "kind": "TEXT",
+                "parent_id": frame,
+                "properties": {"characters": characters},
+            }
+        ],
+    )
+    assert created["status"] == "succeeded", created
+    text_id = created["result"]["createdNodeIds"][0]
+    inspected = run(author, "inspect", node_id=frame)
+    text = next(node for node in inspected["nodes"] if node["id"] == text_id)
+    assert text["characters"] == characters
+    assert text["textSegments"][0]["characters"] == characters
+    assert inspected["revision"] == created["result"]["revision"]
+    snapshot = run(author, "snapshot", node_id=frame, request_id="large-snapshot")
+    assert snapshot["status"] == "succeeded", snapshot
+    retained = json.loads(author._bundle(snapshot["result"])["design.json"])
+    assert retained["nodes"] == inspected["nodes"]
+
+    canvas.lose_next_write = True
+    interrupted = run(
+        author,
+        "edit",
+        node_id=frame,
+        expected_revision=inspected["revision"],
+        request_id="large-lost-response",
+        edits=[{"action": "update", "node_id": text_id, "properties": {"name": "Renamed"}}],
+    )
+    assert interrupted["status"] == "uncertain"
+    observed = run(owner, "reconcile", operation_id=interrupted["operation_id"])
+    assert (
+        next(n for n in observed["reconciliation"]["nodes"] if n["id"] == text_id)["characters"]
+        == characters
+    )
+    owner.resolve_uncertain(
+        "mockups", interrupted["operation_id"], digest(observed["reconciliation"])
+    )
+    assert (
+        run(author, "comment", message="Review continues", request_id="after-large")["status"]
+        == "succeeded"
+    )
+
+
+def test_fragmented_read_rejects_changes_between_chunks(studio):
+    services, canvas = studio
+    author = services()
+    frame = create_frame(author)
+    # Seed an oversized existing node to exercise reads independently of editing.
+    canvas.state["nodes"][frame]["name"] = "x" * 16000
+    client = canvas.client(FakeOAuth(), "root/design", "studio", settings().connections["studio"])
+    script = client.script
+
+    def concurrent_edit(file_key, payload):
+        if payload.get("offset", 0) > 0:
+            canvas.state["nodes"][frame]["name"] = "y" * 16000
+        return script(file_key, payload)
+
+    client.script = concurrent_edit
+    with pytest.raises(FigmaError, match="changed during the read"):
+        client.inspect("testFile123", frame)
+
+
+def test_oversized_script_is_rejected_before_mutation_without_blocking_writes(studio):
+    services, canvas = studio
+    author = services()
+    frame = create_frame(author)
+    base = run(author, "inspect", node_id=frame)
+    before = json.dumps(canvas.state, sort_keys=True)
+    result = run(
+        author,
+        "edit",
+        node_id=frame,
+        expected_revision=base["revision"],
+        request_id="oversized-script",
+        edits=[
+            {
+                "action": "create",
+                "kind": "TEXT",
+                "parent_id": frame,
+                "properties": {"characters": "\t" * 10000},
+            }
+        ]
+        * 50,
+    )
+    assert result["status"] == "rejected", result
+    assert json.dumps(canvas.state, sort_keys=True) == before
+    assert not author.store.unresolved("testFile123")
+    assert (
+        run(author, "comment", message="Still writable", request_id="after-rejection")["status"]
+        == "succeeded"
+    )
+
+
+@pytest.mark.parametrize("next_offset", [0, 1, True, "2"])
+def test_fragmented_read_rejects_invalid_cursors(next_offset):
+    client = FigmaClient(None, "root", "studio", settings().connections["studio"])
+    client.script = lambda *_: {
+        "nodes_json": "[{",
+        "read_token": "unchanged",
+        "next_offset": next_offset,
+    }
+    with pytest.raises(FigmaError, match="Invalid Figma read cursor"):
+        client.inspect("testFile123", "0:1")
+
+
+@pytest.mark.parametrize(
+    "directory,target_id",
+    [("root/design", "alias"), ("root/other", "mockups"), ("root/other", "alias")],
+)
+def test_self_feedback_is_suppressed_across_file_registrations(studio, directory, target_id):
+    services, canvas = studio
+    author, owner = services(), services("owner", True)
+    revision, config = owner.store.settings(directory)
+    if not config.connections:
+        config.connections = settings().connections
+    config.targets[target_id] = settings().targets["mockups"]
+    owner.store.save_settings(directory, revision, config)
+    other_owner = services("owner", True, directory=directory)
+    owner.poll_external("mockups", interval=0)
+    other_owner.poll_external(target_id, interval=0)
+    posted = run(author, "comment", message="Integration review", request_id="shared-file-comment")
+    assert posted["status"] == "succeeded"
+    owner.poll_external("mockups", interval=0)
+    other_owner.poll_external(target_id, interval=0)
+    assert other_owner.store.events("probe", directory, target_id) == []
+    other_author = services("designer-b", directory=directory)
+    assert (
+        other_author.execute(
+            {
+                "operation": "comment",
+                "target_id": target_id,
+                "message": "Another integration review",
+                "request_id": "reply-from-alias",
+            }
+        )["status"]
+        == "succeeded"
+    )
+    owner.poll_external("mockups", interval=0)
+    assert all(
+        row["payload"]["origin"] == "evander"
+        for row in owner.store.events("probe", "root/design", "mockups")
+    )
+
+    # Keep both message and account checks when the operation is in another scope.
+    original = canvas.comments_list[0]
+    canvas.comments_list.extend(
+        [
+            {**original, "id": "quoted", "message": "Quoted: " + original["message"]},
+            {**original, "id": "copied", "user": {"id": "human-user"}},
+        ]
+    )
+    other_owner.poll_external(target_id, interval=0)
+    external = [
+        row["payload"]["item"]["id"]
+        for row in owner.store.events("probe", directory, target_id)
+        if row["payload"]["origin"] == "external"
+    ]
+    assert external == ["quoted", "copied"]
+    # Cross-registration lookup must still require the exact file identity.
+    revision, config = owner.store.settings(directory)
+    config.targets[target_id].file_key = "anotherFile123"
+    owner.store.save_settings(directory, revision, config)
+    canvas.comments_list[:] = []
+    other_owner.poll_external(target_id, interval=0)
+    canvas.comments_list.append(original)
+    other_owner.poll_external(target_id, interval=0)
+    assert any(
+        row["payload"].get("file_key") == "anotherFile123"
+        and row["payload"]["origin"] == "external"
+        for row in owner.store.events("probe", directory, target_id)
+    )
+
+
+def test_interrupted_snapshot_does_not_block_file_writes_after_restart(studio):
+    services, canvas = studio
+    author = services()
+    frame = create_frame(author)
+    original = canvas.client
+
+    def client_factory(*args):
+        client = original(*args)
+
+        def terminate(*_):
+            raise SystemExit("Simulate process termination during snapshot capture")
+
+        client.screenshot = terminate
+        return client
+
+    author.client_factory = client_factory
+    with pytest.raises(SystemExit):
+        run(author, "snapshot", node_id=frame, request_id="interrupted-snapshot")
+    restarted = services("designer-b")
+    history = run(restarted, "history")
+    assert any(
+        record["request"]["operation"] == "snapshot" and record["status"] == "running"
+        for record in history["operations"]
+    )
+    assert restarted.store.unresolved("testFile123") == []
+    create_frame(restarted, "after-snapshot")
+    assert (
+        run(restarted, "comment", message="Still writable", request_id="after-crash")["status"]
+        == "succeeded"
+    )
+
+
+@pytest.mark.parametrize("action", ["create", "update"])
+def test_text_styles_load_the_effective_font_before_editing_text(studio, action):
+    services, canvas = studio
+    author = services()
+    frame = create_frame(author)
+    canvas.state["textStyles"] = {
+        "existing-style": {"fontName": {"family": "Roboto Mono", "style": "Bold"}, "fontSize": 24}
+    }
+    base = run(author, "inspect", node_id=frame)
+    edit = {"action": "create", "kind": "TEXT", "parent_id": frame}
+    if action == "update":
+        initial = run(
+            author,
+            "edit",
+            node_id=frame,
+            expected_revision=base["revision"],
+            request_id="unstyled-text",
+            edits=[{**edit, "properties": {"characters": "Before"}}],
+        )
+        assert initial["status"] == "succeeded", initial
+        edit = {"action": "update", "node_id": initial["result"]["createdNodeIds"][0]}
+        base = run(author, "inspect", node_id=frame)
+    edit["properties"] = {
+        "text_style_id": "existing-style",
+        "characters": "Production overview",
+        "font_size": 28,
+    }
+    result = run(
+        author,
+        "edit",
+        node_id=frame,
+        expected_revision=base["revision"],
+        request_id="apply-style",
+        edits=[edit],
+    )
+    assert result["status"] == "succeeded", result
+    text = next(n for n in run(author, "inspect", node_id=frame)["nodes"] if n["type"] == "TEXT")
+    assert text["characters"] == "Production overview"
+    assert text["fontName"] == {"family": "Roboto Mono", "style": "Bold"}
+    assert text["fontSize"] == 28
+    assert text["textStyleId"] == "existing-style"
+
+
+@pytest.mark.parametrize(
+    "properties,expected",
+    [
+        ({"font_style": "Regular"}, {"family": "Roboto Mono", "style": "Regular"}),
+        ({"font_family": "Inter"}, {"family": "Inter", "style": "Bold"}),
+    ],
+)
+def test_partial_font_updates_preserve_unspecified_attributes(studio, properties, expected):
+    services, _ = studio
+    author = services()
+    frame = create_frame(author)
+    base = run(author, "inspect", node_id=frame)
+    created = run(
+        author,
+        "edit",
+        node_id=frame,
+        expected_revision=base["revision"],
+        request_id="original-font",
+        edits=[
+            {
+                "action": "create",
+                "kind": "TEXT",
+                "parent_id": frame,
+                "properties": {
+                    "characters": "Heading",
+                    "font_family": "Roboto Mono",
+                    "font_style": "Bold",
+                },
+            }
+        ],
+    )
+    assert created["status"] == "succeeded", created
+    text_id = created["result"]["createdNodeIds"][0]
+    result = run(
+        author,
+        "edit",
+        node_id=frame,
+        expected_revision=created["result"]["revision"],
+        request_id="partial-font",
+        edits=[{"action": "update", "node_id": text_id, "properties": properties}],
+    )
+    assert result["status"] == "succeeded", result
+    text = next(n for n in run(author, "inspect", node_id=frame)["nodes"] if n["id"] == text_id)
+    assert text["fontName"] == expected
+    assert text["characters"] == "Heading"

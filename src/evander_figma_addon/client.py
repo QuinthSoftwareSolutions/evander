@@ -19,6 +19,7 @@ from .auth import MCP_URL, OAuth
 from .models import FigmaError, FigmaRejected, FigmaUnavailable
 
 MAX_BYTES = 8 * 1024 * 1024
+MAX_DESIGN_BYTES = 64 * 1024 * 1024
 
 
 class FigmaClient:
@@ -83,7 +84,7 @@ class FigmaClient:
             + script
         )
         if len(code.encode()) > 512 * 1024:
-            raise FigmaError("Design operation is too large; work on a smaller frame")
+            raise FigmaRejected("Design operation is too large; work on a smaller frame")
         result = self._mcp(
             "use_figma",
             {
@@ -119,7 +120,7 @@ class FigmaClient:
         return value
 
     def inspect(self, file_key, node_id):
-        nodes, offset, token = [], 0, None
+        chunks, offset, token = [], 0, None
         while True:
             page = self.script(
                 file_key, {"action": "inspect", "node_id": node_id, "offset": offset}
@@ -127,14 +128,23 @@ class FigmaClient:
             if token is not None and token != page["read_token"]:
                 raise FigmaError("Design changed during the read; inspect again")
             token = page["read_token"]
-            nodes.extend(page["nodes"])
-            if len(nodes) > 1000:
-                raise FigmaError("Design exceeds 1000 nodes; select a smaller frame")
+            chunk = page.get("nodes_json")
+            if not isinstance(chunk, str) or not chunk or not chunk.isascii() or len(chunk) > 8000:
+                raise FigmaError("Invalid Figma design read chunk")
+            chunks.append(chunk)
+            offset += len(chunk)
+            if offset > MAX_DESIGN_BYTES:
+                raise FigmaError("Design exceeds the read size limit; select a smaller frame")
             if page.get("next_offset") is None:
+                try:
+                    nodes = json.loads("".join(chunks))
+                except ValueError:
+                    raise FigmaError("Invalid Figma design read result") from None
+                if not isinstance(nodes, list) or not nodes or len(nodes) > 1000:
+                    raise FigmaError("Design must contain between 1 and 1000 nodes")
                 return nodes
-            if page["next_offset"] <= offset:
+            if type(page["next_offset"]) is not int or page["next_offset"] != offset:
                 raise FigmaError("Invalid Figma read cursor")
-            offset = page["next_offset"]
 
     def screenshot(self, file_key, node_id):
         result = self._mcp("get_screenshot", {"fileKey": file_key, "nodeId": node_id})

@@ -88,6 +88,8 @@ properties include text, loaded fonts, dimensions, position, fills, corners, aut
 plus existing text styles and color-variable bindings. No arbitrary JavaScript, asset URLs, or
 network requests are accepted. Work incrementally: create a container, then use its returned ID
 in the next batch. Inspect existing components and query variables/styles before inventing new ones.
+Updating only `font_family` or `font_style` preserves the other font attribute; specify both for
+mixed-font text. Existing text styles can be applied together with text changes in the same edit.
 
 Example after inspecting frame `12:34`:
 
@@ -115,6 +117,8 @@ Before changing the canvas, the add-on checks each intermediate batch state agai
 1000-node inspection limit, including descendants introduced by clones, composition, and
 instances. Oversized batches return `rejected` without changing the canvas or blocking the file.
 Use a smaller batch or working area and a new request ID after such a rejection.
+Requests exceeding the script size limit are also rejected before mutation. Large text
+nodes remain readable through bounded, consistent inspection chunks, including during recovery.
 
 ## Review snapshots and recovery
 
@@ -145,7 +149,8 @@ copies by other users, and old records without a pinned account require operator
 Canvas uncertainty requires an operator to review the returned evidence,
 then **Accept current state and close operation**. This records `reconciled`, not a fabricated
 success. A new request can then implement any remaining work. If the canvas changes after the
-inspection, resolution is rejected. Snapshot failures are read failures and do not block authors.
+inspection, resolution is rejected. Snapshot failures are read failures and do not block authors,
+including captures interrupted by a host process restart.
 
 ## Workflow integration
 
@@ -163,8 +168,10 @@ acknowledgements and process restarts cannot skip earlier unacknowledged events.
 External polling establishes a baseline on its first successful run. Later polls emit new human
 comments and **named** versions. These give explicit review milestones without treating every
 autosave as another assignment. Polling suppresses the integration's own known comments, deduplicates
-events, and persists the next poll time even on rate-limit/authentication failure. Version traversal
-is bounded to ten pages and fails visibly if exceeded. Native file changes are not a real-time lock.
+events, and persists the next poll time even on rate-limit/authentication failure. Self-authored
+comments are suppressed across all registrations of the same file, including other directories.
+Version traversal is bounded to ten pages and fails visibly if exceeded. Native file changes are
+not a real-time lock.
 
 The three example packs in `config/workflow-packs/figma-*.v1-example.json` use pre-existing sessions
 and working frames. The request event supplies the design brief and node IDs; no sample is

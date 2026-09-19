@@ -13,6 +13,10 @@
   create/edit/render/readback test. Figma client approval and credentials remain deployment prerequisites.
 - Prevent settings writes during directory changes, reject batches that would exceed the design
   inspection limit before mutation, and verify comment content and account identity during recovery.
+- Keep large text nodes readable during inspection, snapshot capture, and uncertain-write recovery;
+  interrupted snapshots no longer block canvas authors after a process restart.
+- Suppress self-authored comment feedback across registrations of the same file, and preserve
+  unspecified font attributes while loading fonts introduced by existing text styles.
 
 ## 2026-09-18 - Browse repository index history (0.46.0)
 

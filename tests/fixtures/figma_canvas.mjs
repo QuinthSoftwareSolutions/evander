@@ -14,6 +14,7 @@ class Node {
   constructor(id){this.key=id;for(const key of Object.keys(state.nodes[id])){
     if(['parent_id','children','removed'].includes(key))continue;
     Object.defineProperty(this,key,{enumerable:true,get:()=>state.nodes[id][key],set:value=>{
+      if(key==='fontName'&&!loaded.has(fontKey(value)))throw new Error('Unloaded new font');
       if(key==='characters'||key==='fontSize')fontCheck(this);state.nodes[id][key]=value;}});
   }}
   get parent(){return wrap(state.nodes[this.key].parent_id);}
@@ -23,7 +24,7 @@ class Node {
     if(old)state.nodes[old].children=state.nodes[old].children.filter(id=>id!==child.id);
     state.nodes[child.id].parent_id=this.id;state.nodes[this.id].children.push(child.id);}
   resize(width,height){fontCheck(this);this.width=width;this.height=height;}
-  getStyledTextSegments(){return [{start:0,end:this.characters.length,fontName:this.fontName,
+  getStyledTextSegments(){return [{start:0,end:this.characters.length,characters:this.characters,fontName:this.fontName,
     fontSize:this.fontSize,fills:this.fills,textStyleId:this.textStyleId}];}
   findAllWithCriteria({types}){return this.children.flatMap(n=>[...(types.includes(n.type)?[n]:[]),...n.findAllWithCriteria({types})]);}
   remove(){if(this.parent)state.nodes[this.parent.id].children=state.nodes[this.parent.id].children.filter(id=>id!==this.id);
@@ -32,7 +33,11 @@ class Node {
     state.nodes[clone.id]={...structuredClone(state.nodes[this.id]),id:clone.id,parent_id:currentPage,children:[]};
     for(const child of children)clone.appendChild(child.clone());return wrap(clone.id);}
   createInstance(){if(this.type!=='COMPONENT')throw new Error('Not component');const n=this.clone();state.nodes[n.id].type='INSTANCE';return wrap(n.id);}
-  async setTextStyleIdAsync(id){this.textStyleId=id;}
+  async setTextStyleIdAsync(id){
+    const style=state.textStyles?.[id];if(!style)throw new Error('Unknown text style');
+    // Applying a style changes its font without loading it for later edits.
+    Object.assign(state.nodes[this.id],structuredClone(style),{textStyleId:id});
+  }
 }
 function create(type){const id=`1:${state.next++}`;
   state.nodes[id]={id,type,name:type,parent_id:type==='PAGE'?'0:0':currentPage,children:[],

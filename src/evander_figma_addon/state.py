@@ -119,15 +119,27 @@ class Store:
             ).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def operation_for_file(self, operation_id: str, file_key: str):
+        """Internal provenance lookup across registrations of the same Figma file."""
+        with self.db() as db:
+            row = db.execute(
+                "SELECT payload FROM records WHERE kind='operation' AND id=? AND file_key=?",
+                (operation_id, file_key),
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
     def unresolved(self, file_key: str):
         with self.db() as db:
             rows = db.execute(
                 "SELECT payload FROM records WHERE kind='operation' AND file_key=?", (file_key,)
             ).fetchall()
         return [
-            json.loads(row[0])
-            for row in rows
-            if json.loads(row[0]).get("status") in {"running", "uncertain"}
+            record
+            for record in (json.loads(row[0]) for row in rows)
+            if record.get("status") in {"running", "uncertain"}
+            # Process termination can leave a snapshot marked running, but it
+            # cannot have changed the canvas and must not block file authors.
+            and record.get("request", {}).get("operation") != "snapshot"
         ]
 
     def finish(self, record, directory, target, file_key, *, event=None):

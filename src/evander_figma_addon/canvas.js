@@ -66,11 +66,17 @@ async function properties(node, props) {
   if (['characters', 'font_size', 'font_family', 'font_style', 'text_style_id'].some(
       key => props[key] != null) && !isText) throw new Error('Text properties require TEXT');
   if (isText && (props.font_family != null || props.font_style != null)) {
-    const font = {family: props.font_family || 'Inter', style: props.font_style || 'Regular'};
+    const font = {family: props.font_family ?? node.fontName.family,
+      style: props.font_style ?? node.fontName.style};
+    if (!font.family || !font.style) throw new Error('Mixed fonts require an explicit family and style');
     await figma.loadFontAsync(font);
     node.fontName = font;
   }
-  if (props.text_style_id != null) await node.setTextStyleIdAsync(props.text_style_id);
+  if (props.text_style_id != null) {
+    await node.setTextStyleIdAsync(props.text_style_id);
+    // A style can change the font without loading it for subsequent text edits.
+    await fonts(node);
+  }
   const mapping = {name:'name', x:'x', y:'y', characters:'characters', font_size:'fontSize',
     corner_radius:'cornerRadius', opacity:'opacity', visible:'visible', layout_mode:'layoutMode',
     item_spacing:'itemSpacing', horizontal_sizing:'layoutSizingHorizontal', vertical_sizing:'layoutSizingVertical'};
@@ -175,22 +181,19 @@ if (root) {
   await figma.setCurrentPageAsync(page);
 }
 if (input.action === 'inspect') {
-  const nodes = tree(root), result = [];
-  let bytes = 0, index = input.offset || 0;
-  while (index < nodes.length) {
-    const size = JSON.stringify(nodes[index]).length;
-    if (size > 12000) throw new Error('Node data exceeds the read limit');
-    if (bytes + size > 12000) break;
-    result.push(nodes[index++]); bytes += size;
-  }
+  // Chunk the serialized data, including within a single node. ASCII encoding
+  // makes offsets portable and keeps each JSON-wrapped response below 20 KB,
+  // even for control characters, non-ASCII text, and large styled-text segments.
+  const serialized = canonical(JSON.parse(JSON.stringify(tree(root)))).replace(
+    /[\u007f-\uffff]/g, character => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0'));
+  const offset = input.offset || 0, chunk = serialized.slice(offset, offset + 8000);
   // A pagination consistency marker, not an authorization or revision digest.
-  const serialized = canonical(nodes);
   let a = 2166136261, b = 5381;
   for (let i = 0; i < serialized.length; i++) {
     a = Math.imul(a ^ serialized.charCodeAt(i), 16777619);
     b = Math.imul(b, 33) ^ serialized.charCodeAt(i);
   }
-  return reply({nodes:result, next_offset:index < nodes.length ? index : null,
+  return reply({nodes_json:chunk, next_offset:offset + chunk.length < serialized.length ? offset + chunk.length : null,
     read_token:`${serialized.length}:${a >>> 0}:${b >>> 0}`});
 }
 const allowed = input.allowed_roots || [];
