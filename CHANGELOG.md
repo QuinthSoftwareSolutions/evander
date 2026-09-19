@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-19 - Collaborate on native Figma mockups (0.47.0)
+## 2026-09-19 - Collaborate on native Figma mockups (0.49.0)
 
 - Add an optional Figma add-on with shared agent tools, workflow providers, directory-scoped
   file grants, and an operator page for host-held OAuth connections, previews, and operation history.
@@ -17,6 +17,35 @@
   interrupted snapshots no longer block canvas authors after a process restart.
 - Suppress self-authored comment feedback across registrations of the same file, and preserve
   unspecified font attributes while loading fonts introduced by existing text styles.
+
+## 2026-09-19 - Collaborate visually through Miro (0.48.0)
+
+- Add an opt-in Miro integration with editable canvas diagrams, scoped snapshots, comment
+  collaboration, agent tools, and matching workflow queries, effects, and polling triggers.
+- Manage named, directory-scoped OAuth connections, board/session grants, call budgets,
+  capability checks, and uncertain-write recovery through Admin Web. Credentials stay encrypted
+  on the host; overlapping writes are serialized and stale snapshots cannot overwrite observed edits.
+- Keep publishing, feedback routing, monitoring cadence, and agent coordination in operator-authored
+  workflows, with optional examples and durable polling checkpoints that survive restarts.
+- Use Miro's published tool parameters, offset comment pagination, and explicit SVG deletion
+  markers. Serialize operation keys across boards, preserve completed writes during readback,
+  and keep concurrent human edits visible to monitoring.
+- Enforce operation directory ownership during recovery, reset polling safely when connections
+  are overridden, and preserve idempotent board-creation retries at the connection's board limit.
+
+## 2026-09-19 - Core classification with Jev (0.47.0)
+
+- Add a provider-neutral classification service with Jev as its first implementation,
+  supporting Choice, Score, and Boolean probability questions on shared input.
+- Add directory-scoped provider settings and fixed reusable profiles, the built-in
+  `query:classification:evaluate` workflow node, and ordinary grantable agent tools
+  `classification_evaluate` and `classification_list_profiles`.
+- Add structured Admin Web profile/workflow editors, sample evaluations, revision-aware
+  saves, atomic profile inheritance, and known answer fields in workflow binding suggestions.
+- Persist resolved classification definitions before workflow execution and attribute
+  bounded provider attempts through the existing model usage store. Keep classification
+  disabled by default, with host-owned credentials and no automatic session grants.
+- Document setup, recovery, an example workflow, and an explicit opt-in live smoke command.
 
 ## 2026-09-18 - Browse repository index history (0.46.0)
 

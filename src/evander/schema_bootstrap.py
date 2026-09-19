@@ -1466,6 +1466,16 @@ _EFFECT_OUTPUT_SCHEMAS = {
 }
 
 _QUERY_OUTPUT_SCHEMAS = {
+    "query:classification:evaluate": {
+        "success": {"type": "boolean"},
+        "answers": {"type": "object", "additionalProperties": {"type": "object"}},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "usage": {"type": "object"},
+        "duration_ms": {"type": "integer"},
+        "profile_id": {"type": ["string", "null"]},
+        "profile_revision": {"type": ["string", "null"]},
+    },
     "query:code-index:status": {
         "status": {"type": "string"},
         "builds": {"type": "array"},

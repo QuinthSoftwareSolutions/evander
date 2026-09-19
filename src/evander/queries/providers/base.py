@@ -88,6 +88,13 @@ class QueryProviderBase:
         del resolved_config
         return {}
 
+    def prepare(self, *, resolved_config: Mapping[str, Any]) -> dict[str, Any]:
+        """Freeze external configuration before the execution record is persisted.
+
+        Preparation must not call external providers or perform side effects.
+        """
+        return dict(resolved_config)
+
     @classmethod
     def validate_definition(
         cls, query_definition: QueryDefinitionDiscriminated

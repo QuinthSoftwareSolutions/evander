@@ -160,6 +160,8 @@ class ToolName(str, Enum):
     GET_WORKFLOW_SNAPSHOT = "get_workflow_snapshot"
     SEMANTIC_UPSERT_TEXT = "semantic_upsert_text"
     SEMANTIC_SEARCH = "semantic_search"
+    CLASSIFICATION_EVALUATE = "classification_evaluate"
+    CLASSIFICATION_LIST_PROFILES = "classification_list_profiles"
     CODE_INDEX_STATUS = "code_index_status"
     CODE_SEARCH = "code_search"
     CODE_NAVIGATE = "code_navigate"

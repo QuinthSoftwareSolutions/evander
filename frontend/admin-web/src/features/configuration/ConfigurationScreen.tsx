@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { WebsiteLoginsConfiguration } from "./WebsiteLoginsConfiguration";
+import { ClassificationConfiguration } from "../classification/ClassificationConfiguration";
 import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
 import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
@@ -957,6 +958,7 @@ export function ConfigurationScreen() {
   const [modelPricingDraftBaseRevision, setModelPricingDraftBaseRevision] = useState<string | null>(null);
   const [modelPricingDirty, setModelPricingDirty] = useState(false);
   const [websiteLoginsDirty, setWebsiteLoginsDirty] = useState(false);
+  const [classificationDirty, setClassificationDirty] = useState(false);
   const [modelPricingSaving, setModelPricingSaving] = useState(false);
   const [modelPricingError, setModelPricingError] = useState<string | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
@@ -1208,7 +1210,7 @@ export function ConfigurationScreen() {
       if (
         state !== null
         && globalSelectedDirectoryPath !== selectedDirectoryPath
-        && (hasDirtyDrafts(dirtyTabs) || websiteLoginsDirty)
+        && (hasDirtyDrafts(dirtyTabs) || websiteLoginsDirty || classificationDirty)
         && !window.confirm("Discard unsaved configuration edits and switch directories?")
       ) {
         setGlobalSelectedDirectoryPath(selectedDirectoryPath);
@@ -1285,6 +1287,9 @@ export function ConfigurationScreen() {
     if (websiteLoginsDirty && destinationKey !== "website-logins"
       && !window.confirm("Discard unsaved website login changes?")) return;
     if (destinationKey !== "website-logins") setWebsiteLoginsDirty(false);
+    if (classificationDirty && destinationKey !== "classification"
+      && !window.confirm("Discard unsaved classification changes?")) return;
+    if (destinationKey !== "classification") setClassificationDirty(false);
     lastDestinationByTabRef.current[tabKey] = destinationKey;
     setSelectedTab(tabKey);
     setSelectedDestination(destinationKey);
@@ -3500,6 +3505,10 @@ export function ConfigurationScreen() {
           </article>
         ) : null}
 
+        {selectedUtility === "classification" ? <ClassificationConfiguration
+          key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
+          disabled={mutationLocked || !state?.directory_scoped_config_enabled}
+          onDirtyChange={setClassificationDirty} /> : null}
         {selectedUtility === "website-logins" ? <WebsiteLoginsConfiguration
           key={selectedDirectoryPath} directoryPath={selectedDirectoryPath}
           disabled={mutationLocked || !state?.directory_scoped_config_enabled}

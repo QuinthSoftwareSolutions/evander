@@ -877,6 +877,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:ado:builds": "List Azure DevOps builds using explicit branch and version filters, newest first.",
     "query:text:regex": "Match or replace text with a configured regular expression and expose named captures.",
     "query:remote-issues": "Query Azure DevOps work items or GitHub issues.",
+    "query:classification:evaluate": "Evaluate named Choice, Score, or Boolean questions against shared state.",
     "query:semantic:store-status": "Read Qdrant health and semantic collection status.",
     "query:semantic:search": "Search a semantic collection with an embedded text query.",
     "query:semantic:get": "Retrieve semantic points by explicit point IDs.",
@@ -5040,6 +5041,22 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             *_remote_issue_base_fields(bindable=True),
             _field("skip", "Skip", "number", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:classification:evaluate",
+        label="Classification evaluate",
+        fields=[
+            _field("state", "State", "json", required=True, bindable=True,
+                   description="Text or structured context shared by all questions."),
+            _field("profile_id", "Profile", "string", bindable=True,
+                   description="Use a fixed directory profile, or define questions inline."),
+            _field("questions", "Questions", "json", bindable=True),
+            _field("provider", "Provider", "string", bindable=True,
+                   description="Inline evaluations only; defaults to directory configuration."),
+            _field("model", "Model", "string", bindable=True,
+                   description="Inline evaluations only; profiles fix the provider and model."),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from evander.admin.services.website_session_admin_service import WebsiteSessionAdminService
+from evander.admin.services.classification_admin_service import ClassificationAdminService
+from evander.classification.service import ClassificationService
 from evander.admin.services.repository_index_service import RepositoryIndexService
 
 import os
@@ -239,6 +241,7 @@ class AdminRuntimeComponents:
     capacity_health_admin: CapacityHealthAdminService
     connector_admin: ConnectorAdminService
     website_session_admin: WebsiteSessionAdminService
+    classification_admin: ClassificationAdminService
     host_directory_admin: HostDirectoryAdminService
     codex_auth_admin: CodexAuthAdminService
     documentation_admin: DocumentationService
@@ -815,6 +818,10 @@ def _build_admin_runtime_components(
         connector_admin=connector_admin,
         website_session_admin=WebsiteSessionAdminService(
             operations_admin, runtime.provider_config, runtime.audit
+        ),
+        classification_admin=ClassificationAdminService(
+            operations_admin, runtime.provider_config, runtime.audit,
+            ClassificationService(config.runtime_dir),
         ),
         host_directory_admin=host_directory_admin,
         codex_auth_admin=codex_auth_admin,

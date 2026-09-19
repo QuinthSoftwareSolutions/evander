@@ -16,6 +16,8 @@ from evander.communication_artifacts import CommunicationArtifactStore
 from evander.issues.service import IssueService
 from evander.runtime import RuntimeContext
 from evander.semantic.gateway_adapter import GatewaySemanticAdapter
+from evander.classification.runtime import service_for_runtime
+from evander.classification.service import ClassificationService
 
 
 def _compat_gateway_attr(name: str, default: object) -> object:
@@ -37,6 +39,7 @@ class GatewayToolDependencies:
     issue_service_factory: Callable[[], IssueService]
     chat_store_factory: Callable[[], ChatStore]
     semantic_adapter: GatewaySemanticAdapter
+    classification_service_factory: Callable[[], ClassificationService]
     communication_artifact_store_factory: Callable[[], CommunicationArtifactStore]
     code_consultation_service_factory: CodeConsultationServiceFactoryPort
 
@@ -64,6 +67,7 @@ class GatewayToolDependencies:
             issue_service_factory=lambda: issue_service_cls(context.provider_config),
             chat_store_factory=lambda: ChatStore(admin_chat_store_path(context.config.runtime_dir)),
             semantic_adapter=GatewaySemanticAdapter(context),
+            classification_service_factory=lambda: service_for_runtime(context),
             communication_artifact_store_factory=communication_artifact_store_factory,
             code_consultation_service_factory=BoundCodeConsultationServiceFactory(
                 lambda: admin_runtime_factory().managed_git_admin,

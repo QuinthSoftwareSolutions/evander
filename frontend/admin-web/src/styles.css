@@ -9101,6 +9101,7 @@ select {
 .agent-log-controls button,
 .action-cluster button,
 .website-logins-panel button,
+.classification-panel button,
 .inline-actions button,
 .admin-toolbar button {
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
@@ -9163,6 +9164,7 @@ select {
 .admin-icon-button,
 .admin-toolbar button,
 .website-logins-panel button,
+.classification-panel button,
 .inline-actions button,
 .action-cluster button,
 .feature-toolbar-actions button,
@@ -11981,6 +11983,7 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .admin-icon-button,
 :root[data-theme="dark"] .admin-toolbar button,
 :root[data-theme="dark"] .website-logins-panel button,
+:root[data-theme="dark"] .classification-panel button,
 :root[data-theme="dark"] .inline-actions button,
 :root[data-theme="dark"] .action-cluster button,
 :root[data-theme="dark"] .feature-toolbar-actions button,

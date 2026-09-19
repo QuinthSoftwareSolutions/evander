@@ -3,6 +3,18 @@
 For effect handoff timing, bounded recovery scheduling, and deployment verification, see
 [Orchestration latency and recovery](orchestration-latency.md).
 
+## Miro visual collaboration
+
+Enable `miro-addon` in **Add-ons**, restart the listed gateway/Admin Web/orchestrator services,
+and configure an OAuth connection and explicit board/session grants in **Miro**. Only workflows
+that include a Miro polling trigger monitor boards. Use the connection activity view for budget
+and polling failures. For an uncertain write, use **Read back**, inspect Miro, and record the
+evidence with **Mark applied** or **Mark not applied** before scheduling further writes.
+See [Miro setup and workflow examples](miro-addon.md); examples are never installed into live
+workflow packs automatically.
+
+## Figma mockup collaboration
+
 For native UI mockup collaboration, see [Figma setup and recovery](figma.md). Enable the optional
 add-on, connect an approved OAuth client, and pass its create/edit/render/readback/cleanup test in
 a disposable file before granting agent authoring. The same page shows snapshots and uncertain
@@ -171,6 +183,10 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 - Override per VM with `DISK_SIZE_GB=40 sudo ./scripts/launch_agent_vm.sh ...`.
 
 ## First Troubleshooting Step
+
+For the opt-in core classification capability, host credential setup, provider enablement,
+and an explicit live smoke command, see [Classification](classification.md). It uses the
+existing gateway, effect orchestrator, and Admin Web processes with no new guest ports.
 
 Before debugging individual scripts or services, run the consolidated host status command:
 

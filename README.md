@@ -22,6 +22,8 @@ For decision journals, bounded wake deltas and configurable workflow context, se
 - A host-side OpenAI relay that keeps the API key on the host, exposes an OpenAI-compatible endpoint to guests, and session-gates hosted web search plus image generation/editing
 - A source- and destination-restricted Codex subscription egress proxy for container workers
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
+- Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
+  choice/score/boolean evaluations, a structured editor, and Jev as the first provider
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
@@ -42,6 +44,8 @@ For decision journals, bounded wake deltas and configurable workflow context, se
 - Opt-in [repository indexing](docs/repository-indexing.md) with scoped source search,
   reusable baseline coverage, bounded compiler scheduling, C#/TypeScript navigation,
   Admin Web controls and portable SQLite/SCIP exports
+- An optional [Miro Add-on](docs/miro-addon.md) for editable diagrams, explanations, comment
+  collaboration, and workflow-owned board monitoring through host-managed OAuth connections
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`

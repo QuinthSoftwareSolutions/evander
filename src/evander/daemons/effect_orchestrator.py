@@ -1970,6 +1970,11 @@ class EffectOrchestratorWorker:
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, query.id)
         graph_metadata = graph.node_graph_metadata_by_id.get(query.id)
+        execution_context = _effect_execution_context(
+            idempotency_key=idempotency_key, queue_record=queue_record,
+            effect=query, graph_metadata=graph_metadata,
+        )
+        execution_context["trace_id"] = queue_record.trace_id
         existing = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
         if existing is not None:
             if existing.status == "running":
@@ -1981,6 +1986,7 @@ class EffectOrchestratorWorker:
                     query=query,
                     resolved_config=dict(existing.resolved_config),
                     graph_metadata=graph_metadata,
+                    execution_context=execution_context,
                 )
                 self._register_inflight_future(
                     idempotency_key=idempotency_key,
@@ -2031,6 +2037,17 @@ class EffectOrchestratorWorker:
             resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
         )
         binding_trace = binding_trace_to_payload(resolved.trace)
+        preparation_error = None
+        try:
+            executor = self.query_executor_registry.resolve(query.type)
+            prepare = getattr(executor, "prepare", None)
+            if callable(prepare):
+                resolved_config = prepare(
+                    query=query, resolved_config=resolved_config,
+                    graph_metadata=graph_metadata, execution_context=execution_context,
+                )
+        except Exception as exc:  # Preparation failures follow ordinary query error routing.
+            preparation_error = exc
         record = EffectExecutionRecord(
             execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
@@ -2051,12 +2068,17 @@ class EffectOrchestratorWorker:
             config_revision=config_revision,
         )
         self.execution_store.record_execution(record)
-        future = self._submit_provider(
-            self._execute_query_provider,
-            query=query,
-            resolved_config=resolved_config,
-            graph_metadata=graph_metadata,
-        )
+        if preparation_error is not None:
+            future = Future()
+            future.set_exception(preparation_error)
+        else:
+            future = self._submit_provider(
+                self._execute_query_provider,
+                query=query,
+                resolved_config=resolved_config,
+                graph_metadata=graph_metadata,
+                execution_context=execution_context,
+            )
         self._register_inflight_future(
             idempotency_key=idempotency_key,
             future=future,
@@ -2440,6 +2462,7 @@ class EffectOrchestratorWorker:
         query: QueryDefinitionDiscriminated,
         resolved_config: dict[str, Any],
         graph_metadata: ResolvedWorkflowGraphMetadata | None = None,
+        execution_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         executor = self.query_executor_registry.resolve(query.type)
         return dict(
@@ -2447,6 +2470,7 @@ class EffectOrchestratorWorker:
                 query=query,
                 resolved_config=resolved_config,
                 graph_metadata=graph_metadata,
+                execution_context=execution_context,
             )
             or {}
         )

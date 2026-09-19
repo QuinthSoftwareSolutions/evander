@@ -1,0 +1,62 @@
+{
+  "pack_id": "classification-triage-example",
+  "pack_version": "v1",
+  "description": "Disabled example: evaluate the triage profile and select urgent support messages.",
+  "graphs": [{
+    "id": "classification-triage",
+    "name": "Classification triage example",
+    "directory_path": "root",
+    "node_ids": ["sample-tick", "classify", "urgent-support", "decision"]
+  }],
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {
+        "id": "sample-tick",
+        "display_name": "Disabled sample schedule",
+        "type": "trigger:cron",
+        "config": {"expression": "0 9 * * 1-5", "enabled": false}
+      },
+      {
+        "id": "classify",
+        "display_name": "Evaluate message",
+        "type": "query:classification:evaluate",
+        "config": {
+          "state": {"context": "Route incoming customer messages.", "message": "Our export stopped and work is blocked. Please help."},
+          "profile_id": "triage"
+        },
+        "outputs": {
+          "answers": {"type": "object", "properties": {
+            "route": {"type": "object", "properties": {"choice": {"type": "string"}}},
+            "severity": {"type": "object", "properties": {"score": {"type": "number"}}},
+            "urgent": {"type": "object", "properties": {"probability_true": {"type": "number"}}}
+          }}
+        }
+      },
+      {
+        "id": "urgent-support",
+        "display_name": "Select urgent support messages",
+        "type": "gate:filter",
+        "config": {"when": {"all": [
+          {"left": "${{classify.answers.route.choice}}", "equals": "support"},
+          {"left": "${{classify.answers.urgent.probability_true}}", "greater_than": 0.8}
+        ]}}
+      },
+      {
+        "id": "decision",
+        "display_name": "Expose the decision",
+        "type": "gate:map",
+        "config": {"template": {
+          "team": "${{classify.answers.route.choice}}",
+          "severity": "${{classify.answers.severity.score}}",
+          "urgency_probability": "${{classify.answers.urgent.probability_true}}"
+        }}
+      }
+    ],
+    "edges": [
+      {"source_id": "sample-tick", "target_id": "classify"},
+      {"source_id": "classify", "target_id": "urgent-support"},
+      {"source_id": "urgent-support", "target_id": "decision"}
+    ]
+  }
+}

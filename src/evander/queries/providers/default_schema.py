@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from evander.queries.providers.schemas import (
+    ClassificationEvaluateQueryDefinition,
     AdoBuildsQueryDefinition,
     TextRegexQueryDefinition,
     AdoWorkItemsQueryDefinition,
@@ -40,6 +41,7 @@ from evander.schema_bootstrap import _QUERY_OUTPUT_SCHEMAS
 from evander.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _QUERY_MODEL_BY_TYPE = {
+    "query:classification:evaluate": ClassificationEvaluateQueryDefinition,
     "query:ado:builds": AdoBuildsQueryDefinition,
     "query:text:regex": TextRegexQueryDefinition,
     "query:code-index:status": CodeIndexStatusDefinition,
