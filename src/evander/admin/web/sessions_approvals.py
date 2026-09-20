@@ -201,6 +201,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.SUBMIT_VOICE_QUERY_RESPONSE: (
         "Answer delegated live voice questions for phone calls projected from this session."
     ),
+    ToolName.EMAIL_LIST_MAILBOXES: (
+        "Discover granted mailbox IDs, accounts, access levels and folders without reading email."
+    ),
     ToolName.EMAIL_LIST_UNREAD: (
         "List unread email messages available through the host email provider."
     ),

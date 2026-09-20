@@ -79,6 +79,27 @@ class ApprovalPolicyError(PolicyError):
         super().__init__(message)
 
 
+_EMAIL_OPERATION_TOOLS = frozenset(
+    {
+        ToolName.EMAIL_LIST_UNREAD,
+        ToolName.EMAIL_LIST_MESSAGES,
+        ToolName.EMAIL_GET_MESSAGE,
+        ToolName.EMAIL_CREATE_DRAFT,
+        ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+        ToolName.EMAIL_SEND,
+        ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
+        ToolName.EMAIL_SEND_APPROVED,
+        ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS,
+    }
+)
+
+
+def _has_email_discovery_permission(session: SessionManifest, tool_name: McpToolName) -> bool:
+    return tool_name == ToolName.EMAIL_LIST_MAILBOXES and bool(
+        _EMAIL_OPERATION_TOOLS.intersection(session.allowed_tools)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ToolApprovalContext:
     session_id: str | None = None
@@ -542,6 +563,9 @@ class PolicyEngine:
             has_tool_permission = ToolName.RESPOND_TO_AGENT.value in allowed_tool_values
             if has_tool_permission:
                 source = "session.allowed_tools.respond_to_agent"
+        if not has_tool_permission and _has_email_discovery_permission(session, tool_name):
+            has_tool_permission = True
+            source = "session.allowed_tools.email"
         if not has_tool_permission:
             has_tool_permission = self._lease_allows_tool(
                 session_id=session.session_id,
@@ -701,6 +725,8 @@ class PolicyEngine:
         session = self.get_session(normalized_session_id)
         tool_value = tool_name_value(tool_name)
         if tool_value in {tool_name_value(tool) for tool in session.allowed_tools}:
+            return False
+        if _has_email_discovery_permission(session, tool_name):
             return False
         self.require_tool_not_denied(session, tool_name)
         lease_is_usable = self.tool_approval_leases.is_tool_approved(

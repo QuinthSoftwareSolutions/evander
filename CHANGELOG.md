@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-20 - Discover granted email mailboxes (0.53.0)
+
+- Add `email_list_mailboxes` so agents can discover their authorized mailbox IDs, accounts,
+  access levels and folders before reading mail or creating unsent drafts.
+- Make discovery available to existing email-enabled sessions while preserving directory tool
+  restrictions, explicit empty grants and legacy mailbox policy. Return only session-scoped
+  public metadata without contacting providers or exposing credential references.
+
 ## 2026-09-20 - Lay out declarative workflow patches (0.52.0)
 
 - Allow declarative workflow document patches to position every namespaced node while preserving

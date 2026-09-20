@@ -1989,6 +1989,25 @@ Audit/result behavior:
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to allow `email_send` and enforce approval through MCP approval policy where required.
 
+### Discovering mailbox grants
+
+Call `email_list_mailboxes` before reading mail or creating drafts when the mailbox ID is unknown.
+The tool returns `mailboxes`, each containing `mailbox_id`, `provider`, `account_identifier`,
+`access` (`read`, `draft`, or `send`) and logical `folders`. Use `mailbox_id` in subsequent tools,
+not the account's email address. For example, mailbox ID `sales` can identify `sales@example.com`.
+
+Discovery is available to existing sessions with an allowed email operation, and is included when
+creating email-enabled sessions. It can also be granted explicitly. Directory tool denials and
+approval rules still apply. Only configured mailboxes authorized by the calling session are
+returned, using that session's directory configuration. Explicit empty grants or folder lists stay
+empty. Legacy manifests use their existing mailbox/folder allowlist and send-enable rules.
+
+Discovery reads local configuration without contacting the mail provider or reading messages.
+It exposes no credential values, credential references or provider folder IDs. The reported access
+is mailbox-level permission; each operation still needs its own allowed tool, and sending still
+requires send enablement, recipient targets and any applicable approval. Provider authentication is
+not verified by discovery. Drafts may have empty recipients and do not require send permission.
+
 ### Paginated mailbox listing
 
 Use `email_list_messages` for historical or filtered mailbox-folder scans. Grant the tool

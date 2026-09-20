@@ -21,6 +21,7 @@ from pydantic import Field as PydanticField
 from pydantic import ValidationError
 
 from evander.email.http_utils import ProviderRequestError
+from evander.email.discovery import discover_email_mailboxes
 from evander.email.providers import EmailDraftAttachment, EmailMessageSearchQuery
 from evander.gateway.dependencies import _compat_gateway_attr
 from evander.gateway.session_context import _resolve_session_id_from_context
@@ -1360,6 +1361,40 @@ def register_communication_tools(
             raise
 
     @server.tool()
+    def email_list_mailboxes(session_id: str) -> dict[str, Any]:
+        """Discover this session's mailbox IDs, accounts, access levels and allowed folders.
+
+        Use the returned mailbox_id (not the account address) in email tools. This
+        reads host configuration only; it does not access messages or verify provider
+        credentials. Mailbox grants do not override tool, send or recipient policies.
+        """
+        args = {"session_id": session_id}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.EMAIL_LIST_MAILBOXES)
+            mailboxes = discover_email_mailboxes(
+                session,
+                context.resolve_provider_config_for_session(session_id),
+                context.policy,
+            )
+            audit_success(
+                session_id, ToolName.EMAIL_LIST_MAILBOXES, args, {"count": len(mailboxes)}
+            )
+            return {"mailboxes": mailboxes}
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.EMAIL_LIST_MAILBOXES, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_LIST_MAILBOXES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def email_list_unread(
         session_id: str, mailbox_id: str, folder: str, limit: int = 10
     ) -> list[dict[str, Any]]:
@@ -1577,6 +1612,10 @@ def register_communication_tools(
         subject: str | None = None,
         recipients: list[str] | None = None,
     ) -> dict[str, Any]:
+        """Create an unsent draft; discover the mailbox_id with email_list_mailboxes.
+
+        Recipients may be omitted or empty while preparing a draft for human review.
+        """
         args = {
             "session_id": session_id,
             "mailbox_id": mailbox_id,

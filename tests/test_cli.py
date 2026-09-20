@@ -1842,6 +1842,7 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
         "has_pending_discord_messages",
         "list_unread_discord_messages",
         "list_all_discord_messages",
+        "email_list_mailboxes",
         "email_list_unread",
         "email_get_message",
         "email_create_draft",

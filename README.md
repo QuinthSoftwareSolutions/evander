@@ -1415,6 +1415,8 @@ helper fails instead of silently falling back to the branch tip.
 ## Email Provider Configuration (Host-Side Secrets Only)
 
 - `email_mailboxes` supports multiple mailbox entries with explicit provider and auth env-var wiring.
+- Email-enabled agents can call `email_list_mailboxes` to discover their granted mailbox IDs,
+  account identities, access levels and folders. Use the returned `mailbox_id` in email tools.
 - Keep mailbox OAuth credentials in host-only environment variables. Gmail and legacy Graph
   configurations can reference a static access token; Graph should normally reference tenant ID,
   client ID, and client secret env vars so Evander can acquire and renew access tokens itself.

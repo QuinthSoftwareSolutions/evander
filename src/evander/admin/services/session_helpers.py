@@ -378,6 +378,7 @@ def build_issue_session_manifest(
     if email_requested:
         resolved_allowed_tools.extend(
             [
+                ToolName.EMAIL_LIST_MAILBOXES,
                 ToolName.EMAIL_LIST_UNREAD,
                 ToolName.EMAIL_GET_MESSAGE,
             ]
