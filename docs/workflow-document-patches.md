@@ -18,6 +18,9 @@ A version-1 document declares:
 - `nodes`, `edges`: ordinary workflow definitions, including connections to the
   pre-existing nodes in the same graph. Each new edge must touch a patch node.
   Routing, bindings, conditions and prompts remain data.
+- `layout.nodes`: optional explicit `{ "x", "y" }` positions for every patch node.
+  Reapplying replaces coordinates only inside the declared node namespace and
+  preserves the rest of the graph layout.
 - `append_config_lists`: optional `{ "node_id", "field", "values", "optional" }`
   entries, appending missing values to a static config array without replacing
   existing values or unrelated configuration. Missing required nodes fail; an
