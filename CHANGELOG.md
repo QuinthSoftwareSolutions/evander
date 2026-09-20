@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-20 - Lay out declarative workflow patches (0.52.0)
+
+- Allow declarative workflow document patches to position every namespaced node while preserving
+  unrelated graph positions and replacing only patch-owned coordinates when reapplied.
+- Include layout changes in preview, validation, no-op detection, and revision-safe saves, and
+  provide a readable horizontal-lane layout for the APP PR-testing workflow.
+
 ## 2026-09-20 - Make Admin Web lists easier to scan (0.51.0)
 
 - Show communication targets, contacts, and email mailboxes as compact, searchable, sortable
