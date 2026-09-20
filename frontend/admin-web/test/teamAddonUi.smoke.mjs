@@ -124,6 +124,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /\/retry-gate/);
   assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
+  assert.match(script, /agentLeadProjectIds/);
+  assert.match(script, /"project_ids"/);
+  assert.match(script, /One agent may lead several projects/);
   assert.match(stylesheet, /\.projects-workbench/);
   assert.match(stylesheet, /\.projects-focus-row/);
   assert.match(stylesheet, /\.project-record-section/);
@@ -6133,7 +6136,12 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   await page.locator("#edit-modal-title", { hasText: "Edit agent backend" }).waitFor({
     state: "visible",
   });
-  assert.equal(await page.locator('#edit-record-form select[name="project_id"]').inputValue(), "project");
+  assert.deepEqual(
+    await page.locator('#edit-record-form select[name="project_ids"]').evaluate((select) =>
+      Array.from(select.selectedOptions).map((option) => option.value).sort(),
+    ),
+    ["other-project", "project"],
+  );
   await page.locator('#edit-record-form input[name="display_name"]').fill("Backend Worker Updated");
   await page.locator("#edit-record-form").getByRole("button", { name: "Save changes" }).click();
   await page.locator("#status-message", { hasText: /Saved revision \d+\./ }).waitFor({
@@ -6146,7 +6154,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   );
   assert.ok(editRequest);
   assert.equal(editRequest.payload.display_name, "Backend Worker Updated");
-  assert.equal(Object.hasOwn(editRequest.payload, "project_id"), false);
+  assert.equal(Object.hasOwn(editRequest.payload, "project_ids"), false);
   await page.waitForTimeout(350);
   assert.equal(
     await orgChartViewportTransform(page),
@@ -8279,8 +8287,19 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
 });
 
 test("team add-on agent edit scopes project, role, and superior choices to the selected team", async (t) => {
-  const { port } = await createTeamAddonServer(t, {
-    initialState: seededGitState(),
+  const initialState = seededGitState();
+  initialState.teams["team-alpha"].project_ids.push("alpha-second-project");
+  initialState.projects["alpha-second-project"] = {
+    id: "alpha-second-project",
+    team_id: "team-alpha",
+    name: "Alpha Second Project",
+    lead_agent_id: "alpha-manager",
+    goals: [],
+    git: null,
+    status: "active",
+  };
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
   });
   const page = await openBrowserPage(t, port);
 
@@ -8305,25 +8324,61 @@ test("team add-on agent edit scopes project, role, and superior choices to the s
   });
 
   const form = page.locator("#edit-record-form");
-  assert.equal(await form.locator('select[name="project_id"] option[value="alpha-project"]').count(), 1);
-  assert.equal(await form.locator('select[name="project_id"] option[value="beta-project"]').count(), 0);
+  const projectSelect = form.locator('select[name="project_ids"]');
+  assert.equal(await projectSelect.getAttribute("multiple"), "");
+  assert.equal(await projectSelect.locator('option[value="alpha-project"]').count(), 1);
+  assert.equal(await projectSelect.locator('option[value="alpha-second-project"]').count(), 1);
+  assert.equal(await projectSelect.locator('option[value="beta-project"]').count(), 0);
   assert.equal(await form.locator('select[name="role_id"] option[value="alpha-project__project-lead"]').count(), 1);
   assert.equal(await form.locator('select[name="role_id"] option[value="beta-project__project-lead"]').count(), 0);
   assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-manager"]').count(), 1);
   assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-lead"]').count(), 0);
   assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="beta-manager"]').count(), 0);
 
+  await projectSelect.selectOption(["alpha-project", "alpha-second-project"]);
+  await form.locator('select[name="team_id"]').evaluate((select) => {
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.deepEqual(
+    await projectSelect.evaluate((select) =>
+      Array.from(select.selectedOptions).map((option) => option.value).sort(),
+    ),
+    ["alpha-project", "alpha-second-project"],
+  );
+
   await form.locator('select[name="team_id"]').selectOption("team-beta");
-  await waitForSelectOption(page, '#edit-record-form select[name="project_id"]', "beta-project");
+  await waitForSelectOption(page, '#edit-record-form select[name="project_ids"]', "beta-project");
   await waitForSelectOption(page, '#edit-record-form select[name="role_id"]', "beta-project__project-lead");
   await waitForSelectOption(page, '#edit-record-form select[name="reports_to_agent_id"]', "beta-manager");
 
-  assert.equal(await form.locator('select[name="project_id"] option[value="alpha-project"]').count(), 0);
+  assert.equal(await projectSelect.locator('option[value="alpha-project"]').count(), 0);
   assert.equal(await form.locator('select[name="role_id"] option[value="alpha-project__project-lead"]').count(), 0);
   assert.equal(await form.locator('select[name="reports_to_agent_id"] option[value="alpha-manager"]').count(), 0);
-  assert.equal(await form.locator('select[name="project_id"]').inputValue(), "");
+  assert.equal(await projectSelect.inputValue(), "");
   assert.equal(await form.locator('select[name="role_id"]').inputValue(), "");
   assert.equal(await form.locator('select[name="reports_to_agent_id"]').inputValue(), "");
+
+  await form.locator('select[name="team_id"]').selectOption("team-alpha");
+  await waitForSelectOption(page, '#edit-record-form select[name="project_ids"]', "alpha-second-project");
+  await projectSelect.selectOption(["alpha-project", "alpha-second-project"]);
+  await form.locator('select[name="role_id"]').selectOption("alpha-project__project-lead");
+  await form.locator('select[name="reports_to_agent_id"]').selectOption("alpha-manager");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await page.locator("#status-message", { hasText: /Saved revision \d+\./ }).waitFor({
+    state: "visible",
+  });
+
+  const editRequest = requests.find(
+    (request) =>
+      request.method === "PATCH" &&
+      request.pathname === "/api/addons/team-addon/agents/alpha-lead",
+  );
+  assert.ok(editRequest);
+  assert.deepEqual([...editRequest.payload.project_ids].sort(), [
+    "alpha-project",
+    "alpha-second-project",
+  ]);
+  assert.equal(Object.hasOwn(editRequest.payload, "project_id"), false);
 });
 
 function seededLongChatState(messageCount = 120) {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-20 - Manage multi-project Team assignments (0.54.0)
+
+- Let the Team agent editor manage the full set of project memberships, including clear
+  project-lead marking and a reminder that lead transfers remain project-scoped.
+- Accept revision-aware multi-project agent updates through the Team Admin API while retaining
+  existing project-lead assignments, and make lead transfers safe when the former lead is already
+  a member of that project.
+- Preserve multi-project choices during dynamic editor refreshes and keep project-scoped roles
+  limited to assignments for their own project.
+
 ## 2026-09-20 - Discover granted email mailboxes (0.53.0)
 
 - Add `email_list_mailboxes` so agents can discover their authorized mailbox IDs, accounts,

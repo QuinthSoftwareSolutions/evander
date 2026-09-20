@@ -2820,12 +2820,32 @@ class TeamAdminService:
                 retained_assignment.kind = AgentProjectAssignmentKind.PROJECT_LEAD
                 retained_assignment.updated_at = now
 
-            for assignment in state.project_assignments.values():
+            previous_lead_assignments = [
+                assignment
+                for assignment in state.project_assignments.values()
                 if (
                     assignment.id != retained_assignment.id
                     and assignment.project_id == project.id
                     and assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD
-                ):
+                )
+            ]
+            for assignment in previous_lead_assignments:
+                existing_member_assignment = next(
+                    (
+                        candidate
+                        for candidate in state.project_assignments.values()
+                        if candidate.agent_id == assignment.agent_id
+                        and candidate.project_id == project.id
+                        and candidate.kind == AgentProjectAssignmentKind.PROJECT_MEMBER
+                    ),
+                    None,
+                )
+                if existing_member_assignment is not None:
+                    # The former lead was already a member. Retain that member
+                    # assignment rather than creating a duplicate while demoting
+                    # the lead overlay.
+                    state.project_assignments.pop(assignment.id, None)
+                else:
                     assignment.kind = AgentProjectAssignmentKind.PROJECT_MEMBER
                     assignment.updated_at = now
 
@@ -3310,6 +3330,8 @@ class TeamAdminService:
         set_team_id: bool = False,
         project_id: str | None = None,
         set_project_id: bool = False,
+        project_ids: Sequence[str] | None = None,
+        set_project_ids: bool = False,
         role_id: str | None = None,
         set_role_id: bool = False,
         session_id: str | None = None,
@@ -3332,6 +3354,11 @@ class TeamAdminService:
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_team_id = _optional_text(team_id)
         normalized_project_id = _optional_text(project_id)
+        normalized_project_ids = (
+            sorted({_required_text(value, "project_ids") for value in (project_ids or [])})
+            if set_project_ids
+            else []
+        )
         normalized_role_id = _optional_text(role_id)
         normalized_reports_to_agent_id = _optional_text(reports_to_agent_id)
         normalized_context_clearing_policy = _resolved_context_clearing_policy(
@@ -3351,6 +3378,8 @@ class TeamAdminService:
             now = utc_now()
             agent = _require_present(state.agents, normalized_agent_id, "agent")
             detached_from_team = False
+            if set_project_id and set_project_ids:
+                raise ValueError("project_id and project_ids cannot be set together")
             if set_team_id:
                 if normalized_team_id is None:
                     blockers = _agent_team_removal_blockers(state, agent)
@@ -3407,6 +3436,81 @@ class TeamAdminService:
                         project_id=normalized_project_id,
                         agent_id=agent.id,
                         role_id=agent.role_id,
+                        kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+                    )
+            elif set_project_ids and not detached_from_team:
+                if agent.team_id is None:
+                    raise ValueError("project_ids cannot be set for a teamless agent")
+                for requested_project_id in normalized_project_ids:
+                    project = _require_present(
+                        state.projects,
+                        requested_project_id,
+                        "project",
+                    )
+                    if project.team_id != agent.team_id:
+                        raise ValueError(
+                            f"project {requested_project_id} does not belong to team {agent.team_id}"
+                        )
+
+                lead_project_ids = {
+                    assignment.project_id
+                    for assignment in state.project_assignments.values()
+                    if assignment.agent_id == agent.id
+                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD
+                }
+                missing_lead_project_ids = sorted(
+                    lead_project_ids.difference(normalized_project_ids)
+                )
+                if missing_lead_project_ids:
+                    raise ValueError(
+                        "project_ids cannot remove project lead assignments; transfer the "
+                        "project lead first: " + ", ".join(missing_lead_project_ids)
+                    )
+
+                for assignment_id in [
+                    assignment.id
+                    for assignment in state.project_assignments.values()
+                    if assignment.agent_id == agent.id
+                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_MEMBER
+                    and assignment.project_id not in normalized_project_ids
+                ]:
+                    state.project_assignments.pop(assignment_id, None)
+
+                member_project_ids = {
+                    assignment.project_id
+                    for assignment in state.project_assignments.values()
+                    if assignment.agent_id == agent.id
+                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_MEMBER
+                }
+                assignment_role_id = (
+                    normalized_role_id if set_role_id or role_id is not None else agent.role_id
+                )
+                assignment_role = (
+                    state.roles.get(assignment_role_id) if assignment_role_id is not None else None
+                )
+                for requested_project_id in normalized_project_ids:
+                    if (
+                        requested_project_id in lead_project_ids
+                        or requested_project_id in member_project_ids
+                    ):
+                        continue
+                    assignment_id = _project_assignment_id(
+                        requested_project_id,
+                        agent.id,
+                        AgentProjectAssignmentKind.PROJECT_MEMBER,
+                        existing_ids=state.project_assignments,
+                    )
+                    state.project_assignments[assignment_id] = AgentProjectAssignment(
+                        id=assignment_id,
+                        team_id=agent.team_id,
+                        project_id=requested_project_id,
+                        agent_id=agent.id,
+                        role_id=(
+                            assignment_role_id
+                            if assignment_role is not None
+                            and assignment_role.project_id in {None, requested_project_id}
+                            else None
+                        ),
                         kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
                     )
             if set_role_id and not detached_from_team:
@@ -3540,6 +3644,7 @@ class TeamAdminService:
                 status is not None
                 or set_role_id
                 or set_project_id
+                or set_project_ids
                 or set_team_id
                 or set_reports_to_agent_id
             ):
