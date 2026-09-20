@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-20 - Make Admin Web lists easier to scan (0.51.0)
+
+- Show communication targets, contacts, and email mailboxes as compact, searchable, sortable
+  summaries with expandable editors; add provider filtering and retain inherited target actions.
+- Reduce shared navigation, form, panel, and table spacing; remove repeated single-setting
+  headings and collapse optional Teams lookup and directory metadata.
+- Preserve configuration drafts and original record identity while filtering and sorting,
+  including failed-save recovery, keyboard access, and read-only inspection. Close editors when
+  a saved snapshot changes so sorted contact readback cannot silently select another record.
+
 ## 2026-09-19 - Preserve subscription-capacity replay routing (0.50.1)
 
 - Preserve the selected ChatGPT subscription profile when an initially unprofiled queued replay

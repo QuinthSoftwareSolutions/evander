@@ -7,6 +7,7 @@ import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
 import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
+import { RecordCollection } from "../admin/RecordCollection";
 import { JsonTextEditor, RegexListEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
 import {
   dedupeStrings,
@@ -1252,6 +1253,9 @@ export function ConfigurationScreen() {
     ? null
     : (selectedDestination as ConfigurationUtilityKey | "");
   const snapshot = state?.tab_snapshots[selectedTab] ?? null;
+  // Saved snapshots can reorder records (contact object keys are sorted on disk).
+  // Reset collection UI state with the snapshot so an open source index cannot select another record.
+  const collectionSnapshotKey = `${selectedDirectoryPath}:${selectedTab}:${snapshot?.revision ?? ""}`;
   const tabDraft = drafts[selectedTab] ?? {};
   const isDirty = dirtyTabs[selectedTab] ?? false;
   const hasUnsavedTabs = hasDirtyDrafts(dirtyTabs);
@@ -1881,11 +1885,15 @@ export function ConfigurationScreen() {
         {parsed.error ? (
           <div className="callout error-callout">Contacts draft could not be read: {parsed.error}</div>
         ) : null}
-        {!parsed.error && entries.length === 0 ? (
-          <div className="empty-state">No contacts are configured for this override.</div>
-        ) : null}
-        {!parsed.error
-          ? entries.map((contact, contactIndex) => (
+        {!parsed.error ? <RecordCollection
+          key={`${collectionSnapshotKey}:${field.field_name}`}
+          label="Contacts" entries={entries}
+          name={(contact, index) => contact.name.trim() || contact.id.trim() || `Contact ${index + 1}`}
+          description={contact => contact.emailAddresses.join(", ") || contact.description}
+          searchText={contact => [contact.id, contact.description, ...contact.phoneNumbers.map(phone => `${phone.label} ${phone.number}`)].join(" ")}
+          isNew={contact => !contact.name.trim()}
+        >
+          {(contact, contactIndex) => (
               <div key={`contact-${contactIndex}`} className="contact-editor-item">
                 <div className="contact-editor-item-header">
                   <strong>{contact.name.trim() || contact.id.trim() || `Contact ${contactIndex + 1}`}</strong>
@@ -2104,8 +2112,8 @@ export function ConfigurationScreen() {
                   ))}
                 </div>
               </div>
-            ))
-          : null}
+            )}
+        </RecordCollection> : null}
       </div>
     );
   }
@@ -2127,9 +2135,7 @@ export function ConfigurationScreen() {
       <div className="communication-targets-editor">
         <div className="contacts-editor-header">
           <p className="muted-text">
-            Targets are resolved through directory inheritance and used by workflow messaging effects.
-            Use Add target for Teams, Discord, email, GitHub, ADO, Jira, or Linear targets; the Teams
-            lookup only helps fill channel addresses.
+            Messaging destinations for workflows and agents. Expand a target to edit its address and capabilities.
           </p>
           <div className="inline-actions contacts-editor-actions">
             <button
@@ -2156,9 +2162,9 @@ export function ConfigurationScreen() {
             </button>
           </div>
         </div>
-        <div className="contact-subsection teams-channel-lookup">
+        <details className="contact-subsection teams-channel-lookup">
+          <summary>Optional Teams channel lookup</summary>
           <div className="contact-subsection-header">
-            <strong>Optional Teams channel lookup</strong>
             <div className="inline-actions compact-actions">
               <button
                 type="button"
@@ -2250,15 +2256,21 @@ export function ConfigurationScreen() {
               )}
             </div>
           ) : null}
-        </div>
+        </details>
         {parsed.error ? (
           <div className="callout error-callout">Communication target draft could not be read: {parsed.error}</div>
         ) : null}
-        {!parsed.error && entries.length === 0 ? (
-          <div className="empty-state">No communication targets are configured for this override.</div>
-        ) : null}
-        {!parsed.error
-          ? entries.map((target, targetIndex) => {
+        {!parsed.error ? <RecordCollection
+          key={`${collectionSnapshotKey}:${field.field_name}`}
+          label="Communication targets" entries={entries}
+          name={(target, index) => target.id.trim() || `Target ${index + 1}`}
+          description={target => target.address || "No address configured"}
+          searchText={target => [target.provider, target.kind, ...target.capabilities, target.disabled ? "disabled" : "enabled", target.authProfileRef].join(" ")}
+          category={target => target.provider}
+          metadata={target => <><span className="record-provider">{target.provider}</span><span>{target.disabled ? "Disabled" : target.capabilities.join(" · ")}</span></>}
+          isNew={target => !target.id.trim()}
+        >
+          {(target, targetIndex) => {
               const kindOptions = communicationTargetKindsForProvider(target.provider);
               const showKindSelector = kindOptions.length > 1;
               const selectedKind = normalizeCommunicationTargetKind(target.provider, target.kind);
@@ -2517,14 +2529,20 @@ export function ConfigurationScreen() {
                 ) : null}
               </div>
               );
-            })
-          : null}
+            }}
+        </RecordCollection> : null}
         {availableInheritedTargets.length ? (
           <div className="contact-subsection communication-target-inherited">
             <div className="contact-subsection-header">
               <strong>Inherited targets</strong>
             </div>
-            {availableInheritedTargets.map((target) => (
+            <RecordCollection key={`${collectionSnapshotKey}:inherited-targets`} label="Inherited targets" entries={availableInheritedTargets}
+              name={target => target.id} description={target => target.address}
+              searchText={target => [target.provider, target.kind, ...target.capabilities].join(" ")}
+              category={target => target.provider}
+              metadata={target => <><span className="record-provider">{target.provider}</span><span>Inherited</span></>}
+            >
+            {target => (
               <div key={`inherited-${target.id}`} className="communication-target-inherited-row">
                 <div>
                   <strong>{target.id}</strong>
@@ -2558,7 +2576,8 @@ export function ConfigurationScreen() {
                   </button>
                 </div>
               </div>
-            ))}
+            )}
+            </RecordCollection>
           </div>
         ) : null}
       </div>
@@ -2789,14 +2808,21 @@ export function ConfigurationScreen() {
           </div>
         ) : null}
 
-        <div className="configuration-context-strip" aria-label="Configuration context">
-          <div><span>Directory</span><strong>{selectedDirectoryPath}</strong></div>
-          <div><span>Parent</span><strong>{state?.selected_directory.parent_path ?? "No parent"}</strong></div>
-          <div><span>Scope</span><strong>{isRoot ? "Root defaults" : "Directory override"}</strong></div>
-          <div><span>Mode</span><strong>{state?.directory_scoped_config_enabled ? "Writable" : "Read only"}</strong></div>
-          <div><span>Domains</span><strong>{selectedTabDefinition?.underlying_domains.join(", ") || "n/a"}</strong></div>
-          <div><span>Overrides</span><strong>{state?.directory_overrides.field_count ?? 0} fields</strong></div>
-        </div>
+        <details className="configuration-context">
+          <summary>
+            <strong>{selectedDirectoryPath}</strong>
+            <span>{isRoot ? "Root defaults" : "Directory override"} · {state?.directory_scoped_config_enabled ? "Writable" : "Read only"}</span>
+            <span className="configuration-context-hint">Directory details</span>
+          </summary>
+          <div className="configuration-context-strip" aria-label="Configuration context">
+            <div><span>Directory</span><strong>{selectedDirectoryPath}</strong></div>
+            <div><span>Parent</span><strong>{state?.selected_directory.parent_path ?? "No parent"}</strong></div>
+            <div><span>Scope</span><strong>{isRoot ? "Root defaults" : "Directory override"}</strong></div>
+            <div><span>Mode</span><strong>{state?.directory_scoped_config_enabled ? "Writable" : "Read only"}</strong></div>
+            <div><span>Domains</span><strong>{selectedTabDefinition?.underlying_domains.join(", ") || "n/a"}</strong></div>
+            <div><span>Overrides</span><strong>{state?.directory_overrides.field_count ?? 0} fields</strong></div>
+          </div>
+        </details>
 
         <div className="feature-grid configuration-summary-grid">
           {selectedUtility === "teams-auth" && selectedTabDefinition?.key === TEAMS_AUTH_CONFIGURATION_TAB_KEY ? (
@@ -3341,7 +3367,7 @@ export function ConfigurationScreen() {
           const sectionIsGlobal = section.fields.every(isGlobalField);
           return (
             <article key={section.key} className="panel section-panel configuration-section-workspace">
-              <div className="panel-header configuration-section-header">
+              {section.fields.length > 1 ? <div className="panel-header configuration-section-header">
                 <div>
                   <h3>{section.title}</h3>
                   <p className="muted-text">
@@ -3352,8 +3378,8 @@ export function ConfigurationScreen() {
                       : "Enable overrides field-by-field to write only the values that should diverge from the parent directory."}
                   </p>
                 </div>
-                <span className="panel-meta">{section.fields.length} {section.fields.length === 1 ? "setting" : "settings"}</span>
-              </div>
+                <span className="panel-meta">{section.fields.length} settings</span>
+              </div> : null}
                 <div className="config-field-grid">
                   {section.fields.map((field) => {
                     const fieldIsGlobal = isGlobalField(field);
@@ -3431,6 +3457,7 @@ export function ConfigurationScreen() {
                             ? renderContactsEditor(field, fieldState, inputDisabled || loading || saving || !state?.directory_scoped_config_enabled)
                             : isEmailMailboxesField
                             ? <EmailMailboxesEditor
+                                key={`${collectionSnapshotKey}:${field.field_name}`}
                                 draftValue={fieldState.value}
                                 disabled={inputDisabled || loading || saving || !state?.directory_scoped_config_enabled}
                                 onDraftChange={(value) => updateFieldState(field.field_name, {
