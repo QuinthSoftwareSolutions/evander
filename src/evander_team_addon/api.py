@@ -1385,6 +1385,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 set_team_id="team_id" in payload,
                 project_id=_optional(payload, "project_id"),
                 set_project_id="project_id" in payload,
+                project_ids=(
+                    _optional_string_list(payload, "project_ids")
+                    if "project_ids" in payload
+                    else None
+                ),
+                set_project_ids="project_ids" in payload,
                 role_id=_optional(payload, "role_id"),
                 set_role_id="role_id" in payload,
                 session_id=_optional(payload, "session_id"),

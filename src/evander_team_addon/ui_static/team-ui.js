@@ -657,7 +657,7 @@ const fieldTooltips = {
   "edit:project:human_review_checklist": "Add, remove, and order the checks a human must complete before approving a release.",
   "edit:project:human_review_test_instructions": "Stable manual test instructions snapshotted onto each release request.",
   "edit:project:human_review_preparation_mode": "Manual uses these instructions directly; workflow requires a prepared preview target before review.",
-  "edit:agent:project_id": "Move the agent within its team. Project leads must remain assigned to their project.",
+  "edit:agent:project_ids": "Assign the agent to one or more projects. Project leads remain assigned until the lead is transferred from that project's editor.",
   "edit:agent:role_id": "First-class role assigned to this persistent agent.",
   "edit:agent:session_id": "Session ID used when this agent is woken or resumed.",
   "edit:agent:display_name": "Optional display name. Clear it to fall back to the agent ID.",
@@ -11413,17 +11413,18 @@ function agentProjectIds(agent) {
   return legacyProjectId ? [legacyProjectId] : [];
 }
 
-function agentEditProjectId(agent) {
-  const memberAssignmentIds = Array.isArray(agent?.project_assignments)
+function agentLeadProjectIds(agent) {
+  const directIds = uniqueTextList(agent?.lead_project_ids);
+  if (directIds.length) {
+    return directIds;
+  }
+  const assignmentIds = Array.isArray(agent?.project_assignments)
     ? agent.project_assignments
-        .filter((assignment) => text(assignment?.kind || "project_member") === "project_member")
+        .filter((assignment) => text(assignment?.kind) === "project_lead")
         .map((assignment) => text(assignment?.project_id))
         .filter(Boolean)
     : [];
-  if (memberAssignmentIds.length) {
-    return uniqueTextList(memberAssignmentIds)[0];
-  }
-  return agentProjectIds(agent)[0] || "";
+  return uniqueTextList(assignmentIds);
 }
 
 function agentProjectSummary(agent) {
@@ -21673,7 +21674,15 @@ function agentEditTeamId(select) {
 
 function agentEditProjectOptions(select) {
   const teamId = agentEditTeamId(select);
-  return teamId ? teamProjectOptions(teamId) : [];
+  if (!teamId) {
+    return [];
+  }
+  const agent = state.agents?.[text(select.form?.dataset?.editId)] || null;
+  const leadProjectIds = new Set(agentLeadProjectIds(agent));
+  return teamProjectOptions(teamId).map(([projectId, label]) => [
+    projectId,
+    leadProjectIds.has(text(projectId)) ? `${label} — Project lead` : label,
+  ]);
 }
 
 function agentEditRoleOptions(select) {
@@ -21729,6 +21738,13 @@ function projectReviewRoleOptionsForProject(projectId) {
 
 function fillSelect(select, options) {
   const currentValue = select.dataset.currentValue ?? select.value;
+  const currentValues = select.multiple
+    ? new Set(
+        select.dataset.currentValue !== undefined
+          ? splitList(select.dataset.currentValue)
+          : Array.from(select.selectedOptions).map((option) => option.value),
+      )
+    : null;
   const includePlaceholder = !select.multiple;
   const placeholder = select.dataset.placeholder || (select.required ? "Select" : "Default");
   select.innerHTML = `${includePlaceholder ? `<option value="">${placeholder}</option>` : ""}${options
@@ -21738,7 +21754,6 @@ function fillSelect(select, options) {
     })
     .join("")}`;
   if (select.multiple) {
-    const currentValues = new Set(splitList(currentValue));
     Array.from(select.options).forEach((option) => {
       option.selected = currentValues.has(option.value);
     });
@@ -24881,7 +24896,7 @@ function renderEditFields(type, record) {
       <fieldset>
         <legend>Project lead handoff</legend>
         ${selectField("Project lead", "lead_agent_id", "project-lead-agents", record.lead_agent_id || "", { required: true, placeholder: "Select team agent" })}
-        <p class="field-help">Transfer authority separately from other project edits. The former lead remains a project member.</p>
+        <p class="field-help">Transfer authority separately from other project edits. One agent may lead several projects; the former lead remains a project member.</p>
         <div class="record-actions">
           <button type="button" data-transfer-project-lead>Transfer project lead</button>
         </div>
@@ -24921,7 +24936,8 @@ function renderEditFields(type, record) {
     return `
       ${readonlyField("Agent ID", record.id)}
       ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
-      ${selectField("Project", "project_id", "agent-edit-projects", agentEditProjectId(record), { placeholder: "No project" })}
+      ${multiSelectField("Projects", "project_ids", "agent-edit-projects", agentProjectIds(record), { size: 5 })}
+      <p class="field-help">Use this list for project memberships. Projects marked “Project lead” stay assigned until you transfer the lead from that project's editor.</p>
       ${selectField("Role", "role_id", "agent-edit-roles", record.role_id || "", { placeholder: "No role" })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
@@ -25136,9 +25152,9 @@ function editPayloadForForm(type, form) {
     };
   }
   if (type === "agent") {
-    const selectedProjectId = text(data.project_id);
+    const selectedProjectIds = uniqueTextList(data.project_ids);
     const currentRecord = recordForEdit("agent", text(form.dataset.editId));
-    const currentProjectId = currentRecord ? agentEditProjectId(currentRecord) : "";
+    const currentProjectIds = currentRecord ? agentProjectIds(currentRecord) : [];
     const requestedTeamId = text(data.team_id);
     const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
     const contextClearingPolicy = text(data.context_clearing_policy) || "off";
@@ -25161,8 +25177,11 @@ function editPayloadForForm(type, form) {
         numberOrZero(data.context_clearing_idle_grace_minutes) * 60,
       );
     }
-    if (selectedProjectId !== currentProjectId) {
-      payload.project_id = selectedProjectId || null;
+    if (
+      selectedProjectIds.length !== currentProjectIds.length
+      || selectedProjectIds.some((projectId) => !currentProjectIds.includes(projectId))
+    ) {
+      payload.project_ids = selectedProjectIds;
     }
     return payload;
   }
