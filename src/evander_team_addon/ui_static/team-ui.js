@@ -21738,6 +21738,13 @@ function projectReviewRoleOptionsForProject(projectId) {
 
 function fillSelect(select, options) {
   const currentValue = select.dataset.currentValue ?? select.value;
+  const currentValues = select.multiple
+    ? new Set(
+        select.dataset.currentValue !== undefined
+          ? splitList(select.dataset.currentValue)
+          : Array.from(select.selectedOptions).map((option) => option.value),
+      )
+    : null;
   const includePlaceholder = !select.multiple;
   const placeholder = select.dataset.placeholder || (select.required ? "Select" : "Default");
   select.innerHTML = `${includePlaceholder ? `<option value="">${placeholder}</option>` : ""}${options
@@ -21747,11 +21754,6 @@ function fillSelect(select, options) {
     })
     .join("")}`;
   if (select.multiple) {
-    const currentValues = new Set(
-      select.dataset.currentValue !== undefined
-        ? splitList(select.dataset.currentValue)
-        : Array.from(select.selectedOptions).map((option) => option.value),
-    );
     Array.from(select.options).forEach((option) => {
       option.selected = currentValues.has(option.value);
     });

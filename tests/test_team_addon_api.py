@@ -7097,15 +7097,17 @@ def test_team_addon_admin_api_updates_multiple_agent_projects(tmp_path: Path) ->
         expected_revision=state.revision,
     )
     state = admin.create_role(
-        role_id="team__member",
+        role_id="project__member",
         team_id="team",
+        project_id="project",
         name="Member",
         expected_revision=state.revision,
     )
     state = admin.register_agent(
         agent_id="member",
         team_id="team",
-        role_id="team__member",
+        project_id="project",
+        role_id="project__member",
         session_id="session-member",
         reports_to_agent_id="manager",
         expected_revision=state.revision,
@@ -7123,11 +7125,14 @@ def test_team_addon_admin_api_updates_multiple_agent_projects(tmp_path: Path) ->
     assert response.status_code == 200
     body = response.json()
     assert body["agents"]["member"]["project_ids"] == ["other-project", "project"]
-    assert sorted(
-        assignment["kind"]
+    assert {
+        assignment["project_id"]: assignment["role_id"]
         for assignment in body["project_assignments"].values()
         if assignment["agent_id"] == "member"
-    ) == ["project_member", "project_member"]
+    } == {
+        "other-project": None,
+        "project": "project__member",
+    }
 
 
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:

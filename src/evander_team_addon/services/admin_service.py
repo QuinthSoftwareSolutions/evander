@@ -3485,6 +3485,9 @@ class TeamAdminService:
                 assignment_role_id = (
                     normalized_role_id if set_role_id or role_id is not None else agent.role_id
                 )
+                assignment_role = (
+                    state.roles.get(assignment_role_id) if assignment_role_id is not None else None
+                )
                 for requested_project_id in normalized_project_ids:
                     if (
                         requested_project_id in lead_project_ids
@@ -3502,7 +3505,12 @@ class TeamAdminService:
                         team_id=agent.team_id,
                         project_id=requested_project_id,
                         agent_id=agent.id,
-                        role_id=assignment_role_id,
+                        role_id=(
+                            assignment_role_id
+                            if assignment_role is not None
+                            and assignment_role.project_id in {None, requested_project_id}
+                            else None
+                        ),
                         kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
                     )
             if set_role_id and not detached_from_team:

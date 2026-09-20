@@ -11756,6 +11756,68 @@ def test_update_agent_project_ids_manages_multiple_memberships_and_retains_leads
         )
 
 
+def test_update_agent_project_ids_limits_project_role_to_its_assignment(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=state.revision,
+    )
+    state = admin.create_project(
+        project_id="other-project",
+        team_id="team",
+        name="Other project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=state.revision,
+    )
+    state = admin.create_role(
+        role_id="project__member",
+        team_id="team",
+        project_id="project",
+        name="Member",
+        expected_revision=state.revision,
+    )
+    state = admin.register_agent(
+        agent_id="member",
+        team_id="team",
+        project_id="project",
+        role_id="project__member",
+        session_id="session-member",
+        reports_to_agent_id="manager",
+        expected_revision=state.revision,
+    )
+
+    state = admin.update_agent(
+        agent_id="member",
+        project_ids=["project", "other-project"],
+        set_project_ids=True,
+        expected_revision=state.revision,
+    )
+
+    assert {
+        assignment.project_id: assignment.role_id
+        for assignment in state.project_assignments.values()
+        if assignment.agent_id == "member"
+    } == {
+        "other-project": None,
+        "project": "project__member",
+    }
+
+
 def test_create_project_existing_project_lead_is_assignment_overlay(
     tmp_path: Path,
 ) -> None:
