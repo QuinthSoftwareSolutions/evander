@@ -7069,6 +7069,67 @@ def test_team_addon_admin_api_transfers_project_lead_with_revision_check(
     assert stale.status_code == 409
 
 
+def test_team_addon_admin_api_updates_multiple_agent_projects(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    admin = _team_admin_service(repo)
+    state = admin.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=state.revision,
+    )
+    state = admin.create_project(
+        project_id="other-project",
+        team_id="team",
+        name="Other project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=state.revision,
+    )
+    state = admin.create_role(
+        role_id="team__member",
+        team_id="team",
+        name="Member",
+        expected_revision=state.revision,
+    )
+    state = admin.register_agent(
+        agent_id="member",
+        team_id="team",
+        role_id="team__member",
+        session_id="session-member",
+        reports_to_agent_id="manager",
+        expected_revision=state.revision,
+    )
+    client = _client(tmp_path)
+
+    response = client.patch(
+        "/api/addons/team-addon/agents/member",
+        json={
+            "project_ids": ["other-project", "project"],
+            "expected_revision": state.revision,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agents"]["member"]["project_ids"] == ["other-project", "project"]
+    assert sorted(
+        assignment["kind"]
+        for assignment in body["project_assignments"].values()
+        if assignment["agent_id"] == "member"
+    ) == ["project_member", "project_member"]
+
+
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     _seed_runtime_operations_state(runtime_dir)

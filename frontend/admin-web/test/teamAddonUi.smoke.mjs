@@ -124,6 +124,9 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /\/retry-gate/);
   assert.match(script, /renderRolePermissionToken/);
   assert.match(script, /projectLeadAgentOptionsForTeam/);
+  assert.match(script, /agentLeadProjectIds/);
+  assert.match(script, /"project_ids"/);
+  assert.match(script, /One agent may lead several projects/);
   assert.match(stylesheet, /\.projects-workbench/);
   assert.match(stylesheet, /\.projects-focus-row/);
   assert.match(stylesheet, /\.project-record-section/);
