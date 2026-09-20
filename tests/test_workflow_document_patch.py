@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import pytest
 
-from evander.workflow.document_patch import apply_workflow_patch
+from evander.workflow.document_patch import apply_workflow_patch, apply_workflow_patch_layout
 
 
 def documents(*, flat=False):
@@ -115,3 +115,38 @@ def test_missing_prerequisite_refuses_to_apply():
     patch["required_node_ids"].append("missing")
     with pytest.raises(ValueError, match="Required workflow node is missing"):
         apply_workflow_patch(config, graphs, patch)
+
+
+def test_layout_replaces_only_the_patch_namespace():
+    _config, _graphs, patch = documents()
+    patch["layout"] = {"nodes": {"digest-map": {"x": 720, "y": 360}}}
+    layout = {
+        "nodes": {
+            "schedule": {"x": 10, "y": 20},
+            "digest-old": {"x": 30, "y": 40},
+        }
+    }
+
+    updated = apply_workflow_patch_layout(layout, patch)
+
+    assert updated == {
+        "nodes": {
+            "schedule": {"x": 10, "y": 20},
+            "digest-map": {"x": 720.0, "y": 360.0},
+        }
+    }
+    assert layout["nodes"]["digest-old"] == {"x": 30, "y": 40}
+
+
+@pytest.mark.parametrize(
+    "positions, message",
+    [
+        ({}, "every patch node"),
+        ({"digest-map": {"x": float("inf"), "y": 0}}, "finite numbers"),
+    ],
+)
+def test_layout_rejects_incomplete_or_invalid_positions(positions, message):
+    _config, _graphs, patch = documents()
+    patch["layout"] = {"nodes": positions}
+    with pytest.raises(ValueError, match=message):
+        apply_workflow_patch_layout({"nodes": {}}, patch)

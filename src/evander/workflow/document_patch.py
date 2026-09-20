@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any
 
 from evander.workflow.graph import compute_downstream_depth
@@ -125,3 +126,47 @@ def apply_workflow_patch(
     else:
         config["workflow_ir"] = ir
     return config, graphs
+
+
+def apply_workflow_patch_layout(layout: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    next_layout = deepcopy(layout)
+    patch_layout = patch.get("layout")
+    if patch_layout is None:
+        return next_layout
+    if not isinstance(patch_layout, dict) or not isinstance(patch_layout.get("nodes"), dict):
+        raise ValueError("Patch layout must contain a nodes object")
+
+    prefix = patch.get("node_prefix")
+    patch_node_ids = {node["id"] for node in patch.get("nodes", [])}
+    positions = patch_layout["nodes"]
+    if set(positions) != patch_node_ids:
+        raise ValueError("Patch layout must position every patch node exactly once")
+
+    normalized: dict[str, dict[str, float]] = {}
+    for node_id, position in positions.items():
+        if not isinstance(node_id, str) or not node_id.startswith(prefix):
+            raise ValueError("Patch layout may only position nodes in node_prefix")
+        if not isinstance(position, dict):
+            raise ValueError("Patch layout positions must be objects")
+        x, y = position.get("x"), position.get("y")
+        if (
+            isinstance(x, bool)
+            or isinstance(y, bool)
+            or not isinstance(x, (int, float))
+            or not isinstance(y, (int, float))
+            or not math.isfinite(x)
+            or not math.isfinite(y)
+        ):
+            raise ValueError("Patch layout coordinates must be finite numbers")
+        normalized[node_id] = {"x": float(x), "y": float(y)}
+
+    current_nodes = next_layout.get("nodes", {})
+    if not isinstance(current_nodes, dict):
+        raise ValueError("Workflow layout nodes must be an object")
+    next_layout["nodes"] = {
+        node_id: position
+        for node_id, position in current_nodes.items()
+        if not node_id.startswith(prefix)
+    }
+    next_layout["nodes"].update(normalized)
+    return next_layout

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from evander.admin.composition import build_admin_runtime
-from evander.workflow.document_patch import apply_workflow_patch
+from evander.workflow.document_patch import apply_workflow_patch, apply_workflow_patch_layout
 
 
 def update_document(service, *, patch, apply=False):
@@ -16,6 +16,7 @@ def update_document(service, *, patch, apply=False):
     document = service.read_workflow_editor_document(workflow_pack=pack)
     graphs = [graph.model_dump(mode="json") for graph in document.graphs]
     config, next_graphs = apply_workflow_patch(document.config, graphs, patch)
+    layout = apply_workflow_patch_layout(document.layout, patch)
     baseline = service.validate_workflow_editor_document(
         config=document.config,
         graphs=graphs,
@@ -25,7 +26,7 @@ def update_document(service, *, patch, apply=False):
     candidate = service.validate_workflow_editor_document(
         config=config,
         graphs=next_graphs,
-        layout=document.layout,
+        layout=layout,
         workflow_pack=pack,
     )
     added = [
@@ -35,7 +36,11 @@ def update_document(service, *, patch, apply=False):
     ]
     if added:
         raise ValueError("New workflow validation diagnostics: " + json.dumps(added))
-    changed = candidate.config != baseline.config or candidate.graphs != baseline.graphs
+    changed = (
+        candidate.config != baseline.config
+        or candidate.graphs != baseline.graphs
+        or candidate.layout != baseline.layout
+    )
     result = {
         "pack": pack,
         "previous_revision": document.revision,
@@ -47,7 +52,7 @@ def update_document(service, *, patch, apply=False):
         saved = service.save_workflow_editor_document(
             config=config,
             graphs=next_graphs,
-            layout=document.layout,
+            layout=layout,
             workflow_pack=pack,
             expected_revision=document.revision,
         )

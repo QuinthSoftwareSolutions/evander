@@ -1,12 +1,29 @@
 # Changelog
 
-## 2026-09-20 - Discover granted email mailboxes (0.51.0)
+## 2026-09-20 - Discover granted email mailboxes (0.53.0)
 
 - Add `email_list_mailboxes` so agents can discover their authorized mailbox IDs, accounts,
   access levels and folders before reading mail or creating unsent drafts.
 - Make discovery available to existing email-enabled sessions while preserving directory tool
   restrictions, explicit empty grants and legacy mailbox policy. Return only session-scoped
   public metadata without contacting providers or exposing credential references.
+
+## 2026-09-20 - Lay out declarative workflow patches (0.52.0)
+
+- Allow declarative workflow document patches to position every namespaced node while preserving
+  unrelated graph positions and replacing only patch-owned coordinates when reapplied.
+- Include layout changes in preview, validation, no-op detection, and revision-safe saves, and
+  provide a readable horizontal-lane layout for the APP PR-testing workflow.
+
+## 2026-09-20 - Make Admin Web lists easier to scan (0.51.0)
+
+- Show communication targets, contacts, and email mailboxes as compact, searchable, sortable
+  summaries with expandable editors; add provider filtering and retain inherited target actions.
+- Reduce shared navigation, form, panel, and table spacing; remove repeated single-setting
+  headings and collapse optional Teams lookup and directory metadata.
+- Preserve configuration drafts and original record identity while filtering and sorting,
+  including failed-save recovery, keyboard access, and read-only inspection. Close editors when
+  a saved snapshot changes so sorted contact readback cannot silently select another record.
 
 ## 2026-09-19 - Preserve subscription-capacity replay routing (0.50.1)
 
