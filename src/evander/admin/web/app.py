@@ -19,7 +19,7 @@ from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
-from starlette.routing import Mount, Route
+from starlette.routing import Match, Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from evander.addons import (
@@ -290,6 +290,7 @@ class AdminWebRequestTimingMiddleware:
             return
 
         started_at = time.perf_counter()
+        request_scope = dict(scope)
         status_code: int | None = None
 
         async def send_with_status(message) -> None:
@@ -305,7 +306,7 @@ class AdminWebRequestTimingMiddleware:
             response_status = status_code if status_code is not None else 500
             is_slow = duration_ms >= self.slow_request_threshold_ms
             if is_slow or response_status >= 500:
-                route = self._route_template_for_endpoint(scope.get("endpoint"), self.routes)
+                route = self._route_template_for_scope(request_scope, self.routes)
                 logger.warning(
                     "admin_web_request_timing method=%s route=%s status=%s duration_ms=%s slow=%s",
                     scope.get("method", ""),
@@ -316,32 +317,60 @@ class AdminWebRequestTimingMiddleware:
                 )
 
     @classmethod
-    def _route_template_for_endpoint(
+    def _route_template_for_scope(
         cls,
-        endpoint: Any,
+        scope: dict[str, Any],
         routes: list[Any],
         *,
         prefix: str = "",
     ) -> str:
-        if endpoint is None:
-            return "<unmatched>"
+        partial_match: tuple[Any, dict[str, Any]] | None = None
         for route in routes:
-            route_path = getattr(route, "path", None)
-            if not isinstance(route_path, str):
-                continue
-            full_path = cls._join_route_path(prefix, route_path)
-            if getattr(route, "endpoint", None) is endpoint:
-                return full_path
-            nested_routes = getattr(route, "routes", None)
-            if isinstance(nested_routes, list):
-                nested_template = cls._route_template_for_endpoint(
-                    endpoint,
-                    nested_routes,
-                    prefix=full_path,
+            match, child_scope = route.matches(scope)
+            if match == Match.FULL:
+                return cls._matched_route_template(
+                    scope,
+                    route,
+                    child_scope,
+                    prefix=prefix,
                 )
-                if nested_template != "<unmatched>":
-                    return nested_template
+            if match == Match.PARTIAL and partial_match is None:
+                partial_match = (route, child_scope)
+        if partial_match is not None:
+            route, child_scope = partial_match
+            return cls._matched_route_template(
+                scope,
+                route,
+                child_scope,
+                prefix=prefix,
+            )
         return "<unmatched>"
+
+    @classmethod
+    def _matched_route_template(
+        cls,
+        scope: dict[str, Any],
+        route: Any,
+        child_scope: dict[str, Any],
+        *,
+        prefix: str,
+    ) -> str:
+        route_path = getattr(route, "path", None)
+        if not isinstance(route_path, str):
+            return "<unmatched>"
+        full_path = cls._join_route_path(prefix, route_path)
+        nested_routes = getattr(route, "routes", None)
+        if isinstance(nested_routes, list) and nested_routes:
+            nested_scope = dict(scope)
+            nested_scope.update(child_scope)
+            nested_template = cls._route_template_for_scope(
+                nested_scope,
+                nested_routes,
+                prefix=full_path,
+            )
+            if nested_template != "<unmatched>":
+                return nested_template
+        return full_path
 
     @staticmethod
     def _join_route_path(prefix: str, route_path: str) -> str:

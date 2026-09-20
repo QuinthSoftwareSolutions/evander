@@ -598,11 +598,14 @@ def test_admin_web_request_timing_logs_canonical_route_without_request_contents(
         0,
         Mount(
             "/timing",
-            routes=[Route("/{item_id}", timed_endpoint, methods=["GET"])],
+            routes=[
+                Route("/first/{item_id}", timed_endpoint, methods=["GET"]),
+                Route("/second/{item_id}", timed_endpoint, methods=["GET"]),
+            ],
         ),
     )
     with TestClient(app) as client:
-        response = client.get("/timing/opaque-item-id?access_token=not-for-logs")
+        response = client.get("/timing/second/opaque-item-id?access_token=not-for-logs")
 
     assert response.status_code == 200
     records = [
@@ -614,7 +617,8 @@ def test_admin_web_request_timing_logs_canonical_route_without_request_contents(
     assert len(records) == 1
     message = records[0].getMessage()
     assert "method=GET" in message
-    assert "route=/timing/{item_id}" in message
+    assert "route=/timing/second/{item_id}" in message
+    assert "route=/timing/first/{item_id}" not in message
     assert "status=200" in message
     assert "duration_ms=" in message
     assert "slow=True" in message
