@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-20 - Diagnose slow Admin Web requests (0.55.0)
+
+- Log Admin Web requests that cross an operator-configured duration threshold and every 5xx
+  response with canonical route, method, status, and duration. Exclude query strings, cookies,
+  and request bodies so journal review does not expose request contents.
+
 ## 2026-09-20 - Manage multi-project Team assignments (0.54.0)
 
 - Let the Team agent editor manage the full set of project memberships, including clear

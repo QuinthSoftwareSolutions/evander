@@ -7,7 +7,9 @@ import argparse
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import json
+import logging
 import re
+import time
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,7 @@ from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
-from starlette.routing import Mount, Route
+from starlette.routing import Match, Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from evander.addons import (
@@ -82,6 +84,7 @@ _DEFAULT_BRANDING_ASSETS = {
     f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/qss-light.png": "qss-light.png",
     f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/qss-dark.png": "qss-dark.png",
 }
+logger = logging.getLogger(__name__)
 
 
 class AdminWebAddonServiceAdapter:
@@ -271,6 +274,109 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return json_error("Authentication required", status_code=401)
             return await call_next(request)
         return await call_next(request)
+
+
+class AdminWebRequestTimingMiddleware:
+    """Log slow or failed HTTP requests without recording request contents."""
+
+    def __init__(self, app, *, routes: list[Any], slow_request_threshold_ms: int) -> None:
+        self.app = app
+        self.routes = routes
+        self.slow_request_threshold_ms = slow_request_threshold_ms
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        started_at = time.perf_counter()
+        request_scope = dict(scope)
+        status_code: int | None = None
+
+        async def send_with_status(message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_status)
+        finally:
+            duration_ms = max(0, int((time.perf_counter() - started_at) * 1000))
+            response_status = status_code if status_code is not None else 500
+            is_slow = duration_ms >= self.slow_request_threshold_ms
+            if is_slow or response_status >= 500:
+                route = self._route_template_for_scope(request_scope, self.routes)
+                logger.warning(
+                    "admin_web_request_timing method=%s route=%s status=%s duration_ms=%s slow=%s",
+                    scope.get("method", ""),
+                    route,
+                    response_status,
+                    duration_ms,
+                    is_slow,
+                )
+
+    @classmethod
+    def _route_template_for_scope(
+        cls,
+        scope: dict[str, Any],
+        routes: list[Any],
+        *,
+        prefix: str = "",
+    ) -> str:
+        partial_match: tuple[Any, dict[str, Any]] | None = None
+        for route in routes:
+            match, child_scope = route.matches(scope)
+            if match == Match.FULL:
+                return cls._matched_route_template(
+                    scope,
+                    route,
+                    child_scope,
+                    prefix=prefix,
+                )
+            if match == Match.PARTIAL and partial_match is None:
+                partial_match = (route, child_scope)
+        if partial_match is not None:
+            route, child_scope = partial_match
+            return cls._matched_route_template(
+                scope,
+                route,
+                child_scope,
+                prefix=prefix,
+            )
+        return "<unmatched>"
+
+    @classmethod
+    def _matched_route_template(
+        cls,
+        scope: dict[str, Any],
+        route: Any,
+        child_scope: dict[str, Any],
+        *,
+        prefix: str,
+    ) -> str:
+        route_path = getattr(route, "path", None)
+        if not isinstance(route_path, str):
+            return "<unmatched>"
+        full_path = cls._join_route_path(prefix, route_path)
+        nested_routes = getattr(route, "routes", None)
+        if isinstance(nested_routes, list) and nested_routes:
+            nested_scope = dict(scope)
+            nested_scope.update(child_scope)
+            nested_template = cls._route_template_for_scope(
+                nested_scope,
+                nested_routes,
+                prefix=full_path,
+            )
+            if nested_template != "<unmatched>":
+                return nested_template
+        return full_path
+
+    @staticmethod
+    def _join_route_path(prefix: str, route_path: str) -> str:
+        if not prefix or prefix == "/":
+            return route_path if route_path.startswith("/") else f"/{route_path}"
+        return f"{prefix.rstrip('/')}/{route_path.lstrip('/')}"
 
 
 class AdminWebStaticFiles(StaticFiles):
@@ -665,6 +771,11 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     app.state.dashboard_cache = dashboard_cache
     app.state.addon_catalog = addon_catalog
     app.add_middleware(AuthMiddleware, auth=auth)
+    app.add_middleware(
+        AdminWebRequestTimingMiddleware,
+        routes=app.router.routes,
+        slow_request_threshold_ms=auth.config.slow_request_threshold_ms,
+    )
     return app
 
 

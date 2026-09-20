@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import subprocess
 import tarfile
 import time
@@ -19,6 +20,7 @@ import httpx
 import pytest
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 from starlette.testclient import TestClient
 
 import evander.admin.services.workflow_reports_service as workflow_reports_service
@@ -577,6 +579,85 @@ def test_admin_web_shutdown_cleans_active_managed_worktrees(
         assert cleanup_calls == []
 
     assert cleanup_calls == [{"cleaned": 1, "failed": 0}]
+
+
+def test_admin_web_request_timing_logs_canonical_route_without_request_contents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", "1")
+    caplog.set_level(logging.WARNING, logger=admin_web_app.__name__)
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
+
+    async def timed_endpoint(request: Request) -> JSONResponse:
+        await asyncio.sleep(0.01)
+        return JSONResponse({"item_id": request.path_params["item_id"]})
+
+    app.router.routes.insert(
+        0,
+        Mount(
+            "/timing",
+            routes=[
+                Route("/first/{item_id}", timed_endpoint, methods=["GET"]),
+                Route("/second/{item_id}", timed_endpoint, methods=["GET"]),
+            ],
+        ),
+    )
+    with TestClient(app) as client:
+        response = client.get("/timing/second/opaque-item-id?access_token=not-for-logs")
+
+    assert response.status_code == 200
+    records = [
+        record
+        for record in caplog.records
+        if record.name == admin_web_app.__name__
+        and record.getMessage().startswith("admin_web_request_timing ")
+    ]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "method=GET" in message
+    assert "route=/timing/second/{item_id}" in message
+    assert "route=/timing/first/{item_id}" not in message
+    assert "status=200" in message
+    assert "duration_ms=" in message
+    assert "slow=True" in message
+    assert "opaque-item-id" not in message
+    assert "access_token" not in message
+    assert "not-for-logs" not in message
+
+
+def test_admin_web_request_timing_logs_fast_5xx_responses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", "999999")
+    caplog.set_level(logging.WARNING, logger=admin_web_app.__name__)
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
+
+    async def unavailable(_: Request) -> JSONResponse:
+        return JSONResponse({"error": "unavailable"}, status_code=503)
+
+    app.router.routes.insert(0, Route("/timing-unavailable", unavailable, methods=["GET"]))
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+        response = client.get("/timing-unavailable?credential=not-for-logs")
+
+    assert response.status_code == 503
+    records = [
+        record
+        for record in caplog.records
+        if record.name == admin_web_app.__name__
+        and record.getMessage().startswith("admin_web_request_timing ")
+    ]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "route=/timing-unavailable" in message
+    assert "status=503" in message
+    assert "slow=False" in message
+    assert "credential" not in message
+    assert "not-for-logs" not in message
 
 
 def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
@@ -9939,11 +10020,41 @@ def test_workflow_webhook_ingress_rejects_duplicate_active_slug(
 def test_admin_web_config_defaults_to_none_without_password(monkeypatch) -> None:
     monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
     monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", raising=False)
 
     config = AdminWebConfig.from_env()
 
     assert config.auth_mode == "none"
     assert config.auth_required is False
+    assert config.slow_request_threshold_ms == 500
+
+
+@pytest.mark.parametrize(
+    ("configured_threshold", "expected_threshold"),
+    [("0", 0), ("250", 250)],
+)
+def test_admin_web_config_reads_slow_request_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_threshold: str,
+    expected_threshold: int,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", configured_threshold)
+
+    config = AdminWebConfig.from_env()
+
+    assert config.slow_request_threshold_ms == expected_threshold
+
+
+@pytest.mark.parametrize("configured_threshold", ["-1", "invalid", "1.5"])
+def test_admin_web_config_rejects_invalid_slow_request_threshold(
+    monkeypatch: pytest.MonkeyPatch, configured_threshold: str
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", configured_threshold)
+
+    with pytest.raises(
+        ValueError, match="SLOW_REQUEST_THRESHOLD_MS must be a non-negative integer"
+    ):
+        AdminWebConfig.from_env()
 
 
 def test_admin_web_config_maps_password_only_deployments_to_local_password(monkeypatch) -> None:
