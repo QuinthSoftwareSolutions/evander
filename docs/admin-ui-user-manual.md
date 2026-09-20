@@ -652,8 +652,8 @@ Common tasks:
    **Utilities** destinations. Only the selected destination is shown in the workspace.
 4. Use **Find setting** to search friendly labels, descriptions, section names, config domains, or
    exact field keys. Selecting a field result opens, focuses, and briefly highlights that setting.
-5. Review directory, parent, scope, write mode, underlying domains, and override count in the
-   context strip.
+5. Review the directory, scope, and write mode in the context summary. Expand **Directory details**
+   to inspect the parent, underlying domains, and override count.
 6. Unlock privileges before saving.
 7. Edit fields in the selected section. Moving between sections or areas preserves drafts and marks
    every affected area as unsaved.
@@ -663,6 +663,15 @@ Common tasks:
     defaults** from Utilities when you need resolution and diagnostic detail.
 11. If the save fails because the config changed on the server, reload and reapply the intended
    changes.
+
+**Communication targets**, **Contacts**, and **Email mailboxes** use compact lists. Search matches
+names, addresses, and relevant record details; targets and mailboxes also offer a provider filter.
+Choose name order, provider order (where available), or configured order with **Sort**. These controls
+only change the view and never reorder the saved configuration. Expand a row to inspect or edit it;
+collapsing it preserves its draft. A successful save reloads the list and closes editors; a failed
+save keeps the open editor and draft. Adding a record clears filters and opens the new editor. Inherited
+targets have their own searchable list with **Override** and **Disable** actions. The optional Teams
+channel lookup is collapsed until needed. Searching and inspecting remain available in read-only mode.
 
 Configuration destinations are linkable through the page URL. Links may identify an area,
 section, and field so another operator can open the same setting directly; invalid or outdated
