@@ -7,7 +7,9 @@ import argparse
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import json
+import logging
 import re
+import time
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -82,6 +84,7 @@ _DEFAULT_BRANDING_ASSETS = {
     f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/qss-light.png": "qss-light.png",
     f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/qss-dark.png": "qss-dark.png",
 }
+logger = logging.getLogger(__name__)
 
 
 class AdminWebAddonServiceAdapter:
@@ -271,6 +274,80 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return json_error("Authentication required", status_code=401)
             return await call_next(request)
         return await call_next(request)
+
+
+class AdminWebRequestTimingMiddleware:
+    """Log slow or failed HTTP requests without recording request contents."""
+
+    def __init__(self, app, *, routes: list[Any], slow_request_threshold_ms: int) -> None:
+        self.app = app
+        self.routes = routes
+        self.slow_request_threshold_ms = slow_request_threshold_ms
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        started_at = time.perf_counter()
+        status_code: int | None = None
+
+        async def send_with_status(message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_status)
+        finally:
+            duration_ms = max(0, int((time.perf_counter() - started_at) * 1000))
+            response_status = status_code if status_code is not None else 500
+            is_slow = duration_ms >= self.slow_request_threshold_ms
+            if is_slow or response_status >= 500:
+                route = self._route_template_for_endpoint(scope.get("endpoint"), self.routes)
+                logger.warning(
+                    "admin_web_request_timing method=%s route=%s status=%s duration_ms=%s slow=%s",
+                    scope.get("method", ""),
+                    route,
+                    response_status,
+                    duration_ms,
+                    is_slow,
+                )
+
+    @classmethod
+    def _route_template_for_endpoint(
+        cls,
+        endpoint: Any,
+        routes: list[Any],
+        *,
+        prefix: str = "",
+    ) -> str:
+        if endpoint is None:
+            return "<unmatched>"
+        for route in routes:
+            route_path = getattr(route, "path", None)
+            if not isinstance(route_path, str):
+                continue
+            full_path = cls._join_route_path(prefix, route_path)
+            if getattr(route, "endpoint", None) is endpoint:
+                return full_path
+            nested_routes = getattr(route, "routes", None)
+            if isinstance(nested_routes, list):
+                nested_template = cls._route_template_for_endpoint(
+                    endpoint,
+                    nested_routes,
+                    prefix=full_path,
+                )
+                if nested_template != "<unmatched>":
+                    return nested_template
+        return "<unmatched>"
+
+    @staticmethod
+    def _join_route_path(prefix: str, route_path: str) -> str:
+        if not prefix or prefix == "/":
+            return route_path if route_path.startswith("/") else f"/{route_path}"
+        return f"{prefix.rstrip('/')}/{route_path.lstrip('/')}"
 
 
 class AdminWebStaticFiles(StaticFiles):
@@ -665,6 +742,11 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     app.state.dashboard_cache = dashboard_cache
     app.state.addon_catalog = addon_catalog
     app.add_middleware(AuthMiddleware, auth=auth)
+    app.add_middleware(
+        AdminWebRequestTimingMiddleware,
+        routes=app.router.routes,
+        slow_request_threshold_ms=auth.config.slow_request_threshold_ms,
+    )
     return app
 
 

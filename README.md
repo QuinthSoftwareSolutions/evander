@@ -320,6 +320,15 @@ service-manager secret source rather than `config/admin-web.env`. When you
 expose it beyond localhost, configure auth, set `EVANDER_ADMIN_WEB_COOKIE_SECURE=true`
 behind HTTPS, and put TLS plus ingress policy in front of the service.
 
+Admin Web writes a `admin_web_request_timing` journal record for requests taking at least
+`EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS` (default `500`) milliseconds and for every 5xx
+response. The record contains only method, route template, status, and duration; it deliberately
+excludes query strings, cookies, and request bodies. For example:
+
+```bash
+journalctl --no-pager -u evander-admin-web.service --since "1 hour ago" | rg admin_web_request_timing
+```
+
 ## Admin Web Operations Dashboard
 
 Admin Web opens to an operations dashboard by default after sign-in. The dashboard is an operator

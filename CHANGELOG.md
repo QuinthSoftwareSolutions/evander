@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-20 - Diagnose slow Admin Web requests (0.54.0)
+
+- Log Admin Web requests that cross an operator-configured duration threshold and every 5xx
+  response with canonical route, method, status, and duration. Exclude query strings, cookies,
+  and request bodies so journal review does not expose request contents.
+
 ## 2026-09-20 - Discover granted email mailboxes (0.53.0)
 
 - Add `email_list_mailboxes` so agents can discover their authorized mailbox IDs, accounts,
