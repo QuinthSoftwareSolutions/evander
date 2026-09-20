@@ -152,6 +152,7 @@ def test_create_server_registers_extracted_communication_tools(tmp_path: Path) -
         "teams_meeting_get_events",
         "teams_meeting_speak",
         "teams_meeting_stop",
+        "email_list_mailboxes",
         "email_list_unread",
         "email_list_messages",
         "email_get_message",

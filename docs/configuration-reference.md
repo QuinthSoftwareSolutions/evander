@@ -2415,6 +2415,13 @@ logical `drafts` folder. Sending email requires a send-capable mailbox grant and
 email target for every recipient whose auth profile names that same mailbox. Creating a draft needs
 the mailbox grant but no send target, so an agent can prepare a draft for human handoff.
 
+`email_list_mailboxes` exposes only the calling session's configured, authorized mailbox IDs,
+account identities, providers, mailbox access levels and logical folders. It is included for new
+email-enabled sessions and available to existing sessions with any allowed email operation, unless
+directory tool policy denies it; explicit discovery-only grants are also supported. It does not
+read email, expose credential references, validate provider authentication, or grant additional
+read/draft/send authority. Use its returned `mailbox_id`, not `account_identifier`, in email tools.
+
 Both canonical fields are nullable for compatibility. Missing or `null` retains the legacy
 allowlist behavior; an explicit empty list grants no targets or mailboxes. Existing sessions are not
 converted implicitly. Admin Web labels legacy sessions and converts them only after an explicit

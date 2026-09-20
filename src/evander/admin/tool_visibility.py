@@ -245,6 +245,7 @@ _TEAMS_TOOLS = {
 }
 
 _EMAIL_TOOLS = {
+    ToolName.EMAIL_LIST_MAILBOXES,
     ToolName.EMAIL_LIST_UNREAD,
     ToolName.EMAIL_LIST_MESSAGES,
     ToolName.EMAIL_GET_MESSAGE,
@@ -265,6 +266,7 @@ _HIDDEN_BY_POLICY_SOURCES = {
     "directory.mcp_tool_policies",
     "session.allowed_tools",
     "session.allowed_tools.respond_to_agent",
+    "session.allowed_tools.email",
     "session.metadata.capability_profile",
     "session.metadata.assistant_mutation_policy",
 }

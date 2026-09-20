@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-20 - Discover granted email mailboxes (0.51.0)
+
+- Add `email_list_mailboxes` so agents can discover their authorized mailbox IDs, accounts,
+  access levels and folders before reading mail or creating unsent drafts.
+- Make discovery available to existing email-enabled sessions while preserving directory tool
+  restrictions, explicit empty grants and legacy mailbox policy. Return only session-scoped
+  public metadata without contacting providers or exposing credential references.
+
 ## 2026-09-19 - Preserve subscription-capacity replay routing (0.50.1)
 
 - Preserve the selected ChatGPT subscription profile when an initially unprofiled queued replay
