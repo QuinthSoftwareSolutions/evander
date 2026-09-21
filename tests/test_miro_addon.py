@@ -208,6 +208,9 @@ def test_addon_discovery_catalog_and_real_mcp_schemas(tmp_path):
         schema["required"]
     )
     assert "ctx" not in schema["properties"]
+    discovery = next(tool.inputSchema for tool in tools if tool.name == "miro_list_connections")
+    assert not discovery.get("required")
+    assert "connection_id" not in discovery["properties"]
 
 
 @pytest.mark.parametrize("scope", ["root/other", "root"])

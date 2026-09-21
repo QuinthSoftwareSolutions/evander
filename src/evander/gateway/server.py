@@ -27,6 +27,7 @@ from starlette.requests import Request
 
 from evander.addons import (
     AddonContext,
+    addon_mcp_discovery_permissions,
     addon_runtime_dir,
     load_addons,
     register_addon_mcp_tools,
@@ -947,7 +948,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         addon_mcp_tool_names.extend(registered_names)
     if addon_mcp_tool_names:
         existing_tool_names = set(context.policy.extra_mcp_tool_names)
-        context.policy.set_extra_mcp_tool_names(existing_tool_names.union(addon_mcp_tool_names))
+        context.policy.set_extra_mcp_tool_names(
+            existing_tool_names.union(addon_mcp_tool_names),
+            discovery_permissions=addon_mcp_discovery_permissions(addon_catalog),
+        )
 
     def _deprecate_session_id_parameter_schema() -> None:
         for tool in server._tool_manager.list_tools():

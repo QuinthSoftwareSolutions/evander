@@ -119,16 +119,26 @@ class MiroStore:
                 db.execute("DELETE FROM records WHERE kind='credentials' AND key=?", (key,))
         return value
 
+    def effective_connections(self, directory: str) -> list[dict]:
+        effective: dict[str, dict] = {}
+        for record in self.list("connection"):
+            config = record["config"]
+            if not in_directory(config["directory_path"], directory):
+                continue
+            previous = effective.get(config["id"])
+            if previous is None or len(config["directory_path"]) > len(
+                previous["config"]["directory_path"]
+            ):
+                effective[config["id"]] = record
+        # Select overrides before checking enabled/access; a disabled child still
+        # shadows its parent and must not accidentally reveal the parent connection.
+        return [effective[key] for key in sorted(effective)]
+
     def resolve_connection(self, directory: str, connection_id: str) -> dict:
-        candidates = [
-            r
-            for r in self.list("connection")
-            if r["config"]["id"] == connection_id
-            and in_directory(r["config"]["directory_path"], directory)
-        ]
-        if not candidates:
-            raise MiroError("forbidden", "Miro connection is unavailable in this directory")
-        return max(candidates, key=lambda r: len(r["config"]["directory_path"]))
+        for record in self.effective_connections(directory):
+            if record["config"]["id"] == connection_id:
+                return record
+        raise MiroError("forbidden", "Miro connection is unavailable in this directory")
 
     def assert_generation(self, record: dict) -> None:
         current = self.get("connection", record["key"])

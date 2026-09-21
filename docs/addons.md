@@ -137,6 +137,14 @@ def register_addon():
     }
 ```
 
+An `mcp_tool_catalog` entry for read-only public metadata discovery can declare
+`discovery_for`, a list of other tool names in the same add-on catalog. A session with an explicit
+grant to one of those tools also receives the discovery tool, unless directory policy denies that
+source tool. Discovery keeps its own directory denial and approval rules. This implication is
+one-way: granting discovery alone does not grant those operations. The gateway and Admin Web
+policy views apply the same declarations. Use this only for local, scoped metadata discovery;
+never for provider reads, writes, or credentials.
+
 Connector-driver extensions implement the small async driver protocol documented in
 [Agent Connectors](connectors.md). Add-ons should use a driver only when the built-in declarative
 REST or filesystem drivers cannot express the integration. A custom driver never receives a
@@ -146,9 +154,9 @@ gateway restart.
 
 ## Miro Add-on
 
-The bundled `miro-addon` exposes editable canvas and comment tools, corresponding workflow
-queries/effects, and opt-in board/comment polling triggers. Its Admin Web page manages named
-OAuth connections, directory and board grants, daily call budgets, and uncertain-write
+The bundled `miro-addon` exposes connection discovery, editable canvas and comment tools,
+corresponding workflow queries/effects, and opt-in board/comment polling triggers. Its Admin Web
+page manages named OAuth connections, directory and board grants, daily call budgets, and uncertain-write
 recovery. No polling or agent wake workflow is installed automatically. See
 [Miro Add-on](miro-addon.md) for setup, operation contracts, examples, and limitations.
 

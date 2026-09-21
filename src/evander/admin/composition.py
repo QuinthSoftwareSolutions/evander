@@ -24,6 +24,7 @@ from evander.agent_control import AgentControlStore
 from evander.addons import (
     AddonContext,
     LoadedAddonCatalog,
+    addon_mcp_discovery_permissions,
     addon_mcp_tool_catalog_payloads,
     addon_runtime_dir,
     load_addons,
@@ -380,7 +381,8 @@ def _build_admin_runtime_components(
     addon_tool_names = [item["value"] for item in addon_mcp_tool_catalog_payloads(addon_catalog)]
     if addon_tool_names:
         runtime.policy.set_extra_mcp_tool_names(
-            set(runtime.policy.extra_mcp_tool_names).union(addon_tool_names)
+            set(runtime.policy.extra_mcp_tool_names).union(addon_tool_names),
+            discovery_permissions=addon_mcp_discovery_permissions(addon_catalog),
         )
     for addon in addon_catalog.registrations:
         if addon.outbound_identity_resolver is None:

@@ -7,7 +7,9 @@ For effect handoff timing, bounded recovery scheduling, and deployment verificat
 
 Enable `miro-addon` in **Add-ons**, restart the listed gateway/Admin Web/orchestrator services,
 and configure an OAuth connection and explicit board grants in **Miro**. Grant agents the required
-Miro tools through normal session policy. Only workflows
+Miro tools through normal session policy; existing grants also expose `miro_list_connections()`.
+Agents use the returned connection IDs with `miro_list_boards` to find approved boards. Discovery
+includes inherited connections and does not contact Miro. Only workflows
 that include a Miro polling trigger monitor boards. Use the connection activity view for budget
 and polling failures. For an uncertain write, use **Read back**, inspect Miro, and record the
 evidence with **Mark applied** or **Mark not applied** before scheduling further writes.
@@ -19,8 +21,10 @@ workflow packs automatically.
 For native UI mockup collaboration, see [Figma setup and recovery](figma.md). Enable the optional
 add-on, connect an approved OAuth client, and pass its create/edit/render/readback/cleanup test in
 a disposable file before granting agent authoring. The same page shows snapshots and uncertain
-operations. Inspect and reconcile interrupted writes before resuming that file; never retry them
-under new request IDs to bypass recovery. This add-on uses existing host services and MCP ports.
+operations. Sessions with `figma_query` or `figma_execute` can call `figma_list_targets()` to discover
+enabled files in their exact directory without a separate discovery grant. Inspect and reconcile
+interrupted writes before resuming that file; never retry them under new request IDs to bypass
+recovery. This add-on uses existing host services and MCP ports.
 
 ## Personal Azure DevOps PR connections
 

@@ -167,6 +167,28 @@ class MiroService:
     def __init__(self, store: MiroStore, access: Access, client_factory=MiroClient):
         self.store, self.access, self.client_factory = store, access, client_factory
 
+    def list_connections(self) -> dict:
+        connections = []
+        for record in self.store.effective_connections(self.access.directory_path):
+            config = Connection.model_validate(record["config"])
+            if not config.enabled:
+                continue
+            if not self.access.admin and not self.access.session_id:
+                if not self.access.workflow or not config.allow_workflows:
+                    continue
+            connections.append(
+                {
+                    "connection_id": config.id,
+                    "name": config.name,
+                    "directory_path": config.directory_path,
+                    "inherited": config.directory_path != self.access.directory_path,
+                    "allow_create_boards": config.allow_create_boards,
+                    "approved_board_count": len(config.boards),
+                    "writable_board_count": sum(board.writable for board in config.boards),
+                }
+            )
+        return {"connections": connections}
+
     def authorize(self, connection_id: str, board_id: str | None = None, *, write=False) -> dict:
         record = self.store.resolve_connection(self.access.directory_path, connection_id)
         config = Connection.model_validate(record["config"])
