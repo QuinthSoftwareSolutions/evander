@@ -6,6 +6,7 @@ from ...models import (
     ProjectStatus,
     TaskAssessmentReadiness,
     TaskResolutionStatus,
+    TeamBlocker,
     TeamBlockerSourceKind,
     TeamBlockerState,
     TeamRecordState,
@@ -15,6 +16,67 @@ from ...models import (
 from .blockers import resolve_active_blockers_for_source
 from .common import utc_now
 from .task_assessment import TaskAssessmentService
+
+
+def blocker_affected_project_ids(state: TeamState, blocker: TeamBlocker) -> set[str]:
+    """Return project IDs whose status can change when ``blocker`` changes state."""
+
+    project_ids: set[str] = set()
+
+    def add_project(project_id: str | None) -> None:
+        if project_id in state.projects:
+            project_ids.add(project_id)
+
+    def add_task_project(task_id: str | None) -> None:
+        task = state.tasks.get(task_id or "")
+        if task is not None:
+            add_project(task.project_id)
+
+    def add_deliverable_project(deliverable_id: str | None) -> None:
+        deliverable = state.deliverables.get(deliverable_id or "")
+        if deliverable is not None:
+            add_task_project(deliverable.task_id)
+
+    def add_release_project(release_id: str | None) -> None:
+        release = state.release_packages.get(release_id or "")
+        if release is not None:
+            add_project(release.project_id)
+
+    def add_review_projects(review_id: str | None) -> None:
+        review = state.review_requests.get(review_id or "")
+        if review is not None:
+            add_deliverable_project(review.deliverable_id)
+            add_release_project(review.release_package_id)
+
+    add_project(blocker.project_id)
+    add_task_project(blocker.task_id)
+    for task_id in blocker.affected_task_ids:
+        add_task_project(task_id)
+
+    if blocker.source_kind == TeamBlockerSourceKind.TASK:
+        add_task_project(blocker.source_id)
+    elif blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+        add_deliverable_project(blocker.source_id)
+    elif blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
+        add_review_projects(blocker.source_id)
+    elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
+        add_release_project(blocker.source_id)
+    elif blocker.source_kind == TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST:
+        request = state.human_review_requests.get(blocker.source_id)
+        if request is not None:
+            add_release_project(request.release_package_id)
+    elif (
+        blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+        and blocker.source_id.startswith("candidate-correction-successor:")
+    ):
+        add_release_project(blocker.source_id.removeprefix("candidate-correction-successor:"))
+    elif blocker.source_kind == TeamBlockerSourceKind.MCP_CAPABILITY:
+        identity = blocker.mcp_capability_identity
+        if identity is not None:
+            for review_id in identity.review_request_ids:
+                add_review_projects(review_id)
+
+    return project_ids
 
 
 def project_blocking_sources(
@@ -309,5 +371,6 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
 
 __all__ = [
     "_recalculate_project_status",
+    "blocker_affected_project_ids",
     "project_blocking_sources",
 ]

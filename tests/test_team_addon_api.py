@@ -72,6 +72,7 @@ from evander_team_addon.models import (
     HumanReviewRequirementSnapshot,
     ProjectGitConfig,
     ProjectReleasePolicy,
+    ProjectStatus,
     ReleaseCandidateManifest,
     ReleaseGateFailure,
     ReleasePackage,
@@ -2913,6 +2914,104 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert not any(
         promotion.promotion_kind == "rollback" for promotion in final_state.git_promotions.values()
     )
+
+
+def test_post_release_report_during_execution_stall_can_be_cancelled_and_recovered(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+
+    def _publish_and_stall_lead(state: TeamState) -> TeamState:
+        release = state.release_packages["release-1"]
+        release.state = TeamRecordState.ACCEPTED
+        release.candidate_commit_sha = "candidate-sha"
+        release.approved_commit_sha = "candidate-sha"
+        release.published_commit_sha = "candidate-sha"
+        release.published_at = datetime(2026, 1, 3, tzinfo=UTC)
+        release.error = None
+        state.agent_runtimes["lead"].no_progress_count = 1
+        state.projects["project"].status = ProjectStatus.BLOCKED
+        state.blockers["stale-lead-execution-stall"] = TeamBlocker(
+            id="stale-lead-execution-stall",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.AGENT_EXECUTION_STALL,
+            source_id="lead",
+            owner_agent_id="lead",
+            affected_task_ids=[],
+            route=TeamBlockerRoute.OPERATOR,
+            summary="The lead has a stale execution-stall incident.",
+        )
+        return state
+
+    repo.update(_publish_and_stall_lead)
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(login="Reporter@Example.com"),
+                )
+            )
+        )
+    )
+
+    reported = client.post(
+        "/release-packages/release-1/report-issue",
+        json={
+            "report": "The released workflow needs an adjustment.",
+            "evidence_refs": ["artifact-space:reports/release-1-adjustment.png"],
+            "expected_revision": repo.read().revision,
+            "request_id": "report-during-stale-execution-stall",
+        },
+    )
+
+    assert reported.status_code == 200, reported.text
+    case_id = reported.json()["result"]["case_id"]
+    triage_task_id = reported.json()["result"]["triage_task_id"]
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="lead",
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["task_ids"] == []
+    assert leases[0]["dispatch"]["inbox_item_ids"]
+
+    admin = _team_admin_service(repo)
+    state = admin.cancel_task(
+        task_id=triage_task_id,
+        reason_code="no_longer_required",
+        reason="The operator confirmed that this adjustment is no longer necessary.",
+        actor_id="operator:admin",
+        expected_revision=repo.read().revision,
+    )
+    state, closed = admin.close_post_release_feedback_case_with_result(
+        case_id=case_id,
+        reason="The reported adjustment is no longer necessary.",
+        evidence_refs=[triage_task_id],
+        closed_by_user_id="operator:admin",
+        request_id="close-report-during-stale-execution-stall",
+        expected_state_revision=state.revision,
+    )
+    state, resolved = admin.resolve_terminal_blocker_as_operator(
+        blocker_id="stale-lead-execution-stall",
+        note="The stale execution incident is closed after operator review.",
+        operator_actor_id="operator:admin",
+        resolution_refs=[case_id, triage_task_id],
+        expected_revision=state.revision,
+    )
+
+    assert closed["success"] is True
+    assert resolved["success"] is True
+    assert state.tasks[triage_task_id].state == TeamTaskState.CANCELLED
+    assert state.cases[case_id].status == TeamCaseStatus.CLOSED
+    assert state.blockers["stale-lead-execution-stall"].state == (
+        TeamBlockerState.RESOLVED
+    )
+    assert state.agent_runtimes["lead"].no_progress_count == 0
 
 
 def test_human_finding_correction_and_post_release_closure_admin_api(

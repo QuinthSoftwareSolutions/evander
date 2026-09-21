@@ -6585,6 +6585,87 @@ def test_operator_can_resolve_terminal_blocker_with_audited_reason(tmp_path: Pat
     )
 
 
+def test_operator_terminal_blocker_resolution_recalculates_project_status(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="operator-project-status-recovery", owner_agent_id="worker")
+
+    def _seed_project_blocker(state: TeamState) -> TeamState:
+        state.projects["project"].status = ProjectStatus.BLOCKED
+        state.blockers["operator-project-status-blocker"] = TeamBlocker(
+            id="operator-project-status-blocker",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id="stale-project-dependency",
+            owner_agent_id="manager",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="The project is waiting for operator recovery.",
+        )
+        return state
+
+    state = repo.update(_seed_project_blocker)
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="operator-project-status-blocker",
+        note="The stale project dependency is no longer blocking work.",
+        operator_actor_id="operator:admin",
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is True
+    assert state.blockers["operator-project-status-blocker"].state == (
+        TeamBlockerState.RESOLVED
+    )
+    assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_operator_terminal_release_review_blocker_resolution_recalculates_project_status(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _seed_terminal_release_review_blocker(state: TeamState) -> TeamState:
+        state.projects["project"].status = ProjectStatus.BLOCKED
+        state.release_packages["terminal-release"] = ReleasePackage(
+            id="terminal-release",
+            project_id="project",
+            state=TeamRecordState.ACCEPTED,
+            review_request_ids=["terminal-release-review"],
+        )
+        state.review_requests["terminal-release-review"] = ReviewRequest(
+            id="terminal-release-review",
+            release_package_id="terminal-release",
+            candidate_commit_sha="terminal-release-candidate",
+            reviewer_agent_id="worker",
+            state=TeamRecordState.BLOCKED,
+        )
+        state.blockers["terminal-release-review-blocker"] = TeamBlocker(
+            id="terminal-release-review-blocker",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+            source_id="terminal-release-review",
+            owner_agent_id="manager",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="The terminal release review needs operator recovery.",
+        )
+        return state
+
+    state = repo.update(_seed_terminal_release_review_blocker)
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="terminal-release-review-blocker",
+        note="The stale terminal review incident is no longer blocking work.",
+        operator_actor_id="operator:admin",
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is True
+    assert state.blockers["terminal-release-review-blocker"].state == (TeamBlockerState.RESOLVED)
+    assert state.review_requests["terminal-release-review"].state == TeamRecordState.PENDING
+    assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
 def test_operator_resolution_wakes_execution_stall_source(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     future = datetime(2026, 8, 24, 12, tzinfo=UTC)
