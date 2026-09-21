@@ -1,3 +1,30 @@
+function applyTheme(theme) {
+  if (theme !== "light" && theme !== "dark") return;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+}
+function storedTheme() {
+  try {
+    const theme = window.localStorage.getItem("admin-web:theme");
+    return theme === "light" || theme === "dark" ? theme : null;
+  } catch { return null; }
+}
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+const applyPreferredTheme = () => applyTheme(storedTheme() || (systemTheme.matches ? "dark" : "light"));
+applyPreferredTheme();
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin || event.source !== window.parent) return;
+  if (event.data?.type === "admin-addon-context") applyTheme(event.data.theme);
+});
+if (window.parent !== window) {
+  window.parent.postMessage({ type: "admin-addon-ready" }, window.location.origin);
+} else {
+  systemTheme.addEventListener("change", applyPreferredTheme);
+  window.addEventListener("storage", (event) => {
+    if (event.key === "admin-web:theme" || event.key === null) applyPreferredTheme();
+  });
+}
+
 const $ = (id) => document.getElementById(id);
 const state = { connections: [], selected: null, directory: new URLSearchParams(location.search).get("directory_path") || "root" };
 $("directory").value = state.directory;
@@ -28,7 +55,6 @@ function edit(connection = null) {
   $("name").value = config.name || "";
   $("callback").value = config.redirect_uri || `${location.origin}/api/addons/miro-addon/oauth/callback`;
   $("budget").value = config.daily_call_budget || 100;
-  $("sessions").value = (config.session_ids || []).join("\n");
   $("enabled").checked = config.enabled !== false; $("workflows").checked = Boolean(config.allow_workflows);
   $("create-boards").checked = Boolean(config.allow_create_boards);
   $("boards").replaceChildren(); (config.boards || []).forEach(addBoard);
@@ -84,7 +110,7 @@ $("settings").addEventListener("submit", run(async () => {
   const boards = [...$("boards").children].map((row) => ({ board_id: row.querySelectorAll("input")[0].value.trim(), name: row.querySelectorAll("input")[1].value.trim(), writable: row.querySelector("input[type=checkbox]").checked }));
   const config = { id: $("connection-id").value.trim(), name: $("name").value.trim(), directory_path: state.directory,
     redirect_uri: $("callback").value.trim(), daily_call_budget: Number($("budget").value),
-    session_ids: $("sessions").value.split(/\s+/).filter(Boolean), boards, enabled: $("enabled").checked,
+    boards, enabled: $("enabled").checked,
     allow_workflows: $("workflows").checked, allow_create_boards: $("create-boards").checked };
   state.selected = await request("/connections", { config, expected_revision: state.selected?.revision || 0 });
   await refresh(); notice("Connection settings saved.");

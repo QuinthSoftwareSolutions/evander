@@ -148,7 +148,7 @@ gateway restart.
 
 The bundled `miro-addon` exposes editable canvas and comment tools, corresponding workflow
 queries/effects, and opt-in board/comment polling triggers. Its Admin Web page manages named
-OAuth connections, directory/session and board grants, daily call budgets, and uncertain-write
+OAuth connections, directory and board grants, daily call budgets, and uncertain-write
 recovery. No polling or agent wake workflow is installed automatically. See
 [Miro Add-on](miro-addon.md) for setup, operation contracts, examples, and limitations.
 

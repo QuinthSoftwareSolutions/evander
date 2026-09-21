@@ -72,7 +72,7 @@ def admin_api_routes(context):
     def public(record, repository):
         secret = repository.get("credentials", record["key"])
         return {
-            "config": record["config"],
+            "config": Connection.model_validate(record["config"]).model_dump(),
             "revision": record["revision"],
             "connected": bool(secret and secret["generation"] == record["generation"]),
             "calls_today": repository.usage(record),

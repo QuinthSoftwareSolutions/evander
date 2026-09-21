@@ -13,10 +13,10 @@ monitor, request a review, or wake an agent by composing normal Evander workflow
 2. Open **Miro**, select the owning directory, and unlock privileged operations in Evander.
    Create a named connection with the public Admin Web callback URL ending
    `/api/addons/miro-addon/oauth/callback`. HTTPS is required except on loopback in development.
-3. Add exact board IDs and grant reads or writes for each. Add the session IDs that may use the
-   connection, and enable the required `miro_*` tools in those sessions' normal policy. Both grants
-   are required. Permit workflow access separately. Creation of new boards is separately opt-in;
-   successfully created boards join this connection's read/write grants.
+3. Add exact board IDs and grant reads or writes for each. Enable the required `miro_*` tools in
+   the agents' normal session policy; that policy authorizes use of connections in their directory
+   and inherited from parent directories. Permit workflow access separately. Creation of new boards
+   is separately opt-in; successfully created boards join this connection's read/write grants.
 4. Save, choose **Connect account**, and follow **Continue to Miro authorization**. Select the Miro
    account and team containing the intended boards. Refresh the page when authorization completes.
    Writes use that account; Evander separately records the responsible agent or workflow.
@@ -26,12 +26,19 @@ monitor, request a review, or wake an agent by composing normal Evander workflow
 6. Compose a workflow or ask an authorized agent to read the approved board. Polling starts only
    when a configured Miro trigger runs. Enabling the add-on alone never starts agent work.
 
+The Miro page follows Admin Web's selected light or dark theme, including changes while the form
+is open. When opened directly, it uses the saved Admin Web preference or the system theme.
+
 Connections inherit into descendant directories; a child connection with the same ID shadows its
 parent. Edit inherited connections in their owning directory. Settings use revision checks to avoid
 overwriting another operator's edits. OAuth registration credentials, PKCE material, and access and
 refresh tokens are encrypted in add-on-private storage with restrictive file permissions. Keep its
 key and database in protected host backups. Disconnect invalidates local authorization and pending
 callbacks; remove the app in Miro as well when provider-side consent must be revoked.
+
+Older per-connection `session_ids` lists are accepted for compatibility and ignored. Normal session
+tool permissions now control agent access. Saving existing settings removes the obsolete list
+without requiring a new OAuth connection; directory and board restrictions still apply.
 
 Miro's official server is fixed at `https://mcp.miro.com/`. OAuth discovery and token destinations
 must share that exact origin. Guests do not receive credentials or a new internet/firewall route.
