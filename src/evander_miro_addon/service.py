@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 
 from .client import COMMENT_PAGE_SIZE, MiroClient, comment_page, svg_from_result, unwrap
+from .canvas_authoring import AUTHORING_CHECKS, validate_connectors
 from .models import (
     CanvasScope,
     Connection,
@@ -234,13 +235,25 @@ class MiroService:
             return await self.write(record, operation, args)
         async with self.client_factory(self.store, record).open() as client:
             if operation == "get_canvas_format":
-                data = await client.call(operation)
+                composer = {"step": args.step, "is_repository": args.is_repository}
+                format_args = {
+                    "format_name": args.format_name,
+                    "notation": args.notation,
+                    "is_repository": args.is_repository,
+                }
+                # Validate both calls before spending a call on the composer.
+                client.prepare(operation, **composer)
+                if args.format_name:
+                    client.prepare("load_format", **format_args)
+                data = await client.call(operation, **composer)
                 specific = (
-                    await client.call("load_format", format_name=args.format_name)
-                    if args.format_name
-                    else None
+                    await client.call("load_format", **format_args) if args.format_name else None
                 )
-                return {"format": data, "format_specific": specific}
+                return {
+                    "format": data,
+                    "format_specific": specific,
+                    "authoring_checks": list(AUTHORING_CHECKS),
+                }
             if operation == "search_canvas":
                 return await self.search(client, args)
             return await self.read(client, record, operation, args)
@@ -406,7 +419,16 @@ class MiroService:
         # Preserve fingerprints of durable writes created before scoped reads and
         # search were added. New, explicitly supplied values still identify a write.
         defaults = OperationInput(connection_id=args.connection_id).model_dump(mode="json")
-        for key in ("canvas_scope", "result_mode", "patterns", "target_id", "cursor"):
+        for key in (
+            "canvas_scope",
+            "result_mode",
+            "patterns",
+            "target_id",
+            "cursor",
+            "step",
+            "notation",
+            "is_repository",
+        ):
             if request[key] == defaults[key]:
                 request.pop(key)
         op_id = digest([record["key"], args.operation_key])
@@ -453,11 +475,13 @@ class MiroService:
                     "uncertain_write",
                     "An earlier write needs reconciliation before this board can change",
                 )
+            if operation in {"create_canvas", "update_canvas"}:
+                svg, ids = canvas(require(args.svg, "svg"))
+                validate_connectors(svg)
             async with self.client_factory(self.store, record).open() as client:
                 baseline = None
                 values: dict[str, Any] = {"board_id": args.board_id, "frame_id": args.frame_id}
                 if operation in {"create_canvas", "update_canvas"}:
-                    svg, ids = canvas(require(args.svg, "svg"))
                     values["svg"] = svg
                     if operation == "create_canvas" and ids:
                         raise MiroError(

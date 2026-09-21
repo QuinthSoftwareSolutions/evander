@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-21 - Validate Miro diagram connectors (0.57.1)
+
+- Follow Miro's current canvas-composer workflow through its design, edit, and DSL steps, and
+  expose diagram notation and repository context to agents and workflows.
+- Direct flowcharts toward native Mermaid diagrams and free-form diagrams toward attached Miro
+  connectors whose direction and label remain bound to the connector.
+- Reject lines and paths without valid widget endpoints before contacting Miro, with corrective
+  guidance for native arrowheads and connector labels. Keep old snapshots readable and preserve
+  previously recorded write outcomes on retries.
+- Accept HTML slides, embeds, and prototype screens as connector endpoints while continuing to
+  reject frames, structural groups, and deleted widgets.
+
 ## 2026-09-21 - Read scoped Miro canvases (0.57.0)
 
 - Add `miro_search_canvas` and `query:miro:search-canvas` for board overviews, areas, item

@@ -114,7 +114,10 @@ class OperationInput(StrictModel):
     comment_id: Identifier | None = None
     resolved: bool = True
     allow_delete: bool = False
+    step: str | None = Field(default=None, min_length=1, max_length=100)
     format_name: str | None = Field(default=None, max_length=100)
+    notation: str | None = Field(default=None, min_length=1, max_length=100)
+    is_repository: bool | None = None
     source_refs: list[Annotated[str, Field(max_length=2048)]] = Field(
         default_factory=list, max_length=30
     )
@@ -123,6 +126,8 @@ class OperationInput(StrictModel):
     def canvas_selection(self):
         if self.canvas_scope is not None and (self.frame_id or self.item_ids):
             raise ValueError("Choose canvas_scope or frame_id/item_ids, not both")
+        if self.notation and not self.format_name:
+            raise ValueError("notation requires format_name")
         return self
 
 
