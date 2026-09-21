@@ -179,6 +179,15 @@ class MiroClient:
             formats = properties.get(field, {}).get("enum", [])
             if "diagramming" in formats and "diagram" not in formats:
                 values["format_name"] = "diagramming"
+        if (
+            operation == "load_format"
+            and values.get("format_name") in {"diagram", "diagramming"}
+            and values.get("notation") is None
+            and "notation" in schema.get("properties", {})
+        ):
+            # Request guidance for separately editable shapes/connectors unless a caller
+            # explicitly selects a notation. Older schemas can omit notation.
+            values["notation"] = "free_form"
         if values.get("board_id"):
             values["board_url"] = board_url(values["board_id"], values.get("frame_id"))
         return tool, bind_arguments(schema, values)

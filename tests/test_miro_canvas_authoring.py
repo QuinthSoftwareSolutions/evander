@@ -217,14 +217,44 @@ def test_guidance_reaches_current_composer_and_notation(entry, format_name, setu
     assert not setup.store.list("operation")
 
 
-def test_legacy_format_name_is_preserved_when_upstream_advertises_it(setup):
+@pytest.mark.parametrize("entry", ["agent", "workflow"])
+@pytest.mark.parametrize("format_name", ["diagramming", "diagram"])
+def test_diagram_guidance_defaults_to_individually_editable_items(
+    entry, format_name, setup, monkeypatch
+):
+    call = invoke(entry, setup, monkeypatch)
+    result = call(
+        "get_canvas_format", {"connection_id": "test", "step": "dsl", "format_name": format_name}
+    )
+    assert result["format_specific"]["notation"] == "free_form"
+    assert setup.calls == [
+        ("canvas_get_canvas_composer_skill", {"step": "dsl"}),
+        ("canvas_load_format_skill", {"format_name": "diagramming", "notation": "free_form"}),
+    ]
+
+
+@pytest.mark.parametrize("format_name", [None, "presentation", "prototyping"])
+def test_diagram_default_does_not_affect_other_guidance(format_name, setup):
+    result = asyncio.run(
+        setup.service.execute(
+            "get_canvas_format", {"connection_id": "test", "format_name": format_name}
+        )
+    )
+    assert all("notation" not in arguments for _, arguments in setup.calls)
+    assert len(setup.calls) == (2 if format_name else 1)
+    assert bool(result["format_specific"]) == bool(format_name)
+
+
+def test_legacy_format_name_and_schema_without_notation_are_preserved(setup):
     setup.schemas["canvas_load_format_skill"]["properties"]["format_name"] = {"enum": ["diagram"]}
+    del setup.schemas["canvas_load_format_skill"]["properties"]["notation"]
     result = asyncio.run(
         setup.service.execute(
             "get_canvas_format", {"connection_id": "test", "format_name": "diagram"}
         )
     )
     assert result["format_specific"]["format_name"] == "diagram"
+    assert setup.calls[-1] == ("canvas_load_format_skill", {"format_name": "diagram"})
 
 
 @pytest.mark.parametrize(

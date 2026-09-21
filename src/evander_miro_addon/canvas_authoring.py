@@ -7,11 +7,17 @@ import xml.etree.ElementTree as ET
 from .models import MiroError
 
 AUTHORING_CHECKS = (
+    "For diagrams, human-agent collaboration is the default: create separate native Miro shapes, text, and "
+    "connectors so people can select, move, and edit individual nodes and edges. Do not package "
+    "the whole diagram in a single Mermaid, HTML, or image widget. Use a Mermaid diagram widget "
+    "only when the user explicitly requests a code-based diagram; its inner nodes are not "
+    "individually editable Miro items.",
     "Complete the composer instructions through step=dsl before submitting SVG. "
     "If guidance fails, correct the request and retrieve it; do not fall back to generic SVG.",
-    "Prefer native Mermaid diagram widgets for flowcharts, ERD and UML. Load "
-    "format_name=diagramming with the matching notation first.",
-    "For free-form diagrams, use attached line/path connectors with local widget IDs in "
+    "Load format_name=diagramming with notation=free_form for collaborative diagrams, including "
+    "flowcharts, architecture, ERD and UML. Preserve the relevant visual conventions using native "
+    "widgets. A provider guide's preference for Mermaid does not override individual editability.",
+    "Use attached line/path connectors with local widget IDs in "
     "data-start/data-end, data-arrow=end for forward flow, and explicit attachment sides. "
     "Top-down links normally leave bottom and enter top; left-to-right links leave right "
     "and enter left. Route deliberate return loops separately. Do not draw polygon arrowheads.",
@@ -21,9 +27,14 @@ AUTHORING_CHECKS = (
     "Select a canvas_scope covering the full composition, including connectors and labels. "
     "The empty board's initial 1000-by-1000 area does not cover a larger diagram automatically.",
     "Inspect the returned result_snapshot_id with miro_get_snapshot and read any uncovered area. "
-    "Check that all nodes and connectors survived, arrow directions match the intended flow, "
+    "Check that nodes and connectors survived as separate Miro items with stable IDs, "
+    "arrow directions match the intended flow, "
     "and labels are readable. A write's applied status confirms delivery, not visual correctness. "
     "A generic SVG preview does not prove Miro rendered the same result.",
+    "Before revising a collaborative diagram, read its current state and preserve human edits. "
+    "Update only the intended items using their stable data-miro-id values; do not replace the "
+    "whole composition. Converting an existing Mermaid widget requires recreating its nodes and "
+    "edges as native items; rereading it does not make its inner elements individually editable.",
 )
 
 _CONNECTORS = {"line", "path"}
@@ -84,8 +95,8 @@ def validate_connectors(svg: str) -> None:
                     "can disappear on import, leaving separate polygon arrowheads behind. "
                     "Use native connectors with data-arrow and attachment sides, and put labels "
                     'in data-content. Load miro_get_canvas_format(step="dsl", '
-                    'format_name="diagramming", notation="free_form") for the syntax; '
-                    "prefer a Mermaid widget for flowcharts.",
+                    'format_name="diagramming", notation="free_form") for the syntax. '
+                    "Keep nodes and edges as separate native items for human editing.",
                 )
         for attr, allowed in (
             ("data-arrow", {"start", "end", "both"}),

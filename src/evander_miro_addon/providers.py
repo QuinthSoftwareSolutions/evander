@@ -59,7 +59,7 @@ FIELD_DESCRIPTIONS = {
     "snapshot_id": "Snapshot returned by a prior read of this exact selection.",
     "operation_id": "Durable operation ID returned by a Miro write.",
     "operation_key": "Stable business operation key; reuse on retries with identical arguments.",
-    "svg": "Editable Miro canvas SVG authored using the current canvas-format query.",
+    "svg": "Miro canvas SVG authored using the current canvas-format query. Collaborative diagrams use separate editable shapes, text and connectors; Mermaid widgets require an explicit request for a code-based diagram.",
     "title": "Title of the new board.",
     "text": "Reply text for an existing thread.",
     "comment_id": "Thread ID from the source comment snapshot.",
@@ -68,7 +68,7 @@ FIELD_DESCRIPTIONS = {
     "resolved": "True resolves the thread; false reopens it.",
     "step": "Canvas-composer workflow step returned by the previous guidance call: design, edit, or dsl.",
     "format_name": "Provider-advertised composition format. Use diagramming for diagrams.",
-    "notation": "Diagram notation: flowchart, entity_relationship, uml_class, uml_sequence, or free_form.",
+    "notation": "Use free_form for individually editable collaborative diagrams, including flowcharts (default for diagramming when supported). Other notations: flowchart, entity_relationship, uml_class, uml_sequence; use these for explicitly requested code-based diagrams.",
     "is_repository": "Whether the agent is working from a source-control repository.",
 }
 
