@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-21 - Read scoped Miro canvases (0.57.0)
+
+- Add `miro_search_canvas` and `query:miro:search-canvas` for board overviews, areas, item
+  matches, and pagination under normal session and board permissions.
+- Support explicit canvas areas and frame/item selections across reads, snapshots, updates,
+  creation readback, recovery, and workflow polling. Verify new empty boards with search and
+  a retained initial area; populated boards require an explicit selection.
+- Use Miro's current frame URL and widget selection contract, and preserve durable retries
+  recorded before the new read parameters were introduced.
+- Let operators confirm an acknowledged board creation using its returned ID and explicit
+  evidence when a later deletion or sharing change makes readback unavailable. Other writes
+  still require readback before resolution.
+
 ## 2026-09-21 - Recognize Miro board creation links (0.56.1)
 
 - Extract board IDs from Miro's `miro_url` response in the shared creation service used by

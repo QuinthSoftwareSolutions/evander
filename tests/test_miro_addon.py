@@ -27,6 +27,8 @@ from evander_miro_addon.state import MiroStore
 
 SVG = '<svg xmlns="http://www.w3.org/2000/svg"><text data-miro-id="item1" x="10" y="20">Order service</text><rect data-miro-id="item2" width="100" height="50"/></svg>'
 NEW = '<svg xmlns="http://www.w3.org/2000/svg"><text x="10" y="20">Retry flow</text></svg>'
+EMPTY = '<svg xmlns="http://www.w3.org/2000/svg"/>'
+AREA = {"x": -500, "y": -500, "width": 1000, "height": 1000}
 
 
 def run(coroutine):
@@ -89,7 +91,12 @@ class Remote:
                 remote.calls.append((operation, values))
                 if operation in {"read_canvas", "read_comments"} and remote.fail_read:
                     raise MiroError("upstream_unavailable", "Offline")
+                if operation == "search_canvas":
+                    return {"total_items": len(canvas(remote.svg)[1]), "total_results": 0}
                 if operation == "read_canvas":
+                    assert values.get("item_ids") or all(
+                        "scope_" + key in values for key in AREA
+                    ), "Miro rejects unscoped reads, including frame URLs without widget_ids"
                     return {"svg": remote.svg}
                 if operation == "read_comments":
                     return {"comments": json.loads(json.dumps(remote.comments))}
@@ -145,6 +152,8 @@ class Remote:
                         )
                     elif operation == "resolve_comment":
                         remote.comments[0]["resolved"] = values["resolved"]
+                    elif operation == "create_board":
+                        remote.svg = EMPTY
                     if remote.fail_after_write:
                         raise TimeoutError("response lost after remote commit")
                     return remote.create_board_result if operation == "create_board" else result
@@ -166,6 +175,8 @@ def setup(tmp_path):
 
 
 def read(service, kind="canvas", **changes):
+    if kind == "canvas" and not {"frame_id", "item_ids", "canvas_scope"} & changes.keys():
+        changes["canvas_scope"] = AREA
     return run(
         service.execute(
             "read_" + kind, {"connection_id": "architecture", "board_id": "board1", **changes}
@@ -180,6 +191,11 @@ def update_args(snapshot, **changes):
         "operation_key": "update-retries",
         "snapshot_id": snapshot["snapshot_id"],
         "svg": SVG.replace("Order service", "Order service with retry"),
+        **(
+            {"canvas_scope": snapshot["scope"]["canvas_scope"]}
+            if "canvas_scope" in snapshot["scope"]
+            else {}
+        ),
         **changes,
     }
 
@@ -337,7 +353,15 @@ def test_mcp_uses_normal_session_tool_policy_and_transport_identity(setup, monke
     arguments = {"connection_id": "architecture", "board_id": "board1"}
 
     def call(tool="miro_read_canvas", **changes):
-        return run(server._tool_manager.call_tool(tool, arguments | changes, context=context))
+        return run(
+            server._tool_manager.call_tool(
+                tool,
+                arguments
+                | ({"canvas_scope": AREA} if tool == "miro_read_canvas" else {})
+                | changes,
+                context=context,
+            )
+        )
 
     assert call()["data"]["item_ids"] == ["item1", "item2"]
     count = len(remote.calls)
@@ -375,6 +399,212 @@ def test_scoped_update_is_editable_and_idempotent(setup):
     assert store.get("operation", result["operation_id"])["request"]["svg"] == args["svg"]
     with pytest.raises(MiroError, match="different arguments"):
         run(service.execute("update_canvas", args | {"svg": SVG}))
+
+
+@pytest.mark.parametrize("operation", ["read_canvas", "create_canvas"])
+def test_populated_canvas_requires_explicit_selection_before_read_or_write(setup, operation):
+    store, _, remote, service = setup
+    arguments = {"connection_id": "architecture", "board_id": "board1"}
+    if operation == "create_canvas":
+        arguments.update(svg=NEW, operation_key="must-not-send")
+    with pytest.raises(MiroError, match="scope_required|miro_search_canvas"):
+        run(service.execute(operation, arguments))
+    assert [op for op, _ in remote.calls] == ["search_canvas"]
+    assert store.list("snapshot") == store.list("operation") == []
+    assert remote.svg == SVG
+
+
+@pytest.mark.parametrize(
+    "selection,widgets",
+    [({"frame_id": "frame1"}, ["frame1"]), ({"item_ids": ["item1"]}, ["item1"])],
+)
+def test_frame_and_item_canvas_reads_send_explicit_widget_ids(setup, selection, widgets):
+    _, _, remote, service = setup
+    snapshot = read(service, **selection)
+    assert remote.calls[-1][1]["item_ids"] == widgets
+    assert "canvas_scope" not in snapshot["scope"]
+    assert snapshot["scope"]["item_ids"] == selection.get("item_ids", [])
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        AREA | {"width": 0},
+        AREA | {"height": -1},
+        AREA | {"x": 1.5},
+        AREA | {"x": True},
+        {"x": 0, "y": 0},
+    ],
+)
+def test_invalid_canvas_areas_fail_before_network(setup, scope):
+    _, _, remote, service = setup
+    with pytest.raises(ValueError):
+        read(service, canvas_scope=scope)
+    assert not remote.calls
+
+
+def test_canvas_area_is_part_of_snapshot_identity_and_update_selection(setup):
+    _, _, remote, service = setup
+    before = read(service)
+    different_area = AREA | {"width": 2000}
+    assert read(service, canvas_scope=different_area)["snapshot_id"] != before["snapshot_id"]
+    with pytest.raises(MiroError, match="selection must match"):
+        run(service.execute("update_canvas", update_args(before, canvas_scope=different_area)))
+    with pytest.raises(ValueError, match="Choose canvas_scope"):
+        read(service, canvas_scope=AREA, item_ids=["item1"])
+    assert not any(op == "update_canvas" for op, _ in remote.calls)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"result_mode": "matches"},
+        {"result_mode": "areas", "patterns": []},
+        {"cursor": 0},
+        {"target_id": "m123"},
+        {"result_mode": "other"},
+        {"result_mode": "matches", "patterns": [""]},
+        {"cursor": -1},
+    ],
+)
+def test_invalid_canvas_search_fails_before_provider_call(setup, arguments):
+    _, _, remote, service = setup
+    with pytest.raises(ValueError):
+        run(
+            service.execute(
+                "search_canvas",
+                {"connection_id": "architecture", "board_id": "board1", **arguments},
+            )
+        )
+    assert not remote.calls
+
+
+def test_canvas_search_rejects_unapproved_board_before_network(setup):
+    _, _, remote, service = setup
+    with pytest.raises(MiroError, match="outside"):
+        run(
+            service.execute(
+                "search_canvas", {"connection_id": "architecture", "board_id": "private"}
+            )
+        )
+    assert not remote.calls
+
+
+@pytest.mark.parametrize("total", [None, False, "0", -1])
+def test_invalid_search_totals_cannot_establish_an_empty_canvas(setup, total):
+    store, _, remote, service = setup
+
+    def factory(store, record):
+        client = remote.client(store, record)
+
+        async def call(operation, **values):
+            assert operation == "search_canvas"
+            return {"total_items": total, "total_results": 0}
+
+        client.call = call
+        return client
+
+    service.client_factory = factory
+    with pytest.raises(MiroError, match="search results"):
+        read(service, canvas_scope=None)
+    assert store.list("snapshot") == []
+
+
+def test_empty_canvas_creation_readback_and_recovery_keep_the_initial_area(setup):
+    store, _, remote, service = setup
+    remote.svg = EMPTY
+    original_factory = remote.client
+
+    def factory(store, record):
+        client = original_factory(store, record)
+        original = client.call
+
+        async def call(operation, **values):
+            result = await original(operation, **values)
+            if operation == "create_canvas":
+                remote.fail_read = True
+            return result
+
+        client.call = call
+        return client
+
+    service.client_factory = factory
+    arguments = {
+        "connection_id": "architecture",
+        "board_id": "board1",
+        "svg": NEW,
+        "operation_key": "initial-content",
+    }
+    written = run(service.execute("create_canvas", arguments))
+    assert written["status"] == "uncertain" and written["readback_scope"]["canvas_scope"] == AREA
+    assert "Retry flow" in remote.svg
+    remote.fail_read = False
+    operator = MiroService(
+        store, Access("root/project", "operator:test", admin=True), original_factory
+    )
+    recovered = run(operator.reconcile("architecture", written["operation_id"]))
+    assert "Retry flow" in recovered["observed"]["data"]["svg"]
+    assert recovered["observed"]["scope"] == written["readback_scope"]
+    assert len([op for op, _ in remote.calls if op == "search_canvas"]) == 1
+    assert len([op for op, _ in remote.calls if op == "create_canvas"]) == 1
+    assert all(
+        {
+            key.removeprefix("scope_"): value
+            for key, value in values.items()
+            if key.startswith("scope_")
+        }
+        == AREA
+        for op, values in remote.calls
+        if op == "read_canvas"
+    )
+    assert run(service.execute("create_canvas", arguments))["status"] == "uncertain"
+
+
+def test_empty_canvas_polling_keeps_its_area_after_content_appears(setup, monkeypatch):
+    store, _, remote, service = setup
+    remote.svg = EMPTY
+    clock = [100000.0]
+    monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
+    arguments = {"connection_id": "architecture", "board_id": "board1"}
+    assert run(service.poll("initial", arguments, kind="canvas", interval=60)) == []
+    remote.svg = SVG
+    clock[0] += 61
+    restarted = MiroService(store, service.access, remote.client)
+    event = run(restarted.poll("initial", arguments, kind="canvas", interval=60))[0]
+    assert event["scope"]["canvas_scope"] == AREA
+    assert [op for op, _ in remote.calls] == ["search_canvas", "read_canvas", "read_canvas"]
+
+
+def test_legacy_write_fingerprint_is_unchanged_by_new_read_defaults(setup):
+    from evander_miro_addon.state import digest
+
+    store, record, remote, service = setup
+    args = OperationInput(
+        connection_id="architecture",
+        title="Created before scoped reads",
+        operation_key="legacy-create",
+    )
+    request = args.model_dump(
+        mode="json", exclude={"canvas_scope", "result_mode", "patterns", "target_id", "cursor"}
+    )
+    operation_id = digest([record["key"], args.operation_key])
+    store.put(
+        "operation",
+        operation_id,
+        {
+            "operation_id": operation_id,
+            "connection_key": record["key"],
+            "operation": "create_board",
+            "actor": service.access.actor,
+            "directory_path": service.access.directory_path,
+            "fingerprint": digest(["create_board", request, service.access.actor]),
+            "request": request,
+            "status": "uncertain",
+            "board_id": "board1",
+        },
+    )
+    assert run(service.execute("create_board", request))["operation_id"] == operation_id
+    assert not remote.calls
 
 
 def test_human_edit_conflict_does_not_overwrite(setup):
@@ -461,6 +691,99 @@ def test_timeout_after_remote_write_is_uncertain_never_replayed(setup):
         )["status"]
         == "applied"
     )
+
+
+def test_operator_can_confirm_acknowledged_creation_after_board_becomes_unreadable(setup):
+    store, _, remote, service = setup
+    remote.fail_read = True
+    arguments = {
+        "connection_id": "architecture",
+        "title": "Deleted test board",
+        "operation_key": "deleted-test-board",
+    }
+    created = run(service.execute("create_board", arguments))
+    assert created["status"] == "uncertain"
+    assert created["upstream_acknowledged"] and created["board_id"]
+    with pytest.raises(MiroError, match="Operator resolution"):
+        run(service.resolve_operation("architecture", created["operation_id"], "applied", "Seen"))
+    operator = MiroService(
+        store, Access("root/project", "operator:jonathan", admin=True), remote.client
+    )
+    with pytest.raises(MiroError, match="Operator resolution"):
+        run(operator.resolve_operation("architecture", created["operation_id"], "applied", ""))
+    with pytest.raises(MiroError, match="Read back"):
+        run(
+            operator.resolve_operation(
+                "architecture", created["operation_id"], "not_applied", "Deleted"
+            )
+        )
+    evidence = "Operator confirmed the acknowledged board existed before deleting it."
+    calls = list(remote.calls)
+    resolved = run(
+        operator.resolve_operation("architecture", created["operation_id"], "applied", evidence)
+    )
+    assert resolved["status"] == "applied"
+    assert resolved["resolution_evidence"] == evidence
+    assert resolved["resolved_by"] == "operator:jonathan"
+    assert not resolved.get("reconciliation_snapshot_id")
+    assert not resolved.get("result_snapshot_id")
+    assert run(service.execute("create_board", arguments))["status"] == "applied"
+    assert remote.calls == calls
+    # The old operation is settled without being replayed; a separately requested
+    # new board can now be created and read back normally.
+    remote.fail_read = False
+    remote.create_board_result = {"miro_url": "https://miro.com/app/board/replacement=/"}
+    replacement = run(service.execute("create_board", arguments | {"operation_key": "replacement"}))
+    assert replacement["status"] == "applied"
+    assert replacement["board_id"] == "replacement="
+    assert len([op for op, _ in remote.calls if op == "create_board"]) == 2
+
+
+@pytest.mark.parametrize("operation", ["create_canvas", "update_canvas"])
+def test_acknowledged_canvas_mutations_still_need_readback_for_operator_resolution(
+    setup, operation
+):
+    store, _, remote, service = setup
+    before = read(service)
+    original_factory = remote.client
+
+    def factory(store, record):
+        client = original_factory(store, record)
+        original_call = client.call
+
+        async def call(name, **values):
+            result = await original_call(name, **values)
+            if name == operation:
+                remote.fail_read = True
+            return result
+
+        client.call = call
+        return client
+
+    service.client_factory = factory
+    arguments = (
+        update_args(before)
+        if operation == "update_canvas"
+        else {
+            "connection_id": "architecture",
+            "board_id": "board1",
+            "canvas_scope": AREA,
+            "svg": NEW,
+            "operation_key": "canvas-readback-failed",
+        }
+    )
+    written = run(service.execute(operation, arguments))
+    assert written["status"] == "uncertain" and written["upstream_acknowledged"]
+    operator = MiroService(
+        store, Access("root/project", "operator:jonathan", admin=True), original_factory
+    )
+    with pytest.raises(MiroError, match="Read back"):
+        run(
+            operator.resolve_operation(
+                "architecture", written["operation_id"], "applied", "Acknowledged"
+            )
+        )
+    assert store.get("operation", written["operation_id"])["status"] == "uncertain"
 
 
 def test_concurrent_agents_cannot_both_update_the_same_snapshot(setup):
@@ -552,7 +875,7 @@ def test_create_board_binds_result_and_new_canvas_remains_editable(setup, respon
     )
     assert result["status"] == "applied"
     assert "Retry flow" in remote.svg
-    assert "Order service" in remote.svg
+    assert "Order service" not in remote.svg
 
 
 def test_human_feedback_reply_and_resolution_keep_threads(setup):
@@ -639,7 +962,7 @@ def test_polling_baseline_restart_acknowledgment_and_repeated_transitions(setup,
     store, _, remote, service = setup
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
-    args = {"connection_id": "architecture", "board_id": "board1"}
+    args = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     assert run(service.poll("watch", args, kind="canvas", interval=60)) == []
     remote.svg = SVG.replace("Order service", "Human update")
     clock[0] += 61
@@ -659,7 +982,7 @@ def test_polling_suppresses_own_changes_and_backs_off_failures(setup, monkeypatc
     store, _, remote, service = setup
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
-    args = {"connection_id": "architecture", "board_id": "board1"}
+    args = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     run(service.poll("watch", args, kind="canvas", interval=60))
     before = read(service)
     clock[0] += 10
@@ -685,7 +1008,7 @@ def test_polling_connection_override_resets_baseline_and_preserves_event_identit
     service = MiroService(
         store, Access("root/project/child", "workflow:child", workflow=True), remote.client
     )
-    arguments = {"connection_id": "architecture", "board_id": "board1"}
+    arguments = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     previous_events = run(
         service.poll("feedback", arguments, kind="canvas", emit_initial=emit_initial)
     )
@@ -729,7 +1052,7 @@ def test_polling_connection_override_does_not_replay_old_event_after_read_failur
     service = MiroService(
         store, Access("root/project/child", "workflow:child", workflow=True), remote.client
     )
-    arguments = {"connection_id": "architecture", "board_id": "board1"}
+    arguments = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     previous = run(
         service.poll("feedback", arguments, kind="canvas", interval=60, emit_initial=True)
     )[0]
@@ -763,7 +1086,7 @@ def test_polling_rechecks_connection_after_waiting_for_lock(setup, monkeypatch, 
     service = MiroService(
         store, Access("root/project/child", "workflow:child", workflow=True), remote.client
     )
-    arguments = {"connection_id": "architecture", "board_id": "board1"}
+    arguments = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
 
     async def poll():
         return await service.poll(
@@ -823,7 +1146,7 @@ def test_polling_rechecks_connection_after_remote_read(setup, monkeypatch):
     service = MiroService(
         store, Access("root/project/child", "workflow:child", workflow=True), remote.client
     )
-    arguments = {"connection_id": "architecture", "board_id": "board1"}
+    arguments = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
 
     async def poll():
         return await service.poll("feedback", arguments, kind="canvas", interval=60)
@@ -879,7 +1202,7 @@ def test_polling_attributes_scoped_writes_across_connections(setup, monkeypatch)
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
     store.save_connection(config(id="monitor"), 0)
-    args = {"connection_id": "monitor", "board_id": "board1"}
+    args = {"connection_id": "monitor", "board_id": "board1", "canvas_scope": AREA}
     run(service.poll("quiet", args, kind="canvas", interval=60))
     run(service.poll("all", args, kind="canvas", interval=60, include_self=True))
     before = read(service, frame_id="frame1")
@@ -916,7 +1239,7 @@ def test_polling_create_canvas_suppresses_only_recorded_additions(setup, monkeyp
     store, _, remote, service = setup
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
-    args = {"connection_id": "architecture", "board_id": "board1"}
+    args = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     run(service.poll("watch", args, kind="canvas", interval=60))
     clock[0] += 10
     operation = run(
@@ -925,6 +1248,7 @@ def test_polling_create_canvas_suppresses_only_recorded_additions(setup, monkeyp
             args
             | {
                 "frame_id": "frame1",
+                "canvas_scope": None,
                 "svg": NEW,
                 "operation_key": "explanation",
             },
@@ -1144,7 +1468,7 @@ def test_all_workflow_schemas_and_service_parity(setup, monkeypatch):
         id="read",
         display_name="Read",
         type="query:miro:read-canvas",
-        config={"connection_id": "architecture", "board_id": "board1"},
+        config={"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA},
     )
     provider = providers.query_providers[envelope.type]()
     provider.initialize(envelope, SimpleNamespace())
@@ -1408,7 +1732,7 @@ def test_real_mcp_http_handshake_schema_binding_and_error_preservation(setup, mo
             assert payload["method"] == "tools/call"
             assert payload["params"]["name"] == "canvas_read_as_svg"
             assert payload["params"]["arguments"]["miro_url"].endswith(
-                "/board1/?focusWidget=frame1"
+                "/board1/?moveToWidget=frame1"
             )
             assert payload["params"]["arguments"]["widget_ids"] == ["item1"]
             result = {"content": [{"type": "text", "text": SVG}]}
@@ -1451,6 +1775,7 @@ def test_create_board_miro_url_through_mcp_and_workflow(
     board_id = "uXjCreated="
     board_url = "https://miro.com/app/board/uXjCreated=/"
     calls = []
+    board_svg = EMPTY
 
     async def token(_self, _record):
         return "synthetic-transport-token"
@@ -1474,13 +1799,31 @@ def test_create_board_miro_url_through_mcp_and_workflow(
                         "name": name,
                         "inputSchema": {
                             "type": "object",
-                            "properties": {field: {"type": "string"}},
+                            "properties": {
+                                field: {"type": "string"},
+                                **(
+                                    {
+                                        "result_mode": {"enum": ["overview", "areas", "matches"]},
+                                        "patterns": {"type": "array", "items": {"type": "string"}},
+                                        "target_id": {"type": "string"},
+                                        "cursor": {"type": "integer"},
+                                    }
+                                    if name == "canvas_search"
+                                    else {}
+                                ),
+                                **(
+                                    {"scope_" + key: {"type": "integer"} for key in AREA}
+                                    if name == "canvas_read_as_svg"
+                                    else {}
+                                ),
+                            },
                             "required": [field],
                             "additionalProperties": False,
                         },
                     }
                     for name, field in [
                         ("board_create", "name"),
+                        ("canvas_search", "miro_url"),
                         ("canvas_read_as_svg", "miro_url"),
                     ]
                 ]
@@ -1496,10 +1839,32 @@ def test_create_board_miro_url_through_mcp_and_workflow(
                     if response_format == "json_text"
                     else board_url
                 }
+            elif params["name"] == "canvas_search":
+                if params["arguments"]["result_mode"] == "overview":
+                    assert params["arguments"] == {"miro_url": board_url, "result_mode": "overview"}
+                    data = {"total_items": len(canvas(board_svg)[1]), "total_results": 0}
+                else:
+                    cursor = params["arguments"].get("cursor", 0)
+                    assert params["arguments"] == {
+                        "miro_url": board_url,
+                        "result_mode": "matches",
+                        "patterns": ["Order"],
+                        "target_id": "m123",
+                        "cursor": cursor,
+                    }
+                    data = {
+                        "total_items": 2,
+                        "total_results": 2,
+                        "results": [{"id": f"item{cursor + 1}", "type": "text", "scope": AREA}],
+                        "next_cursor": 1 if cursor == 0 else None,
+                    }
             else:
                 assert params["name"] == "canvas_read_as_svg"
-                assert params["arguments"] == {"miro_url": board_url}
-                data = {"svg": SVG}
+                assert params["arguments"] == {
+                    "miro_url": board_url,
+                    **{"scope_" + key: value for key, value in AREA.items()},
+                }
+                data = {"svg": board_svg}
             result = (
                 {"content": [], "structuredContent": data}
                 if response_format == "structured"
@@ -1527,7 +1892,12 @@ def test_create_board_miro_url_through_mcp_and_workflow(
                 session_id="author",
                 directory_path="root/project",
                 expires_at=datetime.now(UTC) + timedelta(hours=1),
-                allowed_tools=["miro_create_board", "miro_list_boards", "miro_read_canvas"],
+                allowed_tools=[
+                    "miro_create_board",
+                    "miro_list_boards",
+                    "miro_read_canvas",
+                    "miro_search_canvas",
+                ],
             )
         )
         server = create_server(runtime)
@@ -1573,12 +1943,39 @@ def test_create_board_miro_url_through_mcp_and_workflow(
     assert [board for board in boards if board["board_id"] == board_id] == [
         {"board_id": board_id, "name": "Truman Test", "writable": True, "url": board_url}
     ]
-    observed = invoke("read_canvas", {"connection_id": "architecture", "board_id": board_id})
+    observed = invoke(
+        "read_canvas", {"connection_id": "architecture", "board_id": board_id, "canvas_scope": AREA}
+    )
     assert observed["snapshot_id"] == created["result_snapshot_id"]
+    assert observed["data"]["item_ids"] == []
+    assert observed["scope"]["canvas_scope"] == AREA
+    assert invoke("create_board", arguments) == created
+    assert calls == ["board_create", "canvas_search", "canvas_read_as_svg", "canvas_read_as_svg"]
+    assert store.usage(record) == 4
+
+    # Human content now exists. Both public callers can navigate search pages and
+    # pass an actual search result's rectangle through to the scoped read contract.
+    board_svg = SVG
+    selection = {"connection_id": "architecture", "board_id": board_id}
+    overview = invoke("search_canvas", selection)
+    assert overview["data"]["total_items"] == 2
+    assert overview["external_content"] is True and "snapshot_id" not in overview
+    query = selection | {
+        "result_mode": "matches",
+        "patterns": ["Order"],
+        "target_id": "m123",
+        "cursor": 0,
+    }
+    first = invoke("search_canvas", query)
+    next_page = invoke("search_canvas", query | {"cursor": first["data"]["next_cursor"]})
+    assert next_page["data"]["next_cursor"] is None
+    assert next_page["data"]["results"][0]["id"] == "item2"
+    scope = first["data"]["results"][0]["scope"]
+    observed = invoke("read_canvas", selection | {"canvas_scope": scope})
+    assert observed["scope"]["canvas_scope"] == scope
     assert observed["data"]["item_ids"] == ["item1", "item2"]
     assert invoke("create_board", arguments) == created
-    assert calls == ["board_create", "canvas_read_as_svg", "canvas_read_as_svg"]
-    assert store.usage(record) == 3
+    assert calls.count("board_create") == 1
 
 
 def test_empty_canvas_required_empty_selection_and_incomplete_pages(setup):
@@ -1709,6 +2106,50 @@ def test_workflow_trigger_acknowledges_only_after_publication(setup, monkeypatch
     assert store.list("subscription")[0]["pending"] == []
 
 
+def test_workflow_canvas_trigger_and_catalog_carry_area_selection(setup, monkeypatch):
+    from evander.workflow.contracts import effective_node_output_schema
+
+    _, _, remote, service = setup
+    providers = register_providers()
+    monkeypatch.setattr(
+        "evander_miro_addon.providers.provider_service", lambda context, node_id: service
+    )
+    definition = WorkflowNodeEnvelope(
+        id="miro-area",
+        display_name="Area",
+        type="trigger:miro:board-changed",
+        config={
+            "connection_id": "architecture",
+            "board_id": "board1",
+            "canvas_scope": AREA,
+            "emit_initial": True,
+        },
+    )
+    trigger = providers.trigger_providers[definition.type]()
+    trigger.initialize(definition, SimpleNamespace())
+    event = trigger.poll()[0]
+    assert event.payload["scope"]["canvas_scope"] == AREA
+    assert [op for op, _ in remote.calls] == ["read_canvas"]
+    assert "scope" in effective_node_output_schema(definition)
+    catalog = {node.type: node for node in providers.workflow_editor_catalog_entries}
+    assert {field.key for field in catalog["query:miro:search-canvas"].fields} >= {
+        "result_mode",
+        "patterns",
+        "target_id",
+        "cursor",
+    }
+    for kind in (
+        "query:miro:read-canvas",
+        "effect:miro:create-canvas",
+        "effect:miro:update-canvas",
+        definition.type,
+    ):
+        assert (
+            next(field for field in catalog[kind].fields if field.key == "canvas_scope").kind
+            == "json"
+        )
+
+
 def test_example_workflows_validate_and_use_registered_interfaces():
     from evander.workflow.packs import WorkflowPack, compose_workflow_ir
     from evander.workflow.contracts import effective_node_output_schema
@@ -1785,6 +2226,7 @@ def test_creation_receipt_supports_mixed_svg_text(setup):
             {
                 "connection_id": "architecture",
                 "board_id": "board1",
+                "canvas_scope": AREA,
                 "operation_key": "formatted-text",
                 "svg": '<svg xmlns="http://www.w3.org/2000/svg"><text>Hello <tspan>world</tspan> today</text></svg>',
             },
@@ -1916,7 +2358,12 @@ def test_shared_operation_key_is_serialized_across_boards_and_store_instances(se
 
         author.client_factory = factory
         other = MiroService(MiroStore(store.root.parents[1]), author.access, factory)
-        args = {"connection_id": "architecture", "svg": NEW, "operation_key": "shared"}
+        args = {
+            "connection_id": "architecture",
+            "svg": NEW,
+            "operation_key": "shared",
+            "canvas_scope": AREA,
+        }
         first = asyncio.create_task(author.execute("create_canvas", args | {"board_id": "board1"}))
         await entered.wait()
         second = asyncio.create_task(other.execute("create_canvas", args | {"board_id": "board2"}))
@@ -2012,7 +2459,7 @@ def test_polling_preserves_human_edits_between_write_and_readback(
     _, _, remote, service = setup
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
-    args = {"connection_id": "architecture", "board_id": "board1"}
+    args = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     run(service.poll("feedback", args, kind="canvas", interval=60))
     baseline = read(service)
 
@@ -2049,7 +2496,7 @@ def test_missing_creation_receipt_does_not_hide_observed_additions(setup, monkey
     _, _, remote, service = setup
     clock = [100000.0]
     monkeypatch.setattr("evander_miro_addon.service.time.time", lambda: clock[0])
-    args = {"connection_id": "architecture", "board_id": "board1"}
+    args = {"connection_id": "architecture", "board_id": "board1", "canvas_scope": AREA}
     run(service.poll("feedback", args, kind="canvas", interval=60))
 
     def factory(store, record):

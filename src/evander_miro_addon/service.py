@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 
 from .client import COMMENT_PAGE_SIZE, MiroClient, comment_page, svg_from_result, unwrap
 from .models import (
+    CanvasScope,
     Connection,
     MAX_CONTENT_BYTES,
     MiroError,
@@ -240,6 +241,8 @@ class MiroService:
                     else None
                 )
                 return {"format": data, "format_specific": specific}
+            if operation == "search_canvas":
+                return await self.search(client, args)
             return await self.read(client, record, operation, args)
 
     def saved_snapshot(self, record: dict, snapshot_id: str) -> dict:
@@ -274,10 +277,81 @@ class MiroService:
             "external_content": True,
         }
 
-    async def read(self, client, record: dict, operation: str, args: OperationInput) -> dict:
+    async def search(self, client, args: OperationInput) -> dict:
+        if args.result_mode != "overview" and not args.patterns:
+            raise MiroError("invalid_input", "Search areas and matches require patterns")
+        if args.result_mode == "overview" and (
+            args.target_id is not None or args.cursor is not None
+        ):
+            raise MiroError("invalid_input", "Search target_id and cursor require areas or matches")
+        data = unwrap(
+            await client.call(
+                "search_canvas",
+                board_id=args.board_id,
+                result_mode=args.result_mode,
+                patterns=args.patterns,
+                target_id=args.target_id,
+                cursor=args.cursor,
+            )
+        )
+        if not isinstance(data, dict) or any(
+            type(data.get(key)) is not int or data[key] < 0
+            for key in ("total_items", "total_results")
+        ):
+            raise MiroError(
+                "unsupported_response", "Miro did not return readable canvas search results"
+            )
+        # Search pages and overview samples are navigation aids, not complete snapshots.
+        return {
+            "connection_id": args.connection_id,
+            "board_id": args.board_id,
+            "url": board_url(args.board_id),
+            "data": data,
+            "external_content": True,
+        }
+
+    async def canvas_selection(self, client, args: OperationInput) -> OperationInput:
+        if args.canvas_scope is not None or args.frame_id or args.item_ids:
+            return args
+        overview = await self.search(
+            client, OperationInput(connection_id=args.connection_id, board_id=args.board_id)
+        )
+        if overview["data"]["total_items"] != 0:
+            raise MiroError(
+                "scope_required",
+                "Use miro_search_canvas (query:miro:search-canvas in workflows), then read with "
+                "canvas_scope {x, y, width, height}, frame_id, or item_ids. "
+                "An overview is not a complete board read.",
+            )
+        # Only a confirmed empty board gets an initial area. Record it explicitly;
+        # neither readback nor polling may later reinterpret it as the whole board.
+        return args.model_copy(
+            update={"canvas_scope": CanvasScope(x=-500, y=-500, width=1000, height=1000)}
+        )
+
+    @staticmethod
+    def selection(args: OperationInput) -> dict:
         scope = {"frame_id": args.frame_id, "item_ids": sorted(args.item_ids)}
+        if args.canvas_scope is not None:
+            scope["canvas_scope"] = args.canvas_scope.model_dump()
+        return scope
+
+    async def read(self, client, record: dict, operation: str, args: OperationInput) -> dict:
+        if operation == "read_canvas":
+            args = await self.canvas_selection(client, args)
+        elif args.canvas_scope is not None:
+            raise MiroError("invalid_input", "canvas_scope is only supported for canvas operations")
+        scope = self.selection(args)
         values = {"board_id": args.board_id, "frame_id": args.frame_id, "item_ids": args.item_ids}
         if operation == "read_canvas":
+            if args.canvas_scope is not None:
+                values.update(
+                    {"scope_" + key: value for key, value in scope["canvas_scope"].items()}
+                )
+            elif args.frame_id and not args.item_ids:
+                # A frame URL alone is not a scoped read; selecting the frame pulls
+                # in its descendants under the current Miro canvas contract.
+                values["item_ids"] = [args.frame_id]
             response = await client.call(operation, **values)
             svg, ids = canvas(svg_from_result(response))
             data = {"svg": svg, "item_ids": ids}
@@ -322,13 +396,19 @@ class MiroService:
             or saved["kind"] != kind
         ):
             raise MiroError("conflict", "Snapshot does not belong to this board and operation")
-        if saved["scope"] != {"frame_id": args.frame_id, "item_ids": sorted(args.item_ids)}:
+        if saved["scope"] != self.selection(args):
             raise MiroError("conflict", "Update selection must match the source snapshot")
         return saved
 
     async def write(self, record: dict, operation: str, args: OperationInput) -> dict:
         require(args.operation_key, "operation_key")
         request = args.model_dump(mode="json")
+        # Preserve fingerprints of durable writes created before scoped reads and
+        # search were added. New, explicitly supplied values still identify a write.
+        defaults = OperationInput(connection_id=args.connection_id).model_dump(mode="json")
+        for key in ("canvas_scope", "result_mode", "patterns", "target_id", "cursor"):
+            if request[key] == defaults[key]:
+                request.pop(key)
         op_id = digest([record["key"], args.operation_key])
         fingerprint = digest([operation, request, self.access.actor])
         lock = "board:" + args.board_id if args.board_id else "create-board:" + record["key"]
@@ -428,6 +508,7 @@ class MiroService:
                         )
                 elif operation == "create_canvas":
                     baseline = await self.read(client, record, "read_canvas", args)
+                    args = OperationInput.model_validate(args.model_dump() | baseline["scope"])
                 entry = {
                     "operation_id": op_id,
                     "connection_key": record["key"],
@@ -442,6 +523,8 @@ class MiroService:
                     "started_at": time.time(),
                     "baseline_snapshot_id": baseline["snapshot_id"] if baseline else None,
                 }
+                if baseline and baseline["kind"] == "canvas":
+                    entry["readback_scope"] = baseline["scope"]
                 self.store.put("operation", op_id, entry)
                 try:
                     result = await client.call(operation, **values)
@@ -460,11 +543,18 @@ class MiroService:
                             record = self.store.save_connection(current_config, record["revision"])
                             client.record = record
                         args = args.model_copy(update={"board_id": entry["board_id"]})
+                    # Persist acknowledgement and any created board reference before
+                    # readback, including if the process is interrupted during search.
+                    self.store.put("operation", op_id, entry)
                     read_op = (
                         "read_comments"
                         if operation in {"reply_comment", "resolve_comment"}
                         else "read_canvas"
                     )
+                    if read_op == "read_canvas":
+                        args = await self.canvas_selection(client, args)
+                        entry["readback_scope"] = self.selection(args)
+                        self.store.put("operation", op_id, entry)
                     observed = await self.read(client, record, read_op, args)
                     authored = authored_item_states(operation, args, baseline, observed, result)
                     entry.update(
@@ -530,18 +620,22 @@ class MiroService:
                 "operation": self.saved_operation(record, operation_id),
                 "guidance": "Inspect the Miro team for the created board; record its ID when resolving the operation.",
             }
-        args = OperationInput.model_validate(entry["request"] | {"board_id": entry["board_id"]})
         read_op = (
             "read_comments"
             if entry["operation"] in {"reply_comment", "resolve_comment"}
             else "read_canvas"
         )
-        async with self.store.lock("board:" + args.board_id):
+        async with self.store.lock("board:" + entry["board_id"]):
             # A live writer or another reconciliation may have completed while
             # this request waited. Preserve its durable outcome and evidence.
             entry = self.store.get("operation", operation_id)
+            args = OperationInput.model_validate(
+                entry["request"] | {"board_id": entry["board_id"]} | entry.get("readback_scope", {})
+            )
             async with self.client_factory(self.store, record).open() as client:
                 observed = await self.read(client, record, read_op, args)
+            if read_op == "read_canvas":
+                entry["readback_scope"] = observed["scope"]
             entry["reconciliation_snapshot_id"] = observed["snapshot_id"]
             entry["reconciled_at"] = time.time()
             if entry["status"] == "running":
@@ -572,7 +666,20 @@ class MiroService:
             entry = self.store.get("operation", operation_id)
             if entry["status"] not in {"running", "uncertain"}:
                 raise MiroError("conflict", "Only uncertain operations can be resolved")
-            if entry.get("board_id") and not entry.get("reconciliation_snapshot_id"):
+            acknowledged_creation = (
+                entry["operation"] == "create_board"
+                and entry.get("board_id")
+                and entry.get("upstream_acknowledged")
+                and outcome == "applied"
+            )
+            # Operators can confirm a known, acknowledged creation even after the
+            # board is deleted or its sharing changes. Canvas/comment mutations
+            # still need readback to establish what was actually applied.
+            if (
+                entry.get("board_id")
+                and not entry.get("reconciliation_snapshot_id")
+                and not acknowledged_creation
+            ):
                 raise MiroError("conflict", "Read back the board before resolving this operation")
             entry.update(
                 status=outcome,
@@ -678,6 +785,10 @@ class MiroService:
                             "Connection binding changed; retry the observation",
                         )
                     record = current_record
+                    if kind == "canvas" and state.get("read_scope"):
+                        args = OperationInput.model_validate(
+                            args.model_dump() | state["read_scope"]
+                        )
                     async with self.client_factory(self.store, record).open() as client:
                         observed = await self.read(client, record, "read_" + kind, args)
                     if self.authorize(args.connection_id, args.board_id)["key"] != record["key"]:
@@ -701,6 +812,7 @@ class MiroService:
                     "connection_id": args.connection_id,
                     "board_id": args.board_id,
                     "frame_id": args.frame_id,
+                    "scope": observed["scope"],
                     "kind": kind,
                     "snapshot_id": observed["snapshot_id"],
                     "previous_snapshot_id": state["snapshot_id"],
@@ -712,6 +824,7 @@ class MiroService:
                 state["pending"] = [event]
             state.update(
                 snapshot_id=observed["snapshot_id"],
+                read_scope=observed["scope"],
                 checked_at=observed["observed_at"],
                 last_error=None,
                 retry_after=0,

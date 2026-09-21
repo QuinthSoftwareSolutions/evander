@@ -74,15 +74,40 @@ underscores with hyphens, for example `miro_read_canvas` → `query:miro:read-ca
 | `miro_list_connections` | Agent only | No inputs; discover enabled connections and their public configuration. |
 | `miro_list_boards` | Query | List only configured boards and their write grants. |
 | `miro_get_canvas_format` | Query | Read the current upstream SVG specification; optional `format_name` loads provider-advertised diagram guidance. |
-| `miro_read_canvas` | Query | `board_id`, optional `frame_id`/`item_ids`; returns editable SVG, stable item IDs, URL and `snapshot_id`. |
+| `miro_search_canvas` | Query | `board_id`, `result_mode` (`overview`, `areas`, or `matches`); optional `patterns`, `target_id`, `cursor`. Find areas and item IDs before reading. |
+| `miro_read_canvas` | Query | `board_id` and `canvas_scope` or `frame_id`/`item_ids`; returns editable SVG, stable item IDs, exact selection, URL and `snapshot_id`. |
 | `miro_read_comments` | Query | Same selection; reads bounded complete pagination and returns a comment snapshot. |
 | `miro_get_snapshot` | Query | `snapshot_id`; read a retained source for another agent or review. |
 | `miro_get_operation` | Query | `operation_id`; inspect the durable outcome, attribution and snapshot references. |
 | `miro_create_board` | Effect | `title`, `operation_key`; creates and binds a board when explicitly granted. Sharing follows Miro's workspace policy. |
-| `miro_create_canvas` | Effect | `board_id`, `svg`, `operation_key`; optional frame and `source_refs`. Creates editable content, including a separate revision frame. |
+| `miro_create_canvas` | Effect | `board_id`, `svg`, `operation_key`; `frame_id` or `canvas_scope` covering the new content, and optional `source_refs`. Creates editable content, including a separate revision frame. |
 | `miro_update_canvas` | Effect | Same selection as a prior read, `svg`, `snapshot_id`, `operation_key`; optional `source_refs`/`allow_delete`. |
 | `miro_reply_comment` | Effect | Board/selection, `comment_id`, `text`, `snapshot_id`, `operation_key`; replies to an existing thread. |
 | `miro_resolve_comment` | Effect | Board/selection, `comment_id`, `snapshot_id`, `operation_key`; `resolved=false` reopens a thread. |
+
+For canvas navigation, grant `miro_search_canvas` through the normal session tool policy, then:
+
+1. Call `miro_search_canvas(connection_id="...", board_id="...")` for an overview.
+2. Find relevant content with `result_mode="areas"` or `"matches"` and `patterns=["Order service"]`.
+   Use `target_id` to narrow the search or the returned `data.next_cursor` for another page.
+3. Pass a result's `scope` as `canvas_scope={"x": ..., "y": ..., "width": ..., "height": ...}`
+   to `miro_read_canvas`, or select known `frame_id`/`item_ids`. Coordinates are integers and
+   dimensions must be positive. Choose an area or IDs, not both. A frame selection includes its
+   descendants; Miro may also include ancestor frames for selected items.
+4. Retain the returned `scope` and `snapshot_id`, and use that exact selection for updates.
+
+The matching workflow search is `query:miro:search-canvas`; its `data` contains the upstream
+results and pagination cursor. Search results are external content, and an overview can contain
+only a sample of board regions. Neither search pages nor a bounded SVG read claim to represent
+the entire board. An unscoped read of a populated board returns `scope_required` with search
+guidance. Existing workflows that read or monitor a populated board must select an area, frame,
+or items.
+
+For an empty board, Evander first verifies emptiness with canvas search, then reads an initial
+area at `x=-500, y=-500, width=1000, height=1000`. This lets board creation finish its readback
+without guessing a widget ID. The area is explicit in the snapshot and retained for subsequent
+readback, reconciliation, and polling. Select a larger or different area when adding content
+outside it. Each search and scoped read consumes a separate upstream call.
 
 Obtain the current canvas specification before authoring SVG. The payload is Miro's structured
 editable canvas format, not an SVG image upload. Use its diagram format for Mermaid-based native
@@ -125,6 +150,10 @@ observed snapshot and live board, then record evidence and the outcome. **Mark n
 not automatically retry; schedule a fresh operation key only after verifying absence of the write.
 For an uncertain board creation without a returned ID, inspect the selected Miro team manually and
 include the identified board in the resolution evidence; bind it explicitly in connection settings.
+If Miro acknowledged creation and returned a board ID, an operator may **Mark applied** with
+explicit evidence even when a later deletion or sharing change prevents readback. This confirms
+the original creation; it does not restore board access or replay the operation. Canvas and comment
+writes still require readback before resolution, as does marking an identified creation not applied.
 Operators may inspect and recover operations in their selected directory and its descendants.
 An inherited connection does not permit recovery of operations owned by an ancestor or sibling.
 
@@ -132,9 +161,11 @@ An inherited connection does not permit recovery of operations owned by an ances
 
 `trigger:miro:board-changed` and `trigger:miro:comments-changed` take `connection_id`, `board_id`,
 optional `frame_id`/`item_ids`, `poll_interval_seconds` (default 900, minimum 60), `include_self`
-(default false), and `emit_initial` (default false). The first complete read normally establishes
+(default false), and `emit_initial` (default false). Canvas monitoring also accepts `canvas_scope`
+instead of frame/item IDs. It watches that selection, including when a previously empty board
+gains content; changes outside the area are not observed. The first complete read normally establishes
 a baseline. A changed observation produces a durable event with board/frame references, previous
-and current snapshot IDs, URL, origin, and observation time. Pending events survive process restarts
+and current snapshot IDs, exact `scope`, URL, origin, and observation time. Pending events survive process restarts
 and remain pending until publication acknowledgment. Changes to a subscription's selection establish
 a fresh baseline. When a child connection overrides the monitored connection, polling also resets
 the baseline and discards pending observations tied to the old connection. Event IDs remain unique
