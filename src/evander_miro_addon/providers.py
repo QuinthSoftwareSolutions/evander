@@ -15,7 +15,7 @@ from evander.workflow.contracts import register_node_output_schema
 from evander.workflow.plugins import ProviderPluginRegistration
 
 from .mcp import DESCRIPTIONS
-from .models import OPERATIONS, READ_OPERATIONS, OperationInput
+from .models import OPERATIONS, READ_OPERATIONS, CanvasScope, OperationInput
 from .runtime import provider_service
 
 
@@ -23,15 +23,19 @@ from .runtime import provider_service
 FIELDS = {
     "list_boards": ([], []),
     "get_canvas_format": ([], ["format_name"]),
-    "read_canvas": (["board_id"], ["frame_id", "item_ids"]),
+    "search_canvas": (["board_id"], ["result_mode", "patterns", "target_id", "cursor"]),
+    "read_canvas": (["board_id"], ["frame_id", "item_ids", "canvas_scope"]),
     "read_comments": (["board_id"], ["frame_id", "item_ids"]),
     "get_snapshot": (["snapshot_id"], []),
     "get_operation": (["operation_id"], []),
     "create_board": (["title", "operation_key"], []),
-    "create_canvas": (["board_id", "svg", "operation_key"], ["frame_id", "source_refs"]),
+    "create_canvas": (
+        ["board_id", "svg", "operation_key"],
+        ["frame_id", "canvas_scope", "source_refs"],
+    ),
     "update_canvas": (
         ["board_id", "svg", "snapshot_id", "operation_key"],
-        ["frame_id", "item_ids", "source_refs", "allow_delete"],
+        ["frame_id", "item_ids", "canvas_scope", "source_refs", "allow_delete"],
     ),
     "reply_comment": (
         ["board_id", "comment_id", "text", "snapshot_id", "operation_key"],
@@ -47,6 +51,11 @@ FIELD_DESCRIPTIONS = {
     "board_id": "Exact approved Miro board ID.",
     "frame_id": "Optional frame to scope this operation.",
     "item_ids": "Optional list of item IDs within the approved board.",
+    "canvas_scope": "Canvas area {x,y,width,height} from search, with positive integer dimensions. Choose this or frame/item IDs; reuse the exact selection for updates. For creation, cover the new content.",
+    "result_mode": "overview for board navigation; areas or matches with patterns for search results. Overviews can be sampled and are not full-board snapshots.",
+    "patterns": "Up to 50 search patterns, each up to 500 characters; required for areas and matches.",
+    "target_id": "Optional container or region ID to narrow areas/matches searches.",
+    "cursor": "Optional next_cursor from a previous areas/matches search page.",
     "snapshot_id": "Snapshot returned by a prior read of this exact selection.",
     "operation_id": "Durable operation ID returned by a Miro write.",
     "operation_key": "Stable business operation key; reuse on retries with identical arguments.",
@@ -102,6 +111,7 @@ class ChangedDefinition(TriggerDefinition):
     board_id: str
     frame_id: str | None = None
     item_ids: list[str] = Field(default_factory=list)
+    canvas_scope: CanvasScope | None = None
     poll_interval_seconds: int = Field(default=900, ge=60)
     include_self: bool = False
     emit_initial: bool = False
@@ -145,6 +155,8 @@ class ChangedProvider(TriggerProviderBase):
             key: getattr(definition, key)
             for key in ("connection_id", "board_id", "frame_id", "item_ids")
         }
+        if definition.canvas_scope is not None:
+            arguments["canvas_scope"] = definition.canvas_scope.model_dump()
         events = asyncio.run(
             service.poll(
                 definition.id,
@@ -174,7 +186,9 @@ class ChangedProvider(TriggerProviderBase):
 def field(key: str, required=False, *, bindable=True):
     kind = (
         "json"
-        if key in {"source_refs", "item_ids"}
+        if key in {"source_refs", "item_ids", "canvas_scope", "patterns"}
+        else "number"
+        if key == "cursor"
         else "boolean"
         if key in {"resolved", "allow_delete"}
         else "string"
@@ -224,6 +238,7 @@ def register_providers() -> ProviderPluginRegistration:
                 "status": {"type": "string"},
                 "url": {"type": "string"},
                 "data": {"type": "object"},
+                "scope": {"type": "object"},
                 "boards": {"type": "array"},
                 "result_snapshot_id": {"type": "string"},
             },
@@ -245,6 +260,11 @@ def register_providers() -> ProviderPluginRegistration:
                     field("board_id", True, bindable=False),
                     field("frame_id", bindable=False),
                     field("item_ids", bindable=False),
+                    *(
+                        [field("canvas_scope", bindable=False)]
+                        if node.endswith("board-changed")
+                        else []
+                    ),
                     WorkflowEditorFieldDefinition(
                         key="poll_interval_seconds",
                         label="Polling interval",
@@ -282,7 +302,8 @@ def register_providers() -> ProviderPluginRegistration:
                     "origin",
                     "kind",
                 )
-            },
+            }
+            | {"scope": {"type": "object"}},
         )
     return ProviderPluginRegistration(
         query_providers=queries,

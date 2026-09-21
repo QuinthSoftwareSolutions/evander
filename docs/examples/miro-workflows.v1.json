@@ -17,7 +17,7 @@
     {
       "id": "miro-directed",
       "name": "Miro: directed explanation",
-      "description": "An explicit request reads the current board and asks an agent to explain or revise it.",
+      "description": "An explicit request selects a frame or canvas_scope to read and asks an agent to explain or revise it.",
       "directory_path": "root/REPLACE_PROJECT",
       "node_ids": [
         "explain-request",
@@ -78,7 +78,7 @@
           "type": "effect:agent:prompt",
           "config": {
             "session_id": "REPLACE_AUTHOR_SESSION",
-            "prompt": "Create an editable architecture or application-flow explanation on approved Miro board REPLACE_BOARD using connection REPLACE_CONNECTION. Read miro_get_canvas_format and its diagram guidance first. Task: ${{publish-request.payload.request}}. Inspect source through the managed Git workspace, include pinned source references, and publish with a stable operation key derived from ${{publish-request.event_id}}. Return the board URL and operation status. Do not treat an uncertain write as successful."
+            "prompt": "Create an editable architecture or application-flow explanation on approved Miro board REPLACE_BOARD using connection REPLACE_CONNECTION. Read miro_get_canvas_format and its diagram guidance first. Use miro_search_canvas to locate a frame or area, and supply that frame_id or canvas_scope for canvas readback. Task: ${{publish-request.payload.request}}. Inspect source through the managed Git workspace, include pinned source references, and publish with a stable operation key derived from ${{publish-request.event_id}}. Return the board URL and operation status. Do not treat an uncertain write as successful."
           }
         }
       },
@@ -100,7 +100,8 @@
           "config": {
             "connection_id": "REPLACE_CONNECTION",
             "board_id": "REPLACE_BOARD",
-            "frame_id": "${{explain-request.payload.frame_id ?? null}}"
+            "frame_id": "${{explain-request.payload.frame_id ?? null}}",
+            "canvas_scope": "${{explain-request.payload.canvas_scope ?? null}}"
           }
         }
       },

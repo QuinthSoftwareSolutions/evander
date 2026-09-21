@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -84,11 +84,27 @@ class Connection(StrictModel):
         return value
 
 
+class CanvasScope(StrictModel):
+    """A bounded canvas area in Miro coordinates, as returned by canvas search."""
+
+    x: int = Field(strict=True)
+    y: int = Field(strict=True)
+    width: int = Field(strict=True, gt=0)
+    height: int = Field(strict=True, gt=0)
+
+
 class OperationInput(StrictModel):
     connection_id: Identifier
     board_id: Identifier | None = None
     frame_id: Identifier | None = None
     item_ids: list[Identifier] = Field(default_factory=list, max_length=100)
+    canvas_scope: CanvasScope | None = None
+    result_mode: Literal["overview", "areas", "matches"] = "overview"
+    patterns: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=50
+    )
+    target_id: Annotated[str, Field(pattern=r"^m?\d+$", max_length=256)] | None = None
+    cursor: int | None = Field(default=None, strict=True, ge=0)
     snapshot_id: str | None = None
     operation_key: str | None = Field(default=None, min_length=1, max_length=200)
     operation_id: str | None = None
@@ -103,10 +119,17 @@ class OperationInput(StrictModel):
         default_factory=list, max_length=30
     )
 
+    @model_validator(mode="after")
+    def canvas_selection(self):
+        if self.canvas_scope is not None and (self.frame_id or self.item_ids):
+            raise ValueError("Choose canvas_scope or frame_id/item_ids, not both")
+        return self
+
 
 READ_OPERATIONS = (
     "list_boards",
     "get_canvas_format",
+    "search_canvas",
     "read_canvas",
     "read_comments",
     "get_snapshot",
@@ -122,6 +145,7 @@ WRITE_OPERATIONS = (
 OPERATIONS = READ_OPERATIONS + WRITE_OPERATIONS
 UPSTREAM_TOOLS = {
     "get_canvas_format": "canvas_get_canvas_composer_skill",
+    "search_canvas": "canvas_search",
     "read_canvas": "canvas_read_as_svg",
     "read_comments": "comment_list_comments",
     "create_board": "board_create",
@@ -133,9 +157,10 @@ UPSTREAM_TOOLS = {
 
 
 def board_url(board_id: str, frame_id: str | None = None) -> str:
-    result = f"https://miro.com/app/board/{quote(board_id, safe='')}/"
+    # Miro's MCP URL parser requires literal base64 padding in board IDs.
+    result = f"https://miro.com/app/board/{quote(board_id, safe='=')}/"
     if frame_id:
-        result += f"?focusWidget={quote(frame_id, safe='')}"
+        result += f"?moveToWidget={quote(frame_id, safe='')}"
     return result
 
 

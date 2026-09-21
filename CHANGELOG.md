@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-21 - Read scoped Miro canvases and recognize created boards (0.57.0)
+
+- Extract board IDs from Miro's `miro_url` response in the shared creation service used by
+  `miro_create_board` and `effect:miro:create-board`, retaining existing ID and URL formats.
+- Let successful creation register the new board with read/write access and read it back instead
+  of leaving the operation uncertain because its board reference was not recognized.
+- Preserve literal `=` padding in Miro board links so subsequent upstream calls address the
+  created board correctly instead of receiving a misleading permission error.
+- Add `miro_search_canvas` and `query:miro:search-canvas` for board overviews, areas, item
+  matches, and pagination under normal session and board permissions.
+- Support explicit canvas areas and frame/item selections across reads, snapshots, updates,
+  creation readback, recovery, and workflow polling. Verify new empty boards with search and
+  a retained initial area; populated boards require an explicit selection.
+- Use Miro's current frame URL and widget selection contract, and preserve durable retries
+  recorded before the new read parameters were introduced.
+- Cover both entry points with structured and JSON-text MCP responses, plus subsequent board
+  access, durable retries, and URL validation.
+
 ## 2026-09-21 - Discover Miro connections and Figma files (0.56.0)
 
 - Add `miro_list_connections` so agents can discover enabled connection IDs, directory scope,
