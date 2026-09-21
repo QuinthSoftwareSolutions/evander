@@ -34,6 +34,12 @@ def _tag(element: ET.Element) -> str:
     return element.tag.rsplit("}", 1)[-1].lower()
 
 
+def _is_widget(element: ET.Element) -> bool:
+    return _tag(element) in _WIDGETS or (
+        _tag(element) == "g" and element.get("data-type") == "html_content"
+    )
+
+
 def validate_connectors(svg: str) -> None:
     """Validate widget links without guessing geometry or rewriting user content.
 
@@ -67,7 +73,7 @@ def validate_connectors(svg: str) -> None:
             target = ids.get(element.get(attr, ""))
             if (
                 target is None
-                or _tag(target) not in _WIDGETS
+                or not _is_widget(target)
                 or target.get("data-type") == "frame"
                 or target.get("data-deleted") == "true"
             ):

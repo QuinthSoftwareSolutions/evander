@@ -288,6 +288,69 @@ def test_corrected_connectors_can_retry_rejected_key_and_keep_direction_and_labe
     assert [name for name, _ in setup.calls].count("canvas_create_from_svg") == 1
 
 
+@pytest.mark.parametrize("entry", ["agent", "workflow"])
+@pytest.mark.parametrize("operation", ["create_canvas", "update_canvas"])
+@pytest.mark.parametrize("kind", ["slide", "embed", "prototype"])
+def test_html_widget_connectors_reach_miro(entry, operation, kind, setup, monkeypatch):
+    call = invoke(entry, setup, monkeypatch)
+    geometry = "" if kind == "prototype" else ' data-scale="1" transform="translate(100,100)"'
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<line id="forward" data-start="first" data-end="second" data-arrow="end" '
+        'x1="100" y1="100" x2="300" y2="100"/>'
+        '<path id="return" data-start="second" data-end="first" data-arrow="end" '
+        'd="M 300 100 L 300 50 L 100 50 L 100 100"/>'
+        f'<g id="first" data-type="html_content" data-kind="{kind}"{geometry}>'
+        "<html-source><![CDATA[<section><h1>First</h1></section>]]></html-source></g>"
+        f'<g id="second" data-type="html_content" data-kind="{kind}"{geometry}>'
+        "<html-source><![CDATA[<section><h1>Second</h1></section>]]></html-source></g>"
+        "</svg>"
+    )
+    arguments = {
+        "connection_id": "test",
+        "board_id": "board",
+        "operation_key": "html-connectors",
+        "canvas_scope": SCOPE,
+    }
+    if operation == "update_canvas":
+        for local_id in ("forward", "return", "first", "second"):
+            svg = svg.replace(f'id="{local_id}"', f'id="{local_id}" data-miro-id="{local_id}"')
+        setup.state["svg"] = svg
+        baseline = asyncio.run(
+            setup.service.execute(
+                "read_canvas", {"connection_id": "test", "board_id": "board", "canvas_scope": SCOPE}
+            )
+        )
+        arguments["snapshot_id"] = baseline["snapshot_id"]
+        svg = svg.replace("<h1>First</h1>", "<h1>Updated</h1>")
+    result = call(operation, {**arguments, "svg": svg})
+    assert result["status"] == "applied"
+    upstream_operation = "canvas_" + operation.replace("_canvas", "_from_svg")
+    writes = [values for name, values in setup.calls if name == upstream_operation]
+    assert len(writes) == 1
+    assert writes[0]["svg"] == canvas(svg)[0]
+    assert setup.state["svg"] == canvas(svg)[0]
+
+
+@pytest.mark.parametrize("endpoint", ["data-start", "data-end"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        '<g id="target"><rect width="100" height="100"/></g>',
+        '<g id="target" data-frame="Frame"><rect data-type="frame" width="100" height="100"/></g>',
+        '<g id="target" data-type="frame"/>',
+        '<g id="target" data-type="unknown"/>',
+        '<g id="target" data-type="html_content" data-kind="slide" data-deleted="true"/>',
+    ],
+)
+def test_non_widget_groups_and_deleted_html_widgets_remain_invalid(endpoint, target):
+    original = 'data-start="first"' if endpoint == "data-start" else 'data-end="second"'
+    svg = NATIVE.replace(original, f'{endpoint}="target"').replace("</svg>", target + "</svg>")
+    with pytest.raises(MiroError, match=endpoint + ".*live widget") as error:
+        validate_connectors(svg)
+    assert error.value.code == "invalid_canvas"
+
+
 def test_old_malformed_board_is_still_readable_and_items_can_be_deleted(setup):
     setup.state["svg"] = '<svg><line data-miro-id="bad" x1="0" y1="0" x2="0" y2="10"/></svg>'
     result = asyncio.run(

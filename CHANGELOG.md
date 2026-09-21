@@ -9,6 +9,8 @@
 - Reject lines and paths without valid widget endpoints before contacting Miro, with corrective
   guidance for native arrowheads and connector labels. Keep old snapshots readable and preserve
   previously recorded write outcomes on retries.
+- Accept HTML slides, embeds, and prototype screens as connector endpoints while continuing to
+  reject frames, structural groups, and deleted widgets.
 
 ## 2026-09-21 - Read scoped Miro canvases (0.57.0)
 
