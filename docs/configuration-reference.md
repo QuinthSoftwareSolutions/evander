@@ -33,9 +33,11 @@ manager environment or optional repo-root `secrets.env`.
 
 The `figma-addon` stores revisioned settings per exact directory through its Admin Web page.
 [`config/figma/settings.json.example`](../config/figma/settings.json.example) documents approved
-OAuth client configuration, host credential setting names, registered files, and per-session
-`read`/`comment`/`edit` grants with optional edit roots. Credentials stay in the host service
-environment; guests receive only the Figma MCP tools allowed by their session policy. See
+OAuth client configuration, host credential setting names, registered files, and file-level
+`read`/`comment`/`edit` capabilities with optional edit roots. The add-on does not maintain a
+separate session list; MCP and workflow operations use normal session tool permissions.
+Credentials stay in the host service environment; guests receive only the Figma MCP tools
+allowed by their session policy. See
 [Figma setup and authoring verification](figma.md) before enabling it. No new firewall port or
 standalone service is required.
 

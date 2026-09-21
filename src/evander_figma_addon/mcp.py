@@ -18,7 +18,7 @@ MCP_TOOL_CATALOG = (
         name="figma_list_targets",
         label="List Figma targets",
         group="Figma",
-        description="List files and capabilities granted to this session.",
+        description="List enabled Figma files and their capabilities in this session's directory.",
     ),
     AddonMcpTool(
         name="figma_query",

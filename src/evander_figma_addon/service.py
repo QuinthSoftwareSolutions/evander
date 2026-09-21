@@ -24,7 +24,7 @@ from .models import (
     FigmaError,
     FigmaRejected,
     FigmaUnavailable,
-    Grant,
+    FilePermissions,
     digest,
 )
 from .state import Store
@@ -70,18 +70,16 @@ class FigmaService:
         target = settings.targets.get(target_id)
         if target is None:
             raise FigmaError("Unknown Figma target in this directory")
-        grant = (
-            Grant(access=["read", "comment", "edit"])
-            if self.actor.operator
-            else target.grants.get(self.actor.session_id, Grant())
+        permissions = (
+            FilePermissions(access=["read", "comment", "edit"]) if self.actor.operator else target
         )
-        if access not in grant.access:
-            raise FigmaError("This session is not granted the requested Figma capability")
+        if access not in permissions.access:
+            raise FigmaError("This Figma file does not allow the requested capability")
         connection = settings.connections[target.connection_id]
         client = self.client_factory(
             self.oauth, self.actor.directory, target.connection_id, connection
         )
-        return target, grant, connection, client
+        return target, permissions, connection, client
 
     def list_targets(self):
         _, settings = self.store.settings(self.actor.directory)
@@ -90,12 +88,11 @@ class FigmaService:
                 "target_id": key,
                 "name": target.name,
                 "file_url": f"https://www.figma.com/design/{target.file_key}",
-                "access": target.grants[self.actor.session_id].access,
-                "edit_roots": target.grants[self.actor.session_id].edit_roots,
+                "access": target.access,
+                "edit_roots": target.edit_roots,
             }
             for key, target in settings.targets.items()
-            if self.actor.session_id in target.grants
-            and target.grants[self.actor.session_id].access
+            if target.access
         ]
 
     def connection_status(self, connection_id):
@@ -133,10 +130,10 @@ class FigmaService:
             if request.operation in CANVAS_WRITES
             else ("comment" if request.operation == "comment" else "read")
         )
-        target, grant, connection, client = self._target(request.target_id, access)
+        target, permissions, connection, client = self._target(request.target_id, access)
         # All canvas authors must be able to inspect their own output and expected base.
-        if request.operation in CANVAS_WRITES and "read" not in grant.access:
-            raise FigmaError("Canvas editing also requires the read grant")
+        if request.operation in CANVAS_WRITES and "read" not in permissions.access:
+            raise FigmaError("Canvas editing also requires the file's read capability")
         scope = (self.actor.directory, request.target_id, target.file_key)
         if request.operation == "history":
             return {
@@ -169,7 +166,7 @@ class FigmaService:
         operation_id = digest([self.actor.directory, self.actor.session_id, request.request_id])
         fingerprint = digest([target.file_key, target.connection_id, request.model_dump()])
         with self.store.file_lock(target.file_key):
-            refreshed_target, grant, refreshed_connection, client = self._target(
+            refreshed_target, permissions, refreshed_connection, client = self._target(
                 request.target_id, access
             )
             if refreshed_target != target or refreshed_connection != connection:
@@ -202,11 +199,11 @@ class FigmaService:
             )
             if request.expected_revision and digest(before) != request.expected_revision:
                 raise FigmaConflict("Design changed since inspection; inspect and revise the edit")
-            if request.operation in CANVAS_WRITES and grant.edit_roots:
-                if not before or not set(grant.edit_roots).intersection(
+            if request.operation in CANVAS_WRITES and permissions.edit_roots:
+                if not before or not set(permissions.edit_roots).intersection(
                     [before[0]["id"], *before[0].get("ancestors", [])]
                 ):
-                    raise FigmaError("Selected node is outside this session's edit roots")
+                    raise FigmaError("Selected node is outside this file's editable roots")
             record = {
                 "operation_id": operation_id,
                 "request_id": request.request_id,
@@ -243,7 +240,7 @@ class FigmaService:
                         "node_id": request.node_id,
                         "name": request.name,
                         "expected": before,
-                        "allowed_roots": grant.edit_roots,
+                        "allowed_roots": permissions.edit_roots,
                         "edits": [edit.model_dump(exclude_none=True) for edit in request.edits],
                     }
                     if request.operation == "compose":

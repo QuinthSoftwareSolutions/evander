@@ -44,6 +44,13 @@ function options(select,records) {
   for(const [id,item] of Object.entries(records)){const option=element('option',item.name||id);option.value=id;select.append(option);}
   if(records[previous])select.value=previous;
 }
+function renderPermissions() {
+  const target=current.settings.targets[$('#permissions-target').value];
+  const form=$('#permissions-form');
+  for(const capability of ['read','comment','edit'])form.elements[capability].checked=target?.access.includes(capability)||false;
+  form.elements.roots.value=target?.edit_roots.join(', ')||'';
+}
+$('#permissions-target').addEventListener('change',renderPermissions);
 function render() {
   const connections=$('#connections');connections.replaceChildren();
   for(const [id,config] of Object.entries(current.settings.connections)) {
@@ -61,13 +68,16 @@ function render() {
     const card=element('div',null,'card'),details=element('div'),link=element('a',target.name);
     link.href=`https://www.figma.com/design/${target.file_key}`;link.target='_blank';link.rel='noopener noreferrer';
     details.append(link,element('div',`${id} · ${target.connection_id}`,'badge'));
-    for(const [session,grant] of Object.entries(target.grants))details.append(element('div',`${session}: ${grant.access.join(', ')||'no access'}${grant.edit_roots.length?' · roots '+grant.edit_roots.join(', '):''}`,'badge'));
+    details.append(element('div',`${target.access.join(', ')||'No agent access'}${target.edit_roots.length?' · editable roots '+target.edit_roots.join(', '):''}`,'badge'));
     const testDetails=element('details'),summary=element('summary','Test unattended authoring');
     testDetails.append(summary,element('p','Creates a temporary test page in this file, edits and renders native content, then removes the page.'),
       button('Run test in this file',async()=>{const result=await api('/test','POST',{target_id:id});await load();if(result.status!=='passed')throw new Error(result.error||'Authoring test failed. Inspect operation history.');}));
-    card.append(details,testDetails);targets.append(card);
+    card.append(details,button('Edit permissions',()=>{
+      $('#permissions-target').value=id;renderPermissions();$('#permissions-form').closest('details').open=true;
+    }),testDetails);targets.append(card);
   }
   document.querySelectorAll('.target-select').forEach(select=>options(select,current.settings.targets));
+  renderPermissions();
 }
 form('#directory-form',async()=>{
   try{await load($('#directory').value.trim());}catch(error){$('#directory').value=loadedDirectory||'root';throw error;}
@@ -81,11 +91,14 @@ form('#target-form',async data=>{
   const url=new URL(data.file_url),parts=url.pathname.split('/');
   if(url.protocol!=='https:'||url.hostname!=='www.figma.com'||parts[1]!=='design'||!parts[2])throw new Error('Enter a Figma Design file URL.');
   const settings=structuredClone(current.settings),old=settings.targets[data.id];
-  settings.targets[data.id]={name:data.name,connection_id:data.connection_id,file_key:parts[2],grants:old?.grants||{}};await save(settings);
+  settings.targets[data.id]={name:data.name,connection_id:data.connection_id,file_key:parts[2],access:old?.access||[],edit_roots:old?.edit_roots||[]};await save(settings);
 });
-form('#grant-form',async data=>{
+form('#permissions-form',async data=>{
   const settings=structuredClone(current.settings);
-  settings.targets[data.target_id].grants[data.session_id]={access:['read','comment','edit'].filter(k=>data[k]==='on'),edit_roots:data.roots.split(',').map(s=>s.trim()).filter(Boolean)};
+  const target=settings.targets[data.target_id];
+  if(!target)throw new Error('Register a file before setting permissions.');
+  target.access=['read','comment','edit'].filter(k=>data[k]==='on');
+  target.edit_roots=data.roots.split(',').map(s=>s.trim()).filter(Boolean);
   await save(settings);
 });
 async function loadHistory() {

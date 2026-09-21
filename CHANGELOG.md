@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-21 - Use normal session permissions for Figma (0.55.2)
+
+- Remove Figma's separate session access list. Configure capabilities and editable roots per
+  file, while agent tools and workflow operations use the normal session tool policy.
+- Migrate existing grants to shared file permissions, preserving allowed editable areas and
+  OAuth connections. Let the operator edit file permissions directly without entering session IDs.
+
 ## 2026-09-21 - Follow Admin Web settings in Miro (0.55.1)
 
 - Make the Miro page follow Admin Web's light and dark theme on load and when toggled, preserving
