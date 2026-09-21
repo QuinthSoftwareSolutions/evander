@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-21 - Keep Miro diagrams individually editable (0.57.2)
+
+- Make separate native shapes, text and connectors the default for human-agent collaboration,
+  including flowcharts. Request free-form diagram guidance when no notation is supplied and
+  the provider supports it; retain explicit notation choices and older provider schemas.
+- Reserve Mermaid widgets for explicitly requested code-based diagrams. Update agent and workflow
+  guidance to verify individual item IDs after creation and preserve human edits during revisions,
+  while retaining the native connector checks for arrow directions and labels.
+
 ## 2026-09-21 - Validate Miro diagram connectors (0.57.1)
 
 - Follow Miro's current canvas-composer workflow through its design, edit, and DSL steps, and

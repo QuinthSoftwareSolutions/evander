@@ -250,9 +250,9 @@ class MiroService:
                     await client.call("load_format", **format_args) if args.format_name else None
                 )
                 return {
+                    "authoring_checks": list(AUTHORING_CHECKS),
                     "format": data,
                     "format_specific": specific,
-                    "authoring_checks": list(AUTHORING_CHECKS),
                 }
             if operation == "search_canvas":
                 return await self.search(client, args)
