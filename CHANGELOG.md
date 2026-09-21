@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-21 - Follow Admin Web settings in Miro (0.55.1)
+
+- Make the Miro page follow Admin Web's light and dark theme on load and when toggled, preserving
+  unsaved connection settings and styling form controls, links, and activity details consistently.
+- Use normal per-session Miro tool permissions instead of a second connection session list.
+  Preserve directory, board, and workflow grants, and accept existing connections without
+  requiring reauthorization.
+
 ## 2026-09-20 - Diagnose slow Admin Web requests (0.55.0)
 
 - Log Admin Web requests that cross an operator-configured duration threshold and every 5xx

@@ -242,11 +242,13 @@ selects that driver, then restart Admin Web and the gateway. The trigger/effect 
 the connector directly; agents receive its operations through gateway-managed connector grants.
 
 The bundled `miro-addon` uses add-on-owned named connections managed in **Miro**. Each connection
-belongs to a directory and defines approved boards (read or write), exact session IDs,
+belongs to a directory and defines approved boards (read or write),
 `allow_workflows` (default false), `allow_create_boards` (default false), and a
 `daily_call_budget` (default 100). Connections resolve through directory ancestry; an identically
-named child connection overrides the inherited connection. The `redirect_uri` must be the Admin
-Web HTTPS origin followed by `/api/addons/miro-addon/oauth/callback` (HTTP is allowed only on
+named child connection overrides the inherited connection. Agent access uses normal session
+`miro_*` tool permissions; legacy connection `session_ids` lists are ignored and removed on save.
+The `redirect_uri` must be the Admin Web HTTPS origin followed by
+`/api/addons/miro-addon/oauth/callback` (HTTP is allowed only on
 loopback for development). Settings use revision-checked writes. OAuth tokens, registration
 secrets, and pending PKCE material are encrypted in `runtime/addons/miro-addon/`; credentials
 are never directory JSON or session metadata. See [Miro configuration](miro-addon.md).

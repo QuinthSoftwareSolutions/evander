@@ -172,11 +172,9 @@ class MiroService:
         config = Connection.model_validate(record["config"])
         if not config.enabled:
             raise MiroError("forbidden", "Miro connection is disabled")
-        if not self.access.admin:
-            if self.access.session_id:
-                if self.access.session_id not in config.session_ids:
-                    raise MiroError("forbidden", "Session has no grant for this Miro connection")
-            elif not self.access.workflow or not config.allow_workflows:
+        # Agent calls arrive through the session's normal MCP tool policy.
+        if not self.access.admin and not self.access.session_id:
+            if not self.access.workflow or not config.allow_workflows:
                 raise MiroError("forbidden", "Workflow access to this Miro connection is disabled")
         if board_id is not None:
             binding = next((board for board in config.boards if board.board_id == board_id), None)

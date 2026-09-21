@@ -44,7 +44,6 @@ def config(**changes):
                 {"board_id": "board1", "name": "Architecture", "writable": True},
                 {"board_id": "readonly", "writable": False},
             ],
-            "session_ids": ["author", "reviewer"],
             "allow_workflows": True,
             "allow_create_boards": True,
             "daily_call_budget": 100,
@@ -211,15 +210,13 @@ def test_addon_discovery_catalog_and_real_mcp_schemas(tmp_path):
     assert "ctx" not in schema["properties"]
 
 
-@pytest.mark.parametrize(
-    "scope,session", [("root/other", "author"), ("root", "author"), ("root/project", "intruder")]
-)
-def test_access_rejected_before_network(setup, scope, session):
+@pytest.mark.parametrize("scope", ["root/other", "root"])
+def test_access_rejected_before_network(setup, scope):
     store, _, remote, _ = setup
     service = MiroService(
-        store, Access(scope, "session:" + session, session_id=session), remote.client
+        store, Access(scope, "session:author", session_id="author"), remote.client
     )
-    with pytest.raises(MiroError, match="unavailable|no grant"):
+    with pytest.raises(MiroError, match="unavailable"):
         read(service)
     assert not remote.calls
 
@@ -250,13 +247,106 @@ def test_unapproved_and_readonly_boards_and_workflow_grants(setup):
 
 def test_revision_and_revoked_grants_invalidate_in_flight_calls(setup):
     store, record, remote, service = setup
-    store.save_connection(config(session_ids=[]), record["revision"])
+    store.save_connection(config(boards=[]), record["revision"])
     with pytest.raises(MiroError, match="changed"):
         run(remote.client(store, record).call("read_canvas", board_id="board1"))
     with pytest.raises(MiroError, match="reload"):
         store.save_connection(config(), record["revision"])
-    with pytest.raises(MiroError, match="no grant"):
+    with pytest.raises(MiroError, match="outside"):
         read(service)
+
+
+@pytest.mark.parametrize("legacy_sessions", [[], ["another-session"]])
+def test_legacy_session_lists_do_not_gate_or_survive_connection_saves(setup, legacy_sessions):
+    store, record, remote, service = setup
+    record["config"]["session_ids"] = legacy_sessions
+    store.put("connection", record["key"], record)
+    assert read(service)["data"]["item_ids"] == ["item1", "item2"]
+    migrated = Connection.model_validate(record["config"])
+    assert "session_ids" not in migrated.model_dump()
+    saved = store.save_connection(migrated, record["revision"])
+    assert "session_ids" not in saved["config"]
+    assert saved["generation"] == record["generation"]
+    assert "session_ids" not in Connection.model_json_schema()["properties"]
+
+
+def test_mcp_uses_normal_session_tool_policy_and_transport_identity(setup, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from mcp.server.fastmcp.exceptions import ToolError
+    from starlette.requests import Request
+
+    from evander.config import GatewayConfig
+    from evander.models import ApprovalRequest, SessionManifest
+    from evander.policy import PolicyEngine
+    from evander.repositories.session_manifests import JsonSessionManifestRepository
+    from evander.storage import JsonStore
+    from evander_miro_addon.mcp import MCP_TOOL_NAMES
+
+    store, _, remote, _ = setup
+    runtime_dir = store.root.parents[1]
+    # No per-connection session list: the normal tool grant is sufficient.
+    store.save_connection(config(directory_path="root", allow_workflows=False), 0)
+    gateway = GatewayConfig(
+        runtime_dir=runtime_dir,
+        directories_store_path=runtime_dir / "directories.json",
+        session_store_path=runtime_dir / "sessions.json",
+        approval_store_path=runtime_dir / "approvals.json",
+    )
+    policy = PolicyEngine(
+        gateway,
+        JsonSessionManifestRepository(gateway.session_store_path),
+        JsonStore(gateway.approval_store_path, ApprovalRequest),
+        extra_mcp_tool_names=list(MCP_TOOL_NAMES),
+    )
+    session = SessionManifest(
+        session_id="fresh-agent",
+        directory_path="root",
+        allowed_tools=["miro_read_canvas"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    policy.session_store.upsert_session(session)
+    monkeypatch.setattr(
+        "evander_miro_addon.mcp.MiroService",
+        lambda store, access: MiroService(store, access, remote.client),
+    )
+    server = FastMCP("miro-policy-test")
+    server._evander_transport_session_map = {"transport-author": session.session_id}
+    register_addon().mcp_tools(
+        server,
+        AddonContext(
+            addon_id="miro-addon",
+            runtime_dir=runtime_dir,
+            addon_runtime_dir=store.root,
+            service=SimpleNamespace(policy=policy),
+        ),
+    )
+    request = Request(
+        {
+            "type": "http",
+            "path": "/mcp",
+            "query_string": b"",
+            "headers": [(b"mcp-session-id", b"transport-author")],
+        }
+    )
+    context = SimpleNamespace(request_context=SimpleNamespace(request=request))
+    arguments = {"connection_id": "architecture", "board_id": "board1"}
+
+    def call(tool="miro_read_canvas", **changes):
+        return run(server._tool_manager.call_tool(tool, arguments | changes, context=context))
+
+    assert call()["data"]["item_ids"] == ["item1", "item2"]
+    count = len(remote.calls)
+    with pytest.raises(ToolError, match="outside"):
+        call(board_id="unapproved")
+    with pytest.raises(ToolError):
+        call(session_id="someone-else")
+    with pytest.raises(ToolError, match="not allowed"):
+        call("miro_read_comments")
+    policy.session_store.upsert_session(session.model_copy(update={"allowed_tools": []}))
+    with pytest.raises(ToolError, match="not allowed"):
+        call()
+    assert len(remote.calls) == count
 
 
 def test_scoped_update_is_editable_and_idempotent(setup):
@@ -1080,6 +1170,11 @@ def test_admin_routes_revision_rbac_and_no_secret_disclosure(tmp_path):
             saved = await client.post(path, json=payload)
             assert saved.status_code == 200
             assert saved.json()["revision"] == 1
+            repository = MiroStore(tmp_path)
+            record = repository.resolve_connection("root/project", "architecture")
+            record["config"]["session_ids"] = ["retired-session"]
+            repository.put("connection", record["key"], record)
+            assert "session_ids" not in (await client.get(path)).json()["connections"][0]["config"]
             assert (await client.post(path, json=payload)).status_code == 409
             assert (await client.get(path)).json()["connections"][0]["connected"] is False
             assert "encrypted" not in (await client.get(path)).text

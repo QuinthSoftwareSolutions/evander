@@ -6,7 +6,8 @@ For effect handoff timing, bounded recovery scheduling, and deployment verificat
 ## Miro visual collaboration
 
 Enable `miro-addon` in **Add-ons**, restart the listed gateway/Admin Web/orchestrator services,
-and configure an OAuth connection and explicit board/session grants in **Miro**. Only workflows
+and configure an OAuth connection and explicit board grants in **Miro**. Grant agents the required
+Miro tools through normal session policy. Only workflows
 that include a Miro polling trigger monitor boards. Use the connection activity view for budget
 and polling failures. For an uncertain write, use **Read back**, inspect Miro, and record the
 evidence with **Mark applied** or **Mark not applied** before scheduling further writes.

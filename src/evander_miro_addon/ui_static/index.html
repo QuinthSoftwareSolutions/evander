@@ -14,12 +14,11 @@
 <label>Display name <input id="name" required maxlength="200"></label>
 <label class="wide">OAuth callback URL <input id="callback" type="url" required></label>
 <label>Daily call budget <input id="budget" type="number" min="1" max="100000" value="100" required></label>
-<label>Granted session IDs (one per line)<textarea id="sessions" rows="3"></textarea></label>
 </div><div class="checks">
 <label><input id="enabled" type="checkbox" checked> Enabled</label>
 <label><input id="workflows" type="checkbox"> Allow workflows in this directory and its descendants</label>
 <label><input id="create-boards" type="checkbox"> Allow new boards using Miro’s workspace sharing policy</label></div>
-<h3>Approved boards</h3><p>Grant each board explicitly. Agents also need the Miro tools in their session policy.</p>
+<h3>Approved boards</h3><p>Grant each board explicitly. Agents with the Miro tools enabled in their session policy can use connections in their directory and inherited from parent directories.</p>
 <div id="boards"></div><button id="add-board" type="button">Add board</button>
 <div class="toolbar"><button type="submit">Save settings</button><button id="connect" type="button">Connect account</button><button id="health" type="button">Check connection</button><button id="disconnect" type="button">Disconnect</button></div>
 </form><p><a id="authorize" hidden rel="noopener noreferrer" target="_blank">Continue to Miro authorization</a></p>

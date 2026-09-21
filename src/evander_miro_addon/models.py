@@ -6,7 +6,7 @@ import re
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evander.models import DirectoryPath
 
@@ -38,11 +38,19 @@ class Connection(StrictModel):
     directory_path: str = "root"
     redirect_uri: str
     boards: list[BoardBinding] = Field(default_factory=list, max_length=200)
-    session_ids: list[Identifier] = Field(default_factory=list, max_length=1000)
     allow_workflows: bool = False
     allow_create_boards: bool = False
     daily_call_budget: int = Field(default=100, ge=1, le=100000)
     enabled: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_session_grants(cls, value: Any) -> Any:
+        # Existing connections remain usable after removing the duplicate gate.
+        # Session tool policy is enforced by the MCP entry point.
+        if isinstance(value, dict) and "session_ids" in value:
+            return {key: item for key, item in value.items() if key != "session_ids"}
+        return value
 
     @field_validator("directory_path")
     @classmethod
