@@ -15,6 +15,9 @@
   a retained initial area; populated boards require an explicit selection.
 - Use Miro's current frame URL and widget selection contract, and preserve durable retries
   recorded before the new read parameters were introduced.
+- Let operators confirm an acknowledged board creation using its returned ID and explicit
+  evidence when a later deletion or sharing change makes readback unavailable. Other writes
+  still require readback before resolution.
 - Cover both entry points with structured and JSON-text MCP responses, plus subsequent board
   access, durable retries, and URL validation.
 

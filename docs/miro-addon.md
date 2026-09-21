@@ -150,6 +150,10 @@ observed snapshot and live board, then record evidence and the outcome. **Mark n
 not automatically retry; schedule a fresh operation key only after verifying absence of the write.
 For an uncertain board creation without a returned ID, inspect the selected Miro team manually and
 include the identified board in the resolution evidence; bind it explicitly in connection settings.
+If Miro acknowledged creation and returned a board ID, an operator may **Mark applied** with
+explicit evidence even when a later deletion or sharing change prevents readback. This confirms
+the original creation; it does not restore board access or replay the operation. Canvas and comment
+writes still require readback before resolution, as does marking an identified creation not applied.
 Operators may inspect and recover operations in their selected directory and its descendants.
 An inherited connection does not permit recovery of operations owned by an ancestor or sibling.
 

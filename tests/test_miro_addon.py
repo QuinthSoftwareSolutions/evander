@@ -693,6 +693,99 @@ def test_timeout_after_remote_write_is_uncertain_never_replayed(setup):
     )
 
 
+def test_operator_can_confirm_acknowledged_creation_after_board_becomes_unreadable(setup):
+    store, _, remote, service = setup
+    remote.fail_read = True
+    arguments = {
+        "connection_id": "architecture",
+        "title": "Deleted test board",
+        "operation_key": "deleted-test-board",
+    }
+    created = run(service.execute("create_board", arguments))
+    assert created["status"] == "uncertain"
+    assert created["upstream_acknowledged"] and created["board_id"]
+    with pytest.raises(MiroError, match="Operator resolution"):
+        run(service.resolve_operation("architecture", created["operation_id"], "applied", "Seen"))
+    operator = MiroService(
+        store, Access("root/project", "operator:jonathan", admin=True), remote.client
+    )
+    with pytest.raises(MiroError, match="Operator resolution"):
+        run(operator.resolve_operation("architecture", created["operation_id"], "applied", ""))
+    with pytest.raises(MiroError, match="Read back"):
+        run(
+            operator.resolve_operation(
+                "architecture", created["operation_id"], "not_applied", "Deleted"
+            )
+        )
+    evidence = "Operator confirmed the acknowledged board existed before deleting it."
+    calls = list(remote.calls)
+    resolved = run(
+        operator.resolve_operation("architecture", created["operation_id"], "applied", evidence)
+    )
+    assert resolved["status"] == "applied"
+    assert resolved["resolution_evidence"] == evidence
+    assert resolved["resolved_by"] == "operator:jonathan"
+    assert not resolved.get("reconciliation_snapshot_id")
+    assert not resolved.get("result_snapshot_id")
+    assert run(service.execute("create_board", arguments))["status"] == "applied"
+    assert remote.calls == calls
+    # The old operation is settled without being replayed; a separately requested
+    # new board can now be created and read back normally.
+    remote.fail_read = False
+    remote.create_board_result = {"miro_url": "https://miro.com/app/board/replacement=/"}
+    replacement = run(service.execute("create_board", arguments | {"operation_key": "replacement"}))
+    assert replacement["status"] == "applied"
+    assert replacement["board_id"] == "replacement="
+    assert len([op for op, _ in remote.calls if op == "create_board"]) == 2
+
+
+@pytest.mark.parametrize("operation", ["create_canvas", "update_canvas"])
+def test_acknowledged_canvas_mutations_still_need_readback_for_operator_resolution(
+    setup, operation
+):
+    store, _, remote, service = setup
+    before = read(service)
+    original_factory = remote.client
+
+    def factory(store, record):
+        client = original_factory(store, record)
+        original_call = client.call
+
+        async def call(name, **values):
+            result = await original_call(name, **values)
+            if name == operation:
+                remote.fail_read = True
+            return result
+
+        client.call = call
+        return client
+
+    service.client_factory = factory
+    arguments = (
+        update_args(before)
+        if operation == "update_canvas"
+        else {
+            "connection_id": "architecture",
+            "board_id": "board1",
+            "canvas_scope": AREA,
+            "svg": NEW,
+            "operation_key": "canvas-readback-failed",
+        }
+    )
+    written = run(service.execute(operation, arguments))
+    assert written["status"] == "uncertain" and written["upstream_acknowledged"]
+    operator = MiroService(
+        store, Access("root/project", "operator:jonathan", admin=True), original_factory
+    )
+    with pytest.raises(MiroError, match="Read back"):
+        run(
+            operator.resolve_operation(
+                "architecture", written["operation_id"], "applied", "Acknowledged"
+            )
+        )
+    assert store.get("operation", written["operation_id"])["status"] == "uncertain"
+
+
 def test_concurrent_agents_cannot_both_update_the_same_snapshot(setup):
     store, _, remote, author = setup
     reviewer = MiroService(

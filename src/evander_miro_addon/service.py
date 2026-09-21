@@ -666,7 +666,20 @@ class MiroService:
             entry = self.store.get("operation", operation_id)
             if entry["status"] not in {"running", "uncertain"}:
                 raise MiroError("conflict", "Only uncertain operations can be resolved")
-            if entry.get("board_id") and not entry.get("reconciliation_snapshot_id"):
+            acknowledged_creation = (
+                entry["operation"] == "create_board"
+                and entry.get("board_id")
+                and entry.get("upstream_acknowledged")
+                and outcome == "applied"
+            )
+            # Operators can confirm a known, acknowledged creation even after the
+            # board is deleted or its sharing changes. Canvas/comment mutations
+            # still need readback to establish what was actually applied.
+            if (
+                entry.get("board_id")
+                and not entry.get("reconciliation_snapshot_id")
+                and not acknowledged_creation
+            ):
                 raise MiroError("conflict", "Read back the board before resolving this operation")
             entry.update(
                 status=outcome,
