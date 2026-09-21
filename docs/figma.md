@@ -45,26 +45,40 @@ Provider references, checked September 2026:
    with mode `0600`; the access token refreshes before expiry. Disconnect removes the locally
    held authorization; use Figma's account settings if provider-side revocation is also needed.
 4. Register a disposable Figma Design file and run **Test unattended authoring**. Then register
-   the working files and assign session read, comment, and edit capabilities.
+   the working files and choose their read, comment, and edit capabilities under **File permissions**.
 5. Grant sessions the MCP tools `figma_list_targets`, `figma_query`, and/or `figma_execute` as
-   appropriate. Tool permission and file capability are both required. Reviewers can use
-   `figma_execute` with only read/comment file access to capture, import, and discuss snapshots;
-   canvas editing additionally requires both read and edit.
+   appropriate. There is no separate session list in the add-on. Any session with the required
+   tool can use enabled files in its exact directory, within each file's capabilities and edit
+   roots. For read-only agents, grant `figma_list_targets` and `figma_query`; `figma_execute`
+   allows the effects enabled for that file, including canvas edits when both read and edit
+   are enabled. File permissions apply to all authorized sessions using that target.
 
 Directory configuration and records live in `runtime/addons/figma-addon/state.db`. Settings use
 revision-checked writes through the add-on UI/API. Scope is an exact directory, with no implicit
 inheritance. `config/figma/settings.json.example` shows the settings shape; do not write the live
 database directly. OAuth data lives separately in `runtime/addons/figma-addon/oauth.json`.
 
-Each target binds an exact file key to one connection. Grants name exact session IDs. Empty
+Each target binds an exact file key to one connection. Empty `access` disables agent access. Empty
 `edit_roots` permits edits throughout that registered file; a nonempty list permits edits only
 within those node subtrees. Subtree authors cannot create new pages. Creating a working area
-within a granted page/frame creates an auto-layout frame. Replacing a file registration preserves
-its explicit grants, so review access before saving a different file key.
+within an allowed page/frame creates an auto-layout frame. Replacing a file registration preserves
+its capabilities and editable roots, so review access before saving a different file key.
+
+Older settings with a `grants` map migrate on read. The file receives the union of the effective
+capabilities and the editable roots from grants with both read and edit. Whole-file editing is
+retained only if an edit-capable grant allowed it; a reader's empty roots cannot remove an author's
+restrictions. Grants with edit but no read could not edit before and do not enable editing during
+migration. Empty grants remain disabled. These permissions now apply to every session with
+the corresponding tool permission, so use normal session tool settings to keep agents read-only.
+Saving settings writes the new `access` and `edit_roots` fields and removes the legacy map,
+without changing the OAuth connection. Explicit file settings take precedence over legacy grants.
+If legacy grants combine more than 100 distinct editable roots, migration rejects them rather
+than enabling the whole file; set explicit file permissions through the revision-checked settings
+API before loading that directory.
 
 ## Tools and request contract
 
-`figma_list_targets` discovers granted targets and capabilities. `figma_query` accepts a
+`figma_list_targets` discovers enabled targets and their file capabilities. `figma_query` accepts a
 `DesignRequest` with `operation` set to `pages`, `inspect`, `variables`, `comments`, or `history`.
 `figma_execute` accepts the same typed request contract for authoring and artifact operations.
 The server derives session and directory authority; requests cannot supply a directory or raw code.
@@ -128,7 +142,7 @@ Capture checks that structure did not change around rendering. Composition accep
 snapshot IDs from the same registered file and rejects changed source frames; it does not perform
 a pixel merge or overwrite an accepted snapshot. New revisions receive new IDs.
 
-`import_snapshot` checks the recipient's current file grant, then stages the three files as
+`import_snapshot` checks the current file's read capability, then stages the three files as
 session-owned communication artifacts. Use `communication_copy_artifact_to_workspace` and the
 normal receive policy to materialize them in either execution backend. A reference string alone
 does not copy files. For Team delivery, submit the actual imported files using `artifact_paths`;
@@ -155,14 +169,17 @@ including captures interrupted by a host process restart.
 ## Workflow integration
 
 - `query:figma:read`: `session_id` and typed `request`; read operations only.
-- `effect:figma:execute`: the same inputs and the same file grants as MCP. Non-successful durable
+- `effect:figma:execute`: the same inputs and file permissions as MCP. Non-successful durable
   operations fail the effect with an operation ID for recovery.
 - `trigger:figma:changed`: a registered `target_id`, `origin` (`external`, `evander`, `any`), event
   `kinds`, and optional `poll_external` with `poll_interval_seconds` (default 300, minimum 60).
 
-Operation providers require a session in the workflow's exact directory. They never escalate
-that session's file grants. Successful edits and snapshots immediately enter the add-on's durable
-event queue. Trigger delivery is acknowledged individually after publication, so out-of-order
+Operation providers require a session in the workflow's exact directory with the normal
+`figma_query` or `figma_execute` tool permission, respectively. The workflow's `session_id`
+selects the acting session for policy checks, attribution, and artifact delivery; it is not a
+separate add-on grant. Revoking its tool permission also blocks subsequent workflow operations.
+Successful edits and snapshots immediately enter the add-on's durable event queue. Trigger
+delivery is acknowledged individually after publication, so out-of-order
 acknowledgements and process restarts cannot skip earlier unacknowledged events.
 
 External polling establishes a baseline on its first successful run. Later polls emit new human

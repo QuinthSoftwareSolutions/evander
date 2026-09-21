@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 ADDON_ID = "figma-addon"
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,128}$")]
@@ -47,17 +47,48 @@ class Connection(Model):
         return digest(self.model_dump())
 
 
-class Grant(Model):
+class FilePermissions(Model):
     access: list[Literal["read", "comment", "edit"]] = Field(default_factory=list)
     # Empty means the registered file. Nonempty restricts canvas edits to these subtrees.
     edit_roots: list[NodeId] = Field(default_factory=list, max_length=100)
 
 
-class Target(Model):
+class Target(FilePermissions):
     name: str = Field(min_length=1, max_length=200)
     connection_id: Identifier
     file_key: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9]{6,128}$")]
-    grants: dict[Identifier, Grant] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_session_grants(cls, value):
+        if not isinstance(value, dict) or "grants" not in value:
+            return value
+        value = dict(value)
+        legacy = value.pop("grants")
+        # Explicit file settings supersede the obsolete session map, including revocation.
+        if "access" in value or "edit_roots" in value:
+            return value
+        grants = TypeAdapter(dict[Identifier, FilePermissions]).validate_python(legacy).values()
+        editors = [grant for grant in grants if {"read", "edit"}.issubset(grant.access)]
+        value["access"] = [
+            capability
+            for capability in ("read", "comment", "edit")
+            if any(capability in grant.access for grant in grants)
+            and (capability != "edit" or editors)
+        ]
+        # Canvas writes already required read + edit. Inactive edit-only grants and
+        # readers' empty roots must not open previously restricted areas to editing.
+        roots = (
+            []
+            if any(not grant.edit_roots for grant in editors)
+            else list(dict.fromkeys(root for grant in editors for root in grant.edit_roots))
+        )
+        if len(roots) > 100:
+            raise ValueError(
+                "Legacy Figma grants exceed 100 editable roots; set file access and edit_roots explicitly"
+            )
+        value["edit_roots"] = roots
+        return value
 
 
 class Settings(Model):

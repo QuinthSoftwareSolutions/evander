@@ -4,6 +4,7 @@ import base64
 import asyncio
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import stat
@@ -13,13 +14,18 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.requests import Request
 
 from evander.addons import AddonContext
+from evander.config import GatewayConfig
 from evander.events.models import WorkflowNodeEnvelope
-from evander.policy import PolicyError
+from evander.models import ApprovalRequest, SessionManifest
+from evander.policy import PolicyEngine
+from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.storage import JsonStore
 from evander.artifact_spaces import ArtifactSpaceStore
 from evander_figma_addon import register_addon
 from evander_figma_addon import api as figma_api, mcp as figma_mcp, providers as figma_providers
@@ -55,15 +61,118 @@ def settings():
                     "name": "UI mockups",
                     "connection_id": "studio",
                     "file_key": "testFile123",
-                    "grants": {
-                        "designer-a": {"access": ["read", "comment", "edit"]},
-                        "designer-b": {"access": ["read", "comment", "edit"]},
-                        "reviewer": {"access": ["read", "comment"]},
-                    },
+                    "access": ["read", "comment", "edit"],
                 }
             },
         }
     )
+
+
+@pytest.mark.parametrize(
+    "grants,access,roots",
+    [
+        ({}, [], []),
+        ({"reader": {"access": ["read", "comment"]}}, ["read", "comment"], []),
+        (
+            {"reader": {"access": ["read"]}, "inactive": {"access": ["edit"]}},
+            ["read"],
+            [],
+        ),
+        (
+            {
+                "author-a": {"access": ["read", "edit"], "edit_roots": ["1:2"]},
+                "author-b": {"access": ["read", "edit"], "edit_roots": ["3:4", "1:2"]},
+                "reviewer": {"access": ["read", "comment"], "edit_roots": []},
+                "inactive": {"access": ["edit"], "edit_roots": []},
+            },
+            ["read", "comment", "edit"],
+            ["1:2", "3:4"],
+        ),
+        (
+            {
+                "author-a": {"access": ["read", "edit"], "edit_roots": ["1:2"]},
+                "author-b": {"access": ["read", "edit"], "edit_roots": []},
+            },
+            ["read", "edit"],
+            [],
+        ),
+    ],
+)
+def test_legacy_grants_migrate_to_file_permissions_on_read_and_save(
+    tmp_path, grants, access, roots
+):
+    payload = settings().model_dump()
+    target = payload["targets"]["mockups"]
+    target.pop("access")
+    target.pop("edit_roots")
+    target["grants"] = grants
+    store = Store(tmp_path)
+    with store.db() as db:
+        db.execute("INSERT INTO settings VALUES (?,?,?)", ("root/design", 7, json.dumps(payload)))
+    revision, migrated = store.settings("root/design")
+    assert revision == 7
+    assert migrated.targets["mockups"].access == access
+    assert migrated.targets["mockups"].edit_roots == roots
+    assert migrated.connections["studio"].binding() == settings().connections["studio"].binding()
+    assert store.save_settings("root/design", revision, migrated) == 8
+    with store.db() as db:
+        saved = json.loads(db.execute("SELECT payload FROM settings").fetchone()[0])
+    assert "grants" not in saved["targets"]["mockups"]
+    assert "grants" not in Settings.model_json_schema()["$defs"]["Target"]["properties"]
+
+
+def test_explicit_file_permissions_override_legacy_grants():
+    payload = settings().model_dump()
+    target = payload["targets"]["mockups"]
+    target.update(access=[], edit_roots=["1:2"], grants={"author": {"access": ["read", "edit"]}})
+    migrated = Settings.model_validate(payload).targets["mockups"]
+    assert migrated.access == []
+    assert migrated.edit_roots == ["1:2"]
+
+
+def test_legacy_root_overflow_cannot_turn_into_whole_file_editing():
+    payload = settings().model_dump()
+    target = payload["targets"]["mockups"]
+    target.pop("access")
+    target.pop("edit_roots")
+    target["grants"] = {
+        "author-a": {"access": ["read", "edit"], "edit_roots": [f"1:{i}" for i in range(100)]},
+        "author-b": {"access": ["read", "edit"], "edit_roots": ["2:1"]},
+    }
+    with pytest.raises(ValueError, match="exceed 100 editable roots"):
+        Settings.model_validate(payload)
+
+
+def session_policy(runtime_dir):
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        directories_store_path=runtime_dir / "directories.json",
+        session_store_path=runtime_dir / "sessions.json",
+        approval_store_path=runtime_dir / "approvals.json",
+    )
+    policy = PolicyEngine(
+        config,
+        JsonSessionManifestRepository(config.session_store_path),
+        JsonStore(config.approval_store_path, ApprovalRequest),
+        extra_mcp_tool_names=[tool.name for tool in figma_mcp.MCP_TOOL_CATALOG],
+    )
+    directories = policy.policy_config.directory_service
+    directories.create(parent="root", name="design")
+    directories.create(parent="root", name="other")
+    directories.create(parent="root/design", name="child")
+    for id in ("designer-a", "designer-b", "reviewer", "fresh-agent", "outsider", "child"):
+        policy.session_store.upsert_session(
+            SessionManifest(
+                session_id=id,
+                directory_path={"outsider": "root/other", "child": "root/design/child"}.get(
+                    id, "root/design"
+                ),
+                allowed_tools=["figma_list_targets", "figma_query"]
+                + ([] if id == "reviewer" else ["figma_execute"]),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        )
+    return policy
 
 
 class FakeOAuth:
@@ -253,13 +362,16 @@ def test_separate_proposals_review_and_compose_pinned_snapshots(studio):
     assert len(state.versions) == 2
 
 
-def test_one_author_reviewers_cannot_edit_or_forge_extra_fields(studio):
+def test_read_only_file_cannot_be_edited_or_forge_extra_fields(studio):
     service, canvas = studio
     frame = create_frame(service())
+    revision, config = service().store.settings("root/design")
+    config.targets["mockups"].access = ["read", "comment"]
+    service().store.save_settings("root/design", revision, config)
     reviewer = service("reviewer")
     base = run(reviewer, "inspect", node_id=frame)
     calls = len(canvas.calls)
-    with pytest.raises(FigmaError, match="not granted"):
+    with pytest.raises(FigmaError, match="does not allow"):
         run(
             reviewer,
             "edit",
@@ -384,8 +496,9 @@ def test_revoked_access_cross_directory_and_root_constraints(studio):
     a, b = service(), service("designer-b")
     first, second = create_frame(a, "first"), create_frame(a, "second")
     revision, config = a.store.settings(a.actor.directory)
-    config.targets["mockups"].grants["designer-b"].edit_roots = [first]
+    config.targets["mockups"].edit_roots = [first]
     a.store.save_settings(a.actor.directory, revision, config)
+    assert create_frame(b, "inside", parent=first)
     other = run(b, "inspect", node_id=second)
     with pytest.raises(FigmaError, match="outside"):
         run(
@@ -399,9 +512,10 @@ def test_revoked_access_cross_directory_and_root_constraints(studio):
     with pytest.raises(FigmaError, match="Unknown"):
         run(service(directory="root/other"), "inspect", node_id=first)
     revision, config = a.store.settings(a.actor.directory)
-    config.targets["mockups"].grants.pop("designer-b")
+    config.targets["mockups"].access = []
     a.store.save_settings(a.actor.directory, revision, config)
-    with pytest.raises(FigmaError, match="not granted"):
+    assert b.list_targets() == []
+    with pytest.raises(FigmaError, match="does not allow"):
         run(b, "history")
 
 
@@ -525,15 +639,10 @@ def test_registration_and_schema_catalog():
 
 
 def provider_context(runtime_dir, directory="root/design"):
-    sessions = {
-        id: SimpleNamespace(session_id=id, directory_path="root/design")
-        for id in ("designer-a", "designer-b", "reviewer")
-    }
-    sessions["outsider"] = SimpleNamespace(session_id="outsider", directory_path="root/other")
     return SimpleNamespace(
         resolved_config=SimpleNamespace(runtime_dir=runtime_dir),
         metadata={"directory_path": directory, "workflow_trace_id": "trace-1"},
-        session_lookup=SimpleNamespace(read_all_sessions=lambda: sessions),
+        admin_service=SimpleNamespace(runtime=SimpleNamespace(policy=session_policy(runtime_dir))),
     )
 
 
@@ -558,8 +667,9 @@ def test_workflow_runtime_enforces_session_scope_and_read_only_queries(studio, m
         provider_context(service().store.runtime_dir),
     )
     assert query.execute()["variables_and_styles"] == {"brand": "#112233"}
-    with pytest.raises(FigmaError, match="Session must belong"):
-        query.execute(resolved_config={"session_id": "outsider"})
+    for session in ("outsider", "child"):
+        with pytest.raises(FigmaError, match="Session must belong"):
+            query.execute(resolved_config={"session_id": session})
     with pytest.raises(FigmaError, match="cannot perform effects"):
         query.execute(
             resolved_config={
@@ -589,9 +699,23 @@ def test_workflow_runtime_enforces_session_scope_and_read_only_queries(studio, m
         ),
         query.runtime_context,
     )
-    with pytest.raises(FigmaError, match="not granted"):
+    with pytest.raises(FigmaError, match="figma_execute is not allowed"):
         effect.execute()
-    assert effect.execute(resolved_config={"session_id": "designer-a"})["result"]["node_id"]
+    assert effect.execute(resolved_config={"session_id": "fresh-agent"})["result"]["node_id"]
+    policy = query.runtime_context.admin_service.runtime.policy
+    reviewer = policy.get_session("reviewer")
+    policy.session_store.upsert_session(reviewer.model_copy(update={"allowed_tools": []}))
+    count = len(canvas.calls)
+    with pytest.raises(FigmaError, match="figma_query is not allowed"):
+        query.execute()
+    author = policy.get_session("fresh-agent")
+    policy.session_store.upsert_session(author.model_copy(update={"allowed_tools": []}))
+    with pytest.raises(FigmaError, match="figma_execute is not allowed"):
+        effect.execute(resolved_config={"session_id": "fresh-agent"})
+    assert len(canvas.calls) == count
+    query.runtime_context.admin_service = None
+    with pytest.raises(FigmaError, match="runtime session tool policy"):
+        query.execute()
 
 
 def test_trigger_redelivery_out_of_order_ack_and_target_replacement(studio):
@@ -632,26 +756,8 @@ def test_trigger_redelivery_out_of_order_ack_and_target_replacement(studio):
     assert restored.poll() == []
 
 
-def test_mcp_uses_transport_session_and_policy(studio, monkeypatch):
+def test_mcp_uses_normal_tool_policy_without_session_grants(studio, monkeypatch):
     service, canvas = studio
-    callbacks, checked = {}, []
-
-    class Server:
-        _evander_transport_session_map = {"transport-1": "reviewer"}
-
-        def tool(self, *, name, **_):
-            def register(callback):
-                callbacks[name] = callback
-                return callback
-
-            return register
-
-    def require(session_id, tool):
-        checked.append((session_id, tool))
-        if tool == "figma_execute":
-            raise PolicyError("Tool is not allowed")
-        return SimpleNamespace(session_id=session_id, directory_path="root/design")
-
     monkeypatch.setattr(
         figma_mcp,
         "FigmaService",
@@ -660,13 +766,16 @@ def test_mcp_uses_transport_session_and_policy(studio, monkeypatch):
         ),
     )
     runtime = service().store.runtime_dir
+    policy = session_policy(runtime)
+    server = FastMCP("figma-policy-test")
+    server._evander_transport_session_map = {"transport-1": "fresh-agent"}
     figma_mcp.register_mcp_tools(
-        Server(),
+        server,
         AddonContext(
             addon_id="figma-addon",
             runtime_dir=runtime,
             addon_runtime_dir=service().store.root,
-            service=SimpleNamespace(policy=SimpleNamespace(require_tool=require)),
+            service=SimpleNamespace(policy=policy),
         ),
     )
     request = Request(
@@ -678,18 +787,53 @@ def test_mcp_uses_transport_session_and_policy(studio, monkeypatch):
         }
     )
     context = SimpleNamespace(request_context=SimpleNamespace(request=request))
-    result = callbacks["figma_list_targets"](ctx=context)
-    assert result["targets"][0]["access"] == ["read", "comment"]
-    assert checked == [("reviewer", "figma_list_targets")]
-    with pytest.raises(ToolError, match="bound"):
-        callbacks["figma_list_targets"](session_id="designer-a", ctx=context)
-    with pytest.raises(ToolError, match="not allowed"):
-        callbacks["figma_execute"](
-            DesignRequest(
-                operation="comment", target_id="mockups", message="Hi", request_id="blocked"
-            ),
-            ctx=context,
+
+    def call(tool="figma_query", **arguments):
+        return asyncio.run(
+            asyncio.wait_for(server._tool_manager.call_tool(tool, arguments, context=context), 15)
         )
+
+    inspect = {"operation": "inspect", "target_id": "mockups", "node_id": "0:1"}
+    # File settings name no sessions. Any normally authorized session in this exact
+    # directory can discover and inspect the file, including newly created agents.
+    for session in ("fresh-agent", "designer-b"):
+        server._evander_transport_session_map["transport-1"] = session
+        result = call("figma_list_targets")
+        assert result["targets"][0]["access"] == ["read", "comment", "edit"]
+        assert call(request=inspect)["nodes"][0]["id"] == "0:1"
+    server._evander_transport_session_map["transport-1"] = "reviewer"
+    count = len(canvas.calls)
+    with pytest.raises(ToolError, match="bound"):
+        call("figma_list_targets", session_id="designer-a")
+    with pytest.raises(ToolError, match="figma_execute is not allowed"):
+        call(
+            "figma_execute",
+            request={
+                "operation": "create_area",
+                "target_id": "mockups",
+                "name": "No",
+                "request_id": "blocked",
+            },
+        )
+    for session in ("outsider", "child"):
+        server._evander_transport_session_map["transport-1"] = session
+        assert call("figma_list_targets")["targets"] == []
+        with pytest.raises(ToolError, match="Unknown Figma target"):
+            call(request=inspect)
+    server._evander_transport_session_map["transport-1"] = "fresh-agent"
+    session = policy.get_session("fresh-agent")
+    policy.session_store.upsert_session(session.model_copy(update={"allowed_tools": []}))
+    with pytest.raises(ToolError, match="figma_query is not allowed"):
+        call(request=inspect)
+    server._evander_transport_session_map["transport-1"] = "designer-b"
+    policy.policy_config.config_store.write(
+        "root",
+        domain="policy",
+        payload={"mcp_tool_policies": {"figma_query": {"denied": True}}},
+    )
+    with pytest.raises(ToolError, match="denied by directory policy"):
+        call(request=inspect)
+    assert len(canvas.calls) == count
 
 
 def test_admin_permissions_revision_and_directory_scoped_oauth(tmp_path, monkeypatch):

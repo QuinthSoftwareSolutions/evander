@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from evander.effects.providers.base import EffectProviderBase
 from evander.events.models import ConfigValue, TriggerEvent, WorkflowNodeEnvelope
 from evander.models import DirectoryPath
+from evander.policy import PolicyError
 from evander.queries.providers.base import QueryProviderBase
 from evander.triggers.providers.base import TriggerProviderBase
 from evander.workflow.catalog import WorkflowEditorFieldDefinition, WorkflowEditorNodeCatalogEntry
@@ -56,7 +57,7 @@ def materialize(node, model):
     )
 
 
-def workflow_service(context, session_id=None, *, polling=False):
+def workflow_service(context, session_id=None, *, tool_name="figma_execute", polling=False):
     if context is None:
         raise FigmaError("Figma provider requires runtime context")
     directory = DirectoryPath(
@@ -67,16 +68,16 @@ def workflow_service(context, session_id=None, *, polling=False):
         return FigmaService(runtime_dir, Actor(directory, "figma-poller", operator=True))
     if not isinstance(session_id, str) or not session_id:
         raise FigmaError("Figma workflow operations require an explicit session_id")
-    lookup = getattr(context, "session_lookup", None)
-    if not callable(getattr(lookup, "read_all_sessions", None)):
-        raise FigmaError("Figma workflow operations require session_lookup")
-    sessions = lookup.read_all_sessions()
-    session = (
-        sessions.get(session_id)
-        if isinstance(sessions, dict)
-        else next((s for s in sessions if s.session_id == session_id), None)
-    )
-    if session is None or session_directory(session) != directory:
+    admin = getattr(context, "admin_service", None)
+    runtime = getattr(admin, "runtime", None) or admin
+    policy = getattr(runtime, "policy", None)
+    if not callable(getattr(policy, "require_tool", None)):
+        raise FigmaError("Figma workflow operations require runtime session tool policy")
+    try:
+        session = policy.require_tool(session_id, tool_name)
+    except PolicyError as exc:
+        raise FigmaError(str(exc)) from None
+    if session_directory(session) != directory:
         raise FigmaError("Session must belong to the workflow's Figma directory")
     return FigmaService(
         runtime_dir,
@@ -106,7 +107,11 @@ class _Operation:
         request = DesignRequest.model_validate(payload["request"])
         if read_only and request.operation not in QUERY_OPERATIONS:
             raise FigmaError("Figma queries cannot perform effects")
-        result = workflow_service(self.runtime_context, payload.get("session_id")).execute(request)
+        result = workflow_service(
+            self.runtime_context,
+            payload.get("session_id"),
+            tool_name="figma_query" if read_only else "figma_execute",
+        ).execute(request)
         if "status" in result and result["status"] != "succeeded":
             raise FigmaError(
                 f"Figma operation {result['operation_id']} needs attention ({result['status']})"
@@ -213,7 +218,7 @@ def register_providers():
                 kind=kind,
                 type=type_name,
                 label=label,
-                description="Directory-scoped Figma operations using the named session's exact grants.",
+                description="Figma file operations using the named session's normal tool permissions.",
                 fields=[
                     WorkflowEditorFieldDefinition(
                         key="session_id", label="Session", kind="text", required=True, bindable=True

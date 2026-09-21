@@ -13,12 +13,8 @@
       "name": "UI mockups",
       "connection_id": "studio",
       "file_key": "ReplaceWithFigmaFileKey",
-      "grants": {
-        "designer-a": {"access": ["read", "comment", "edit"], "edit_roots": []},
-        "designer-b": {"access": ["read", "comment", "edit"], "edit_roots": []},
-        "reviewer": {"access": ["read", "comment"], "edit_roots": []},
-        "reviewer-b": {"access": ["read", "comment"], "edit_roots": []}
-      }
+      "access": ["read", "comment", "edit"],
+      "edit_roots": []
     }
   }
 }

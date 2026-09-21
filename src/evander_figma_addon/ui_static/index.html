@@ -19,7 +19,7 @@
       </form>
     </details>
   </section>
-  <section><h2>Files and access</h2><div id="targets"></div>
+  <section><h2>Files and access</h2><p>Set capabilities for each file. Agents use their normal session tool permissions to work with these files.</p><div id="targets"></div>
     <details><summary>Register or update a file</summary>
       <form id="target-form" class="grid">
         <label>Target ID<input name="id" required pattern="[A-Za-z0-9_\-]+"></label>
@@ -29,17 +29,16 @@
         <button>Save file</button>
       </form>
     </details>
-    <details><summary>Assign session access</summary>
-      <form id="grant-form" class="grid">
-        <label>File<select name="target_id" class="target-select" required></select></label>
-        <label>Session ID<input name="session_id" required pattern="[A-Za-z0-9_\-]+"></label>
+    <details><summary>File permissions</summary>
+      <form id="permissions-form" class="grid">
+        <label>File<select name="target_id" id="permissions-target" class="target-select" required></select></label>
         <fieldset><legend>Capabilities</legend>
-          <label class="check"><input name="read" type="checkbox" checked>Read</label>
+          <label class="check"><input name="read" type="checkbox">Read</label>
           <label class="check"><input name="comment" type="checkbox">Comment</label>
           <label class="check"><input name="edit" type="checkbox">Edit</label>
         </fieldset>
-        <label>Editable root node IDs (optional)<input name="roots" placeholder="12:34, 56:78"><small>Leave empty for the whole file. Clear all capabilities to revoke access.</small></label>
-        <button>Save access</button>
+        <label>Editable root node IDs (optional)<input name="roots" placeholder="12:34, 56:78"><small>Leave empty for the whole file. These limits apply to all agents using this file. Clear all capabilities to disable agent access.</small></label>
+        <button>Save permissions</button>
       </form>
     </details>
   </section>
