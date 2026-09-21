@@ -133,7 +133,8 @@ UPSTREAM_TOOLS = {
 
 
 def board_url(board_id: str, frame_id: str | None = None) -> str:
-    result = f"https://miro.com/app/board/{quote(board_id, safe='')}/"
+    # Miro's MCP URL parser requires literal base64 padding in board IDs.
+    result = f"https://miro.com/app/board/{quote(board_id, safe='=')}/"
     if frame_id:
         result += f"?focusWidget={quote(frame_id, safe='')}"
     return result

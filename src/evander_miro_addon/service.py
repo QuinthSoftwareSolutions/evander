@@ -503,7 +503,12 @@ class MiroService:
                 value = board.get("id") or board.get("board_id") or board.get("boardId")
                 if value:
                     return identifier(value)
-                url = board.get("url") or board.get("board_url") or board.get("boardUrl")
+                url = (
+                    board.get("miro_url")
+                    or board.get("url")
+                    or board.get("board_url")
+                    or board.get("boardUrl")
+                )
                 if isinstance(url, str):
                     parts = urlsplit(url)
                     if (

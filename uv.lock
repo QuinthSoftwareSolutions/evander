@@ -196,7 +196,7 @@ wheels = [
 
 [[package]]
 name = "evander"
-version = "0.56.0"
+version = "0.56.1"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },

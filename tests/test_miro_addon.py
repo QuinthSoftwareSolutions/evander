@@ -67,6 +67,7 @@ class Remote:
         self.max_active_writes = 0
         self.delay = False
         self.next_item_id = 0
+        self.create_board_result = {"id": "created-board"}
 
     def client(self, store, record):
         remote = self
@@ -146,7 +147,7 @@ class Remote:
                         remote.comments[0]["resolved"] = values["resolved"]
                     if remote.fail_after_write:
                         raise TimeoutError("response lost after remote commit")
-                    return {"id": "created-board"} if operation == "create_board" else result
+                    return remote.create_board_result if operation == "create_board" else result
                 finally:
                     remote.active_writes -= 1
 
@@ -508,8 +509,22 @@ def test_concurrent_agents_cannot_both_update_the_same_snapshot(setup):
     assert remote.max_active_writes == 1
 
 
-def test_create_board_binds_result_and_new_canvas_remains_editable(setup):
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"id": "created-board"},
+        {"miro_url": "https://miro.com/app/board/created-board/"},
+        {"board": {"miro_url": "https://miro.com/app/board/created-board/"}},
+        {"result": {"data": {"miro_url": "https://miro.com/app/board/created-board/"}}},
+        {"url": "https://miro.com/app/board/created-board/"},
+        {"board_url": "https://miro.com/app/board/created-board/"},
+        {"boardUrl": "https://miro.com/app/board/created-board/"},
+    ],
+    ids=["id", "miro_url", "nested_board", "wrapped_data", "url", "board_url", "boardUrl"],
+)
+def test_create_board_binds_result_and_new_canvas_remains_editable(setup, response):
     store, _, remote, service = setup
+    remote.create_board_result = response
     created = run(
         service.execute(
             "create_board",
@@ -529,7 +544,7 @@ def test_create_board_binds_result_and_new_canvas_remains_editable(setup):
             "create_canvas",
             {
                 "connection_id": "architecture",
-                "board_id": "board1",
+                "board_id": created["board_id"],
                 "svg": NEW,
                 "operation_key": "explanation",
             },
@@ -572,6 +587,7 @@ def test_human_feedback_reply_and_resolution_keep_threads(setup):
 @pytest.mark.parametrize("fail_readback", [False, True])
 def test_create_board_retry_at_capacity_preserves_durable_outcome(setup, fail_readback):
     store, record, remote, service = setup
+    remote.create_board_result = {"miro_url": "https://miro.com/app/board/created-board/"}
     store.save_connection(
         config(boards=[{"board_id": f"board{i}", "writable": True} for i in range(199)]),
         record["revision"],
@@ -593,6 +609,30 @@ def test_create_board_retry_at_capacity_preserves_durable_outcome(setup, fail_re
     with pytest.raises(MiroError, match="board limit"):
         run(service.execute("create_board", arguments | {"operation_key": "another-board"}))
     assert remote.calls == calls
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://miro.com/app/board/created-board/",
+        "https://miro.com.evil.test/app/board/created-board/",
+        "https://miro.com/app/dashboard/created-board/",
+    ],
+)
+def test_create_board_rejects_untrusted_miro_url_without_approving_board(setup, url):
+    store, record, remote, service = setup
+    remote.create_board_result = {"miro_url": url}
+    result = run(
+        service.execute(
+            "create_board",
+            {"connection_id": "architecture", "title": "New board", "operation_key": "new"},
+        )
+    )
+    assert result["status"] == "uncertain"
+    assert result["error"] == "unsupported_response"
+    assert result["board_id"] is None
+    assert store.resolve_connection("root/project", "architecture") == record
+    assert [operation for operation, _ in remote.calls] == ["create_board"]
 
 
 def test_polling_baseline_restart_acknowledgment_and_repeated_transitions(setup, monkeypatch):
@@ -1389,6 +1429,156 @@ def test_real_mcp_http_handshake_schema_binding_and_error_preservation(setup, mo
     run(scenario())
     assert store.usage(record) == 1
     assert [request["method"] for request in requests].count("initialize") == 2
+
+
+@pytest.mark.parametrize("caller", ["agent", "workflow"])
+@pytest.mark.parametrize("response_format", ["structured", "json_text"])
+def test_create_board_miro_url_through_mcp_and_workflow(
+    setup, monkeypatch, caller, response_format
+):
+    from datetime import UTC, datetime, timedelta
+
+    from evander.config import GatewayConfig
+    from evander.directories import DirectoryService
+    from evander.gateway import create_server
+    from evander.models import SessionManifest
+    from evander.runtime import build_runtime
+    from evander_miro_addon.client import MiroClient
+    from evander_miro_addon.models import READ_OPERATIONS
+
+    store, record, _, _ = setup
+    runtime_dir = store.root.parents[1]
+    board_id = "uXjCreated="
+    board_url = "https://miro.com/app/board/uXjCreated=/"
+    calls = []
+
+    async def token(_self, _record):
+        return "synthetic-transport-token"
+
+    def handle(request):
+        if request.method != "POST":
+            return httpx.Response(405)
+        payload = json.loads(request.content)
+        if "id" not in payload:
+            return httpx.Response(202)
+        if payload["method"] == "initialize":
+            result = {
+                "protocolVersion": "2025-06-18",
+                "serverInfo": {"name": "synthetic-miro", "version": "1"},
+                "capabilities": {"tools": {}},
+            }
+        elif payload["method"] == "tools/list":
+            result = {
+                "tools": [
+                    {
+                        "name": name,
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {field: {"type": "string"}},
+                            "required": [field],
+                            "additionalProperties": False,
+                        },
+                    }
+                    for name, field in [
+                        ("board_create", "name"),
+                        ("canvas_read_as_svg", "miro_url"),
+                    ]
+                ]
+            }
+        else:
+            assert payload["method"] == "tools/call"
+            params = payload["params"]
+            calls.append(params["name"])
+            if params["name"] == "board_create":
+                assert params["arguments"] == {"name": "Truman Test"}
+                data = {
+                    "miro_url": board_url.replace("=", "%3D")
+                    if response_format == "json_text"
+                    else board_url
+                }
+            else:
+                assert params["name"] == "canvas_read_as_svg"
+                assert params["arguments"] == {"miro_url": board_url}
+                data = {"svg": SVG}
+            result = (
+                {"content": [], "structuredContent": data}
+                if response_format == "structured"
+                else {"content": [{"type": "text", "text": json.dumps(data)}]}
+            )
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
+
+    original_init = MiroClient.__init__
+
+    def init_client(self, store, record):
+        original_init(self, store, record, http_transport=httpx.MockTransport(handle))
+
+    monkeypatch.setattr(MiroOAuth, "access_token", token)
+    monkeypatch.setattr(MiroClient, "__init__", init_client)
+    if caller == "agent":
+        runtime = build_runtime(
+            GatewayConfig(
+                runtime_dir=runtime_dir,
+                addon_loader=AddonLoaderConfig(modules=["evander_miro_addon"], package_dirs=[]),
+            )
+        )
+        DirectoryService(runtime.directories).create(parent="root", name="project")
+        runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id="author",
+                directory_path="root/project",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                allowed_tools=["miro_create_board", "miro_list_boards", "miro_read_canvas"],
+            )
+        )
+        server = create_server(runtime)
+
+        def invoke(operation, arguments):
+            return run(
+                server._tool_manager.call_tool(
+                    "miro_" + operation, {"session_id": "author", **arguments}
+                )
+            )
+
+    else:
+        providers = register_providers()
+        context = SimpleNamespace(
+            provider_config={"runtime_dir": str(runtime_dir)},
+            metadata={"directory_path": "root/project"},
+        )
+
+        def invoke(operation, arguments):
+            query = operation in READ_OPERATIONS
+            kind = ("query" if query else "effect") + ":miro:" + operation.replace("_", "-")
+            registry = providers.query_providers if query else providers.effect_providers
+            provider = registry[kind]()
+            provider.initialize(
+                WorkflowNodeEnvelope(
+                    id=operation, display_name=operation, type=kind, config=arguments
+                ),
+                context,
+            )
+            return provider.execute()["result"]
+
+    arguments = {
+        "connection_id": "architecture",
+        "title": "Truman Test",
+        "operation_key": "create-truman-test",
+    }
+    created = invoke("create_board", arguments)
+    assert created["status"] == "applied"
+    assert created["board_id"] == board_id
+    assert created["url"] == board_url
+    assert store.get("snapshot", created["result_snapshot_id"])["board_id"] == board_id
+    boards = invoke("list_boards", {"connection_id": "architecture"})["boards"]
+    assert [board for board in boards if board["board_id"] == board_id] == [
+        {"board_id": board_id, "name": "Truman Test", "writable": True, "url": board_url}
+    ]
+    observed = invoke("read_canvas", {"connection_id": "architecture", "board_id": board_id})
+    assert observed["snapshot_id"] == created["result_snapshot_id"]
+    assert observed["data"]["item_ids"] == ["item1", "item2"]
+    assert invoke("create_board", arguments) == created
+    assert calls == ["board_create", "canvas_read_as_svg", "canvas_read_as_svg"]
+    assert store.usage(record) == 3
 
 
 def test_empty_canvas_required_empty_selection_and_incomplete_pages(setup):
