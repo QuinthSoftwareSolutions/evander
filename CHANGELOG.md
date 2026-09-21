@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-21 - Discover Miro connections and Figma files (0.56.0)
+
+- Add `miro_list_connections` so agents can discover enabled connection IDs, directory scope,
+  board counts, and board-creation settings without guessing an ID or contacting Miro.
+- Make Miro connection discovery and Figma's existing `figma_list_targets` available through
+  existing operation tool grants. Preserve directory denials, approval requirements, Miro
+  connection inheritance and overrides, and Figma's exact-directory file permissions.
+- Keep discovery limited to public local configuration without exposing credentials or granting
+  additional board/file operations. Document the discovery-first agent flow for both add-ons.
+
 ## 2026-09-21 - Use normal session permissions for Figma (0.55.2)
 
 - Remove Figma's separate session access list. Configure capabilities and editable roots per

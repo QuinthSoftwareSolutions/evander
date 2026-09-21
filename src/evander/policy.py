@@ -407,6 +407,7 @@ class PolicyEngine:
             for tool_name in extra_mcp_tool_names or []
             if str(tool_name or "").strip()
         }
+        self._addon_discovery_permissions: dict[str, frozenset[str]] = {}
         self.policy_config = policy_config or PolicyConfigResolver(
             config,
             session_store=session_store,
@@ -416,10 +417,42 @@ class PolicyEngine:
     def set_approval_notification_dispatcher(self, dispatcher: Any | None) -> None:
         self.approval_notification_dispatcher = dispatcher
 
-    def set_extra_mcp_tool_names(self, tool_names: list[str] | tuple[str, ...] | set[str]) -> None:
+    def set_extra_mcp_tool_names(
+        self,
+        tool_names: list[str] | tuple[str, ...] | set[str],
+        *,
+        discovery_permissions: dict[str, tuple[str, ...]] | None = None,
+    ) -> None:
         self.extra_mcp_tool_names = {
             str(tool_name or "").strip() for tool_name in tool_names if str(tool_name or "").strip()
         }
+        permissions = (
+            self._addon_discovery_permissions
+            if discovery_permissions is None
+            else discovery_permissions
+        )
+        self._addon_discovery_permissions = {
+            tool: frozenset(sources).intersection(self.extra_mcp_tool_names) - {tool}
+            for tool, sources in permissions.items()
+            if tool in self.extra_mcp_tool_names
+        }
+
+    def _has_addon_discovery_permission(
+        self,
+        session: SessionManifest,
+        tool_name: McpToolName,
+        *,
+        effective_policy: EffectivePolicyConfig | None = None,
+    ) -> bool:
+        sources = self._addon_discovery_permissions.get(tool_name_value(tool_name), frozenset())
+        granted = sources.intersection(tool_name_value(tool) for tool in session.allowed_tools)
+        if not granted:
+            return False
+        effective_policy = effective_policy or self.effective_policy_for_session(session)
+        return any(
+            not (rule := effective_policy.mcp_tool_policies.get(source)) or not rule.denied
+            for source in granted
+        )
 
     def _iter_known_tool_names(self) -> list[McpToolName]:
         builtins: list[McpToolName] = list(ToolName)
@@ -566,6 +599,11 @@ class PolicyEngine:
         if not has_tool_permission and _has_email_discovery_permission(session, tool_name):
             has_tool_permission = True
             source = "session.allowed_tools.email"
+        if not has_tool_permission and self._has_addon_discovery_permission(
+            session, tool_name, effective_policy=effective_policy
+        ):
+            has_tool_permission = True
+            source = "session.allowed_tools.addon_discovery"
         if not has_tool_permission:
             has_tool_permission = self._lease_allows_tool(
                 session_id=session.session_id,
@@ -727,6 +765,9 @@ class PolicyEngine:
         if tool_value in {tool_name_value(tool) for tool in session.allowed_tools}:
             return False
         if _has_email_discovery_permission(session, tool_name):
+            return False
+        if self._has_addon_discovery_permission(session, tool_name):
+            self.require_tool_not_denied(session, tool_name)
             return False
         self.require_tool_not_denied(session, tool_name)
         lease_is_usable = self.tool_approval_leases.is_tool_approved(

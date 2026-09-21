@@ -46,11 +46,11 @@ Provider references, checked September 2026:
    held authorization; use Figma's account settings if provider-side revocation is also needed.
 4. Register a disposable Figma Design file and run **Test unattended authoring**. Then register
    the working files and choose their read, comment, and edit capabilities under **File permissions**.
-5. Grant sessions the MCP tools `figma_list_targets`, `figma_query`, and/or `figma_execute` as
-   appropriate. There is no separate session list in the add-on. Any session with the required
-   tool can use enabled files in its exact directory, within each file's capabilities and edit
-   roots. For read-only agents, grant `figma_list_targets` and `figma_query`; `figma_execute`
-   allows the effects enabled for that file, including canvas edits when both read and edit
+5. Grant sessions `figma_query` and/or `figma_execute` as appropriate. Either tool grant also
+   makes `figma_list_targets` available automatically. There is no separate session list in the
+   add-on. Any session with the required tool can use enabled files in its exact directory,
+   within each file's capabilities and edit roots. For read-only agents, grant `figma_query`;
+   `figma_execute` allows the effects enabled for that file, including canvas edits when read and edit
    are enabled. File permissions apply to all authorized sessions using that target.
 
 Directory configuration and records live in `runtime/addons/figma-addon/state.db`. Settings use
@@ -78,8 +78,15 @@ API before loading that directory.
 
 ## Tools and request contract
 
-`figma_list_targets` discovers enabled targets and their file capabilities. `figma_query` accepts a
-`DesignRequest` with `operation` set to `pages`, `inspect`, `variables`, `comments`, or `history`.
+Call `figma_list_targets()` first to discover enabled targets and their file capabilities without
+knowing a connection or target ID. It reads local settings in the session's exact directory,
+without reading credentials or calling Figma. Discovery accompanies an existing query or execute
+grant unless that source tool is denied by directory policy. Discovery's own directory denials
+and approval requirements still apply. Granting only `figma_list_targets` permits metadata
+discovery without granting query or execute operations.
+
+`figma_query` accepts a `DesignRequest` with `operation` set to `pages`, `inspect`, `variables`,
+`comments`, or `history`.
 `figma_execute` accepts the same typed request contract for authoring and artifact operations.
 The server derives session and directory authority; requests cannot supply a directory or raw code.
 

@@ -111,6 +111,8 @@ class AddonMcpTool(BaseModel):
     label: str
     description: str
     group: str | None = None
+    # Read-only discovery can accompany existing grants for this add-on's operations.
+    discovery_for: tuple[str, ...] = ()
 
     @field_validator("name", "label", "description", mode="before")
     @classmethod
@@ -172,6 +174,12 @@ class AddonRegistration:
                 )
             seen_tool_names.add(tool.name)
             tool_catalog.append(tool)
+        for tool in tool_catalog:
+            if tool.name in tool.discovery_for or set(tool.discovery_for) - seen_tool_names:
+                raise ValueError(
+                    f"add-on {self.addon_id} discovery tool {tool.name!r} must reference "
+                    "other tools in its own catalog"
+                )
         object.__setattr__(self, "mcp_tool_catalog", tuple(tool_catalog))
 
 
@@ -179,6 +187,15 @@ class AddonRegistration:
 class LoadedAddonCatalog:
     registrations: tuple[AddonRegistration, ...]
     loaded_addons: tuple[str, ...]
+
+
+def addon_mcp_discovery_permissions(catalog: LoadedAddonCatalog) -> dict[str, tuple[str, ...]]:
+    return {
+        tool.name: tool.discovery_for
+        for registration in catalog.registrations
+        for tool in registration.mcp_tool_catalog
+        if tool.discovery_for
+    }
 
 
 def addon_mcp_tool_catalog_payloads(catalog: LoadedAddonCatalog) -> list[dict[str, str]]:

@@ -30,9 +30,10 @@ The Miro page follows Admin Web's selected light or dark theme, including change
 is open. When opened directly, it uses the saved Admin Web preference or the system theme.
 
 Connections inherit into descendant directories; a child connection with the same ID shadows its
-parent. Edit inherited connections in their owning directory. Settings use revision checks to avoid
-overwriting another operator's edits. OAuth registration credentials, PKCE material, and access and
-refresh tokens are encrypted in add-on-private storage with restrictive file permissions. Keep its
+parent, even when the child connection is disabled. Edit inherited connections in their owning
+directory. Settings use revision checks to avoid overwriting another operator's edits.
+OAuth registration credentials, PKCE material, and access and refresh tokens are encrypted in
+add-on-private storage with restrictive file permissions. Keep its
 key and database in protected host backups. Disconnect invalidates local authorization and pending
 callbacks; remove the app in Miro as well when provider-side consent must be revoked.
 
@@ -46,13 +47,31 @@ The implementation follows Miro's [OAuth connection guidance](https://developers
 
 ## Agent and workflow interfaces
 
-Every operation takes `connection_id`. Agent identity and directory come from the authenticated
-session; workflows use their execution directory, not a directory supplied in the operation input.
-All tools appear in the **Miro** tool catalog. Matching workflow query/effect names replace
+Agents start with `miro_list_connections()` to discover enabled connections in their directory
+and its ancestors. The response includes `connection_id`, display name, owning directory,
+`inherited`, approved/writable board counts, and the connection's `allow_create_boards` setting.
+It reads local configuration without contacting Miro or reading credentials. These settings do
+not grant operation permissions or verify the current OAuth connection.
+
+An existing session grant to any other Miro tool automatically makes connection discovery
+available, provided that tool is not denied by directory policy. Discovery's own directory denials
+and approval requirements still apply. Operators can also grant only `miro_list_connections` for
+metadata access; this does not grant board reads or writes.
+
+Every other operation takes `connection_id`. Use an ID returned by discovery with
+`miro_list_boards(connection_id="...")` to find approved boards and their write grants. An empty
+board list means no boards are registered in that connection; connecting a Miro account does not
+automatically approve or enumerate its upstream boards. Creating a board requires both the
+`miro_create_board` tool and the connection's board-creation setting.
+
+Agent identity and directory come from the authenticated session; workflows use their execution
+directory, not a directory supplied in the operation input. All tools appear in the **Miro** tool
+catalog. Discovery is agent-only; matching workflow query/effect names for the other tools replace
 underscores with hyphens, for example `miro_read_canvas` → `query:miro:read-canvas`.
 
 | Agent tool | Workflow kind | Purpose and additional inputs |
 |---|---|---|
+| `miro_list_connections` | Agent only | No inputs; discover enabled connections and their public configuration. |
 | `miro_list_boards` | Query | List only configured boards and their write grants. |
 | `miro_get_canvas_format` | Query | Read the current upstream SVG specification; optional `format_name` loads provider-advertised diagram guidance. |
 | `miro_read_canvas` | Query | `board_id`, optional `frame_id`/`item_ids`; returns editable SVG, stable item IDs, URL and `snapshot_id`. |

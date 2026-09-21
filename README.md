@@ -13,7 +13,8 @@ For decision journals, bounded wake deltas and configurable workflow context, se
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - Optional [Figma collaboration](docs/figma.md) for native mockups, parallel design proposals,
-  shared editing, review, and immutable snapshots through agent tools and workflows
+  shared editing, review, and immutable snapshots through agent tools and workflows, with
+  file discovery available through existing agent tool grants
 - Directory-scoped named connectors for approved REST and add-on operations, including
   Freshservice, plus host file retrieval with host-owned authentication, per-session operation
   grants, approvals, and artifact results
@@ -46,6 +47,7 @@ For decision journals, bounded wake deltas and configurable workflow context, se
   Admin Web controls and portable SQLite/SCIP exports
 - An optional [Miro Add-on](docs/miro-addon.md) for editable diagrams, explanations, comment
   collaboration, and workflow-owned board monitoring through host-managed OAuth connections
+  that agents can discover using their existing Miro tool grants
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`

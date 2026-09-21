@@ -36,6 +36,8 @@ The `figma-addon` stores revisioned settings per exact directory through its Adm
 OAuth client configuration, host credential setting names, registered files, and file-level
 `read`/`comment`/`edit` capabilities with optional edit roots. The add-on does not maintain a
 separate session list; MCP and workflow operations use normal session tool permissions.
+An explicit `figma_query` or `figma_execute` grant also exposes `figma_list_targets` for local
+file discovery, subject to directory tool denials and discovery approval requirements.
 Credentials stay in the host service environment; guests receive only the Figma MCP tools
 allowed by their session policy. See
 [Figma setup and authoring verification](figma.md) before enabling it. No new firewall port or
@@ -249,6 +251,10 @@ belongs to a directory and defines approved boards (read or write),
 `daily_call_budget` (default 100). Connections resolve through directory ancestry; an identically
 named child connection overrides the inherited connection. Agent access uses normal session
 `miro_*` tool permissions; legacy connection `session_ids` lists are ignored and removed on save.
+An explicit grant to any Miro operation also exposes `miro_list_connections` for local discovery
+of enabled connections, including inherited connections and their board counts. Source-tool
+denials and discovery's own directory denial/approval rules still apply. A disabled child
+connection shadows its ancestor and is omitted from discovery.
 The `redirect_uri` must be the Admin Web HTTPS origin followed by
 `/api/addons/miro-addon/oauth/callback` (HTTP is allowed only on
 loopback for development). Settings use revision-checked writes. OAuth tokens, registration
