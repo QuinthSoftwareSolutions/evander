@@ -6,6 +6,8 @@
   `miro_create_board` and `effect:miro:create-board`, retaining existing ID and URL formats.
 - Let successful creation register the new board with read/write access and read it back instead
   of leaving the operation uncertain because its board reference was not recognized.
+- Preserve literal `=` padding in Miro board links so subsequent upstream calls address the
+  created board correctly instead of receiving a misleading permission error.
 - Cover both entry points with structured and JSON-text MCP responses, plus subsequent board
   access, durable retries, and URL validation.
 

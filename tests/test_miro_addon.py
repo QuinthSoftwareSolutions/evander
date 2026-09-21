@@ -1449,7 +1449,7 @@ def test_create_board_miro_url_through_mcp_and_workflow(
     store, record, _, _ = setup
     runtime_dir = store.root.parents[1]
     board_id = "uXjCreated="
-    board_url = "https://miro.com/app/board/uXjCreated%3D/"
+    board_url = "https://miro.com/app/board/uXjCreated=/"
     calls = []
 
     async def token(_self, _record):
@@ -1491,7 +1491,11 @@ def test_create_board_miro_url_through_mcp_and_workflow(
             calls.append(params["name"])
             if params["name"] == "board_create":
                 assert params["arguments"] == {"name": "Truman Test"}
-                data = {"miro_url": board_url}
+                data = {
+                    "miro_url": board_url.replace("=", "%3D")
+                    if response_format == "json_text"
+                    else board_url
+                }
             else:
                 assert params["name"] == "canvas_read_as_svg"
                 assert params["arguments"] == {"miro_url": board_url}
