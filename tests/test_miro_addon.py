@@ -584,9 +584,25 @@ def test_legacy_write_fingerprint_is_unchanged_by_new_read_defaults(setup):
         title="Created before scoped reads",
         operation_key="legacy-create",
     )
-    request = args.model_dump(
-        mode="json", exclude={"canvas_scope", "result_mode", "patterns", "target_id", "cursor"}
-    )
+    # Freeze the recorded request's schema; deriving it from the current model
+    # would accidentally add future defaults to this historical fingerprint.
+    request = {
+        "connection_id": "architecture",
+        "board_id": None,
+        "frame_id": None,
+        "item_ids": [],
+        "snapshot_id": None,
+        "operation_key": "legacy-create",
+        "operation_id": None,
+        "svg": None,
+        "title": "Created before scoped reads",
+        "text": None,
+        "comment_id": None,
+        "resolved": True,
+        "allow_delete": False,
+        "format_name": None,
+        "source_refs": [],
+    }
     operation_id = digest([record["key"], args.operation_key])
     store.put(
         "operation",

@@ -22,7 +22,7 @@ from .runtime import provider_service
 # Required arguments and available optional inputs are shared by schema and editor.
 FIELDS = {
     "list_boards": ([], []),
-    "get_canvas_format": ([], ["format_name"]),
+    "get_canvas_format": ([], ["step", "format_name", "notation", "is_repository"]),
     "search_canvas": (["board_id"], ["result_mode", "patterns", "target_id", "cursor"]),
     "read_canvas": (["board_id"], ["frame_id", "item_ids", "canvas_scope"]),
     "read_comments": (["board_id"], ["frame_id", "item_ids"]),
@@ -66,7 +66,10 @@ FIELD_DESCRIPTIONS = {
     "source_refs": "Repository commits, task references, or artifact references explaining provenance.",
     "allow_delete": 'Permit deleting snapshot items explicitly marked data-deleted="true"; omitted items remain unchanged.',
     "resolved": "True resolves the thread; false reopens it.",
-    "format_name": "Optional provider-advertised format to load, such as diagram guidance.",
+    "step": "Canvas-composer workflow step returned by the previous guidance call: design, edit, or dsl.",
+    "format_name": "Provider-advertised composition format. Use diagramming for diagrams.",
+    "notation": "Diagram notation: flowchart, entity_relationship, uml_class, uml_sequence, or free_form.",
+    "is_repository": "Whether the agent is working from a source-control repository.",
 }
 
 
@@ -190,7 +193,7 @@ def field(key: str, required=False, *, bindable=True):
         else "number"
         if key == "cursor"
         else "boolean"
-        if key in {"resolved", "allow_delete"}
+        if key in {"resolved", "allow_delete", "is_repository"}
         else "string"
     )
     return WorkflowEditorFieldDefinition(
@@ -241,6 +244,15 @@ def register_providers() -> ProviderPluginRegistration:
                 "scope": {"type": "object"},
                 "boards": {"type": "array"},
                 "result_snapshot_id": {"type": "string"},
+                **(
+                    {
+                        "format": {"type": "object"},
+                        "format_specific": {"type": "object"},
+                        "authoring_checks": {"type": "array", "items": {"type": "string"}},
+                    }
+                    if operation == "get_canvas_format"
+                    else {}
+                ),
             },
         )
     triggers = {

@@ -173,6 +173,12 @@ class MiroClient:
         schema = self.schemas.get(tool)
         if schema is None:
             raise MiroError("unsupported_capability", f"Miro does not currently expose {tool}")
+        if operation == "load_format" and values.get("format_name") == "diagram":
+            properties = schema.get("properties", {})
+            field = next((key for key in ALIASES["format_name"] if key in properties), None)
+            formats = properties.get(field, {}).get("enum", [])
+            if "diagramming" in formats and "diagram" not in formats:
+                values["format_name"] = "diagramming"
         if values.get("board_id"):
             values["board_url"] = board_url(values["board_id"], values.get("frame_id"))
         return tool, bind_arguments(schema, values)
