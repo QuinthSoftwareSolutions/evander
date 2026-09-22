@@ -129,6 +129,70 @@ def test_managed_connector_rejects_reflection_before_persistence(custody, mode):
             assert b"synthetic-document-token" not in path.read_bytes()
 
 
+@pytest.mark.parametrize("protocol", ["basic", "oauth2_client_credentials"])
+def test_managed_connector_allows_public_auth_identifiers_in_responses(custody, protocol):
+    if protocol == "basic":
+        auth = {"type": "basic_env", "username_env": "USER", "password_env": "PASSWORD"}
+        values = {"username": "public-user", "password": "synthetic-password"}
+    else:
+        auth = {
+            "type": protocol, "token_url": "https://login.example.test/token",
+            "client_id_env": "CLIENT", "client_secret_env": "SECRET",
+        }
+        values = {"client_id": "public-user", "client_secret": "synthetic-client-secret"}
+    config, _ = managed_connector(custody, auth=auth, values=values)
+    service = _service(
+        custody.runtime_dir, config,
+        auth_transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, json={"access_token": "synthetic-access-token", "expires_in": 3600},
+        )),
+        rest_transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, json={"title": "XML export requested by public-user"},
+        )),
+    )
+    result = asyncio.run(service.invoke(
+        session=_session(), connector_id="documents", operation_name="get_document",
+        arguments={"id": "one"},
+    ))
+    assert result.value == {"title": "XML export requested by public-user"}
+
+
+@pytest.mark.parametrize("mode", ["json", "text", "artifact"])
+@pytest.mark.parametrize("reflected", ["password", "basic_header", "client_secret", "access_token"])
+def test_managed_connector_field_aware_checks_still_reject_secrets(custody, mode, reflected):
+    import base64
+
+    if reflected in {"password", "basic_header"}:
+        auth = {"type": "basic_env", "username_env": "USER", "password_env": "PASSWORD"}
+        values = {"username": "public-user", "password": "synthetic-password"}
+        secret = values["password"] if reflected == "password" else base64.b64encode(
+            b"public-user:synthetic-password"
+        ).decode()
+    else:
+        auth = {
+            "type": "oauth2_client_credentials", "token_url": "https://login.example.test/token",
+            "client_id_env": "CLIENT", "client_secret_env": "SECRET",
+        }
+        values = {"client_id": "public-client", "client_secret": "synthetic-client-secret"}
+        secret = values["client_secret"] if reflected == "client_secret" else "synthetic-access-token"
+    config, _ = managed_connector(custody, auth=auth, values=values, result_mode=mode)
+    service = _service(
+        custody.runtime_dir, config,
+        auth_transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, json={"access_token": "synthetic-access-token", "expires_in": 3600},
+        )),
+        rest_transport=httpx.MockTransport(lambda request: httpx.Response(200, text=secret)),
+    )
+    with pytest.raises(ConnectorInvocationError, match="Managed connector request failed"):
+        asyncio.run(service.invoke(
+            session=_session(), connector_id="documents", operation_name="get_document",
+            arguments={"id": "one"},
+        ))
+    for path in custody.runtime_dir.rglob("*"):
+        if path.is_file():
+            assert secret.encode() not in path.read_bytes()
+
+
 def test_oauth_cache_observes_credential_revision_and_disable(custody):
     config, record = managed_connector(
         custody,

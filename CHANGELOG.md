@@ -20,6 +20,10 @@
   during first-time managed setup. Resume retention beyond held records, count deletion
   failures independently of successful batches, and prevent schedules from duplicating
   unresolved selections. Expose scoped, audited detail reads for saved privacy evidence.
+- Preserve ordinary connector content after credential migration, validate child privacy
+  overrides against inherited policy, and keep unavailable Teams identities visible to
+  administrators. Resolve subscription policy once per bounded shared snapshot instead of
+  repeatedly walking the directory registry for every tunnel read.
 - Include technical privacy review drafts and deployment/restore caveats. No production
   policies, provider contracts, legal approvals, or customer-data cleanup are applied.
 

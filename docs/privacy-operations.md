@@ -51,6 +51,10 @@ Privacy configuration is the `privacy` directory domain (`privacy.json`) with a
 single `privacy` object. The existing `enable_directory_scoped_config` feature
 must permit configuration writes. Every operator mutation requires the current
 snapshot revision; conflicts require reloading and reviewing again.
+Child edits are partial overrides: omitted fields inherit from the parent, and only
+the supplied fields are saved. Effective settings must stay within the root category
+and enforcement baseline. Inheriting root-scheduled retention does not authorize a
+child to change that installation-owned schedule.
 
 The trusted-host CLI uses the operating-system UID as actor. Access to it confers
 host-administrator authority; it is not a replacement for web RBAC.
@@ -181,6 +185,10 @@ Subscription egress has installation-wide approval only, for all enabled
 categories. Its service explicitly selects `--runtime-dir <installation runtime>`;
 custom deployments must do the same. Persistent relay/proxy connections recheck
 policy; revocation cannot recall bytes already delivered.
+Subscription checks share a policy snapshot for at most one second across tunnels.
+Each snapshot resolves every directory once, including dormant children; expiry is
+still checked on every dispatch. A failed refresh denies traffic without reusing
+expired approvals. Directory-attributed relay checks continue to reload on each call.
 Policy dispatch reads an atomic directory-registry snapshot without creating or
 opening writable lock files, preserving the proxy's read-only systemd filesystem.
 Invalid registries or policies still fail closed; dispatch never repairs them.

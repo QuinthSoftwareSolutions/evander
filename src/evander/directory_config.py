@@ -651,6 +651,11 @@ class DirectoryConfigStore:
     def read(self, reference: str, *, domain: str) -> dict[str, Any] | None:
         domain = self._normalize_domain_name(domain)
         directory = self._service.show(reference).directory
+        return self.read_for_directory(directory, domain=domain)
+
+    def read_for_directory(self, directory: DirectoryInfo, *, domain: str) -> dict[str, Any] | None:
+        """Read an already resolved directory without rescanning its registry."""
+        domain = self._normalize_domain_name(domain)
         if domain not in self._domains_for_directory_info(directory, root_path=self._root_path):
             return None
         path = self._domain_file_path(directory.path, domain=domain)
@@ -1125,13 +1130,44 @@ class DirectoryConfigResolver:
             validation_errors=validation_errors,
         )
 
+    def resolve_privacy_tree(self) -> dict[str, dict[str, Any]]:
+        """Resolve each privacy overlay once, parent first, from one directory tree.
+
+        The caller supplies a read-only registry snapshot. Reusing inherited
+        settings avoids resolving every ancestor and copying the entire registry
+        separately for every directory on subscription proxy dispatch.
+        """
+        from evander.privacy.models import PrivacySettings, merge_privacy_settings
+
+        directories = [
+            self._service.show("root").directory,
+            *self._service.list_descendants("root"),
+        ]
+        resolved: dict[str, dict[str, Any]] = {}
+        defaults = PrivacySettings().model_dump(mode="json")
+        for directory in directories:
+            inherited = (
+                defaults if directory.path == "root"
+                else resolved[directory.path.rsplit("/", 1)[0]]
+            )
+            overlay = self._overlay_for_directory(directory, domain="privacy")
+            if overlay is None:
+                resolved[directory.path] = inherited
+                continue
+            # Use the same overlay validation and merge semantics as resolve_domain.
+            normalized = DirectoryConfigStore.validate_domain_payload("privacy", overlay)
+            resolved[directory.path] = PrivacySettings.model_validate(
+                merge_privacy_settings(inherited, normalized.get("privacy", {}))
+            ).model_dump(mode="json")
+        return resolved
+
     def _overlay_for_directory(
         self, directory: DirectoryInfo, *, domain: str
     ) -> dict[str, Any] | None:
-        if self._config_store is not None and domain in self._config_store.list_domains(
-            directory.path
-        ):
-            return self._config_store.read(directory.path, domain=domain)
+        if self._config_store is not None:
+            stored = self._config_store.read_for_directory(directory, domain=domain)
+            if stored is not None:
+                return stored
         overlays = directory.metadata.get(DIRECTORY_CONFIG_OVERLAYS_KEY)
         if not isinstance(overlays, dict):
             return None

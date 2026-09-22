@@ -14,6 +14,7 @@ from evander.messaging.teams_auth import (
     DeviceCodeLoginSession,
     MicrosoftDeviceCodeAuthConfig,
     TeamsAuthCredentials,
+    TeamsAuthenticationRequiredError,
     TeamsDeviceCodeTokenProvider,
 )
 
@@ -230,14 +231,24 @@ class TeamsAdminService:
             _, config, identity_id, provider = self._teams_auth_provider_for_directory(
                 directory_path
             )
-            entries.append(
-                self._teams_auth_payload(
-                    directory_path=directory_path,
-                    config=config,
-                    identity_id=identity_id,
-                    credentials=provider.load_credentials(),
-                )
+            unavailable = False
+            try:
+                credentials = provider.load_credentials()
+            except TeamsAuthenticationRequiredError:
+                # Administration must still list other identities when one record
+                # is disabled, deleted or no longer usable with its live binding.
+                # Do not change the token provider's fail-closed retrieval path.
+                credentials = None
+                unavailable = True
+            entry = self._teams_auth_payload(
+                directory_path=directory_path,
+                config=config,
+                identity_id=identity_id,
+                credentials=credentials,
             )
+            if unavailable:
+                entry["status"] = "unavailable"
+            entries.append(entry)
         return entries
 
     def list_channels(

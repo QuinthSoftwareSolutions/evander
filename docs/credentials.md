@@ -82,6 +82,12 @@ the UI writes explicit `null` environment fields to clear inherited sources.
 `bearer_env`, `api_key_header_env`, `basic_env`, and environment-backed OAuth profiles remain
 explicit compatibility modes. A managed reference never falls back to them.
 
+Response reflection checks protect tokens, client secrets, Basic passwords and encoded
+Basic authorization, not public OAuth client IDs or ordinary Basic usernames. For
+API-key-as-username Basic authentication with the conventional dummy password `X`
+(including Freshservice), the username is protected as the secret and `X` is not
+treated as a secret substring in ticket or attachment content.
+
 Bindings cover connector identity, destinations, OAuth parameters and operation definitions.
 A child can inherit an approved reference, but cannot redeclare it as its own, change its
 destination and reuse the parent's authority, or edit the parent's stored values. It can
@@ -105,6 +111,9 @@ that credential's row to start or complete sign-in, or sign out. Each row addres
 credential, including shared identities whose owner is not a Teams consumer. The owner's
 directory configuration and other Teams accounts are unaffected. The existing Teams sign-in
 panel continues to address the identity configured for the selected directory.
+The Teams identity list marks a disabled, deleted or otherwise unusable managed
+credential as `unavailable` and continues listing the remaining identities. Token
+retrieval still fails closed for the unavailable credential.
 An existing JSON file containing credentials must go through maintenance migration.
 An empty `{}` placeholder created by runtime assembly, or an empty encrypted legacy
 envelope with its valid key, is signed out and can prepare managed sign-in directly.

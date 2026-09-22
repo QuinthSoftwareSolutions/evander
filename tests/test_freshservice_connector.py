@@ -21,6 +21,11 @@ from evander.connectors.service import (
 from evander.models import SessionManifest, ToolName
 from evander_freshservice_addon import register_addon
 from evander_freshservice_addon.connector import FreshserviceConnectorDriver
+from evander.connectors.models import ConnectorAuthProfile
+from evander.credentials.bindings import connector_binding
+from test_managed_credentials_integrations import custody as custody_fixture
+
+custody = custody_fixture
 
 
 def _operation(
@@ -164,6 +169,40 @@ def test_freshservice_addon_registers_connector_driver() -> None:
 
     assert registration.addon_id == "freshservice-addon"
     assert registry.driver_names == ("filesystem", "freshservice", "rest")
+
+
+@pytest.mark.parametrize("reflected", [None, "api_key", "basic_header"])
+def test_managed_freshservice_dummy_password_does_not_reject_ticket_content(custody, reflected):
+    import base64
+
+    config = _config(operations={"get_ticket": _operation("get_ticket")})
+    profile = config.auth_profiles["freshservice-readonly"]
+    key = "synthetic-freshservice-api-key"
+    encoded = base64.b64encode(f"{key}:X".encode()).decode()
+    title = {None: "XML export request", "api_key": key, "basic_header": encoded}[reflected]
+    record = custody.create(
+        owner="root/techops", kind="connector", label="Freshservice",
+        bindings=[connector_binding("freshservice-readonly", "freshservice", profile, config.connectors["freshservice"])],
+        values={"username": key, "password": "X"},
+    )
+    config.auth_profiles["freshservice-readonly"] = ConnectorAuthProfile(
+        type="basic", credential_ref=record["id"],
+    )
+    service = _service(custody.runtime_dir, config, lambda request: httpx.Response(
+        200, json={"ticket": {"id": 1, "subject": title}},
+    ))
+
+    def invoke():
+        return asyncio.run(service.invoke(
+            session=_session(["get_ticket"]), connector_id="freshservice",
+            operation_name="get_ticket", arguments={"ticket_id": 1},
+        ))
+
+    if reflected:
+        with pytest.raises(ConnectorInvocationError, match="Managed connector request failed"):
+            invoke()
+    else:
+        assert "XML export request" in json.dumps(invoke().value)
 
 
 def test_freshservice_example_config_is_valid() -> None:

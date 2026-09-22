@@ -21,6 +21,7 @@ from evander.privacy.models import (
     PrivacySettings,
     PrivacyUnsupported,
     RecordReference,
+    merge_privacy_settings,
     now_utc,
     revision,
 )
@@ -303,14 +304,22 @@ class PrivacyAdminService:
 
     def _configure(self, scope, payload):
         self._fields(payload, {"config"}, {"config"})
-        candidate = self._model(PrivacySettings, payload["config"])
+        overlay = self._model(PrivacySettings, payload["config"]).model_dump(
+            mode="json", exclude_unset=True
+        )
+        inherited = (
+            self._settings(scope.rsplit("/", 1)[0]) if scope != "root" else PrivacySettings()
+        )
+        candidate = self._model(
+            PrivacySettings, merge_privacy_settings(inherited.model_dump(mode="json"), overlay)
+        )
         if scope != "root":
             root = self._settings("root")
             if set(candidate.enabled_categories) - set(root.enabled_categories):
                 raise PrivacyError("Directory categories cannot exceed installation categories")
             if root.mode == "enforce" and candidate.mode != "enforce":
                 raise PrivacyError("Directory policy cannot weaken installation enforcement")
-            if any(rule.scheduled for rule in candidate.retention.values()):
+            if any(candidate.retention[key].scheduled for key in overlay.get("retention", {})):
                 raise PrivacyUnsupported(
                     "Scheduled source-expiry cleanup is installation-owned; use root policy"
                 )
@@ -324,13 +333,13 @@ class PrivacyAdminService:
                 raise PrivacyError(
                     "Artifact expiry is owned by stored expires_at; do not duplicate its period"
                 )
-        if candidate.mode == "enforce":
+        if candidate.mode == "enforce" and self._settings(scope).mode != "enforce":
             raise PrivacyUnsupported(
                 "Installation-wide enforcement cannot be activated here until all enabled outbound "
                 "paths are covered. Instrumented-route policies can be tested in isolated deployments."
             )
         result = self.operations.write_directory_domain_config(
-            scope, "privacy", {"privacy": candidate.model_dump(mode="json")}
+            scope, "privacy", {"privacy": overlay}
         )
         if not result.ok:
             if any(

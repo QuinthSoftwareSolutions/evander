@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -66,6 +67,17 @@ class PrivacySettings(StrictModel):
         if not values or any(not value.strip() or len(value) > 80 for value in values):
             raise ValueError("enabled categories must be nonempty short identifiers")
         return sorted(set(values))
+
+
+def merge_privacy_settings(inherited: dict, overlay: dict) -> dict:
+    """Apply a privacy overlay using directory config's recursive mapping merge."""
+    merged = deepcopy(inherited)
+    for key, value in overlay.items():
+        if isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = merge_privacy_settings(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
 
 
 class DatasetDescriptor(StrictModel):

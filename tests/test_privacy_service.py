@@ -102,6 +102,44 @@ def test_defaults_are_report_only_no_scheduled_deletion(service):
     assert store.blob_path(record.artifact_id).exists()
 
 
+@pytest.mark.parametrize("mode", ["report_only", "enforce"])
+def test_child_privacy_config_inherits_root_and_preserves_only_supplied_overrides(service, mode):
+    service.resolver.directory_service.create(parent="root", name="child")
+    root = {
+        "mode": mode, "enabled_categories": ["code"], "export_ttl_days": 9,
+        "retention": {"communication_artifacts": {
+            "approved": True, "approval_reference": "root-review", "scheduled": True,
+        }},
+    }
+    service.resolver.config_store.write("root", domain="privacy", payload={"privacy": root})
+    result = action(service, "configure", {"config": {"export_ttl_days": 2}}, scope="root/child")
+    assert result["status"] == "published"
+    snapshot = service.snapshot("root/child")
+    assert snapshot["config"] == {"export_ttl_days": 2}
+    assert snapshot["effective_config"] == {**service.snapshot("root")["effective_config"], "export_ttl_days": 2}
+    action(service, "configure", {"config": {}}, scope="root/child")
+    assert service.snapshot("root/child")["effective_config"]["export_ttl_days"] == 9
+    with pytest.raises(PrivacyError, match="categories cannot exceed"):
+        action(service, "configure", {"config": {"enabled_categories": ["other"]}}, scope="root/child")
+    if mode == "enforce":
+        with pytest.raises(PrivacyError, match="cannot weaken"):
+            action(service, "configure", {"config": {"mode": "report_only"}}, scope="root/child")
+
+
+def test_replacing_privacy_overlay_uses_nearest_parent_not_previous_local_values(service):
+    service.resolver.directory_service.create(parent="root", name="parent")
+    service.resolver.directory_service.create(parent="root/parent", name="child")
+    action(service, "configure", {"config": {"enabled_categories": ["code", "contact"]}})
+    action(service, "configure", {"config": {"enabled_categories": ["contact"], "export_ttl_days": 8}}, scope="root/parent")
+    action(service, "configure", {"config": {"enabled_categories": ["code"]}}, scope="root/parent/child")
+    action(service, "configure", {"config": {"export_ttl_days": 3}}, scope="root/parent/child")
+    snapshot = service.snapshot("root/parent/child")
+    assert snapshot["config"] == {"export_ttl_days": 3}
+    assert snapshot["effective_config"]["enabled_categories"] == ["contact"]
+    action(service, "configure", {"config": {}}, scope="root/parent/child")
+    assert service.snapshot("root/parent/child")["effective_config"]["export_ttl_days"] == 8
+
+
 def test_preview_requires_policy_and_separate_approval(service):
     store, record = artifact(service)
     preview = action(service, "retention.preview", {"dataset": "communication_artifacts"})

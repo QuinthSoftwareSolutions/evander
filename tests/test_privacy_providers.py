@@ -90,6 +90,10 @@ def test_missing_runtime_report_only_does_not_create_files(tmp_path):
 
 @pytest.mark.parametrize("mode", ["report_only", "enforce"])
 def test_subscription_policy_reads_on_read_only_runtime_and_observes_revocation(tmp_path, monkeypatch, mode):
+    from evander.privacy import providers
+
+    tick = [100.0]
+    monkeypatch.setattr(providers, "monotonic", lambda: tick[0])
     config = GatewayConfig(runtime_dir=tmp_path)
     directories = DirectoryStore(config.directories_store_path)
     directories.ensure_root()
@@ -120,6 +124,7 @@ def test_subscription_policy_reads_on_read_only_runtime_and_observes_revocation(
         if revoked:
             settings["provider_policy"]["approvals"][0]["status"] = "revoked"
             store.write("root", domain="privacy", payload={"privacy": settings})
+            tick[0] += 1.0
         before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
         with monkeypatch.context() as readonly:
             readonly.setattr(Path, "open", read_only_open)
@@ -210,7 +215,11 @@ def test_policy_reloaded_from_revisioned_directory_store(tmp_path):
     assert not guard.check(**DISPATCH).allowed
 
 
-def test_subscription_union_cannot_hide_unknown_child_categories(tmp_path):
+def test_subscription_union_cannot_hide_unknown_child_categories(tmp_path, monkeypatch):
+    from evander.privacy import providers
+
+    tick = [100.0]
+    monkeypatch.setattr(providers, "monotonic", lambda: tick[0])
     config = GatewayConfig(runtime_dir=tmp_path)
     directories = DirectoryStore(config.directories_store_path)
     directories.ensure_root()
@@ -237,7 +246,79 @@ def test_subscription_union_cannot_hide_unknown_child_categories(tmp_path):
     store.write(
         "root/child", domain="privacy", payload={"privacy": {"enabled_categories": ["unknown"]}}
     )
+    tick[0] += 1.0
     assert not guard.check(**dispatch).allowed
+
+
+def test_subscription_snapshot_reuses_linear_directory_resolution_and_expires(tmp_path, monkeypatch):
+    from evander.models import Directory
+    from evander.privacy import providers
+
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directories = DirectoryStore(config.directories_store_path)
+    directories.write_all({
+        "root": Directory(id="root", name="root"),
+        **{f"d{i}": Directory(id=f"d{i}", name=f"d{i}", parent_id="root") for i in range(200)},
+    })
+    store = DirectoryConfigStore(directories, runtime_dir=tmp_path)
+    settings = policy(
+        provider="codex_subscription", endpoint="https://chatgpt.com",
+        connection_id="subscription:installation", capability="codex_subscription",
+    )
+    store.write("root", domain="privacy", payload={"privacy": settings})
+    tick = [100.0]
+    monkeypatch.setattr(providers, "monotonic", lambda: tick[0], raising=False)
+    guard = runtime_provider_guard(tmp_path)
+    calls = []
+    read_all = DirectoryStore.read_all
+
+    def counted_read_all(self):
+        calls.append(True)
+        return read_all(self)
+
+    dispatch = {
+        "provider": "codex_subscription", "endpoint": "https://chatgpt.com",
+        "connection_id": "subscription:installation", "capability": "codex_subscription",
+        "directory_path": None, "installation_wide": True,
+    }
+    with monkeypatch.context() as counter:
+        counter.setattr(DirectoryStore, "read_all", counted_read_all)
+        for _ in range(3):
+            assert guard.check(**dispatch).allowed
+    assert len(calls) <= 4, "Resolve the registry once, not for every child and tunnel read"
+    settings["provider_policy"]["approvals"][0]["status"] = "revoked"
+    store.write("root", domain="privacy", payload={"privacy": settings})
+    tick[0] += 1.0
+    assert not guard.check(**dispatch).allowed
+    config.directories_store_path.write_text("{}")
+    tick[0] += 1.0
+    assert guard.check(**dispatch).reason == "policy_unavailable"
+
+
+def test_subscription_cached_policy_still_checks_approval_expiry(tmp_path, monkeypatch):
+    from evander.privacy import providers
+
+    monkeypatch.setattr(providers, "monotonic", lambda: 100.0)
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directories = DirectoryStore(config.directories_store_path)
+    directories.ensure_root()
+    settings = policy(
+        provider="codex_subscription", endpoint="https://chatgpt.com",
+        connection_id="subscription:installation", capability="codex_subscription",
+    )
+    now = datetime.now(UTC)
+    settings["provider_policy"]["approvals"][0]["expires_at"] = (now + timedelta(milliseconds=100)).isoformat()
+    DirectoryConfigStore(directories, runtime_dir=tmp_path).write("root", domain="privacy", payload={"privacy": settings})
+    guard = runtime_provider_guard(tmp_path)
+    guard.clock = lambda: now
+    dispatch = {
+        "provider": "codex_subscription", "endpoint": "https://chatgpt.com",
+        "connection_id": "subscription:installation", "capability": "codex_subscription",
+        "directory_path": None, "installation_wide": True,
+    }
+    assert guard.check(**dispatch).allowed
+    guard.clock = lambda: now + timedelta(milliseconds=101)
+    assert guard.check(**dispatch).reason == "missing_current_approval"
 
 
 @pytest.mark.parametrize(

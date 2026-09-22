@@ -364,7 +364,17 @@ class ConnectorService:
                 managed, metadata = self._managed_values(directory_path, config, connector)
             except CredentialError:
                 raise ConnectorPolicyError("Managed connector credentials are unavailable") from None
-            _MANAGED_VALUES.set(tuple(managed.values()))
+            # Only secret-bearing fields belong in the response reflection check.
+            # Usernames and OAuth client IDs are normally public identifiers.
+            # API-key-as-username Basic auth (including Freshservice) conventionally
+            # uses the literal dummy password X; protect the key, not that sentinel.
+            if profile.type == "basic":
+                secret = managed["username"] if managed["password"] == "X" else managed["password"]
+                _MANAGED_VALUES.set((secret,))
+            elif profile.type == "oauth2_client_credentials":
+                _MANAGED_VALUES.set((managed["client_secret"],))
+            else:
+                _MANAGED_VALUES.set((managed["token"],))
             if profile.type == "bearer":
                 return {"Authorization": "Bearer " + managed["token"]}
             if profile.type == "api_key_header":

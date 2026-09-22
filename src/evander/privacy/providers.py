@@ -8,6 +8,7 @@ must verify which external account that reference represents when approving it.
 from __future__ import annotations
 
 import logging
+import json
 import time
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -15,6 +16,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
+from time import monotonic
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -169,11 +172,13 @@ class ProviderDispatchGuard:
         capability: str,
         installation_wide: bool = False,
     ) -> ProviderDispatchDecision:
-        """Re-read policy on every call; never accept guest-provided categories.
+        """Check current policy on every call; never accept guest-provided categories.
 
         Loader order is root followed by effective directory settings. Every
         applicable enforcing layer must approve; a child cannot loosen root.
         Subscription dispatch checks the union of all returned directory labels.
+        Its loader may reuse a snapshot for at most one second; approval expiry
+        is still evaluated on every check, including checks on open tunnels.
         """
         try:
             layers = tuple(self.settings_loader(directory_path))
@@ -258,6 +263,29 @@ class ProviderDispatchGuard:
         return decision
 
 
+def _subscription_settings_cache(loader: Callable[[str | None], Sequence[Any]]):
+    """Share a bounded read-only snapshot across a proxy's concurrent tunnels."""
+    lock = Lock()
+    expires_at = float("-inf")
+    cached: tuple[Any, ...] = ()
+
+    def load(directory_path: str | None) -> Sequence[Any]:
+        nonlocal expires_at, cached
+        if directory_path is not None:
+            return loader(directory_path)
+        with lock:
+            now = monotonic()
+            if now >= expires_at:
+                # Expiry is measured from the start of resolution, not its end.
+                # Never fall back to an expired approval if reloading fails.
+                cached = ()
+                cached = tuple(loader(None))
+                expires_at = now + 1.0
+            return cached
+
+    return load
+
+
 def config_provider_guard(config: Any) -> ProviderDispatchGuard:
     """Read authoritative directory policy without creating files on dispatch."""
 
@@ -303,14 +331,21 @@ def config_provider_guard(config: Any) -> ProviderDispatchGuard:
                 raise ValueError("invalid privacy directory configuration")
             return resolution.effective_config["privacy"]
 
-        root = resolve("root")
         if directory_path is None:
             # CONNECT cannot attribute a customer/session. Include every child,
             # including dormant ones, rather than guessing which traffic is live.
-            return [root, *(resolve(item.path) for item in service.list_descendants("root"))]
+            # Identical inherited dispatch policies need only be checked once.
+            policies = {}
+            for settings in resolver.resolve_privacy_tree().values():
+                relevant = {key: settings[key] for key in (
+                    "mode", "enabled_categories", "provider_policy",
+                )}
+                policies.setdefault(json.dumps(relevant, sort_keys=True), relevant)
+            return list(policies.values())
+        root = resolve("root")
         return [root] if directory_path == "root" else [root, resolve(directory_path)]
 
-    return ProviderDispatchGuard(load)
+    return ProviderDispatchGuard(_subscription_settings_cache(load))
 
 
 def runtime_provider_guard(runtime_dir: Path) -> ProviderDispatchGuard:
@@ -327,4 +362,4 @@ def runtime_provider_guard(runtime_dir: Path) -> ProviderDispatchGuard:
         )
         return config_provider_guard(config).settings_loader(directory_path)
 
-    return ProviderDispatchGuard(load)
+    return ProviderDispatchGuard(_subscription_settings_cache(load))
