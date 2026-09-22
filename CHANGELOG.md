@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-22 - Recover releases with pinned integration and verifier evidence (0.59.0)
+
+- Add contextual, revision-gated release reintegration in Admin Web and MCP, preserving
+  accepted contributions and work lineage. Project policy controls ownership and retirement.
+- Restart interrupted verifier command sequences in bounded fresh workspace generations,
+  preserving history and rejecting stale progress/results.
+- Separate raw execution outcomes from optional structured verification policy, including
+  explicit baseline exceptions and configurable correction versus blocking decisions.
+- Retain redacted verifier output and local evidence before session cleanup, with historical
+  log lookup and visible toolchain identities. Immediately wake operator dependency recovery.
+- Stage and validate immutable worker .NET bundles, atomically switch selectors and pin
+  resolved mounts per session. Keep project-specific evaluators in operator-owned
+  configuration outside this repository.
+
 ## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
 
 - Maintain an incremental Team cost report with exact request deduplication, attribution,

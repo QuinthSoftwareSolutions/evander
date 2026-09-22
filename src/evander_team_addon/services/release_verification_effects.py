@@ -9,6 +9,7 @@ from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvi
 from evander.effects.providers.agent_create import AgentCreateEffectProvider
 from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
+from evander.effects.providers.agent_session import container_backend, effective_config_for_session
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
@@ -175,6 +176,12 @@ class EffectReleaseVerificationExecutor:
         )
         provider.set_container_execution_started_callback(on_started)
         return _execute_provider(provider)
+
+    def read_artifact(self, *, session_id: str, relative_path: str) -> str:
+        config = effective_config_for_session(self._runtime_context, session_id)
+        return container_backend(self._runtime_context, config).read_session_artifact_text(
+            session_id=session_id, relative_path=relative_path,
+        )
 
     def destroy_verifier(self, *, run_id: str, session_id: str) -> None:
         provider = AgentDestroyEffectProvider()

@@ -750,6 +750,7 @@ class ContainerWorkerVmExecutionBackend:
             "worker_terminal_kind",
             "active_tool",
             "active_tool_interruption",
+            "read_only_mounts",
         ):
             if key in worker_metadata:
                 metadata[key] = worker_metadata[key]

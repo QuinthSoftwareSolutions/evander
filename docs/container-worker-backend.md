@@ -1,5 +1,10 @@
 # Container Worker Backend
 
+Read-only toolchain mount sources are pinned per session. The .NET provisioner validates
+immutable bundles before atomically selecting one for future sessions. See
+[release recovery and toolchain rollout](release-recovery-and-verifier-policy.md#immutable-worker-sdk-rollout)
+for migration, drain, retention and rollback precautions.
+
 `evander-worker-daemon` is the worker-VM side of the container execution backend. It exposes a small HTTP API for starting, inspecting, stopping, deleting, and reading logs for jobs that run inside disposable Docker containers.
 
 The daemon is intentionally primarily an execution envelope. It does not receive control-plane

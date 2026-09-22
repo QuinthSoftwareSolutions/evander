@@ -1989,6 +1989,11 @@ def _accepted_contribution_deliverables(
             and deliverable.state == TeamRecordState.ACCEPTED
             and deliverable.superseded_by_deliverable_id is None
             and (
+                not task.deliverable_contract
+                or not task.deliverable_contract.pinned_source_deliverable_ids
+                or deliverable.id in task.deliverable_contract.pinned_source_deliverable_ids
+            )
+            and (
                 not legacy_direct_child_policy
                 or deliverable.completion is None
                 or deliverable.completion.kind != TaskCompletionKind.EVIDENCED_NOOP

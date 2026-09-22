@@ -1,5 +1,8 @@
 # Operations
 
+For contextual release reintegration, verifier recovery, retained logs and staged worker
+toolchain rollout, see [Release recovery and verifier policy](release-recovery-and-verifier-policy.md).
+
 For effect handoff timing, bounded recovery scheduling, and deployment verification, see
 [Orchestration latency and recovery](orchestration-latency.md).
 

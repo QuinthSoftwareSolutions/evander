@@ -3233,7 +3233,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request,
             state,
             status_code=201,
-            extra={"dependency_composition_recovery": result},
+            extra={
+                "dependency_composition_recovery": result,
+                "outbox_publication_wake": _request_team_outbox_publication(
+                    context,
+                    correlation_key=f"dependency-composition-recovery:{blocker_id}:{state.revision}",
+                ),
+            },
         )
 
     async def create_outcome_kind_definition(
@@ -4116,6 +4122,45 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             }
         )
 
+    async def case_reintegration_candidates(request: Request) -> JSONResponse:
+        from .services.reintegration_service import TeamReintegrationService
+
+        current = repository.read()
+        case = current.cases.get(request.path_params["case_id"])
+        project = current.projects.get(case.project_id) if case else None
+        if project is None:
+            return JSONResponse({"error": "project-scoped case not found"}, status_code=404)
+        if not _auth_can(context.auth, request, ADMIN_OWNER_PERMISSION, directory_path=project.directory_path):
+            return JSONResponse({"error": "Directory owner permission required"}, status_code=403)
+        candidates = await run_in_threadpool(TeamReintegrationService(admin_service).candidates_for_case, case.id)
+        return JSONResponse({"candidates": candidates})
+
+    async def reintegrate_release(request: Request) -> JSONResponse:
+        from .services.reintegration_service import TeamReintegrationService
+
+        payload = await _read_payload(request)
+        current = repository.read()
+        release_id = request.path_params["release_package_id"]
+        release = current.release_packages.get(release_id)
+        if release is None:
+            return JSONResponse({"error": "release not found"}, status_code=404)
+        project = current.projects[release.project_id]
+        if not _auth_can(context.auth, request, ADMIN_OWNER_PERMISSION, directory_path=project.directory_path):
+            return JSONResponse({"error": "Directory owner permission required"}, status_code=403)
+        service = TeamReintegrationService(admin_service)
+        if payload.get("action", "preview") == "preview":
+            preview = await run_in_threadpool(service.preview, release_id, owner_agent_id=payload.get("owner_agent_id"))
+            return JSONResponse({"preview": preview})
+        preview = payload.get("preview")
+        if payload.get("action") != "submit" or not isinstance(preview, dict) or preview.get("release_package_id") != release_id:
+            raise ValueError("invalid reintegration action or preview")
+        updated, result = await run_in_threadpool(service.submit,
+            preview=payload["preview"], actor_id=_operator_actor_from_request(context.auth, request),
+            request_id=_required(payload, "request_id"))
+        result["outbox_publication_wake"] = _request_team_outbox_publication(context,
+            correlation_key=f"reintegration:{result['task_id']}")
+        return _state_response(request, updated, extra={"reintegration": result})
+
     async def get_release_package(request: Request) -> JSONResponse:
         state = repository.read()
         release = state.release_packages.get(request.path_params["release_package_id"])
@@ -4160,6 +4205,25 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 {"error": "Live verification output is restricted to directory owners."},
                 status_code=403,
             )
+        from .services.verification_logs import read_verification_log
+
+        requested_job = request.query_params.get("job_id")
+        if requested_job:
+            matching = any(
+                row.get("job_id") == requested_job
+                for run_id in release.verification_run_ids
+                if (run := state.release_verification_runs.get(run_id)) is not None
+                for row in [
+                    *(c.model_dump() for c in run.command_results),
+                    *(c for generation in run.generation_history for c in generation.get("command_results", [])),
+                ]
+            )
+            if not matching:
+                return JSONResponse({"error": "verification job not found"}, status_code=404)
+            retained = await run_in_threadpool(read_verification_log, Path(context.runtime_dir), requested_job)
+            if retained is None:
+                return JSONResponse({"error": "retained log unavailable or expired"}, status_code=404)
+            return JSONResponse({"log": {"available": True, "retained": True, "text": retained}})
         runtime = _runtime_from_context(context)
         payload = await run_in_threadpool(
             _release_verification_live_payload,
@@ -4801,6 +4865,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ),
         route("/release-packages", create_release_package, methods=["POST"]),
         route("/release-packages", list_release_packages, methods=["GET"]),
+        route("/cases/{case_id}/reintegration-candidates", case_reintegration_candidates, methods=["GET"]),
+        route("/release-packages/{release_package_id}/reintegration", reintegrate_release, methods=["POST"]),
         route(
             "/human-review-requests",
             list_human_review_requests,

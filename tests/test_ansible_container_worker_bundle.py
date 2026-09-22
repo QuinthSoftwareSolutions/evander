@@ -762,3 +762,33 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "evander-npm-audit-facade" in worker_docs
     assert "dedicated container-worker VM playbook" in readme
     assert "dedicated container-worker VM playbook" in operations
+
+
+def test_dotnet_bundle_selector_only_publishes_validated_directories(tmp_path):
+    import yaml
+
+    tasks = yaml.safe_load(
+        (ROOT / "ansible/roles/worker_dotnet_toolchain/tasks/main.yml").read_text()
+    )
+    task = next(
+        row
+        for row in tasks
+        if row["name"] == "Atomically select validated dotnet bundle for future sessions"
+    )
+    script = task["ansible.builtin.command"]["argv"][2]
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    selector = tmp_path / "current"
+    selector.symlink_to(old)
+    args = ["python3", "-c", script, str(new), str(selector)]
+    failed = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    assert failed.returncode != 0
+    assert selector.resolve() == old
+    (new / ".complete").write_text("validated")
+    passed = subprocess.run(args, capture_output=True, text=True, timeout=10, check=True)
+    assert "selected" in passed.stdout
+    assert selector.resolve() == new
+    assert old.is_dir()
+    repeated = subprocess.run(args, capture_output=True, text=True, timeout=10, check=True)
+    assert not repeated.stdout

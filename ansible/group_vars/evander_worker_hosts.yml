@@ -228,8 +228,9 @@ evander_runner_image_archives:
 # creates these directories and seeds the .NET, Node, and Playwright caches.
 # Operators can still populate NuGet fallback package artifacts out-of-band.
 evander_worker_toolchain_cache_root: "{{ evander_worker_root }}/toolchain-cache"
-evander_worker_dotnet_cache_path: "{{ evander_worker_toolchain_cache_root }}/dotnet"
-evander_worker_dotnet_tools_cache_path: "{{ evander_worker_toolchain_cache_root }}/dotnet-tools"
+evander_worker_dotnet_bundle_selector: "{{ evander_worker_toolchain_cache_root }}/dotnet-current"
+evander_worker_dotnet_cache_path: "{{ evander_worker_dotnet_bundle_selector }}/sdk"
+evander_worker_dotnet_tools_cache_path: "{{ evander_worker_dotnet_bundle_selector }}/tools"
 evander_worker_node_cache_path: "{{ evander_worker_toolchain_cache_root }}/node-v24.14.0"
 evander_worker_playwright_runtime_cache_path: "{{ evander_worker_toolchain_cache_root }}/playwright-runtime"
 evander_worker_playwright_browsers_cache_path: "{{ evander_worker_toolchain_cache_root }}/ms-playwright"

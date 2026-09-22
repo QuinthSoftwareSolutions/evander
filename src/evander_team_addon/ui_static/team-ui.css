@@ -8475,3 +8475,12 @@ label textarea {
     border-bottom: 1px solid var(--line);
   }
 }
+dialog.team-reintegration-dialog {
+  max-width: min(42rem, 90vw);
+  max-height: 85vh;
+  overflow: auto;
+  padding: 1.5rem;
+  border-radius: 0.75rem;
+}
+dialog.team-reintegration-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+dialog.team-reintegration-dialog .actions { display: flex; gap: 0.75rem; }

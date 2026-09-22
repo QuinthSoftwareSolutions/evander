@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import re
 import subprocess
@@ -553,7 +554,11 @@ class DockerContainerRuntime:
             args.extend(["-v", subscription_completion_mount])
         for mount in subscription_config_mounts:
             args.extend(["-v", mount])
-        for mount in self.read_only_mounts:
+        pinned_mounts = self._session_read_only_mounts(paths)
+        record.metadata["read_only_mounts"] = [
+            {"source": mount.host_path, "target": mount.container_path} for mount in pinned_mounts
+        ]
+        for mount in pinned_mounts:
             args.extend(["-v", mount.docker_volume_arg])
         for cap in self.sandbox_profile.cap_drop:
             args.extend(["--cap-drop", cap])
@@ -585,6 +590,53 @@ class DockerContainerRuntime:
         args.append(request.image)
         args.extend(request.command)
         return args
+
+    def _session_read_only_mounts(self, paths: WorkerSessionPaths) -> tuple[WorkerReadOnlyMount, ...]:
+        """Pin host-selected toolchain paths across all jobs in a session."""
+        if not self.read_only_mounts:
+            return ()
+        snapshot = paths.root / "readonly-mounts.json"
+        lock_path = paths.root / "readonly-mounts.lock"
+        for path in (snapshot, lock_path):
+            ensure_resolved_path_within(base=paths.root, candidate=path, description="mount snapshot")
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            selected = json.loads(snapshot.read_text()) if snapshot.exists() else {}
+            mounts = []
+            resolved_paths: dict[Path, Path] = {}
+
+            def resolve_once(path: Path) -> Path:
+                # Resolve shared selectors only once, even if the operator
+                # switches one between resolving the SDK and tools children.
+                if path not in resolved_paths:
+                    resolved_paths[path] = (
+                        path if path.parent == path
+                        else (resolve_once(path.parent) / path.name).resolve()
+                    )
+                return resolved_paths[path]
+
+            for mount in self.read_only_mounts:
+                key = mount.docker_volume_arg
+                # Only configured mounts are eligible; removing a grant removes access.
+                if key not in selected:
+                    selected[key] = str(resolve_once(Path(mount.host_path)))
+                source = selected[key]
+                if source != mount.host_path and not Path(source).exists():
+                    raise ValueError("pinned read-only bundle is missing; refusing an empty replacement mount")
+                mounts.append(validate_worker_read_only_mount(WorkerReadOnlyMount(
+                    host_path=source, container_path=mount.container_path,
+                )))
+            temporary = snapshot.with_name(f".readonly-mounts-{uuid4().hex}")
+            try:
+                with temporary.open("x") as stream:
+                    os.chmod(temporary, 0o600)
+                    json.dump(selected, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, snapshot)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return tuple(mounts)
 
     def _container_identity_mounts(self, paths: WorkerSessionPaths) -> list[str]:
         identity = _numeric_container_identity(self.sandbox_profile.user)
