@@ -425,29 +425,60 @@ render_unit() {
     "${template}" > "${target}"
 }
 
-grant_local_secrets_git_access() {
+restrict_local_secrets_git_access() {
   local secrets_file="$1"
   local git_user="${EVANDER_GIT_USER:-${RUN_USER}}"
-  local secrets_dir git_group
-
+  local git_uid run_uid
   [[ -f "${secrets_file}" ]] || return 0
   [[ -n "${git_user}" ]] || return 0
-  if ! id "${git_user}" >/dev/null 2>&1; then
-    echo "Warning: cannot grant Git SSH access to ${secrets_file}; user ${git_user} does not exist." >&2
+  git_uid="$(id -u "${git_user}" 2>/dev/null)" || return 0
+  run_uid="$(id -u "${RUN_USER}" 2>/dev/null)" || return 0
+  if [[ "${git_uid}" == "${run_uid}" ]]; then
+    echo "Git shares the control-plane account; account-level secret isolation is unavailable."
     return 0
   fi
-
-  secrets_dir="$(dirname "${secrets_file}")"
+  # Git refresh runs through the authenticated socket; Git needs no shared env.
   if command -v setfacl >/dev/null 2>&1; then
-    setfacl -m "u:${git_user}:--x" "${secrets_dir}"
-    setfacl -m "u:${git_user}:r--" "${secrets_file}"
-    return 0
+    setfacl -x "u:${git_user}" "${secrets_file}" 2>/dev/null || true
+    setfacl -x "u:${git_user}" "$(dirname "${secrets_file}")" 2>/dev/null || true
+    setfacl -m 'g::---,o::---' "${secrets_file}"
+  else
+    chmod 0600 "${secrets_file}"
   fi
+}
 
-  git_group="$(id -gn "${git_user}")"
-  chgrp "${git_group}" "${secrets_dir}" "${secrets_file}"
-  chmod 0710 "${secrets_dir}"
-  chmod 0640 "${secrets_file}"
+configure_credential_delivery() {
+  local key_source="${EVANDER_CREDENTIALS_KEY_SOURCE:-/etc/evander/credentials/master.key}"
+  local credstore="${EVANDER_CREDENTIALS_CREDSTORE_DIR:-/etc/credstore}"
+  local unit dropin
+  if [[ -f "${key_source}" ]]; then
+    if [[ "${key_source}" != "$(realpath -e -- "${key_source}")" ]] || \
+        [[ "$(stat -c '%u:%a:%s' -- "${key_source}")" != "0:600:32" && \
+           "$(stat -c '%u:%a:%s' -- "${key_source}")" != "0:400:32" ]]; then
+      echo "Credential key source must be a root-owned private 32-byte regular file without symlinks." >&2
+      exit 1
+    fi
+    install -d -m 0700 "${credstore}"
+    local alias="${credstore}/evander-credentials-key"
+    if [[ -e "${alias}" || -L "${alias}" ]]; then
+      if [[ ! -L "${alias}" || "$(readlink "${alias}")" != "${key_source}" ]]; then
+        echo "Credential source already exists; reconcile its protected key path before installing." >&2
+        exit 1
+      fi
+    else
+      ln -s -- "${key_source}" "${alias}"
+    fi
+  fi
+  for unit in evander-gateway.service evander-admin-web.service \
+      evander-effect-orchestrator.service evander-trigger-orchestrator.service \
+      evander-teams-ingest.service evander-teams-notifications.service \
+      evander-teams-meeting-ingest.service; do
+    dropin="${SYSTEMD_DIR}/${unit}.d"
+    install -d -m 0755 "${dropin}"
+    # Import only this named credential. Its absence permits metadata diagnostics;
+    # dependent application operations fail closed when they cannot read the key.
+    printf '[Service]\nImportCredential=evander-credentials-key\n' > "${dropin}/30-credential-store.conf"
+  done
 }
 
 configure_local_secrets() {
@@ -455,7 +486,7 @@ configure_local_secrets() {
     return
   fi
 
-  grant_local_secrets_git_access "${LOCAL_SECRETS_FILE}"
+  restrict_local_secrets_git_access "${LOCAL_SECRETS_FILE}"
 
   local unit dropin_dir dropin_path
   for unit in "${EVANDER_UNITS[@]}"; do
@@ -469,6 +500,7 @@ configure_local_secrets() {
 }
 
 configure_local_secrets
+configure_credential_delivery
 
 render_unit \
   "${ROOT_DIR}/systemd/evander-gateway.service.template" \

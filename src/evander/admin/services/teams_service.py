@@ -8,10 +8,10 @@ from urllib.parse import quote
 import httpx
 
 from evander.config import GatewayConfig
+from evander.credentials.teams import teams_credential_store, teams_owner_credential_store
 from evander.directories import DirectoryService
 from evander.messaging.teams_auth import (
     DeviceCodeLoginSession,
-    JsonTeamsIdentityCredentialStore,
     MicrosoftDeviceCodeAuthConfig,
     TeamsAuthCredentials,
     TeamsDeviceCodeTokenProvider,
@@ -78,11 +78,17 @@ class TeamsAdminService:
     def _teams_auth_provider_for_directory(
         self,
         directory_path: str | None,
+        credential_ref: str | None = None,
     ) -> tuple[str, GatewayConfig, str, TeamsDeviceCodeTokenProvider]:
         normalized_directory = self._deps.normalize_directory_reference(directory_path)
         resolved_config = self._deps.runtime.provider_config.resolve_for_directory(
             normalized_directory
         )
+        credential_store = None
+        if credential_ref is not None:
+            resolved_config, credential_store = teams_owner_credential_store(
+                resolved_config, normalized_directory, credential_ref
+            )
         if resolved_config.teams_backend != "delegated_graph_api":
             raise ValueError(
                 f"Directory '{normalized_directory}' is not configured for delegated Teams auth "
@@ -106,10 +112,7 @@ class TeamsAdminService:
                 authority_base_url=resolved_config.teams_delegated_authority_base_url,
                 timeout_seconds=resolved_config.teams_timeout_seconds,
             ),
-            JsonTeamsIdentityCredentialStore(
-                resolved_config.teams_delegated_credential_store_path,
-                identity_id,
-            ),
+            credential_store or teams_credential_store(resolved_config, normalized_directory),
         )
         return normalized_directory, resolved_config, identity_id, provider
 
@@ -144,9 +147,11 @@ class TeamsAdminService:
             return self._deps.graph_client_factory(config, provider)
         return TeamsGraphClient(config=config, token_provider=provider)
 
-    def login(self, *, directory: str = "root") -> DeviceCodeLoginSession:
+    def login(
+        self, *, directory: str = "root", credential_ref: str | None = None
+    ) -> DeviceCodeLoginSession:
         normalized_directory, config, identity_id, provider = (
-            self._teams_auth_provider_for_directory(directory)
+            self._teams_auth_provider_for_directory(directory, credential_ref)
         )
         session = provider.begin_device_code_login()
         metadata = dict(session.metadata)
@@ -165,9 +170,10 @@ class TeamsAdminService:
         *,
         directory: str = "root",
         timeout_seconds: float | None = None,
+        credential_ref: str | None = None,
     ) -> dict[str, object]:
         normalized_directory, config, identity_id, provider = (
-            self._teams_auth_provider_for_directory(directory)
+            self._teams_auth_provider_for_directory(directory, credential_ref)
         )
         credentials = provider.complete_device_code_login(
             login_session, timeout_seconds=timeout_seconds
@@ -179,9 +185,11 @@ class TeamsAdminService:
             credentials=credentials,
         )
 
-    def status(self, *, directory: str = "root") -> dict[str, object]:
+    def status(
+        self, *, directory: str = "root", credential_ref: str | None = None
+    ) -> dict[str, object]:
         normalized_directory, config, identity_id, provider = (
-            self._teams_auth_provider_for_directory(directory)
+            self._teams_auth_provider_for_directory(directory, credential_ref)
         )
         return self._teams_auth_payload(
             directory_path=normalized_directory,
@@ -190,9 +198,11 @@ class TeamsAdminService:
             credentials=provider.load_credentials(),
         )
 
-    def logout(self, *, directory: str = "root") -> dict[str, object]:
+    def logout(
+        self, *, directory: str = "root", credential_ref: str | None = None
+    ) -> dict[str, object]:
         normalized_directory, config, identity_id, provider = (
-            self._teams_auth_provider_for_directory(directory)
+            self._teams_auth_provider_for_directory(directory, credential_ref)
         )
         provider.clear_credentials()
         return {

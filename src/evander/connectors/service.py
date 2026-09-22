@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import sha256
 from inspect import isclass
@@ -33,6 +34,8 @@ from evander.connectors.models import (
 )
 from evander.connectors.registry import ConnectorCallContext, ConnectorRegistry
 from evander.models import SessionManifest
+from evander.credentials import CredentialError, CredentialStore
+from evander.credentials.bindings import connector_binding, validate_connector_values
 
 
 class ConnectorPolicyError(RuntimeError):
@@ -41,6 +44,7 @@ class ConnectorPolicyError(RuntimeError):
 
 _MAX_OAUTH_TOKEN_RESPONSE_BYTES = 64 * 1024
 _NO_REMOTE_SCHEMA_REGISTRY = Registry()
+_MANAGED_VALUES: ContextVar[tuple[str, ...]] = ContextVar("connector_managed_values", default=())
 
 
 @dataclass
@@ -108,7 +112,9 @@ class ConnectorService:
         registry: ConnectorRegistry | None = None,
         environ: Mapping[str, str] | None = None,
         auth_transport: httpx.AsyncBaseTransport | None = None,
+        credential_store: CredentialStore | None = None,
     ) -> None:
+        self.credentials = credential_store or CredentialStore(runtime_dir)
         self.runtime_dir = runtime_dir
         self.provider_config = provider_config
         self.artifact_store_factory = artifact_store_factory
@@ -164,7 +170,7 @@ class ConnectorService:
                     "connector_id": connector_id,
                     "display_name": connector.display_name,
                     "description": connector.description,
-                    "available": self.auth_status(config, connector)["available"],
+                    "available": self.auth_status(config, connector, directory_path=session.directory_path)["available"],
                     "operations": operations,
                 }
             )
@@ -216,7 +222,18 @@ class ConnectorService:
             )
         return config, connector, operation
 
-    async def invoke(
+    async def invoke(self, **kwargs) -> ConnectorInvocationResult:
+        context_token = _MANAGED_VALUES.set(())
+        try:
+            return await self._invoke(**kwargs)
+        except Exception:
+            if _MANAGED_VALUES.get():
+                raise ConnectorInvocationError("Managed connector request failed") from None
+            raise
+        finally:
+            _MANAGED_VALUES.reset(context_token)
+
+    async def _invoke(
         self,
         *,
         session: SessionManifest,
@@ -243,10 +260,11 @@ class ConnectorService:
             runtime_dir=self.runtime_dir,
             artifact_store=self.artifact_store_factory(),
             auth_headers=auth_headers,
+            sensitive_values=_MANAGED_VALUES.get(),
         )
         driver = self.registry.require(connector.driver)
         try:
-            return await driver.invoke(
+            result = await driver.invoke(
                 context=context,
                 connector_id=normalized_id,
                 definition=connector,
@@ -254,6 +272,10 @@ class ConnectorService:
                 operation=operation,
                 arguments=arguments,
             )
+            if _MANAGED_VALUES.get():
+                from evander.credentials.sanitize import reject_reflected_credentials
+                reject_reflected_credentials(result.model_dump(mode="json"), _MANAGED_VALUES.get())
+            return result
         except ConnectorUpstreamAuthenticationError:
             if not connector.auth_profile:
                 raise
@@ -277,8 +299,9 @@ class ConnectorService:
                         config=config,
                         connector=connector,
                     ),
+                    sensitive_values=_MANAGED_VALUES.get(),
                 )
-                return await driver.invoke(
+                result = await driver.invoke(
                     context=retry_context,
                     connector_id=normalized_id,
                     definition=connector,
@@ -286,6 +309,10 @@ class ConnectorService:
                     operation=operation,
                     arguments=arguments,
                 )
+                if _MANAGED_VALUES.get():
+                    from evander.credentials.sanitize import reject_reflected_credentials
+                    reject_reflected_credentials(result.model_dump(mode="json"), _MANAGED_VALUES.get())
+                return result
             except ConnectorUpstreamAuthenticationError:
                 self._oauth_tokens.pop(token_key, None)
                 raise
@@ -295,13 +322,20 @@ class ConnectorService:
             raise ConnectorInvocationError("connector upstream request failed") from exc
 
     def auth_status(
-        self, config: ConnectorDirectoryConfig, connector: ConnectorDefinition
+        self, config: ConnectorDirectoryConfig, connector: ConnectorDefinition, *, directory_path: str = "root"
     ) -> dict[str, Any]:
         if connector.auth_profile is None:
             return {"available": True, "type": "none"}
         profile = config.auth_profiles.get(connector.auth_profile)
         if profile is None:
             return {"available": False, "type": "missing"}
+        if profile.credential_ref:
+            try:
+                self._managed_values(directory_path, config, connector)
+                available = True
+            except CredentialError:
+                available = False
+            return {"available": available, "type": profile.type, "credential_ref": profile.credential_ref}
         required_envs = self._required_env_names(profile)
         missing = [name for name in required_envs if not str(self.environ.get(name) or "").strip()]
         return {
@@ -324,6 +358,21 @@ class ConnectorService:
             raise ConnectorPolicyError("connector authentication is unavailable")
         if profile.type == "none":
             return {}
+        managed = None
+        if profile.credential_ref:
+            try:
+                managed, metadata = self._managed_values(directory_path, config, connector)
+            except CredentialError:
+                raise ConnectorPolicyError("Managed connector credentials are unavailable") from None
+            _MANAGED_VALUES.set(tuple(managed.values()))
+            if profile.type == "bearer":
+                return {"Authorization": "Bearer " + managed["token"]}
+            if profile.type == "api_key_header":
+                return {str(profile.header_name): managed["token"]}
+            if profile.type == "basic":
+                encoded = base64.b64encode(f"{managed['username']}:{managed['password']}".encode()).decode()
+                _MANAGED_VALUES.set((*_MANAGED_VALUES.get(), encoded))
+                return {"Authorization": "Basic " + encoded}
         if profile.type == "bearer_env":
             return {"Authorization": f"Bearer {self._secret(profile.token_env)}"}
         if profile.type == "api_key_header_env":
@@ -335,7 +384,15 @@ class ConnectorService:
             directory_path=directory_path,
             profile_id=str(connector.auth_profile),
             profile=profile,
+            managed=managed,
+            credential_revision=metadata["revision"] if managed is not None else None,
         )
+        if managed is not None:
+            # A rotation/disable during token acquisition invalidates the result.
+            if self.credentials.metadata(profile.credential_ref)["revision"] != metadata["revision"]:
+                self._oauth_tokens.pop((directory_path, str(connector.auth_profile)), None)
+                raise ConnectorPolicyError("Managed connector credentials changed")
+            _MANAGED_VALUES.set((*_MANAGED_VALUES.get(), token))
         return {"Authorization": f"Bearer {token}"}
 
     async def _oauth_token(
@@ -344,15 +401,18 @@ class ConnectorService:
         directory_path: str,
         profile_id: str,
         profile: ConnectorAuthProfile,
+        managed: dict | None = None,
+        credential_revision: str | None = None,
     ) -> str:
         key = (directory_path, profile_id)
-        client_id = self._secret(profile.client_id_env)
-        client_secret = self._secret(profile.client_secret_env)
+        client_id = managed["client_id"] if managed is not None else self._secret(profile.client_id_env)
+        client_secret = managed["client_secret"] if managed is not None else self._secret(profile.client_secret_env)
         profile_fingerprint = self._oauth_profile_fingerprint(
             profile,
             client_id=client_id,
             client_secret=client_secret,
         )
+        profile_fingerprint += ":" + (credential_revision or "environment")
         cached = self._oauth_tokens.get(key)
         now = monotonic()
         if (
@@ -435,6 +495,21 @@ class ConnectorService:
         payload["resolved_client_secret"] = client_secret
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return sha256(encoded).hexdigest()
+
+    def _managed_values(self, directory_path, config, connector):
+        profile_id = str(connector.auth_profile)
+        profile = config.auth_profiles[profile_id]
+        connector_id = next((key for key, value in config.connectors.items() if value is connector), None)
+        if connector_id is None:
+            raise CredentialError("Connector binding is unavailable")
+        owner_resolver = getattr(self.provider_config, "connector_credential_owner", None)
+        owner = owner_resolver(directory_path, profile_id) if owner_resolver else directory_path
+        values, metadata = self.credentials.resolve(profile.credential_ref, directory=directory_path,
+            binding=connector_binding(profile_id, connector_id, profile, connector), kind="connector")
+        if metadata["owner_directory"] != owner:
+            raise CredentialError("Credential reference must be declared in its owning directory")
+        validate_connector_values(profile, values)
+        return values, metadata
 
     def _secret(self, env_name: str | None) -> str:
         normalized = str(env_name or "").strip()

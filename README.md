@@ -55,6 +55,8 @@ For decision journals, bounded wake deltas and configurable workflow context, se
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`
+- Encrypted, directory-owned Teams and connector credentials, with operator migration,
+  key recovery and restart guidance at [docs/credentials.md](docs/credentials.md)
 - An asynchronous personal Alexa-to-agent bridge at `docs/alexa-agent-bridge.md`
 - A Host Directory security and operations reference at `docs/host-directories.md`
 

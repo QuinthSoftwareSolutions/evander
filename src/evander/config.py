@@ -367,6 +367,7 @@ class GatewayConfig(BaseModel):
     teams_meeting_request_timeout_seconds: float = Field(default=15.0, gt=0)
     teams_meeting_max_active_meetings: int = Field(default=1, ge=1)
     teams_meeting_store_path: Path = Path("/var/lib/evander/teams-meetings.json")
+    teams_delegated_credential_ref: str | None = Field(default=None, pattern=r"^cred_[0-9a-f]{32}$")
     teams_delegated_identity_id: str | None = None
     teams_delegated_client_id: str | None = None
     teams_delegated_tenant_id: str = "organizations"

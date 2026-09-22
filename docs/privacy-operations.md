@@ -175,13 +175,20 @@ treated as public data.
 
 - No live service deployment or customer-data deletion is performed by this code
   change. Validate in an isolated fixture installation before enabling schedules.
-- Stop all old Teams credential writers during upgrade. Valid legacy plaintext
-  migrates on first access to an encrypted envelope at the same JSON path, with
-  `secrets/<credential-JSON-filename>.key`. Old binaries cannot read the envelope;
-  rollback requires controlled migration or reauthentication, not blind restore.
-- Back up the credential JSON and matching key together under approved custody.
-  Missing/invalid keys fail closed and are not regenerated over encrypted data.
-  Legacy plaintext backups outside the live store are unaffected by migration.
+- Stop all Teams credential consumers during upgrade, initialize the managed
+  credential store, preview `evander-cli credentials migrate --family teams`, and
+  apply it only with `--apply --maintenance`. Managed custody in
+  `runtime/credentials/credentials.db` is authoritative once a directory has a
+  `teams_delegated_credential_ref`; there is no fallback to the legacy JSON file.
+- Migration accepts both original plaintext JSON and the transitional
+  `evander.teams-credentials.fernet.v1` envelope produced by earlier privacy builds.
+  The latter requires its matching `secrets/<credential-JSON-filename>.key` and
+  fails closed if the key is missing or invalid. A successful complete import
+  retires the source and its transitional key after taking an encrypted managed-store
+  recovery snapshot. Retained identities keep both files for a later reviewed pass.
+- Back up the managed database and its external master key together under approved
+  custody. Old binaries cannot read managed references; rollback requires controlled
+  migration or reauthentication, not blind restoration of configuration.
 - Test restoration in quarantine. Reconcile authoritative controller instructions,
   completed job evidence, restrictions and external actions **manually** before
   enabling ingest/workers/outbound connections. Automated restore suppression is

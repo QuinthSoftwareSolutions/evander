@@ -248,6 +248,15 @@ class ProviderConfigResolver:
         )
         return ConnectorDirectoryConfig.model_validate(resolution.effective_config)
 
+    def connector_credential_owner(self, directory_path: str, profile_id: str) -> str:
+        resolution = self.resolver.resolve_domain(
+            self.directory_scope_resolver.resolve_directory_path(directory_path),
+            domain="connectors", base_config=get_domain_base_config(self.config, "connectors"),
+            validator=lambda candidate: validate_effective_domain_payload("connectors", candidate),
+        )
+        source = resolution.provenance.get(f"auth_profiles.{profile_id}.credential_ref")
+        return (source.directory_path or "root") if source else directory_path
+
     def resolve_host_directories_for_directory(
         self, directory_path: str | None
     ) -> HostDirectoryDirectoryConfig:

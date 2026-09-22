@@ -50,6 +50,8 @@ evander_repo_managed_untracked_config_paths: >-
   }}
 evander_deploy_path: "/opt/evander"
 evander_runtime_dir: "{{ evander_deploy_path }}/runtime"
+# Explicit opt-in: preserve an existing key, never recreate a lost store key.
+evander_initialize_credential_store: false
 evander_runtime_service_lock_files:
   - discord-ingest.lock
   - discord-wake.lock

@@ -16944,13 +16944,19 @@ when enabled</td>
 <td>Meeting integration is configured</td>
 </tr>
 <tr class="even">
+<td><code>evander-privacy-maintenance.service</code></td>
+<td><code>evander-cli privacy maintenance</code></td>
+<td>Advances bounded privacy maintenance and retry work</td>
+<td>Privacy operations are configured; normally timer-activated</td>
+</tr>
+<tr class="odd">
 <td><code>evander-trigger-orchestrator.service</code></td>
 <td><code>evander-cli trigger-orchestrator</code></td>
 <td>Polls trigger providers, validates/deduplicates, and publishes
 durable trigger events</td>
 <td>Workflow triggers are enabled</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-effect-orchestrator.service</code></td>
 <td><code>evander-effect-orchestrator</code></td>
 <td>Traverses downstream workflow nodes and executes gates, queries, and
@@ -17127,6 +17133,19 @@ workflow/effect/gate executions</td>
 <td>Model usage service and Team cost aggregation</td>
 </tr>
 <tr class="even">
+<td><code>runtime/credentials/credentials.db</code></td>
+<td>Encrypted managed Teams and connector credential bundles plus public
+metadata</td>
+<td>Managed credential store; decryption also requires the external
+master key</td>
+</tr>
+<tr class="odd">
+<td><code>runtime/privacy.db</code></td>
+<td>Privacy cases, jobs, holds, incident references, follow-ups, and
+minimal access evidence</td>
+<td>Privacy service and maintenance worker</td>
+</tr>
+<tr class="even">
 <td><code>runtime/teams-meetings.json</code></td>
 <td>Teams meeting session/projection state</td>
 <td>Teams meeting services</td>
@@ -17278,10 +17297,11 @@ and Skills; <strong>Extensions</strong> contains Add-ons, Connectors,
 Host Directories, and add-on-contributed areas;
 <strong>Infrastructure</strong> contains Subscriptions, Git
 Repositories, VMs, and Workers; and <strong>Governance</strong> contains
-Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users &amp;
-Groups. Use <strong>Find page</strong> or <code>Ctrl+K</code> /
-<code>Command+K</code> to search the currently visible built-in and
-add-on areas without changing their hash routes or directory scope.</p>
+Tool Visibility, MCP Tools, Tool Calls, Privacy, Configuration, and
+Users &amp; Groups. Use <strong>Find page</strong> or
+<code>Ctrl+K</code> / <code>Command+K</code> to search the currently
+visible built-in and add-on areas without changing their hash routes or
+directory scope.</p>
 <p>Inside <strong>Configuration</strong>, a second compact navigator
 exposes the active area&#39;s settings and utilities. <strong>Find
 setting</strong> searches operator labels and help alongside technical
@@ -17383,25 +17403,30 @@ and what host commit identity do they use?</td>
 <td>What was invoked, allowed, denied, or failed?</td>
 </tr>
 <tr class="odd">
+<td>Privacy</td>
+<td>Which scoped privacy controls, cases, retention jobs, holds,
+incidents, and review exports need attention?</td>
+</tr>
+<tr class="even">
 <td>Configuration</td>
 <td>Which host and directory-scoped values resolve here?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Reports</td>
 <td>What happened during orchestration and operations, including effects
 and gates?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Users &amp; Groups</td>
 <td>Who can authenticate, and which groups/permissions govern operator
 access?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Workers</td>
 <td>Which host/background systemd workers are configured, active, or
 reporting journal errors?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Workflow</td>
 <td>Which pack revision is active, what do its graphs define, and what
 is the runtime activity?</td>

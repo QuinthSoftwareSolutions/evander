@@ -64,6 +64,7 @@ from evander.admin.web.reports import report_routes
 from evander.admin.web.tool_calls import tool_call_routes
 from evander.admin.web.tool_visibility import tool_visibility_routes
 from evander.admin.web.teams_auth import teams_auth_routes
+from evander.admin.web.credentials import credential_routes
 from evander.admin.web.skills import skill_routes
 from evander.admin.web.user_store import AdminWebUserStore
 from evander.admin.web.user_notifications import user_notification_routes
@@ -727,6 +728,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(pr_integration_routes(service, auth))
     routes.extend(report_routes(service, auth, dashboard_cache))
     routes.extend(teams_auth_routes(service, auth))
+    routes.extend(credential_routes(service, auth))
     routes.extend(chat_routes(service, auth))
     routes.extend(codex_auth_routes(service, auth))
     routes.extend(workflow_event_routes(service, auth))

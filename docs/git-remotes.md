@@ -8,6 +8,13 @@ This is a quarantine and transport boundary, not an execution sandbox. Agent-aut
 runs only inside a VM or container. Host worktrees are used for narrow Git operations and must never
 be used to run untrusted builds or tests.
 
+The restricted Git account does not need the shared host secret environment file. Setup and the
+systemd installer remove its legacy named read/traversal ACLs and close the file's group/other
+permissions, preserving unrelated named ACL entries. Managed refresh uses the existing host
+refresh surface. A Git account sharing the control-plane UID still shares its authority; account
+names alone do not isolate secrets. The new [credential-store key](credentials.md) is provisioned
+only to its explicit control-plane consumers.
+
 ## Repository identity and scope
 
 The registry lives at `runtime/managed-git-repositories.json`. It is protected by a file lock and

@@ -8776,6 +8776,7 @@ The trigger worker illustrates why the distinction matters: its persistent unit 
 | `evander-teams-ingest.service` | `evander-cli teams-ingest` via its runner script | Ingests Microsoft Teams messages | Teams is configured |
 | `evander-teams-notifications.service` | `evander-teams-notifications` | Receives loopback-proxied Microsoft Graph message and lifecycle callbacks | Teams notifications are installed; public routing is configured only when enabled |
 | `evander-teams-meeting-ingest.service` | `evander-teams-meeting-ingest` | Ingests queued meeting transcript and speech-status events | Meeting integration is configured |
+| `evander-privacy-maintenance.service` | `evander-cli privacy maintenance` | Advances bounded privacy maintenance and retry work | Privacy operations are configured; normally timer-activated |
 | `evander-trigger-orchestrator.service` | `evander-cli trigger-orchestrator` | Polls trigger providers, validates/deduplicates, and publishes durable trigger events | Workflow triggers are enabled |
 | `evander-effect-orchestrator.service` | `evander-effect-orchestrator` | Traverses downstream workflow nodes and executes gates, queries, and effects | Workflows may run beyond their trigger |
 
@@ -8818,6 +8819,8 @@ The runtime tree contains both live configuration and operational state. The tab
 | `runtime/workflow-state.json` | Workflow-scoped state records | Workflow state providers |
 | `runtime/wake-requests-store.db` | Scheduled wake requests and dispatch history | Scheduled-wake and reconciliation services |
 | `runtime/model-usage.db` | Normalized model-usage observations and attribution | Model usage service and Team cost aggregation |
+| `runtime/credentials/credentials.db` | Encrypted managed Teams and connector credential bundles plus public metadata | Managed credential store; decryption also requires the external master key |
+| `runtime/privacy.db` | Privacy cases, jobs, holds, incident references, follow-ups, and minimal access evidence | Privacy service and maintenance worker |
 | `runtime/teams-meetings.json` | Teams meeting session/projection state | Teams meeting services |
 | `runtime/managed-git-repositories.json` | Stable managed repository identities and bindings | Managed Git service |
 | `runtime/managed-git/` | Host-owned bare repositories | Managed Git service and restricted SSH |
@@ -8869,7 +8872,7 @@ The navigation keeps all areas visible in six permanently expanded groups: **Ove
 Dashboard and Reports; **Operations** contains Agents, Sessions, Issues, Approvals, and Artifacts;
 **Automation** contains Workflow and Skills; **Extensions** contains Add-ons, Connectors, Host Directories, and
 add-on-contributed areas; **Infrastructure** contains Subscriptions, Git Repositories, VMs, and Workers; and **Governance** contains
-Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users & Groups. Use **Find page** or
+Tool Visibility, MCP Tools, Tool Calls, Privacy, Configuration, and Users & Groups. Use **Find page** or
 `Ctrl+K` / `Command+K` to search the currently visible built-in and add-on areas without changing
 their hash routes or directory scope.
 
@@ -8905,6 +8908,7 @@ unknown field is ignored.
 | Host Directories | Which approved host roots, agent capabilities, health checks, and quarantined entries are managed here? |
 | Git Repositories | Which managed repositories are registered, when were they refreshed, and what host commit identity do they use? |
 | Tool Calls | What was invoked, allowed, denied, or failed? |
+| Privacy | Which scoped privacy controls, cases, retention jobs, holds, incidents, and review exports need attention? |
 | Configuration | Which host and directory-scoped values resolve here? |
 | Reports | What happened during orchestration and operations, including effects and gates? |
 | Users & Groups | Who can authenticate, and which groups/permissions govern operator access? |

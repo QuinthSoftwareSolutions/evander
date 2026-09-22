@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-21 - Add operator privacy foundations (0.58.0)
+## 2026-09-22 - Add privacy controls and managed credentials (0.59.0)
 
 - Add scoped privacy inventory, revisioned policies, cases, holds, reviewed local jobs,
   encrypted reviewer exports, external follow-ups, and incident records through Admin Web
@@ -8,11 +8,14 @@
   coverage; installation-wide readiness and enforcement are not claimed.
 - Schedule bounded, opt-in attachment-staging retention and honor holds in existing
   opportunistic artifact expiry, with durable retry evidence and stale-selection checks.
-- Serialize voice, meeting, and DIDWW JSON transactions across processes; encrypt Teams
-  delegated credential payloads with validated one-way legacy migration and protected keys.
+- Serialize voice, meeting, and DIDWW JSON transactions across processes. Move Teams and
+  connector credentials into a shared encrypted, revisioned store with explicit ownership,
+  consumer bindings, maintenance migration, recovery snapshots, and protected key delivery.
 - Add fresh, endpoint-bound provider approval checks to model relay, classifier, and Codex
   subscription egress paths, including retries and persistent-connection revocation. Other
   outbound paths remain explicit coverage gaps; report-only remains the upgrade default.
+- Add metadata-only credential administration, managed Teams sign-in, safe refresh locking,
+  connector credential references, key rotation, and fail-closed migration/recovery behavior.
 - Include technical privacy review drafts and deployment/restore caveats. No production
   policies, provider contracts, legal approvals, or customer-data cleanup are applied.
 
@@ -429,7 +432,6 @@
 - Supply the standard admin provider adapter when preparing indexing sessions so
   managed Git cloning and repository bindings work in the deployed runtime.
 - Exercise real session creation and clone providers together in indexing coverage.
-
 ## 2026-09-10 - Copy Team configurations (0.37.0)
 
 - Add a revision-checked Team copy operation and Teams-view wizard that clones

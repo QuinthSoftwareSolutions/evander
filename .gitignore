@@ -52,6 +52,8 @@ node_modules
 secrets.env
 secrets (Copy).env
 tasks/
+!ansible/roles/service_config/tasks/
+!ansible/roles/service_config/tasks/credentials.yml
 !ansible/roles/container_worker_runtime/tasks/
 !ansible/roles/container_worker_runtime/tasks/main.yml
 !ansible/roles/container_worker_service/tasks/

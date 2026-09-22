@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson } from "../admin/api";
+import type {CredentialsSnapshot} from "../configuration/CredentialsConfiguration";
 
 type ConnectorOperation = {
   description: string;
@@ -63,6 +64,7 @@ export function ConnectorsPage({
   privilegedUnlocked: boolean;
 }) {
   const [state, setState] = useState<ConnectorState | null>(null);
+  const [credentials, setCredentials] = useState<CredentialsSnapshot | null>(null);
   const [draft, setDraft] = useState("{}");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -136,6 +138,11 @@ export function ConnectorsPage({
     saveRequestIdRef.current += 1;
     testRequestIdRef.current += 1;
     setState(null);
+    setCredentials(null);
+    const scope = selectedDirectoryPath;
+    void fetchJson<CredentialsSnapshot>(`/api/admin/credentials?directory_path=${encodeURIComponent(scope)}`, {signal:controller.signal})
+      .then(value => {if (activeDirectoryPathRef.current === scope && !controller.signal.aborted) setCredentials(value);})
+      .catch(() => {});
     setDraft("{}");
     setSelectedId(null);
     setSaving(false);
@@ -298,7 +305,7 @@ export function ConnectorsPage({
           <div>
             <h2>{selected?.display_name ?? "Connector configuration"}</h2>
             <p className="muted-text">
-              Definitions inherit by directory. Credentials remain host-owned environment secrets and are never shown here.
+              Definitions inherit by directory. Authentication can use managed credentials or existing host environment references.
             </p>
           </div>
           <div className="feature-toolbar-actions">
@@ -350,6 +357,23 @@ export function ConnectorsPage({
               <div><span>Operations</span><strong>{Object.keys(selected.operations).length}</strong></div>
             </div>
             <p>{selected.description}</p>
+            {selected.auth_profile ? <label className="field-stack">Managed credential
+              <select aria-label="Managed connector credential" disabled={!privilegedUnlocked || saving} defaultValue="" key={`${selectedDirectoryPath}:${selected.connector_id}`} onChange={event => {
+                if (!event.target.value || !activeState || !selected.auth_profile) return;
+                try {
+                  const parsed = JSON.parse(draft) as {auth_profiles?: Record<string, Record<string, unknown>>};
+                  const effective = activeState.effective_config.auth_profiles as Record<string, Record<string, unknown>>;
+                  const profile = {...(parsed.auth_profiles?.[selected.auth_profile] ?? effective[selected.auth_profile])};
+                  for (const field of ["token_env","username_env","password_env","client_id_env","client_secret_env"]) profile[field] = null;
+                  profile.type = String(profile.type).replace(/_env$/, "");
+                  profile.credential_ref = event.target.value;
+                  parsed.auth_profiles = {...parsed.auth_profiles,[selected.auth_profile]:profile};
+                  setDraft(configText(parsed));
+                } catch {setError("Fix the configuration JSON before selecting a credential.");}
+              }}><option value="">Select an approved credential</option>
+                {credentials?.directory_path === selectedDirectoryPath ? credentials.credentials.filter(c => c.local && c.status === "active" && c.bindings.some(b => b.profile_id === selected.auth_profile && b.connector_id === selected.connector_id)).map(c => <option key={c.id} value={c.id}>{c.label}</option>) : null}
+              </select><span>Manage values and approvals in Configuration → Access, approvals and audit → Credentials.</span>
+            </label> : null}
           </article>
         ) : null}
 

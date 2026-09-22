@@ -1304,7 +1304,7 @@ class TeamsIngestWorker:
                     f"{env_var_name!r}"
                 )
         else:
-            token_provider = _build_delegated_teams_token_provider(provider_config)
+            token_provider = _build_delegated_teams_token_provider(provider_config, directory_path)
         if token_provider is None:
             resolved_token_provider = None
             resolved_tenant_id_provider = None
@@ -1856,6 +1856,8 @@ def _read_trigger_cursor_state(path: Path, trigger_id: str) -> dict[str, object]
 
 def _teams_user_cache_namespace(config: GatewayConfig, *, directory_path: str) -> str:
     if config.teams_backend == "delegated_graph_api":
+        if config.teams_delegated_credential_ref:
+            return f"managed:{config.teams_delegated_credential_ref}:{directory_path or 'root'}"
         return (
             f"delegated:{config.teams_delegated_identity_id or 'default'}:"
             f"{directory_path or 'root'}"
@@ -1994,6 +1996,8 @@ def _teams_graph_poll_scope(provider_config: GatewayConfig, *, directory_path: s
             (provider_config.teams_delegated_identity_id or "").strip(),
         )
     )
+    if provider_config.teams_delegated_credential_ref:
+        identity += "\0" + provider_config.teams_delegated_credential_ref
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
     return f"{DirectoryPath(segments=directory_path).as_posix()}:{digest}"
 

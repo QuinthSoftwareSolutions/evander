@@ -16,7 +16,8 @@ class ConnectorCallContext:
     directory_path: str
     runtime_dir: Any
     artifact_store: Any
-    auth_headers: dict[str, str] = field(default_factory=dict)
+    auth_headers: dict[str, str] = field(default_factory=dict, repr=False)
+    sensitive_values: tuple[str, ...] = field(default=(), repr=False)
 
 
 class ConnectorDriver(Protocol):

@@ -76,7 +76,6 @@ from evander.services import (
 )
 from evander.storage import JsonStore
 from evander.messaging.teams_auth import (
-    JsonTeamsIdentityCredentialStore,
     MicrosoftDeviceCodeAuthConfig,
     TeamsDeviceCodeTokenProvider,
 )
@@ -761,7 +760,7 @@ def _build_teams_service(
             read_reaction_emoji=config.teams_read_reaction_emoji,
         )
     if config.teams_backend == "delegated_graph_api":
-        token_provider = _build_delegated_teams_token_provider(config)
+        token_provider = _build_delegated_teams_token_provider(config, directory_path or "root")
         return GraphTeamsService(
             message_store,
             token_provider=token_provider.get_bearer_token,
@@ -795,7 +794,7 @@ def _build_teams_service(
     )
 
 
-def _build_delegated_teams_token_provider(config: GatewayConfig) -> TeamsDeviceCodeTokenProvider:
+def _build_delegated_teams_token_provider(config: GatewayConfig, directory_path: str = "root") -> TeamsDeviceCodeTokenProvider:
     identity_id = str(config.teams_delegated_identity_id or "").strip()
     if not identity_id:
         raise RuntimeError(
@@ -812,10 +811,9 @@ def _build_delegated_teams_token_provider(config: GatewayConfig) -> TeamsDeviceC
         authority_base_url=config.teams_delegated_authority_base_url,
         timeout_seconds=config.teams_timeout_seconds,
     )
-    credential_store = JsonTeamsIdentityCredentialStore(
-        config.teams_delegated_credential_store_path,
-        identity_id,
-    )
+    from evander.credentials.teams import teams_credential_store
+
+    credential_store = teams_credential_store(config, directory_path)
     return TeamsDeviceCodeTokenProvider(auth_config, credential_store)
 
 

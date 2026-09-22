@@ -319,11 +319,15 @@ def _http_url(value: object, *, field_name: str) -> str:
 class ConnectorAuthProfile(BaseModel):
     type: Literal[
         "none",
+        "bearer",
+        "api_key_header",
+        "basic",
         "bearer_env",
         "api_key_header_env",
         "basic_env",
         "oauth2_client_credentials",
     ]
+    credential_ref: str | None = Field(default=None, pattern=r"^cred_[0-9a-f]{32}$")
     token_env: str | None = None
     header_name: str | None = None
     username_env: str | None = None
@@ -371,6 +375,18 @@ class ConnectorAuthProfile(BaseModel):
 
     @model_validator(mode="after")
     def validate_required_fields(self) -> "ConnectorAuthProfile":
+        managed = self.type in {"bearer", "api_key_header", "basic"} or self.credential_ref is not None
+        if managed:
+            if self.type in {"none", "bearer_env", "api_key_header_env", "basic_env"}:
+                raise ValueError("Managed credentials require a managed authentication type")
+            if not self.credential_ref or any(getattr(self, field) for field in (
+                "token_env", "username_env", "password_env", "client_id_env", "client_secret_env"
+            )):
+                raise ValueError("Managed authentication requires one reference and no environment fields")
+            if self.type == "api_key_header" and not self.header_name:
+                raise ValueError("API key authentication requires header_name")
+            if self.type == "oauth2_client_credentials" and not self.token_url:
+                raise ValueError("OAuth authentication requires token_url")
         required: dict[str, tuple[str, ...]] = {
             "bearer_env": ("token_env",),
             "api_key_header_env": ("token_env", "header_name"),
@@ -381,7 +397,7 @@ class ConnectorAuthProfile(BaseModel):
                 "client_secret_env",
             ),
         }
-        missing = [name for name in required.get(self.type, ()) if not getattr(self, name)]
+        missing = [] if managed else [name for name in required.get(self.type, ()) if not getattr(self, name)]
         if missing:
             raise ValueError(f"auth profile type {self.type!r} requires: {', '.join(missing)}")
         if self.header_name is not None:
@@ -573,6 +589,9 @@ def validate_connector_directory_overlay(payload: dict[str, Any]) -> dict[str, A
                 profile_type = str(raw_profile["type"] or "").strip()
                 if profile_type not in {
                     "none",
+                    "bearer",
+                    "api_key_header",
+                    "basic",
                     "bearer_env",
                     "api_key_header_env",
                     "basic_env",

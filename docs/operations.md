@@ -168,7 +168,8 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 3. Edit host-global bootstrap settings in `runtime/host-config.json`.
 4. Configure `root` directory overlays directly with the admin UI or `evander-cli directories config-set`.
    Configure named agent integrations on the **Connectors** page or in the `connectors` directory
-   domain; keep credential values in the gateway/Admin service environment.
+   domain; use the [Credentials page and managed store](credentials.md) for host authentication.
+   Environment-based profiles remain an explicit compatibility option.
 5. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
 6. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
 7. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
@@ -935,6 +936,13 @@ Storage layout for directory config:
 - Host-mediated auth reads the effective provider `github_token_env` on the host. That environment variable must contain a GitHub token that can satisfy Copilot CLI requests. Guest-side `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `copilot login` still override the host-mediated `gh` fallback if you set them intentionally.
 
 ### Microsoft Teams delegated auth
+
+- Prefer [managed Teams custody](credentials.md) for new identities. Initialize the encrypted
+  store, prepare sign-in in Configuration → Credentials, then use the existing Teams auth panel.
+  Migrate existing JSON credentials during maintenance. Managed references require approved
+  consumer bindings; changes to client, tenant, authority or scopes need owner approval and a
+  new sign-in. Approved descendants can use/refresh a shared identity, while manual sign-in and
+  sign-out belong to its owning directory.
 
 - Teams access is host-side and delegated. The preferred operator flow is Admin Web ->
   Configuration -> People & Communications: verify the directory-scoped Teams provider settings, inspect

@@ -215,6 +215,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "teams_delegated_authority_base_url",
             "teams_delegated_client_id",
             "teams_delegated_credential_store_path",
+            "teams_delegated_credential_ref",
             "teams_delegated_identity_id",
             "teams_delegated_scopes",
             "teams_delegated_tenant_id",

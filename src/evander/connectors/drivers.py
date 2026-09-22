@@ -260,10 +260,16 @@ class RestConnectorDriver:
                 f"connector upstream returned HTTP {response.status_code}"
             )
         content = response.content
+        if context.sensitive_values:
+            from evander.credentials.sanitize import reject_reflected_credentials
+            reject_reflected_credentials(content, context.sensitive_values)
+            reject_reflected_credentials(dict(response.headers), context.sensitive_values)
         duration_ms = int((monotonic() - started) * 1000)
         if operation.result_mode == "json":
             try:
                 value = json.loads(content)
+                if context.sensitive_values:
+                    reject_reflected_credentials(value, context.sensitive_values)
             except (UnicodeDecodeError, ValueError) as exc:
                 raise ConnectorInvocationError("connector response was not valid JSON") from exc
             return ConnectorInvocationResult(

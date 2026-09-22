@@ -13422,3 +13422,107 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .personal-ado-notice { background: #143324; color: #b5efca; }
 :root[data-theme="dark"] .personal-ado-error,
 :root[data-theme="dark"] .personal-ado-dialog input[aria-invalid="true"] { border-color: #ffb6aa; }
+
+.credentials-panel {
+  min-width: 0;
+}
+
+.credentials-panel .table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.credentials-panel table {
+  min-width: 680px;
+}
+
+.credentials-panel td {
+  vertical-align: top;
+}
+
+.credential-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.credentials-panel form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 36rem;
+}
+
+.credentials-panel table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.credentials-panel th,
+.credentials-panel td {
+  text-align: left;
+  padding: 0.8rem 0.65rem;
+  border-bottom: 1px solid rgba(34, 67, 80, 0.14);
+}
+
+.credentials-panel th {
+  color: #627988;
+  font-size: 0.82rem;
+}
+
+.credentials-panel td details {
+  margin-top: 0.5rem;
+  overflow-wrap: anywhere;
+  max-width: 24rem;
+}
+
+.credentials-panel td summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 720px) {
+  .credentials-panel table {
+    min-width: 0;
+  }
+
+  .credentials-panel thead {
+    display: none;
+  }
+
+  .credentials-panel tbody {
+    display: block;
+  }
+
+  .credentials-panel tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-bottom: 1rem;
+  }
+
+  .credentials-panel td {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .credentials-panel td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 0.3rem;
+    color: #627988;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .credentials-panel td:nth-child(1),
+  .credentials-panel td:nth-child(4),
+  .credentials-panel td:nth-child(6) {
+    grid-column: 1 / -1;
+  }
+
+  .credentials-panel .credential-actions > button {
+    width: auto;
+    flex: 1 1 8rem;
+  }
+}

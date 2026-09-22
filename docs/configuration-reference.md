@@ -47,6 +47,25 @@ allowed by their session policy. See
 [Figma setup and authoring verification](figma.md) before enabling it. No new firewall port or
 standalone service is required.
 
+### Managed Teams and connector credentials
+
+See [credentials.md](credentials.md) for initialization, migration, restart and recovery.
+The first release stores encrypted bundles in `runtime/credentials/credentials.db` and keeps
+the master key outside runtime. Values never belong in configuration JSON.
+
+| Setting | Purpose |
+|---|---|
+| `teams_delegated_credential_ref` | Directory provider field selecting a managed Teams identity; overrides legacy JSON custody with no fallback. |
+| Connector `credential_ref` | Opaque reference for `bearer`, `api_key_header`, `basic`, or `oauth2_client_credentials`; cannot coexist with environment sources. |
+| `EVANDER_CREDENTIALS_KEY_FILE` | Explicit protected key-file path for a host process; never a key value. |
+| `CREDENTIALS_DIRECTORY` | Set by systemd; the domain reads `evander-credentials-key` from this directory. |
+| Installer `EVANDER_CREDENTIALS_KEY_SOURCE` | Defaults to `/etc/evander/credentials/master.key`; protected source registered in systemd's credential store. |
+| `evander_initialize_credential_store` | Ansible opt-in initialization, default `false`; never recreates a lost key for an existing database. |
+
+The master key is available automatically after service restart when provisioned by the
+installer. Missing or incorrect keys disable credential operations while metadata remains
+available. No new guest ports, environment-secret export, or worker key delivery is added.
+
 ### Personal ADO OAuth (shared host environment)
 
 These settings are documented in `config/admin-web.env.example`, but must be supplied through

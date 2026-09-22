@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+from functools import wraps
+
 import base64
 import json
 import os
+import stat
 import tempfile
 import time
 from datetime import UTC, datetime, timedelta
@@ -22,6 +26,7 @@ _DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 _AADSTS_CONFIDENTIAL_CLIENT_REQUIRES_SECRET = "AADSTS7000218"
 _IDENTITY_METADATA_SCOPES = ("openid", "profile")
 _NON_CONCRETE_TENANT_IDS = {"organizations", "common", "consumers"}
+TEAMS_CREDENTIAL_ENVELOPE_FORMAT = "evander.teams-credentials.fernet.v1"
 
 
 def _utc_now() -> datetime:
@@ -276,6 +281,48 @@ class TeamsCredentialStore(Protocol):
     def clear(self) -> None: ...
 
 
+def legacy_teams_credential_key_path(path: Path) -> Path:
+    path = Path(path)
+    return path.parent / "secrets" / f"{path.name}.key"
+
+
+def decode_legacy_teams_credential_envelope(
+    envelope: object,
+    *,
+    key_path: Path,
+) -> tuple[str, dict[str, Any]] | None:
+    """Decode the transitional privacy envelope without rewriting its source file."""
+
+    if not isinstance(envelope, dict) or not ({"format", "ciphertext"} & set(envelope)):
+        return None
+    if (
+        set(envelope) != {"format", "ciphertext"}
+        or envelope.get("format") != TEAMS_CREDENTIAL_ENVELOPE_FORMAT
+        or not isinstance(envelope.get("ciphertext"), str)
+    ):
+        raise TeamsAuthProtocolError("Unsupported Teams credential storage format.")
+    try:
+        fd = os.open(Path(key_path), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+                raise ValueError("unsafe key file")
+            cleartext = Fernet(stream.read()).decrypt(envelope["ciphertext"].encode())
+        document = json.loads(cleartext)
+        if (
+            not isinstance(document, dict)
+            or set(document) != {"kind", "credentials"}
+            or document.get("kind") not in {"single", "identities"}
+            or not isinstance(document.get("credentials"), dict)
+        ):
+            raise ValueError("invalid encrypted payload")
+        return document["kind"], document["credentials"]
+    except (InvalidToken, OSError, TypeError, ValueError):
+        raise TeamsAuthProtocolError(
+            "Teams credential store could not be decrypted or validated."
+        ) from None
+
+
 class _EncryptedTeamsCredentialStore(JsonObjectStore):
     """Locked credential storage with one-way, atomic plaintext migration.
 
@@ -284,14 +331,14 @@ class _EncryptedTeamsCredentialStore(JsonObjectStore):
     A missing key for encrypted data is an error, never a request to generate one.
     """
 
-    _format = "evander.teams-credentials.fernet.v1"
+    _format = TEAMS_CREDENTIAL_ENVELOPE_FORMAT
     _kind = "single"
 
     def __init__(self, path: Path) -> None:
         path = Path(path)
         if path.is_symlink():
             raise TeamsAuthProtocolError("Teams credential store must not be a symbolic link.")
-        self.key_path = path.parent / "secrets" / f"{path.name}.key"
+        self.key_path = legacy_teams_credential_key_path(path)
         super().__init__(path, {}, file_mode=0o600, empty_file_factory=dict)
 
     def _cipher(self, *, create: bool) -> Fernet:
@@ -347,21 +394,14 @@ class _EncryptedTeamsCredentialStore(JsonObjectStore):
             envelope = super()._read_object_unlocked()
         except (UnicodeError, ValueError):
             raise TeamsAuthProtocolError("Teams credential store contains invalid JSON.") from None
-        if "format" in envelope or "ciphertext" in envelope:
-            if set(envelope) != {"format", "ciphertext"} or envelope["format"] != self._format:
-                raise TeamsAuthProtocolError("Unsupported Teams credential storage format.")
-            try:
-                cleartext = self._cipher(create=False).decrypt(envelope["ciphertext"].encode())
-                document = json.loads(cleartext)
-                if not isinstance(document, dict) or set(document) != {"kind", "credentials"}:
-                    raise ValueError("invalid encrypted payload")
-                if document["kind"] != self._kind:
-                    raise ValueError("credential kind mismatch")
-                return self._validate_payload(document["credentials"])
-            except (InvalidToken, AttributeError, TypeError, ValueError):
+        decoded = decode_legacy_teams_credential_envelope(envelope, key_path=self.key_path)
+        if decoded is not None:
+            kind, credentials = decoded
+            if kind != self._kind:
                 raise TeamsAuthProtocolError(
                     "Teams credential store could not be decrypted or validated."
-                ) from None
+                )
+            return self._validate_payload(credentials)
         payload = self._validate_payload(envelope)
         if payload:
             # Validation and the durable encrypted replacement share the file lock.
@@ -428,6 +468,26 @@ class JsonTeamsIdentityCredentialStore(_EncryptedTeamsCredentialStore):
         }
 
 
+def _managed_auth_errors(method):
+    """Provider error descriptions and payloads may reflect submitted tokens."""
+    @wraps(method)
+    def safe(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except TeamsAuthError as exc:
+            if not getattr(self.credential_store, "fresh_reads", False):
+                raise
+            raise type(exc)(
+                f"Managed Teams authentication failed ({type(exc).__name__}).",
+                response_status_code=exc.response_status_code,
+            ) from None
+        except (ValueError, TypeError, OverflowError):
+            if not getattr(self.credential_store, "fresh_reads", False):
+                raise
+            raise TeamsAuthProtocolError("Managed Teams authentication returned invalid data.") from None
+    return safe
+
+
 class TeamsDeviceCodeTokenProvider:
     def __init__(
         self,
@@ -447,18 +507,24 @@ class TeamsDeviceCodeTokenProvider:
         self._credentials_lock = RLock()
 
     def load_credentials(self) -> TeamsAuthCredentials | None:
-        if self._cached_credentials is not None:
+        if self._cached_credentials is not None and not getattr(self.credential_store, "fresh_reads", False):
             return self._cached_credentials
         self._cached_credentials = self.credential_store.load()
         return self._cached_credentials
 
-    def save_credentials(self, credentials: TeamsAuthCredentials) -> TeamsAuthCredentials:
-        self.credential_store.save(credentials)
+    def save_credentials(self, credentials: TeamsAuthCredentials, *, refresh=False) -> TeamsAuthCredentials:
+        if getattr(self.credential_store, "fresh_reads", False):
+            self.credential_store.save(credentials, refresh=refresh)
+        else:
+            self.credential_store.save(credentials)
         self._cached_credentials = credentials
         return credentials
 
-    def clear_credentials(self) -> None:
-        self.credential_store.clear()
+    def clear_credentials(self, *, revoked=False) -> None:
+        if getattr(self.credential_store, "fresh_reads", False):
+            self.credential_store.clear(revoked=revoked)
+        else:
+            self.credential_store.clear()
         self._cached_credentials = None
 
     def credentials_expiring(
@@ -475,7 +541,14 @@ class TeamsDeviceCodeTokenProvider:
             now=self._now_provider(),
         )
 
+    @_managed_auth_errors
     def begin_device_code_login(self) -> DeviceCodeLoginSession:
+        revision = None
+        if getattr(self.credential_store, "fresh_reads", False):
+            with self._credentials_lock:
+                self.credential_store.require_owner()
+                self.load_credentials()
+                revision = self.credential_store.revision
         payload = self._post_form(
             self.config.device_code_url,
             {
@@ -508,6 +581,13 @@ class TeamsDeviceCodeTokenProvider:
                 "expires_in",
             }
         }
+        if getattr(self.credential_store, "fresh_reads", False):
+            metadata = {
+                "credential_revision": revision,
+                "credential_ref": self.credential_store.ref,
+                "credential_directory": self.credential_store.directory,
+                "credential_binding": self.credential_store.binding,
+            }
         return DeviceCodeLoginSession(
             client_id=self.config.client_id,
             tenant_id=self.config.tenant_id,
@@ -523,7 +603,28 @@ class TeamsDeviceCodeTokenProvider:
             metadata=metadata,
         )
 
+    @_managed_auth_errors
     def poll_device_code_login_once(self, session: DeviceCodeLoginSession) -> TeamsAuthCredentials:
+        with self._credentials_lock:
+            return self._poll_device_code_login_once(session)
+
+    def _poll_device_code_login_once(self, session: DeviceCodeLoginSession) -> TeamsAuthCredentials:
+        managed = getattr(self.credential_store, "fresh_reads", False)
+        if managed or "credential_ref" in session.metadata or "credential_revision" in session.metadata:
+            revision = session.metadata.get("credential_revision")
+            if (
+                not managed
+                or session.metadata.get("credential_ref") != self.credential_store.ref
+                or session.metadata.get("credential_directory") != self.credential_store.directory
+                or session.metadata.get("credential_binding") != self.credential_store.binding
+                or not isinstance(revision, str)
+                or not revision
+            ):
+                raise TeamsAuthenticationRequiredError("Start a new managed Teams login")
+            self.credential_store.require_owner()
+            self.load_credentials()
+            if self.credential_store.revision != revision:
+                raise TeamsAuthenticationRequiredError("Teams credentials changed; start a new login")
         payload = self._post_form(
             self.config.token_url,
             {
@@ -576,10 +677,18 @@ class TeamsDeviceCodeTokenProvider:
                     error_message=deadline_message,
                 )
 
+    @_managed_auth_errors
     def refresh_access_token(
         self,
         credentials: TeamsAuthCredentials | None = None,
     ) -> TeamsAuthCredentials:
+        lock = getattr(self.credential_store, "refresh_lock", nullcontext)
+        with self._credentials_lock, lock():
+            if getattr(self.credential_store, "fresh_reads", False):
+                credentials = self.load_credentials()
+            return self._refresh_access_token(credentials)
+
+    def _refresh_access_token(self, credentials=None) -> TeamsAuthCredentials:
         resolved = credentials or self.load_credentials()
         if resolved is None:
             raise TeamsAuthenticationRequiredError("No persisted Teams credentials are available.")
@@ -606,24 +715,26 @@ class TeamsDeviceCodeTokenProvider:
                 operation="refresh",
             )
         except RefreshTokenRevokedError:
-            self.clear_credentials()
+            self.clear_credentials(revoked=True)
             raise
 
         refreshed = self._credentials_from_token_payload(payload, prior_credentials=resolved)
-        return self.save_credentials(refreshed)
+        return self.save_credentials(refreshed, refresh=True)
 
+    @_managed_auth_errors
     def get_bearer_token(self, *, force_refresh: bool = False) -> str:
         # A Teams ingest cycle can poll several Graph targets at once. Keep the
         # read-check-refresh sequence atomic so an expiring credential produces one
         # refresh request rather than a concurrent refresh-token stampede.
-        with self._credentials_lock:
+        lock = getattr(self.credential_store, "refresh_lock", nullcontext)
+        with self._credentials_lock, lock():
             credentials = self.load_credentials()
             if credentials is None:
                 raise TeamsAuthenticationRequiredError(
                     "No Teams delegated credentials are available. Start device-code login first."
                 )
             if force_refresh or self.credentials_expiring(credentials):
-                credentials = self.refresh_access_token(credentials)
+                credentials = self._refresh_access_token(credentials)
             return credentials.access_token
 
     def get_tenant_id(self) -> str | None:

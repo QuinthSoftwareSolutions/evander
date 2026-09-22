@@ -183,7 +183,10 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Microsoft Entra application client ID used for delegated Teams Graph access."
     ),
     "teams_delegated_credential_store_path": (
-        "Host JSON file path where delegated Teams credentials are cached."
+        "Legacy host JSON token cache; unused when a managed credential reference is set."
+    ),
+    "teams_delegated_credential_ref": (
+        "Managed delegated Teams credential. Prepare sign-in in Credentials or use the maintenance migration command."
     ),
     "teams_delegated_identity_id": (
         "Stable operator identity key used to select delegated Teams credentials."

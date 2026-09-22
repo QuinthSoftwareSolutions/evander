@@ -87,7 +87,7 @@ to a provider is conditional on deployment configuration.
 | Retell call records | `RetellPhoneCallStore` | Call/provider IDs, metadata, call status and time | Opportunistic compaction during mutations uses created_at older than 90 days; this does not assure deletion at day 90. | Verify exact fields after sanitization and Retell's own retention/processor terms. |
 | Agent prompt and wake records | `agent-prompt-store.json`, queued prompts, wake request store | Prompt payload/body, sender/target session IDs, response-token claims, resume prompts and metadata | Prompts: responded/closed and updated over 90 days ago. Wakes: dispatch/message age thresholds of 90 days; requests additionally must be disabled and updated over 90 days ago. Cleanup is operation-triggered. | Verify queues/retry ledgers and copies injected into worker/model context; create subject-location tests. |
 | Communication artifacts | `CommunicationArtifactStore` | Attachment bytes and source metadata, original filename, provider identifiers | Default seven-day expiry; cleanup runs opportunistically on store use. | Use the staging-only privacy adapter and verify scheduled execution; approve backup treatment and account for delivered/provider copies separately. |
-| Credentials and connection records | Website credentials, ADO user connections, Teams delegated credentials, host environment references | Account IDs, scopes, PAT/access/refresh tokens, credential field names; encryption is store-specific | Website/ADO stores support encryption; Teams credential JSON was plaintext in the original baseline and is encrypted on first access by this branch with a separate key. Individual deletion/removal exists; removal does not itself revoke upstream grants. | Maintain credential inventory, rotation/revocation runbook, and clear controller instruction for each connected account. |
+| Credentials and connection records | Website credentials, ADO user connections, managed Teams/connector credentials, legacy Teams JSON, host environment references | Account IDs, scopes, PAT/access/refresh tokens, credential field names; encryption is store-specific | Managed Teams/connector bundles use AES-256-GCM in `runtime/credentials/credentials.db` with an external master key, ownership, bindings, revisioned lifecycle and explicit maintenance migration. Transitional Teams envelopes use a separate per-file key until imported. Individual disable/delete does not itself revoke upstream grants. | Maintain credential inventory, rotation/revocation runbook, migration evidence, and clear controller instruction for each connected account. |
 | Model usage and classification attribution | `src/evander/model_usage/runtime.py`, `src/evander/model_usage/models.py`; `runtime/model-usage.db` | Session/directory/workflow/dispatch IDs, provider/model, timestamps, token counts, status, request/response sizes and hashes, usage metadata | A separate durable usage store; no privacy retention/erasure adapter is established. Hashes and operational IDs are not automatically anonymous. | Review fields, correlations, access, retention, and classifier-provider records independently of prompt stores. |
 | Published artifacts and artifact spaces | `src/evander/published_artifacts.py`, `src/evander/session_artifacts.py`, `src/evander/artifact_spaces.py`; `runtime/published-artifacts/` plus source/space stores | Archive bytes, filenames, source metadata, session/VM IDs, source file contents | Durable published archives differ from seven-day communication staging; no complete lifecycle adapter is established. | Inventory archives, metadata, space versions, guest source files, delivered links and backups; review manual lifecycle and subject-location routes. |
 | Privacy operations evidence | `src/evander/privacy/`; `runtime/privacy.db` and restricted export storage | Subject correlation keys, controller/approval references, cases, holds, job outcomes, incidents and selected export content | New privacy evidence is itself retained data; automated lifecycle coverage is incomplete. | Approve case/evidence retention, export expiry, access, backup and incident treatment; avoid unnecessary content in references. |
@@ -179,12 +179,13 @@ are declarations, not automatic detection. Report-only defaults and an unverifie
 deployment must not be described as enforced compliance.
 
 Voice, meeting and DIDWW stores now have cross-process-safe transactions, not
-automatic lifecycle deletion. Teams credential APIs preserve their caller
-interface, but migrate plaintext JSON one-way into an encrypted envelope on first
-access. Restart all writers on the same version; preserve the matching
-`secrets/<credential-json-filename>.key` when restoring the file. Existing backups
-and old copies are not retroactively encrypted or deleted. Missing/wrong keys fail
-closed; older binaries cannot read the migrated envelope.
+automatic lifecycle deletion. Managed Teams and connector values live in the
+central encrypted credential domain and are selected only through approved opaque
+references. Explicit maintenance migration accepts original plaintext Teams JSON
+and the transitional privacy envelope; the latter requires its matching
+`secrets/<credential-json-filename>.key`. Existing backups and old copies are not
+retroactively encrypted or deleted. Missing or incorrect legacy/master keys fail
+closed, and older binaries cannot follow managed references.
 
 These are implementation findings and proposed engineering priorities, not a
 determination that every feature or automated control is legally required before
