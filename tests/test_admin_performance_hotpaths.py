@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -209,11 +210,86 @@ def test_systemctl_batch_preserves_partial_missing_unit_results(monkeypatch):
             stdout="Id=one.service\nActiveState=active\n\nId=two.service\nLoadState=not-found\nActiveState=inactive\n",
         )
 
-    monkeypatch.setattr(operations_helpers, "_run_system_service_command", run)
+    monkeypatch.setattr(operations_helpers, "_run_subprocess", run)
     result = operations_helpers._systemctl_show_many(["one.service", "two.service"])
     assert result["one.service"]["ActiveState"] == "active"
     assert result["two.service"]["LoadState"] == "not-found"
+    assert len(calls) == 2
+    assert calls[1] == ["sudo", "-n", *calls[0]]
+
+
+@pytest.mark.parametrize("sudo_outcome", ["denied", "missing", "partial", "success"])
+def test_worker_inventory_preserves_partial_results_across_sudo(monkeypatch, sudo_outcome):
+    calls = []
+    initial_stdout = (
+        "Id=evander-ado-worker.service\nLoadState=loaded\n"
+        "ActiveState=active\nSubState=running\nMainPID=42\n"
+    )
+
+    def run(args):
+        calls.append(args)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(args, 1, initial_stdout, "Another unit is missing")
+        if sudo_outcome == "missing":
+            raise FileNotFoundError("sudo is not installed")
+        if sudo_outcome == "denied":
+            return subprocess.CompletedProcess(args, 1, "", "sudo: a password is required")
+        stdout = "Id=evander-proxy-issue-sync.service\nActiveState=active\nMainPID=24\n"
+        if sudo_outcome == "success":
+            stdout += "\n" + initial_stdout.replace("MainPID=42", "MainPID=84")
+        return subprocess.CompletedProcess(args, int(sudo_outcome == "partial"), stdout, "")
+
+    monkeypatch.setattr(operations_helpers, "_run_subprocess", run)
+    service = worker_control_service.WorkerControlAdminService()
+    workers = {worker.worker_id: worker for worker in service.list_background_workers()}
+    assert workers["ado"].active_state == "active"
+    assert workers["ado"].running is True
+    assert workers["ado"].main_pid == (84 if sudo_outcome == "success" else 42)
+    if sudo_outcome in {"partial", "success"}:
+        assert workers["proxy-issue-sync"].running is True
+        assert workers["proxy-issue-sync"].main_pid == 24
+    else:
+        assert workers["proxy-issue-sync"].active_state == "unavailable"
+    assert workers["discord-ingest"].active_state == "unavailable"
+    assert len(calls) == 2
+    assert calls[1] == ["sudo", "-n", *calls[0]]
+
+
+def test_systemctl_batch_does_not_retry_success(monkeypatch):
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "Id=one.service\nActiveState=active\n", "")
+
+    monkeypatch.setattr(operations_helpers, "_run_subprocess", run)
+    assert operations_helpers._systemctl_show_many(["one.service"])["one.service"][
+        "ActiveState"
+    ] == "active"
     assert len(calls) == 1
+
+
+def test_systemctl_batch_without_unit_data_reports_sudo_failure(monkeypatch):
+    monkeypatch.setattr(
+        operations_helpers,
+        "_run_subprocess",
+        lambda args: subprocess.CompletedProcess(
+            args, 1, "", "sudo: a password is required" if args[0] == "sudo" else "Access denied"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="sudo: a password is required"):
+        operations_helpers._systemctl_show_many(["one.service"])
+
+
+def test_system_service_command_keeps_default_sudo_result(monkeypatch):
+    attempts = [
+        subprocess.CompletedProcess([], 1, "partial output", "Initial error"),
+        subprocess.CompletedProcess([], 1, "", "sudo: a password is required"),
+    ]
+    final_result = attempts[-1]
+    monkeypatch.setattr(operations_helpers, "_run_subprocess", lambda args: attempts.pop(0))
+    assert operations_helpers._run_system_service_command(["systemctl", "show"]) is final_result
+    assert not attempts
 
 
 def test_worker_route_runs_inventory_off_the_event_loop():

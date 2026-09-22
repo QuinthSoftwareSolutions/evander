@@ -10,6 +10,8 @@
   upstream cleanup when streams disconnect.
 - Batch and cache worker inventory, bound Admin response and chat transcript caches, and
   use direct session lookups with compact batched lifecycle inputs.
+- Preserve partial worker inventory when the systemctl sudo fallback fails or returns
+  only a different subset of units.
 - Incrementally project worker transcripts, read log tails from the end, and merge overlapping
   output in linear time with bounded retained projection state.
 - Poll only the VM being watched, query Discord trigger messages using indexed cursors, page

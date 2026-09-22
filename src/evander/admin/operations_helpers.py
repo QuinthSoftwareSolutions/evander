@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
@@ -55,7 +56,11 @@ def _load_optional_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _run_system_service_command(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_system_service_command(
+    args: list[str],
+    *,
+    on_result: Callable[[subprocess.CompletedProcess[str]], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
     commands = [args, ["sudo", "-n", *args]]
     last_result: subprocess.CompletedProcess[str] | None = None
     for cmd in commands:
@@ -64,6 +69,8 @@ def _run_system_service_command(args: list[str]) -> subprocess.CompletedProcess[
         except OSError:
             continue
         last_result = result
+        if on_result is not None:
+            on_result(result)
         if result.returncode == 0:
             return result
     if last_result is None:
@@ -106,15 +113,21 @@ def _systemctl_show_many(units: list[str]) -> dict[str, dict[str, str]]:
         "Id,LoadState,ActiveState,SubState,Result,MainPID,ExecMainStatus,ExecMainCode,"
         "UnitFileState,Description"
     )
-    result = _run_system_service_command(
-        ["systemctl", "show", "--no-pager", f"--property={properties}", *units]
-    )
     payloads: dict[str, dict[str, str]] = {}
-    for block in (result.stdout or "").strip().split("\n\n"):
-        payload = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
-        unit = payload.get("Id")
-        if unit in units:
-            payloads[unit] = payload
+
+    def collect_result(result: subprocess.CompletedProcess[str]) -> None:
+        # A failed batch can still contain healthy units. Keep those results
+        # even if sudo fails or returns data for only a different subset.
+        for block in (result.stdout or "").strip().split("\n\n"):
+            payload = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+            unit = payload.get("Id")
+            if unit in units:
+                payloads[unit] = payload
+
+    result = _run_system_service_command(
+        ["systemctl", "show", "--no-pager", f"--property={properties}", *units],
+        on_result=collect_result,
+    )
     if not payloads and result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "systemctl show failed").strip())
     return payloads
