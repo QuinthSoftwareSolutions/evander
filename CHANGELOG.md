@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-22 - Improve Team chat navigation and stability (0.59.0)
+
+- Preserve the new-chat agent picker position through Team state refreshes, so operators can
+  select agents far down the list without being returned to its start.
+- Add direct Chat actions in the Teams agent detail and Org chart agent menu.
+
 ## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
 
 - Maintain an incremental Team cost report with exact request deduplication, attribution,

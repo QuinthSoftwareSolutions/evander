@@ -1280,6 +1280,14 @@ function openOrgAgentContextMenu(detail) {
     agentId,
     items: [
       {
+        action: "open-chat",
+        label: "Open chat",
+        disabled: chatState.read_only || !agent,
+        disabledReason: chatState.read_only
+          ? "This chat history is read-only."
+          : "Agent is no longer available.",
+      },
+      {
         action: "open-session",
         label: "Open session",
         disabled: !text(agent?.session_id),
@@ -1403,6 +1411,10 @@ function closeOrgContextMenu() {
 }
 
 function handleOrgContextAction(action, context) {
+  if (action === "open-chat") {
+    void openChatForAgent(context.agentId);
+    return;
+  }
   if (action === "open-session") {
     navigateToAgentSession(state.agents?.[context.agentId]?.session_id);
     return;
@@ -2689,6 +2701,13 @@ function bindRecordEditing() {
     if (openSessionButton) {
       event.preventDefault();
       navigateToAgentSession(openSessionButton.dataset.openSessionId);
+      return;
+    }
+
+    const openChatButton = event.target.closest("[data-open-chat-agent-id]");
+    if (openChatButton) {
+      event.preventDefault();
+      void openChatForAgent(openChatButton.dataset.openChatAgentId);
       return;
     }
 
@@ -5601,6 +5620,29 @@ async function createOrFocusChat(agentId) {
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Chat could not be opened.", "error");
   }
+}
+
+async function openChatForAgent(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return;
+  }
+  if (chatState.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
+  setTeamView("chat");
+  try {
+    await loadView("chat");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Chat view failed to load.", "error");
+    return;
+  }
+  if (chatState.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
+  await createOrFocusChat(normalizedAgentId);
 }
 
 async function submitChatMessage(form) {
@@ -9100,6 +9142,7 @@ function renderAgents() {
                     <div class="record-actions">
                       ${renderAgentRosterStatusPill(details)}
                       ${renderAgentStandDownControls(details.id, details)}
+                      ${renderOpenAgentChatButton(details.id)}
                       ${renderOpenAgentSessionButton(details.sessionId)}
                       ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
                       ${editButton("agent", details.id)}
@@ -10353,6 +10396,7 @@ function renderChatNewPicker() {
   if (!elements.chatNewPicker) {
     return;
   }
+  const previousScrollTop = chatAgentPickerScrollTop();
   if (chatState.read_only) {
     elements.chatNewPicker.hidden = true;
     elements.chatNewPicker.innerHTML = "";
@@ -10373,6 +10417,22 @@ function renderChatNewPicker() {
       </div>
     `
     : `<p class="empty-state">No available agents.</p>`;
+  restoreChatAgentPickerScrollTop(previousScrollTop);
+}
+
+function chatAgentPickerScrollTop() {
+  const picker = elements.chatNewPicker?.querySelector(".chat-agent-picker");
+  return picker instanceof HTMLElement ? picker.scrollTop : null;
+}
+
+function restoreChatAgentPickerScrollTop(scrollTop) {
+  if (scrollTop === null) {
+    return;
+  }
+  const picker = elements.chatNewPicker?.querySelector(".chat-agent-picker");
+  if (picker instanceof HTMLElement) {
+    picker.scrollTop = scrollTop;
+  }
 }
 
 function renderChatConversationRow(conversation) {
@@ -11174,6 +11234,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       </div>
       <div class="record-actions agent-detail-actions">
         ${renderAgentStandDownControls(details.id, details)}
+        ${renderOpenAgentChatButton(details.id)}
         ${renderOpenAgentSessionButton(details.sessionId)}
         ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
         ${editButton("agent", details.id)}
@@ -11319,6 +11380,14 @@ function renderOpenAgentSessionButton(sessionId) {
     return "";
   }
   return `<button class="record-action" type="button" data-open-session-id="${escapeAttr(normalizedSessionId)}">Open session</button>`;
+}
+
+function renderOpenAgentChatButton(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return "";
+  }
+  return `<button class="record-action" type="button" data-open-chat-agent-id="${escapeAttr(normalizedAgentId)}" ${chatState.read_only ? 'disabled title="This chat history is read-only."' : ""}>Chat</button>`;
 }
 
 function navigateToAgentSession(sessionId) {
