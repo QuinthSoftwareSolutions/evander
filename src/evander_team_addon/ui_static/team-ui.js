@@ -19742,7 +19742,7 @@ function renderReleaseGateAction(release) {
   const retryableVerification =
     release.state === "blocked" &&
     failure?.stage === "verification" &&
-    ["infrastructure", "timeout"].includes(failure?.kind);
+    ["infrastructure", "timeout", "blocked"].includes(failure?.kind);
   const retryableReview =
     release.state === "blocked" &&
     failure?.stage === "review" &&

@@ -4783,6 +4783,21 @@ def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
     assert escaped.status_code == 400
 
 
+@pytest.mark.parametrize("limit,status", [(4, 200), (3, 400), (0, 400), (-1, 400), ("bad", 400)])
+def test_session_artifact_text_endpoint_enforces_byte_limit(tmp_path, limit, status):
+    client = _client(tmp_path)
+    root = tmp_path / "worker-root" / "sessions" / "session-1" / "artifacts"
+    root.mkdir(parents=True)
+    (root / "report.txt").write_bytes("éé".encode())
+    response = client.get(
+        "/v1/sessions/session-1/artifacts/report.txt",
+        params={"max_bytes": limit}, headers=_auth(),
+    )
+    assert response.status_code == status
+    if status == 200:
+        assert response.text == "éé"
+
+
 def test_session_artifact_text_endpoint_rejects_symlink_leaf_inside_artifacts(
     tmp_path: Path,
 ) -> None:

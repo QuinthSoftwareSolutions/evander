@@ -523,6 +523,17 @@ class ContainerWorkerVmExecutionBackend:
             session_id, relative_path
         )
 
+    def read_session_artifact_text_bounded(
+        self,
+        *,
+        session_id: str,
+        relative_path: str,
+        max_bytes: int,
+    ) -> str:
+        return self._client_for_session(session_id).read_session_artifact_text_bounded(
+            session_id, relative_path, max_bytes=max_bytes
+        )
+
     def provision_mssql_database(
         self,
         *,

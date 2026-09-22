@@ -29,6 +29,7 @@ from .domain.release_cancellation import (
 from .domain.work_lineage import ensure_release_work_lineage
 from .domain.task_authorship import combined_deliverable_attributions, common_deliverable_author
 from .domain.wake import _append_agent_wake_requested_event
+from .domain.work_due import _mark_agent_work_due
 
 
 class TeamReintegrationService:
@@ -271,6 +272,7 @@ class TeamReintegrationService:
                     actor_id=actor_id,
                     reason=f"Reintegrating accepted work as {task.id}",
                 )
+            _mark_agent_work_due(state, agent_id=owner_id, now=now)
             _append_agent_wake_requested_event(
                 state,
                 agent_id=owner_id,

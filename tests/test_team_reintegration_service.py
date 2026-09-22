@@ -216,3 +216,53 @@ def test_superseded_pinned_source_blocks_preparation_instead_of_swapping(tmp_pat
             task_id=task.id,
             managed_repo_id=state.projects["project"].git.managed_repo_id,
         )
+
+
+def test_new_integration_work_resets_prior_no_progress_before_dispatch(tmp_path):
+    from datetime import timedelta
+
+    from evander_team_addon.models import utc_now
+    from evander_team_addon.services.runtime_service import TeamRuntimeService
+
+    repo, service, _ = setup_service(tmp_path)
+
+    def previously_idle(state):
+        runtime = state.agent_runtimes["backend"]
+        runtime.no_progress_count = 3
+        runtime.next_wake_at = utc_now() + timedelta(hours=1)
+        return state
+
+    repo.update(previously_idle)
+    state, result = service.submit(
+        preview=service.preview("release-1", owner_agent_id="backend"),
+        actor_id="operator:test", request_id="fresh-work",
+    )
+    assert state.agent_runtimes["backend"].no_progress_count == 0
+    assert state.agent_runtimes["backend"].next_wake_at is None
+    state, leases = TeamRuntimeService(repo).lease_due_agents(agent_id="backend")
+    assert len(leases) == 1
+    assert result["task_id"] in state.dispatches[leases[0]["dispatch_id"]].task_ids
+    assert not any(b.source_kind == "agent_execution_stall" for b in state.blockers.values())
+
+
+def test_reintegration_keeps_existing_execution_stall_blocked(tmp_path):
+    from evander_team_addon.models import TeamBlocker
+
+    repo, service, _ = setup_service(tmp_path)
+
+    def stalled(state):
+        state.agent_runtimes["backend"].no_progress_count = 3
+        state.blockers["stall"] = TeamBlocker(
+            id="stall", team_id="team", project_id="project",
+            source_kind="agent_execution_stall", source_id="backend",
+            summary="Unresolved execution stall", owner_agent_id="lead",
+        )
+        return state
+
+    repo.update(stalled)
+    state, _ = service.submit(
+        preview=service.preview("release-1", owner_agent_id="backend"),
+        actor_id="operator:test", request_id="stalled-work",
+    )
+    assert state.agent_runtimes["backend"].no_progress_count == 3
+    assert state.blockers["stall"].state == "open"

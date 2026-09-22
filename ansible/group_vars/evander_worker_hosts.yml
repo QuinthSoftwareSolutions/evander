@@ -327,9 +327,11 @@ evander_worker_playwright_runtime_remote_archive_path: "{{ evander_worker_root }
 evander_worker_playwright_browsers_remote_archive_path: "{{ evander_worker_root }}/images/playwright-browsers.tar.gz"
 evander_worker_readonly_mounts: >-
   {{
-    [
+    ([
       evander_worker_dotnet_cache_path ~ ':/opt/evander/toolchains/dotnet',
-      evander_worker_dotnet_tools_cache_path ~ ':/opt/evander/toolchains/dotnet-tools',
+      evander_worker_dotnet_tools_cache_path ~ ':/opt/evander/toolchains/dotnet-tools'
+    ] if (evander_worker_dotnet_toolchain_enabled | bool) else [])
+    + [
       evander_worker_node_cache_path ~ ':/opt/evander/toolchains/node-v24.14.0',
       evander_worker_playwright_runtime_cache_path ~ ':/opt/evander/playwright-runtime',
       evander_worker_playwright_browsers_cache_path ~ ':/opt/evander/ms-playwright',

@@ -86,7 +86,7 @@ class ReleaseVerificationExecutor(Protocol):
 
     def destroy_verifier(self, *, run_id: str, session_id: str) -> None: ...
 
-    def read_artifact(self, *, session_id: str, relative_path: str) -> str: ...
+    def read_artifact(self, *, session_id: str, relative_path: str, max_bytes: int) -> str: ...
 
 
 class TeamReleaseVerificationRunner:
@@ -568,9 +568,12 @@ class TeamReleaseVerificationRunner:
             path = PurePosixPath(ref.removeprefix("/artifacts/"))
             if path.is_absolute() or ".." in path.parts or str(path) == ".":
                 raise ValueError("invalid verifier artifact path")
+            remaining_bytes = 5 * 1024 * 1024 - size
+            if remaining_bytes <= 0:
+                raise ValueError("verifier evidence artifacts exceed the 5 MiB retention limit")
             try:
                 content = self._executor.read_artifact(
-                    session_id=session_id, relative_path=str(path)
+                    session_id=session_id, relative_path=str(path), max_bytes=remaining_bytes
                 )
             except Exception as exc:
                 raise ValueError(f"could not retain verifier artifact {ref}: {exc}") from exc

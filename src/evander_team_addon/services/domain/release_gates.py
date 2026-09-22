@@ -2088,6 +2088,9 @@ def retry_release_gate(
         if rejected_verification_retry:
             if current.state != "failed" or current.failure_kind != "candidate":
                 raise ValueError("operator verification retry requires a failed candidate run")
+        elif current.state == "failed" and current.failure_kind == "command":
+            if not normalized_requested_by.startswith("operator:"):
+                raise ValueError("retrying command-blocked verification requires an operator")
         elif current.state not in {"failed", "timed_out"} or current.failure_kind not in {
             "infrastructure",
             "timeout",

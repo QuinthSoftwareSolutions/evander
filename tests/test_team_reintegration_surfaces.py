@@ -56,6 +56,49 @@ def test_reintegration_preview_api_requires_owner_and_privileged_unlock(
     assert bool(calls) == (owner and privileged)
 
 
+@pytest.mark.parametrize("privileged", [False, True])
+def test_command_blocked_gate_api_requires_unlocked_operator_retry(tmp_path, privileged):
+    from test_team_addon_git_effects import _seed_team, _seed_release_verification
+    from test_team_verification_recovery import run_structured, RESULT_PREFIX
+
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    run, _ = run_structured(repo, {
+        "success": True, "exit_code": 0,
+        "stdout": RESULT_PREFIX + json.dumps({
+            "schema_version": 1, "outcome": "failed", "explanation": "Check prerequisites",
+            "candidate_commit_sha": "candidate-sha",
+        }),
+    })
+    saved = repo.read()
+    routes = api.admin_api_routes(AddonContext(
+        addon_id="team-addon", runtime_dir=tmp_path,
+        addon_runtime_dir=tmp_path / "addons/team-addon",
+        auth=_HumanApiAuthStub(login="operator@example.com", owner=True, privileged=privileged),
+    ))
+    endpoint = next(r.endpoint for r in routes if r.path.endswith("/retry-gate"))
+    request = _json_route_request(
+        method="POST", path="/release-packages/release-1/retry-gate",
+        path_params={"release_package_id": "release-1"},
+        payload={
+            "gate_kind": "verification", "gate_id": run.id,
+            "reason": "Prerequisites repaired", "expected_revision": saved.revision,
+        },
+    )
+    response = asyncio.run(endpoint(request))
+    assert response.status_code == (200 if privileged else 403)
+    after = repo.read()
+    if privileged:
+        release = after.release_packages["release-1"]
+        assert release.state == "pending"
+        assert release.gate_failure is None
+        new_run = after.release_verification_runs[release.verification_run_ids[-1]]
+        assert new_run.supersedes_verification_run_id == run.id
+        assert new_run.candidate_commit_sha == run.candidate_commit_sha
+    else:
+        assert after.revision == saved.revision
+
+
 def test_mcp_preview_submit_and_replay_use_shared_service(tmp_path, monkeypatch):
     name = mcp.TEAM_REINTEGRATE_RELEASE_TOOL
     context = _runtime(tmp_path, allowed_tools=[])

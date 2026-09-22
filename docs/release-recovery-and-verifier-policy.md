@@ -63,6 +63,8 @@ allocates a new generation/session, and reruns **every** prerequisite command.
 Passed commands from an incomplete workspace cannot skip installation or build
 steps in a cleaned checkout. Previous command evidence remains in generation
 history. Fully persisted terminal evidence is reused, with cleanup reconciled.
+An already-deleted verifier counts as cleaned up; other deletion errors still block
+the release.
 Per-run thread coalescing and a cross-process file lease prevent overlapping
 execution; generation checks reject stale progress and final results.
 
@@ -79,6 +81,9 @@ Existing commands default to `result_protocol: "exit_code"`, no baseline
 exceptions, and `command_failure_action: "correction"` for compatibility.
 Use `command_failure_action: "block"` when a failed command should stop for
 assessment instead of automatically opening a candidate correction task.
+After repairing the prerequisite, an operator can use **Retry verification
+gate** to create another attempt for the same frozen candidate. This retry requires
+privileged operations unlocked and a reason; agents cannot retry command-blocked gates.
 
 For `result_protocol: "json-v1"`, the platform supplies
 `EVANDER_VERIFICATION_CANDIDATE_SHA` and `EVANDER_VERIFICATION_BASE_SHA` from the
@@ -100,7 +105,9 @@ an accepted exception distinctly from a clean command pass.
 Reports are bounded to 65,536 characters. `/artifacts/` references must be readable text
 inside that session's artifact root (no traversal); up to 5 MiB total is copied
 into the retained command log before session cleanup. Missing local evidence
-blocks the result. Other references are opaque references to evaluator-owned
+blocks the result. Each read passes the remaining byte allowance to the worker,
+which bounds file reads before decoding; the client also bounds the streamed response.
+Other references are opaque references to evaluator-owned
 durable storage, not URLs for the host to fetch. The platform validates identity
 and transport, not the scientific adequacy of a project's comparison algorithm.
 
@@ -129,6 +136,8 @@ host and runner-container execution, then atomically replaces the `dotnet-curren
 symlink. Identical selected archive inputs reuse the validated bundle. Existing
 bundles are not removed. `evander_worker_dotnet_bundle_selector` configures the
 selector; the SDK/tools source paths must be its `sdk` and `tools` children.
+When `evander_worker_dotnet_toolchain_enabled` is false, default SDK/tools mounts
+are omitted so container jobs cannot create directories at the future selector path.
 
 The worker pins resolved read-only mount sources in a host-only session snapshot.
 All jobs in that session keep those paths across selector switches and daemon

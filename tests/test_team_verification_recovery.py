@@ -368,3 +368,165 @@ def test_cli_reads_retained_logs_without_worker_or_session(tmp_path, monkeypatch
     )
     assert result.exit_code == 0, result.output
     assert result.output.strip() == "last"
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_recovery_after_session_deletion_before_checkpoint(tmp_path, monkeypatch, interrupted):
+    from datetime import UTC, datetime, timedelta
+
+    from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
+    from evander.models import SessionManifest
+    from test_admin_service import build_admin_runtime, write_config
+
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    admin = build_admin_runtime(write_config(tmp_path / "host"))
+    admin.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="verification-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    deletions = []
+
+    def delete_session(session_id):
+        deletions.append(session_id)
+        return {"deleted": True}
+
+    monkeypatch.setattr(
+        admin.vm_agent_admin, "container_worker_backend",
+        lambda **kwargs: SimpleNamespace(delete_session=delete_session),
+    )
+    admin.vm_agent_admin.delete_admin_agent("verification-session", backend="container_worker_vm")
+    assert admin.runtime.session_repository.get_session("verification-session") is None
+
+    def checkpoint(state):
+        run = state.release_verification_runs["verification-1"]
+        run.state = "running"
+        run.execution_generation = 1
+        run.command_results[0] = ReleaseVerificationCommandResult(
+            name="frozen-check", state="passed", execution_generation=1, exit_code=0,
+        )
+        if interrupted:
+            state.release_packages["release-1"].manifest.verification_commands.append(
+                ReleaseVerificationCommand(name="dependent", argv=["dependent"])
+            )
+            run.command_results.append(
+                ReleaseVerificationCommandResult(name="dependent", execution_generation=1)
+            )
+        return state
+
+    repo.update(checkpoint)
+    commands, _, _ = _stub_release_verifier_setup(monkeypatch, destroy_result={"success": True})
+    monkeypatch.setattr(
+        AgentDestroyEffectProvider, "execute",
+        lambda self, **kwargs: admin.vm_agent_admin.delete_admin_agent(
+            self.effect_definition.session_id, backend="container_worker_vm"
+        ),
+    )
+    _verify_release_provider(tmp_path)
+    run = repo.read().release_verification_runs["verification-1"]
+    assert run.state == "passed"
+    assert run.failure_kind is None
+    assert deletions == ["verification-session"]
+    if interrupted:
+        assert run.execution_generation == 2
+        assert ["python", "-m", "frozen_check"] in commands
+        assert ["dependent"] in commands
+    else:
+        assert commands == []
+        assert run.execution_generation == 1
+
+
+@pytest.mark.parametrize("error", [ValueError("deletion rejected"), RuntimeError("worker offline")])
+def test_cleanup_keeps_real_deletion_errors(tmp_path, monkeypatch, error):
+    from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
+
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    _stub_release_verifier_setup(monkeypatch, destroy_result={"success": True})
+
+    def fail(self, **kwargs):
+        raise error
+
+    monkeypatch.setattr(AgentDestroyEffectProvider, "execute", fail)
+    _verify_release_provider(tmp_path)
+    run = repo.read().release_verification_runs["verification-1"]
+    assert run.state == "failed"
+    assert run.failure_kind == "infrastructure"
+    assert str(error) in run.error
+
+
+def test_operator_retries_command_blocked_verification_with_frozen_candidate(tmp_path):
+    from evander_team_addon.services.admin_service import TeamAdminService
+    from evander_team_addon.services.domain.release_gates import retry_release_gate
+
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    report = dict(schema_version=1, outcome="failed", explanation="Prerequisite unavailable",
+                  candidate_commit_sha="candidate-sha")
+    run, _ = run_structured(repo, {
+        "success": True, "exit_code": 0,
+        "stdout": RESULT_PREFIX + json.dumps(report),
+    })
+    state = repo.read()
+    release = state.release_packages["release-1"]
+    assert release.state == "blocked"
+    assert release.gate_failure.kind == "blocked"
+    assert run.failure_kind == "command"
+    assert run.correction_task_id is None
+    before = state.model_dump(mode="json")
+    with pytest.raises(ValueError, match="requires an operator"):
+        retry_release_gate(
+            state, release=release, gate_kind="verification", gate_id=run.id,
+            requested_by="agent:lead", reason="Try again", result={},
+        )
+    assert state.model_dump(mode="json") == before
+    updated, result = TeamAdminService(repo).retry_release_gate_with_result(
+        release_package_id=release.id, gate_kind="verification", gate_id=run.id,
+        operator_actor_id="operator:test", reason="Prerequisite repaired",
+        expected_revision=state.revision,
+    )
+    replacement = updated.release_verification_runs[result["replacement_gate_id"]]
+    assert replacement.state == "pending"
+    assert replacement.candidate_commit_sha == run.candidate_commit_sha
+    assert replacement.supersedes_verification_run_id == run.id
+    assert replacement.retry_reason == "Prerequisite repaired"
+    assert replacement.retry_requested_by == "operator:test"
+    assert updated.release_packages[release.id].manifest == release.manifest
+    assert updated.release_packages[release.id].gate_failure is None
+    assert updated.release_packages[release.id].approved_commit_sha is None
+    assert repo.list_outbox_records(intent_type="team.release.verification_requested")
+
+
+def test_artifact_reads_pass_remaining_byte_allowance_through_executor(tmp_path, monkeypatch):
+    from evander.effects.providers.base import EffectRuntimeContext
+    from evander_team_addon.services import release_verification_effects as effects
+
+    seen = []
+
+    def read(*, session_id, relative_path, max_bytes):
+        seen.append((session_id, relative_path, max_bytes))
+        if relative_path == "first.txt":
+            return "é" * 10
+        raise ValueError("Worker artifact exceeds import limit")
+
+    monkeypatch.setattr(effects, "effective_config_for_session", lambda *args: None)
+    monkeypatch.setattr(
+        effects, "container_backend",
+        lambda *args: SimpleNamespace(read_session_artifact_text_bounded=read),
+    )
+    runner = TeamReleaseVerificationRunner(
+        _seed_team(tmp_path), effects.EffectReleaseVerificationExecutor(EffectRuntimeContext()),
+    )
+    with pytest.raises(ValueError, match="exceeds import limit"):
+        runner._read_evidence_artifacts(
+            ["/artifacts/first.txt", "/artifacts/second.txt"], session_id="verifier",
+        )
+    assert seen == [
+        ("verifier", "first.txt", 5 * 1024 * 1024),
+        ("verifier", "second.txt", 5 * 1024 * 1024 - 20),
+    ]

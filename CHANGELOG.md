@@ -13,6 +13,9 @@
 - Stage and validate immutable worker .NET bundles, atomically switch selectors and pin
   resolved mounts per session. Keep project-specific evaluators in operator-owned
   configuration outside this repository.
+- Make repeated verifier cleanup safe, allow operator retries of command-blocked gates,
+  reset idle no-progress counters for new integration work, enforce evidence byte limits
+  at the worker read and transport, and omit disabled .NET toolchain mounts.
 
 ## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
 
