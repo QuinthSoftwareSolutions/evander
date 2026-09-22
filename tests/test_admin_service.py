@@ -5080,10 +5080,10 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
             requested_team_ids.append(team_id)
             return [
                 {
-                    "id": "19:truman@thread.skype",
-                    "displayName": "Truman",
+                    "id": "19:evander@thread.skype",
+                    "displayName": "Evander",
                     "membershipType": "standard",
-                    "webUrl": "https://teams.example/truman",
+                    "webUrl": "https://teams.example/evander",
                 },
                 {
                     "id": "19:other@thread.skype",
@@ -5102,7 +5102,7 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
     result = service.operations_admin.teams_auth_list_channels(
         directory=directory_path,
         team_id="c85e4de5-e0d7-4240-8302-8bc944f2360d",
-        channel_name="Truman",
+        channel_name="Evander",
     )
 
     assert result["directory_path"] == directory_path
@@ -5110,11 +5110,11 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
     assert result["channels"] == [
         {
             "team_id": "c85e4de5-e0d7-4240-8302-8bc944f2360d",
-            "channel_id": "19:truman@thread.skype",
-            "display_name": "Truman",
+            "channel_id": "19:evander@thread.skype",
+            "display_name": "Evander",
             "membership_type": "standard",
-            "web_url": "https://teams.example/truman",
-            "allowlist_entry": "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:truman@thread.skype",
+            "web_url": "https://teams.example/evander",
+            "allowlist_entry": "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:evander@thread.skype",
         }
     ]
     assert requested_team_ids == ["c85e4de5-e0d7-4240-8302-8bc944f2360d"]
@@ -5147,7 +5147,7 @@ def test_teams_auth_list_channels_can_list_all_channels(
             assert team_id == "team-123"
             return [
                 {"id": "19:a@thread.skype", "displayName": "General"},
-                {"id": "19:b@thread.skype", "displayName": "Truman"},
+                {"id": "19:b@thread.skype", "displayName": "Evander"},
             ]
 
     monkeypatch.setattr(admin_teams_service, "TeamsGraphClient", FakeGraphClient)
@@ -5165,7 +5165,7 @@ def test_teams_auth_list_channels_can_list_all_channels(
 
     assert result["channel_name"] is None
     assert result["match_count"] == 2
-    assert [item["display_name"] for item in result["channels"]] == ["General", "Truman"]
+    assert [item["display_name"] for item in result["channels"]] == ["General", "Evander"]
 
 
 def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) -> None:
@@ -6049,7 +6049,7 @@ def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
-            stdout="Repo: ExampleIndustryAPP\nLog: /home/agent/.evander/agent-ExampleIndustryAPP.log\nlegacy line\n",
+            stdout="Repo: SampleApplication\nLog: /home/agent/.evander/agent-SampleApplication.log\nlegacy line\n",
             stderr="",
         )
 
@@ -6058,7 +6058,7 @@ def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(
     )
 
     output = service.vm_agent_admin.get_agent_log_snapshot(
-        "bug-finder-vm", repo_name="ExampleIndustryAPP"
+        "bug-finder-vm", repo_name="SampleApplication"
     )
 
     assert "legacy line" in output
@@ -17083,8 +17083,8 @@ def test_clone_repo_into_vm_configures_separate_author_and_committer(
         managed_repo_id=_MANAGED_REPO_ID,
         git_author_name="Ada Lovelace",
         git_author_email="ada@example.com",
-        git_committer_name="Truman Bot",
-        git_committer_email="truman@example.com",
+        git_committer_name="Evander Bot",
+        git_committer_email="evander@example.com",
     )
 
     assert result.success is True
@@ -17093,8 +17093,8 @@ def test_clone_repo_into_vm_configures_separate_author_and_committer(
     assert "GIT_USER_EMAIL=ada@example.com" in remote_script
     assert "GIT_AUTHOR_NAME='Ada Lovelace'" in remote_script
     assert "GIT_AUTHOR_EMAIL=ada@example.com" in remote_script
-    assert "GIT_COMMITTER_NAME='Truman Bot'" in remote_script
-    assert "GIT_COMMITTER_EMAIL=truman@example.com" in remote_script
+    assert "GIT_COMMITTER_NAME='Evander Bot'" in remote_script
+    assert "GIT_COMMITTER_EMAIL=evander@example.com" in remote_script
     assert 'git -C "${TARGET_DIR}" config user.name "${GIT_USER_NAME}"' in remote_script
     assert 'git -C "${TARGET_DIR}" config author.name "${GIT_AUTHOR_NAME}"' in remote_script
     assert 'git -C "${TARGET_DIR}" config author.email "${GIT_AUTHOR_EMAIL}"' in remote_script
@@ -18571,7 +18571,7 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
         expected_commit_sha="a" * 40,
         destination_branch="feature/issue-14724",
         directory_path="root",
-        title="14724: Test Issue: Truman",
+        title="14724: Test Issue: Evander",
         body="Inline PR body",
         draft=True,
     )

@@ -1228,7 +1228,7 @@ class OpenAIRealtimeSession:
                 "response": {
                     "output_modalities": ["text"],
                     "instructions": (
-                        "Summarize this phone call for the originating Truman agent. "
+                        "Summarize this phone call for the originating Evander agent. "
                         "Include a brief summary, decisions, and action items."
                     ),
                 },
@@ -1384,7 +1384,7 @@ class OpenAIRealtimeSession:
                     "type": "function",
                     "name": "query_origin_agent",
                     "description": (
-                        "Ask the originating Truman agent a live-context question that requires "
+                        "Ask the originating Evander agent a live-context question that requires "
                         "its files, tools, repository state, or memory and is not already "
                         "answered by the Current task or Context. Do not use this tool to ask "
                         "for the outbound call objective, opening, script, instructions, "

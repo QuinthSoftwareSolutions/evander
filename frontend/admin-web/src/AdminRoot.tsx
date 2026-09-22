@@ -1402,9 +1402,9 @@ function LoginBrandBar({
         {theme === "dark" ? "Light mode" : "Dark mode"}
       </button>
       {productLogoUrl ? (
-        <img className="admin-login-truman-logo" src={productLogoUrl} alt={branding.product_logo.alt} />
+        <img className="admin-login-evander-logo" src={productLogoUrl} alt={branding.product_logo.alt} />
       ) : (
-        <span className="admin-login-truman-logo admin-login-logo-placeholder" aria-hidden="true" />
+        <span className="admin-login-evander-logo admin-login-logo-placeholder" aria-hidden="true" />
       )}
     </div>
   );

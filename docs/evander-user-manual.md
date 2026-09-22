@@ -2899,7 +2899,7 @@ $HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/path
 Operators can manage the same contract without editing raw metadata: use **HTTP targets** in the
 Agents create/edit forms or in **Sessions → Model and access**. Each row accepts an alias and
 HTTP(S) base URL. Existing per-target workflow metadata is preserved, and clearing all rows writes
-an explicit empty target set so legacy APP environment metadata cannot restore access implicitly.
+an explicit empty target set so legacy App environment metadata cannot restore access implicitly.
 
 The relay:
 
@@ -7632,7 +7632,7 @@ agent-requested attempt also fails for infrastructure reasons, Riley must
 escalate it rather than retry again. If a command exits nonzero, Imani must
 change and re-review the content; no one can retry it into approval.
 
-## Complete APP walkthrough: guarded line-speed control
+## Complete App walkthrough: guarded line-speed control
 
 The following representative manufacturing flow combines task hierarchy,
 composition, durable dispatch, human testing, correction lineage, exact-SHA
@@ -7641,8 +7641,8 @@ to the supported records described in Chapters 18–24.
 
 1. A plant engineer reports that Packaging Line 4 can accept a line-speed
    setpoint above the commissioned limit. Team creates case
-   <code>APP-482</code> and an outcome root
-   <code>guard-line-speed</code>, owned by the APP project lead. The contract
+   <code>App-482</code> and an outcome root
+   <code>guard-line-speed</code>, owned by the App project lead. The contract
    requires a reviewed software change and operator-verification evidence.
 2. The lead decomposes three levels: PLC/domain validation, API enforcement,
    operator UI, automated tests, operating instructions, and a self-owned
@@ -7697,7 +7697,7 @@ to the supported records described in Chapters 18–24.
     calibration note remains <code>recovery_required</code> with its exact
     path and failed safety check; no broad delete discards it.
 14. A later operator report that the warning should be localized creates a
-    post-release case and triage root only. The published APP release stays
+    post-release case and triage root only. The published App release stays
     immutable, and rollback or a further successor requires a separate
     controlled decision.
 
@@ -8555,15 +8555,15 @@ The distinction between add-on and core remained intact as more add-ons appeared
 
 Multi-user local authentication made the signed-in person's identity and permissions part of each operation. Team chat became per operator rather than one global conversation. The broad Lock/Unlock control was eventually narrowed to a local UI read-only guard; backend authority still comes from authentication, RBAC, privileged-operation checks, directory scope, and revisions. A visual lock is useful protection against accidental clicks, but it is not an authorization boundary.
 
-### June 26–30: a persisted name makes renaming an upgrade
+### June 26–30: naming becomes part of the upgrade
 
-Operational naming also moved to Evander: Python package, `evander-*` services, `EVANDER_*` variables, and guest `.evander` and `/etc/evander` paths. Installer and setup code retained narrow upgrade handling for earlier service, firewall, network, environment, and guest paths.
+Operational naming was standardized on Evander: Python package, `evander-*` services, `EVANDER_*` variables, and guest `.evander` and `/etc/evander` paths. Installer and setup code retained narrow upgrade handling for earlier service, firewall, network, environment, and guest paths.
 
 > <span class="sidebar-kicker">Compatibility sidebar</span> **A rename becomes a migration when the old name is durable**
 >
 > Changing a heading is cosmetic. Changing a systemd unit, environment-variable prefix, network name, package import, runtime path, guest profile hook, or stored workflow field changes how a running installation finds its state. The Evander rename therefore needed discovery, repair, cleanup, and compatibility logic—not merely search and replace.
 >
-> Historical changelog entries and rollback artifacts may use the former product name. That residue helps identify their era; it does not make the former service or path a current authority.
+> Older rollback artifacts can contain names from their era. Treat deployed configuration and current service paths as the authority for an upgrade.
 
 ### June 27–30: focused services expose domain ownership
 
@@ -9099,7 +9099,7 @@ First establish whether the external item or message was saved inside Evander. O
 | PR feedback is present but agent does not resume | `runtime/pr-feedback-store.json`, agent control state, and ADO worker journal | Ingest, dedupe, disabled agent, or wake | Correlate comment/PR/session IDs; enable only the intended agent or correct the failed wake |
 | Scheduled wake is overdue | Scheduled wake record, host agent control state, and worker journal | Due-time parsing, disabled agent, session terminality, or worker | Confirm UTC/time zone and eligibility, then wake through the owning worker/API |
 | Discord or Teams message is visible externally but absent internally | Ingest cursor/store and integration worker journal | External permission, poll/webhook, allowlist, or cursor | Repair ingest first; do not debug wake logic until a canonical inbox/message record exists |
-| Communication trigger accepted a message but Team Chat has no corresponding row | Trigger run, fixed bridge configuration, target capabilities, and `ExternalChatIngressRecord` keyed by provider/target/source message | Communication-to-Team-Chat effect, fixed identity, author authority, or ingress persistence | Repair the exact bridge failure and replay the same source message ID; do not invent a new operator identity or duplicate dispatch |
+| Communication trigger accepted a message but Team Chat has no corresponding row | Trigger run, fixed bridge configuration, target capabilities, and `ExternalChatIngressRecord` keyed by provider/target/source message | Communication-to-Team-Chat effect, fixed identity, author authority, or ingress persistence | Fix the bridge failure and replay the original source ID. Preserve operator identity and avoid duplicate dispatch. |
 | Message is stored but no wake occurs | Message/inbox record, wake eligibility, and wake worker log | Priority, handled state, disabled agent, dedupe, or active-session policy | Evaluate current wake rules and idempotency key; avoid duplicating a successful wake |
 | Team Chat reply is visible but never reached the external source | `ExternalChatDeliveryRecord`, `team.chat.external_reply_requested`, send effect, success/failure recorder, and target capability | Persisted external delivery or communication provider | Keep the Team reply; inspect `pending`, `sending`, `sent`, `failed`, or `unknown` state and retry only when the persisted evidence makes that safe |
 | Outbound notification fails | Effect execution and configured target in `runtime/communication-targets.db` | Target capability, credential, attachment, or provider | Correct the named target/provider and retry the effect only when its idempotency record permits |
@@ -9675,6 +9675,7 @@ inventoried ignored files, bytes reclaimed, and any
 - **agent identity** — [6. Identity, Sessions, RBAC, and Policy](#6-identity-sessions-rbac-and-policy), [18. Organization, Projects, Tasks, and Cases](#18-organization-projects-tasks-and-cases).
 - **Agent Mail** — [21. Chat, Agent Mail, Voice, and Escalation](#21-chat-agent-mail-voice-and-escalation), [29. Troubleshooting Decision Tables](#29-troubleshooting-decision-tables).
 - **agent sessions** — [6. Identity, Sessions, RBAC, and Policy](#6-identity-sessions-rbac-and-policy), [9. Execution Backends](#9-execution-backends).
+- **App walkthrough** — [24. Team Git Promotion and Release Gates](#24-team-git-promotion-and-release-gates).
 - **approvals** — [7. MCP, Approvals, and Audit](#7-mcp-approvals-and-audit), [15. Admin Operations, Observability, Backup, and Recovery](#15-admin-operations-observability-backup-and-recovery).
 - **architecture** — [3. Trust Model and Security Boundaries](#3-trust-model-and-security-boundaries), [4. System Topology, Services, and Ports](#4-system-topology-services-and-ports).
 - **artifact spaces** — [11. Managed Git, Artifacts, and Code Consultations](#11-managed-git-artifacts-and-code-consultations), [22. Deliverables, Reviews, and Decision Cascades](#22-deliverables-reviews-and-decision-cascades).
@@ -9771,7 +9772,6 @@ inventoried ignored files, bytes reclaimed, and any
 - **MCP** — [7. MCP, Approvals, and Audit](#7-mcp-approvals-and-audit), [16. Team Add-on Boundary and Domain Model](#16-team-add-on-boundary-and-domain-model).
 - **meetings** — [13. Communications, Meetings, Calls, and Wakes](#13-communications-meetings-calls-and-wakes), [21. Chat, Agent Mail, Voice, and Escalation](#21-chat-agent-mail-voice-and-escalation).
 - **memory** — [14. Semantic Memory, Model Usage, Skills, and Add-ons](#14-semantic-memory-model-usage-skills-and-add-ons), [25. Governance, Memory, Cost, and Internals](#25-governance-memory-cost-and-internals).
-- **APP walkthrough** — [24. Team Git Promotion and Release Gates](#24-team-git-promotion-and-release-gates).
 - **Microsoft Teams** — [13. Communications, Meetings, Calls, and Wakes](#13-communications-meetings-calls-and-wakes), [21. Chat, Agent Mail, Voice, and Escalation](#21-chat-agent-mail-voice-and-escalation).
 - **model relay** — [10. Networking, Relays, Packages, and Secrets](#10-networking-relays-packages-and-secrets), [14. Semantic Memory, Model Usage, Skills, and Add-ons](#14-semantic-memory-model-usage-skills-and-add-ons).
 - **model usage** — [14. Semantic Memory, Model Usage, Skills, and Add-ons](#14-semantic-memory-model-usage-skills-and-add-ons), [25. Governance, Memory, Cost, and Internals](#25-governance-memory-cost-and-internals).

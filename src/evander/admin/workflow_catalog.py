@@ -3237,7 +3237,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 required=True,
                 bindable=True,
                 description="Immutable key of the published tar.gz archive to import.",
-                placeholder="manuals/true-app/reviewed/latest",
+                placeholder="manuals/sample-app/reviewed/latest",
             ),
             _field(
                 "destination_path",

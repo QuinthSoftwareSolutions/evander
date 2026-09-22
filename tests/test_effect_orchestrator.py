@@ -7532,9 +7532,9 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
@@ -7542,7 +7542,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
         QueuedAgentPromptRecord(
             queue_key="session-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="hello",
             model=None,
@@ -7605,16 +7605,16 @@ def test_agent_enqueue_prompt_dispatch_retains_expired_subscription_capacity_pro
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
     queued = QueuedAgentPromptRecord(
         queue_key="session-1",
         target="session-1",
-        vm_name="truman",
+        vm_name="evander",
         session_id="session-1",
         prompt="hello after renewal",
         model=None,
@@ -8388,11 +8388,11 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
             metadata={
                 "execution_backend": "container_worker_vm",
-                "target_name": "truman",
+                "target_name": "evander",
                 "container_worker": {"image": "runner:queue-image"},
                 "agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"},
             },
@@ -8403,7 +8403,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
         QueuedAgentPromptRecord(
             queue_key="session-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="check teams",
             model=None,
@@ -8525,11 +8525,11 @@ def test_container_prompt_completion_without_agent_output_fails_without_persisti
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
             metadata={
                 "execution_backend": "container_worker_vm",
-                "target_name": "truman",
+                "target_name": "evander",
                 "agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"},
             },
         )
@@ -8649,9 +8649,9 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
@@ -8666,7 +8666,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
         QueuedAgentPromptRecord(
             queue_key="scheduled-wake:wake-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="resume scheduled work",
             model=None,
@@ -8792,9 +8792,9 @@ def test_agent_enqueue_prompt_dispatch_hook_discards_cancelled_scheduled_wake_qu
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     wake_store = WakeRequestStore(tmp_path / "wake-requests-store.json")
@@ -8833,7 +8833,7 @@ def test_agent_enqueue_prompt_dispatch_hook_discards_cancelled_scheduled_wake_qu
         QueuedAgentPromptRecord(
             queue_key="scheduled-wake:wake-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="resume scheduled work",
             model=None,
@@ -8892,10 +8892,10 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             metadata={
                 "execution_backend": "container_worker_vm",
-                "target_name": "truman",
+                "target_name": "evander",
                 "agent_provider": "claude",
                 "wake_dispatch_id": "wake-dispatch-1",
             },
@@ -8906,7 +8906,7 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
         QueuedAgentPromptRecord(
             queue_key="pr-feedback:session-1:feedback-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="handle PR feedback",
             model=None,
@@ -9009,7 +9009,7 @@ def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_di
             "dispatch_id": "effect-dispatch-123",
             "wake_dispatch_id": "wake-dispatch-1",
             "session_id": "session-1",
-            "vm_name": "truman",
+            "vm_name": "evander",
             "execution_backend": "container_worker_vm",
         },
     )

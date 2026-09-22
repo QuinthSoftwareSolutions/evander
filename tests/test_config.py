@@ -779,7 +779,7 @@ def test_local_openai_provider_config_validates_and_normalizes_full_configuratio
             "openai_relay_host": "192.168.250.1",
             "local_openai_api_base_url": " http://127.0.0.1:11434/v1/ ",
             "local_openai_api_key": " ollama-local ",
-            "local_openai_provider_name": " local_truman ",
+            "local_openai_provider_name": " local_evander ",
         }
     )
 
@@ -787,7 +787,7 @@ def test_local_openai_provider_config_validates_and_normalizes_full_configuratio
     assert config.openai_provider_mode == "local_openai"
     assert config.local_openai_api_base_url == "http://127.0.0.1:11434/v1"
     assert config.local_openai_api_key == "ollama-local"
-    assert config.local_openai_provider_name == "local_truman"
+    assert config.local_openai_provider_name == "local_evander"
 
 
 def test_local_openai_provider_config_rejects_default_upstream_when_relay_binds_wildcard() -> None:

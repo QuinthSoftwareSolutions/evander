@@ -48,8 +48,8 @@ def _provider(
         effect_definition=SimpleNamespace(
             id="effect-ado-work-item-tag",
             type=provider_class.NODE_TYPE,
-            directory_path="root/example/truman",
-            project="Example Industry APP",
+            directory_path="root/example/evander",
+            project="Example Industry App",
             work_item_id="123",
             tag=tag,
             sync_proxy_cache=False,
@@ -86,8 +86,8 @@ def test_ado_add_work_item_tag_updates_when_missing(
         {
             "provider": "azure_devops",
             "remote_issue_id": "123",
-            "directory_path": "root/example/truman",
-            "project": "Example Industry APP",
+            "directory_path": "root/example/evander",
+            "project": "Example Industry App",
             "include_comments": False,
         }
     ]
@@ -95,8 +95,8 @@ def test_ado_add_work_item_tag_updates_when_missing(
         {
             "provider": "azure_devops",
             "remote_issue_id": "123",
-            "directory_path": "root/example/truman",
-            "project": "Example Industry APP",
+            "directory_path": "root/example/evander",
+            "project": "Example Industry App",
             "state": None,
             "fields": {"System.Tags": "auto-dev; backend; ready"},
         }

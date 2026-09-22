@@ -189,7 +189,10 @@ def migrate_vm_sessions_to_container(
         return
 
     if copy_only:
+        from evander.provider_config import ProviderConfigResolver
+
         copy_results = []
+        provider_config = ProviderConfigResolver(cfg)
 
         def _progress(message: str) -> None:
             typer.echo(message, err=True)
@@ -197,7 +200,7 @@ def migrate_vm_sessions_to_container(
         for session in selected:
             result = copy_vm_session_state(
                 session,
-                config=cfg,
+                config=provider_config.resolve_for_directory(session.directory_path),
                 worker_root=resolved_worker_root,
                 vm_user=vm_user,
                 log_vm_user=log_vm_user,

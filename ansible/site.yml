@@ -6,6 +6,30 @@
     evander_repo_parent: "{{ evander_deploy_path | dirname }}"
     evander_expected_runtime_dir: "{{ evander_deploy_path }}/runtime"
   pre_tasks:
+    - name: Check for existing Teams ingest settings on unmanaged hosts
+      ansible.builtin.stat:
+        path: "{{ evander_deploy_path }}/config/teams-ingest/config.json"
+      register: evander_existing_teams_ingest_settings
+      when: not (evander_manage_teams_ingest_config | bool)
+
+    - name: Read existing Teams ingest settings on unmanaged hosts
+      ansible.builtin.slurp:
+        src: "{{ evander_deploy_path }}/config/teams-ingest/config.json"
+      register: evander_existing_teams_ingest_document
+      when:
+        - not (evander_manage_teams_ingest_config | bool)
+        - evander_existing_teams_ingest_settings.stat.exists | default(false)
+      no_log: true
+
+    - name: Preserve existing Teams notification settings for unmanaged hosts
+      ansible.builtin.set_fact:
+        evander_teams_ingest_config: >-
+          {{ evander_existing_teams_ingest_document.content | b64decode | from_json }}
+      when:
+        - not (evander_manage_teams_ingest_config | bool)
+        - evander_existing_teams_ingest_document.content is defined
+      no_log: true
+
     - name: Assert the service profile is supported
       ansible.builtin.assert:
         that:

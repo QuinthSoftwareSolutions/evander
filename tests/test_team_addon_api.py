@@ -1936,7 +1936,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
             return {
                 "managed_repo_id": managed_repo_id,
                 "canonical_repository_identity": "azure-devops:org/project/app",
-                "display_name": "ExampleIndustryAPP",
+                "display_name": "SampleApplication",
             }
 
     addon_service = SimpleNamespace(managed_git_admin=_ManagedGit())
@@ -1995,7 +1995,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     )
     assert release_detail.json()["candidate_checkout"] == {
         "canonical_repository_identity": "azure-devops:org/project/app",
-        "repository_display_name": "ExampleIndustryAPP",
+        "repository_display_name": "SampleApplication",
         "managed_repo_id": "mr_0123456789abcdefabcd",
         "release_ref": "refs/heads/team/team/releases/release-1",
         "candidate_commit_sha": "candidate-sha",
@@ -9230,7 +9230,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                 "managed_repo_id": "mr_0123456789abcdefabcd",
                 "agent_author_identity": {
                     "name": "Jonathan Quinth",
-                    "email": "operator@example.invalid",
+                    "email": "jonathan.quinth@exampleindustry.com",
                 },
                 "agent_committer_identity": {
                     "name": "Evander Bot",
@@ -9254,7 +9254,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     )
     assert response.json()["projects"]["project"]["git"]["agent_author_identity"] == {
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
     assert response.json()["projects"]["project"]["release_policy"]["resource_limits"] == {
         "memory": "6g",
@@ -9270,7 +9270,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                 "base_branch": "develop",
                 "agent_author_identity": {
                     "name": "Jonathan Quinth",
-                    "email": "operator@example.invalid",
+                    "email": "jonathan.quinth@exampleindustry.com",
                 },
                 "agent_committer_identity": {
                     "name": "Evander Bot",

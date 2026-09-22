@@ -83,7 +83,7 @@
     {"term": "managed Git", "targets": ["11-managed-git-artifacts-and-code-consultations", "28-system-reference"]},
     {"term": "managed repository ID", "targets": ["11-managed-git-artifacts-and-code-consultations", "24-team-git-promotion-and-release-gates"]},
     {"term": "MCP", "targets": ["7-mcp-approvals-and-audit", "16-team-add-on-boundary-and-domain-model"]},
-    {"term": "APP walkthrough", "targets": ["24-team-git-promotion-and-release-gates"]},
+    {"term": "App walkthrough", "targets": ["24-team-git-promotion-and-release-gates"]},
     {"term": "meetings", "targets": ["13-communications-meetings-calls-and-wakes", "21-chat-agent-mail-voice-and-escalation"]},
     {"term": "memory", "targets": ["14-semantic-memory-model-usage-skills-and-add-ons", "25-governance-memory-cost-and-internals"]},
     {"term": "Microsoft Teams", "targets": ["13-communications-meetings-calls-and-wakes", "21-chat-agent-mail-voice-and-escalation"]},

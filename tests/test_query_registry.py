@@ -421,7 +421,7 @@ def test_session_context_query_provider_returns_metadata(tmp_path: Path) -> None
             "session_id": "session-1",
             "vm_name": "vm-1",
             "directory_path": "root/team-a",
-            "metadata": {"issue_number": "14084", "issue_title": "Fix APP"},
+            "metadata": {"issue_number": "14084", "issue_title": "Fix App"},
             "created_at": "2026-04-07T10:00:00+00:00",
             "expires_at": "2026-04-09T10:00:00+00:00",
             "model": "gpt-5.4",
@@ -874,7 +874,7 @@ def test_remote_issues_query_provider_passes_ado_query_mode(
         display_name="Remote ADO issues",
         type="query:remote-issues",
         provider="ado",
-        project="APP",
+        project="App",
         query_mode="structured_filters",
         states=["Committed"],
     )

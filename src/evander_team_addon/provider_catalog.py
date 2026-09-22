@@ -687,7 +687,7 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "requesting_session_id",
                 "Requesting session ID",
                 "string",
-                description="Optional Truman session that requested the directive.",
+                description="Optional Evander session that requested the directive.",
             ),
             _revision_field(),
         ],
@@ -1364,7 +1364,7 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Session ID",
                 "string",
                 required=True,
-                description="Completed Truman session id to classify against Team runtime state.",
+                description="Completed Evander session id to classify against Team runtime state.",
             ),
             _catalog_field(
                 "dispatch_id",
@@ -1408,7 +1408,7 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         "effect",
         "effect:team:mark-ephemeral-spawned",
         "Mark Team worker spawned",
-        "Attach a created Truman session to a Team ephemeral assignment.",
+        "Attach a created Evander session to a Team ephemeral assignment.",
         [
             _catalog_field(
                 "assignment_id",
@@ -1421,7 +1421,7 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "session_id",
                 "Session ID",
                 "string",
-                description="Created Truman session id for the ephemeral worker.",
+                description="Created Evander session id for the ephemeral worker.",
             ),
             _catalog_field(
                 "create_result",
@@ -1484,7 +1484,7 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "session_id",
                 "Session ID",
                 "string",
-                description="Destroyed Truman session id for lookup when assignment id is not bound.",
+                description="Destroyed Evander session id for lookup when assignment id is not bound.",
             ),
             _catalog_field(
                 "destroy_result",

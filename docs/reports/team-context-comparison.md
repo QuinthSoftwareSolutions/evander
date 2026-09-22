@@ -11,8 +11,8 @@ Synthetic sanitized examples; no historical token replay or billing data.
 | coding | retained | 19,923 → 10,379 | 47.9% | 17,110 → 8,070 | 14,012 | 18.11% | 23,182 |
 | independent-review | fresh | 28,127 → 12,449 | 55.74% | 17,289 → 8,877 | 14,828 | 14.23% | 24,495 |
 | independent-review | retained | 27,181 → 11,963 | 55.99% | 17,289 → 8,877 | 14,828 | 14.23% | 24,495 |
-| Truman-management | fresh | 29,360 → 17,090 | 41.79% | 20,968 → 10,641 | 16,586 | 20.9% | 28,826 |
-| Truman-management | retained | 27,837 → 16,604 | 40.35% | 20,968 → 10,641 | 16,586 | 20.9% | 28,826 |
+| Evander-management | fresh | 29,360 → 17,090 | 41.79% | 20,968 → 10,641 | 16,586 | 20.9% | 28,826 |
+| Evander-management | retained | 27,837 → 16,604 | 40.35% | 20,968 → 10,641 | 16,586 | 20.9% | 28,826 |
 | Trudy-coordination | fresh | 26,030 → 15,511 | 40.41% | 19,032 → 9,338 | 15,280 | 19.71% | 25,990 |
 | Trudy-coordination | retained | 24,508 → 15,025 | 38.69% | 19,032 → 9,338 | 15,280 | 19.71% | 25,990 |
 
@@ -28,8 +28,8 @@ The following sensitivity calculation includes a full copy of managed guidance o
 | coding | retained | 39,651 → 38,144 | 3,160 → 440 | 5,620 → 440 | 7 |
 | independent-review | fresh | 47,858 → 40,217 | 3,751 → 1,271 | 5,856 → 1,271 | 9 |
 | independent-review | retained | 46,912 → 39,731 | 3,751 → 1,271 | 5,856 → 1,271 | 9 |
-| Truman-management | fresh | 49,089 → 44,856 | 3,390 → 1,270 | 6,875 → 1,040 | 9 |
-| Truman-management | retained | 47,566 → 44,370 | 3,390 → 1,270 | 6,875 → 1,040 | 9 |
+| Evander-management | fresh | 49,089 → 44,856 | 3,390 → 1,270 | 6,875 → 1,040 | 9 |
+| Evander-management | retained | 47,566 → 44,370 | 3,390 → 1,270 | 6,875 → 1,040 | 9 |
 | Trudy-coordination | fresh | 45,758 → 43,276 | 3,390 → 966 | 6,260 → 736 | 8 |
 | Trudy-coordination | retained | 44,236 → 42,790 | 3,390 → 966 | 6,260 → 736 | 8 |
 

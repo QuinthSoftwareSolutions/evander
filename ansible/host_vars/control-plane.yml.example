@@ -1,5 +1,6 @@
 ---
-# CI/CD-owned Truman override. Local and other deployments inherit the disabled defaults.
+# Put these values in operator-owned inventory outside the checkout for hosts
+# that use Teams change notifications. Set that host's real public URL there.
 evander_manage_teams_ingest_config: true
 evander_teams_ingest_config:
   runtime_dir: "runtime"
@@ -14,7 +15,7 @@ evander_teams_ingest_config:
   target_transient_backoff_initial_seconds: 5
   target_transient_backoff_max_seconds: 30
   change_notifications_enabled: true
-  change_notification_public_base_url: "https://truman-admin.northeurope.cloudapp.azure.com"
+  change_notification_public_base_url: "https://control-plane.example.test"
   change_notification_listener_host: "127.0.0.1"
   change_notification_listener_port: 11882
   change_notification_subscription_lifetime_hours: 48

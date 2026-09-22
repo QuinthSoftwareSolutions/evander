@@ -1096,8 +1096,8 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert container_triggers["trigger-cron-auto-dev-1"]["config"]["expression"] == "*/5 * * * *"
     auto_dev_query = container_queries["query-ado-auto-dev-1"]
     assert auto_dev_query["type"] == "query:ado:work-items"
-    assert auto_dev_query["config"]["directory_path"] == "root/example/truman"
-    assert auto_dev_query["config"]["project"] == "Example Industry APP"
+    assert auto_dev_query["config"]["directory_path"] == "root/example/evander"
+    assert auto_dev_query["config"]["project"] == "Example Industry App"
     assert auto_dev_query["config"]["states"] == ["New", "To Do"]
     assert auto_dev_query["config"]["tags_any"] == ["auto-dev"]
     assert auto_dev_query["config"]["current_iteration"] is False
@@ -1117,7 +1117,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             },
             {
                 "left": '${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? ""}}',
-                "not_equals": "truman@quinth.se",
+                "not_equals": "evander@example.test",
             },
         ]
     }
@@ -1248,7 +1248,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "*/15 * * * *"
     )
     approval_query = container_queries["query-ado-auto-dev-awaiting-approval-1"]
-    assert approval_query["config"]["directory_path"] == "root/example/truman/auto-dev"
+    assert approval_query["config"]["directory_path"] == "root/example/evander/auto-dev"
     assert approval_query["config"]["top"] == 50
     assert "[System.Tags] CONTAINS 'auto-dev'" in approval_query["config"]["wiql"]
     assert "[System.Tags] NOT CONTAINS 'auto-dev-approved'" in approval_query["config"]["wiql"]
@@ -1257,7 +1257,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert approval_threshold["config"]["when"]["all"][1]["greater_than"] == 8
     approval_caller = container_effects["effect-agent-create-auto-dev-approval-caller-1"]
     assert approval_caller["config"]["session_id"] == (
-        "auto-dev-ado-approval-caller-root-example-truman-auto-dev"
+        "auto-dev-ado-approval-caller-root-example-evander-auto-dev"
     )
     assert "make_phone_call" in approval_caller["config"]["allowed_tools"]
     assert "get_phone_call_result" in approval_caller["config"]["allowed_tools"]
@@ -1265,7 +1265,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     approval_prompt = container_effects["effect-agent-enqueue-prompt-auto-dev-approval-caller-1"][
         "config"
     ]["prompt"]
-    assert "jonathan_quinth" in approval_prompt
+    assert "demo_operator" in approval_prompt
     assert "auto-dev-approved" in approval_prompt
     assert (
         container_edges[

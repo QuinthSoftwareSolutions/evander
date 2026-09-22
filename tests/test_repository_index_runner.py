@@ -370,13 +370,13 @@ def test_dotnet_navigation_restores_then_indexes_without_building(tmp_path, monk
         assert kwargs["env"]["NoWarn"] == "CS1591;NU1510"
 
 
-def test_app_profile_indexes_the_solution_as_one_workspace():
+def test_sample_profile_indexes_the_solution_as_one_workspace():
     profile = json.loads(
         (Path(__file__).parents[1] / "config/repository-indexing/app.json.example").read_text()
     )
 
     assert profile["scip"] is True
-    assert profile["dotnet_projects"] == ["Src/App.slnx"]
+    assert profile["dotnet_projects"] == ["src/SampleApp.slnx"]
 
 
 @pytest.mark.parametrize(

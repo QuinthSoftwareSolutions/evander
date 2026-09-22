@@ -28,7 +28,7 @@ def _trigger(**config):
         "type": "trigger:issue:comment-created",
         "provider": "ado",
         "organization_url": "https://dev.azure.com/example",
-        "project": "APP",
+        "project": "App",
         "directories": ["root/example-industry/app"],
     }
     payload.update(config)
@@ -44,10 +44,10 @@ def _provider(runtime_dir: Path, **config) -> IssueCommentCreatedTriggerProvider
 
 def _ado_issue(
     *,
-    issue_id: str = "ado:APP:123",
+    issue_id: str = "ado:App:123",
     issue_number: str = "123",
     directory_path: str = "root/example-industry/app",
-    project: str = "APP",
+    project: str = "App",
     comments: list[dict] | None = None,
 ) -> LocalIssueRecord:
     return LocalIssueRecord(
@@ -64,9 +64,9 @@ def _ado_issue(
             organization="https://dev.azure.com/example",
             project=project,
             work_item_id=issue_number,
-            work_item_url=f"https://dev.azure.com/example/APP/_workitems/edit/{issue_number}",
+            work_item_url=f"https://dev.azure.com/example/App/_workitems/edit/{issue_number}",
         ),
-        url=f"https://dev.azure.com/example/APP/_workitems/edit/{issue_number}",
+        url=f"https://dev.azure.com/example/App/_workitems/edit/{issue_number}",
         comments=comments or [],
         created_at=datetime(2026, 5, 8, 10, 0, tzinfo=UTC),
         updated_at=datetime(2026, 5, 8, 10, 5, tzinfo=UTC),
@@ -97,7 +97,7 @@ def test_new_comment_creates_trigger_activation(tmp_path: Path) -> None:
 
     assert len(events) == 1
     assert events[0].trigger_type == "trigger:issue:comment-created"
-    assert events[0].payload["issue_id"] == "ado:APP:123"
+    assert events[0].payload["issue_id"] == "ado:App:123"
     assert events[0].payload["comment_id"] == "c1"
 
 
@@ -153,7 +153,7 @@ def test_duplicate_comments_are_not_emitted_twice(tmp_path: Path) -> None:
 
     provider.acknowledge_published_event(events[0])
     cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
-    assert cursor_payload["issue-comment"]["seen_comment_keys"] == ["ado:APP:123:c3"]
+    assert cursor_payload["issue-comment"]["seen_comment_keys"] == ["ado:App:123:c3"]
     assert provider.poll() == []
 
     issue.comments.append(
@@ -220,7 +220,7 @@ def test_directory_scope_allows_descendants_via_shared_helper(tmp_path: Path) ->
     _store_issue(
         tmp_path,
         _ado_issue(
-            issue_id="ado:APP:10",
+            issue_id="ado:App:10",
             issue_number="10",
             directory_path="root/example-industry/app/subteam",
             comments=[{"id": "nested", "text": "emit me"}],
@@ -229,7 +229,7 @@ def test_directory_scope_allows_descendants_via_shared_helper(tmp_path: Path) ->
     _store_issue(
         tmp_path,
         _ado_issue(
-            issue_id="ado:APP:11",
+            issue_id="ado:App:11",
             issue_number="11",
             directory_path="root/example-industry/other",
             comments=[{"id": "sibling", "text": "ignore me"}],

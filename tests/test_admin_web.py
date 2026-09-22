@@ -2732,11 +2732,11 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     )
     news_asset_dir = service.project_dir / "docs" / "assets" / "news"
     news_asset_dir.mkdir(parents=True)
-    (news_asset_dir / "truman-signature.svg").write_text(
+    (news_asset_dir / "evander-signature.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
         encoding="utf-8",
     )
-    (news_asset_dir / "truman-signature-inverse.svg").write_text(
+    (news_asset_dir / "evander-signature-inverse.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
         encoding="utf-8",
     )
@@ -2747,7 +2747,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         "### Practical tips\n\n"
         "- Open the dashboard first.\n\n"
         "- Download the changelog when you need the full record.\n\n"
-        '![Truman signature](docs/assets/news/truman-signature.svg "Signed by Truman")\n\n'
+        '![Evander signature](docs/assets/news/evander-signature.svg "Signed by Evander")\n\n'
         "The dashboard news feed explains what changed and how to use it.\n"
         "\n"
         "## 2026-05-20 - Earlier Update\n\n"
@@ -2759,7 +2759,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     response = client.get("/api/admin/release-info")
     older_response = client.get("/api/admin/release-info?news_index=1")
     invalid_response = client.get("/api/admin/release-info?news_index=-1")
-    asset_response = client.get("/api/admin/news/assets/truman-signature.svg")
+    asset_response = client.get("/api/admin/news/assets/evander-signature.svg")
     blocked_asset_response = client.get("/api/admin/news/assets/%2e%2e/NEWS.md")
 
     assert response.status_code == 200
@@ -2821,10 +2821,10 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
                     "text": None,
                     "level": None,
                     "items": [],
-                    "src": "/api/admin/news/assets/truman-signature.svg",
-                    "dark_src": "/api/admin/news/assets/truman-signature-inverse.svg",
-                    "alt": "Truman signature",
-                    "title": "Signed by Truman",
+                    "src": "/api/admin/news/assets/evander-signature.svg",
+                    "dark_src": "/api/admin/news/assets/evander-signature-inverse.svg",
+                    "alt": "Evander signature",
+                    "title": "Signed by Evander",
                 },
                 {
                     "kind": "paragraph",
@@ -2891,7 +2891,7 @@ def test_admin_web_release_info_is_protected_when_auth_required(
 
     protected_response = client.get("/api/admin/release-info")
     protected_download_response = client.get("/api/admin/release-info/changelog")
-    protected_asset_response = client.get("/api/admin/news/assets/truman-signature.svg")
+    protected_asset_response = client.get("/api/admin/news/assets/evander-signature.svg")
     state_response = client.get("/api/admin/state")
 
     assert protected_response.status_code == 401
@@ -7458,7 +7458,7 @@ def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> 
 
     response = client.post(
         "/api/admin/artifacts/uploads",
-        data={"key": "manuals/true-app/reviewed/run-1", "artifact_path": "input/reviewed.docx"},
+        data={"key": "manuals/sample-app/reviewed/run-1", "artifact_path": "input/reviewed.docx"},
         files={
             "file": (
                 "reviewed.docx",
@@ -7469,14 +7469,14 @@ def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> 
     )
     duplicate = client.post(
         "/api/admin/artifacts/uploads",
-        data={"key": "manuals/true-app/reviewed/run-1"},
+        data={"key": "manuals/sample-app/reviewed/run-1"},
         files={"file": ("reviewed.docx", b"again")},
     )
-    download = client.get("/api/admin/artifact-downloads/manuals%2Ftrue-app%2Freviewed%2Frun-1")
+    download = client.get("/api/admin/artifact-downloads/manuals%2Fsample-app%2Freviewed%2Frun-1")
 
     assert response.status_code == 201
     payload = response.json()
-    assert payload["key"] == "manuals/true-app/reviewed/run-1"
+    assert payload["key"] == "manuals/sample-app/reviewed/run-1"
     assert payload["session_id"] == "manual-upload"
     assert payload["source_file_count"] == 1
     assert payload["metadata"]["source"] == "manual_upload"

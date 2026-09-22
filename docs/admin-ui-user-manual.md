@@ -498,7 +498,7 @@ Common tasks:
     preserve legacy behavior; an explicit empty list means no access.
 15. Configure **HTTP targets** as alias/base-URL pairs when the agent needs REST or browser access
     to an external application. The UI shows the relay URL template, preserves workflow-owned
-    target metadata, and converts legacy APP environment targets when edited. Removing every row
+    target metadata, and converts legacy App environment targets when edited. Removing every row
     stores an explicit empty target set.
 16. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.

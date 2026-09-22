@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import (
     Mapping,
     Sequence,
@@ -13,6 +14,7 @@ from typing import (
 from evander.effects.providers.agent_copy_files import (
     AgentCopyFilesEffectProvider,
 )
+from evander.effects.providers.agent_session import effective_config_for_session
 from evander.events.provider_models import (
     AgentCopyFilesEffectDefinition,
 )
@@ -37,6 +39,25 @@ from .provider_values import (
 )
 
 
+def _legacy_agent_guidance_section_ids(context: Any, session_id: str) -> list[str]:
+    config = effective_config_for_session(context, session_id)
+    team_state = config.provider_state.get("team_addon", {})
+    if not isinstance(team_state, Mapping):
+        raise ValueError("provider_state.team_addon must be a JSON object")
+    configured = team_state.get("legacy_guidance_section_ids", [])
+    if not isinstance(configured, list):
+        raise ValueError("legacy guidance section IDs must be a JSON array")
+    result: list[str] = []
+    for value in (*LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS, *configured):
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value):
+            raise ValueError("legacy guidance section IDs must be valid section names")
+        if value == TEAM_AGENT_GUIDANCE_SECTION_ID:
+            raise ValueError("current guidance section cannot be removed as legacy")
+        if value not in result:
+            result.append(value)
+    return result
+
+
 def _seed_team_agent_guidance(
     context: Any,
     *,
@@ -55,6 +76,7 @@ def _seed_team_agent_guidance(
             **identity,
         }
 
+    legacy_section_ids = _legacy_agent_guidance_section_ids(context, session_id)
     provider = AgentCopyFilesEffectProvider()
     provider.initialize(
         AgentCopyFilesEffectDefinition(
@@ -71,7 +93,7 @@ def _seed_team_agent_guidance(
                     "overwrite": True,
                     "merge_strategy": "managed_section",
                     "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
-                    "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
+                    **({"remove_section_ids": legacy_section_ids} if legacy_section_ids else {}),
                 }
             ],
         ),
@@ -122,6 +144,7 @@ def _seed_team_governance_guidance(
     files: list[dict[str, Any]] = []
     inactive_team_guidance = _optional_text(agent.get("team_id")) is None
     if inactive_team_guidance:
+        legacy_section_ids = _legacy_agent_guidance_section_ids(context, session_id)
         files.append(
             {
                 "content": _team_agent_guidance_inactive_content(agent=agent),
@@ -130,7 +153,7 @@ def _seed_team_governance_guidance(
                 "overwrite": True,
                 "merge_strategy": "managed_section",
                 "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
-                "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
+                **({"remove_section_ids": legacy_section_ids} if legacy_section_ids else {}),
             }
         )
     files.append(

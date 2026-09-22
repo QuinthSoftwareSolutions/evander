@@ -769,16 +769,16 @@ def test_host_commit_identity_update_is_repository_scoped(tmp_path: Path) -> Non
         repo_id,
         directory_path="root/team-a/project",
         name=" Jonathan Quinth ",
-        email=" operator@example.invalid ",
+        email=" jonathan.quinth@exampleindustry.com ",
     )
 
     assert updated["host_commit_identity"] == {
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
     assert _internal_record(service, repo_id)["host_commit_identity"] == {
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
     with pytest.raises(LookupError):
         service.set_host_commit_identity(
@@ -3058,7 +3058,7 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         repo_id,
         directory_path="root",
         name="Jonathan Quinth",
-        email="operator@example.invalid",
+        email="jonathan.quinth@exampleindustry.com",
     )
     feature_a = tmp_path / "feature-a.txt"
     _run("git", "checkout", "-b", "agents/session-1/a", cwd=source)
@@ -3143,8 +3143,8 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         "--format=%an <%ae>|%cn <%ce>",
         result["commit_sha"],
     ) == (
-        "Jonathan Quinth <operator@example.invalid>"
-        "|Jonathan Quinth <operator@example.invalid>"
+        "Jonathan Quinth <jonathan.quinth@exampleindustry.com>"
+        "|Jonathan Quinth <jonathan.quinth@exampleindustry.com>"
     )
     assert (
         _run(

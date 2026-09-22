@@ -736,10 +736,10 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
           text: null,
           level: null,
           items: [],
-          src: "/api/admin/news/assets/truman-signature.svg",
-          dark_src: "/api/admin/news/assets/truman-signature-inverse.svg",
-          alt: "Truman signature",
-          title: "Signed by Truman",
+          src: "/api/admin/news/assets/evander-signature.svg",
+          dark_src: "/api/admin/news/assets/evander-signature-inverse.svg",
+          alt: "Evander signature",
+          title: "Signed by Evander",
         },
         {
           kind: "paragraph",
@@ -1425,9 +1425,9 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   await assert.doesNotReject(() => releasePanel.locator(".release-news-title").filter({ hasText: "Safer workflows, clearer operations" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".release-news-subheading").filter({ hasText: "Practical tips" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".release-news-list").filter({ hasText: "Open the dashboard first." }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.getByAltText("Truman signature").first().waitFor({ state: "attached" }));
+  await assert.doesNotReject(() => releasePanel.getByAltText("Evander signature").first().waitFor({ state: "attached" }));
   assert.equal(await releasePanel.locator(".release-news-image img").count(), 2);
-  assert.equal((await releasePanel.locator(".release-news-image figcaption").textContent())?.trim(), "Signed by Truman");
+  assert.equal((await releasePanel.locator(".release-news-image figcaption").textContent())?.trim(), "Signed by Evander");
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Older" }).waitFor({ state: "visible" }));
   assert.equal(await releasePanel.getByText("Entry 1 · Latest", { exact: true }).count(), 1);
   assert.equal(await releasePanel.getByText("Recent entries", { exact: true }).count(), 0);

@@ -3,7 +3,7 @@
 This change is implemented and tested locally. It does not edit local or remote
 operator configuration, start a live pilot, or change model assignments. The
 proposed pilot sets the existing `work_lineage` policy for the concrete persistent
-agents fulfilling Truman's and Trudy's management roles. Other roles keep their
+agents fulfilling Evander's and Trudy's management roles. Other roles keep their
 current policies. Planning, parallel work, independent review, acceptance, and
 release gates remain required.
 

@@ -53,8 +53,8 @@ class FakeManagedGitAdmin:
             "canonical_repository_url": "https://github.com/example/project",
             "default_branch": "main",
             "host_commit_identity": {
-                "name": "Truman Bot",
-                "email": "truman@quinth.se",
+                "name": "Evander Bot",
+                "email": "evander@quinth.se",
             },
         }
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
@@ -205,14 +205,14 @@ def test_managed_git_route_sets_repository_scoped_host_commit_identity() -> None
         ),
         json={
             "name": " Jonathan Quinth ",
-            "email": " operator@example.invalid ",
+            "email": " jonathan.quinth@exampleindustry.com ",
         },
     )
 
     assert response.status_code == 200
     assert response.json()["repository"]["host_commit_identity"] == {
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
     assert [call[0] for call in managed_git.calls] == ["get", "set-host-identity"]
     assert managed_git.calls[1] == (
@@ -221,7 +221,7 @@ def test_managed_git_route_sets_repository_scoped_host_commit_identity() -> None
         {
             "directory_path": "root/team-a",
             "name": "Jonathan Quinth",
-            "email": "operator@example.invalid",
+            "email": "jonathan.quinth@exampleindustry.com",
         },
     )
     assert auth.permission_paths == ["root/team-a", "root/team-a"]
@@ -368,7 +368,7 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
                 "--name",
                 "Jonathan Quinth",
                 "--email",
-                "operator@example.invalid",
+                "jonathan.quinth@exampleindustry.com",
             ],
         ),
         runner.invoke(app, ["git-repos", "delete", managed_repo_id]),
@@ -396,7 +396,7 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
     assert managed_git.calls[3][2] == {
         "directory_path": "root/team-a",
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
 
 

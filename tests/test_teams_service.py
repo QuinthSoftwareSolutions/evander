@@ -2103,7 +2103,7 @@ def test_graph_teams_attachment_download_uses_graph_for_sharepoint_content_url(
 ) -> None:
     requests: list[httpx.Request] = []
     sharepoint_url = (
-        "https://example.invalid/sites/dev46/Delade dokument/Truman/Picture.png"
+        "https://exampleindustry.sharepoint.com/sites/dev46/Delade dokument/Evander/Picture.png"
     )
     encoded_share = (
         base64.urlsafe_b64encode(sharepoint_url.encode("utf-8")).decode("ascii").rstrip("=")
@@ -2169,7 +2169,7 @@ def test_graph_teams_attachment_download_follows_graph_redirect_without_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[httpx.Request] = []
-    sharepoint_url = "https://example.invalid/sites/dev46/Docs/Picture.png"
+    sharepoint_url = "https://exampleindustry.sharepoint.com/sites/dev46/Docs/Picture.png"
     encoded_share = (
         base64.urlsafe_b64encode(sharepoint_url.encode("utf-8")).decode("ascii").rstrip("=")
     )

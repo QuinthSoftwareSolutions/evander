@@ -35,7 +35,7 @@ def test_ado_activity_repository_filters_and_pages(tmp_path: Path) -> None:
                 "actor_unique_name": "alex@example.com",
                 "actor_email": "alex@example.com",
                 "directory_path": "root",
-                "project": "APP",
+                "project": "App",
                 "work_item_id": "101",
                 "title": "Fix activity",
                 "summary": "Updated fields: System.Tags",
@@ -49,8 +49,8 @@ def test_ado_activity_repository_filters_and_pages(tmp_path: Path) -> None:
                 "actor_unique_name": "alex@example.com",
                 "actor_email": "alex@example.com",
                 "directory_path": "root",
-                "project": "APP",
-                "repo": "ExampleIndustryAPP",
+                "project": "App",
+                "repo": "SampleApplication",
                 "pr_id": "12",
                 "title": "PR title",
                 "summary": "Looks good",
@@ -63,7 +63,7 @@ def test_ado_activity_repository_filters_and_pages(tmp_path: Path) -> None:
                 "actor_unique_name": "other@example.com",
                 "actor_email": "other@example.com",
                 "directory_path": "other-dir",
-                "project": "APP",
+                "project": "App",
                 "work_item_id": "202",
             },
         ]
@@ -75,7 +75,7 @@ def test_ado_activity_repository_filters_and_pages(tmp_path: Path) -> None:
         since=datetime(2026, 7, 7, tzinfo=UTC),
         actor="alex@example.com",
         directory_path="root",
-        project="APP",
+        project="App",
         top=1,
     )
     assert first_page["count"] == 1
@@ -86,7 +86,7 @@ def test_ado_activity_repository_filters_and_pages(tmp_path: Path) -> None:
         since=datetime(2026, 7, 7, tzinfo=UTC),
         actor="alex@example.com",
         directory_path="root",
-        project="APP",
+        project="App",
         cursor=first_page["paging"]["next_cursor"],
         top=1,
     )
@@ -114,7 +114,7 @@ def test_ado_activity_repository_scopes_duplicate_activity_ids_by_directory(
                 "activity_kind": "work_item_changed",
                 "occurred_at": datetime(2026, 7, 7, 10, tzinfo=UTC),
                 "directory_path": "root",
-                "project": "APP",
+                "project": "App",
                 "work_item_id": "101",
                 "summary": "Root update",
             },
@@ -123,7 +123,7 @@ def test_ado_activity_repository_scopes_duplicate_activity_ids_by_directory(
                 "activity_kind": "work_item_changed",
                 "occurred_at": datetime(2026, 7, 7, 11, tzinfo=UTC),
                 "directory_path": "other-dir",
-                "project": "APP",
+                "project": "App",
                 "work_item_id": "101",
                 "summary": "Other directory update",
             },
@@ -146,7 +146,7 @@ def test_ado_activity_repository_scopes_duplicate_activity_ids_by_directory(
 def test_ado_activity_repository_filters_sync_state_by_directory(tmp_path: Path) -> None:
     repo = AdoActivityRepository(tmp_path)
     repo.update_sync_state(
-        sync_key="root:work_items:APP:*",
+        sync_key="root:work_items:App:*",
         directory_path="root",
         complete_through=datetime(2026, 7, 8, tzinfo=UTC),
         metadata={"actor": "alex@example.com"},
@@ -165,7 +165,7 @@ def test_ado_activity_repository_filters_sync_state_by_directory(tmp_path: Path)
 
     assert result["index"]["sync_state"] == [
         {
-            "sync_key": "root:work_items:APP:*",
+            "sync_key": "root:work_items:App:*",
             "complete_through": "2026-07-08T00:00:00.000000Z",
             "updated_at": result["index"]["sync_state"][0]["updated_at"],
             "metadata": {"actor": "alex@example.com"},
@@ -186,7 +186,7 @@ def test_ado_activity_query_provider_reads_index_for_runtime_directory(tmp_path:
                 "actor_unique_name": "alex@example.com",
                 "actor_email": "alex@example.com",
                 "directory_path": "root",
-                "project": "APP",
+                "project": "App",
                 "work_item_id": "101",
             }
         ]
@@ -264,7 +264,7 @@ def test_ado_activity_sync_indexes_work_item_activity(
                 "items": [
                     {
                         "id": "101",
-                        "project": "APP",
+                        "project": "App",
                         "title": "Activity item",
                         "state": "Active",
                         "type": "Task",
@@ -302,7 +302,7 @@ def test_ado_activity_sync_indexes_work_item_activity(
         directory_path="root",
         scope="work_items",
         actor="alex@example.com",
-        project="APP",
+        project="App",
     )
 
     assert result["inserted"] == 1
@@ -335,7 +335,7 @@ def test_ado_activity_sync_all_preserves_scope_order_paging_and_completion(
                     "items": [
                         {
                             "id": "101",
-                            "project": "APP",
+                            "project": "App",
                             "activities": [
                                 {
                                     "activity_type": "changed",
@@ -357,8 +357,8 @@ def test_ado_activity_sync_all_preserves_scope_order_paging_and_completion(
         def list_ado_pr_comment_activity(self, **kwargs):
             calls.append(("pr_comments", kwargs))
             return {
-                "repo": "ExampleIndustryAPP",
-                "project": "APP",
+                "repo": "SampleApplication",
+                "project": "App",
                 "comments": [
                     {
                         "pr_id": "12",
@@ -374,8 +374,8 @@ def test_ado_activity_sync_all_preserves_scope_order_paging_and_completion(
         def list_ado_pr_commit_activity(self, **kwargs):
             calls.append(("pr_commits", kwargs))
             return {
-                "repo": "ExampleIndustryAPP",
-                "project": "APP",
+                "repo": "SampleApplication",
+                "project": "App",
                 "commits": [
                     {
                         "pr_id": "12",
@@ -401,8 +401,8 @@ def test_ado_activity_sync_all_preserves_scope_order_paging_and_completion(
         directory_path="root",
         scope="all",
         actor="alex@example.com",
-        project="APP",
-        repo="ExampleIndustryAPP",
+        project="App",
+        repo="SampleApplication",
         states=["Active"],
         types=["Task"],
         tags_any=["review"],
@@ -450,11 +450,11 @@ def test_ado_activity_sync_all_preserves_scope_order_paging_and_completion(
     )
     sync_state = {item["sync_key"]: item["metadata"] for item in indexed["index"]["sync_state"]}
     assert sync_state == {
-        "root:pr_commits:APP:ExampleIndustryAPP": {
+        "root:pr_commits:App:SampleApplication": {
             "actor": "alex@example.com",
             "statuses": ["active"],
         },
-        "root:work_items:APP:*": {
+        "root:work_items:App:*": {
             "actor": "alex@example.com",
             "states": ["Active"],
             "types": ["Task"],
@@ -501,8 +501,8 @@ def test_ado_activity_mcp_tools_register_and_query_index(tmp_path: Path) -> None
                 "actor_unique_name": "alex@example.com",
                 "actor_email": "alex@example.com",
                 "directory_path": "root",
-                "project": "APP",
-                "repo": "ExampleIndustryAPP",
+                "project": "App",
+                "repo": "SampleApplication",
                 "pr_id": "12",
             }
         ]
