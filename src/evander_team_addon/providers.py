@@ -6,7 +6,9 @@ import logging
 import os
 import re
 import shlex
+import time
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from urllib.parse import urlencode
 from evander.addons import addon_storage_path
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
 from evander.orchestration.maintenance import MaintenanceBudget, MaintenanceResult
+from evander.orchestration.isolated_maintenance import sqlite_busy
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
@@ -5496,14 +5499,78 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
     _LEASE_RENEWAL_SECONDS = MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS
     _LEASE_RENEWAL_WINDOW_SECONDS = 300
     maintenance_priority = -100  # Lease work precedes other broad recovery.
+    isolated_maintenance = True
 
     def __init__(self) -> None:
+        self._repository: TeamStateRepository | None = None
+        self._database_identity: tuple[int, int] | None = None
+        self._reset_cursors()
+
+    def _reset_cursors(self) -> None:
         self._lease_cursor = ""
         self._completion_cursor = ""
         self._history_cursor = ""
         self._completion_lane = "completion"
         self._queue_cursor = ""
         self._queue_validated = False
+
+    @contextmanager
+    def _timed(self, phase: str):
+        started = time.perf_counter()
+        outcome = "succeeded"
+        details: dict[str, Any] = {}
+        try:
+            yield details
+        except Exception as exc:
+            outcome = "busy" if sqlite_busy(exc) else "failed"
+            raise
+        finally:
+            elapsed = (time.perf_counter() - started) * 1000
+            log = logger.info if elapsed >= 100 or outcome != "succeeded" else logger.debug
+            log(
+                "Team lifecycle phase=%s duration_ms=%.1f outcome=%s details=%s",
+                phase,
+                elapsed,
+                outcome,
+                details,
+            )
+
+    def initialize(self, *, worker: Any) -> None:
+        runtime_dir = _runtime_dir_from_worker(worker)
+        if runtime_dir is not None:
+            self._get_repository(runtime_dir)
+        # The receipt store or providers can change without changing runtime_dir.
+        # Initialization is only called before work or after draining the lane.
+        self._reset_cursors()
+
+    def _get_repository(self, runtime_dir: Path) -> TeamStateRepository:
+        if self._repository is None or self._repository.runtime_dir != runtime_dir:
+            with self._timed("repository_initialization"):
+                self._repository = TeamStateRepository(runtime_dir, maintenance=True)
+                stat = self._repository.store.path.stat()
+                self._database_identity = (stat.st_dev, stat.st_ino)
+                self._reset_cursors()
+        else:
+            stat = self._repository.store.path.stat()
+            if (stat.st_dev, stat.st_ino) != self._database_identity:
+                raise RuntimeError(
+                    "Team database replaced; restart worker to initialize its schema"
+                )
+        return self._repository
+
+    def _candidate_page(self, repo: TeamStateRepository, **kwargs: Any):
+        with self._timed("lifecycle_candidates") as details:
+            details["kind"] = kwargs.get("kind", "completion")
+            page = repo.lifecycle_candidates(**kwargs)
+            details["candidates"] = len(page.candidates)
+            return page
+
+    def _prompt_records(self, worker: Any, dispatch_ids: set[str]) -> list[Any]:
+        with self._timed("execution_receipt_lookup") as details:
+            records = _agent_prompt_records_for_dispatches(worker, dispatch_ids)
+            details["dispatches"] = len(dispatch_ids)
+            details["records"] = len(records)
+            return records
 
     def on_waiting_reconciliation_slice(
         self, *, worker: Any, budget: MaintenanceBudget
@@ -5516,7 +5583,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         runtime_dir = _runtime_dir_from_worker(worker)
         if runtime_dir is None:
             return MaintenanceResult(examined=0)
-        repo = TeamStateRepository(runtime_dir)
+        repo = self._get_repository(runtime_dir)
         queued = MaintenanceResult(examined=0)
         if not self._queue_validated:
             queued = self._reconcile_queue_slice(worker=worker, repo=repo, budget=budget)
@@ -5525,10 +5592,8 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             self._queue_validated = True
         kind = self._completion_lane
         cursor = self._completion_cursor if kind == "completion" else self._history_cursor
-        page = repo.lifecycle_candidates(kind=kind, after=cursor)
-        records = _agent_prompt_records_for_dispatches(
-            worker, {c.dispatch_id for c in page.candidates}
-        )
+        page = self._candidate_page(repo, kind=kind, after=cursor)
+        records = self._prompt_records(worker, {c.dispatch_id for c in page.candidates})
         changes = queued.changes
         for candidate in page.candidates:
             if not budget.take():
@@ -5555,11 +5620,11 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         runtime_dir = _runtime_dir_from_worker(worker)
         if not dispatch_id or runtime_dir is None:
             return
-        repo = TeamStateRepository(runtime_dir)
-        page = repo.lifecycle_candidates(dispatch_ids=[dispatch_id])
+        repo = self._get_repository(runtime_dir)
+        page = self._candidate_page(repo, dispatch_ids=[dispatch_id])
         # Query every receipt for this immutable dispatch, not only the event
         # that woke us: a delayed old success must not undo a newer failure.
-        records = _agent_prompt_records_for_dispatches(worker, {dispatch_id})
+        records = self._prompt_records(worker, {dispatch_id})
         for candidate in page.candidates:
             self._reconcile_candidate(worker, repo, candidate, records)
 
@@ -5630,19 +5695,22 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 )
         if not actionable:
             return 0
-        return self._reconcile_selected_completion(
-            worker=worker,
-            repo=repo,
-            dispatch_ids={candidate.dispatch_id},
-            records=matching,
-        )
+        with self._timed("completion_finalization") as details:
+            changes = self._reconcile_selected_completion(
+                worker=worker,
+                repo=repo,
+                dispatch_ids={candidate.dispatch_id},
+                records=matching,
+            )
+            details["changes"] = changes
+            return changes
 
     def validate_queued_prompt(self, *, worker: Any, record: Any) -> bool:
         dispatch_id = _optional_text(getattr(record, "dispatch_id", None))
         runtime_dir = _runtime_dir_from_worker(worker)
         if not dispatch_id or runtime_dir is None:
             return True
-        page = TeamStateRepository(runtime_dir).lifecycle_candidates(dispatch_ids=[dispatch_id])
+        page = self._candidate_page(self._get_repository(runtime_dir), dispatch_ids=[dispatch_id])
         if not page.candidates:
             return not dispatch_id.startswith(("team-dispatch-", "team-chat:", "team-governance"))
         candidate = page.candidates[0]
@@ -5666,7 +5734,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 return MaintenanceResult(changes, budget.examined, True)
             dispatch_id = _optional_text(getattr(record, "dispatch_id", None))
             if dispatch_id:
-                page = repo.lifecycle_candidates(dispatch_ids=[dispatch_id])
+                page = self._candidate_page(repo, dispatch_ids=[dispatch_id])
                 candidate = page.candidates[0] if page.candidates else None
                 current = (
                     candidate is not None
@@ -5699,7 +5767,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         runtime_dir = _runtime_dir_from_worker(worker)
         if runtime_dir is not None:
             result_queue = self._reconcile_queue_slice(
-                worker=worker, repo=TeamStateRepository(runtime_dir), budget=MaintenanceBudget()
+                worker=worker, repo=self._get_repository(runtime_dir), budget=MaintenanceBudget()
             )
             return result.changes + result_queue.changes
         return result.changes
@@ -5710,14 +5778,15 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         runtime_dir = _runtime_dir_from_worker(worker)
         if runtime_dir is None:
             return MaintenanceResult(examined=0)
-        repo = TeamStateRepository(runtime_dir)
+        repo = self._get_repository(runtime_dir)
         now = datetime.now(UTC)
         renewal_due_at = now + timedelta(seconds=self._LEASE_RENEWAL_WINDOW_SECONDS)
-        page = repo.lifecycle_candidates(
-            kind="leases", after=self._lease_cursor, due_at=renewal_due_at
+        page = self._candidate_page(
+            repo, kind="leases", after=self._lease_cursor, due_at=renewal_due_at
         )
         due_dispatches = {
-            c.dispatch_id: (c.agent_id, c.current_session_id) for c in page.candidates
+            c.dispatch_id: (c.agent_id, c.current_session_id)
+            for c in page.candidates
             if c.current_session_id is not None
         }
         if not due_dispatches:
@@ -5725,7 +5794,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             return MaintenanceResult(examined=0)
 
         records_by_dispatch: dict[str, Any] = {}
-        for record in _agent_prompt_records_for_dispatches(worker, set(due_dispatches)):
+        for record in self._prompt_records(worker, set(due_dispatches)):
             if getattr(record, "status", None) != "waiting":
                 continue
             outputs = _record_outputs(record)
@@ -5742,7 +5811,6 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         for dispatch_id, (agent_id, session_id) in due_dispatches.items():
             if not budget.take():
                 return MaintenanceResult(renewed_count, budget.examined, True)
-            self._lease_cursor = dispatch_id
             record = records_by_dispatch.get(dispatch_id)
             if record is None or not _team_dispatch_execution_is_live(
                 worker,
@@ -5750,20 +5818,23 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 dispatch_id=dispatch_id,
                 session_id=session_id,
             ):
+                self._lease_cursor = dispatch_id
                 continue
             try:
-                _state, renewed = TeamRuntimeService(repo).renew_agent_dispatch_lease(
-                    agent_id=agent_id,
-                    dispatch_id=dispatch_id,
-                    now=now,
-                    lease_seconds=self._LEASE_RENEWAL_SECONDS,
-                    renew_within_seconds=self._LEASE_RENEWAL_WINDOW_SECONDS,
-                )
+                with self._timed("lease_renewal"):
+                    _state, renewed = TeamRuntimeService(repo).renew_agent_dispatch_lease(
+                        agent_id=agent_id,
+                        dispatch_id=dispatch_id,
+                        now=now,
+                        lease_seconds=self._LEASE_RENEWAL_SECONDS,
+                        renew_within_seconds=self._LEASE_RENEWAL_WINDOW_SECONDS,
+                    )
             except TeamStateConflictError:
                 # Completion, expiry, or replacement won the atomic state race.
                 # The next reconciliation cycle will use the authoritative row.
                 continue
             renewed_count += int(renewed)
+            self._lease_cursor = dispatch_id
         self._lease_cursor = page.next_cursor or ""
         return MaintenanceResult(renewed_count, budget.examined, page.next_cursor is not None)
 
@@ -14585,7 +14656,7 @@ def _bridge_author_ids(value: object) -> set[str]:
 
 
 def _runtime_dir_from_worker(worker: Any) -> Path | None:
-    for source in (getattr(worker, "config", None), getattr(worker, "worker_config", None)):
+    for source in (getattr(worker, "worker_config", None), getattr(worker, "config", None)):
         runtime_dir = getattr(source, "runtime_dir", None)
         if runtime_dir is not None:
             return Path(runtime_dir)

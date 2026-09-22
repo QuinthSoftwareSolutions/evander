@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
@@ -567,6 +568,12 @@ def _model_option(model: str) -> dict[str, str]:
     return {"value": model, "label": model}
 
 
+def _is_current_session_model_option(model: str) -> bool:
+    # Pricing retains older models for past usage, while this menu configures future sessions.
+    match = re.match(r"^gpt-(\d+)", model)
+    return match is None or int(match.group(1)) >= 6
+
+
 def _model_provider_mode_options() -> list[dict[str, str]]:
     return [
         {"value": "openai_public", "label": "Public OpenAI"},
@@ -597,7 +604,7 @@ def _model_options_from_pricing_catalog(service: AdminRuntimeComponents) -> list
             continue
         for raw_model in models:
             model = str(raw_model).strip()
-            if not model or model in seen_models:
+            if not model or model in seen_models or not _is_current_session_model_option(model):
                 continue
             seen_models.add(model)
             options.append(_model_option(model))

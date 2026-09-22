@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from evander.effects.providers.lifecycle_hooks import build_effect_lifecycle_hooks
 from evander.orchestration.maintenance import MaintenanceResult
+from evander.orchestration.isolated_maintenance import IsolatedMaintenanceHook
 from .agent_completion import publish_configured_agent_completions
 from ..effect_extensions import (
     CompletionDispatchHook,
@@ -22,7 +23,7 @@ class _ProviderLifecycleReconciliationHook:
     @property
     def maintenance_name(self) -> str:
         return (
-            type(self._hook).__name__
+            getattr(self._hook, "maintenance_name", type(self._hook).__name__)
             + ":"
             + getattr(getattr(self._hook, "_provider_class", None), "__name__", "")
         )
@@ -48,7 +49,21 @@ class _ProviderCompletionDispatchHook:
 
     @property
     def maintenance_name(self) -> str:
-        return type(self._hook).__name__
+        return getattr(self._hook, "maintenance_name", type(self._hook).__name__)
+
+    def initialize(self, *, worker: Any) -> None:
+        initialize = getattr(self._hook, "initialize", None)
+        if callable(initialize):
+            initialize(worker=worker)
+
+    def close(self) -> None:
+        close = getattr(self._hook, "close", None)
+        if callable(close):
+            close()
+
+    def poll(self, *, worker: Any) -> int:
+        poll = getattr(self._hook, "poll", None)
+        return int(poll(worker=worker) or 0) if callable(poll) else 0
 
     @property
     def maintenance_priority(self) -> int:
@@ -120,7 +135,10 @@ def build_agent_default_effect_handlers(
     tuple[LifecycleReconciliationHook, ...],
     tuple[CompletionDispatchHook, ...],
 ]:
-    lifecycle_hooks = build_effect_lifecycle_hooks(provider_factory=provider_factory)
+    lifecycle_hooks = tuple(
+        IsolatedMaintenanceHook(hook) if getattr(hook, "isolated_maintenance", False) else hook
+        for hook in build_effect_lifecycle_hooks(provider_factory=provider_factory)
+    )
     return (
         (AgentCompletionSpecialEventHandler(lifecycle_hooks),),
         tuple(_ProviderLifecycleReconciliationHook(hook) for hook in lifecycle_hooks),
