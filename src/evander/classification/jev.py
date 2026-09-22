@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from evander.classification.models import ClassificationError, json_bytes, validate_answers
+from evander.privacy.providers import check_provider_dispatch
 
 
 class JevProvider:
@@ -47,6 +48,7 @@ class JevProvider:
             transport=self.transport, follow_redirects=False, trust_env=False
         ) as client:
             for attempt in range(settings.max_retries + 1):
+                check_provider_dispatch()
                 started = self.clock()
                 remaining = deadline - started
                 if remaining <= 0:

@@ -216,6 +216,11 @@ async function createAdminPage(t, options = {}) {
     const url = new URL(route.request().url());
     const { pathname } = url;
 
+    if (pathname.startsWith("/api/privacy") && options.handlePrivacyRequest) {
+      await options.handlePrivacyRequest({ route, url });
+      return;
+    }
+
     if (pathname === "/api/admin/branding") {
       await route.fulfill(jsonResponse({}));
       return;
@@ -677,11 +682,140 @@ test("admin shell groups every destination and exposes descriptions as tooltips"
     await page.locator(".admin-shell-nav-group-label").allTextContents(),
     ["Overview", "Operations", "Automation", "Extensions", "Infrastructure", "Governance"],
   );
-  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 21);
+  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 22);
   assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small').count(), 0);
 
   await page.getByRole("button", { name: "Agents", exact: true }).hover();
   await assert.doesNotReject(() => page.getByRole("tooltip").getByText("Active and historical execution targets.").waitFor({ state: "visible" }));
+});
+
+test("privacy page previews an exact scoped revision and exposes incomplete coverage", async (t) => {
+  const actions = [];
+  let revision = "reviewed-revision";
+  const { address, page } = await createAdminPage(t, {
+    session: { ...sessionResponse, privileged_operations: { unlocked: true } },
+    adminState: { ...adminStateResponse, privileged_operations: { unlocked: true } },
+    handlePrivacyRequest: async ({ route, url }) => {
+      assert.equal(url.searchParams.get("directory_path"), "root");
+      if (route.request().method() === "POST") {
+        actions.push(route.request().postDataJSON());
+        revision = "after-preview";
+        await route.fulfill(jsonResponse({ result: { job_id: "job-preview", status: "previewed" } }));
+      } else {
+        await route.fulfill(jsonResponse({
+          directory_path: "root", revision, permissions: ["privacy.read", "privacy.configure"],
+          coverage_complete: false, readiness: { ready: false, blockers: ["Manual follow-up required"] },
+          inventory: [{ dataset_id: "voice", label: "Voice sessions", status: "manual", capabilities: {} }],
+        }));
+      }
+    },
+  });
+  page.setDefaultTimeout(10_000);
+  await page.goto(`http://127.0.0.1:${address.port}/#privacy`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Privacy readiness" }).waitFor();
+  await page.getByText("incomplete — unsupported datasets remain", { exact: false }).waitFor();
+  await page.getByLabel("Dataset ID", { exact: true }).fill("voice");
+  await page.getByRole("button", { name: "Preview retention", exact: true }).click();
+  await page.getByText("after-preview", { exact: true }).waitFor();
+  assert.deepEqual(actions, [{ expected_revision: "reviewed-revision", payload: { dataset: "voice" } }]);
+  await page.getByLabel("Action", { exact: true }).selectOption("jobs.approve");
+  assert.equal(await page.getByRole("button", { name: "Approve reviewed job", exact: true }).isDisabled(), true);
+});
+
+test("privacy page rejects mismatched directory response instead of rendering it", async (t) => {
+  const { address, page } = await createAdminPage(t, {
+    handlePrivacyRequest: async ({ route }) => route.fulfill(jsonResponse({
+      directory_path: "root/other", revision: "foreign", cases: [{ case_id: "not-for-this-scope" }],
+    })),
+  });
+  page.setDefaultTimeout(10_000);
+  await page.goto(`http://127.0.0.1:${address.port}/#privacy`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("alert").getByText("Privacy response scope did not match", { exact: false }).waitFor();
+  assert.equal(await page.getByText("not-for-this-scope", { exact: false }).count(), 0);
+});
+
+test("privacy reviewer downloads require scoped unexpired exports and independent release permissions", async (t) => {
+  const requestedDownloads = [];
+  const { address, page } = await createAdminPage(t, {
+    session: { ...sessionResponse, privileged_operations: { unlocked: true } },
+    adminState: { ...adminStateResponse, privileged_operations: { unlocked: true } },
+    handlePrivacyRequest: async ({ route, url }) => {
+      if (url.pathname.startsWith("/api/privacy/exports/")) {
+        requestedDownloads.push(url.pathname);
+        await route.fulfill({ ...jsonResponse({ records: [] }), headers: {
+          "Content-Disposition": 'attachment; filename="evander-privacy-review.json"',
+          "Cache-Control": "no-store",
+        } });
+        return;
+      }
+      await route.fulfill(jsonResponse({
+        directory_path: "root", revision: "review-revision", permissions: ["privacy.read", "privacy.cases", "privacy.export"],
+        jobs: [
+          { id: "review-job", scope: "root", operation: "export", status: "awaiting_review", expires_at: "2099-01-01T00:00:00Z" },
+          { id: "foreign-job", scope: "root/other", operation: "export", status: "released", expires_at: "2099-01-01T00:00:00Z" },
+          { id: "expired-job", scope: "root", operation: "export", status: "released", expires_at: "2000-01-01T00:00:00Z" },
+        ],
+      }));
+    },
+  });
+  page.setDefaultTimeout(10_000);
+  await page.goto(`http://127.0.0.1:${address.port}/#privacy`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Reviewer downloads" }).waitFor();
+  assert.equal(await page.getByRole("link", { name: /Download for review:/ }).count(), 1);
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Download for review: review-job", exact: true }).click();
+  const download = await downloadPromise;
+  assert.equal(download.suggestedFilename(), "evander-privacy-review.json");
+  assert.deepEqual(requestedDownloads, ["/api/privacy/exports/review-job"]);
+  await page.getByLabel("Action", { exact: true }).selectOption("exports.release");
+  assert.equal(await page.getByRole("button", { name: "Record independent export review", exact: true }).isDisabled(), true);
+});
+
+test("privacy approval requires inspection of the same current persisted job", async (t) => {
+  const approvals = [];
+  let revision = "initial-revision";
+  const { address, page } = await createAdminPage(t, {
+    session: { ...sessionResponse, privileged_operations: { unlocked: true } },
+    adminState: { ...adminStateResponse, privileged_operations: { unlocked: true } },
+    handlePrivacyRequest: async ({ route, url }) => {
+      if (url.pathname.startsWith("/api/privacy/jobs/")) {
+        const jobId = url.pathname.split("/").at(-1);
+        await route.fulfill(jsonResponse({
+          id: jobId, scope: "root", revision: jobId === "changed-job" ? "stale-revision" : revision,
+          status: "preview", records: [{ dataset_id: "voice", record_id: "record-to-review", fingerprint: "exact-fingerprint" }],
+        }));
+      } else if (url.pathname.endsWith("/actions/jobs.approve")) {
+        approvals.push(route.request().postDataJSON());
+        revision = "approved-revision";
+        await route.fulfill(jsonResponse({ result: { status: "approved" } }));
+      } else {
+        await route.fulfill(jsonResponse({ directory_path: "root", revision, permissions: ["privacy.read", "privacy.approve"] }));
+      }
+    },
+  });
+  page.setDefaultTimeout(10_000);
+  await page.goto(`http://127.0.0.1:${address.port}/#privacy`, { waitUntil: "domcontentloaded" });
+  await page.getByLabel("Action", { exact: true }).selectOption("jobs.approve");
+  const approve = page.getByRole("button", { name: "Approve reviewed job", exact: true });
+  const inspect = page.getByRole("button", { name: "Inspect persisted selection", exact: true });
+  const job = page.getByLabel("Reviewed job ID", { exact: true });
+  await job.fill("job-to-approve");
+  assert.equal(await approve.isDisabled(), true);
+  await inspect.click();
+  await page.getByRole("heading", { name: "Persisted selection: job-to-approve" }).waitFor();
+  assert.equal(await approve.isEnabled(), true);
+  await job.fill("changed-job");
+  assert.equal(await approve.isDisabled(), true);
+  await inspect.click();
+  await page.getByRole("alert").getByText("Privacy state changed; refresh", { exact: false }).waitFor();
+  assert.equal(await approve.isDisabled(), true);
+  await job.fill("job-to-approve");
+  await inspect.click();
+  await page.getByRole("heading", { name: "Persisted selection: job-to-approve" }).waitFor();
+  await approve.click();
+  await page.getByText("approved-revision", { exact: true }).waitFor();
+  assert.deepEqual(approvals, [{ expected_revision: "initial-revision", payload: { job_id: "job-to-approve" } }]);
+  assert.equal(await approve.isDisabled(), true);
 });
 
 test("managed Git page registers and maintains repositories through the Admin API", async (t) => {

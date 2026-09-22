@@ -203,7 +203,7 @@ class ProviderConfigResolver:
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
         normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
         payload = self.config.model_dump(mode="json")
-        for domain in ("providers", "email"):
+        for domain in ("providers", "email", "privacy"):
             resolution = self.resolver.resolve_domain(
                 normalized_path,
                 domain=domain,

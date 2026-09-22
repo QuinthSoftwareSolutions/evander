@@ -6,7 +6,6 @@ import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import RLock
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -34,6 +33,7 @@ from evander.retell_phone import (
     RetellPhoneCallService,
     sanitize_retell_metadata,
 )
+from evander.storage import JsonObjectStore
 
 VoiceSessionChannel = Literal["phone", "teams_meeting", "browser_agent_call"]
 VoiceSessionStatus = Literal["created", "connecting", "active", "ended", "failed"]
@@ -156,15 +156,11 @@ class VoiceQueryRecord(BaseModel):
         return text or None
 
 
-class VoiceSessionStore:
-    """Atomic JSON store for projected voice session state."""
+class VoiceSessionStore(JsonObjectStore):
+    """Durable JSON state with process-shared locks around entire transactions."""
 
     def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-        self._lock = RLock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._atomic_write(_empty_voice_store_payload())
+        super().__init__(Path(path), _empty_voice_store_payload())
 
     def prepare_session(
         self,
@@ -182,7 +178,7 @@ class VoiceSessionStore:
     ) -> tuple[VoiceSessionRecord, bool]:
         normalized_request_id = str(request_id or "").strip() or f"voice-{uuid4().hex}"
         now = datetime.now(UTC)
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             request_index = _ensure_mapping(payload, "request_index")
             existing_id = request_index.get(normalized_request_id)
@@ -231,7 +227,7 @@ class VoiceSessionStore:
         normalized = str(voice_session_id or "").strip()
         if not normalized:
             return None
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = _ensure_mapping(self._read_raw(), "sessions").get(normalized)
         if not isinstance(raw, dict):
             return None
@@ -241,7 +237,7 @@ class VoiceSessionStore:
         normalized = str(request_id or "").strip()
         if not normalized:
             return None
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             voice_session_id = _ensure_mapping(payload, "request_index").get(normalized)
             raw = (
@@ -257,7 +253,7 @@ class VoiceSessionStore:
         normalized = str(bridge_session_id or "").strip()
         if not normalized:
             return None
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             voice_session_id = _ensure_mapping(payload, "bridge_index").get(normalized)
             raw = (
@@ -279,7 +275,7 @@ class VoiceSessionStore:
         realtime_metadata: dict[str, Any] | None = None,
         meeting_id: str | None = None,
     ) -> VoiceSessionRecord:
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             record = self._require_record(payload, voice_session_id)
             record.bridge_session_id = _optional_text(bridge_session_id) or record.bridge_session_id
@@ -315,7 +311,7 @@ class VoiceSessionStore:
         voice_session_id: str,
         payload: dict[str, Any],
     ) -> VoiceSessionRecord:
-        with self._lock:
+        with self._lock, self._file_lock():
             raw_store = self._read_raw()
             record = self._require_record(raw_store, voice_session_id)
             _apply_bridge_payload(record, payload)
@@ -339,7 +335,7 @@ class VoiceSessionStore:
         normalized_text = str(text or "").strip()
         if not normalized_text:
             return self.get_by_voice_session_id(voice_session_id)
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             record = self._require_record(payload, voice_session_id)
             next_sequence = len(record.transcript_events) + 1
@@ -372,7 +368,7 @@ class VoiceSessionStore:
     ) -> VoiceSessionRecord:
         if status not in {"ended", "failed"}:
             raise ValueError("complete_session status must be ended or failed")
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             record = self._require_record(payload, voice_session_id)
             record.status = status
@@ -417,7 +413,7 @@ class VoiceSessionStore:
         if not normalized_question:
             raise ValueError("question is required")
         now = datetime.now(UTC)
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             session_record = self._require_record(payload, voice_session_id)
             queries = _ensure_mapping(payload, "queries")
@@ -447,7 +443,7 @@ class VoiceSessionStore:
         normalized = str(query_id or "").strip()
         if not normalized:
             return None
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = _ensure_mapping(self._read_raw(), "queries").get(normalized)
         if not isinstance(raw, dict):
             return None
@@ -465,7 +461,7 @@ class VoiceSessionStore:
         normalized = str(voice_session_id or "").strip()
         if not normalized:
             return []
-        with self._lock:
+        with self._lock, self._file_lock():
             raw_queries = _ensure_mapping(self._read_raw(), "queries")
             records = []
             for raw in raw_queries.values():
@@ -540,7 +536,7 @@ class VoiceSessionStore:
         request_id: str,
         prompt: str,
     ) -> VoiceSessionRecord:
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             record = self._require_record(payload, voice_session_id)
             record.reconciliation_status = "scheduled"
@@ -556,7 +552,7 @@ class VoiceSessionStore:
         query_id: str,
         callback: Any,
     ) -> VoiceQueryRecord:
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             queries = _ensure_mapping(payload, "queries")
             raw = queries.get(str(query_id or "").strip())
@@ -570,7 +566,7 @@ class VoiceSessionStore:
             return record
 
     def mark_reconciliation_failed(self, voice_session_id: str, error: str) -> VoiceSessionRecord:
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             record = self._require_record(payload, voice_session_id)
             record.reconciliation_status = "failed"
@@ -582,20 +578,16 @@ class VoiceSessionStore:
 
     def _read_raw(self) -> dict[str, Any]:
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = self._read_object_unlocked()
         except json.JSONDecodeError as exc:
             raise ValueError(f"Voice session store {self.path} contains invalid JSON") from exc
-        if not isinstance(raw, dict):
-            return _empty_voice_store_payload()
-        raw.setdefault("sessions", {})
-        raw.setdefault("request_index", {})
-        raw.setdefault("bridge_index", {})
+        for section in ("sessions", "request_index", "bridge_index", "queries"):
+            if not isinstance(raw.setdefault(section, {}), dict):
+                raise ValueError(f"Voice session store has an invalid {section} section")
         return raw
 
     def _atomic_write(self, payload: dict[str, Any]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        self._write_object_unlocked(payload)
 
     def _require_record(self, payload: dict[str, Any], voice_session_id: str) -> VoiceSessionRecord:
         raw = _ensure_mapping(payload, "sessions").get(voice_session_id)

@@ -56,6 +56,7 @@ const TAB_ICONS: Readonly<Record<BuiltinAdminTab, LucideIcon>> = {
   "mcp-tools": Wrench,
   "tool-calls": ScrollText,
   configuration: Settings2,
+  privacy: ShieldCheck,
   users: Users,
 };
 

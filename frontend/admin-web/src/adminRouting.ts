@@ -16,6 +16,7 @@ export type BuiltinAdminTab =
   | "mcp-tools"
   | "tool-calls"
   | "configuration"
+  | "privacy"
   | "reports"
   | "users"
   | "workers"
@@ -97,6 +98,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "mcp-tools", label: "MCP Tools", shortLabel: "MCP", description: "Directory-scoped MCP tool approval and deny policy.", group: "governance" },
   { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries.", group: "governance" },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy.", group: "governance" },
+  { key: "privacy", label: "Privacy", shortLabel: "Privacy", description: "Privacy coverage, retention previews, holds, and request handling.", group: "governance" },
   {
     key: "users",
     label: "Users & Groups",

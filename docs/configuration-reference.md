@@ -1,5 +1,9 @@
 # Configuration Reference
 
+The `privacy` directory domain adds revisioned operator policies, defaulting to report-only
+with no new scheduled deletion. See [Privacy operations](privacy-operations.md) for the exact
+implemented scope, permission model, publish action, source-owned expiry and provider limitations.
+
 For Azure DevOps work-item images, the session needs `list_inline_media`, `download_inline_media`
 and `communication_copy_artifact_to_workspace`, plus `communication_file_receive_enabled: true`
 in its session or effective directory policy. Existing file size/type limits apply. See the

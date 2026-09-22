@@ -48,6 +48,7 @@ from evander.admin.web.codex_auth import codex_auth_routes
 from evander.admin.web.connectors import connector_routes
 from evander.admin.web.discord_webhooks import discord_webhook_routes
 from evander.admin.web.host_directories import host_directory_routes
+from evander.admin.web.privacy import privacy_routes
 from evander.admin.web.operator_steering import operator_steering_routes
 from evander.admin.web.sessions_approvals import session_approval_routes
 from evander.admin.web.shared import (
@@ -703,6 +704,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(connector_routes(service, auth))
     routes.extend(discord_webhook_routes(service, auth))
     routes.extend(host_directory_routes(service, auth))
+    routes.extend(privacy_routes(service, auth))
     routes.extend(website_session_routes(service, auth))
     routes.extend(classification_routes(service, auth))
     routes.extend(capacity_routes(service, auth, dashboard_cache))

@@ -82,7 +82,9 @@ EVANDER_UNITS=(
   evander-teams-meeting-ingest.service
   evander-effect-orchestrator.service
   evander-trigger-orchestrator.service
+  evander-privacy-maintenance.service
 )
+EVANDER_TIMERS=(evander-privacy-maintenance.timer)
 EVANDER_TARGETS=(
   evander-team-runtime.target
 )
@@ -556,11 +558,21 @@ render_unit \
   "${ROOT_DIR}/systemd/evander-team-runtime.target.template" \
   "${SYSTEMD_DIR}/evander-team-runtime.target"
 
+render_unit \
+  "${ROOT_DIR}/systemd/evander-privacy-maintenance.service.template" \
+  "${SYSTEMD_DIR}/evander-privacy-maintenance.service"
+
+render_unit \
+  "${ROOT_DIR}/systemd/evander-privacy-maintenance.timer.template" \
+  "${SYSTEMD_DIR}/evander-privacy-maintenance.timer"
+
 systemctl daemon-reload
-systemctl enable "${EVANDER_UNITS[@]}" "${EVANDER_TARGETS[@]}"
+systemctl enable "${EVANDER_UNITS[@]}" "${EVANDER_TARGETS[@]}" "${EVANDER_TIMERS[@]}"
 
 cat <<EOF
 Installed systemd units:
+  evander-privacy-maintenance.service
+  evander-privacy-maintenance.timer
   evander-gateway.service
   evander-admin-web.service
   evander-openai-relay.service

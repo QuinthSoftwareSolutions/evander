@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import RLock
 from typing import Any, Literal
 from urllib.parse import quote
 from uuid import uuid4
@@ -15,6 +13,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from evander.directories import DirectoryService
 from evander.models import DirectoryPath, SessionManifest, ToolName, utc_now
+from evander.storage import JsonObjectStore
 from evander.voice_sessions import (
     VoiceProjectionService,
     realtime_session_config,
@@ -96,18 +95,14 @@ class TeamsMeetingStartResult(BaseModel):
     bridge: dict[str, Any] = Field(default_factory=dict)
 
 
-class TeamsMeetingStore:
-    """Atomic JSON store for Teams meeting/session bindings and visible events."""
+class TeamsMeetingStore(JsonObjectStore):
+    """Durable meeting state with process-shared transaction locks."""
 
     def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-        self._lock = RLock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._atomic_write(_empty_store_payload())
+        super().__init__(Path(path), _empty_store_payload())
 
     def upsert_binding(self, binding: TeamsMeetingBinding) -> None:
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             bindings = _ensure_mapping(payload, "bindings")
             bindings[binding.meeting_id] = binding.model_dump(mode="json")
@@ -127,14 +122,14 @@ class TeamsMeetingStore:
         normalized = str(meeting_id or "").strip()
         if not normalized:
             return None
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = _ensure_mapping(self._read_raw(), "bindings").get(normalized)
         if not isinstance(raw, dict):
             return None
         return TeamsMeetingBinding.model_validate(raw)
 
     def list_bindings(self) -> list[TeamsMeetingBinding]:
-        with self._lock:
+        with self._lock, self._file_lock():
             raw_bindings = dict(_ensure_mapping(self._read_raw(), "bindings"))
         bindings: list[TeamsMeetingBinding] = []
         for raw in raw_bindings.values():
@@ -150,7 +145,7 @@ class TeamsMeetingStore:
     def close_binding(self, meeting_id: str, *, status: MeetingBindingStatus = "stopped") -> None:
         if status not in {"stopped", "failed"}:
             raise ValueError("closed meeting status must be stopped or failed")
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             bindings = _ensure_mapping(payload, "bindings")
             raw = bindings.get(meeting_id)
@@ -175,7 +170,7 @@ class TeamsMeetingStore:
         occurred_at: datetime | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TeamsMeetingEvent:
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             binding = self._require_binding(payload, meeting_id)
             event = TeamsMeetingEvent(
@@ -201,7 +196,7 @@ class TeamsMeetingStore:
     ) -> list[TeamsMeetingEvent]:
         if not bridge_events:
             return []
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._read_raw()
             binding = self._require_binding(payload, meeting_id)
             raw_events = _ensure_list(payload, "events", meeting_id)
@@ -253,7 +248,7 @@ class TeamsMeetingStore:
         binding = self.get_binding_for_session(session_id)
         if binding is None:
             raise ValueError(f"Unknown Teams meeting session: {session_id}")
-        with self._lock:
+        with self._lock, self._file_lock():
             raw_events = list(_ensure_list(self._read_raw(), "events", binding.meeting_id))
         events = [
             TeamsMeetingEvent.model_validate(raw) for raw in raw_events if isinstance(raw, dict)
@@ -268,7 +263,7 @@ class TeamsMeetingStore:
         normalized = str(meeting_id or "").strip()
         if not normalized:
             raise ValueError("meeting_id is required")
-        with self._lock:
+        with self._lock, self._file_lock():
             raw_events = list(_ensure_list(self._read_raw(), "events", normalized))
         return max(
             (
@@ -288,19 +283,16 @@ class TeamsMeetingStore:
         return TeamsMeetingBinding.model_validate(raw)
 
     def _read_raw(self) -> dict[str, Any]:
-        payload = self.path.read_text(encoding="utf-8")
-        raw = json.loads(payload)
-        if not isinstance(raw, dict):
-            return _empty_store_payload()
-        raw.setdefault("bindings", {})
-        raw.setdefault("events", {})
-        raw.setdefault("next_sequences", {})
+        raw = self._read_object_unlocked()
+        for section in ("bindings", "events", "next_sequences"):
+            if not isinstance(raw.setdefault(section, {}), dict):
+                raise ValueError(f"Teams meeting store has an invalid {section} section")
+        if any(not isinstance(events, list) for events in raw["events"].values()):
+            raise ValueError("Teams meeting store contains an invalid event list")
         return raw
 
     def _atomic_write(self, payload: dict[str, Any]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        self._write_object_unlocked(payload)
 
 
 class TeamsMeetingBridgeClient:

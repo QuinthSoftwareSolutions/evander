@@ -90,6 +90,9 @@ const ConnectorsPage = lazy(() =>
 const HostDirectoriesPage = lazy(() =>
   import("./features/hostDirectories/HostDirectoriesPage").then(({ HostDirectoriesPage }) => ({ default: HostDirectoriesPage })),
 );
+const PrivacyPage = lazy(() =>
+  import("./features/privacy/PrivacyPage").then(({ PrivacyPage }) => ({ default: PrivacyPage })),
+);
 const OperationsDashboard = lazy(() =>
   import("./features/dashboard/OperationsDashboard").then(({ OperationsDashboard }) => ({ default: OperationsDashboard })),
 );
@@ -2287,6 +2290,11 @@ export default function AdminRoot() {
                 />
               ) : renderedTab === "host-directories" ? (
                 <HostDirectoriesPage
+                  selectedDirectoryPath={selectedDirectoryPath}
+                  privilegedUnlocked={privilegeUnlocked}
+                />
+              ) : renderedTab === "privacy" ? (
+                <PrivacyPage
                   selectedDirectoryPath={selectedDirectoryPath}
                   privilegedUnlocked={privilegeUnlocked}
                 />

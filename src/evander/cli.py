@@ -34,6 +34,7 @@ from evander.bootstrap import (
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.config import GatewayConfig
 from evander.code_index.cli import app as code_index_app
+from evander.privacy.cli import app as privacy_app
 from evander.connectors.models import normalize_connector_id
 from evander.connectors.service import ConnectorService, connector_registry_from_addons
 from evander.daemons.ado_issue_worker import run_worker_command
@@ -146,6 +147,7 @@ team_app = typer.Typer(help="Inspect Team Add-on runtime activity.")
 app.add_typer(directories_app, name="directories")
 app.add_typer(git_repos_app, name="git-repos", rich_help_panel="Health and State")
 app.add_typer(code_index_app, name="code-index", rich_help_panel="Health and State")
+app.add_typer(privacy_app, name="privacy", rich_help_panel="Health and State")
 app.add_typer(wake_schedules_app, name="wake-schedules")
 app.add_typer(teams_auth_app, name="teams-auth", rich_help_panel="Sessions and Feedback")
 app.add_typer(teams_meeting_app, name="teams-meeting", rich_help_panel="Sessions and Feedback")

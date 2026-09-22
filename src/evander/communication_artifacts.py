@@ -5,12 +5,15 @@ import mimetypes
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import wraps
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+from evander.privacy.repository import held_without_initializing, privacy_guard
 
 
 DEFAULT_COMMUNICATION_ARTIFACT_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -49,6 +52,14 @@ class StagedCommunicationArtifact:
     metadata_path: Path
 
 
+def _serialized_artifact_operation(operation):
+    @wraps(operation)
+    def guarded(self, *args, **kwargs):
+        with privacy_guard(self.root.parent):
+            return operation(self, *args, **kwargs)
+    return guarded
+
+
 class CommunicationArtifactStore:
     """Host-side store for provider-sourced communication attachments.
 
@@ -66,6 +77,7 @@ class CommunicationArtifactStore:
         self.ttl_seconds = max(0, int(ttl_seconds))
         self.root.mkdir(parents=True, exist_ok=True)
 
+    @_serialized_artifact_operation
     def stage(
         self,
         *,
@@ -114,6 +126,7 @@ class CommunicationArtifactStore:
         self._atomic_write_json(metadata_path, record.model_dump(mode="json"))
         return record
 
+    @_serialized_artifact_operation
     def get(self, artifact_id: str) -> StagedCommunicationArtifact:
         self.cleanup_expired()
         safe_id = validate_artifact_id(artifact_id)
@@ -133,14 +146,25 @@ class CommunicationArtifactStore:
         staged = self.get(artifact_id)
         return {**staged.metadata.model_dump(mode="json"), "path": str(staged.blob_path)}
 
-    def delete(self, artifact_id: str) -> None:
+    @_serialized_artifact_operation
+    def delete(self, artifact_id: str) -> bool:
         safe_id = validate_artifact_id(artifact_id)
-        for path in (self.metadata_path(safe_id), self.blob_path(safe_id)):
+        if held_without_initializing(self.root.parent, "communication_artifacts", safe_id):
+            return False
+        self._delete_under_privacy_guard(safe_id)
+        return True
+
+    def _delete_under_privacy_guard(self, artifact_id: str) -> None:
+        """Caller serializes with privacy hold publication and source mutations."""
+        safe_id = validate_artifact_id(artifact_id)
+        # Keep discoverable metadata if blob removal fails, enabling safe retry.
+        for path in (self.blob_path(safe_id), self.metadata_path(safe_id)):
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
 
+    @_serialized_artifact_operation
     def cleanup_expired(self, *, now: datetime | None = None) -> int:
         current = now or utc_now()
         removed = 0
@@ -153,8 +177,8 @@ class CommunicationArtifactStore:
             except Exception:
                 continue
             if record.expires_at <= current:
-                self.delete(artifact_id)
-                removed += 1
+                if self.delete(artifact_id):
+                    removed += 1
         return removed
 
     def metadata_path(self, artifact_id: str) -> Path:

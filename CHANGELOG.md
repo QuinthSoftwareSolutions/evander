@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-21 - Add operator privacy foundations (0.58.0)
+
+- Add scoped privacy inventory, revisioned policies, cases, holds, reviewed local jobs,
+  encrypted reviewer exports, external follow-ups, and incident records through Admin Web
+  and the trusted-host CLI. Explicitly report unsupported lifecycle operations and incomplete
+  coverage; installation-wide readiness and enforcement are not claimed.
+- Schedule bounded, opt-in attachment-staging retention and honor holds in existing
+  opportunistic artifact expiry, with durable retry evidence and stale-selection checks.
+- Serialize voice, meeting, and DIDWW JSON transactions across processes; encrypt Teams
+  delegated credential payloads with validated one-way legacy migration and protected keys.
+- Add fresh, endpoint-bound provider approval checks to model relay, classifier, and Codex
+  subscription egress paths, including retries and persistent-connection revocation. Other
+  outbound paths remain explicit coverage gaps; report-only remains the upgrade default.
+- Include technical privacy review drafts and deployment/restore caveats. No production
+  policies, provider contracts, legal approvals, or customer-data cleanup are applied.
+
 ## 2026-09-21 - Keep Miro diagrams individually editable (0.57.2)
 
 - Make separate native shapes, text and connectors the default for human-agent collaboration,

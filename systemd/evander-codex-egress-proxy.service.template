@@ -9,7 +9,7 @@ User=__RUN_USER__
 WorkingDirectory=__PROJECT_DIR__
 Environment=EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS=127.0.0.1/32
 EnvironmentFile=-__PROJECT_DIR__/config/codex-egress-proxy.env
-ExecStart=__PROJECT_DIR__/.venv/bin/evander-codex-egress-proxy
+ExecStart=__PROJECT_DIR__/.venv/bin/evander-codex-egress-proxy --runtime-dir __PROJECT_DIR__/runtime
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

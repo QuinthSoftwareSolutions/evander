@@ -1,5 +1,8 @@
 # Operations
 
+For the privacy inventory, approved cleanup jobs, holds, reviewer exports, incident references,
+credential upgrade and restore caveats, see [Privacy operations](privacy-operations.md).
+
 For effect handoff timing, bounded recovery scheduling, and deployment verification, see
 [Orchestration latency and recovery](orchestration-latency.md).
 

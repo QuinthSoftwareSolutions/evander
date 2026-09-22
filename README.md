@@ -6,6 +6,10 @@ package, Git, and HTTP relays.
 
 ## What This Scaffold Includes
 
+For implemented privacy operator controls, coverage limits, credential migration and the
+remaining roadmap, see [Privacy operations](docs/privacy-operations.md). This staged foundation
+does not establish complete GDPR readiness.
+
 For Team task-board filtering, progress permalinks and ADO intake setup, see
 [Case progress boards](docs/case-progress-boards.md).
 For decision journals, bounded wake deltas and configurable workflow context, see

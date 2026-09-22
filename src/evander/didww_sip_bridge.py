@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from threading import RLock
 from typing import Any, Literal
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -33,6 +32,7 @@ from starlette.routing import Route
 
 from evander.bootstrap import resolve_runtime_dir
 from evander.models import utc_now
+from evander.storage import JsonObjectStore
 from evander.voice_sessions import (
     VoiceTranscriptEvent,
     normalize_voice_session_status,
@@ -635,16 +635,14 @@ class DidwwBridgeCallRecord(BaseModel):
         }
 
 
-class DidwwBridgeStore:
+class DidwwBridgeStore(JsonObjectStore):
+    """Durable bridge state with process-shared transaction locks."""
+
     def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-        self._lock = RLock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._atomic_write({"calls": {}, "request_index": {}})
+        super().__init__(Path(path), {"calls": {}, "request_index": {}})
 
     def create_call(self, payload: PhoneCallStartRequest) -> tuple[DidwwBridgeCallRecord, bool]:
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = self._read_raw()
             request_index = _mapping(raw, "request_index")
             existing_id = request_index.get(payload.request_id)
@@ -672,7 +670,7 @@ class DidwwBridgeStore:
         self,
         payload: InboundPhoneCallStartRequest,
     ) -> tuple[DidwwBridgeCallRecord, bool]:
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = self._read_raw()
             request_index = _mapping(raw, "request_index")
             existing_id = request_index.get(payload.request_id)
@@ -709,7 +707,7 @@ class DidwwBridgeStore:
         normalized = str(voice_session_id or "").strip()
         if not normalized:
             return None
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = _mapping(self._read_raw(), "calls").get(normalized)
         if not isinstance(raw, dict):
             return None
@@ -719,7 +717,7 @@ class DidwwBridgeStore:
         normalized = str(call_id or "").strip()
         if not normalized:
             return None
-        with self._lock:
+        with self._lock, self._file_lock():
             calls = list(_mapping(self._read_raw(), "calls").values())
         for raw in calls:
             if not isinstance(raw, dict):
@@ -867,7 +865,7 @@ class DidwwBridgeStore:
         voice_session_id: str,
         callback: Callable[[DidwwBridgeCallRecord], None],
     ) -> DidwwBridgeCallRecord:
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = self._read_raw()
             record = self._require(raw, voice_session_id)
             callback(record)
@@ -883,20 +881,14 @@ class DidwwBridgeStore:
         return DidwwBridgeCallRecord.model_validate(record)
 
     def _read_raw(self) -> dict[str, Any]:
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
-        _mapping(payload, "calls")
-        _mapping(payload, "request_index")
+        payload = self._read_object_unlocked()
+        for section in ("calls", "request_index"):
+            if not isinstance(payload.setdefault(section, {}), dict):
+                raise ValueError(f"DIDWW bridge store has an invalid {section} section")
         return payload
 
     def _atomic_write(self, payload: dict[str, Any]) -> None:
-        tmp = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        self._write_object_unlocked(payload)
 
 
 @dataclass(frozen=True)

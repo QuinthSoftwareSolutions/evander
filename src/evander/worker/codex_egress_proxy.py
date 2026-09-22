@@ -8,9 +8,13 @@ import signal
 import socket
 import socketserver
 import threading
-from collections.abc import Iterable, Sequence
+import time
+from collections.abc import Callable, Iterable, Sequence
 from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from urllib.parse import urlsplit
+from pathlib import Path
+
+from evander.privacy.providers import ProviderDispatchGuard, runtime_provider_guard
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,8 @@ class RestrictedCodexEgressProxy:
         connect_timeout_seconds: float = 15.0,
         tunnel_idle_timeout_seconds: float = 300.0,
         max_connections: int = 64,
+        privacy_guard: ProviderDispatchGuard | None = None,
+        runtime_dir: Path | None = None,
     ) -> None:
         self.host = str(host).strip()
         self.port = int(port)
@@ -54,6 +60,9 @@ class RestrictedCodexEgressProxy:
         self.connect_timeout_seconds = max(0.1, float(connect_timeout_seconds))
         self.tunnel_idle_timeout_seconds = max(0.1, float(tunnel_idle_timeout_seconds))
         self.max_connections = int(max_connections)
+        self.privacy_guard = privacy_guard or runtime_provider_guard(
+            runtime_dir or Path("/var/lib/evander")
+        )
         if self.max_connections <= 0:
             raise ValueError("Codex egress proxy max_connections must be positive")
         self._server: _ThreadingTcpServer | None = None
@@ -122,6 +131,9 @@ class RestrictedCodexEgressProxy:
             if port != 443 or not self._host_allowed(host):
                 _send_response(client, 403, "destination not allowed")
                 return
+            if not self._privacy_allowed(host):
+                _send_response(client, 403, "privacy approval required")
+                return
             upstream = socket.create_connection((host, port), timeout=self.connect_timeout_seconds)
         except (OSError, ValueError) as exc:
             logger.info(
@@ -134,14 +146,28 @@ class RestrictedCodexEgressProxy:
                 pass
             return
         try:
+            if not self._privacy_allowed(host):
+                _send_response(client, 403, "privacy approval required")
+                return
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             _tunnel(
                 client,
                 upstream,
                 idle_timeout_seconds=self.tunnel_idle_timeout_seconds,
+                privacy_check=lambda: self._privacy_allowed(host),
             )
         finally:
             upstream.close()
+
+    def _privacy_allowed(self, host: str) -> bool:
+        return self.privacy_guard.check(
+            provider="codex_subscription",
+            endpoint=f"https://{host}",
+            connection_id="subscription:installation",
+            directory_path=None,
+            capability="codex_subscription",
+            installation_wide=True,
+        ).allowed
 
     def _client_allowed(self, client_address: object | None) -> bool:
         if not self.allowed_client_networks:
@@ -240,6 +266,11 @@ def build_codex_egress_proxy_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--runtime-dir", type=Path,
+        default=Path(os.environ.get("EVANDER_RUNTIME_DIR", "/var/lib/evander")),
+        help="Control-plane runtime directory containing authoritative privacy policy.",
+    )
+    parser.add_argument(
         "--port",
         type=int,
         default=int(
@@ -281,6 +312,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         port=args.port,
         allowed_hosts=allowed_hosts,
         allowed_client_cidrs=allowed_client_cidrs,
+        runtime_dir=args.runtime_dir,
     )
     stopped = threading.Event()
 
@@ -343,6 +375,7 @@ def _tunnel(
     upstream: socket.socket,
     *,
     idle_timeout_seconds: float,
+    privacy_check: Callable[[], bool] | None = None,
 ) -> None:
     """Pump a tunnel on its bounded handler thread and expire inactive peers."""
 
@@ -350,20 +383,31 @@ def _tunnel(
     client.settimeout(timeout)
     upstream.settimeout(timeout)
     peers = {client: upstream, upstream: client}
+    last_activity = time.monotonic()
     try:
         while True:
+            if privacy_check is not None and not privacy_check():
+                return
+            remaining = timeout - (time.monotonic() - last_activity)
+            if remaining <= 0:
+                return
             readable, _, exceptional = select.select(
                 tuple(peers),
                 (),
                 tuple(peers),
-                timeout,
+                min(1.0, remaining) if privacy_check is not None else remaining,
             )
-            if exceptional or not readable:
+            if exceptional:
                 return
+            if not readable:
+                continue
             for source in readable:
+                if privacy_check is not None and not privacy_check():
+                    return
                 data = source.recv(65536)
                 if not data:
                     return
                 peers[source].sendall(data)
+                last_activity = time.monotonic()
     except (OSError, ValueError):
         return

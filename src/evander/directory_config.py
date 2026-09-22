@@ -33,6 +33,7 @@ DIRECTORY_CONFIG_METADATA_DOMAINS_KEY = "domains"
 DIRECTORY_CONFIG_ROOT_DIRNAME = "directory-config"
 
 DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
+    "privacy": "privacy.json",
     "policy": "policy.json",
     "providers": "providers.json",
     "contacts": "contacts.json",
@@ -71,6 +72,7 @@ LEGACY_ADO_WORKER_BOOTSTRAP_FIELDS = frozenset(
 )
 
 DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
+    "privacy": frozenset({"privacy"}),
     "policy": frozenset(
         {
             "approval_ttl_seconds",
@@ -751,6 +753,15 @@ class DirectoryConfigStore:
                 if key not in LEGACY_ADO_WORKER_BOOTSTRAP_FIELDS
             }
         allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
+        if domain == "privacy":
+            from evander.privacy.models import PrivacySettings
+
+            if set(payload) - {"privacy"}:
+                raise ValueError("privacy domain accepts only privacy settings")
+            if "privacy" not in payload:
+                return {}
+            validated_privacy = PrivacySettings.model_validate(payload["privacy"])
+            return {"privacy": validated_privacy.model_dump(mode="json", exclude_unset=True)}
         if domain != "providers":
             unknown_fields = sorted(set(payload) - allowed_fields)
             if unknown_fields:
@@ -1010,7 +1021,7 @@ class DirectoryConfigResolver:
     ) -> GatewayConfig:
         root_bootstrap = base_gateway_config or build_runtime_gateway_config(host_config)
         payload = root_bootstrap.model_dump(mode="json")
-        for domain in ("policy", "providers", "email", "wake", "vm"):
+        for domain in ("policy", "providers", "email", "wake", "vm", "privacy"):
             resolution = self.resolve_domain(
                 "root",
                 domain=domain,
@@ -1032,6 +1043,12 @@ class DirectoryConfigResolver:
     ) -> DirectoryConfigResolution:
         details = self._service.show(reference)
         effective = deepcopy(base_config) if base_config is not None else {}
+        if domain == "privacy":
+            # A cached resolved GatewayConfig is not a source of grants. Removing
+            # an approval must not resurrect it from yesterday's root settings.
+            from evander.privacy.models import PrivacySettings
+
+            effective = {"privacy": PrivacySettings().model_dump(mode="json")}
         if domain == "providers" and "classification" in effective:
             # Classification is directory-owned. Do not resurrect removed profiles or
             # enablement from the process's cached root configuration.

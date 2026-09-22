@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote, unquote, urlencode
 
 import httpx
+import anyio
 import uvicorn
 from python_multipart.multipart import (
     MultipartParseError,
@@ -42,6 +43,11 @@ from evander.model_usage.runtime import (
 )
 from evander.operator_steering import OperatorSteeringNote, operator_steering_note_store
 from evander.provider_config import ProviderConfigResolver
+from evander.privacy.providers import (
+    PrivacyDispatchDenied,
+    ProviderDispatchGuard,
+    config_provider_guard,
+)
 from evander.relays.local_openai_tool_compatibility import (
     LocalOpenAIToolCompatibility,
     LocalOpenAIToolCompatibilityAdapter,
@@ -142,6 +148,7 @@ class RelayRequestContext:
     config: GatewayConfig
     web_search_enabled: bool
     image_generation_enabled: bool
+    directory_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -259,10 +266,12 @@ class OpenAIRelay:
         transport: httpx.AsyncBaseTransport | None = None,
         *,
         provider_config_resolver: ProviderConfigResolver | None = None,
+        privacy_guard: ProviderDispatchGuard | None = None,
     ) -> None:
         self.config = config
         self.transport = transport
         self.provider_config_resolver = provider_config_resolver or ProviderConfigResolver(config)
+        self.privacy_guard = privacy_guard or config_provider_guard(config)
         self._local_openai_tool_adapter = LocalOpenAIToolCompatibilityAdapter()
         self.model_usage_store = model_usage_store(config.runtime_dir)
         self.operator_steering_store = operator_steering_note_store(config.runtime_dir)
@@ -293,6 +302,8 @@ class OpenAIRelay:
             try:
                 request_context = relay._resolve_request_context(request)
             except SessionExpiredError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=403)
+            except PrivacyDispatchDenied as exc:
                 return JSONResponse({"error": str(exc)}, status_code=403)
             except PermissionError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=401)
@@ -423,11 +434,15 @@ class OpenAIRelay:
                         timeout_seconds=request_context.config.openai_relay_timeout_seconds,
                         provider_name="openai",
                         operator_steering_note=steering_injection.note,
+                        privacy_context=request_context,
                     )
 
                 async with httpx.AsyncClient(
                     timeout=request_context.config.openai_relay_timeout_seconds,
                     transport=relay.transport,
+                    trust_env=False,
+                    follow_redirects=False,
+                    event_hooks={"request": [relay._privacy_request_hook(request_context)]},
                 ) as client:
                     started_at = time.perf_counter()
                     try:
@@ -533,11 +548,15 @@ class OpenAIRelay:
                     provider_name=openai_compatible_upstream.provider_name,
                     operator_steering_note=steering_injection.note,
                     local_openai_tool_compatibility=local_openai_tool_compatibility,
+                    privacy_context=request_context,
                 )
 
             async with httpx.AsyncClient(
                 timeout=request_context.config.openai_relay_timeout_seconds,
                 transport=relay.transport,
+                trust_env=False,
+                follow_redirects=False,
+                event_hooks={"request": [relay._privacy_request_hook(request_context)]},
             ) as client:
                 started_at = time.perf_counter()
                 try:
@@ -663,6 +682,11 @@ class OpenAIRelay:
             }
             headers["authorization"] = f"Bearer {openai_compatible_upstream.api_key}"
 
+            try:
+                relay._require_privacy(request_context)
+            except PrivacyDispatchDenied as exc:
+                await websocket.close(code=1008, reason=str(exc))
+                return
             async with relay._connect_upstream_websocket(
                 upstream_url,
                 headers=headers,
@@ -678,10 +702,15 @@ class OpenAIRelay:
                     web_search_enabled=request_context.web_search_enabled,
                     image_generation_enabled=request_context.image_generation_enabled,
                     provider_name=openai_compatible_upstream.provider_name,
+                    privacy_context=request_context,
                 )
+
+        async def privacy_denied(_request: Request, exc: PrivacyDispatchDenied) -> JSONResponse:
+            return JSONResponse({"error": str(exc)}, status_code=403)
 
         return Starlette(
             debug=False,
+            exception_handlers={PrivacyDispatchDenied: privacy_denied},
             middleware=[Middleware(OpenAIAuthPathTokenMiddleware)],
             routes=[
                 Route("/healthz", health, methods=["GET"]),
@@ -827,11 +856,15 @@ class OpenAIRelay:
                     request_model=request_model,
                     timeout_seconds=request_context.config.openai_relay_timeout_seconds,
                     provider_name=upstream.provider_name,
+                    privacy_context=request_context,
                 )
 
             async with httpx.AsyncClient(
                 timeout=request_context.config.openai_relay_timeout_seconds,
                 transport=self.transport,
+                trust_env=False,
+                follow_redirects=False,
+                event_hooks={"request": [self._privacy_request_hook(request_context)]},
             ) as client:
                 started_at = time.perf_counter()
                 upstream_response = await client.request(
@@ -980,11 +1013,15 @@ class OpenAIRelay:
                 timeout_seconds=request_context.config.anthropic_relay_timeout_seconds,
                 provider_name="anthropic",
                 operator_steering_note=steering_injection.note,
+                privacy_context=request_context,
             )
 
         async with httpx.AsyncClient(
             timeout=request_context.config.anthropic_relay_timeout_seconds,
             transport=self.transport,
+            trust_env=False,
+            follow_redirects=False,
+            event_hooks={"request": [self._privacy_request_hook(request_context)]},
         ) as client:
             started_at = time.perf_counter()
             try:
@@ -1045,6 +1082,7 @@ class OpenAIRelay:
         request_body_bytes: int | None = None,
         request_body_sha256: str | None = None,
         request_model: str | None = None,
+        privacy_context: RelayRequestContext | None = None,
     ) -> StreamingResponse:
         self.stream_started_count += 1
         stream_id = self.stream_started_count
@@ -1062,6 +1100,10 @@ class OpenAIRelay:
         client = httpx.AsyncClient(
             timeout=timeout_seconds,
             transport=self.transport,
+            trust_env=False,
+            follow_redirects=False,
+            event_hooks={"request": [self._privacy_request_hook(privacy_context)]}
+            if privacy_context else None,
         )
         upstream_stream = client.stream(
             method=request.method,
@@ -1100,7 +1142,9 @@ class OpenAIRelay:
             rewrite_buffer = b""
             try:
                 try:
-                    async for chunk in upstream_response.aiter_raw():
+                    async for chunk in self._privacy_stream_chunks(
+                        upstream_response.aiter_raw(), privacy_context
+                    ):
                         chunk_count += 1
                         bytes_sent += len(chunk)
                         response_hash.update(chunk)
@@ -1129,6 +1173,9 @@ class OpenAIRelay:
                                 rewrite_buffer,
                                 compatibility=local_openai_tool_compatibility,
                             )
+                except PrivacyDispatchDenied:
+                    logger.info("privacy_provider_stream_revoked capability=model_relay")
+                    return
                 except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
                     # Some upstream streaming responses terminate with a transport-level
                     # read error after the final bytes have already been delivered.
@@ -1888,12 +1935,15 @@ class OpenAIRelay:
             path=request.url.path,
             api_key_env=self._resolved_api_key_env(resolved_config),
         )
-        return RelayRequestContext(
+        context = RelayRequestContext(
             session_id=session_id,
             config=resolved_config,
             web_search_enabled=bool(session.web_search_enabled),
             image_generation_enabled=bool(session.image_generation_enabled),
+            directory_path=session.directory_path,
         )
+        self._require_privacy(context)
+        return context
 
     def _resolve_websocket_context(self, websocket: WebSocket) -> RelayRequestContext:
         session_id = self._session_id_from_path_params(
@@ -1909,12 +1959,73 @@ class OpenAIRelay:
             path=websocket.url.path,
             api_key_env=self._resolved_api_key_env(resolved_config),
         )
-        return RelayRequestContext(
+        context = RelayRequestContext(
             session_id=session_id,
             config=resolved_config,
             web_search_enabled=bool(session.web_search_enabled),
             image_generation_enabled=bool(session.image_generation_enabled),
+            directory_path=session.directory_path,
         )
+        self._require_privacy(context)
+        return context
+
+    def _require_privacy(self, context: RelayRequestContext) -> None:
+        decision = self.privacy_guard.require(
+            provider=context.config.model_provider_mode,
+            endpoint=self._resolved_upstream_base_url(context.config),
+            connection_id=f"model:{self._resolved_api_key_env(context.config)}",
+            directory_path=context.directory_path,
+            capability="model_relay",
+        )
+        if decision.enforced:
+            # A persistent connection must not outlive a changed/revoked session
+            # or switch silently to the scope/provider of a later configuration.
+            try:
+                session = self._session_for_request_context(context.session_id)
+                ensure_session_not_expired(session)
+                current = self.provider_config_resolver.resolve_for_session_manifest(session)
+                if (
+                    session.directory_path != context.directory_path
+                    or current.model_provider_mode != context.config.model_provider_mode
+                    or self._resolved_upstream_base_url(current) != self._resolved_upstream_base_url(context.config)
+                    or self._resolved_api_key_env(current) != self._resolved_api_key_env(context.config)
+                ):
+                    raise PrivacyDispatchDenied()
+            except Exception:
+                raise PrivacyDispatchDenied() from None
+
+    def _privacy_request_hook(self, context: RelayRequestContext):
+        async def check(_request: httpx.Request) -> None:
+            self._require_privacy(context)
+        return check
+
+    async def _privacy_stream_chunks(
+        self, chunks: AsyncIterator[bytes], context: RelayRequestContext | None
+    ) -> AsyncIterator[bytes]:
+        if context is None:
+            async for chunk in chunks:
+                yield chunk
+            return
+        pending: asyncio.Task[bytes] | None = None
+        try:
+            while True:
+                self._require_privacy(context)
+                if pending is None:
+                    pending = asyncio.create_task(anext(chunks))
+                done, _ = await asyncio.wait({pending}, timeout=1.0)
+                if not done:
+                    continue
+                self._require_privacy(context)
+                try:
+                    chunk = pending.result()
+                except StopAsyncIteration:
+                    return
+                pending = None
+                yield chunk
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
 
     @staticmethod
     def _request_body_declares_hosted_web_search(request_body: bytes) -> bool:
@@ -2173,11 +2284,18 @@ class OpenAIRelay:
                 "websocket relay support requires the 'websockets' package to be installed"
             ) from exc
 
-        async with websockets.connect(
+        class ApprovedEndpointConnect(websockets.connect):
+            def process_redirect(self, exc: Exception) -> Exception:
+                # Even same-origin redirects may change the approved service
+                # path. Reconfiguration and reapproval must be explicit.
+                return exc
+
+        async with ApprovedEndpointConnect(
             upstream_url,
             additional_headers=headers,
             open_timeout=timeout_seconds,
             close_timeout=timeout_seconds,
+            proxy=None,
         ) as upstream:
             yield upstream
 
@@ -2192,6 +2310,7 @@ class OpenAIRelay:
         web_search_enabled: bool = True,
         image_generation_enabled: bool = True,
         provider_name: str = "openai",
+        privacy_context: RelayRequestContext | None = None,
     ) -> None:
         try:
             from websockets.exceptions import ConnectionClosedOK
@@ -2219,6 +2338,13 @@ class OpenAIRelay:
                     return
                 if message_type != "websocket.receive":
                     continue
+                if privacy_context is not None:
+                    try:
+                        self._require_privacy(privacy_context)
+                    except PrivacyDispatchDenied:
+                        await upstream.close()
+                        await safe_close_client(code=1008, reason="privacy approval revoked")
+                        return
                 if message.get("text") is not None:
                     text = message["text"]
                     if not web_search_enabled and _websocket_message_declares_hosted_web_search(
@@ -2328,14 +2454,40 @@ class OpenAIRelay:
             asyncio.create_task(client_to_upstream()),
             asyncio.create_task(upstream_to_client()),
         ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            exc = task.exception()
-            if exc is not None and not isinstance(exc, WebSocketDisconnect):
-                raise exc
+        if privacy_context is not None:
+            async def watch_privacy() -> None:
+                while True:
+                    await asyncio.sleep(1.0)
+                    try:
+                        self._require_privacy(privacy_context)
+                    except PrivacyDispatchDenied:
+                        await upstream.close()
+                        await safe_close_client(code=1008, reason="privacy approval revoked")
+                        return
+            tasks.append(asyncio.create_task(watch_privacy()))
+        cancelled = False
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if task.cancelled():
+                    continue
+                exc = task.exception()
+                if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                    raise exc
+        except asyncio.CancelledError:
+            # ASGI servers cancel a WebSocket handler during client teardown.
+            # Treat that as connection closure, while still reaping child tasks.
+            cancelled = True
+            return
+        finally:
+            # Also reap the policy watcher if the ASGI request itself is cancelled.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            with anyio.CancelScope(shield=True):
+                await asyncio.gather(*tasks, return_exceptions=True)
+                if cancelled:
+                    await upstream.close()
 
     @classmethod
     def _websocket_usage_payload_from_message(
