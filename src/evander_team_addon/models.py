@@ -843,6 +843,15 @@ class ReleaseVerificationCommand(TeamModel):
     cwd: str = "."
     argv: list[str]
     timeout_seconds: int = Field(default=3600, ge=1, le=14400)
+    result_protocol: Literal["exit_code", "json-v1"] = "exit_code"
+    allow_baseline_exceptions: bool = False
+    command_failure_action: Literal["correction", "block"] = "correction"
+
+    @model_validator(mode="after")
+    def _baseline_requires_report(self) -> "ReleaseVerificationCommand":
+        if self.allow_baseline_exceptions and self.result_protocol != "json-v1":
+            raise ValueError("baseline exceptions require json-v1 evidence")
+        return self
 
     @field_validator("name", "cwd", mode="before")
     @classmethod
@@ -947,6 +956,13 @@ def _legacy_release_gate_sequence(value: Mapping[str, Any]) -> list[dict[str, An
     ]
 
 
+class ReintegrationPolicy(TeamModel):
+    enabled: bool = True
+    owner_agent_id: str | None = None
+    instructions: str = Field(default="Merge the pinned accepted contributions onto the pinned base, verify, and submit an integration deliverable.", min_length=1, max_length=8000)
+    retire_source_release: bool = False
+
+
 class ProjectReleasePolicy(TeamModel):
     schema_version: Literal[1, 2, 3] = 3
     gate_sequence: list[ReleaseGateStage] = Field(default_factory=list)
@@ -955,6 +971,9 @@ class ProjectReleasePolicy(TeamModel):
     container_image: str | None = None
     resource_limits: WorkerResourceLimits | None = None
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
+    verification_max_generations: int = Field(default=3, ge=1, le=10)
+    verification_log_retention_days: int = Field(default=30, ge=1, le=365)
+    reintegration: ReintegrationPolicy = Field(default_factory=ReintegrationPolicy)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
     human_review_requirement: HumanReviewRequirement | None = None
     # Retained as a compatibility input. An explicit policy with every stage
@@ -1618,11 +1637,12 @@ class TaskOutcomeContract(TeamModel):
 class TaskDeliverableContract(TeamModel):
     require_git_provenance: bool = False
     required_contribution_task_ids: list[str] = Field(default_factory=list)
+    pinned_source_deliverable_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("required_contribution_task_ids", mode="before")
+    @field_validator("required_contribution_task_ids", "pinned_source_deliverable_ids", mode="before")
     @classmethod
-    def _required_contribution_task_ids(cls, value: object) -> list[str]:
-        return _unique_text_list(value, "required_contribution_task_ids")
+    def _required_contribution_task_ids(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
 
 
 class TaskCompletion(TeamModel):
@@ -4354,12 +4374,18 @@ class ReleaseScopeValidation(TeamModel):
 class ReleaseVerificationCommandResult(TeamModel):
     name: str
     state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
-    failure_kind: Literal["candidate", "infrastructure", "timeout"] | None = None
+    failure_kind: Literal["candidate", "command", "infrastructure", "timeout"] | None = None
     job_id: str | None = None
     exit_code: int | None = None
     failure_cause: WorkerFailureCause | None = None
     duration_seconds: float | None = None
     log_excerpt: str | None = None
+    execution_generation: int = Field(default=0, ge=0)
+    execution_outcome: Literal["success", "command_failure", "infrastructure", "timeout"] | None = None
+    policy_outcome: Literal["passed", "baseline_exception", "failed", "infrastructure"] | None = None
+    evidence: dict[str, Any] | None = None
+    log_artifact: str | None = None
+    toolchain_mounts: list[dict[str, str]] = Field(default_factory=list)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -4384,7 +4410,9 @@ class ReleaseVerificationRun(TeamModel):
     resource_limits: WorkerResourceLimits | None = None
     verifier_settings_snapshotted: bool = False
     attempt_number: int = Field(default=1, ge=1)
-    failure_kind: Literal["candidate", "infrastructure", "timeout"] | None = None
+    execution_generation: int = Field(default=0, ge=0)
+    generation_history: list[dict[str, Any]] = Field(default_factory=list)
+    failure_kind: Literal["candidate", "command", "infrastructure", "timeout"] | None = None
     supersedes_verification_run_id: str | None = None
     superseded_by_verification_run_id: str | None = None
     retry_reason: str | None = None
@@ -4906,6 +4934,8 @@ class ReleaseCandidateManifest(TeamModel):
     scope_validation: ReleaseScopeValidation | None = None
     gate_sequence: list[ReleaseGateStage] = Field(default_factory=list)
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
+    verification_max_generations: int = Field(default=3, ge=1, le=10)
+    verification_log_retention_days: int = Field(default=30, ge=1, le=365)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
     human_review_requirement: HumanReviewRequirementSnapshot | None = None
     predecessor_release_package_id: str | None = None

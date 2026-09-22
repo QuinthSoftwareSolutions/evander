@@ -5319,6 +5319,7 @@ def test_team_addon_admin_api_designates_explicit_integration_boundary(
             assert task["deliverable_contract"] == {
                 "require_git_provenance": True,
                 "required_contribution_task_ids": ["implementation"],
+                "pinned_source_deliverable_ids": [],
             }
 
             detach_contribution = await client.patch(

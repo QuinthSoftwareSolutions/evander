@@ -40,6 +40,29 @@ def _job_payload(status: str = "running") -> dict[str, object]:
     }
 
 
+def test_bounded_artifact_reader_sends_limit_and_stops_oversized_stream(monkeypatch):
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    chunks = []
+
+    class OversizedResponse(httpx.SyncByteStream):
+        def __iter__(self):
+            for index in range(100):
+                chunks.append(index)
+                yield b"x" * 65536
+
+    def handler(request):
+        assert request.url.params["max_bytes"] == "5"
+        return httpx.Response(200, stream=OversizedResponse(), request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        worker = ContainerWorkerClient(
+            base_url="http://worker.test", token_env="WORKER_TOKEN", client=client,
+        )
+        with pytest.raises(ValueError, match="exceeds import limit"):
+            worker.read_session_artifact_text_bounded("session", "report.txt", max_bytes=5)
+    assert chunks == [0]
+
+
 def test_container_worker_client_uses_auth_header_and_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

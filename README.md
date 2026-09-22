@@ -352,6 +352,9 @@ panel surfaces explicit missing reasons instead of inferring or inventing releas
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
 
+For pinned release reintegration, restart-safe verification, structured evidence and
+worker SDK rollout, see [Release recovery and verifier policy](docs/release-recovery-and-verifier-policy.md).
+
 For the complete layered technical reference to core Evander and the Team Add-on, including
 architecture, runbooks, diagrams, glossary, and linked subject index, see the
 [`Evander Technical Manual`](docs/evander-user-manual.md). The same edition is published as

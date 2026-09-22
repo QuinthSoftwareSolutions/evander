@@ -40,6 +40,7 @@ class TeamReleaseGateService:
         command_results: list[dict[str, Any]],
         failure_kind: str | None = None,
         error: str | None = None,
+        execution_generation: int | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_results = [
             ReleaseVerificationCommandResult.model_validate(item) for item in command_results
@@ -60,6 +61,11 @@ class TeamReleaseGateService:
             )
 
         def _mutate(state: TeamState) -> TeamState:
+            run = state.release_verification_runs[verification_run_id]
+            if run.execution_generation != (execution_generation or 0):
+                raise ValueError("stale release verification execution generation")
+            if any(item.execution_generation != run.execution_generation for item in normalized_results):
+                raise ValueError("stale release verification command generation")
             record_release_verification_result(
                 state,
                 release_package_id=release_package_id,

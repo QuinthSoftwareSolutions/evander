@@ -30,6 +30,28 @@ from evander.worker.models import (
 )
 
 
+def test_artifact_byte_limit_reaches_selected_worker(tmp_path, monkeypatch):
+    import httpx
+
+    from evander.execution.container_worker_client import ContainerWorkerClient
+
+    monkeypatch.setenv("WORKER_TOKEN", "test-token")
+
+    def handler(request):
+        assert request.url.path == "/v1/sessions/session-1/artifacts/report.txt"
+        assert request.url.params["max_bytes"] == "2"
+        return httpx.Response(200, content="é".encode(), request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        client = ContainerWorkerClient(
+            base_url="http://worker.test", token_env="WORKER_TOKEN", client=transport,
+        )
+        backend = _backend(tmp_path, client)
+        assert backend.read_session_artifact_text_bounded(
+            session_id="session-1", relative_path="report.txt", max_bytes=2,
+        ) == "é"
+
+
 class FakeContainerWorkerClient:
     base_url = "http://worker.test"
 
