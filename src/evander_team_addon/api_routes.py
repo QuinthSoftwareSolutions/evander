@@ -294,6 +294,16 @@ def build_routes(dependencies: TeamApiDependencies) -> Sequence[Route]:
         ),
         route("/release-packages", handlers["create_release_package"], methods=["POST"]),
         route("/release-packages", handlers["list_release_packages"], methods=["GET"]),
+        route(
+            "/cases/{case_id}/reintegration-candidates",
+            handlers["case_reintegration_candidates"],
+            methods=["GET"],
+        ),
+        route(
+            "/release-packages/{release_package_id}/reintegration",
+            handlers["reintegrate_release"],
+            methods=["POST"],
+        ),
         route("/human-review-requests", handlers["list_human_review_requests"], methods=["GET"]),
         route(
             "/human-review-requests/{human_review_request_id}",

@@ -401,6 +401,15 @@ def _project_repo_task_dependency_git_sources_unchecked(
     resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
     resolve_team_review_commit = getattr(managed_git, "resolve_team_review_commit", None)
     required_source_ids = set(required_source_deliverable_ids_for_task(state, task_id=task_id))
+    pinned_sources = (
+        set(task.deliverable_contract.pinned_source_deliverable_ids)
+        if task.deliverable_contract
+        else set()
+    )
+    if pinned_sources and not pinned_sources.issubset(required_source_ids):
+        raise RuntimeError(
+            "pinned integration contributions changed; create a new recovery preview"
+        )
     required_task_ids = {
         state.deliverables[deliverable_id].task_id
         for deliverable_id in required_source_ids
@@ -428,6 +437,7 @@ def _project_repo_task_dependency_git_sources_unchecked(
             deliverable
             for deliverable in current_deliverables
             if _deliverable_has_git_state(deliverable)
+            and (not pinned_sources or deliverable.id in pinned_sources)
             and (
                 dependency_task_id in task.dependency_task_ids
                 or deliverable.id in required_source_ids

@@ -478,6 +478,15 @@ class ReleaseVerificationCommand(TeamModel):
     cwd: str = "."
     argv: list[str]
     timeout_seconds: int = Field(default=3600, ge=1, le=14400)
+    result_protocol: Literal["exit_code", "json-v1"] = "exit_code"
+    allow_baseline_exceptions: bool = False
+    command_failure_action: Literal["correction", "block"] = "correction"
+
+    @model_validator(mode="after")
+    def _baseline_requires_report(self) -> "ReleaseVerificationCommand":
+        if self.allow_baseline_exceptions and self.result_protocol != "json-v1":
+            raise ValueError("baseline exceptions require json-v1 evidence")
+        return self
 
     @field_validator("name", "cwd", mode="before")
     @classmethod
@@ -582,6 +591,17 @@ def _legacy_release_gate_sequence(value: Mapping[str, Any]) -> list[dict[str, An
     ]
 
 
+class ReintegrationPolicy(TeamModel):
+    enabled: bool = True
+    owner_agent_id: str | None = None
+    instructions: str = Field(
+        default="Merge the pinned accepted contributions onto the pinned base, verify, and submit an integration deliverable.",
+        min_length=1,
+        max_length=8000,
+    )
+    retire_source_release: bool = False
+
+
 class ProjectReleasePolicy(TeamModel):
     schema_version: Literal[1, 2, 3] = 3
     gate_sequence: list[ReleaseGateStage] = Field(default_factory=list)
@@ -590,6 +610,9 @@ class ProjectReleasePolicy(TeamModel):
     container_image: str | None = None
     resource_limits: WorkerResourceLimits | None = None
     verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
+    verification_max_generations: int = Field(default=3, ge=1, le=10)
+    verification_log_retention_days: int = Field(default=30, ge=1, le=365)
+    reintegration: ReintegrationPolicy = Field(default_factory=ReintegrationPolicy)
     review_requirements: list[ReleaseReviewRequirement] = Field(default_factory=list)
     human_review_requirement: HumanReviewRequirement | None = None
     # Retained as a compatibility input. An explicit policy with every stage

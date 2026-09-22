@@ -337,7 +337,7 @@ class ContainerWorkerClient:
     def read_session_artifact_text_bounded(
         self, session_id: str, relative_path: str, *, max_bytes: int
     ) -> str:
-        """Read an index artifact without buffering an unbounded worker response."""
+        """Bound both the worker's file read and the streamed response body."""
         from contextlib import nullcontext
 
         if max_bytes <= 0:
@@ -356,7 +356,8 @@ class ContainerWorkerClient:
         with (
             manager as client,
             client.stream(
-                "GET", self._url(path), headers={"Authorization": f"Bearer {token}"}
+                "GET", self._url(path), headers={"Authorization": f"Bearer {token}"},
+                params={"max_bytes": max_bytes},
             ) as response,
         ):
             if response.status_code >= 400:

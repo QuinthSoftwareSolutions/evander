@@ -300,6 +300,12 @@ def execution_logs(
     ] = 50,
     backend: BackendOption = None,
 ) -> None:
+    from evander_team_addon.services.verification_logs import read_verification_log
+
+    retained = read_verification_log(cli_runtime._runtime_dir_for_config_option(config), target)
+    if retained is not None:
+        typer.echo("\n".join(retained.splitlines()[-lines:]))
+        return
     backend = _build_execution_backend_for_kind(config, backend=backend, target=target)
     typer.echo(backend.get_log_snapshot(target, lines=lines), nl=False)
 

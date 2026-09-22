@@ -1107,6 +1107,7 @@ _STAND_DOWN_DISPATCH_COMPLETION_TOOLS = frozenset(
 )
 _PROJECT_SCOPE_TOOLS = frozenset(
     {
+        "team_reintegrate_release",
         "team_create_task",
         "team_create_task_for_role",
         "team_create_tasks",

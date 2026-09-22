@@ -1,5 +1,12 @@
 # Configuration Reference
 
+Project release policies support `reintegration`, `verification_max_generations`,
+`verification_log_retention_days` and opt-in per-command `result_protocol`,
+`allow_baseline_exceptions`, and `command_failure_action`. See
+[Release recovery and verifier policy](release-recovery-and-verifier-policy.md) for defaults,
+frozen-manifest semantics and safe rollout. Worker .NET paths use
+`evander_worker_dotnet_bundle_selector` with `sdk` and `tools` children.
+
 For Azure DevOps work-item images, the session needs `list_inline_media`, `download_inline_media`
 and `communication_copy_artifact_to_workspace`, plus `communication_file_receive_enabled: true`
 in its session or effective directory policy. Existing file size/type limits apply. See the

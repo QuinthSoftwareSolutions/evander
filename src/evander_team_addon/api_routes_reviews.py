@@ -388,7 +388,13 @@ def build_reviews_handlers(
             request,
             state,
             status_code=201,
-            extra={"dependency_composition_recovery": result},
+            extra={
+                "dependency_composition_recovery": result,
+                "outbox_publication_wake": _request_team_outbox_publication(
+                    context,
+                    correlation_key=f"dependency-composition-recovery:{blocker_id}:{state.revision}",
+                ),
+            },
         )
 
     async def create_outcome_kind_definition(

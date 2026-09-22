@@ -424,6 +424,8 @@ def record_release_verification_result(
     run = state.release_verification_runs.get(verification_run_id)
     if release is None or run is None:
         raise ValueError("release package or verification run does not exist")
+    if run.release_package_id != release.id:
+        raise ValueError("verification run belongs to a different release")
     if release.state == TeamRecordState.CANCELLED:
         result["verification_state"] = run.state
         result["ignored_terminal_state"] = True
@@ -452,6 +454,7 @@ def record_release_verification_result(
         raise ValueError("passed release verification cannot have failure_kind")
     if verification_state != "passed" and normalized_failure_kind not in {
         "candidate",
+        "command",
         "infrastructure",
         "timeout",
     }:
@@ -492,7 +495,7 @@ def record_release_verification_result(
                 state,
                 release,
                 stage="verification",
-                kind=("timeout" if normalized_failure_kind == "timeout" else "infrastructure"),
+                kind=("blocked" if normalized_failure_kind == "command" else "timeout" if normalized_failure_kind == "timeout" else "infrastructure"),
                 source_id=run.id,
                 error=message,
                 result=result,
@@ -558,6 +561,8 @@ def record_release_verification_command_progress(
     )
     if _release.state == TeamRecordState.CANCELLED:
         return run
+    if command_result.execution_generation != run.execution_generation:
+        raise ValueError("stale release verification execution generation")
     if command_index < 0 or command_index >= len(run.command_results):
         raise ValueError(f"release verification command index {command_index} is out of range")
     existing = run.command_results[command_index]
@@ -2083,6 +2088,9 @@ def retry_release_gate(
         if rejected_verification_retry:
             if current.state != "failed" or current.failure_kind != "candidate":
                 raise ValueError("operator verification retry requires a failed candidate run")
+        elif current.state == "failed" and current.failure_kind == "command":
+            if not normalized_requested_by.startswith("operator:"):
+                raise ValueError("retrying command-blocked verification requires an operator")
         elif current.state not in {"failed", "timed_out"} or current.failure_kind not in {
             "infrastructure",
             "timeout",
@@ -2544,6 +2552,8 @@ def _candidate_manifest(
         ),
         gate_sequence=[stage.model_copy(deep=True) for stage in policy.gate_sequence],
         verification_commands=list(policy.verification_commands),
+        verification_max_generations=policy.verification_max_generations,
+        verification_log_retention_days=policy.verification_log_retention_days,
         review_requirements=list(policy.review_requirements),
         human_review_requirement=human_snapshot,
         predecessor_release_package_id=release.supersedes_release_package_id,

@@ -5,10 +5,12 @@ from pathlib import Path
 import subprocess
 from typing import Any, Protocol
 
+from evander.admin.services.vm_agent.errors import ContainerWorkerAgentNotFoundError
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_create import AgentCreateEffectProvider
 from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
+from evander.effects.providers.agent_session import container_backend, effective_config_for_session
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
@@ -176,6 +178,12 @@ class EffectReleaseVerificationExecutor:
         provider.set_container_execution_started_callback(on_started)
         return _execute_provider(provider)
 
+    def read_artifact(self, *, session_id: str, relative_path: str, max_bytes: int) -> str:
+        config = effective_config_for_session(self._runtime_context, session_id)
+        return container_backend(self._runtime_context, config).read_session_artifact_text_bounded(
+            session_id=session_id, relative_path=relative_path, max_bytes=max_bytes,
+        )
+
     def destroy_verifier(self, *, run_id: str, session_id: str) -> None:
         provider = AgentDestroyEffectProvider()
         provider.initialize(
@@ -188,7 +196,13 @@ class EffectReleaseVerificationExecutor:
             ),
             self._runtime_context,
         )
-        result = _execute_provider(provider)
+        try:
+            result = _execute_provider(provider)
+        except ContainerWorkerAgentNotFoundError as exc:
+            if exc.agent_id != session_id:
+                raise
+            # Cleanup may have finished before its generation/result checkpoint.
+            return
         if not bool(result.get("success")):
             raise RuntimeError(
                 _optional_text(result.get("message"))

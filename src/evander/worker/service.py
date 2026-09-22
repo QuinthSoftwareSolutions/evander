@@ -3918,12 +3918,14 @@ class WorkerDaemon:
             preparation_reused=True,
         )
 
-    def read_session_artifact_text(self, session_id: str, relative_path: str) -> str:
+    def read_session_artifact_text(
+        self, session_id: str, relative_path: str, *, max_bytes: int | None = None
+    ) -> str:
         _normalized_session_id, _sessions_root, session_root = (
             WorkerSessionPaths.resolve_session_root(self.worker_root, session_id)
         )
         root = session_root / "artifacts"
-        return read_artifact_text_no_follow(root, relative_path)
+        return read_artifact_text_no_follow(root, relative_path, max_bytes=max_bytes)
 
     def provision_mssql_database(
         self,

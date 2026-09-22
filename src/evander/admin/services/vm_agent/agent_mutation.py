@@ -18,6 +18,7 @@ from evander.admin.services.vm_agent.common import (
     _sync_added_discord_session_cursors,
     timedelta,
 )
+from evander.admin.services.vm_agent.errors import ContainerWorkerAgentNotFoundError
 from evander.codex_auth import (
     CodexAuthMode,
     effective_codex_auth_mode,
@@ -394,7 +395,7 @@ class VmAgentMutationMixin:
             else str(getattr(record, "session_id", "") or "").strip()
         )
         if not session_id:
-            raise ValueError(f"Unknown container worker agent target: {agent_id}")
+            raise ContainerWorkerAgentNotFoundError(agent_id)
         git_write_access_revoked = _revoke_container_git_write_access_for_session(session)
         target_name = (
             self._container_session_target_name(session)

@@ -1367,6 +1367,8 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
         {
             "name": "tests",
             "state": "failed",
+            "execution_generation": 0,
+            "toolchain_mounts": [],
             "exit_code": 1,
             "log_excerpt": (
                 "/home/agent/worktrees/repo/Src/App/OpcWriteStep.cs(17,1): "

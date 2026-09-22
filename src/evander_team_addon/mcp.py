@@ -105,6 +105,7 @@ TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = "team_propose_human_finding_resolut
 TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL = "team_route_human_finding_correction"
 TEAM_CLOSE_POST_RELEASE_CASE_TOOL = "team_close_post_release_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
+TEAM_REINTEGRATE_RELEASE_TOOL = "team_reintegrate_release"
 TEAM_CREATE_TASK_FOR_ROLE_TOOL = "team_create_task_for_role"
 TEAM_CREATE_TASKS_TOOL = "team_create_tasks"
 TEAM_CREATE_OUTCOME_KIND_TOOL = "team_create_outcome_kind"
@@ -170,6 +171,7 @@ TEAM_SEARCH_MEMORY_TOOL = "team_search_memory"
 TEAM_LIST_CONVERSATION_MESSAGES_TOOL = "team_list_conversation_messages"
 
 ORDINARY_TEAM_MCP_TOOL_NAMES = (
+    TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
     TEAM_ARCHIVE_MEMORY_TOOL,
@@ -261,6 +263,7 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
 )
 IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
+    TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
     TEAM_ARCHIVE_MEMORY_TOOL,
@@ -322,6 +325,7 @@ IMPLEMENTED_CHAT_TEAM_MCP_TOOL_NAMES = (
 IMPLEMENTED_EPHEMERAL_WORKER_MCP_TOOL_NAMES = (TEAM_REPORT_EPHEMERAL_RESULT_TOOL,)
 
 MCP_TOOL_NAMES = (
+    TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
@@ -438,6 +442,10 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         repo,
     )
     managed_git = _team_mcp_managed_git_admin(context)
+    from .services.admin_service import TeamAdminService
+    from .services.reintegration_service import TeamReintegrationService
+
+    reintegration = TeamReintegrationService(TeamAdminService(repo, managed_git_admin=managed_git))
     note_commands = TeamNoteCommandService(repo)
     memory_commands = TeamMemoryCommandService(repo)
     agent_message_commands = TeamAgentMessageCommandService(repo)
@@ -639,6 +647,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         outcome_catalog_commands,
         blocker_commands,
         agent_control_commands,
+        reintegration,
         resolver,
         context,
     )
@@ -1323,6 +1332,7 @@ def _register_slice6_tools(
     outcome_catalog_commands: TeamOutcomeCatalogCommandService,
     blocker_commands: TeamBlockerCommandService,
     agent_control_commands: TeamAgentControlCommandService,
+    reintegration,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
 ) -> None:
@@ -2262,6 +2272,36 @@ def _register_slice6_tools(
             "agents on the blocker's reporter-to-manager escalation line."
         ),
     )
+
+    def team_reintegrate_release(
+        release_package_id: str, action: Literal["preview", "submit"] = "preview",
+        preview: dict[str, Any] | None = None, request_id: str | None = None,
+        owner_agent_id: str | None = None, session_id: str | None = None,
+    ) -> dict[str, Any]:
+        from .models import project_lead_agent_id
+
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id, tool_name=TEAM_REINTEGRATE_RELEASE_TOOL,
+        )
+        release = caller.state.release_packages.get(release_package_id)
+        if release is None or project_lead_agent_id(caller.state, release.project_id) != caller.agent_id:
+            raise ToolError("reintegration requires the configured project lead")
+        dispatch = caller.state.dispatches[caller.active_dispatch_id]
+        if release.project_id not in dispatch.project_ids:
+            raise ToolError("reintegration project is outside the active dispatch scope")
+        try:
+            if action == "preview":
+                return {"preview": reintegration.preview(release_package_id, owner_agent_id=owner_agent_id)}
+            if not preview or preview.get("release_package_id") != release_package_id or not request_id:
+                raise ValueError("submission requires a matching preview and request_id")
+            _state, result = reintegration.submit_from_agent(preview=preview,
+                session_id=caller.session_id, request_id=request_id)
+            return _team_command_mcp_result(result, caller=caller, context=context)
+        except (ValueError, KeyError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    server.add_tool(team_reintegrate_release, name=TEAM_REINTEGRATE_RELEASE_TOOL,
+        description="Preview accepted release contributions on the refreshed configured base, then submit the exact preview as an integration task. Requires the project lead and an active project dispatch. Team policy controls owner and retirement; existing review and release workflows apply.")
 
     def team_start_dependency_composition_recovery(
         blocker_id: str,

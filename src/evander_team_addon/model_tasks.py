@@ -420,11 +420,14 @@ class TaskOutcomeContract(TeamModel):
 class TaskDeliverableContract(TeamModel):
     require_git_provenance: bool = False
     required_contribution_task_ids: list[str] = Field(default_factory=list)
+    pinned_source_deliverable_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("required_contribution_task_ids", mode="before")
+    @field_validator(
+        "required_contribution_task_ids", "pinned_source_deliverable_ids", mode="before"
+    )
     @classmethod
-    def _required_contribution_task_ids(cls, value: object) -> list[str]:
-        return _unique_text_list(value, "required_contribution_task_ids")
+    def _required_contribution_task_ids(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value, info.field_name)
 
 
 class TaskCompletion(TeamModel):
