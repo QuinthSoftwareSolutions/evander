@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import fcntl
 import sqlite3
+import json
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 from threading import RLock
+from types import SimpleNamespace
 from typing import Any, Iterable
 
 from pydantic import BaseModel, Field
@@ -153,6 +155,60 @@ class ContainerWorkerExecutionRepository:
             """,
             (normalized,),
         )
+
+    def list_lifecycle_records(self, session_ids: Iterable[str]) -> dict[str, list[Any]]:
+        """Batch only the fields used for session lifecycle; omit execution payloads.
+
+        Historic cleanup metadata can still affect the current lifecycle, so it
+        must be included even when it belongs to an older execution.
+        """
+        ids = list(dict.fromkeys(str(value) for value in session_ids))
+        result: dict[str, list[Any]] = {value: [] for value in ids}
+        if not ids:
+            return result
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            for start in range(0, len(ids), 400):
+                batch = ids[start : start + 400]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"""
+                    SELECT execution_id, session_id, last_status, created_at, updated_at,
+                           finished_at, json_extract(payload_json, '$.started_at') AS started_at,
+                           json_extract(
+                               payload_json, '$.metadata.container_lifecycle', '$.metadata.state',
+                               '$.metadata.cleanup_status', '$.metadata.cleanup_attempted_at',
+                               '$.metadata.cleanup_completed_at', '$.metadata.cleanup_error'
+                           ) AS lifecycle_fields
+                    FROM container_worker_executions
+                    WHERE session_id IN ({placeholders})
+                    """,
+                    batch,
+                )
+                for row in rows:
+                    fields = dict(row)
+                    for name in ("created_at", "updated_at", "started_at", "finished_at"):
+                        value = fields[name]
+                        fields[name] = datetime.fromisoformat(value) if value else None
+                    # Multiple paths return a JSON array, retaining booleans
+                    # and other scalar types that single-path extraction would
+                    # coerce to SQLite integers/text before Python sees them.
+                    fields["metadata"] = dict(
+                        zip(
+                            (
+                                "container_lifecycle",
+                                "state",
+                                "cleanup_status",
+                                "cleanup_attempted_at",
+                                "cleanup_completed_at",
+                                "cleanup_error",
+                            ),
+                            json.loads(fields.pop("lifecycle_fields")),
+                        )
+                    )
+                    result[row["session_id"]].append(SimpleNamespace(**fields))
+        return result
 
     def get_session_summary(self, session_id: str) -> ContainerWorkerSessionExecutionSummary:
         normalized = self._normalize_key(session_id)

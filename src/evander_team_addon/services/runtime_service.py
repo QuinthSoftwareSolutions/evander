@@ -31,6 +31,7 @@ from ..sqlite_store import (
     TeamStateSqliteCommandTransaction,
 )
 from ..models import (
+    SCHEMA_VERSION,
     AgentContextClearingPolicy,
     AgentInboxItem,
     AgentRuntime,
@@ -1246,6 +1247,7 @@ class TeamRuntimeService:
                     state_model.blockers[blocker_id].model_dump(mode="json")
                     for blocker_id in durable_dispatch.blocker_ids
                 ]
+                dispatch_assessments = TaskAssessmentService(state_model)
                 agent_payload = _agent_payload(state_model, agent)
                 role_description_fingerprint = agent_role_description_fingerprint(agent_payload)
                 durable_dispatch.role_description_fingerprint = role_description_fingerprint
@@ -1269,6 +1271,7 @@ class TeamRuntimeService:
                             task_payload_with_assessment(
                                 state_model,
                                 state_model.tasks[task_id],
+                                assessment_service=dispatch_assessments,
                             )
                             for task_id in durable_dispatch.task_ids
                             if task_id in state_model.tasks
@@ -1279,6 +1282,7 @@ class TeamRuntimeService:
                                 "blocking_sources": project_blocking_sources(
                                     state_model,
                                     project.id,
+                                    assessment_service=dispatch_assessments,
                                 ),
                             }
                             for project in sorted(
@@ -1838,6 +1842,7 @@ class TeamRuntimeService:
                     state_model.blockers[blocker_id].model_dump(mode="json")
                     for blocker_id in durable_dispatch.blocker_ids
                 ]
+                dispatch_assessments = TaskAssessmentService(state_model)
                 manager_payload = _agent_payload(state_model, manager)
                 role_description_fingerprint = agent_role_description_fingerprint(manager_payload)
                 durable_dispatch.role_description_fingerprint = role_description_fingerprint
@@ -1859,7 +1864,9 @@ class TeamRuntimeService:
                         "reason": "manager_fallback",
                         "dispatch": durable_dispatch.model_dump(mode="json"),
                         "tasks": [
-                            task_payload_with_assessment(state_model, task)
+                            task_payload_with_assessment(
+                                state_model, task, assessment_service=dispatch_assessments,
+                            )
                             for task in manager_tasks
                         ],
                         **_dispatch_case_payloads(
@@ -2671,7 +2678,8 @@ class TeamRuntimeService:
         now: datetime | None = None,
         lease_seconds: int = MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS,
         renew_within_seconds: int = 300,
-    ) -> tuple[TeamState, bool]:
+        include_state: bool = True,
+    ) -> tuple[TeamState | None, bool]:
         """Boundedly renew one still-active durable dispatch lease.
 
         The caller is responsible for proving that the exact execution backing
@@ -2690,47 +2698,44 @@ class TeamRuntimeService:
         normalized_renew_within_seconds = max(0, int(renew_within_seconds))
         renewal_due_at = effective_now + timedelta(seconds=normalized_renew_within_seconds)
 
-        def _renewal_due(state: TeamState) -> bool:
-            dispatch = state.dispatches.get(normalized_dispatch_id)
-            runtime = state.agent_runtimes.get(normalized_agent_id)
+        # Maintenance only needs the renewal result. Preserve the full-state
+        # return for other callers while avoiding historical state reads in the
+        # per-dispatch maintenance loop.
+        current = self._repository.read() if include_state else None
+        if current is not None:
+            dispatch = current.dispatches.get(normalized_dispatch_id)
+            runtime = current.agent_runtimes.get(normalized_agent_id)
             if (
-                dispatch is None
-                or runtime is None
+                dispatch is None or runtime is None
                 or dispatch.agent_id != normalized_agent_id
                 or dispatch.status != TeamDispatchStatus.LEASED
                 or runtime.active_dispatch_id != normalized_dispatch_id
-                or dispatch.lease_expires_at is None
-                or runtime.wake_leased_until is None
+                or dispatch.lease_expires_at is None or runtime.wake_leased_until is None
+                or (
+                    _ensure_utc(dispatch.lease_expires_at) > renewal_due_at
+                    and _ensure_utc(runtime.wake_leased_until) > renewal_due_at
+                )
             ):
-                return False
-            return (
-                _ensure_utc(dispatch.lease_expires_at) <= renewal_due_at
-                or _ensure_utc(runtime.wake_leased_until) <= renewal_due_at
-            )
-
-        current = self._repository.read()
-        if not _renewal_due(current):
-            return current, False
-
-        renewed: list[bool] = []
-
-        def _mutate(state: TeamState) -> TeamState:
-            if not _renewal_due(state):
-                return state
-            dispatch = state.dispatches[normalized_dispatch_id]
-            runtime = state.agent_runtimes[normalized_agent_id]
-            renewed_until = effective_now + timedelta(seconds=normalized_lease_seconds)
-            dispatch.lease_expires_at = renewed_until
+                return current, False
+        renewed_until = effective_now + timedelta(seconds=normalized_lease_seconds)
+        revision, updated_at, renewed = self._repository.renew_dispatch_lease(
+            agent_id=normalized_agent_id,
+            dispatch_id=normalized_dispatch_id,
+            renewal_due_at=renewal_due_at,
+            renewed_until=renewed_until,
+            now=effective_now,
+            expected_revision=current.revision if current is not None else None,
+        )
+        if current is not None and renewed:
+            current.dispatches[normalized_dispatch_id].lease_expires_at = renewed_until
+            runtime = current.agent_runtimes[normalized_agent_id]
             runtime.wake_leased_until = renewed_until
             runtime.updated_at = effective_now
-            renewed.append(True)
-            return state
-
-        state = self._repository.update(
-            _mutate,
-            expected_revision=current.revision,
-        )
-        return state, bool(renewed)
+            if current.revision != revision:
+                current.schema_version = SCHEMA_VERSION
+            current.revision = revision
+            current.updated_at = updated_at
+        return current, renewed
 
     def fail_agent_dispatch(
         self,

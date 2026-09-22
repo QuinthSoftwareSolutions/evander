@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-23 - Optimize control-plane hot paths (0.59.2)
+
+- Paginate Team task reads before enrichment, reuse task and project assessments, index
+  deliverable coverage, and skip assessment work for agents without assigned tasks.
+- Shorten Team write preparation and use revision-checked dispatch lease updates while
+  preserving command callbacks, outbox atomicity, lifecycle validation, and lease ownership.
+- Move relay persistence and steering off the event loop, preserving usage recording and
+  upstream cleanup when streams disconnect.
+- Batch and cache worker inventory, bound Admin response and chat transcript caches, and
+  use direct session lookups with compact batched lifecycle inputs.
+- Preserve partial worker inventory when the systemctl sudo fallback fails or returns
+  only a different subset of units.
+- Incrementally project worker transcripts, read log tails from the end, and merge overlapping
+  output in linear time with bounded retained projection state.
+- Poll only the VM being watched, query Discord trigger messages using indexed cursors, page
+  semantic indexing with durable continuation keys, and reclaim index content in bounded batches.
+- Add regression coverage for concurrency, cancellation, cache invalidation, transcript rotation,
+  cursor ties, legacy checkpoints, and repository index schema migration.
+
 ## 2026-09-22 - Separate control-plane implementation responsibilities (0.59.1)
 
 - Split Team API routes, workflow providers, domain models, derived views, and SQLite

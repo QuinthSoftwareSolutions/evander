@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote, unquote, urlencode
 
 import httpx
+from anyio import CancelScope
 import uvicorn
 from python_multipart.multipart import (
     MultipartParseError,
@@ -23,6 +24,7 @@ from python_multipart.multipart import (
     parse_options_header,
 )
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -291,7 +293,7 @@ class OpenAIRelay:
 
         async def proxy(request: Request) -> Response:
             try:
-                request_context = relay._resolve_request_context(request)
+                request_context = await run_in_threadpool(relay._resolve_request_context, request)
             except SessionExpiredError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=403)
             except PermissionError as exc:
@@ -389,7 +391,8 @@ class OpenAIRelay:
                     )
                 except ValueError as exc:
                     return JSONResponse({"error": str(exc)}, status_code=400)
-                steering_injection = relay._operator_steering_injection(
+                steering_injection = await run_in_threadpool(
+                    relay._operator_steering_injection,
                     session_id=request_context.session_id,
                     method=request.method,
                     provider_name="openai",
@@ -438,18 +441,21 @@ class OpenAIRelay:
                             content=request_body,
                         )
                     except Exception as exc:
-                        relay._release_operator_steering_note(
+                        await run_in_threadpool(
+                            relay._release_operator_steering_note,
                             steering_injection.note,
                             error=f"upstream request failed before delivery: {exc}",
                         )
                         raise
-                    relay._mark_operator_steering_delivered(
+                    await run_in_threadpool(
+                        relay._mark_operator_steering_delivered,
                         steering_injection.note,
                         provider_name="openai",
                         provider_endpoint=upstream_path,
                     )
                     try:
-                        relay._record_model_usage_event(
+                        await run_in_threadpool(
+                            relay._record_model_usage_event,
                             session_id=request_context.session_id,
                             upstream_path=upstream_path,
                             request_body=request_body,
@@ -504,7 +510,8 @@ class OpenAIRelay:
             }
             headers["accept-encoding"] = "identity"
             headers["authorization"] = f"Bearer {openai_compatible_upstream.api_key}"
-            steering_injection = relay._operator_steering_injection(
+            steering_injection = await run_in_threadpool(
+                relay._operator_steering_injection,
                 session_id=request_context.session_id,
                 method=request.method,
                 provider_name=openai_compatible_upstream.provider_name,
@@ -548,18 +555,21 @@ class OpenAIRelay:
                         content=request_body,
                     )
                 except Exception as exc:
-                    relay._release_operator_steering_note(
+                    await run_in_threadpool(
+                        relay._release_operator_steering_note,
                         steering_injection.note,
                         error=f"upstream request failed before delivery: {exc}",
                     )
                     raise
-                relay._mark_operator_steering_delivered(
+                await run_in_threadpool(
+                    relay._mark_operator_steering_delivered,
                     steering_injection.note,
                     provider_name=openai_compatible_upstream.provider_name,
                     provider_endpoint=upstream_path,
                 )
                 try:
-                    relay._record_model_usage_event(
+                    await run_in_threadpool(
+                        relay._record_model_usage_event,
                         session_id=request_context.session_id,
                         upstream_path=upstream_path,
                         request_body=request_body,
@@ -590,7 +600,9 @@ class OpenAIRelay:
 
         async def websocket_proxy(websocket: WebSocket) -> None:
             try:
-                request_context = relay._resolve_websocket_context(websocket)
+                request_context = await run_in_threadpool(
+                    relay._resolve_websocket_context, websocket
+                )
             except SessionExpiredError as exc:
                 await websocket.close(code=1008, reason=str(exc))
                 return
@@ -791,12 +803,7 @@ class OpenAIRelay:
             upstream = self._openai_compatible_upstream(request_context.config)
             if not upstream.api_key:
                 return JSONResponse(
-                    {
-                        "error": (
-                            "Host environment variable "
-                            f"{upstream.api_key_source} is not set."
-                        )
-                    },
+                    {"error": (f"Host environment variable {upstream.api_key_source} is not set.")},
                     status_code=503,
                 )
             upstream_url = self._upstream_http_url(
@@ -841,14 +848,13 @@ class OpenAIRelay:
                     content=self._spooled_file_chunks(spool),
                 )
                 try:
-                    self._record_model_usage_event(
+                    await run_in_threadpool(
+                        self._record_model_usage_event,
                         session_id=request_context.session_id,
                         upstream_path=upstream_path,
                         request_body=None,
                         request_body_bytes=request_size or None,
-                        request_body_sha256=(
-                            request_hasher.hexdigest() if request_size else None
-                        ),
+                        request_body_sha256=(request_hasher.hexdigest() if request_size else None),
                         request_model=request_model,
                         upstream_response=upstream_response,
                         duration_ms=self._duration_ms_since(started_at),
@@ -960,7 +966,8 @@ class OpenAIRelay:
         headers["x-api-key"] = api_key
         if not any(key.lower() == "anthropic-version" for key in headers):
             headers["anthropic-version"] = request_context.config.anthropic_api_version
-        steering_injection = self._operator_steering_injection(
+        steering_injection = await run_in_threadpool(
+            self._operator_steering_injection,
             session_id=request_context.session_id,
             method=request.method,
             provider_name="anthropic",
@@ -995,18 +1002,21 @@ class OpenAIRelay:
                     content=request_body,
                 )
             except Exception as exc:
-                self._release_operator_steering_note(
+                await run_in_threadpool(
+                    self._release_operator_steering_note,
                     steering_injection.note,
                     error=f"upstream request failed before delivery: {exc}",
                 )
                 raise
-            self._mark_operator_steering_delivered(
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
                 steering_injection.note,
                 provider_name="anthropic",
                 provider_endpoint=normalized_path,
             )
             try:
-                self._record_model_usage_event(
+                await run_in_threadpool(
+                    self._record_model_usage_event,
                     session_id=request_context.session_id,
                     upstream_path=normalized_path,
                     request_body=request_body,
@@ -1072,18 +1082,36 @@ class OpenAIRelay:
         started_at = time.perf_counter()
         try:
             upstream_response = await upstream_stream.__aenter__()
-        except Exception as exc:
-            self._release_operator_steering_note(
-                operator_steering_note,
-                error=f"upstream stream failed before delivery: {exc}",
-            )
-            await client.aclose()
+        except BaseException as exc:
+            with CancelScope(shield=True):
+                try:
+                    await run_in_threadpool(
+                        self._release_operator_steering_note,
+                        operator_steering_note,
+                        error=f"upstream stream failed before delivery: {exc}",
+                    )
+                finally:
+                    await client.aclose()
             raise
-        self._mark_operator_steering_delivered(
-            operator_steering_note,
-            provider_name=provider_name,
-            provider_endpoint=upstream_path,
-        )
+
+        async def close_upstream() -> None:
+            with CancelScope(shield=True):
+                try:
+                    await upstream_stream.__aexit__(None, None, None)
+                finally:
+                    await client.aclose()
+
+        try:
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
+                operator_steering_note,
+                provider_name=provider_name,
+                provider_endpoint=upstream_path,
+            )
+        except BaseException:
+            # The response iterator does not own the upstream yet.
+            await close_upstream()
+            raise
         logger.info(
             "relay_stream_upstream_response stream_id=%s status_code=%s content_type=%s",
             stream_id,
@@ -1166,31 +1194,33 @@ class OpenAIRelay:
                     self.stream_transport_terminated_count,
                 )
             finally:
-                try:
-                    self._record_stream_model_usage_event(
-                        session_id=session_id,
-                        upstream_path=upstream_path,
-                        request_body=request_body,
-                        upstream_response=upstream_response,
-                        response_body_bytes=bytes_sent,
-                        response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
-                        response_payload=stream_payload,
-                        duration_ms=self._duration_ms_since(started_at),
-                        provider_name=provider_name,
-                        request_body_bytes=request_body_bytes,
-                        request_body_sha256=request_body_sha256,
-                        request_model=request_model,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "relay_stream_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
-                        session_id,
-                        request.url.path,
-                        exc.__class__.__name__,
-                        str(exc),
-                    )
-                await upstream_stream.__aexit__(None, None, None)
-                await client.aclose()
+                with CancelScope(shield=True):
+                    try:
+                        await run_in_threadpool(
+                            self._record_stream_model_usage_event,
+                            session_id=session_id,
+                            upstream_path=upstream_path,
+                            request_body=request_body,
+                            upstream_response=upstream_response,
+                            response_body_bytes=bytes_sent,
+                            response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
+                            response_payload=stream_payload,
+                            duration_ms=self._duration_ms_since(started_at),
+                            provider_name=provider_name,
+                            request_body_bytes=request_body_bytes,
+                            request_body_sha256=request_body_sha256,
+                            request_model=request_model,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "relay_stream_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                            session_id,
+                            request.url.path,
+                            exc.__class__.__name__,
+                            str(exc),
+                        )
+                    finally:
+                        await close_upstream()
 
         return StreamingResponse(
             iterator(),
@@ -2302,7 +2332,8 @@ class OpenAIRelay:
                 if usage_payload is not None and session_id:
                     response_payload, event_type = usage_payload
                     try:
-                        self._record_websocket_model_usage_event(
+                        await run_in_threadpool(
+                            self._record_websocket_model_usage_event,
                             session_id=session_id,
                             upstream_path=upstream_path,
                             message=message,

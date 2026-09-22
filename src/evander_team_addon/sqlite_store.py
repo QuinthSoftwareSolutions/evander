@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
-from contextlib import closing
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,7 +37,8 @@ from .sqlite_codec import (
     T,
     _datetime_value,
     _idempotency_key_values,
-    _json_dumps,
+    _json_values_equal,
+    _utc_datetime_value,
     _replace_state_result,
     _state_content_changed,
     _state_content_payload,
@@ -69,6 +70,9 @@ from .sqlite_codec import (
 )
 from .sqlite_codec import (
     _int_bool as _int_bool,
+)
+from .sqlite_codec import (
+    _json_dumps as _json_dumps,
 )
 from .sqlite_codec import (
     _json_loads as _json_loads,
@@ -505,15 +509,111 @@ class TeamStateSqliteStore(
                 connection.execute("BEGIN IMMEDIATE")
                 self._write_state(connection, state)
 
+    def renew_dispatch_lease(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        renewal_due_at: datetime,
+        renewed_until: datetime,
+        now: datetime,
+        expected_revision: int | None = None,
+    ) -> tuple[bool, int, datetime, bool]:
+        """Renew only the current leased dispatch/runtime pair atomically.
+
+        These timestamp-only changes preserve all previously validated Team
+        relationships. Matching identity, live status, both lease timestamps,
+        and the active runtime reservation are checked under the writer lock;
+        a replaced or terminal dispatch can never be revived by this path.
+        """
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                metadata = dict(connection.execute(
+                    "SELECT key, value FROM team_state_metadata "
+                    "WHERE key IN ('revision', 'updated_at')"
+                ))
+                revision = int(metadata["revision"])
+                updated_at = _datetime_value(metadata["updated_at"])
+                if expected_revision is not None and revision != expected_revision:
+                    return False, revision, updated_at, False
+                row = connection.execute(
+                    """SELECT d.lease_expires_at, r.wake_leased_until, r.updated_at
+                       FROM team_dispatches AS d
+                       JOIN team_agent_runtimes AS r ON r.agent_id = d.agent_id
+                       WHERE d.id = ? AND d.agent_id = ? AND d.status = 'leased'
+                         AND r.active_dispatch_id = d.id
+                         AND d.lease_expires_at IS NOT NULL
+                         AND r.wake_leased_until IS NOT NULL""",
+                    (dispatch_id, agent_id),
+                ).fetchone()
+                if row is None:
+                    return True, revision, updated_at, False
+                lease_expires_at = _utc_datetime_value(row["lease_expires_at"])
+                wake_leased_until = _utc_datetime_value(row["wake_leased_until"])
+                if lease_expires_at > renewal_due_at and wake_leased_until > renewal_due_at:
+                    return True, revision, updated_at, False
+                if (
+                    lease_expires_at == renewed_until
+                    and wake_leased_until == renewed_until
+                    and _utc_datetime_value(row["updated_at"]) == now
+                ):
+                    return True, revision, updated_at, True
+                connection.execute(
+                    "UPDATE team_dispatches SET lease_expires_at = ? WHERE id = ?",
+                    (renewed_until.isoformat(), dispatch_id),
+                )
+                connection.execute(
+                    "UPDATE team_agent_runtimes SET wake_leased_until = ?, updated_at = ? "
+                    "WHERE agent_id = ?",
+                    (renewed_until.isoformat(), now.isoformat(), agent_id),
+                )
+                revision += 1
+                updated_at = utc_now()
+                connection.executemany(
+                    "UPDATE team_state_metadata SET value = ? WHERE key = ?",
+                    (
+                        (str(revision), "revision"),
+                        (updated_at.isoformat(), "updated_at"),
+                        (str(SCHEMA_VERSION), "state_schema_version"),
+                    ),
+                )
+                return True, revision, updated_at, True
+
+
+    @contextmanager
+    def _state_update_transaction(
+        self,
+    ) -> Iterator[tuple[sqlite3.Connection, TeamState, dict[str, Any]]]:
+        """Prepare a coherent baseline before reserving the SQLite writer.
+
+        Only snapshot reads may repeat. Mutators and their command-side writes
+        run exactly once, after verifying the baseline revision under the writer
+        lock. Under sustained contention the final attempt reads under that lock
+        to guarantee progress with the same callback semantics as before.
+        """
+        for _attempt in range(3):
+            with self._connect() as reader:
+                reader.execute("BEGIN")
+                state = self._read_state(reader)
+                baseline = state.model_dump(mode="json")
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if self._read_revision_from_connection(connection) != state.revision:
+                    continue
+                yield connection, state, baseline
+                return
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = self._read_state(connection)
+            yield connection, state, state.model_dump(mode="json")
+
     def update_object(
         self,
         updater: Callable[[dict[str, Any]], T | None],
     ) -> T | None:
         with self._lock:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                payload = self._read_payload(connection)
-                previous_state = TeamState.model_validate(payload)
+            with self._state_update_transaction() as (connection, previous_state, payload):
                 result = updater(payload)
                 state = self._persist_updated_payload(
                     connection,
@@ -526,19 +626,10 @@ class TeamStateSqliteStore(
         self,
         updater: Callable[[TeamState], TeamState | None],
     ) -> TeamState:
-        """Atomically update typed Team state without redundant model round-trips.
-
-        The persisted payload is retained as the immutable comparison baseline because
-        callers commonly mutate the supplied model in place. The candidate is still
-        validated in full before any delta is written, so invalid mutations roll back
-        the transaction exactly like the legacy object update path.
-        """
+        """Atomically update typed state with a revision-checked read baseline."""
 
         with self._lock:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                state = self._read_state(connection)
-                previous_payload = state.model_dump(mode="json")
+            with self._state_update_transaction() as (connection, state, previous_payload):
                 previous_schema_version = state.schema_version
                 previous_revision = state.revision
                 previous_updated_at = state.updated_at
@@ -557,15 +648,9 @@ class TeamStateSqliteStore(
         updater: Callable[[dict[str, Any], TeamStateSqliteCommandTransaction], T],
     ) -> T:
         with self._lock:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                payload = self._read_payload(connection)
-                previous_state = TeamState.model_validate(payload)
+            with self._state_update_transaction() as (connection, previous_state, payload):
                 transaction = TeamStateSqliteCommandTransaction(self, connection)
-                result = updater(
-                    payload,
-                    transaction,
-                )
+                result = updater(payload, transaction)
                 state = self._persist_updated_payload(
                     connection,
                     previous_state=previous_state,
@@ -577,18 +662,14 @@ class TeamStateSqliteStore(
         self,
         updater: Callable[[TeamState, TeamStateSqliteCommandTransaction], T],
     ) -> T:
-        """Atomically update typed Team state and command side tables.
+        """Commit state, activity, idempotency and outbox in one transaction.
 
-        The state is reconstructed once and the pre-mutation payload is retained as
-        the delta baseline. Dispatch activity, outbox, and idempotency writes share
-        the same SQLite transaction and roll back if final state validation fails.
+        Baseline reconstruction happens before the writer reservation. The
+        callback and full candidate validation remain inside the transaction so
+        callback failures and invalid mutations also roll back command records.
         """
-
         with self._lock:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                state = self._read_state(connection)
-                previous_payload = state.model_dump(mode="json")
+            with self._state_update_transaction() as (connection, state, previous_payload):
                 previous_schema_version = state.schema_version
                 previous_revision = state.revision
                 previous_updated_at = state.updated_at
@@ -791,7 +872,7 @@ class TeamStateSqliteStore(
                 changed_by_field[field_name] = {
                     record_id
                     for record_id in set(before) | set(after)
-                    if _json_dumps(before.get(record_id)) != _json_dumps(after.get(record_id))
+                    if not _json_values_equal(before.get(record_id), after.get(record_id))
                 }
         return changed_by_field
 

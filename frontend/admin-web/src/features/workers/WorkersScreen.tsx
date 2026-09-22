@@ -268,6 +268,7 @@ export function WorkersScreen() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer: number | null = null;
 
     async function refresh(showLoading: boolean) {
       try {
@@ -295,17 +296,15 @@ export function WorkersScreen() {
       } finally {
         if (!cancelled) {
           setLoading(false);
+          timer = window.setTimeout(() => void refresh(false), POLL_INTERVAL_MS);
         }
       }
     }
 
     void refresh(true);
-    const timer = window.setInterval(() => {
-      void refresh(false);
-    }, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [isDirty, selectedWorkerId]);
 

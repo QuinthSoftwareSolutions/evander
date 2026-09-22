@@ -115,7 +115,9 @@ class VmAgentRuntimeMixin:
         vm_user: str = "agent",
         directory_path: str | None = None,
         direct_only: bool = False,
+        target_vm_name: str | None = None,
     ) -> list[VmSummary]:
+        target_options = {"target_vm_name": target_vm_name} if target_vm_name else {}
         try:
             summaries = self._provider_registry().list_vms(
                 include_inactive=include_inactive,
@@ -123,6 +125,7 @@ class VmAgentRuntimeMixin:
                 vm_user=vm_user,
                 directory_path=directory_path,
                 direct_only=direct_only,
+                **target_options,
             )
             if summaries:
                 return summaries
@@ -134,6 +137,7 @@ class VmAgentRuntimeMixin:
             vm_user=vm_user,
             directory_path=directory_path,
             direct_only=direct_only,
+            **target_options,
         )
 
     def start_vm(self, target: str) -> VmActionResult:

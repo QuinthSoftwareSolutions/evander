@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from ..models import (
     AgentInboxItem,
@@ -29,11 +29,12 @@ from ..models import (
 from ..human_review_projection import release_package_api_payload
 from .domain.project_status import project_blocking_sources
 from .domain.outcome_catalog import effective_outcome_kind_payloads
-from .domain.task_assessment import task_payload_with_assessment
+from .domain.task_assessment import TaskAssessmentService, task_payload_with_assessment
 from .wake_prompt_context import build_dispatch_summary
 
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
+_PageRecord = TypeVar("_PageRecord")
 
 
 class TeamReadService:
@@ -47,6 +48,12 @@ class TeamReadService:
         self._visible_team_ids = self._compute_visible_team_ids()
         self._visible_project_ids = self._compute_visible_project_ids()
         self._visible_agent_ids = self._compute_visible_agent_ids()
+        self._assessment_service: TaskAssessmentService | None = None
+
+    def _assessments(self) -> TaskAssessmentService:
+        if self._assessment_service is None:
+            self._assessment_service = TaskAssessmentService(self._state)
+        return self._assessment_service
 
     def list_tasks(
         self,
@@ -66,8 +73,10 @@ class TeamReadService:
             and _matches(owner_agent_id, task.owner_agent_id)
             and _matches_enum(state, task.state)
         ]
-        rows = [self._task_row(task) for task in sorted(tasks, key=_task_sort_key)]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(tasks, key=_task_sort_key),
+            limit=limit, cursor=cursor, offset=offset, transform=self._task_row,
+        )
 
     def get_task(
         self,
@@ -78,7 +87,9 @@ class TeamReadService:
         task = self._state.tasks.get(_text(task_id))
         if task is None or not self._task_visible(task):
             return None
-        payload = task_payload_with_assessment(self._state, task)
+        payload = task_payload_with_assessment(
+            self._state, task, assessment_service=self._assessments(),
+        )
         git_contexts = self._git_work_context_rows_for_task(
             task.id,
             dispatch_id=dispatch_id,
@@ -480,10 +491,10 @@ class TeamReadService:
             and _matches(team_id, project.team_id)
             and _matches_enum(status, project.status)
         ]
-        rows = [
-            self._project_row(project) for project in sorted(projects, key=lambda item: item.id)
-        ]
-        return _page(rows, limit=limit, cursor=cursor, offset=offset)
+        return _page(
+            sorted(projects, key=lambda item: item.id),
+            limit=limit, cursor=cursor, offset=offset, transform=self._project_row,
+        )
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
         project = self._state.projects.get(_text(project_id))
@@ -503,6 +514,7 @@ class TeamReadService:
         payload["blocking_sources"] = project_blocking_sources(
             self._state,
             project.id,
+            assessment_service=self._assessments(),
         )
         return _without_none(payload)
 
@@ -861,7 +873,9 @@ class TeamReadService:
         return sorted(rows, key=lambda row: (_maybe_text(row.get("task_id")) or "", row["id"]))
 
     def _task_row(self, task: AgentTask) -> dict[str, Any]:
-        derived = task_payload_with_assessment(self._state, task)
+        derived = task_payload_with_assessment(
+            self._state, task, assessment_service=self._assessments(),
+        )
         child_ids = _capped_list(derived.get("child_task_ids") or [], 12)
         row: dict[str, Any] = {
             "id": task.id,
@@ -1213,7 +1227,9 @@ class TeamReadService:
                 "name": project.name,
                 "lead_agent_id": project.lead_agent_id,
                 "status": project.status.value,
-                "blocking_source_count": len(project_blocking_sources(self._state, project.id)),
+                "blocking_source_count": len(project_blocking_sources(
+                    self._state, project.id, assessment_service=self._assessments(),
+                )),
                 "goal_count": len(project.goals),
                 "has_git": project.git is not None,
                 "updated_at": _json_value(project.updated_at),
@@ -1446,11 +1462,12 @@ def _runtime_attention_read_sort_key(
 
 
 def _page(
-    records: list[dict[str, Any]],
+    records: list[_PageRecord],
     *,
     limit: int,
     cursor: str | None,
     offset: int | None,
+    transform: Callable[[_PageRecord], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     safe_limit = max(1, min(_MAX_LIMIT, int(limit or _DEFAULT_LIMIT)))
     resolved_offset = _cursor_offset(cursor) if cursor is not None else max(0, int(offset or 0))
@@ -1458,7 +1475,7 @@ def _page(
     next_offset = resolved_offset + len(page_records)
     next_cursor = str(next_offset) if next_offset < len(records) else None
     return {
-        "records": page_records,
+        "records": [transform(record) for record in page_records] if transform else page_records,
         "count": len(page_records),
         "total": len(records),
         "total_count": len(records),

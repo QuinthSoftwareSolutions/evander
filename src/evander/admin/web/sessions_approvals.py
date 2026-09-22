@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
@@ -990,7 +991,7 @@ def session_approval_routes(
             }
         )
 
-    async def list_sessions(request: Request) -> JSONResponse:
+    def build_sessions_response(request: Request) -> JSONResponse:
         params = request.query_params
         requested_directory_path = params.get("directory_path")
         if requested_directory_path is not None:
@@ -1027,11 +1028,11 @@ def session_approval_routes(
             }
         )
 
+    async def list_sessions(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_sessions_response, request)
+
     def _get_session_summary(session_id: str) -> SessionSummary:
-        for item in service.vm_agent_admin.list_sessions(include_expired=True):
-            if item.session_id == session_id:
-                return item
-        raise ValueError(f"Unknown session: {session_id}")
+        return service.vm_agent_admin.get_session_summary(session_id)
 
     def _session_summary_or_error(
         session_id: str,
@@ -1096,7 +1097,7 @@ def session_approval_routes(
             return None, auth_error
         return wake_request, None
 
-    async def get_session_detail(request: Request) -> JSONResponse:
+    def build_session_detail_response(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
             summary = _get_session_summary(session_id)
@@ -1117,6 +1118,9 @@ def session_approval_routes(
                 "summary_json": _iso(summary.model_dump(mode="json")),
             }
         )
+
+    async def get_session_detail(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_session_detail_response, request)
 
     async def list_session_git_grants(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")

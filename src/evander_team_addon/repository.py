@@ -183,6 +183,31 @@ class TeamStateRepository:
             )
         return state
 
+    def renew_dispatch_lease(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        renewal_due_at: datetime,
+        renewed_until: datetime,
+        now: datetime,
+        expected_revision: int | None = None,
+    ) -> tuple[int, datetime, bool]:
+        committed, revision, updated_at, renewed = self.store.renew_dispatch_lease(
+            agent_id=agent_id,
+            dispatch_id=dispatch_id,
+            renewal_due_at=renewal_due_at,
+            renewed_until=renewed_until,
+            now=now,
+            expected_revision=expected_revision,
+        )
+        if not committed:
+            assert expected_revision is not None
+            raise TeamStateConflictError(
+                expected_revision=expected_revision, current_revision=revision,
+            )
+        return revision, updated_at, renewed
+
     def append_dispatch_activity(
         self,
         activity: TeamDispatchActivity | Mapping[str, Any],
