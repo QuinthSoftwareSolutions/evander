@@ -82,6 +82,18 @@ def connect_orchestration_db(path: Path | str) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
+def connect_orchestration_db_read_only(path: Path | str) -> Iterator[sqlite3.Connection]:
+    """Read an initialized database without WAL negotiation or repository locks."""
+    connection = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.1)
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        yield connection
+    finally:
+        connection.close()
+
+
+@contextmanager
 def _try_orchestration_retention_lock(path: Path | str) -> Iterator[bool]:
     """Try to own daily retention across all processes using this database."""
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-22 - Isolate Team lifecycle maintenance from message dispatch (0.58.2)
+
+- Run Team lease and completion reconciliation on a dedicated single-flight lane so
+  database contention cannot hold up unrelated assistant workflow events.
+- Reuse initialized Team repositories, discover lifecycle candidates through query-only
+  snapshots, and defer contended maintenance writes after a bounded lock wait.
+- Coalesce completion hints while retaining durable receipt recovery, serialize lifecycle
+  cursors, and drain maintenance before runtime rebinding or worker shutdown.
+- Keep receipt reads independent of foreground execution locks, drain maintenance on every
+  locked single-cycle exit, and preserve running maintenance during graph-only configuration edits.
+- Add phase timings and contention, recovery, and foreground-latency regression coverage.
+
 ## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
 
 - Maintain an incremental Team cost report with exact request deduplication, attribution,

@@ -596,7 +596,24 @@ class EffectOrchestratorWorker:
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
             on_start=self._wake_sleeper.start,
+            on_stop=self.close,
         )
+        self._initialize_lifecycle_hooks()
+
+    def _initialize_lifecycle_hooks(self) -> None:
+        for hook in self._completion_dispatch_hooks:
+            initialize = getattr(hook, "initialize", None)
+            if callable(initialize):
+                initialize(worker=self)
+        self._lifecycle_hooks_closed = False
+
+    def close(self) -> None:
+        """Drain isolated lifecycle work before releasing runtime bindings."""
+        for hook in self._completion_dispatch_hooks:
+            close = getattr(hook, "close", None)
+            if callable(close):
+                close()
+        self._lifecycle_hooks_closed = True
 
     def _bind_provider_factory_runtime_ports(self) -> None:
         try:
@@ -666,12 +683,14 @@ class EffectOrchestratorWorker:
         self._managed_git_lifecycle.cleanup_active_worktrees()
 
     def run_once_with_lock(self) -> EffectOrchestratorCycleResult:
-        return self._kernel.run_once_with_lock()
+        return self._kernel.run_once_with_lock(on_stop=self.close)
 
     def force_complete_await_agent(self, dispatch_id: str) -> bool:
         return self._run_force_complete_hooks(dispatch_id=dispatch_id)
 
     def run_once(self) -> EffectOrchestratorCycleResult:
+        if self._lifecycle_hooks_closed:
+            self._initialize_lifecycle_hooks()
         self._reconcile_managed_git_worktrees()
         latest_config, _changed = self._config_reloader.get_latest()
         previous_config = self.worker_config
@@ -753,6 +772,17 @@ class EffectOrchestratorWorker:
                     )
                     apply_config = False
 
+            if apply_config and (store_changed or provider_changed):
+                self.close()
+                # A draining lifecycle transaction can publish to the old bus.
+                # Do not abandon those durable events when switching stores.
+                if store_changed and self.event_queue.list_pending():
+                    apply_config = False
+                    self._initialize_lifecycle_hooks()
+                    logger.info(
+                        "Effect orchestrator store rebind deferred for events published "
+                        "while draining lifecycle maintenance"
+                    )
             if apply_config:
                 self.worker_config = latest_config
                 active_config = latest_config
@@ -808,6 +838,8 @@ class EffectOrchestratorWorker:
                     != previous_config.orchestration_store_path
                 ):
                     self._register_default_node_executors()
+                if store_changed or provider_changed:
+                    self._initialize_lifecycle_hooks()
                 logger.info(
                     "Effect orchestrator config revision changed revision=%s node_count=%d edge_count=%d",
                     _config_revision_hash(latest_config),
@@ -817,6 +849,10 @@ class EffectOrchestratorWorker:
                     + len(latest_config.queries),
                     len(active_config.edges),
                 )
+        for hook in self._completion_dispatch_hooks:
+            poll = getattr(hook, "poll", None)
+            if callable(poll):
+                poll(worker=self)
         config_revision = _config_revision_hash(active_config)
         pending_events_scanned = 0
         events_processed = 0
