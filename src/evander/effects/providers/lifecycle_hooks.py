@@ -1783,7 +1783,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         vm_user = str(getattr(record, "vm_user", None) or "agent")
         thread_id = str(getattr(result, "thread_id", "") or "").strip()
         effective_thread_id = thread_id or str(effective_resume_thread_id or "").strip()
-        model = str(record.model or getattr(session, "model", None) or "gpt-5.4").strip()
+        model = str(
+            record.model
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider("codex")
+        ).strip()
         record_metadata = getattr(record, "metadata", {})
         wake_dispatch_id = (
             str(record_metadata.get("wake_dispatch_id") or "").strip()

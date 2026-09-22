@@ -52,7 +52,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'cp ~/codex-models-cache.json "${CODEX_HOME}/models_cache.json"' in script
     assert 'cp ~/codex-models-cache.json "${HOME}/.codex/models_cache.json"' in script
     assert 'cat > "${CODEX_CONFIG_PATH}" <<CONFIG' in script
-    assert 'model = "gpt-5.4"' in script
+    assert 'model = "gpt-6-sol"' in script
     assert 'model_reasoning_effort = "high"' in script
     assert 'personality = "pragmatic"' in script
     assert 'web_search = "disabled"' in script

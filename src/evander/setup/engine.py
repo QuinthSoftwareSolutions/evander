@@ -81,7 +81,7 @@ PROVIDER_ENV_VARS = {
 }
 
 PROVIDER_DEFAULT_MODELS = {
-    "openai": "gpt-5.4",
+    "openai": "gpt-6-sol",
     "anthropic": "claude-sonnet-4-6",
     "ollama": "qwen2.5-coder:14b",
 }

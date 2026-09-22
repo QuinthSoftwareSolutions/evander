@@ -77,6 +77,31 @@ def _seed_catalog():
     return load_model_pricing_catalog(default_model_pricing_catalog_seed_path())
 
 
+@pytest.mark.parametrize(
+    ("model", "rule_id", "expected_total"),
+    [
+        ("gpt-6-sol", "openai:gpt-6-sol:text:2026-09-22", Decimal("0.012")),
+        ("gpt-6-luna", "openai:gpt-6-luna:text:2026-09-22", Decimal("0.0006")),
+    ],
+)
+def test_seed_catalog_prices_current_gpt6_models(
+    model: str, rule_id: str, expected_total: Decimal
+) -> None:
+    event = _event(
+        model=model,
+        input_tokens=1000,
+        output_tokens=1000,
+        total_tokens=2000,
+        occurred_at=datetime(2026, 9, 22, 12, 0, tzinfo=UTC),
+    )
+
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == rule_id
+    assert estimate.estimated_total == expected_total
+
+
 def test_openai_pricing_estimates_cached_input_costs() -> None:
     catalog = _seed_catalog()
     event = _event(
@@ -365,7 +390,7 @@ def test_seed_default_model_pricing_catalog_preserves_operator_edits(tmp_path, m
     monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
     catalog_path = seed_default_model_pricing_catalog(tmp_path)
     seeded_payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert seeded_payload["version"] == "openai-anthropic-2026-07-30"
+    assert seeded_payload["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
 
     operator_payload = _pricing_catalog_payload(
         version="operator-pricing",
@@ -416,7 +441,7 @@ def test_seed_default_model_pricing_catalog_ignores_pristine_legacy_seed(
     )
 
     payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert payload["version"] == "openai-anthropic-2026-07-30"
+    assert payload["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
 
 
 def test_openai_pricing_prefers_service_tier_specific_rules() -> None:
