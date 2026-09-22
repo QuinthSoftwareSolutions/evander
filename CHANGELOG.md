@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-22 - Use GPT-6 for new agent defaults (0.58.2)
+
+- Use GPT-6 Sol for Codex agent fallbacks, new OpenAI setup, and guest bootstrap defaults.
+- Seed new installations with the verified GPT-6 Sol, Luna, and Astra pricing while retaining
+  historical rates for past usage.
+- Update inactive workflow examples to select GPT-6 Sol or Luna according to their prior tier.
+- Omit older GPT generations from the session model picker without removing their pricing history.
+
 ## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
 
 - Maintain an incremental Team cost report with exact request deduplication, attribution,

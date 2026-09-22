@@ -17,6 +17,7 @@ from evander.setup.engine import (
     DEFAULT_ADMIN_PORT,
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_RUNTIME_DIR,
+    PROVIDER_DEFAULT_MODELS,
     PROVIDER_ENV_VARS,
     SetupDependencyInstallRejected,
     SetupManager,
@@ -331,7 +332,12 @@ def _configure_item(manager: SetupManager, state, item_id: str, *, interactive: 
             f"Default provider ({', '.join(state.ai_providers)})",
             default=state.default_provider or state.ai_providers[0],
         ).strip()
-        model = typer.prompt("Default model", default=state.default_model or "gpt-5.4")
+        default_model = (
+            state.default_model
+            if provider == state.default_provider and state.default_model
+            else PROVIDER_DEFAULT_MODELS.get(provider, PROVIDER_DEFAULT_MODELS["openai"])
+        )
+        model = typer.prompt("Default model", default=default_model)
         return manager.configure_default_model(state, provider=provider, model=model)
     if item_id == "install_preflight":
         if not manager.configuration_ready(state):

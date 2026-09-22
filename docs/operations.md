@@ -933,7 +933,7 @@ Storage layout for directory config:
 ### Codex provider bootstrap
 
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user, seeds `~/bin/rg`, and verifies Codex.
-- The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `EVANDER_LLM_BASE_URL` from `~/.agent/config.env`; it registers the host relay as `[model_providers.evander_openai_relay]` with `supports_websockets = false` so Codex does not run websocket prewarm against the HTTP/SSE relay. It also registers the host MCP gateway as a required `[mcp_servers.evander]` connection using `EVANDER_GATEWAY_URL`, preventing model turns from racing tool discovery, and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
+- The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-6-sol"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `EVANDER_LLM_BASE_URL` from `~/.agent/config.env`; it registers the host relay as `[model_providers.evander_openai_relay]` with `supports_websockets = false` so Codex does not run websocket prewarm against the HTTP/SSE relay. It also registers the host MCP gateway as a required `[mcp_servers.evander]` connection using `EVANDER_GATEWAY_URL`, preventing model turns from racing tool discovery, and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - Runtime start/resume model selection is host-session-bound: `session.model` wins, otherwise effective `issue_setup.default_model` is used. If neither resolves, start/resume fails with a remediation error instead of using an implicit runtime fallback model.
 - The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Codex bootstrap.
 
@@ -1164,7 +1164,7 @@ and record the backup SHA-256 in the resulting artifact bundle.
     "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
     "azure_openai_api_version": "2024-10-21-preview",
     "azure_openai_model_deployments": {
-      "gpt-5.4": "codex-gpt-5-4"
+      "gpt-6-sol": "codex-gpt-6-sol"
     }
   }
   ```

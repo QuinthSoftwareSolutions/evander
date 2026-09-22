@@ -1401,6 +1401,20 @@ def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
                         "service_tier": None,
                         "long_context": None,
                     },
+                    {
+                        "id": "openai:historical",
+                        "provider": "openai",
+                        "models": ["gpt-4o", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol"],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "rates_per_1m_tokens": {"input": "1.00", "output": "2.00"},
+                    },
+                    {
+                        "id": "openai:current",
+                        "provider": "openai",
+                        "models": ["gpt-6-luna", "gpt-6-sol"],
+                        "effective_from": "2026-09-22T00:00:00Z",
+                        "rates_per_1m_tokens": {"input": "1.00", "output": "2.00"},
+                    },
                 ],
             }
         ),
@@ -1418,6 +1432,8 @@ def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
         {"value": "alpha-model", "label": "alpha-model"},
         {"value": "shared-model", "label": "shared-model"},
         {"value": "beta-model", "label": "beta-model"},
+        {"value": "gpt-6-luna", "label": "gpt-6-luna"},
+        {"value": "gpt-6-sol", "label": "gpt-6-sol"},
     ]
     assert any(item["value"] == "approval_check" for item in payload["tool_options"])
 
