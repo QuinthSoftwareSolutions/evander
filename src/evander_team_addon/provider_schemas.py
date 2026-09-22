@@ -67,8 +67,7 @@ class TeamPublishOutboxEventsEffectDefinition(EffectDefinition):
         if value is None or isinstance(value, (list, str)):
             return value
         raise ValueError(
-            "effect:team:publish-outbox-events "
-            f"{info.field_name} must be a JSON array"
+            f"effect:team:publish-outbox-events {info.field_name} must be a JSON array"
         )
 
 

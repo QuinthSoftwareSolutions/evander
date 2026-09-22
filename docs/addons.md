@@ -1622,6 +1622,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_request_release`
 - `team_decide_initial_release`
 - `team_recover_release`
+- `team_reintegrate_release`
 - `team_retry_release_gate`
 - `team_request_ephemeral_agent`
 - `team_request_ephemeral_agents`
@@ -2678,6 +2679,14 @@ cannot request this operator-only retry.
 The verification history displays the retry comment and requester.
 `team_recover_release` remains limited to failed Git feature/release promotions
 and is not a release-gate retry mechanism.
+
+`team_reintegrate_release` previews current accepted release contributions on
+the refreshed configured Git base, then submits that exact preview as an
+integration task. It requires the configured project lead and an active dispatch
+scoped to the release's project. Submission requires the matching `preview` and
+a `request_id`; a changed preview must be refreshed and reviewed again. Project
+reintegration policy controls ownership and source-release retirement, and the
+existing review and release workflows apply to the resulting work.
 
 Use an explicit policy with every `gate_sequence` entry disabled for an
 intentionally ungated project; a missing policy blocks a new Git release rather

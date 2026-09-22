@@ -1,5 +1,8 @@
 # Architecture Notes
 
+For source ownership and compatibility entry points, see
+[control-plane implementation boundaries](maintainability-boundaries.md).
+
 ## Components
 
 

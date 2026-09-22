@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-22 - Separate control-plane implementation responsibilities (0.59.1)
+
+- Split Team API routes, workflow providers, domain models, derived views, and SQLite
+  persistence into cohesive modules while retaining public imports and migration order.
+- Separate integration services, communication tool groups, and CLI commands with stable
+  tool registration, command help, request schemas, and operator behavior.
+- Give workflow run reporting and realtime voice playback explicit per-invocation state
+  and smaller processing stages, preserving correlation, cancellation, and cleanup behavior.
+- Extract workflow editor components, state hooks, and pure helpers with typed interfaces
+  while preserving editing, inspection, validation, and save interactions.
+- Align model and payload assertions and the Team tool inventory with the merged release.
+
 ## 2026-09-22 - Recover releases with pinned integration and verifier evidence (0.59.0)
 
 - Add contextual, revision-gated release reintegration in Admin Web and MCP, preserving

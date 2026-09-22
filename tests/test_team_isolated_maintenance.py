@@ -533,7 +533,7 @@ def test_contended_renewal_preserves_cursor_then_succeeds(tmp_path, monkeypatch)
     worker = _context(tmp_path)
     worker.execution_store.list_prompt_records_for_dispatches = lambda ids: [record]
     monkeypatch.setattr(
-        "evander_team_addon.providers._team_dispatch_execution_is_live", lambda *a, **k: True
+        "evander_team_addon.provider_completion._team_dispatch_execution_is_live", lambda *a, **k: True
     )
     hook = TeamAgentPromptCompletionFinalizeHook()
     hook.initialize(worker=worker)
@@ -659,7 +659,7 @@ def test_two_extra_teams_with_history_and_lock_contention_keep_message_p95_under
         lambda ids: [r for r in records if r.outputs["dispatch_id"] in ids] + actual_query(ids),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._team_dispatch_execution_is_live", lambda *a, **k: True
+        "evander_team_addon.provider_completion._team_dispatch_execution_is_live", lambda *a, **k: True
     )
     team = TeamAgentPromptCompletionFinalizeHook()
     lane = IsolatedMaintenanceHook(team)
