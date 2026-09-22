@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from pydantic import ConfigDict, PrivateAttr, TypeAdapter
 from evander.addons import addon_storage_path
 from evander.models import DirectoryPath, utc_now
 from evander.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
+from evander.orchestration.isolated_maintenance import sqlite_busy
 
 from .models import (
     SCHEMA_VERSION,
@@ -37,6 +39,7 @@ ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 SQLITE_SCHEMA_VERSION = 78
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
+logger = logging.getLogger(__name__)
 
 # Applied after column migrations. Additive indexes need no state rewrite.
 _LIFECYCLE_INDEX_SQL = """
@@ -144,12 +147,17 @@ def normalized_payload_digest(payload: Mapping[str, Any]) -> str:
 
 
 class TeamStateSqliteStore(CaseContextStoreMixin):
-    def __init__(self, runtime_dir: str | Path) -> None:
+    def __init__(self, runtime_dir: str | Path, *, maintenance: bool = False) -> None:
         self.runtime_dir = Path(runtime_dir)
         self.path = addon_storage_path(self.runtime_dir, ADDON_ID, STATE_DB_FILE)
         self._lock = RLock()
+        self._busy_timeout_ms = SQLITE_BUSY_TIMEOUT_MS
+        self._maintenance = False
         self.ensure_schema()
         self._initialize_if_empty()
+        self._maintenance = maintenance
+        if maintenance:
+            self._busy_timeout_ms = 100
 
     def read_object(self) -> dict[str, Any]:
         with self._lock:
@@ -302,7 +310,7 @@ class TeamStateSqliteStore(CaseContextStoreMixin):
         if kind == "completion" and after:
             priority_text, after = after.split(":", 1)
             after_priority = int(priority_text)
-        with self._lock, self._connect() as connection:
+        with self._read_connection() as connection:
             connection.execute("BEGIN")
             revision_row = connection.execute(
                 "SELECT value FROM team_state_metadata WHERE key = 'revision'"
@@ -2284,21 +2292,57 @@ class TeamStateSqliteStore(CaseContextStoreMixin):
                         (str(SCHEMA_VERSION),),
                     )
 
-    def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def _read_connection(self) -> sqlite3.Connection:
+        """Read a committed snapshot without negotiating WAL or a writer lock."""
+        started = time.perf_counter()
         connection = sqlite3.connect(
-            self.path,
-            timeout=30.0,
+            self.path.resolve().as_uri() + "?mode=ro",
+            uri=True,
+            timeout=self._busy_timeout_ms / 1000,
             factory=_ClosingSqliteConnection,
         )
         try:
             connection.row_factory = sqlite3.Row
-            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-            self._enable_wal(connection)
-            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA query_only=ON")
         except BaseException:
             connection.close()
             raise
+        logger.debug(
+            "Team lifecycle phase=database_connection duration_ms=%.1f mode=read outcome=succeeded",
+            (time.perf_counter() - started) * 1000,
+        )
+        return connection
+
+    def _connect(self) -> sqlite3.Connection:
+        started = time.perf_counter()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(
+            self.path,
+            timeout=self._busy_timeout_ms / 1000,
+            factory=_ClosingSqliteConnection,
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
+            if not self._maintenance:
+                self._enable_wal(connection)
+            connection.execute("PRAGMA foreign_keys=ON")
+        except BaseException as exc:
+            connection.close()
+            if self._maintenance:
+                logger.warning(
+                    "Team lifecycle phase=database_connection duration_ms=%.1f "
+                    "mode=maintenance outcome=%s",
+                    (time.perf_counter() - started) * 1000,
+                    "busy" if sqlite_busy(exc) else "failed",
+                )
+            raise
+        if self._maintenance:
+            logger.debug(
+                "Team lifecycle phase=database_connection duration_ms=%.1f "
+                "mode=maintenance outcome=succeeded",
+                (time.perf_counter() - started) * 1000,
+            )
         return connection
 
     @staticmethod

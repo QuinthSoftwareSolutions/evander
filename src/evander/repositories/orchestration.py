@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
+    connect_orchestration_db_read_only,
     datetime_to_storage,
     ensure_orchestration_schema,
     json_dumps,
@@ -389,7 +390,9 @@ class SqliteExecutionRepository(Generic[TRecord]):
         if self.table_name != "effect_executions":
             return []
         placeholders = ",".join("?" for _ in ids)
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        # Maintenance runs concurrently with foreground dispatch. A separate
+        # SQLite snapshot must not hold the execution repository's writer lock.
+        with connect_orchestration_db_read_only(self.path) as connection:
             rows = connection.execute(
                 f"""SELECT payload_json FROM effect_executions
                     WHERE effect_type = 'effect:agent:enqueue-prompt'

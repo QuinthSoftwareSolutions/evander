@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import socket
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -165,6 +166,49 @@ def test_polling_kernel_run_once_with_lock_propagates_exceptions() -> None:
 
     with pytest.raises(RuntimeError, match="boom"):
         kernel.run_once_with_lock()
+
+
+@pytest.mark.parametrize("once", [True, False])
+@pytest.mark.parametrize("failed", [True, False])
+def test_polling_kernel_drains_before_releasing_lock(once, failed) -> None:
+    calls = []
+
+    class LockManager:
+        @contextmanager
+        def lock(self, path):
+            calls.append("locked")
+            try:
+                yield
+            finally:
+                calls.append("released")
+
+    def run_cycle():
+        calls.append("cycle")
+        if failed:
+            raise RuntimeError("cycle failed")
+        return 0
+
+    def drain():
+        assert calls == ["locked", "cycle"]
+        calls.append("drained")
+
+    kernel = PollingOrchestratorKernel(
+        config=PollingKernelConfig(poll_interval_seconds=1, jitter_seconds=0, lock_path="test"),
+        lock_manager=LockManager(),
+        sleeper=_FakeSleeper(),
+        run_cycle=run_cycle,
+        get_sleep_seconds=float,
+        on_stop=drain,
+    )
+    if once and not failed:
+        assert kernel.run_once_with_lock(on_stop=drain) == 0
+    else:
+        with pytest.raises(RuntimeError if failed else StopIteration):
+            if once:
+                kernel.run_once_with_lock(on_stop=drain)
+            else:
+                kernel.run_forever()
+    assert calls == ["locked", "cycle", "drained", "released"]
 
 
 def test_compute_next_sleep_seconds_uses_jitter(monkeypatch: pytest.MonkeyPatch) -> None:

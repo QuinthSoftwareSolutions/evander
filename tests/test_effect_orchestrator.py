@@ -1125,7 +1125,12 @@ def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> No
     assert worker._kernel.config.lock_path == worker.lock_path
 
     sentinel = object()
-    worker._kernel.run_once_with_lock = lambda: sentinel  # type: ignore[method-assign]
+
+    def run_once_with_lock(*, on_stop):
+        assert on_stop == worker.close
+        return sentinel
+
+    worker._kernel.run_once_with_lock = run_once_with_lock  # type: ignore[method-assign]
 
     assert worker.run_once_with_lock() is sentinel
 
@@ -1639,7 +1644,9 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert {item["trace_id"] for item in queue_payload.values()} == {"trace-1"}
 
 
-def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) -> None:
+def test_effect_orchestrator_hot_drains_fast_completion_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     worker_config = canonical_worker_config(
@@ -1706,6 +1713,9 @@ def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) ->
         )
     )
 
+    # Test eager successor handling independently of host/fsync latency. The
+    # elapsed event-slice limit is covered in test_orchestration_handoff_latency.
+    monkeypatch.setattr("evander.daemons.effect_orchestrator.time.monotonic", lambda: 0.0)
     active_result = worker.run_once()
     idle_result = worker.run_once()
 
