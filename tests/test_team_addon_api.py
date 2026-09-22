@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from evander_team_addon import (
+    api_routes_human_reviews,
+    api_routes_organization,
+    api_routes_reads,
+    api_routes_releases,
+)
+
 import asyncio
 import json
 import subprocess
@@ -2292,7 +2299,7 @@ def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
 
     observed_at = datetime(2026, 8, 7, 7, 50, tzinfo=UTC)
     monkeypatch.setattr(
-        team_addon_api,
+        api_routes_human_reviews,
         "human_review_request_detail_payload",
         lambda *_args, **_kwargs: {
             "state": "blocked",
@@ -3716,7 +3723,7 @@ def test_generated_agent_avatar_preview_wraps_transport_failures(
 ) -> None:
     _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "evander_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api_routes_avatars.openai_avatar_generator_from_config",
         lambda _config: _FailingAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -3736,7 +3743,7 @@ def test_generated_agent_avatar_preview_is_accepted_with_revision(
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "evander_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api_routes_avatars.openai_avatar_generator_from_config",
         lambda _config: _FakeAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -3775,7 +3782,7 @@ def test_agent_avatar_accept_preview_requires_current_revision(
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "evander_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api_routes_avatars.openai_avatar_generator_from_config",
         lambda _config: _FakeAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -4774,7 +4781,7 @@ def test_team_addon_delivery_view_serializes_derived_datetime_values(
             "data": {"state": {"runtime_operations": {"attention": [{"at": observed_at}]}}},
         }
 
-    monkeypatch.setattr(team_addon_api, "_view_payload_for_request", _delivery_payload)
+    monkeypatch.setattr(api_routes_reads, "_view_payload_for_request", _delivery_payload)
 
     response = client.get("/api/addons/team-addon/views/delivery")
 
@@ -4813,7 +4820,7 @@ def test_team_addon_release_detail_serializes_derived_datetime_values(
             },
         }
 
-    monkeypatch.setattr(team_addon_api, "release_package_api_payload", _release_payload)
+    monkeypatch.setattr(api_routes_releases, "release_package_api_payload", _release_payload)
 
     response = client.get("/api/addons/team-addon/release-packages/release-1")
 
@@ -5319,6 +5326,7 @@ def test_team_addon_admin_api_designates_explicit_integration_boundary(
             assert task["deliverable_contract"] == {
                 "require_git_provenance": True,
                 "required_contribution_task_ids": ["implementation"],
+                "pinned_source_deliverable_ids": [],
             }
 
             detach_contribution = await client.patch(
@@ -5981,7 +5989,7 @@ def test_agent_voice_session_create_query_and_end(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api_routes_voice.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     operator_identity = {
@@ -5990,7 +5998,11 @@ def test_agent_voice_session_create_query_and_end(
         "actor": "operator:jonathan",
     }
     monkeypatch.setattr(
-        "evander_team_addon.api._operator_identity_from_request",
+        "evander_team_addon.api_routes_voice._operator_identity_from_request",
+        lambda _auth, _request: dict(operator_identity),
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.api_voice._operator_identity_from_request",
         lambda _auth, _request: dict(operator_identity),
     )
     client = TestClient(create_app(service))
@@ -6212,7 +6224,7 @@ def test_agent_voice_session_records_chat_conversation_message(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api_routes_voice.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -6299,7 +6311,7 @@ def test_agent_voice_session_can_end_by_request_id(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api_routes_voice.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -7493,7 +7505,7 @@ def test_team_addon_admin_api_costs_default_skips_backfill_and_uses_threadpool(
             "unpriced_events_count": 0,
         }
 
-    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(api_routes_reads, "run_in_threadpool", fake_run_in_threadpool)
     monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
     client = _client(tmp_path)
 
@@ -7585,7 +7597,7 @@ def test_team_addon_admin_api_costs_get_backfill_requires_privileged_unlock(
             "unpriced_events_count": 0,
         }
 
-    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(api_routes_reads, "run_in_threadpool", fake_run_in_threadpool)
     monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
     client = _client(tmp_path, unlock_privileged=False)
 
@@ -7643,7 +7655,7 @@ def test_team_addon_admin_api_costs_backfill_endpoint_runs_backfill_in_threadpoo
             },
         }
 
-    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(api_routes_reads, "run_in_threadpool", fake_run_in_threadpool)
     monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
     client = _client(tmp_path)
 
@@ -9475,7 +9487,7 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
         "register_repository",
         fake_register_repository,
     )
-    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(api_routes_organization, "run_in_threadpool", fake_run_in_threadpool)
     client = TestClient(create_app(service))
     _unlock_privileged_operations(client)
 

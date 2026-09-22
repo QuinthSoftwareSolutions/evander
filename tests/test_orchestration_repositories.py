@@ -22,6 +22,7 @@ from evander.repositories.orchestration import (
 )
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
+    connect_orchestration_db_read_only,
     maybe_checkpoint_orchestration_wal,
 )
 from evander.triggers.queue import SqliteTriggerEventQueue
@@ -81,6 +82,37 @@ def test_latest_agent_prompt_receipt_is_scoped_and_ignores_queue_markers(tmp_pat
 def test_latest_agent_prompt_receipt_does_not_create_missing_database(tmp_path):
     path = tmp_path / "absent.db"
     assert read_latest_agent_prompt_execution(path, session_id="session", dispatch_id="dispatch") is None
+    assert not path.exists()
+
+
+def test_prompt_receipts_read_committed_state_during_write_transaction(tmp_path):
+    store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    record = _effect_record(execution_id="prompt", idempotency_key="prompt")
+    record.effect_type = "effect:agent:enqueue-prompt"
+    record.status = "waiting"
+    record.outputs = {"dispatch_id": "dispatch"}
+    store.put(record)
+    with connect_orchestration_db(store.path) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("DELETE FROM effect_executions")
+        assert store.list_prompt_records_for_dispatches({"dispatch"}) == [record]
+    assert store.list_prompt_records_for_dispatches({"dispatch"}) == []
+
+
+def test_orchestration_read_only_connection_rejects_writes_and_closes(tmp_path):
+    store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    with connect_orchestration_db_read_only(store.path) as connection:
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("DELETE FROM effect_executions")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
+
+
+def test_orchestration_read_only_connection_does_not_create_database(tmp_path):
+    path = tmp_path / "absent.db"
+    with pytest.raises(sqlite3.OperationalError):
+        with connect_orchestration_db_read_only(path):
+            pytest.fail("opened a missing database")
     assert not path.exists()
 
 

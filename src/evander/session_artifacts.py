@@ -94,7 +94,11 @@ def open_relative_regular_file_no_follow(
         os.close(parent_fd)
 
 
-def read_artifact_text_no_follow(root: Path, relative_path: Any) -> str:
+def read_artifact_text_no_follow(
+    root: Path, relative_path: Any, *, max_bytes: int | None = None
+) -> str:
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("Artifact byte limit must be positive")
     normalized_relative_path = normalize_artifact_relative_path(relative_path)
     fd = open_relative_regular_file_no_follow(
         root,
@@ -105,8 +109,17 @@ def read_artifact_text_no_follow(root: Path, relative_path: Any) -> str:
     if fd is None:
         raise FileNotFoundError(f"artifact path is not a regular file: {normalized_relative_path}")
     try:
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            return handle.read()
+        if max_bytes is None:
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                return handle.read()
+        with os.fdopen(fd, "rb") as handle:
+            if os.fstat(handle.fileno()).st_size > max_bytes:
+                raise ValueError("Worker artifact exceeds import limit")
+            # Bound the read itself too: a writer may grow the file after fstat.
+            content = handle.read(max_bytes + 1)
+            if len(content) > max_bytes:
+                raise ValueError("Worker artifact exceeds import limit")
+            return content.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("artifact file is not valid UTF-8 text") from exc
 

@@ -307,7 +307,7 @@ if [ -n "${CODEX_SESSION_ID:-}" ]; then
 fi
 for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do
 cat > "${CODEX_CONFIG_PATH}" <<CONFIG
-model = "gpt-5.4"
+model = "gpt-6-sol"
 model_provider = "evander_openai_relay"
 model_reasoning_effort = "high"
 personality = "pragmatic"

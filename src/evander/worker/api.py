@@ -339,10 +339,12 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
 
     async def read_session_artifact(request: Request) -> Response:
         try:
+            byte_limit = request.query_params.get("max_bytes")
             text = await run_in_threadpool(
                 daemon.read_session_artifact_text,
                 request.path_params["session_id"],
                 request.path_params["artifact_path"],
+                max_bytes=int(byte_limit) if byte_limit is not None else None,
             )
         except FileNotFoundError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)

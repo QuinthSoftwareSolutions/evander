@@ -42,9 +42,9 @@ class TeamStateConflictError(RuntimeError):
 
 
 class TeamStateRepository:
-    def __init__(self, runtime_dir: str | Path) -> None:
+    def __init__(self, runtime_dir: str | Path, *, maintenance: bool = False) -> None:
         self.runtime_dir = Path(runtime_dir)
-        self.store = TeamStateSqliteStore(self.runtime_dir)
+        self.store = TeamStateSqliteStore(self.runtime_dir, maintenance=maintenance)
         self._dispatch_activity_repository = TeamDispatchActivityRepository(self.store)
         self._idempotency_repository = TeamIdempotencyRepository(self.store)
         self._outbox_repository = TeamOutboxRepository(self.store)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander_team_addon import api_projection, api_authorization
+
 import asyncio
 import json
 import threading
@@ -12,7 +14,12 @@ from starlette.requests import Request
 
 from evander.addons import AddonContext
 from evander.config import GatewayConfig
-from evander_team_addon import api, models
+from evander_team_addon import (
+    api,
+    runtime_projections,
+    attention_projections,
+    activity_projections,
+)
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
@@ -45,7 +52,7 @@ def test_view_projection_matches_full_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     instant = datetime(2026, 9, 22, 12, tzinfo=UTC)
-    for module in (api, models):
+    for module in (api_projection, runtime_projections, attention_projections, activity_projections):
         monkeypatch.setattr(module, "utc_now", lambda: instant)
     full_state = repository.read()
     projection = repository.read_projection(collections=sorted(api._view_read_collections(view)))
@@ -121,7 +128,7 @@ def test_bootstrap_projection_matches_full_state(
     repository: TeamStateRepository,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(api, "utc_now", lambda: datetime(2026, 9, 22, tzinfo=UTC))
+    monkeypatch.setattr(api_projection, "utc_now", lambda: datetime(2026, 9, 22, tzinfo=UTC))
     projection = repository.read_projection(collections=sorted(api._BOOTSTRAP_COLLECTIONS))
     request = _request("bootstrap")
     assert api._bootstrap_payload_for_request(None, request, projection) == (
@@ -133,8 +140,8 @@ def test_chat_projection_retains_operator_scope_and_mutation_authorization(
     repository: TeamStateRepository,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(api, "utc_now", lambda: datetime(2026, 9, 22, tzinfo=UTC))
-    monkeypatch.setattr(api, "request_has_privileged_operations", lambda **_kwargs: True)
+    monkeypatch.setattr(api_projection, "utc_now", lambda: datetime(2026, 9, 22, tzinfo=UTC))
+    monkeypatch.setattr(api_authorization, "request_has_privileged_operations", lambda **_kwargs: True)
     for operator in ("admin", "other"):
         TeamChatService(repository).create_or_get_conversation(
             agent_id="backend",

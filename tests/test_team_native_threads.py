@@ -579,7 +579,7 @@ def test_historical_native_reconciliation_is_batched_restart_safe_and_eventually
     limit = TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE
     receipts = _seed_historical_native_receipts(env, 2 * limit + 5)
     monkeypatch.setattr(
-        "evander_team_addon.providers._completed_agent_prompt_records",
+        "evander_team_addon.provider_prompt_queue._completed_agent_prompt_records",
         lambda worker: [_receipt_record(receipt) for receipt in receipts],
     )
     transactions = []
@@ -625,7 +625,7 @@ def test_native_reconciliation_prioritizes_active_completion_over_history(native
     assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=env.worker) == 1
     completed = env.worker.execution_store.get_execution(record.execution_id)
     monkeypatch.setattr(
-        "evander_team_addon.providers._completed_agent_prompt_records",
+        "evander_team_addon.provider_prompt_queue._completed_agent_prompt_records",
         lambda worker: [*map(_receipt_record, receipts), completed],
     )
     monkeypatch.setattr(
@@ -715,7 +715,7 @@ def test_workflow_finalizer_preserves_lineage_when_33rd_active_receipt_is_deferr
     job.status = ExecutionStatusKind.STOPPED
     assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=env.worker) == 1
     monkeypatch.setattr(
-        "evander_team_addon.providers._waiting_agent_prompt_records", lambda worker: waiting
+        "evander_team_addon.provider_prompt_queue._waiting_agent_prompt_records", lambda worker: waiting
     )
     # Exercise the unchanged transactional batch guard directly: an independent
     # finalizer must still preserve the deferred 33rd receipt before release.

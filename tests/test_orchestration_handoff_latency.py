@@ -615,7 +615,7 @@ def test_native_receipt_preflight_matches_last_wins_timestamp_ties(monkeypatch):
         for i in range(2)
     ]
     monkeypatch.setattr(
-        "evander_team_addon.providers._team_native_thread_receipt",
+        "evander_team_addon.provider_completion._team_native_thread_receipt",
         lambda r: AgentDispatchNativeThreadReceipt(
             "session", "dispatch", "native", now, missing_thread=r.execution_id == "1"
         ),
@@ -633,7 +633,7 @@ def test_lifecycle_projection_snapshot_pages_and_query_indexes(tmp_path, monkeyp
         agent_id="backend", defer_activation=True
     )
     dispatch_id = leases[0]["dispatch_id"]
-    original_connect = repo.store._connect
+    original_connect = repo.store._read_connection
     statements = []
 
     def connect():
@@ -641,7 +641,7 @@ def test_lifecycle_projection_snapshot_pages_and_query_indexes(tmp_path, monkeyp
         connection.set_trace_callback(statements.append)
         return connection
 
-    monkeypatch.setattr(repo.store, "_connect", connect)
+    monkeypatch.setattr(repo.store, "_read_connection", connect)
     page = repo.lifecycle_candidates(limit=1)
     assert page.revision == repo.read_revision()
     assert page.candidates[0].dispatch_id == dispatch_id
@@ -666,7 +666,7 @@ def test_lifecycle_projection_cannot_mix_revisions(tmp_path, monkeypatch):
     )
     dispatch_id = leases[0]["dispatch_id"]
     revision = repo.read_revision()
-    connect = repo.store._connect
+    connect = repo.store._read_connection
     changed = []
 
     def concurrent_connect():
@@ -688,7 +688,7 @@ def test_lifecycle_projection_cannot_mix_revisions(tmp_path, monkeypatch):
         connection.set_trace_callback(on_statement)
         return connection
 
-    monkeypatch.setattr(repo.store, "_connect", concurrent_connect)
+    monkeypatch.setattr(repo.store, "_read_connection", concurrent_connect)
     page = repo.lifecycle_candidates()
     assert changed and page.revision == revision
     assert page.candidates[0].session_id == "session-backend"

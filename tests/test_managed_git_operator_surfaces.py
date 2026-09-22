@@ -94,6 +94,7 @@ class FakeManagedGitAdmin:
         self.calls.append(("maintenance", args, kwargs))
         return {"maintained": [self.repository["managed_repo_id"]]}
 
+
 def _route_client(
     managed_git: FakeManagedGitAdmin,
     *,
@@ -299,7 +300,7 @@ def test_git_repos_cli_emits_json_and_forwards_registration(monkeypatch) -> None
 
     managed_git = FakeManagedGitAdmin()
     monkeypatch.setattr(
-        "evander.cli.build_admin_runtime",
+        "evander.cli_runtime.build_admin_runtime",
         lambda _config: SimpleNamespace(managed_git_admin=managed_git),
     )
 
@@ -334,7 +335,7 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
 
     managed_git = FakeManagedGitAdmin()
     monkeypatch.setattr(
-        "evander.cli.build_admin_runtime",
+        "evander.cli_runtime.build_admin_runtime",
         lambda _config: SimpleNamespace(managed_git_admin=managed_git),
     )
     runner = CliRunner()
@@ -423,7 +424,7 @@ def test_git_repos_cli_exposes_agent_grant_revoke_and_clone_commands(monkeypatch
             return {"managed_repo_id": repo_id, "target_dir": "/home/agent/repo"}
 
     monkeypatch.setattr(
-        "evander.cli.build_admin_runtime",
+        "evander.cli_runtime.build_admin_runtime",
         lambda _config: SimpleNamespace(vm_agent_admin=VmAgentAdmin()),
     )
     runner = CliRunner()

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-22 - Optimize control-plane hot paths (0.58.2)
+## 2026-09-23 - Optimize control-plane hot paths (0.59.2)
 
 - Paginate Team task reads before enrichment, reuse task and project assessments, index
   deliverable coverage, and skip assessment work for agents without assigned tasks.
@@ -18,6 +18,55 @@
   semantic indexing with durable continuation keys, and reclaim index content in bounded batches.
 - Add regression coverage for concurrency, cancellation, cache invalidation, transcript rotation,
   cursor ties, legacy checkpoints, and repository index schema migration.
+
+## 2026-09-22 - Separate control-plane implementation responsibilities (0.59.1)
+
+- Split Team API routes, workflow providers, domain models, derived views, and SQLite
+  persistence into cohesive modules while retaining public imports and migration order.
+- Separate integration services, communication tool groups, and CLI commands with stable
+  tool registration, command help, request schemas, and operator behavior.
+- Give workflow run reporting and realtime voice playback explicit per-invocation state
+  and smaller processing stages, preserving correlation, cancellation, and cleanup behavior.
+- Extract workflow editor components, state hooks, and pure helpers with typed interfaces
+  while preserving editing, inspection, validation, and save interactions.
+- Align model and payload assertions and the Team tool inventory with the merged release.
+
+## 2026-09-22 - Recover releases with pinned integration and verifier evidence (0.59.0)
+
+- Add contextual, revision-gated release reintegration in Admin Web and MCP, preserving
+  accepted contributions and work lineage. Project policy controls ownership and retirement.
+- Restart interrupted verifier command sequences in bounded fresh workspace generations,
+  preserving history and rejecting stale progress/results.
+- Separate raw execution outcomes from optional structured verification policy, including
+  explicit baseline exceptions and configurable correction versus blocking decisions.
+- Retain redacted verifier output and local evidence before session cleanup, with historical
+  log lookup and visible toolchain identities. Immediately wake operator dependency recovery.
+- Stage and validate immutable worker .NET bundles, atomically switch selectors and pin
+  resolved mounts per session. Keep project-specific evaluators in operator-owned
+  configuration outside this repository.
+- Make repeated verifier cleanup safe, allow operator retries of command-blocked gates,
+  reset idle no-progress counters for new integration work, enforce evidence byte limits
+  at the worker read and transport, and omit disabled .NET toolchain mounts.
+
+## 2026-09-22 - Use GPT-6 for new agent defaults (0.58.3)
+
+- Use GPT-6 Sol for Codex agent fallbacks, new OpenAI setup, and guest bootstrap defaults.
+- Seed new installations with the verified GPT-6 Sol, Luna, and Astra pricing while retaining
+  historical rates for past usage.
+- Update inactive workflow examples to select GPT-6 Sol or Luna according to their prior tier.
+- Omit older GPT generations from the session model picker without removing their pricing history.
+
+## 2026-09-22 - Isolate Team lifecycle maintenance from message dispatch (0.58.2)
+
+- Run Team lease and completion reconciliation on a dedicated single-flight lane so
+  database contention cannot hold up unrelated assistant workflow events.
+- Reuse initialized Team repositories, discover lifecycle candidates through query-only
+  snapshots, and defer contended maintenance writes after a bounded lock wait.
+- Coalesce completion hints while retaining durable receipt recovery, serialize lifecycle
+  cursors, and drain maintenance before runtime rebinding or worker shutdown.
+- Keep receipt reads independent of foreground execution locks, drain maintenance on every
+  locked single-cycle exit, and preserve running maintenance during graph-only configuration edits.
+- Add phase timings and contention, recovery, and foreground-latency regression coverage.
 
 ## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
 

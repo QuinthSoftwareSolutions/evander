@@ -1877,6 +1877,12 @@ def _task_deliverable_contract_scope_error(
             )
     if deliverable_contract is None:
         return None
+    for source_id in deliverable_contract.pinned_source_deliverable_ids:
+        source = state.deliverables.get(source_id)
+        if (not integration_boundary or source is None
+                or source.task_id not in deliverable_contract.required_contribution_task_ids
+                or source.state != TeamRecordState.ACCEPTED):
+            return "pinned source must be an accepted deliverable of a required contribution"
     if task_id in deliverable_contract.required_contribution_task_ids:
         return "task cannot require itself as a deliverable contribution"
     direct_child_ids = {

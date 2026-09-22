@@ -762,3 +762,75 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "evander-npm-audit-facade" in worker_docs
     assert "dedicated container-worker VM playbook" in readme
     assert "dedicated container-worker VM playbook" in operations
+
+
+def test_dotnet_bundle_selector_only_publishes_validated_directories(tmp_path):
+    import yaml
+
+    tasks = yaml.safe_load(
+        (ROOT / "ansible/roles/worker_dotnet_toolchain/tasks/main.yml").read_text()
+    )
+    task = next(
+        row
+        for row in tasks
+        if row["name"] == "Atomically select validated dotnet bundle for future sessions"
+    )
+    script = task["ansible.builtin.command"]["argv"][2]
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    selector = tmp_path / "current"
+    selector.symlink_to(old)
+    args = ["python3", "-c", script, str(new), str(selector)]
+    failed = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    assert failed.returncode != 0
+    assert selector.resolve() == old
+    (new / ".complete").write_text("validated")
+    passed = subprocess.run(args, capture_output=True, text=True, timeout=10, check=True)
+    assert "selected" in passed.stdout
+    assert selector.resolve() == new
+    assert old.is_dir()
+    repeated = subprocess.run(args, capture_output=True, text=True, timeout=10, check=True)
+    assert not repeated.stdout
+
+
+def test_enabling_dotnet_after_disabled_jobs_can_create_bundle_selector(tmp_path):
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    defaults = yaml.safe_load((ROOT / "ansible/group_vars/evander_worker_hosts.yml").read_text())
+    environment = NativeEnvironment()
+    environment.filters["bool"] = bool
+    template = environment.from_string(defaults["evander_worker_readonly_mounts"])
+    selector = tmp_path / "dotnet-current"
+    paths = {
+        name: str(tmp_path / name)
+        for name in defaults if name.endswith("_cache_path")
+    }
+    paths.update(
+        evander_worker_dotnet_cache_path=str(selector / "sdk"),
+        evander_worker_dotnet_tools_cache_path=str(selector / "tools"),
+        evander_worker_dotnet_toolchain_enabled=False,
+        evander_worker_mssql_client_toolchain_enabled=False,
+    )
+    disabled = template.render(**paths)
+    assert all("/opt/evander/toolchains/dotnet" not in mount for mount in disabled)
+    # Reproduce Docker -v's missing-source directory creation for a first job.
+    for mount in disabled:
+        Path(mount.split(":", 1)[0]).mkdir(parents=True, exist_ok=True)
+    assert not selector.exists()
+    paths["evander_worker_dotnet_toolchain_enabled"] = True
+    enabled = template.render(**paths)
+    assert f"{selector}/sdk:/opt/evander/toolchains/dotnet" in enabled
+    assert f"{selector}/tools:/opt/evander/toolchains/dotnet-tools" in enabled
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / ".complete").write_text("validated")
+    tasks = yaml.safe_load((ROOT / "ansible/roles/worker_dotnet_toolchain/tasks/main.yml").read_text())
+    selection = next(t for t in tasks if t["name"] == "Atomically select validated dotnet bundle for future sessions")
+    subprocess.run(
+        ["python3", "-c", selection["ansible.builtin.command"]["argv"][2], str(bundle), str(selector)],
+        check=True, capture_output=True, timeout=10,
+    )
+    assert selector.is_symlink()
+    assert selector.resolve() == bundle

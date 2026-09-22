@@ -1,6 +1,6 @@
 # Control-plane performance paths
 
-The 0.58.2 optimizations address the thirteen findings from the September 2026
+The 0.59.2 optimizations address the thirteen findings from the September 2026
 performance audit. They preserve the existing API payloads, authorization filters,
 command atomicity, dispatch ownership, and durable cursor/checkpoint behavior.
 
@@ -60,13 +60,14 @@ Run them alongside the existing domain suites. Performance regressions are prima
 checked through bounded reads, constructor/query counts and synchronization barriers,
 so normal test runs do not depend on machine-specific timing thresholds.
 
-Final validation on 2026-09-22: all 8,408 Python tests passed. Focused Workers
+Final validation on 2026-09-23 after merging main: all 8,510 Python tests passed. Focused Workers
 browser/configuration checks, TypeScript checking, and Ruff on changed Python
 files also passed. The broad frontend suite exceeded its 180-second sandbox
 limit; its failing/stalled navigation and tool-visibility files passed individually
 outside the sandbox. The complete frontend suite is not claimed verified.
 
-Synthetic local probes compared the original `81544e61` code with these changes:
+Synthetic local probes from the initial performance implementation compared the
+original `81544e61` code with the optimizations:
 
 | Workload | Before | After |
 | --- | ---: | ---: |
