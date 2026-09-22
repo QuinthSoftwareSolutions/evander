@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
+
+- Maintain an incremental Team cost report with exact request deduplication, attribution,
+  pricing and budget-window invalidation; coalesce and throttle UI cost refreshes.
+- Read only the Team collections needed by each view, and move projection, workflow reads,
+  and JSON serialization off the web event loop while preserving permission filtering.
+- Bound and parallelize worker health probes, share short-lived capacity and rolling workflow
+  report snapshots, and aggregate workflow activity once per report.
+- Cover directory-scoped audit status counts without fetching large audit payload rows.
+- Separate SSE startup latency from subscription lifetime in slow-request logs, include response
+  timing phases, and record failures that occur after response headers have been sent.
+
 ## 2026-09-22 - Review Miro layouts and iterate on repairs (0.58.0)
 
 - Add advisory layout reports to canvas snapshots and new completed writes, naming shared exits,

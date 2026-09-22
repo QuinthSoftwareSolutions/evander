@@ -26,6 +26,7 @@ from evander.admin.payloads import (
     ConformanceRequirementSnippetPayload,
     ConformanceReportsPayload,
     ToolCallAuditEntryPayload,
+    WorkflowEditorDocumentPayload,
     WorkflowFailureClusterExamplePayload,
     WorkflowFailureClusterPayload,
     WorkflowFailureClusterReportPayload,
@@ -97,6 +98,10 @@ from evander.admin.services.approval_audit_service import (
     iter_file_lines_reverse as _iter_file_lines_reverse,
     tool_call_audit_entry_from_payload as _tool_call_audit_entry_from_payload,
 )
+from evander.admin.services.snapshot_cache import SnapshotCache
+
+
+WORKFLOW_GRAPH_ACTIVITY_SNAPSHOT_TTL_SECONDS = 15.0
 
 
 @dataclass(slots=True)
@@ -119,6 +124,9 @@ class WorkflowReportsAdminService:
         self.runtime = dependencies.runtime
         self._workflow_config_admin = dependencies.workflow_config_admin
         self._list_agents = dependencies.list_agents
+        self._graph_activity_snapshots: SnapshotCache[WorkflowGraphActivityReportPayload] = (
+            SnapshotCache(ttl_seconds=WORKFLOW_GRAPH_ACTIVITY_SNAPSHOT_TTL_SECONDS)
+        )
 
     @property
     def project_dir(self) -> Path:
@@ -132,9 +140,11 @@ class WorkflowReportsAdminService:
         period_start: datetime | None = None,
         period_end: datetime | None = None,
         limit: int | None = None,
+        refresh: bool = False,
     ) -> "WorkflowGraphActivityReportPayload":
+        kwargs = {"refresh": True} if refresh else {}
         return self._read_workflow_graph_activity_report(
-            period_start=period_start, period_end=period_end, limit=limit
+            period_start=period_start, period_end=period_end, limit=limit, **kwargs
         )
 
     def read_workflow_failure_clusters_report(
@@ -1095,6 +1105,43 @@ class WorkflowReportsAdminService:
         period_start: datetime | None = None,
         period_end: datetime | None = None,
         limit: int | None = None,
+        refresh: bool = False,
+    ) -> WorkflowGraphActivityReportPayload:
+        document = self._read_composed_workflow_editor_document()
+        stores = self._workflow_run_store_paths()
+
+        def collect() -> WorkflowGraphActivityReportPayload:
+            return self._collect_workflow_graph_activity_report(
+                period_start=period_start,
+                period_end=period_end,
+                limit=limit,
+                document=document,
+                stores=stores,
+            )
+
+        # Explicit intervals are exact reads, including backfilled executions.
+        # Only the default rolling dashboard window is a short-lived snapshot.
+        if period_start is not None or period_end is not None:
+            return collect()
+        key = (
+            str(stores.get("orchestration_store_path", "")),
+            document.revision or self._workflow_editor_revision(
+                config=document.config, layout=document.layout, graphs=document.graphs
+            ),
+            limit,
+        )
+        return self._graph_activity_snapshots.read(key, collect, refresh=refresh).model_copy(
+            deep=True
+        )
+
+    def _collect_workflow_graph_activity_report(
+        self,
+        *,
+        period_start: datetime | None,
+        period_end: datetime | None,
+        limit: int | None,
+        document: WorkflowEditorDocumentPayload,
+        stores: dict[str, Any],
     ) -> WorkflowGraphActivityReportPayload:
         now = _utc_now()
         end_at = (
@@ -1114,7 +1161,6 @@ class WorkflowReportsAdminService:
         if start_at > end_at:
             raise ValueError("Workflow graph activity period_start must be before period_end.")
 
-        document = self._read_composed_workflow_editor_document()
         node_metadata: dict[str, dict[str, str | None]] = {}
         for collection_name in ("triggers", "gates", "effects", "queries"):
             nodes = document.config.get(collection_name)
@@ -1265,7 +1311,6 @@ class WorkflowReportsAdminService:
             ]
             return max(parsed_values) if parsed_values else None
 
-        stores = self._workflow_run_store_paths()
         if stores:
             start_text = datetime_to_storage(start_at)
             end_text = datetime_to_storage(end_at)
@@ -1288,7 +1333,7 @@ class WorkflowReportsAdminService:
                     tuple(node_to_graph_id.items()),
                 )
                 activity_sql = """
-                    WITH activity AS (
+                    WITH activity AS MATERIALIZED (
                         SELECT nodes.graph_id AS graph_id,
                                events.trigger_id AS node_id,
                                'trigger' AS source,
@@ -1347,12 +1392,23 @@ class WorkflowReportsAdminService:
                     SELECT graph_id, node_id, source, status,
                            COUNT(*) AS activity_count,
                            MIN(activity_at) AS first_activity_at,
-                           MAX(activity_at) AS latest_activity_at
+                           MAX(activity_at) AS latest_activity_at,
+                           NULL AS run_count
                     FROM activity
                     GROUP BY graph_id, node_id, source, status
+                    UNION ALL
+                    SELECT graph_id, NULL, NULL, NULL, NULL, NULL, NULL,
+                           COUNT(DISTINCT run_key) AS run_count
+                    FROM activity
+                    GROUP BY graph_id
                     """,
                     activity_parameters,
                 ):
+                    if row["run_count"] is not None:
+                        state = graph_states.get(str(row["graph_id"] or ""))
+                        if state is not None:
+                            state["run_count"] = int(row["run_count"])
+                        continue
                     register_aggregated_activity(
                         graph_id=str(row["graph_id"] or ""),
                         node_id=str(row["node_id"] or ""),
@@ -1362,18 +1418,6 @@ class WorkflowReportsAdminService:
                         first_activity_at=_coerce_optional_datetime(row["first_activity_at"]),
                         latest_activity_at=_coerce_optional_datetime(row["latest_activity_at"]),
                     )
-                for row in connection.execute(
-                    activity_sql
-                    + """
-                    SELECT graph_id, COUNT(DISTINCT run_key) AS run_count
-                    FROM activity
-                    GROUP BY graph_id
-                    """,
-                    activity_parameters,
-                ):
-                    state = graph_states.get(str(row["graph_id"] or ""))
-                    if state is not None:
-                        state["run_count"] = int(row["run_count"] or 0)
         graphs: list[WorkflowGraphActivityGraphPayload] = []
         for graph_id, state in graph_states.items():
             graph = state["graph"]

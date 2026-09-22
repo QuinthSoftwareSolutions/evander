@@ -23,6 +23,7 @@ from .sqlite_store import (
     STATE_DB_FILE,
     TeamStateSqliteCommandTransaction,
     TeamStateSqliteStore,
+    TeamStateReadProjection,
 )
 from .lifecycle_candidates import LifecycleCandidatePage
 
@@ -50,6 +51,11 @@ class TeamStateRepository:
 
     def read(self) -> TeamState:
         return self.store.read_state()
+
+    def read_projection(self, *, collections: Sequence[str]) -> TeamStateReadProjection:
+        """Return a read-only subset; mutations must always use full state."""
+
+        return self.store.read_projection(collections=collections)
 
     def read_revision(self) -> int:
         return self.store.read_revision()

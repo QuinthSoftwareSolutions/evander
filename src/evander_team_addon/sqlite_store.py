@@ -14,6 +14,8 @@ from threading import RLock
 from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
+from pydantic import ConfigDict, PrivateAttr, TypeAdapter
+
 from evander.addons import addon_storage_path
 from evander.models import DirectoryPath, utc_now
 from evander.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
@@ -48,6 +50,45 @@ CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_active_dispatch
 """
 
 T = TypeVar("T")
+
+_STATE_METADATA_FIELDS = frozenset({"schema_version", "revision", "updated_at"})
+_STATE_COLLECTION_FIELDS = frozenset(TeamState.model_fields) - _STATE_METADATA_FIELDS
+_STATE_FIELD_ADAPTERS = {
+    name: TypeAdapter(field.annotation) for name, field in TeamState.model_fields.items()
+}
+_STATE_GROUP_READERS = {
+    "notes": "_read_case_context",
+    "case_context_views": "_read_case_context",
+    "case_context_snapshots": "_read_case_context",
+    "human_review_requests": "_read_human_reviews",
+    "human_review_decisions": "_read_human_reviews",
+    "human_review_findings": "_read_human_reviews",
+}
+
+
+class TeamStateReadProjection(TeamState):
+    """A validated read projection, never a candidate for a state update.
+
+    Rows are validated individually from a committed SQLite snapshot; the
+    cross-collection invariants were checked when that snapshot was written.
+    Accessing an omitted collection fails instead of treating missing data as
+    an empty collection, which protects derived values and authorization checks.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    _loaded_collections: frozenset[str] = PrivateAttr(default_factory=frozenset)
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in _STATE_COLLECTION_FIELDS:
+            loaded = object.__getattribute__(self, "__pydantic_private__")
+            if name not in loaded["_loaded_collections"]:
+                raise ValueError(f"Team read projection did not load collection {name!r}")
+        return super().__getattribute__(name)
+
+
+def _require_complete_state(state: TeamState) -> None:
+    if isinstance(state, TeamStateReadProjection):
+        raise ValueError("Team read projections cannot be persisted")
 
 
 class _ClosingSqliteConnection(sqlite3.Connection):
@@ -128,6 +169,30 @@ class TeamStateSqliteStore(CaseContextStoreMixin):
                 # cross-revision TeamState (for example, half a review cohort).
                 connection.execute("BEGIN")
                 return self._read_state(connection)
+
+    def read_projection(self, *, collections: Sequence[str]) -> TeamStateReadProjection:
+        """Read only the collections needed by a read-only API projection."""
+
+        selected = frozenset(collections)
+        unknown = selected - _STATE_COLLECTION_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown Team projection collections: {sorted(unknown)!r}")
+        # WAL readers can take a consistent snapshot without waiting for the
+        # process-local writer lock or resetting the journal mode.
+        with closing(sqlite3.connect(self.path, timeout=30.0)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("BEGIN")
+            payload = self._read_state_payload(connection, collections=selected)
+        validated = {
+            name: _STATE_FIELD_ADAPTERS[name].validate_python(value)
+            for name, value in payload.items()
+            if name in _STATE_METADATA_FIELDS or name in selected
+        }
+        projection = TeamStateReadProjection.model_construct(**validated)
+        projection._loaded_collections = selected
+        return projection
 
     def read_revision(self) -> int:
         """Read the current state revision without reconstructing the Team state."""
@@ -490,6 +555,7 @@ class TeamStateSqliteStore(CaseContextStoreMixin):
         previous_updated_at: datetime,
         candidate: TeamState,
     ) -> _PreparedTeamStateUpdate:
+        _require_complete_state(candidate)
         candidate_payload = candidate.model_dump(mode="json")
         candidate_updated_at = (
             candidate.updated_at if candidate.updated_at != previous_updated_at else utc_now()
@@ -2266,12 +2332,20 @@ class TeamStateSqliteStore(CaseContextStoreMixin):
         return self._read_state(connection).model_dump(mode="json")
 
     def _read_state(self, connection: sqlite3.Connection) -> TeamState:
+        return TeamState.model_validate(self._read_state_payload(connection))
+
+    def _read_state_payload(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        collections: frozenset[str] | None = None,
+    ) -> dict[str, Any]:
         metadata = {
             str(row["key"]): str(row["value"])
             for row in connection.execute("SELECT key, value FROM team_state_metadata")
         }
         if "revision" not in metadata:
-            return TeamState.empty()
+            return TeamState.empty().model_dump(mode="python")
 
         payload: dict[str, Any] = {
             "schema_version": int(metadata.get("state_schema_version", SCHEMA_VERSION)),
@@ -2319,49 +2393,17 @@ class TeamStateSqliteStore(CaseContextStoreMixin):
             "git_work_contexts": {},
             "stand_downs": {},
         }
-        self._read_teams(connection, payload)
-        self._read_governance_groups(connection, payload)
-        self._read_governance_agenda(connection, payload)
-        self._read_governance_runtimes(connection, payload)
-        self._read_roles(connection, payload)
-        self._read_projects(connection, payload)
-        self._read_agents(connection, payload)
-        self._read_project_assignments(connection, payload)
-        self._read_stand_downs(connection, payload)
-        self._read_agent_runtimes(connection, payload)
-        self._read_work_lineages(connection, payload)
-        self._read_external_source_evidence_snapshots(connection, payload)
-        self._read_cases(connection, payload)
-        self._read_tasks(connection, payload)
-        self._read_deliverables(connection, payload)
-        self._read_outcome_kind_definitions(connection, payload)
-        self._read_review_profiles(connection, payload)
-        self._read_review_requests(connection, payload)
-        self._read_inbox(connection, payload)
-        self._read_blockers(connection, payload)
-        self._read_dependency_composition_recoveries(connection, payload)
-        self._read_blocker_events(connection, payload)
-        self._read_action_records(connection, payload)
-        self._read_case_context(connection, payload)
-        self._read_memories(connection, payload)
-        self._read_conversations(connection, payload)
-        self._read_conversation_messages(connection, payload)
-        self._read_external_chat_ingress(connection, payload)
-        self._read_external_chat_deliveries(connection, payload)
-        self._read_chat_attachments(connection, payload)
-        self._read_chat_attachment_policies(connection, payload)
-        self._read_release_packages(connection, payload)
-        self._read_release_verification_runs(connection, payload)
-        self._read_human_reviews(connection, payload)
-        self._read_dispatches(connection, payload)
-        self._read_git_preparation_attempts(connection, payload)
-        self._read_worktree_cleanup_candidates(connection, payload)
-        self._read_ephemeral_assignments(connection, payload)
-        self._read_git_promotions(connection, payload)
-        self._read_git_work_contexts(connection, payload)
-        return TeamState.model_validate(payload)
+        readers = dict.fromkeys(
+            _STATE_GROUP_READERS.get(name, f"_read_{name}")
+            for name in TeamState.model_fields
+            if name in _STATE_COLLECTION_FIELDS and (collections is None or name in collections)
+        )
+        for reader in readers:
+            getattr(self, reader)(connection, payload)
+        return payload
 
     def _write_state(self, connection: sqlite3.Connection, state: TeamState) -> None:
+        _require_complete_state(state)
         payload = state.model_dump(mode="json")
         payload["schema_version"] = max(
             int(payload.get("schema_version", SCHEMA_VERSION)),
@@ -3373,8 +3415,7 @@ class TeamStateSqliteStore(CaseContextStoreMixin):
                 ),
                 "cancellation": (
                     _json_loads(row["cancellation_json"])
-                    if row["cancellation_json"] is not None
-                    else None
+                    if row["cancellation_json"] is not None else None
                 ),
                 "dependency_task_ids": dependencies.get(row["id"], []),
                 "deliverable_ids": deliverables.get(row["id"], []),
@@ -4705,7 +4746,8 @@ class TeamStateSqliteStore(CaseContextStoreMixin):
                 "git_promotion_record_ids": promotions.get(row["id"], []),
                 "cancellation": (
                     _json_loads(row["cancellation_json"])
-                    if row["cancellation_json"] is not None else None
+                    if row["cancellation_json"] is not None
+                    else None
                 ),
                 "state": row["state"],
                 "published_at": row["published_at"],

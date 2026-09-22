@@ -277,7 +277,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 class AdminWebRequestTimingMiddleware:
-    """Log slow or failed HTTP requests without recording request contents."""
+    """Log response latency, not successful SSE subscription lifetime."""
 
     def __init__(self, app, *, routes: list[Any], slow_request_threshold_ms: int) -> None:
         self.app = app
@@ -292,29 +292,71 @@ class AdminWebRequestTimingMiddleware:
         started_at = time.perf_counter()
         request_scope = dict(scope)
         status_code: int | None = None
+        response_start_ms: int | None = None
+        first_body_ms: int | None = None
+        event_stream = False
+        startup_logged = False
+        failed = False
+
+        def elapsed_ms() -> int:
+            return max(0, int((time.perf_counter() - started_at) * 1000))
+
+        def log_timing(duration_ms: int, *, phase: str) -> None:
+            route = self._route_template_for_scope(request_scope, self.routes)
+            logger.warning(
+                "admin_web_request_timing method=%s route=%s status=%s duration_ms=%s "
+                "slow=%s response_start_ms=%s first_body_ms=%s total_ms=%s "
+                "event_stream=%s failed=%s phase=%s",
+                scope.get("method", ""),
+                route,
+                status_code if status_code is not None else 500,
+                duration_ms,
+                duration_ms >= self.slow_request_threshold_ms,
+                response_start_ms,
+                first_body_ms,
+                elapsed_ms(),
+                event_stream,
+                failed,
+                phase,
+            )
 
         async def send_with_status(message) -> None:
-            nonlocal status_code
+            nonlocal status_code, response_start_ms, first_body_ms, event_stream, startup_logged
             if message["type"] == "http.response.start":
                 status_code = int(message["status"])
+                response_start_ms = elapsed_ms()
+                event_stream = any(
+                    key.lower() == b"content-type"
+                    and value.lower().split(b";", 1)[0].strip() == b"text/event-stream"
+                    for key, value in message.get("headers", [])
+                )
+            elif message["type"] == "http.response.body" and first_body_ms is None:
+                if message.get("body") or not message.get("more_body", False):
+                    first_body_ms = elapsed_ms()
             await send(message)
+            if (
+                event_stream
+                and first_body_ms is not None
+                and not startup_logged
+                and first_body_ms >= self.slow_request_threshold_ms
+            ):
+                log_timing(first_body_ms, phase="stream_start")
+                startup_logged = True
 
         try:
             await self.app(scope, receive, send_with_status)
+        except Exception:
+            failed = True
+            raise
         finally:
-            duration_ms = max(0, int((time.perf_counter() - started_at) * 1000))
+            total_ms = elapsed_ms()
+            duration_ms = (
+                first_body_ms if event_stream and first_body_ms is not None else total_ms
+            )
             response_status = status_code if status_code is not None else 500
             is_slow = duration_ms >= self.slow_request_threshold_ms
-            if is_slow or response_status >= 500:
-                route = self._route_template_for_scope(request_scope, self.routes)
-                logger.warning(
-                    "admin_web_request_timing method=%s route=%s status=%s duration_ms=%s slow=%s",
-                    scope.get("method", ""),
-                    route,
-                    response_status,
-                    duration_ms,
-                    is_slow,
-                )
+            if failed or response_status >= 500 or (is_slow and not startup_logged):
+                log_timing(duration_ms, phase="stream_end" if event_stream else "response")
 
     @classmethod
     def _route_template_for_scope(

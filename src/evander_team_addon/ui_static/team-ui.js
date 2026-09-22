@@ -225,8 +225,15 @@ let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
+let costsInFlight = null;
+let costsForcedRefresh = null;
+let costsLastLoadedAt = 0;
+let costsRefreshTimer = null;
+let costsRefreshPending = false;
+const COSTS_REFRESH_INTERVAL_MS = 15000;
 let costBackfillRequestId = 0;
 let costBackfillLoading = false;
+let costBackfillFinished = null;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
 const initialHumanReviewDeepLink = readHumanReviewDeepLink();
@@ -4932,7 +4939,63 @@ function closeStateStream() {
   stateStreamErrorRefreshPending = false;
 }
 
-async function loadCosts() {
+function scheduleCostsRefresh(delay) {
+  if (costsRefreshTimer !== null) {
+    return;
+  }
+  costsRefreshTimer = window.setTimeout(() => {
+    costsRefreshTimer = null;
+    if (teamViewUsesCostState(activeTeamView)) {
+      void loadCosts({ force: true });
+    }
+  }, delay);
+}
+
+function queueForcedCostsRefresh(completion) {
+  if (!costsForcedRefresh) {
+    costsForcedRefresh = completion.then(() => {
+      costsForcedRefresh = null;
+      return loadCosts({ force: true });
+    });
+  }
+  return costsForcedRefresh;
+}
+
+function loadCosts({ force = false } = {}) {
+  if (costBackfillLoading) {
+    return force ? queueForcedCostsRefresh(costBackfillFinished) : Promise.resolve();
+  }
+  if (costsInFlight) {
+    if (force) {
+      // A successful budget reset must observe a read started after the reset,
+      // including when an older transcript backfill is also running.
+      return queueForcedCostsRefresh(costsInFlight);
+    }
+    costsRefreshPending = true;
+    return costsInFlight;
+  }
+  const remaining = costsLastLoadedAt + COSTS_REFRESH_INTERVAL_MS - Date.now();
+  if (!force && remaining > 0) {
+    // Keep the last state event during the interval; it must not be lost just
+    // because no further events arrive after this refresh is deferred.
+    scheduleCostsRefresh(remaining);
+    return Promise.resolve();
+  }
+  if (costsRefreshTimer !== null) {
+    window.clearTimeout(costsRefreshTimer);
+    costsRefreshTimer = null;
+  }
+  costsRefreshPending = false;
+  costsInFlight = fetchCosts().finally(() => {
+    costsInFlight = null;
+    if (costsRefreshPending) {
+      scheduleCostsRefresh(COSTS_REFRESH_INTERVAL_MS);
+    }
+  });
+  return costsInFlight;
+}
+
+async function fetchCosts() {
   const requestId = ++costsRequestId;
   try {
     const response = await teamFetch(`${API_BASE}/costs?backfill=false`, {
@@ -4946,6 +5009,7 @@ async function loadCosts() {
       return;
     }
     costState = normalizeCosts(payload);
+    costsLastLoadedAt = Date.now();
     if (teamViewUsesCostState(activeTeamView)) {
       const drafts = captureFormDrafts();
       render();
@@ -4972,8 +5036,17 @@ async function refreshCostBackfill() {
     return;
   }
   const requestId = ++costBackfillRequestId;
+  // Ignore a GET already in flight if it completes after the newer backfill.
+  costsRequestId += 1;
+  costsRefreshPending = false;
+  if (costsRefreshTimer !== null) {
+    window.clearTimeout(costsRefreshTimer);
+    costsRefreshTimer = null;
+  }
   let drafts = captureFormDrafts();
   costBackfillLoading = true;
+  let finishBackfill;
+  costBackfillFinished = new Promise((resolve) => { finishBackfill = resolve; });
   setStatus("Refreshing transcript costs.", "loading");
   render();
   restoreFormDrafts(drafts);
@@ -4992,6 +5065,7 @@ async function refreshCostBackfill() {
     drafts = captureFormDrafts();
     costBackfillLoading = false;
     costState = normalizeCosts(payload);
+    costsLastLoadedAt = Date.now();
     render();
     restoreFormDrafts(drafts);
     setStatus("", "");
@@ -5008,6 +5082,10 @@ async function refreshCostBackfill() {
     render();
     restoreFormDrafts(drafts);
     setStatus(error instanceof Error ? error.message : "Cost transcript refresh failed.", "error");
+  } finally {
+    costBackfillLoading = false;
+    costBackfillFinished = null;
+    finishBackfill();
   }
 }
 
@@ -22066,7 +22144,7 @@ async function resetTeamCostBudget(button, teamId, reason) {
       throw new Error(await responseText(response));
     }
     await applyMutationResultPayload(await response.json());
-    await loadCosts();
+    await loadCosts({ force: true });
     setStatus("Started a new team cost budget window.", "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Budget reset failed.", "error");

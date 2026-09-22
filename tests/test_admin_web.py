@@ -11756,6 +11756,7 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     service = build_admin_runtime(write_config(tmp_path))
     calls = 0
     capacity_calls = 0
+    capacity_refreshes = []
 
     def list_background_workers() -> list[WorkerSummary]:
         nonlocal calls
@@ -11771,9 +11772,10 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
             )
         ]
 
-    def read_capacity_health() -> dict[str, object]:
+    def read_capacity_health(*, refresh: bool = False) -> dict[str, object]:
         nonlocal capacity_calls
         capacity_calls += 1
+        capacity_refreshes.append(refresh)
         return {
             "generated_at": "2026-05-21T12:00:00+00:00",
             "workers": {"total_workers": capacity_calls},
@@ -11810,6 +11812,7 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     assert capacity_second.status_code == 200
     assert capacity_live.status_code == 200
     assert capacity_refreshed.status_code == 200
+    assert capacity_refreshes == [False, False, True]
     assert first.headers["x-admin-web-cache"] == "miss"
     assert not_modified.headers["x-admin-web-cache"] == "hit"
     assert not_modified.headers["etag"] == first.headers["etag"]
