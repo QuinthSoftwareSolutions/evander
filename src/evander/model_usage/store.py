@@ -27,6 +27,7 @@ from evander.model_usage.pricing import (
     model_pricing_catalog_fingerprint,
     model_pricing_catalog_payload,
 )
+from evander.model_usage.report_snapshot import CostReportSnapshot, ensure_cost_report_tracking
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 _SQLITE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
@@ -229,6 +230,15 @@ class ModelUsageStore:
                     ON model_usage_events(session_id, cost_request_key, occurred_at, event_id)
                 """
             )
+            ensure_cost_report_tracking(connection)
+
+    @contextmanager
+    def cost_report_snapshot(self) -> Iterator[CostReportSnapshot]:
+        # WAL readers do not block relay writes. All report inputs (including
+        # correlation contexts) must come from this same committed revision.
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            yield CostReportSnapshot(connection)
 
     def upsert_event(self, event: ModelInferenceUsageEvent) -> None:
         validated = ModelInferenceUsageEvent.model_validate(event)

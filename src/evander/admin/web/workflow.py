@@ -436,17 +436,15 @@ async def workflow_run_events(
     journal = service.workflow_config_admin.workflow_event_journal()
     cursor = journal.cursor()
 
-    async def snapshot_event() -> tuple[str, str] | None:
-        if await request.is_disconnected():
-            return None
+    def build_snapshot_event() -> tuple[str, str]:
         try:
             snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
             if auth is None:
                 payload = json.dumps(snapshot.model_dump(mode="json"))
             else:
                 document = service.workflow_config_admin.read_composed_workflow_editor_document()
-                _, readable_graphs, readable_node_ids = _workflow_run_graphs_for_document(
-                    service, auth, request
+                readable_graphs, readable_node_ids = _require_workflow_run_read_access(
+                    auth=auth, request=request, graphs=document.graphs
                 )
                 if not document.graphs:
                     payload = json.dumps(snapshot.model_dump(mode="json"))
@@ -490,6 +488,11 @@ async def workflow_run_events(
         )
         return state_key, f"event: snapshot\ndata: {payload}\n\n"
 
+    async def snapshot_event() -> tuple[str, str] | None:
+        if await request.is_disconnected():
+            return None
+        return await run_in_threadpool(build_snapshot_event)
+
     first = await snapshot_event()
     if first is None:
         return
@@ -519,7 +522,7 @@ def workflow_routes(
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[Route]:
-    async def get_document(request: Request) -> JSONResponse:
+    def build_document_response(request: Request) -> JSONResponse:
         try:
             requested_workflow_pack = request.query_params.get("workflow_pack")
             if requested_workflow_pack is None:
@@ -575,7 +578,10 @@ def workflow_routes(
             )
         )
 
-    async def get_catalog(request: Request) -> JSONResponse:
+    async def get_document(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_document_response, request)
+
+    def build_catalog_response(request: Request) -> JSONResponse:
         try:
             directory_path = service.teams_admin.normalize_directory_reference(
                 request.query_params.get("directory_path") or "root"
@@ -592,6 +598,9 @@ def workflow_routes(
         except PermissionError as exc:
             return json_error(str(exc), status_code=403)
         return JSONResponse(catalog.model_dump(mode="json"))
+
+    async def get_catalog(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_catalog_response, request)
 
     async def get_target_catalog(request: Request) -> JSONResponse:
         try:
@@ -635,7 +644,7 @@ def workflow_routes(
             }
         )
 
-    async def get_runs(request: Request) -> JSONResponse:
+    def build_runs_response(request: Request) -> JSONResponse:
         try:
             document = service.workflow_config_admin.read_composed_workflow_editor_document()
             snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
@@ -654,6 +663,9 @@ def workflow_routes(
             return json_error(str(exc))
         except PermissionError as exc:
             return json_error(str(exc), status_code=403)
+
+    async def get_runs(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_runs_response, request)
 
     async def get_run_search(request: Request) -> JSONResponse:
         query = request.query_params

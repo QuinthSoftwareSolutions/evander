@@ -435,6 +435,74 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
 TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
 TEAM_VIEW_COLLECTIONS["mail"] = {"teams", "projects", "roles", "agents"}
 TEAM_VIEW_COLLECTIONS["activity"] = {"teams", "roles", "agents"}
+# Runtime attention and activity summaries accompany every non-chat view. Their
+# dependencies are intentionally explicit, including records not returned as
+# top-level collections by the view (for example release review blockers).
+_VIEW_RUNTIME_COLLECTIONS = {
+    "teams",
+    "projects",
+    "roles",
+    "agents",
+    "project_assignments",
+    "agent_runtimes",
+    "stand_downs",
+    "tasks",
+    "deliverables",
+    "review_requests",
+    "inbox",
+    "blockers",
+    "dependency_composition_recoveries",
+    "action_records",
+    "dispatches",
+    "release_packages",
+    "release_verification_runs",
+    "ephemeral_assignments",
+    "git_promotions",
+    "git_work_contexts",
+    "external_source_evidence_snapshots",
+}
+_CHAT_VIEW_COLLECTIONS = {
+    "teams",
+    "agents",
+    "projects",
+    "project_assignments",
+    "roles",
+    "agent_runtimes",
+    "stand_downs",
+    "conversations",
+    "conversation_messages",
+    "chat_attachments",
+}
+_BOOTSTRAP_COLLECTIONS = {
+    "teams",
+    "governance_groups",
+    "projects",
+    "agents",
+    "cases",
+    "tasks",
+    "deliverables",
+    "review_requests",
+    "conversations",
+}
+_COST_COLLECTIONS = {
+    "teams",
+    "governance_groups",
+    "agents",
+    "project_assignments",
+    "ephemeral_assignments",
+    "action_records",
+}
+
+
+def _view_read_collections(view: str) -> set[str]:
+    if view == "chat":
+        return _CHAT_VIEW_COLLECTIONS
+    collections = TEAM_VIEW_COLLECTIONS[view] | _VIEW_RUNTIME_COLLECTIONS
+    if "release_packages" in TEAM_VIEW_COLLECTIONS[view]:
+        collections |= set(HUMAN_REVIEW_COLLECTION_KEYS)
+    return collections
+
+
 TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "teams",
     "governance_groups",
@@ -476,7 +544,7 @@ def _team_costs_payload(
     *,
     backfill_transcripts: bool,
 ) -> dict[str, Any]:
-    state = repository.read()
+    state = repository.read_projection(collections=sorted(_COST_COLLECTIONS))
     state = TeamAdminService(repository).advance_team_cost_budget_windows(
         current_state=state,
     )
@@ -625,18 +693,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
 
     async def get_state(request: Request) -> JSONResponse:
-        return JSONResponse(_state_payload(request, repository.read()))
+        return await run_in_threadpool(
+            lambda: JSONResponse(_state_payload(request, repository.read()))
+        )
 
     async def get_bootstrap(request: Request) -> JSONResponse:
-        state = repository.read()
-        return JSONResponse(
-            _bootstrap_payload_for_request(
-                context.auth,
-                request,
-                state,
-                communication_targets=_registered_communication_target_options(context),
+        def response() -> JSONResponse:
+            state = repository.read_projection(collections=sorted(_BOOTSTRAP_COLLECTIONS))
+            return JSONResponse(
+                _bootstrap_payload_for_request(
+                    context.auth,
+                    request,
+                    state,
+                    communication_targets=_registered_communication_target_options(context),
+                )
             )
-        )
+
+        return await run_in_threadpool(response)
 
     async def get_inbox_history(request: Request) -> JSONResponse:
         return JSONResponse(_inbox_history_payload_for_request(request, repository.read()))
@@ -760,17 +833,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         view = request.path_params["view"]
         if view not in TEAM_VIEW_IDS:
             return JSONResponse({"error": "view not found"}, status_code=404)
-        state = await run_in_threadpool(repository.read)
-        return JSONResponse(
-            _view_payload_for_request(
-                context.auth,
-                request,
-                state,
-                view=view,
-                runtime_dir=context.runtime_dir,
-                session_repository=_session_repository_from_context(context),
+
+        def response() -> JSONResponse:
+            state = repository.read_projection(collections=sorted(_view_read_collections(view)))
+            return JSONResponse(
+                _view_payload_for_request(
+                    context.auth,
+                    request,
+                    state,
+                    view=view,
+                    runtime_dir=context.runtime_dir,
+                    session_repository=_session_repository_from_context(context),
+                )
             )
-        )
+
+        # Projection and JSON encoding can cost more than the database read.
+        # Keep the complete synchronous pipeline off the ASGI event loop.
+        return await run_in_threadpool(response)
 
     async def stream_state(request: Request) -> StreamingResponse:
         return StreamingResponse(

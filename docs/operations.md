@@ -776,6 +776,28 @@ systemd, VM inventory, workflow, approval, session, and audit read while an oper
 and out of the dashboard. The detailed tabs are not opted into that cache, and the dashboard Refresh
 button sends a cache-bypass marker for a fresh read.
 
+Expensive capacity collection additionally shares a 30-second service snapshot across readers,
+including detailed views. Worker health and telemetry probes run concurrently, with at most four
+workers at a time, one connection attempt per probe, and a five-second HTTP timeout (or a shorter
+configured timeout). Rolling workflow graph reports share a 15-second snapshot and scan activity
+once for node totals and distinct run counts. Explicit report periods remain fresh reads. Dashboard
+Refresh and cache-control bypasses refresh these service snapshots too; payload timestamps retain
+the actual collection time/window rather than pretending a cached result was just collected.
+
+Team cost reports maintain a disposable `runtime/team-cost-report.db` projection alongside the
+authoritative model-usage store. Normal reads update only changed request groups, including late
+transcripts, corrections, deletions, and attribution changes. The first build, pricing changes,
+and budget-window changes still rebuild historical usage and can be slower. The UI coalesces
+in-flight cost reads and spaces automatic refreshes by 15 seconds; an explicit budget reset forces
+a new read. Team views use read-only collection projections and never persist partial state.
+
+Slow-request journal entries distinguish response-header, first-body and total elapsed time.
+For `text/event-stream` subscriptions, `duration_ms` is startup latency, not connection lifetime;
+`phase=stream_start` is emitted when a slow first body arrives, and `phase=stream_end` identifies
+failed/incomplete streams. Ordinary responses use `phase=response` and total duration. These are
+wall-clock phases, not separate database/handler/serialization profiles. Failed responses retain
+the actual sent status (possibly 200) and add `failed=True` when an exception escapes.
+
 For machine-readable scripting that matches the GUI data model, use:
 
 ```bash
