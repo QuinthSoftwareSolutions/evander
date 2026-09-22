@@ -1,12 +1,24 @@
 # Changelog
 
-## 2026-09-22 - Use GPT-6 for new agent defaults (0.58.2)
+## 2026-09-22 - Use GPT-6 for new agent defaults (0.58.3)
 
 - Use GPT-6 Sol for Codex agent fallbacks, new OpenAI setup, and guest bootstrap defaults.
 - Seed new installations with the verified GPT-6 Sol, Luna, and Astra pricing while retaining
   historical rates for past usage.
 - Update inactive workflow examples to select GPT-6 Sol or Luna according to their prior tier.
 - Omit older GPT generations from the session model picker without removing their pricing history.
+
+## 2026-09-22 - Isolate Team lifecycle maintenance from message dispatch (0.58.2)
+
+- Run Team lease and completion reconciliation on a dedicated single-flight lane so
+  database contention cannot hold up unrelated assistant workflow events.
+- Reuse initialized Team repositories, discover lifecycle candidates through query-only
+  snapshots, and defer contended maintenance writes after a bounded lock wait.
+- Coalesce completion hints while retaining durable receipt recovery, serialize lifecycle
+  cursors, and drain maintenance before runtime rebinding or worker shutdown.
+- Keep receipt reads independent of foreground execution locks, drain maintenance on every
+  locked single-cycle exit, and preserve running maintenance during graph-only configuration edits.
+- Add phase timings and contention, recovery, and foreground-latency regression coverage.
 
 ## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
 
