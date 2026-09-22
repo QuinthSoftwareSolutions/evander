@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-22 - Optimize control-plane hot paths (0.58.2)
+
+- Paginate Team task reads before enrichment, reuse task and project assessments, index
+  deliverable coverage, and skip assessment work for agents without assigned tasks.
+- Shorten Team write preparation and use revision-checked dispatch lease updates while
+  preserving command callbacks, outbox atomicity, lifecycle validation, and lease ownership.
+- Move relay persistence and steering off the event loop, preserving usage recording and
+  upstream cleanup when streams disconnect.
+- Batch and cache worker inventory, bound Admin response and chat transcript caches, and
+  use direct session lookups with compact batched lifecycle inputs.
+- Incrementally project worker transcripts, read log tails from the end, and merge overlapping
+  output in linear time with bounded retained projection state.
+- Poll only the VM being watched, query Discord trigger messages using indexed cursors, page
+  semantic indexing with durable continuation keys, and reclaim index content in bounded batches.
+- Add regression coverage for concurrency, cancellation, cache invalidation, transcript rotation,
+  cursor ties, legacy checkpoints, and repository index schema migration.
+
 ## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
 
 - Maintain an incremental Team cost report with exact request deduplication, attribution,

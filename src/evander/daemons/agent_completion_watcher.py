@@ -140,6 +140,7 @@ def await_agent_completion_and_publish(
 
     while time.monotonic() - started_at < timeout_seconds:
         summaries = admin_runtime.vm_agent_admin.list_vms(
+            target_vm_name=vm_name,
             include_inactive=True,
             omit_state=False,
             vm_user=vm_user,

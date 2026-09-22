@@ -66,9 +66,14 @@ class VmInventoryAdminService:
         vm_user: str = "agent",
         directory_path: str | None = None,
         direct_only: bool = False,
+        target_vm_name: str | None = None,
     ) -> list[VmSummary]:
-        vm_names = vm_helpers.virsh_lines(
-            ["list", "--all" if include_inactive else "--state-running", "--name"]
+        vm_names = (
+            [target_vm_name]
+            if target_vm_name
+            else vm_helpers.virsh_lines(
+                ["list", "--all" if include_inactive else "--state-running", "--name"]
+            )
         )
         session_ids_by_vm = self._session_ids_by_vm()
         labels_by_vm = self._labels_by_vm()
@@ -93,7 +98,12 @@ class VmInventoryAdminService:
                     continue
             elif directory_path is not None and normalized_directory_path not in vm_directory_paths:
                 continue
-            libvirt_state = vm_helpers.dominfo_field(vm_name, "State") or "unknown"
+            libvirt_state = vm_helpers.dominfo_field(vm_name, "State")
+            if target_vm_name and not libvirt_state:
+                continue
+            libvirt_state = libvirt_state or "unknown"
+            if not include_inactive and libvirt_state != "running":
+                continue
             host_control_status = self._deps.agent_control_store.status_for_vm(vm_name)
             ip_address = vm_helpers.resolve_vm_ip(vm_name) if libvirt_state == "running" else None
             if libvirt_state != "running":

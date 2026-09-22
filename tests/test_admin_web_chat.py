@@ -152,6 +152,49 @@ def test_chat_store_uses_per_instance_locks_and_atomic_json_write(tmp_path: Path
     assert list(tmp_path.glob(".*.tmp")) == []
 
 
+def test_chat_transcript_and_stream_read_off_the_event_loop(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+    import threading
+
+    service = FakeAdminService(tmp_path)
+    store = ChatStore(tmp_path / "admin-web-chat-store.json")
+    thread_id = store.get_or_create_thread("alice")
+    loop_thread = threading.get_ident()
+    reads = []
+    original = ChatStore.get_transcript
+
+    def checked_read(self, **kwargs):
+        reads.append(threading.get_ident())
+        assert reads[-1] != loop_thread
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(ChatStore, "get_transcript", checked_read)
+    routes = chat_routes(service, FakeAuth({"username": "alice"}))
+
+    async def run():
+        for path in ("/api/chat/transcript/{thread_id}", "/api/chat/stream/{thread_id}"):
+            endpoint = next(route.endpoint for route in routes if route.path == path)
+            request = Request(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": path,
+                    "query_string": b"",
+                    "headers": [],
+                    "path_params": {"thread_id": thread_id},
+                }
+            )
+            response = await endpoint(request)
+            assert response.status_code == 200
+            if path.startswith("/api/chat/stream"):
+                event = await anext(response.body_iterator)
+                assert "event: snapshot" in event
+                await response.body_iterator.aclose()
+
+    asyncio.run(run())
+    assert len(reads) == 2
+
+
 def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: Path) -> None:
     service = FakeAdminService(tmp_path)
     alice = _client_for_user(

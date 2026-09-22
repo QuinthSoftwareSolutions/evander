@@ -100,6 +100,26 @@ def _systemctl_show(unit: str) -> dict[str, str]:
     return payload
 
 
+def _systemctl_show_many(units: list[str]) -> dict[str, dict[str, str]]:
+    """Read all worker states in one systemctl invocation, preserving missing units."""
+    properties = (
+        "Id,LoadState,ActiveState,SubState,Result,MainPID,ExecMainStatus,ExecMainCode,"
+        "UnitFileState,Description"
+    )
+    result = _run_system_service_command(
+        ["systemctl", "show", "--no-pager", f"--property={properties}", *units]
+    )
+    payloads: dict[str, dict[str, str]] = {}
+    for block in (result.stdout or "").strip().split("\n\n"):
+        payload = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        unit = payload.get("Id")
+        if unit in units:
+            payloads[unit] = payload
+    if not payloads and result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "systemctl show failed").strip())
+    return payloads
+
+
 def _journalctl_tail(unit: str, *, lines: int) -> str:
     result = _run_system_service_command(
         ["journalctl", "--no-pager", "--output=short-iso", "-u", unit, "-n", str(lines)]

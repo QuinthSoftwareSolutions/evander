@@ -12,6 +12,7 @@ from ...models import (
     DependencyCompositionRecoveryState,
     TeamState,
     TeamTaskState,
+    TaskAssessment,
     TaskAssessmentReadiness,
     _ensure_utc,
 )
@@ -122,8 +123,11 @@ def plan_role_task_allocations(
 
     selections: dict[str, dict[str, Any]] = {}
     reserved_agents: set[str] = set()
+    queued_tasks = queued_role_tasks(state)
+    if not queued_tasks:
+        return selections
     assessments = TaskAssessmentService(state)
-    for task in queued_role_tasks(state):
+    for task in queued_tasks:
         project = state.projects[task.project_id]
         if (
             (team_id is not None and project.team_id != team_id)
@@ -202,14 +206,17 @@ def plan_role_task_allocations(
     return selections
 
 
-def role_queue_wait_reason(state: TeamState, task: AgentTask) -> str | None:
+def role_queue_wait_reason(
+    state: TeamState, task: AgentTask, *, assessment: TaskAssessment | None = None,
+) -> str | None:
     if task.assignment_mode != "role" or task.owner_agent_id is not None:
         return None
     if task.state != TeamTaskState.PENDING:
         return task.state.value
     if state.dependency_status(task.id) != "satisfied":
         return "waiting_for_dependencies"
-    if TaskAssessmentService(state).assess(task.id).readiness != TaskAssessmentReadiness.ACTIONABLE:
+    assessment = assessment or TaskAssessmentService(state).assess(task.id)
+    if assessment.readiness != TaskAssessmentReadiness.ACTIONABLE:
         return "waiting_for_execution_gates"
     creator = state.agents.get(task.created_by_agent_id or "")
     if creator is None or creator.status != AgentStatus.ACTIVE:
