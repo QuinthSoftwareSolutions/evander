@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-22 - Review Miro layouts and iterate on repairs (0.58.0)
+
+- Add advisory layout reports to canvas snapshots and new completed writes, naming shared exits,
+  overlapping reconstructed routes, and possible node crossings by stable item IDs.
+- Let agents view a bounded reconstructed PNG through `miro_get_snapshot(include_preview=true)`
+  under the existing tool grant. Label it as a diagnostic, not a Miro screenshot, and disclose
+  unsupported geometry, unknown routing, and incomplete coverage.
+- Guide agents and workflows through read/view/repair iterations with distinct branch exits,
+  empty bypass lanes, fresh operation keys for changed repairs, and preservation of human edits.
+  Keep layout findings separate from write success and snapshot conflict detection.
+
 ## 2026-09-22 - Restore projects after terminal blocker recovery (0.57.3)
 
 - Recalculate every directly affected project's status when an operator resolves a terminal

@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 
 from .client import COMMENT_PAGE_SIZE, MiroClient, comment_page, svg_from_result, unwrap
 from .canvas_authoring import AUTHORING_CHECKS, validate_connectors
+from .layout_review import review_layout
 from .models import (
     CanvasScope,
     Connection,
@@ -285,10 +286,17 @@ class MiroService:
 
     @staticmethod
     def public_snapshot(snapshot: dict) -> dict:
-        return {key: value for key, value in snapshot.items() if key != "connection_key"} | {
+        result = {key: value for key, value in snapshot.items() if key != "connection_key"} | {
             "url": board_url(snapshot["board_id"], snapshot["scope"].get("frame_id")),
             "external_content": True,
         }
+        if snapshot["kind"] == "canvas":
+            # Derived diagnostics must not change stored snapshot identities or
+            # stale-write checks. They are advisory, not write success criteria.
+            result["layout_review"] = review_layout(snapshot["data"]["svg"]) | {
+                "snapshot_id": snapshot["snapshot_id"],
+            }
+        return result
 
     async def search(self, client, args: OperationInput) -> dict:
         if args.result_mode != "overview" and not args.patterns:
@@ -589,6 +597,8 @@ class MiroService:
                         authored_item_states=authored,
                         completed_at=time.time(),
                     )
+                    if "layout_review" in observed:
+                        entry["layout_review"] = observed["layout_review"]
                 except Exception as exc:
                     # Even a remote tool error can follow a partial multi-item mutation.
                     pre_send = (

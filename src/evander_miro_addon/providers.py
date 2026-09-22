@@ -244,6 +244,7 @@ def register_providers() -> ProviderPluginRegistration:
                 "scope": {"type": "object"},
                 "boards": {"type": "array"},
                 "result_snapshot_id": {"type": "string"},
+                "layout_review": {"type": "object"},
                 **(
                     {
                         "format": {"type": "object"},
