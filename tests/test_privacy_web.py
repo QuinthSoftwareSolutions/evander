@@ -54,6 +54,12 @@ class PrivacyStub:
             ],
         }
 
+    def record_detail(self, scope, kind, record_id, *, actor):
+        self.calls.append(("record_detail", scope, kind, record_id, actor))
+        if self.failure:
+            raise self.failure
+        return {"id": record_id, "scope": scope, "record_kind": kind, "revision": "rev1"}
+
 
 class AuthStub:
     def __init__(self, permissions=(), *, mode="local_password", unlocked=True, scope="root/team"):
@@ -137,6 +143,36 @@ def test_privacy_snapshot_is_scoped_and_not_cacheable():
     assert response.json()["permissions"] == ["privacy.read"]
     assert not response.json()["coverage_complete"]
     assert request(auth, path="/api/privacy?directory_path=root/other").status_code == 403
+
+
+@pytest.mark.parametrize("kind,permission", [
+    ("case", "privacy.cases"), ("incident", "privacy.cases"),
+    ("followup", "privacy.cases"), ("hold", "privacy.approve"),
+])
+def test_evidence_detail_requires_scoped_privilege_and_records_authenticated_actor(kind, permission):
+    path = f"/api/privacy/records/{kind}/record1?directory_path=root/team"
+    privacy = PrivacyStub()
+    assert request(AuthStub({"privacy.read"}), path=path, privacy=privacy).status_code == 403
+    assert not privacy.calls
+    auth = AuthStub({permission}, unlocked=False)
+    response = request(auth, path=path, privacy=privacy)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert privacy.calls == [("record_detail", "root/team", kind, "record1", "operator@example.test")]
+    assert request(auth, path=path.replace("root/team", "root/other")).status_code == 403
+    assert request(AuthStub({permission}, mode="none"), path=path).status_code == 403
+    root = path.replace("root/team", "root")
+    assert request(AuthStub({permission}, scope="root"), path=root).status_code == 403
+    assert request(AuthStub({ADMIN_OWNER_PERMISSION}, scope="root"), path=root).status_code == 200
+
+
+def test_evidence_detail_does_not_expose_unexpected_errors_or_accept_unknown_kinds():
+    privacy = PrivacyStub()
+    privacy.failure = RuntimeError("confidential stored evidence")
+    response = request(AuthStub({"privacy.cases"}), path="/api/privacy/records/case/one?directory_path=root/team", privacy=privacy)
+    assert response.status_code == 500 and "confidential" not in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert request(AuthStub({"privacy.cases"}), path="/api/privacy/records/unknown/one").status_code == 404
 
 
 @pytest.mark.parametrize("mode", ["none", "local_password"])

@@ -143,6 +143,27 @@ class PrivacyRepository:
                     return True
         return False
 
+    def unresolved_selection_ids(self, dataset: str) -> set[str]:
+        """Unfinished erasures own their records across scopes and metadata pages.
+
+        Include previews and jobs needing operator review, including exhausted
+        retries. A new schedule must not reauthorize that same unresolved work.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT DISTINCT json_extract(selection.value, '$.record_id') "
+                "FROM privacy_records AS job, json_each(job.body, '$.records') AS selection "
+                "WHERE job.kind='job' "
+                "AND json_extract(job.body, '$.operation') IN ('retention','erase') "
+                "AND json_extract(job.body, '$.status') NOT IN ('local_complete','cancelled') "
+                "AND json_extract(selection.value, '$.dataset_id')=? "
+                "AND NOT EXISTS (SELECT 1 FROM json_each(job.body, '$.outcomes') AS outcome "
+                "WHERE outcome.key=? || ':' || json_extract(selection.value, '$.record_id') "
+                "AND outcome.value IN ('deleted','already_absent'))",
+                (dataset, dataset),
+            )
+            return {row[0] for row in rows}
+
     def case_has_unresolved(self, kind: str, scope: str, case_id: str, completed: set[str]) -> bool:
         with self.connect() as db:
             placeholders = ",".join("?" for _ in completed)

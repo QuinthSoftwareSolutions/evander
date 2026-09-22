@@ -263,6 +263,7 @@ def config_provider_guard(config: Any) -> ProviderDispatchGuard:
 
     def load(directory_path: str | None) -> Sequence[Any]:
         from evander.directories import DirectoryService, DirectoryStore
+        from evander.repositories.directories import ReadOnlyJsonDirectoryRepository
         from evander.directory_config import (
             DirectoryConfigResolver,
             DirectoryConfigStore,
@@ -280,7 +281,10 @@ def config_provider_guard(config: Any) -> ProviderDispatchGuard:
             }:
                 raise ValueError("unknown privacy directory")
             return [base or {"mode": "report_only", "enabled_categories": ["unknown"]}]
-        directory_store = DirectoryStore(config.directories_store_path)
+        directory_store = DirectoryStore(
+            config.directories_store_path,
+            repository=ReadOnlyJsonDirectoryRepository(config.directories_store_path),
+        )
         service = DirectoryService(directory_store)
         resolver = DirectoryConfigResolver(
             service,

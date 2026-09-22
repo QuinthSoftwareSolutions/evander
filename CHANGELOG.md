@@ -16,6 +16,10 @@
   outbound paths remain explicit coverage gaps; report-only remains the upgrade default.
 - Add metadata-only credential administration, managed Teams sign-in, safe refresh locking,
   connector credential references, key rotation, and fail-closed migration/recovery behavior.
+- Read proxy privacy policy without filesystem writes and allow empty legacy Teams stores
+  during first-time managed setup. Resume retention beyond held records, count deletion
+  failures independently of successful batches, and prevent schedules from duplicating
+  unresolved selections. Expose scoped, audited detail reads for saved privacy evidence.
 - Include technical privacy review drafts and deployment/restore caveats. No production
   policies, provider contracts, legal approvals, or customer-data cleanup are applied.
 

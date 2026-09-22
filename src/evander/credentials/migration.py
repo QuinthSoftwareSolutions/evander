@@ -42,6 +42,21 @@ def _write(admin, directory, payload):
         raise CredentialError("Could not save Teams credential reference")
 
 
+def _empty_legacy_teams_source(source: Path) -> bool:
+    """Recognize signed-out storage without initializing keys or changing data."""
+    raw = protected_read(source, limit=4 * 1024 * 1024, legacy_permissions=True)
+    try:
+        payload = json.loads(raw)
+        decoded = decode_legacy_teams_credential_envelope(
+            payload, key_path=legacy_teams_credential_key_path(source)
+        )
+        if decoded is not None:
+            _, payload = decoded
+        return isinstance(payload, dict) and not payload
+    except (TeamsAuthProtocolError, ValueError, TypeError):
+        raise CredentialError("Teams source format or identity mapping is invalid") from None
+
+
 def prepare_teams(admin, directory, payload) -> dict:
     with admin.operations.admin_config_mutation_lock():
         config = admin.resolver.resolve_for_directory(directory)
@@ -54,7 +69,10 @@ def prepare_teams(admin, directory, payload) -> dict:
             previous = admin.store.metadata(config.teams_delegated_credential_ref)
             if previous["owner_directory"] == directory and previous["status"] != "deleted":
                 raise CredentialError("Use the existing managed Teams credential")
-        elif Path(config.teams_delegated_credential_store_path).exists():
+        elif (
+            Path(config.teams_delegated_credential_store_path).exists()
+            and not _empty_legacy_teams_source(Path(config.teams_delegated_credential_store_path))
+        ):
             raise CredentialError(
                 "Existing Teams storage requires the maintenance migration command"
             )
@@ -223,7 +241,7 @@ def migrate_teams(runtime, *, apply: bool = False, maintenance: bool = False) ->
             sources.get(group["source"], (b"", {}))[0]
         ).hexdigest()
         values = payload.get(group["identity"], {})
-        if source.exists() and group["source"] in sources and group["identity"] not in payload:
+        if payload and group["identity"] not in payload:
             result["conflicts"].append(
                 "Teams source does not contain the configured identity"
             )

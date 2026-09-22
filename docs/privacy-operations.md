@@ -40,6 +40,13 @@ installation owner. Child-directory grants are separate: `privacy.read`,
 They are not automatically assigned to ordinary operators. Mutations also require
 the existing privileged-operations unlock.
 
+Summaries remain metadata-only. Use **Inspect evidence** on a case, incident,
+follow-up or hold, or enter its known ID under **Inspect stored evidence**, to
+read saved controller/instruction/verification references, evidence, and hold
+selections. These reads require `privacy.cases` for cases, incidents and follow-ups,
+or `privacy.approve` for holds, in the exact owning scope. They are available while
+mutations are locked, bypass response caches, and record the authenticated reader.
+
 Privacy configuration is the `privacy` directory domain (`privacy.json`) with a
 single `privacy` object. The existing `enable_directory_scoped_config` feature
 must permit configuration writes. Every operator mutation requires the current
@@ -53,6 +60,8 @@ evander-cli privacy status --config runtime --directory-path root
 evander-cli privacy action retention.preview --config runtime --directory-path root \
   --expected-revision <current-revision> --payload-file <reviewed-request.json>
 evander-cli privacy job <job-id> --config runtime --directory-path root
+evander-cli privacy record case <case-id> --config runtime --directory-path root
+evander-cli privacy record hold <hold-id> --config runtime --directory-path root
 evander-cli privacy maintenance --config runtime --limit 50
 ```
 
@@ -102,10 +111,17 @@ are preserved but remain inaccessible through normal expired-artifact reads.
 
 The installer renders `evander-privacy-maintenance.service` and its timer. The
 timer runs after boot and one minute after each completed pass, with a 55-second
-service timeout and no guest-facing port. Metadata scanning uses a durable cursor;
-source scans and selections have explicit limits. Failed jobs retry at most three
-automatic failed attempts before operator intervention. Check `errors`, job state,
-source coverage and systemd failure status; a timeout is not successful cleanup.
+service timeout and no guest-facing port. Metadata scanning and each job's selected
+records use durable cursors, so held records do not prevent progress on later
+unheld selections. Source scans and selections have explicit limits. Each deletion
+receives at most three automatic failed attempts before operator intervention;
+successful batches and hold checks do not consume retries. Export write failures
+retain their three-attempt limit. Job detail includes separate batch/failure counts.
+Scheduled previews exclude records owned by unresolved retention or erasure jobs,
+including previews, exhausted retries and selections awaiting review. An operator
+can retry a current approved job explicitly or cancel it before preparing new work.
+Check `errors`, job state, source coverage and systemd failure status; a timeout is
+not successful cleanup.
 
 ## Cases, review exports and incidents
 
@@ -165,6 +181,9 @@ Subscription egress has installation-wide approval only, for all enabled
 categories. Its service explicitly selects `--runtime-dir <installation runtime>`;
 custom deployments must do the same. Persistent relay/proxy connections recheck
 policy; revocation cannot recall bytes already delivered.
+Policy dispatch reads an atomic directory-registry snapshot without creating or
+opening writable lock files, preserving the proxy's read-only systemd filesystem.
+Invalid registries or policies still fail closed; dispatch never repairs them.
 
 Approved relay paths no longer use implicit environment HTTP proxies or follow
 WebSocket redirects. Deployments depending on those behaviors need an explicitly

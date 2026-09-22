@@ -652,6 +652,11 @@ current revision and exact record list before approving retention work or releas
 because stale revisions and changed source records fail closed. See `docs/privacy-operations.md`
 for the operational boundaries, review sequence, and recovery guidance.
 
+Use **Inspect evidence** on a case, incident, external follow-up or hold to reopen its saved
+references and selected records. **Inspect stored evidence** also accepts a known record ID.
+Case, incident and follow-up detail requires `privacy.cases`; hold detail requires `privacy.approve`
+in the selected scope. Reading remains available while privileged mutations are locked.
+
 ## Configuration
 
 The Configuration tab edits directory-scoped policy and runtime-global admin settings.

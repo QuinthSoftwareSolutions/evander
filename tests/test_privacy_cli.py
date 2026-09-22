@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from evander.privacy import cli
@@ -142,3 +143,19 @@ def test_job_inspection_returns_exact_scoped_selection(monkeypatch):
     assert result.exit_code == 0, result.stdout
     assert calls == [("root/team", "job1", "host:123:operator")]
     assert json.loads(result.stdout)["revision"] == "rev1"
+
+
+@pytest.mark.parametrize("kind", ["case", "hold", "incident", "followup"])
+def test_evidence_inspection_uses_exact_scope_and_host_identity(monkeypatch, kind):
+    calls = []
+
+    def detail(scope, record_kind, record_id, *, actor):
+        calls.append((scope, record_kind, record_id, actor))
+        return {"id": record_id, "record_kind": record_kind, "evidence_reference": "saved/1"}
+
+    monkeypatch.setattr(cli, "service", lambda config: SimpleNamespace(record_detail=detail))
+    monkeypatch.setattr(cli, "host_actor", lambda: "host:123:operator")
+    result = CliRunner().invoke(cli.app, ["record", kind, "record1", "--directory-path", "root/team"])
+    assert result.exit_code == 0, result.stdout
+    assert calls == [("root/team", kind, "record1", "host:123:operator")]
+    assert json.loads(result.stdout)["evidence_reference"] == "saved/1"

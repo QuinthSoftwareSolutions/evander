@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import errno
+import json
 import socket
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -83,6 +86,57 @@ def test_missing_runtime_report_only_does_not_create_files(tmp_path):
     decision = runtime_provider_guard(runtime).check(**DISPATCH)
     assert decision.allowed and decision.would_deny
     assert not runtime.exists()
+
+
+@pytest.mark.parametrize("mode", ["report_only", "enforce"])
+def test_subscription_policy_reads_on_read_only_runtime_and_observes_revocation(tmp_path, monkeypatch, mode):
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directories = DirectoryStore(config.directories_store_path)
+    directories.ensure_root()
+    DirectoryService(directories).create(parent="root", name="child")
+    store = DirectoryConfigStore(directories, runtime_dir=tmp_path)
+    settings = policy(
+        mode=mode, provider="codex_subscription", endpoint="https://chatgpt.com",
+        connection_id="subscription:installation", capability="codex_subscription",
+    )
+    store.write("root", domain="privacy", payload={"privacy": settings})
+    guard = runtime_provider_guard(tmp_path)
+    dispatch = {
+        "provider": "codex_subscription", "endpoint": "https://chatgpt.com",
+        "connection_id": "subscription:installation", "capability": "codex_subscription",
+        "directory_path": None, "installation_wide": True,
+    }
+    original_open = Path.open
+
+    def read_only_open(path, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wa+"):
+            raise OSError(errno.EROFS, "Read-only file system")
+        return original_open(path, mode, *args, **kwargs)
+
+    def read_only_mutation(*args, **kwargs):
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    for revoked in (False, True):
+        if revoked:
+            settings["provider_policy"]["approvals"][0]["status"] = "revoked"
+            store.write("root", domain="privacy", payload={"privacy": settings})
+        before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+        with monkeypatch.context() as readonly:
+            readonly.setattr(Path, "open", read_only_open)
+            readonly.setattr(Path, "mkdir", read_only_mutation)
+            readonly.setattr(Path, "chmod", read_only_mutation)
+            decision = guard.check(**dispatch)
+        assert decision.reason == ("missing_current_approval" if revoked else "approved")
+        assert decision.allowed == (mode == "report_only" or not revoked)
+        assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+def test_read_only_policy_reader_does_not_repair_invalid_directory_registry(tmp_path):
+    config = GatewayConfig(runtime_dir=tmp_path)
+    config.directories_store_path.write_text(json.dumps({}))
+    assert config_provider_guard(config).check(**DISPATCH).reason == "policy_unavailable"
+    assert config.directories_store_path.read_text() == "{}"
+    assert list(tmp_path.iterdir()) == [config.directories_store_path]
 
 
 @pytest.mark.parametrize(

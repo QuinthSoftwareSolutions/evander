@@ -37,6 +37,15 @@ type JobDetail = RecordSummary & {
   status: string;
   records: RecordSummary[];
 };
+type EvidenceDetail = RecordSummary & {
+  id: string; scope: string; directory_path: string; record_kind: string; revision: string;
+};
+const EVIDENCE_KINDS: Record<string, { label: string; permission: string }> = {
+  case: { label: "Data-subject request", permission: "privacy.cases" },
+  hold: { label: "Hold", permission: "privacy.approve" },
+  incident: { label: "Incident", permission: "privacy.cases" },
+  followup: { label: "External follow-up", permission: "privacy.cases" },
+};
 type FormField = { name: string; label: string; required?: boolean; multiline?: boolean };
 type ActionDefinition = { label: string; permission: string; fields: FormField[]; destructive?: boolean };
 
@@ -156,13 +165,17 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value) ?? "";
 }
 
-function Summaries({ title, rows, hasMore }: { title: string; rows: RecordSummary[]; hasMore?: boolean }) {
+function Summaries({ title, rows, hasMore, onInspect, busy }: {
+  title: string; rows: RecordSummary[]; hasMore?: boolean; onInspect?: (id: string) => void; busy?: boolean;
+}) {
   return <section className="panel">
     <h3>{title}</h3>
     {hasMore ? <p>Additional records exist; this view is limited to 100 summaries. Use a known record ID or narrow the directory scope.</p> : null}
     {rows.length ? rows.map((row, index) => <details key={index}>
       <summary>{text(row.id ?? row.job_id ?? row.hold_id ?? row.case_id ?? row.incident_id ?? row.followup_id ?? index + 1)} · {text(row.status ?? "recorded")}</summary>
       <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(row, null, 2)}</pre>
+      {onInspect && typeof row.id === "string" ? <button type="button" disabled={busy}
+        onClick={() => onInspect(row.id as string)}>Inspect evidence: {row.id}</button> : null}
     </details>) : <p>No records in this scope.</p>}
   </section>;
 }
@@ -178,6 +191,9 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
   const [values, setValues] = useState<Record<string, string>>({});
   const [result, setResult] = useState<unknown>(null);
   const [reviewedJob, setReviewedJob] = useState<JobDetail | null>(null);
+  const [evidenceKind, setEvidenceKind] = useState("case");
+  const [evidenceId, setEvidenceId] = useState("");
+  const [evidence, setEvidence] = useState<EvidenceDetail | null>(null);
   const activeDirectoryPathRef = useRef(selectedDirectoryPath);
   const requestSequenceRef = useRef(0);
   activeDirectoryPathRef.current = selectedDirectoryPath;
@@ -190,6 +206,8 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
     setValues({});
     setResult(null);
     setReviewedJob(null);
+    setEvidence(null);
+    setEvidenceId("");
     setError("");
     setBusy(false);
     void fetchJson<PrivacyState>(`/api/privacy?${new URLSearchParams({ directory_path: requestedDirectoryPath })}`, {
@@ -215,6 +233,32 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
   const reviewedApproval = action !== "jobs.approve" || Boolean(reviewedJob
     && reviewedJob.id === values.job_id?.trim() && reviewedJob.scope === selectedDirectoryPath
     && reviewedJob.status === "preview" && reviewedJob.revision === state?.revision);
+
+  async function inspectEvidence(kind: string, id: string) {
+    const baseState = state;
+    const recordId = id.trim();
+    if (!baseState || !recordId || busy || !baseState.permissions?.includes(EVIDENCE_KINDS[kind]?.permission)) return;
+    const requestedDirectoryPath = baseState.directory_path;
+    if (requestedDirectoryPath !== activeDirectoryPathRef.current) return;
+    const requestId = ++requestSequenceRef.current;
+    setEvidenceKind(kind);
+    setEvidenceId(recordId);
+    setEvidence(null);
+    setBusy(true);
+    setError("");
+    try {
+      const detail = await fetchJson<EvidenceDetail>(`/api/privacy/records/${kind}/${encodeURIComponent(recordId)}?${new URLSearchParams({ directory_path: requestedDirectoryPath })}`, { cache: "no-store" });
+      if (requestId !== requestSequenceRef.current || activeDirectoryPathRef.current !== requestedDirectoryPath) return;
+      if (detail.id !== recordId || detail.record_kind !== kind || detail.scope !== requestedDirectoryPath
+        || detail.directory_path !== requestedDirectoryPath) throw new Error("Privacy evidence scope, kind or ID did not match");
+      if (detail.revision !== baseState.revision) throw new Error("Privacy state changed; refresh and inspect the current evidence");
+      setEvidence(detail);
+    } catch (cause: unknown) {
+      if (requestId === requestSequenceRef.current) setError(String(cause));
+    } finally {
+      if (requestId === requestSequenceRef.current) setBusy(false);
+    }
+  }
 
   async function inspectJob() {
     const baseState = state;
@@ -249,6 +293,7 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
     setBusy(true);
     setError("");
     setResult(null);
+    setEvidence(null);
     try {
       const payload: RecordSummary = {};
       for (const field of definition.fields) {
@@ -355,10 +400,30 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
           </a> — {String(job.status)}; expires {String(job.expires_at)}
         </li>)}</ul>
       </section> : null}
-      <Summaries title="Holds" rows={state.holds ?? []} hasMore={state.holds_has_more} />
-      <Summaries title="Data-subject requests" rows={state.cases ?? []} hasMore={state.cases_has_more} />
-      <Summaries title="External follow-ups" rows={state.followups ?? []} hasMore={state.followups_has_more} />
-      <Summaries title="Incidents" rows={state.incidents ?? []} hasMore={state.incidents_has_more} />
+      <section className="panel" aria-label="Stored privacy evidence">
+        <h3>Inspect stored evidence</h3>
+        <p>Open a record below or enter a known ID to review its saved references and selection in this directory.</p>
+        <form onSubmit={(event) => { event.preventDefault(); void inspectEvidence(evidenceKind, evidenceId); }}>
+          <label>Evidence type<select value={evidenceKind} disabled={busy} onChange={(event) => {
+            setEvidenceKind(event.target.value); setEvidence(null);
+          }}>{Object.entries(EVIDENCE_KINDS).map(([kind, entry]) => <option key={kind} value={kind}>{entry.label}</option>)}</select></label>
+          <label>Evidence record ID<input value={evidenceId} required disabled={busy} onChange={(event) => {
+            setEvidenceId(event.target.value); setEvidence(null);
+          }} /></label>
+          <button type="submit" disabled={busy || !evidenceId.trim() || !state.permissions?.includes(EVIDENCE_KINDS[evidenceKind].permission)}>Read stored evidence</button>
+        </form>
+        {evidence && evidence.scope === selectedDirectoryPath ? <div>
+          <h4>Stored evidence: {evidence.id}</h4>
+          <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(evidence, null, 2)}</pre>
+        </div> : null}
+      </section>
+      {([
+        ["hold", "Holds", state.holds, state.holds_has_more],
+        ["case", "Data-subject requests", state.cases, state.cases_has_more],
+        ["followup", "External follow-ups", state.followups, state.followups_has_more],
+        ["incident", "Incidents", state.incidents, state.incidents_has_more],
+      ] as const).map(([kind, title, rows, hasMore]) => <Summaries key={kind} title={title} rows={rows ?? []} hasMore={hasMore} busy={busy}
+        onInspect={state.permissions?.includes(EVIDENCE_KINDS[kind].permission) ? (id) => { void inspectEvidence(kind, id); } : undefined} />)}
     </> : null}
   </div>;
 }

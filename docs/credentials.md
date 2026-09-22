@@ -105,7 +105,12 @@ that credential's row to start or complete sign-in, or sign out. Each row addres
 credential, including shared identities whose owner is not a Teams consumer. The owner's
 directory configuration and other Teams accounts are unaffected. The existing Teams sign-in
 panel continues to address the identity configured for the selected directory.
-An existing JSON credential file must go through maintenance migration. The provider config
+An existing JSON file containing credentials must go through maintenance migration.
+An empty `{}` placeholder created by runtime assembly, or an empty encrypted legacy
+envelope with its valid key, is signed out and can prepare managed sign-in directly.
+Maintenance migration also accepts empty storage without inventing an identity conflict.
+Malformed sources and nonempty files missing the configured identity still require
+reconciliation. The provider config
 field `teams_delegated_credential_ref` selects managed custody; the legacy JSON path is then
 unused. Access/refresh tokens and account metadata remain in the encrypted bundle.
 Legacy input may be either the original plaintext document or an

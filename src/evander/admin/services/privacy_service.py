@@ -28,6 +28,7 @@ from evander.privacy.repository import PrivacyRepository, privacy_guard
 
 MAX_SELECTION = 1000
 MAX_EXPORT_BYTES = 32 * 1024 * 1024
+MAX_FAILED_ATTEMPTS = 3
 
 
 class PrivacyAdminService:
@@ -149,10 +150,40 @@ class PrivacyAdminService:
                 "cutoff",
                 "held_count",
                 "has_more",
+                "record_cursor",
+                "attempts",
+                "failed_attempts",
+                "record_failures",
             }
             return {
                 **self._summary(job),
                 **{k: v for k, v in job.items() if k in fields},
+                "directory_path": scope,
+                "revision": self._revision(scope),
+            }
+
+    def record_detail(self, scope: str, kind: str, record_id: str, *, actor="trusted-host") -> dict:
+        """Read stored evidence through an exact-scope, audited operator surface."""
+        fields_by_kind = {
+            "case": set(CaseCreate.model_fields) | {
+                "verification_reference", "closure_reference", "located_records",
+                "manual_datasets", "failed_datasets", "located_at", "coverage_complete",
+            },
+            "hold": set(HoldCreate.model_fields),
+            "incident": set(IncidentCreate.model_fields),
+            "followup": set(FollowupCreate.model_fields) | {"evidence_reference"},
+        }
+        if kind not in fields_by_kind:
+            raise PrivacyError("Unknown privacy evidence kind")
+        scope = self._scope(scope)
+        with privacy_guard(self.runtime_dir):
+            record = self._get(kind, record_id, scope)
+            self.repository.record_access(scope, f"review_{kind}_evidence", record_id, actor)
+            fields = fields_by_kind[kind] | {"created_by", "updated_by"}
+            return {
+                **self._summary(record),
+                **{key: value for key, value in record.items() if key in fields},
+                "record_kind": kind,
                 "directory_path": scope,
                 "revision": self._revision(scope),
             }
@@ -324,7 +355,7 @@ class PrivacyAdminService:
             raise PrivacyError("Hold selection contains missing or out-of-scope records")
         return self._summary(self._new("hold", scope, {**fields, "status": "active"}, actor))
 
-    def _retention_preview(self, scope, payload, actor):
+    def _retention_preview(self, scope, payload, actor, *, scheduled=False):
         self._fields(payload, {"dataset", "limit"}, {"dataset"})
         adapter = self.registry.get(payload["dataset"])
         limit = payload.get("limit", 50)
@@ -333,7 +364,10 @@ class PrivacyAdminService:
         cutoff = now_utc()
         candidates = adapter.preview(scope, cutoff=cutoff)
         held = [ref for ref in candidates if self.repository.held(ref.dataset_id, ref.record_id)]
-        eligible = [ref for ref in candidates if ref not in held]
+        reserved = self.repository.unresolved_selection_ids(payload["dataset"]) if scheduled else set()
+        eligible = [ref for ref in candidates if ref not in held and ref.record_id not in reserved]
+        if scheduled and not eligible:
+            return None
         fields = {
             "status": "preview",
             "operation": "retention",
@@ -489,7 +523,15 @@ class PrivacyAdminService:
             self._put("job", {**job, "status": "approved", "approved_by": actor}, actor)
         )
 
-    def _run(self, job, actor, *, limit=50):
+    @staticmethod
+    def _record_failures(job):
+        # Older jobs counted successful batches in attempts. Only persisted
+        # failure outcomes prove an unsuccessful attempt when upgrading them.
+        return dict(job.get("record_failures", {
+            key: 1 for key, outcome in job["outcomes"].items() if outcome == "failed"
+        }))
+
+    def _run(self, job, actor, *, limit=50, automatic=False):
         if job["status"] not in {"approved", "running", "partial_failure", "held"}:
             raise PrivacyConflict("This job is not approved for execution")
         scope = job["scope"]
@@ -505,11 +547,20 @@ class PrivacyAdminService:
             return self._run_export(job, actor)
         job = self._put("job", {**job, "status": "running"}, actor)
         outcomes = dict(job["outcomes"])
+        failures = self._record_failures(job)
+        failed_attempts = job.get("failed_attempts", int(bool(failures)))
+        failed_batch = False
         examined = 0
-        for raw in job["records"]:
+        records = job["records"]
+        cursor = job.get("record_cursor", 0)
+        for offset in range(len(records)):
+            index = (cursor + offset) % len(records)
+            raw = records[index]
             ref = RecordReference.model_validate(raw)
             key = f"{ref.dataset_id}:{ref.record_id}"
             if outcomes.get(key) in {"deleted", "already_absent"}:
+                continue
+            if automatic and failures.get(key, 0) >= MAX_FAILED_ATTEMPTS:
                 continue
             if examined >= limit:
                 break
@@ -523,7 +574,14 @@ class PrivacyAdminService:
                     outcomes[key] = "changed"
                 except Exception:
                     outcomes[key] = "failed"
-            job = self._put("job", {**job, "outcomes": outcomes}, actor)
+                    failures[key] = failures.get(key, 0) + 1
+                    if not failed_batch:
+                        failed_attempts += 1
+                        failed_batch = True
+            job = self._put("job", {
+                **job, "outcomes": outcomes, "record_cursor": (index + 1) % len(records),
+                "record_failures": failures, "failed_attempts": failed_attempts,
+            }, actor)
         states = set(outcomes.values())
         if "changed" in states:
             status = "needs_review"
@@ -628,7 +686,10 @@ class PrivacyAdminService:
         except OSError:
             self._put(
                 "job",
-                {**job, "status": "partial_failure", "attempts": job.get("attempts", 0) + 1},
+                {
+                    **job, "status": "partial_failure", "attempts": job.get("attempts", 0) + 1,
+                    "failed_attempts": job.get("failed_attempts", job.get("attempts", 0)) + 1,
+                },
                 actor,
             )
             raise PrivacyError(
@@ -841,10 +902,28 @@ class PrivacyAdminService:
                 self.repository.advance_maintenance(position)
                 if job["status"] not in {"approved", "running", "partial_failure", "held"}:
                     continue
-                if job.get("attempts", 0) >= 3 and job["status"] == "partial_failure":
+                if (
+                    job["operation"] == "export"
+                    and job.get("failed_attempts", job.get("attempts", 0)) >= MAX_FAILED_ATTEMPTS
+                ):
+                    continue
+                failures = self._record_failures(job)
+                pending = [
+                    f"{ref['dataset_id']}:{ref['record_id']}"
+                    for ref in job["records"]
+                    if job["outcomes"].get(f"{ref['dataset_id']}:{ref['record_id']}")
+                    not in {"deleted", "already_absent"}
+                ]
+                if job["operation"] != "export" and pending and all(
+                    failures.get(key, 0) >= MAX_FAILED_ATTEMPTS for key in pending
+                ):
+                    if job["status"] != "partial_failure":
+                        self._put("job", {**job, "status": "partial_failure"}, actor)
                     continue
                 try:
-                    outcome = self._run(job, actor, limit=limit - result["examined"])
+                    outcome = self._run(
+                        job, actor, limit=limit - result["examined"], automatic=True
+                    )
                     result["jobs"].append(outcome)
                     result["examined"] += max(1, outcome.get("examined", 0))
                 except PrivacyError:
@@ -858,25 +937,19 @@ class PrivacyAdminService:
                     if result["examined"] >= limit or not rule.approved or not rule.scheduled:
                         continue
                     try:
-                        adapter = self.registry.get(dataset)
-                        candidates = adapter.preview("root", cutoff=now_utc())
-                        if not any(
-                            not self.repository.held(ref.dataset_id, ref.record_id)
-                            for ref in candidates
-                        ):
-                            continue
                         preview = self._retention_preview(
-                            "root", {"dataset": dataset, "limit": limit - result["examined"]}, actor
+                            "root", {"dataset": dataset, "limit": limit - result["examined"]},
+                            actor, scheduled=True,
                         )
-                        job = self._get("job", preview["id"], "root")
-                        if not job["record_count"]:
-                            self._put("job", {**job, "status": "local_complete"}, actor)
+                        if preview is None:
                             continue
+                        job = self._get("job", preview["id"], "root")
                         self._approve(job, actor)
                         outcome = self._run(
                             self._get("job", job["id"], "root"),
                             actor,
                             limit=limit - result["examined"],
+                            automatic=True,
                         )
                         result["jobs"].append(outcome)
                         result["examined"] += max(1, outcome.get("examined", 0))

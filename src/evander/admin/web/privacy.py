@@ -45,6 +45,13 @@ ACTION_PERMISSIONS = {
     "exports.release": PRIVACY_APPROVE_PERMISSION,
 }
 
+EVIDENCE_PERMISSIONS = {
+    "case": PRIVACY_CASES_PERMISSION,
+    "incident": PRIVACY_CASES_PERMISSION,
+    "followup": PRIVACY_CASES_PERMISSION,
+    "hold": PRIVACY_APPROVE_PERMISSION,
+}
+
 _PRIVATE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
@@ -196,9 +203,28 @@ def privacy_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[
         except Exception:
             return _response({"error": "Privacy job selection could not be read securely"}, 500)
 
+    async def record_detail(request: Request) -> JSONResponse:
+        try:
+            kind = str(request.path_params["kind"])
+            permission = EVIDENCE_PERMISSIONS.get(kind)
+            if permission is None:
+                return _response({"error": "Unknown privacy evidence kind"}, 404)
+            scope, actor = authorize(request, permission)
+            return _response(await run_in_threadpool(
+                service.privacy_admin.record_detail, scope, kind,
+                str(request.path_params["record_id"]), actor=actor,
+            ))
+        except PermissionError as exc:
+            return _response({"error": str(exc)}, 403)
+        except (PrivacyError, ValueError) as exc:
+            return _response({"error": str(exc)}, 400)
+        except Exception:
+            return _response({"error": "Privacy evidence could not be read securely"}, 500)
+
     return [
         Route("/api/privacy", snapshot, methods=["GET"]),
         Route("/api/privacy/actions/{action:str}", mutate, methods=["POST"]),
         Route("/api/privacy/exports/{job_id:str}", export_review, methods=["GET"]),
         Route("/api/privacy/jobs/{job_id:str}", job_detail, methods=["GET"]),
+        Route("/api/privacy/records/{kind:str}/{record_id:str}", record_detail, methods=["GET"]),
     ]

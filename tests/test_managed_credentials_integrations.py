@@ -418,6 +418,52 @@ def test_teams_migration_rejects_transitional_envelope_without_key(admin):
     assert admin.credential_admin.store.list_metadata() == []
 
 
+@pytest.mark.parametrize("encrypted", [False, True])
+@pytest.mark.parametrize("operation", ["prepare", "migrate"])
+def test_first_time_managed_teams_accepts_empty_store_from_runtime_assembly(tmp_path, monkeypatch, operation, encrypted):
+    monkeypatch.setenv("EVANDER_CREDENTIALS_KEY_FILE", str(tmp_path / "keys/master.key"))
+    runtime_dir = write_runtime_config(
+        tmp_path, enable_directory_scoped_config=True,
+        teams_backend="delegated_graph_api", teams_delegated_identity_id="identity-a",
+        teams_delegated_client_id="client-a", teams_delegated_tenant_id="tenant-a",
+    )
+    admin = build_admin_runtime(runtime_dir)
+    service = admin.credential_admin
+    service.store.initialize()
+    config = admin.runtime.provider_config.resolve_for_directory("root")
+    source = Path(config.teams_delegated_credential_store_path)
+    assert json.loads(source.read_text()) == {}
+    if encrypted:
+        JsonTeamsIdentityCredentialStore(source, "identity-a").clear()
+    before = source.read_bytes()
+    if operation == "prepare":
+        service.prepare_teams("root", {"expected_config_revision": service.snapshot("root")["teams_revision"]})
+        assert source.read_bytes() == before
+    else:
+        assert not migrate_teams(admin)["conflicts"]
+        assert source.read_bytes() == before
+        assert migrate_teams(admin, apply=True, maintenance=True)["applied"]
+        assert not source.exists()
+    reloaded = build_admin_runtime(runtime_dir)
+    config = reloaded.runtime.provider_config.resolve_for_directory("root")
+    assert config.teams_delegated_credential_ref
+    assert ManagedTeamsCredentialStore(config, "root").load() is None
+    assert len(service.store.list_metadata()) == 1
+
+
+def test_empty_teams_setup_does_not_ignore_unmigrated_other_identity(admin):
+    source = legacy_teams_source(admin)
+    payload = json.loads(source.read_text())
+    payload["other-identity"] = payload.pop("identity-a")
+    source.write_text(json.dumps(payload))
+    service = admin.credential_admin
+    with pytest.raises(CredentialError, match="maintenance migration"):
+        service.prepare_teams("root", {"expected_config_revision": service.snapshot("root")["teams_revision"]})
+    assert migrate_teams(admin, apply=True, maintenance=True)["conflicts"]
+    assert service.store.list_metadata() == []
+    assert json.loads(source.read_text()) == payload
+
+
 def create_admin_connector(admin, directory="root"):
     service = admin.credential_admin
     return service.create_connector(

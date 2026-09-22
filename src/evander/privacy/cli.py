@@ -91,6 +91,17 @@ def job_detail(
         raise typer.BadParameter(str(exc)) from exc
 
 
+@app.command("record")
+def record_detail(
+    kind: str, record_id: str, directory_path: Directory = "root", config: Config = Path("runtime")
+) -> None:
+    """Inspect persisted case, hold, incident or followup evidence in the exact scope."""
+    try:
+        emit(service(config).record_detail(directory_path, kind, record_id, actor=host_actor()))
+    except (PrivacyError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 @app.command("action")
 def action(
     action: str,

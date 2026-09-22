@@ -166,6 +166,160 @@ def test_hold_published_after_approval_stops_job(service):
     assert result["status"] == "local_complete"
 
 
+def retention_job(service, count=2):
+    # Stage live attachments first so staging's opportunistic cleanup does not
+    # remove earlier fixtures before the full retention selection is prepared.
+    records = [artifact(service, expired=False) for _ in range(count)]
+    for store, record in records:
+        path = store.metadata_path(record.artifact_id)
+        payload = json.loads(path.read_text())
+        payload["expires_at"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        path.write_text(json.dumps(payload))
+    job = action(service, "retention.preview", {"dataset": "communication_artifacts"})
+    assert job["record_count"] == count
+    action(service, "jobs.approve", {"job_id": job["id"]})
+    return service.repository.get("job", job["id"], "root")
+
+
+def test_maintenance_resumes_past_held_records_after_restart(service):
+    publish(service)
+    job = retention_job(service)
+    first, second = job["records"]
+    hold = action(service, "holds.create", {
+        "dataset": "communication_artifacts", "record_ids": [first["record_id"]],
+        "reason": "preserve first", "review_at": datetime.now(UTC).isoformat(),
+    })
+    assert service.maintenance(limit=1)["examined"] == 1
+    reloaded = PrivacyAdminService(service.operations, service.resolver, service.config)
+    assert reloaded.maintenance(limit=1)["examined"] == 1
+    store = CommunicationArtifactStore(service.runtime_dir)
+    assert store.blob_path(first["record_id"]).exists()
+    assert not store.blob_path(second["record_id"]).exists()
+    action(reloaded, "holds.release", {"hold_id": hold["id"]})
+    assert reloaded.maintenance(limit=1)["jobs"][0]["status"] == "local_complete"
+
+
+def test_successful_batches_do_not_consume_failure_retries(service, monkeypatch):
+    publish(service)
+    job = retention_job(service, count=4)
+    adapter = service.registry.get("communication_artifacts")
+    erase = adapter.erase
+    failing_id = job["records"][-1]["record_id"]
+    attempts = []
+
+    def transient(scope, ref):
+        if ref.record_id == failing_id:
+            attempts.append(ref.record_id)
+            if len(attempts) == 1:
+                raise OSError("transient deletion failure")
+        return erase(scope, ref)
+
+    monkeypatch.setattr(adapter, "erase", transient)
+    for _ in range(3):
+        service.maintenance(limit=1)
+    assert service.repository.get("job", job["id"], "root")["failed_attempts"] == 0
+    service.maintenance(limit=1)
+    failed = service.repository.get("job", job["id"], "root")
+    assert failed["status"] == "partial_failure" and failed["failed_attempts"] == 1
+    assert service.maintenance(limit=1)["jobs"][0]["status"] == "local_complete"
+    assert len(attempts) == 2
+
+
+def test_old_batch_counter_does_not_exhaust_new_failure_budget(service):
+    publish(service)
+    job = retention_job(service, count=1)
+    key = f"communication_artifacts:{job['records'][0]['record_id']}"
+    service.repository.put("job", job["id"], "root", {
+        **job, "status": "partial_failure", "attempts": 30, "outcomes": {key: "failed"},
+    })
+    assert service.maintenance(limit=1)["jobs"][0]["status"] == "local_complete"
+    assert service.repository.get("job", job["id"], "root")["failed_attempts"] == 1
+
+
+@pytest.mark.parametrize("outcome", ["deleted", "failed"])
+def test_maintenance_finishes_status_after_interrupted_last_outcome(service, outcome):
+    publish(service)
+    job = retention_job(service, count=1)
+    key = f"communication_artifacts:{job['records'][0]['record_id']}"
+    service.repository.put("job", job["id"], "root", {
+        **job, "status": "running", "outcomes": {key: outcome}, "record_failures": {key: 3},
+    })
+    service.maintenance(limit=1)
+    assert service.repository.get("job", job["id"], "root")["status"] == (
+        "local_complete" if outcome == "deleted" else "partial_failure"
+    )
+
+
+def test_failed_record_budget_does_not_starve_other_selected_records(service, monkeypatch):
+    publish(service)
+    job = retention_job(service, count=5)
+    adapter = service.registry.get("communication_artifacts")
+    erase = adapter.erase
+    failed_ids = {ref["record_id"] for ref in job["records"][:3]}
+    calls = []
+
+    def fail_selected(scope, ref):
+        calls.append(ref.record_id)
+        if ref.record_id in failed_ids:
+            raise OSError("unavailable")
+        return erase(scope, ref)
+
+    monkeypatch.setattr(adapter, "erase", fail_selected)
+    for _ in range(15):
+        assert service.maintenance(limit=1)["examined"] <= 1
+    assert all(calls.count(record_id) == 3 for record_id in failed_ids)
+    assert all(calls.count(ref["record_id"]) == 1 for ref in job["records"][3:])
+    assert service.repository.get("job", job["id"], "root")["status"] == "partial_failure"
+
+
+def test_scheduling_does_not_bypass_retries_or_duplicate_unresolved_selection(service, monkeypatch):
+    publish(service, scheduled=True)
+    store, record = artifact(service)
+    calls = []
+
+    def fail(scope, ref):
+        calls.append(ref.record_id)
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(service.registry.get("communication_artifacts"), "erase", fail)
+    for _ in range(8):
+        assert service.maintenance(limit=2)["examined"] <= 2
+    jobs = service.repository.list("job", "root")
+    assert len(jobs) == 1
+    assert calls == [record.artifact_id] * 3
+    assert store.blob_path(record.artifact_id).exists()
+    # An explicit cancellation releases ownership for a new operator-authorized pass.
+    action(service, "jobs.cancel", {"job_id": jobs[0]["id"]})
+    service.maintenance(limit=1)
+    assert len(service.repository.list("job", "root")) == 2
+
+
+@pytest.mark.parametrize("status", ["preview", "held", "needs_review", "partial_failure"])
+def test_scheduler_respects_old_unresolved_jobs_outside_metadata_page(service, status):
+    publish(service, scheduled=True)
+    store, record = artifact(service)
+    job = action(service, "retention.preview", {"dataset": "communication_artifacts"})
+    saved = service.repository.get("job", job["id"], "root")
+    saved["status"] = status
+    key = f"communication_artifacts:{record.artifact_id}"
+    if status == "partial_failure":
+        saved.update(outcomes={key: "failed"}, record_failures={key: 3})
+    elif status == "held":
+        action(service, "holds.create", {
+            "dataset": "communication_artifacts", "record_ids": [record.artifact_id],
+            "reason": "preserve", "review_at": datetime.now(UTC).isoformat(),
+        })
+    service.repository.put("job", job["id"], "root", saved)
+    for index in range(105):
+        service._new("job", "root", {**saved, "records": [], "outcomes": {}, "status": "cancelled"}, "fixture")
+    with service.repository.connect() as db:
+        position = db.execute("SELECT rowid FROM privacy_records WHERE id=?", (job["id"],)).fetchone()[0]
+    service.repository.advance_maintenance(position)
+    assert service.maintenance(limit=1)["jobs"] == []
+    assert len(service.repository.list("job")) == 106
+    assert store.blob_path(record.artifact_id).exists()
+
+
 def test_stale_revision_and_unknown_scope_fail(service):
     old = service.snapshot("root")["revision"]
     create_case(service)
@@ -403,6 +557,60 @@ def test_job_detail_audits_actor_without_invalidating_revision(service):
         row = db.execute("SELECT actor,operation FROM privacy_access_events").fetchone()
         assert tuple(row) == ("reviewer-identity", "review_job_selection")
     assert service.snapshot("root")["revision"] == before
+
+
+def test_persisted_evidence_is_scoped_audited_and_available_after_reload(service):
+    _, record = artifact(service)
+    case = create_case(service)
+    action(service, "cases.update", {
+        "case_id": case["id"], "status": "open", "verification_reference": "verification/1",
+    })
+    action(service, "cases.locate", {"case_id": case["id"]})
+    hold = action(service, "holds.create", {
+        "dataset": "communication_artifacts", "record_ids": [record.artifact_id],
+        "reason": "hold/evidence/1", "review_at": datetime.now(UTC).isoformat(),
+    })
+    incident = action(service, "incidents.create", {
+        "discovered_at": datetime.now(UTC).isoformat(), "controller_ref": "controller/1",
+        "evidence_reference": "incident/evidence/1",
+    })
+    action(service, "incidents.update", {
+        "incident_id": incident["id"], "status": "contained",
+        "containment_reference": "containment/1", "notification_reference": "notification/1",
+    })
+    followup = action(service, "followups.create", {
+        "case_id": case["id"], "kind": "provider", "owner": "operator",
+        "reference": "ticket/1", "deadline_at": datetime.now(UTC).isoformat(),
+    })
+    action(service, "followups.update", {
+        "followup_id": followup["id"], "status": "complete", "evidence_reference": "followup/evidence/1",
+    })
+    service.resolver.directory_service.create(parent="root", name="other")
+    reloaded = PrivacyAdminService(service.operations, service.resolver, service.config)
+    before = reloaded.snapshot("root")["revision"]
+    for kind, saved, fields in (
+        ("case", case, {"controller_ref": "customer/instruction/1", "instruction_ref": "request/1",
+                        "verification_reference": "verification/1", "subject_keys": {"session_id": "session-one"}}),
+        ("hold", hold, {"reason": "hold/evidence/1", "record_ids": [record.artifact_id]}),
+        ("incident", incident, {"controller_ref": "controller/1", "evidence_reference": "incident/evidence/1",
+                                "containment_reference": "containment/1", "notification_reference": "notification/1"}),
+        ("followup", followup, {"reference": "ticket/1", "evidence_reference": "followup/evidence/1"}),
+    ):
+        details = reloaded.record_detail("root", kind, saved["id"], actor="reviewer")
+        assert all(details[key] == value for key, value in fields.items())
+        assert details["revision"] == before and details["record_kind"] == kind
+        assert details["directory_path"] == details["scope"] == "root"
+        with pytest.raises(PrivacyError, match="selected scope"):
+            reloaded.record_detail("root/other", kind, saved["id"], actor="reviewer")
+    assert "instruction_ref" not in reloaded.snapshot("root")["cases"][0]
+    assert "reason" not in reloaded.snapshot("root")["holds"][0]
+    assert "evidence_reference" not in reloaded.snapshot("root")["incidents"][0]
+    with reloaded.repository.connect() as db:
+        rows = db.execute("SELECT actor,operation FROM privacy_access_events").fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("reviewer", f"review_{kind}_evidence") for kind in ("case", "hold", "incident", "followup")
+    ]
+    assert reloaded.snapshot("root")["revision"] == before
 
 
 def _acquire_privacy_lock_in_child(runtime_dir, entered):
