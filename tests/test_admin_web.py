@@ -2647,7 +2647,13 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
 
 def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> None:
     app_source = (
-        Path(__file__).resolve().parents[1] / "frontend" / "admin-web" / "src" / "App.tsx"
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "admin-web"
+        / "src"
+        / "features"
+        / "workflow-editor"
+        / "nodeDefaults.ts"
     ).read_text(encoding="utf-8")
 
     assert "dedupe:${{system.execution.event_id}}" in app_source

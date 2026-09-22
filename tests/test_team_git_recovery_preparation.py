@@ -126,11 +126,11 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
             ) from exc
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args: SimpleNamespace(prepare_task_worktree=prepare),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: sources,
     )
     context = EffectRuntimeContext(
@@ -345,12 +345,12 @@ def test_explicit_contribution_contract_prepares_fresh_worktree_after_inputs_acc
         return daemon.prepare_task_worktree(session_id, request)
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args: SimpleNamespace(prepare_task_worktree=prepare),
     )
     sources = []
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: list(sources),
     )
     context = EffectRuntimeContext(

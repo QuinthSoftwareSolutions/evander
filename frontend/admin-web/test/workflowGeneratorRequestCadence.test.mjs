@@ -1,21 +1,12 @@
+import { readWorkflowEditorSource, readWorkflowEditorFunction } from "./workflowEditorSource.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const app = readWorkflowEditorSource();
 
 test("workflow generator model requests require an explicit action", () => {
-  const generatorFetchIndex = app.indexOf('"/api/workflow-editor/generate-draft"');
-  const descriptionHandlerIndex = app.indexOf("function handleWorkflowGeneratorDescriptionChange");
-  const generatorActionIndex = app.indexOf("async function generateWorkflowGeneratorDraft");
-  assert.notEqual(generatorFetchIndex, -1);
-  assert.notEqual(descriptionHandlerIndex, -1);
-  assert.notEqual(generatorActionIndex, -1);
-  const generatorRequestSource = app.slice(
-    Math.max(0, generatorFetchIndex - 1200),
-    generatorFetchIndex + 300,
-  );
-  const descriptionHandlerSource = app.slice(descriptionHandlerIndex, generatorActionIndex);
+  const generatorRequestSource = readWorkflowEditorFunction("generateWorkflowGeneratorDraft");
+  const descriptionHandlerSource = readWorkflowEditorFunction("handleWorkflowGeneratorDescriptionChange");
 
   assert.match(app, /async function generateWorkflowGeneratorDraft\(\)/);
   assert.match(app, /onClick=\{generateWorkflowGeneratorDraft\}/);
@@ -26,7 +17,7 @@ test("workflow generator model requests require an explicit action", () => {
   assert.match(app, /role="dialog" aria-modal="false"/);
   assert.match(app, /aria-label="Generate workflow"/);
   assert.match(app, /aria-haspopup="dialog"/);
-  assert.doesNotMatch(app.slice(app.indexOf("function renderWorkflowGeneratorCanvasPanel"), app.indexOf("function renderWorkflowPackModal")), /modal-backdrop/);
+  assert.doesNotMatch(readWorkflowEditorFunction("renderWorkflowGeneratorCanvasPanel"), /modal-backdrop/);
   assert.match(app, /const workflowMutationLocked = workflowEditLocked \|\| workflowGeneratorOpen;/);
   assert.match(app, /nodesDraggable=\{!workflowMutationLocked/);
   assert.match(app, /nodesConnectable=\{!workflowMutationLocked\}/);

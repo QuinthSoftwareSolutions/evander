@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander_team_addon import provider_events
+
 import hashlib
 import json
 import shlex
@@ -38,7 +40,6 @@ from evander.workflow.packs import WorkflowPack
 from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 import evander_team_addon.outbox_publication as team_outbox_publication
-import evander_team_addon.providers as team_providers
 from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
 from evander_team_addon.costs import TeamCostService
@@ -3315,7 +3316,7 @@ def test_systemd_team_wake_fails_before_leasing_when_runtime_generation_is_stale
 ) -> None:
     monkeypatch.setenv("INVOCATION_ID", "systemd-invocation")
     monkeypatch.setattr(
-        "evander_team_addon.providers.require_current_runtime_generation",
+        "evander_team_addon.provider_wake.require_current_runtime_generation",
         lambda _runtime_dir: (_ for _ in ()).throw(
             RuntimeError("Team runtime generation is not current")
         ),
@@ -3348,7 +3349,7 @@ def test_systemd_governance_wake_fails_before_state_access_when_generation_is_st
 ) -> None:
     monkeypatch.setenv("INVOCATION_ID", "systemd-invocation")
     monkeypatch.setattr(
-        "evander_team_addon.providers.require_current_runtime_generation",
+        "evander_team_addon.provider_wake_chat.require_current_runtime_generation",
         lambda _runtime_dir: (_ for _ in ()).throw(
             RuntimeError("Team runtime generation is not current")
         ),
@@ -3436,7 +3437,7 @@ def test_immediate_wake_can_skip_global_maintenance(
         _unexpected_maintenance,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.reconcile_current_human_review_assignments",
+        "evander_team_addon.provider_wake.reconcile_current_human_review_assignments",
         _unexpected_maintenance,
     )
     monkeypatch.setattr(
@@ -4858,11 +4859,11 @@ def test_mutation_chat_does_not_prepare_git_or_review_artifacts(
         raise AssertionError("chat must not prepare repositories or review artifacts")
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repos",
+        "evander_team_addon.provider_wake._prepare_project_repos",
         _unexpected,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_review_artifacts_for_lease",
+        "evander_team_addon.provider_wake._prepare_review_artifacts_for_lease",
         _unexpected,
     )
     resumer = FakeResumer()
@@ -9574,11 +9575,11 @@ def test_dependency_recovery_worktree_uses_pinned_commit_not_live_base_branch(
         return "/home/agent/worktrees/repo/recovery-task", base_commit
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: dependency_sources,
     )
 
@@ -9644,11 +9645,11 @@ def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
         return "/home/agent/worktrees/repo/task", pinned_commit
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: [],
     )
 
@@ -9704,7 +9705,7 @@ def test_coordination_task_is_excluded_from_git_preparation(
         raise AssertionError("coordination tasks must not prepare Git worktrees")
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _unexpected_prepare,
     )
 
@@ -9803,11 +9804,11 @@ def test_pinned_dependency_composition_receipt_retries_from_prepared_checkout_ba
         )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: dependency_sources,
     )
     original_create = TeamAdminService.create_git_work_context_with_id
@@ -9921,11 +9922,11 @@ def test_git_preparation_receipt_survives_context_commit_conflict_and_retries(
         )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: [],
     )
     original_create = TeamAdminService.create_git_work_context_with_id
@@ -10702,11 +10703,11 @@ def test_git_context_transaction_revalidates_exact_dependency_generation(
         return "/home/agent/worktrees/repo/task", "c" * 40
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         _dependency_sources,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     original_create = TeamAdminService.create_git_work_context_with_id
@@ -10791,7 +10792,7 @@ def test_git_context_transaction_rejects_project_generation_change_during_prepar
         return "/home/agent/worktrees/repo/task", "c" * 40
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
 
@@ -11032,7 +11033,7 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
             }
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        "evander_team_addon.provider_git_repositories.AgentCloneRepoEffectProvider",
         CapturingCloneProvider,
     )
     provider = TeamWakeDueAgentsEffectProvider()
@@ -11132,7 +11133,7 @@ def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
 
     managed_git = _ManagedGit()
     monkeypatch.setattr(
-        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        "evander_team_addon.provider_git_repositories.AgentCloneRepoEffectProvider",
         _CapturingCloneProvider,
     )
     resumer = FakeResumer()
@@ -13614,7 +13615,7 @@ def test_create_task_effect_reports_generated_id_from_atomic_mutation(
             return super().create_or_reprioritize_task_with_result(**kwargs)
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.TeamAdminService",
+        "evander_team_addon.provider_tasks.TeamAdminService",
         RacingTaskAdminService,
     )
     provider = TeamCreateTaskEffectProvider()
@@ -13932,7 +13933,7 @@ def test_create_case_effect_returns_generated_id_when_other_case_is_created(
             return super().create_case_with_id(**kwargs)
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.TeamAdminService",
+        "evander_team_addon.provider_tasks.TeamAdminService",
         RacingCaseAdminService,
     )
     provider = TeamCreateCaseEffectProvider()
@@ -14926,7 +14927,7 @@ def test_team_event_publisher_enriches_release_approval_handoff(
         return "publication-context"
 
     monkeypatch.setattr(
-        team_providers,
+        provider_events,
         "release_publication_context",
         _publication_context,
     )

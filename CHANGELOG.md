@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-22 - Separate control-plane implementation responsibilities (0.58.4)
+
+- Split Team API routes, workflow providers, domain models, derived views, and SQLite
+  persistence into cohesive modules while retaining public imports and migration order.
+- Separate integration services, communication tool groups, and CLI commands with stable
+  tool registration, command help, request schemas, and operator behavior.
+- Give workflow run reporting and realtime voice playback explicit per-invocation state
+  and smaller processing stages, preserving correlation, cancellation, and cleanup behavior.
+- Extract workflow editor components, state hooks, and pure helpers with typed interfaces
+  while preserving editing, inspection, validation, and save interactions.
+
 ## 2026-09-22 - Use GPT-6 for new agent defaults (0.58.3)
 
 - Use GPT-6 Sol for Codex agent fallbacks, new OpenAI setup, and guest bootstrap defaults.

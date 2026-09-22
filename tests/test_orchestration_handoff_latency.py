@@ -615,7 +615,7 @@ def test_native_receipt_preflight_matches_last_wins_timestamp_ties(monkeypatch):
         for i in range(2)
     ]
     monkeypatch.setattr(
-        "evander_team_addon.providers._team_native_thread_receipt",
+        "evander_team_addon.provider_completion._team_native_thread_receipt",
         lambda r: AgentDispatchNativeThreadReceipt(
             "session", "dispatch", "native", now, missing_thread=r.execution_id == "1"
         ),

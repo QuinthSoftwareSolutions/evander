@@ -1,8 +1,9 @@
+import { readWorkflowEditorSource, readWorkflowEditorFunction } from "./workflowEditorSource.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const source = readWorkflowEditorSource();
 const typesSource = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
 
 test("workflow editor exposes workflow pack selection and sends it on save", () => {
@@ -44,14 +45,8 @@ test("workflow editor exposes workflow pack management actions", () => {
 });
 
 test("workflow editor exposes workflow pack history", () => {
-  const historySource = source.slice(
-    source.indexOf("function renderWorkflowPackHistory()"),
-    source.indexOf("function toggleWorkflowPackHistoryPanel()"),
-  );
-  const historyPanelSource = source.slice(
-    source.indexOf("function renderWorkflowPackHistoryCanvasPanel()"),
-    source.indexOf("function renderSavePanelContent()"),
-  );
+  const historySource = readWorkflowEditorFunction("renderWorkflowPackHistory");
+  const historyPanelSource = readWorkflowEditorFunction("renderWorkflowPackHistoryCanvasPanel");
   assert.match(typesSource, /export type WorkflowPackHistoryEntry = \{/);
   assert.match(typesSource, /export type WorkflowPackHistoryDetail = \{/);
   assert.match(source, /function workflowPackHistoryPath\(workflowPack/);

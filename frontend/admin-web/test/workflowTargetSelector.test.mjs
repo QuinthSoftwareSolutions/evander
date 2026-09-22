@@ -1,8 +1,8 @@
+import { readWorkflowEditorSource } from "./workflowEditorSource.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const app = readWorkflowEditorSource();
 
 test("collapses target selector triplets while preserving session and VM disambiguation", () => {
   const targetSelectorSet = app.match(/const TARGET_SELECTOR_NODE_TYPES = new Set\(\[([\s\S]*?)\]\);/)?.[1] ?? "";

@@ -1,10 +1,18 @@
+import { readWorkflowEditorSource, readWorkflowEditorFunction } from "./workflowEditorSource.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const app = readWorkflowEditorSource();
 
 function sourceBetween(startText, endText) {
+  const functionName = /^function ([A-Za-z0-9_]+)/.exec(startText)?.[1];
+  if (functionName) {
+    const implementation = readWorkflowEditorFunction(functionName);
+    return functionName === "workflowTutorialIsAtFinalStep"
+      ? implementation + readWorkflowEditorFunction("markActiveWorkflowTutorialCompletedIfFinished")
+      : implementation;
+  }
   const start = app.indexOf(startText);
   assert.notEqual(start, -1, `missing start marker: ${startText}`);
   const end = app.indexOf(endText, start);
@@ -24,9 +32,9 @@ test("tutorial edits do not replace the shared workflow graph state", () => {
 });
 
 test("tutorial progress uses account preferences and the chooser can skip or restart without auto-starting", () => {
-  const progressHelpers = sourceBetween(
-    "const WORKFLOW_TUTORIAL_PROGRESS_API_PATH",
-    "function readStoredWorkflowSidebarWidth()",
+  const progressHelpers = readFileSync(
+    new URL("../src/features/workflow-editor/tutorialModel.ts", import.meta.url),
+    "utf8",
   );
   const chooserBranch = sourceBetween(
     "function renderWorkflowTutorialChooser()",
