@@ -596,6 +596,122 @@ def test_child_can_migrate_inherited_environment_profile_without_changing_parent
     assert child.auth_profiles["documents"].token_env is None
 
 
+@pytest.mark.parametrize("entrypoint", ["api", "cli", "preview"])
+def test_parent_connector_conversion_rejects_incompatible_child_without_changes(admin, monkeypatch, entrypoint):
+    from typer.testing import CliRunner
+    from evander.cli import app
+    from evander.credentials.migration import migrate_connector
+
+    DirectoryService(admin.directory_store).create(parent="root", name="team")
+    admin.credential_admin.connectors.save(
+        "root/team", expected_revision=admin.credential_admin.connectors.snapshot("root/team")["revision"],
+        config_payload={"auth_profiles": {"documents": {"token_env": "CHILD_TOKEN"}}},
+    )
+    parent = admin.credential_admin.connectors.snapshot("root")
+    child = admin.credential_admin.connectors.snapshot("root/team")
+    profile = admin.runtime.provider_config.resolve_connectors_for_directory("root").auth_profiles["documents"]
+    monkeypatch.setenv(profile.token_env, "synthetic-parent-token")
+    monkeypatch.setenv("CHILD_TOKEN", "synthetic-child-token")
+    if entrypoint == "api":
+        with TestClient(Starlette(routes=credential_routes(admin, Auth()))) as client:
+            response = client.post("/api/admin/credentials", json={
+                "profile_id": "documents", "values": {"token": "synthetic-parent-token"},
+                "expected_config_revision": parent["revision"],
+            })
+        assert response.status_code == 409, response.text
+        message = response.text
+    elif entrypoint == "cli":
+        result = CliRunner().invoke(app, [
+            "credentials", "migrate", "--family", "connector", "--directory", "root",
+            "--profile-id", "documents", "--runtime-dir", str(admin.config.runtime_dir),
+            "--apply", "--maintenance",
+        ])
+        assert result.exit_code == 1, result.output
+        message = result.output
+    else:
+        result = migrate_connector(admin, directory="root", profile_id="documents")
+        assert result["conflicts"] and not result["applied"]
+        message = json.dumps(result)
+    assert "root/team" in message and "documents" in message
+    assert "credential_ref" in message and "null" in message
+    assert "synthetic-parent-token" not in message and "synthetic-child-token" not in message
+    assert admin.credential_admin.store.list_metadata() == []
+    assert admin.credential_admin.connectors.snapshot("root")["config"] == parent["config"]
+    assert admin.credential_admin.connectors.snapshot("root/team")["config"] == child["config"]
+    assert admin.runtime.provider_config.resolve_connectors_for_directory("root/team").auth_profiles["documents"].token_env == "CHILD_TOKEN"
+
+
+def test_parent_conversion_preserves_child_migrated_first(admin):
+    DirectoryService(admin.directory_store).create(parent="root", name="team")
+    child = create_admin_connector(admin, "root/team")
+    parent = create_admin_connector(admin)
+    assert parent["id"] != child["id"]
+    assert admin.runtime.provider_config.resolve_connectors_for_directory("root/team").auth_profiles["documents"].credential_ref == child["id"]
+
+
+def test_parent_conversion_preserves_explicit_child_environment_profile(admin, monkeypatch):
+    DirectoryService(admin.directory_store).create(parent="root", name="team")
+    overlay = {"auth_profiles": {"documents": {
+        "type": "bearer_env", "token_env": "CHILD_TOKEN", "credential_ref": None,
+    }}}
+    admin.credential_admin.connectors.save(
+        "root/team", expected_revision=admin.credential_admin.connectors.snapshot("root/team")["revision"],
+        config_payload=overlay,
+    )
+    create_admin_connector(admin)
+    child = admin.runtime.provider_config.resolve_connectors_for_directory("root/team")
+    assert child.auth_profiles["documents"].credential_ref is None
+    assert child.auth_profiles["documents"].token_env == "CHILD_TOKEN"
+    monkeypatch.setenv("CHILD_TOKEN", "synthetic-child-token")
+    service = admin.credential_admin.connectors._deps.connector_service
+    assert service.auth_status(child, child.connectors["documents"], directory_path="root/team")["available"]
+    assert admin.credential_admin.connectors.snapshot("root/team")["config"] == overlay
+
+
+@pytest.mark.parametrize("change", ["auth_override", "destination"])
+def test_parent_conversion_rechecks_descendants_before_publishing(admin, monkeypatch, change):
+    from evander.admin.services.credential_admin_service import CredentialConversionConflict
+
+    DirectoryService(admin.directory_store).create(parent="root", name="team")
+    before = admin.credential_admin.connectors.snapshot("root")["config"]
+    create = admin.credential_admin.store.create
+
+    def concurrent_child_edit(**kwargs):
+        record = create(**kwargs)
+        overlay = (
+            {"auth_profiles": {"documents": {"token_env": "CHILD_TOKEN"}}}
+            if change == "auth_override" else
+            {"connectors": {"documents": {"config": {"base_url": "https://child.example.test"}}}}
+        )
+        admin.credential_admin.connectors.save(
+            "root/team", expected_revision=admin.credential_admin.connectors.snapshot("root/team")["revision"],
+            config_payload=overlay,
+        )
+        return record
+
+    monkeypatch.setattr(admin.credential_admin.store, "create", concurrent_child_edit)
+    with pytest.raises(CredentialConversionConflict, match="root/team"):
+        create_admin_connector(admin)
+    assert admin.credential_admin.connectors.snapshot("root")["config"] == before
+    assert all(row["status"] == "deleted" for row in admin.credential_admin.store.list_metadata())
+    assert admin.credential_admin.connectors.snapshot("root/team")["config"]
+
+
+def test_conversion_validates_grandchild_overlays_when_parent_profile_is_inherited(admin):
+    from evander.admin.services.credential_admin_service import CredentialConversionConflict
+
+    directories = DirectoryService(admin.directory_store)
+    directories.create(parent="root", name="team")
+    directories.create(parent="root/team", name="child")
+    admin.credential_admin.connectors.save(
+        "root/team/child", expected_revision=admin.credential_admin.connectors.snapshot("root/team/child")["revision"],
+        config_payload={"auth_profiles": {"documents": {"token_env": "CHILD_TOKEN"}}},
+    )
+    with pytest.raises(CredentialConversionConflict, match="root/team/child"):
+        create_admin_connector(admin, "root/team")
+    assert admin.credential_admin.store.list_metadata() == []
+
+
 def test_api_lock_keyloss_and_malformed_inputs_never_return_values(admin):
     auth = Auth()
     with TestClient(Starlette(routes=credential_routes(admin, auth))) as client:

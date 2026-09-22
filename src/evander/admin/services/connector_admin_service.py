@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
-from typing import Any, ContextManager, Protocol
+from typing import Any, Callable, ContextManager, Protocol
 
 from evander.admin.directory import (
     AdminResult,
@@ -109,6 +109,7 @@ class ConnectorAdminService:
         *,
         expected_revision: str,
         config_payload: object,
+        preflight: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if not expected_revision:
             raise ValueError("expected_revision is required")
@@ -144,6 +145,10 @@ class ConnectorAdminService:
                     if metadata["owner_directory"] != directory_path or metadata["kind"] != "connector":
                         raise ValueError("Credential reference must be declared in its owning directory")
             self._deps.connector_service.validate_config(candidate)
+            if preflight is not None:
+                # Credential conversion must recheck descendants under the same
+                # mutation lock as publication, after the parent revision check.
+                preflight()
             result = self._deps.operations_admin.write_directory_domain_config(
                 directory_path, "connectors", config_payload
             )

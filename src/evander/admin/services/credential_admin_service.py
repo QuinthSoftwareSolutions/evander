@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import copy
 
+from pydantic import ValidationError
+
+from evander.admin.services.connector_admin_service import _deep_merge
+from evander.connectors.models import ConnectorDirectoryConfig
 from evander.credentials import CredentialConflict, CredentialError, CredentialStore
 from evander.credentials.bindings import (
     connector_binding,
@@ -12,6 +16,10 @@ from evander.credentials.bindings import (
 from evander.credentials.store import contains_scope, scope_path
 from evander.directories import DirectoryService
 from evander.models import AuditEvent
+
+
+class CredentialConversionConflict(CredentialConflict):
+    """Safe, actionable conversion diagnostics containing configuration IDs only."""
 
 
 class CredentialAdminService:
@@ -130,6 +138,65 @@ class CredentialAdminService:
             )
         )
 
+    @staticmethod
+    def _managed_connector_profile(profile, ref):
+        managed = profile.model_dump(mode="json", exclude_none=True)
+        for field in (
+            "token_env", "username_env", "password_env", "client_id_env", "client_secret_env",
+        ):
+            managed[field] = None  # Clear inherited environment sources explicitly.
+        managed.update(type=profile.type.removesuffix("_env"), credential_ref=ref)
+        return managed
+
+    def validate_connector_conversion(self, directory, pid, *, managed=None, expected_bindings=None):
+        """Preview the replacement without importing values or editing children."""
+        parent = self.resolver.resolve_connectors_for_directory(directory)
+        profile = parent.auth_profiles.get(pid)
+        if profile is None:
+            raise CredentialError("Select a configured authentication profile")
+        if managed is None:
+            # A schema-valid preview reference; never persisted or resolved.
+            managed = self._managed_connector_profile(profile, "cred_" + "0" * 32)
+        parent_payload = parent.model_dump(mode="json")
+        parent_payload["auth_profiles"][pid] = managed
+        bindings = [
+            connector_binding(pid, cid, profile, connector)
+            for cid, connector in parent.connectors.items() if connector.auth_profile == pid
+        ]
+        if expected_bindings is not None and (
+            len(bindings) != len(expected_bindings)
+            or any(binding not in expected_bindings for binding in bindings)
+        ):
+            raise CredentialConversionConflict(
+                "Connector consumers changed; reload configuration before converting credentials."
+            )
+        for child in self.directories.list_descendants(directory):
+            conflict = CredentialConversionConflict(
+                f"Cannot convert authentication profile '{pid}': descendant '{child.path}' "
+                "would have an invalid profile or lose its credential binding. "
+                "Migrate that child's credential first, or give it a complete local "
+                "authentication profile with credential_ref set to null, then retry."
+            )
+            result = self.operations.compute_directory_effective_config(child.path, "connectors")
+            if not result.ok or result.data is None:
+                raise conflict
+            candidate = copy.deepcopy(parent_payload)
+            for layer in result.data.resolution.applied_layers:
+                if layer.directory_path.startswith(directory + "/"):
+                    candidate = _deep_merge(candidate, layer.overlay)
+            try:
+                effective = ConnectorDirectoryConfig.model_validate(candidate)
+            except ValidationError:
+                raise conflict from None
+            child_profile = effective.auth_profiles.get(pid)
+            if child_profile and child_profile.credential_ref == managed["credential_ref"]:
+                if any(
+                    connector_binding(pid, cid, child_profile, connector) not in bindings
+                    for cid, connector in effective.connectors.items()
+                    if connector.auth_profile == pid and not connector.disabled
+                ):
+                    raise conflict
+
     def create_connector(
         self, directory: str, payload: dict, actor=None, *, recovery=False
     ) -> dict:
@@ -155,6 +222,7 @@ class CredentialAdminService:
         ]
         if not bindings:
             raise CredentialError("Authentication profile must have a configured connector")
+        self.validate_connector_conversion(directory, pid, expected_bindings=bindings)
         metadata = self.store.create(
             owner=directory,
             kind="connector",
@@ -164,22 +232,18 @@ class CredentialAdminService:
             expires_at=payload.get("expires_at"),
         )
         overlay = copy.deepcopy(snapshot["config"])
-        managed = profile.model_dump(mode="json", exclude_none=True)
-        for field in (
-            "token_env",
-            "username_env",
-            "password_env",
-            "client_id_env",
-            "client_secret_env",
-        ):
-            managed[field] = None  # Clear inherited environment sources explicitly.
-        managed.update(type=profile.type.removesuffix("_env"), credential_ref=metadata["id"])
+        managed = self._managed_connector_profile(profile, metadata["id"])
         overlay.setdefault("auth_profiles", {})[pid] = managed
         recovery_path = None
         try:
             if recovery:
                 recovery_path = self.store.backup("connector-migration-recovery")
-            self.connectors.save(directory, expected_revision=expected, config_payload=overlay)
+            self.connectors.save(
+                directory, expected_revision=expected, config_payload=overlay,
+                preflight=lambda: self.validate_connector_conversion(
+                    directory, pid, managed=managed, expected_bindings=bindings
+                ),
+            )
         except Exception:
             # Never leave an active unbound credential when the config CAS fails.
             self.store.update(

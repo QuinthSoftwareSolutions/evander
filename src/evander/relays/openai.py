@@ -62,6 +62,7 @@ from evander.session_auth import (
 logger = logging.getLogger(__name__)
 
 MCP_SESSION_TOKEN_REQUIRED_MESSAGE = "MCP session token is required for this session"
+_PRIVACY_STREAM_RECHECK_SECONDS = 1.0
 
 HOP_BY_HOP_HEADERS = {
     "authorization",
@@ -2007,15 +2008,25 @@ class OpenAIRelay:
                 yield chunk
             return
         pending: asyncio.Task[bytes] | None = None
+        loop = asyncio.get_running_loop()
+        next_check = float("-inf")
         try:
             while True:
-                self._require_privacy(context)
+                if loop.time() >= next_check:
+                    # Registry/session/provider reads are synchronous. Offload one
+                    # complete check per interval, not two checks per SSE chunk.
+                    # Do not forward bytes while a due check is still running.
+                    await asyncio.to_thread(self._require_privacy, context)
+                    next_check = loop.time() + _PRIVACY_STREAM_RECHECK_SECONDS
                 if pending is None:
                     pending = asyncio.create_task(anext(chunks))
-                done, _ = await asyncio.wait({pending}, timeout=1.0)
-                if not done:
+                done, _ = await asyncio.wait(
+                    {pending}, timeout=max(0.0, next_check - loop.time())
+                )
+                if not done or loop.time() >= next_check:
+                    # Even an idle upstream is rechecked. A chunk arriving at a
+                    # deadline stays pending until fresh authorization succeeds.
                     continue
-                self._require_privacy(context)
                 try:
                     chunk = pending.result()
                 except StopAsyncIteration:

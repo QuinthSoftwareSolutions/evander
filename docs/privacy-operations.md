@@ -189,6 +189,11 @@ Subscription checks share a policy snapshot for at most one second across tunnel
 Each snapshot resolves every directory once, including dormant children; expiry is
 still checked on every dispatch. A failed refresh denies traffic without reusing
 expired approvals. Directory-attributed relay checks continue to reload on each call.
+For SSE streams, the relay runs a full policy/session check before forwarding the
+first chunk and at one-second intervals thereafter, including while the upstream
+is idle. These synchronous reads run in a worker thread, not on the shared event
+loop. A due check pauses forwarding; a denial cancels the pending upstream read.
+New dispatches and retries still perform their own fresh checks.
 Policy dispatch reads an atomic directory-registry snapshot without creating or
 opening writable lock files, preserving the proxy's read-only systemd filesystem.
 Invalid registries or policies still fail closed; dispatch never repairs them.

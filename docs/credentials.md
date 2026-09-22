@@ -96,6 +96,15 @@ reviews **current consumers** and approves that exact preview. Approval uses bot
 revision and a consumer-preview revision. The Connectors page can select locally owned,
 already-bound references.
 
+Before converting a parent profile, both Credentials and CLI migration preview its
+descendants. A partial child override such as `{"token_env":"CHILD_TOKEN"}` cannot
+inherit the parent's new managed type/reference. Conversion reports the affected
+directory and stops before importing values. Migrate that child first, or pin a
+complete local environment profile (including its legacy type, environment fields,
+and `"credential_ref": null`), then retry the parent. The child overlay is never
+rewritten automatically. Descendants are checked again under the publication lock;
+a concurrent incompatible edit prevents publication and retires the unused new record.
+
 OAuth caches check current credential status and revision before use, including after token
 acquisition. Disable/delete stops future selection; an already-dispatched request may finish.
 Provider-side revocation remains a provider operation. Known managed values reflected in REST

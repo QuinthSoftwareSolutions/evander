@@ -7,6 +7,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from evander.admin.services.connector_admin_service import ConnectorConfigRevisionConflict
+from evander.admin.services.credential_admin_service import CredentialConversionConflict
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import request_has_privileged_operations
 from evander.credentials import CredentialConflict, CredentialError, CredentialUnavailable
@@ -63,6 +64,8 @@ def credential_routes(service, auth):
             return response(result)
         except PermissionError:
             return response({"error": "Credential management requires directory owner access"}, 403)
+        except CredentialConversionConflict as exc:
+            return response({"error": str(exc)}, 409)
         except (CredentialConflict, ConnectorConfigRevisionConflict):
             return response(
                 {"error": "Credential or configuration changed. Reload before saving."}, 409

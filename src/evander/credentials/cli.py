@@ -89,6 +89,7 @@ def migrate(
     maintenance: Annotated[bool, typer.Option("--maintenance")] = False,
 ):
     from evander.admin.composition import build_admin_runtime
+    from evander.admin.services.credential_admin_service import CredentialConversionConflict
     from .migration import migrate_connector, migrate_teams
 
     if family not in {"teams", "connector"}:
@@ -114,6 +115,9 @@ def migrate(
             raise typer.Exit(1)
     except typer.Exit:
         raise
+    except CredentialConversionConflict as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
     except Exception:
         typer.echo(
             "Credential migration failed. Source values were not printed; inspect configuration, key access and migration metadata before retrying.",

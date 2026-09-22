@@ -374,6 +374,8 @@ def migrate_teams(runtime, *, apply: bool = False, maintenance: bool = False) ->
 
 
 def migrate_connector(runtime, *, directory: str, profile_id: str, apply=False) -> dict:
+    from evander.admin.services.credential_admin_service import CredentialConversionConflict
+
     admin = runtime.credential_admin
     config = admin.resolver.resolve_connectors_for_directory(directory)
     profile = config.auth_profiles.get(profile_id)
@@ -388,7 +390,14 @@ def migrate_connector(runtime, *, directory: str, profile_id: str, apply=False) 
         "migrated": bool(profile.credential_ref),
         "applied": False,
     }
-    if profile.credential_ref or not apply:
+    if profile.credential_ref:
+        return report
+    try:
+        admin.validate_connector_conversion(directory, profile_id)
+    except CredentialConversionConflict as exc:
+        report["conflicts"] = [str(exc)]
+        return report
+    if not apply:
         return report
     names = {
         "token": profile.token_env,

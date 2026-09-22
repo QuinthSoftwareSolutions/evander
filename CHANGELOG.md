@@ -24,6 +24,10 @@
   overrides against inherited policy, and keep unavailable Teams identities visible to
   administrators. Resolve subscription policy once per bounded shared snapshot instead of
   repeatedly walking the directory registry for every tunnel read.
+- Preflight descendant connector profiles before parent credential conversion and report
+  actionable UI/CLI conflicts without changing independent child credentials. Move SSE
+  policy/session checks off the relay event loop and bound them to one check per stream
+  interval while preserving idle-stream revocation and upstream cleanup.
 - Include technical privacy review drafts and deployment/restore caveats. No production
   policies, provider contracts, legal approvals, or customer-data cleanup are applied.
 

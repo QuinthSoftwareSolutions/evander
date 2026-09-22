@@ -448,6 +448,128 @@ def test_idle_sse_revocation_cancels_pending_upstream_read(tmp_path):
     assert closed
 
 
+@pytest.mark.parametrize("mode", ["report_only", "enforce"])
+def test_sse_policy_resolution_is_bounded_and_runs_off_event_loop(tmp_path, monkeypatch, mode):
+    from evander.models import Directory
+
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directories = DirectoryStore(config.directories_store_path)
+    directories.write_all({
+        "root": Directory(id="root", name="root"),
+        **{f"d{i}": Directory(id=f"d{i}", name=f"d{i}", parent_id="root") for i in range(500)},
+    })
+    DirectoryConfigStore(directories, runtime_dir=tmp_path).write(
+        "root", domain="privacy", payload={"privacy": policy(mode=mode)},
+    )
+    relay = OpenAIRelay(config)
+    JsonSessionManifestRepository(config.session_store_path).upsert_session(SessionManifest(
+        session_id="stream", directory_path="root", allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    ))
+    context = RelayRequestContext("stream", config, False, False, "root")
+    checks = []
+    require = relay._require_privacy
+    loop_thread = threading.get_ident()
+
+    def checked(context):
+        checks.append(threading.get_ident())
+        require(context)
+
+    monkeypatch.setattr(relay, "_require_privacy", checked)
+
+    async def exercise():
+        async def chunks():
+            for _ in range(100):
+                yield b"data: fixture\n\n"
+        result = [chunk async for chunk in relay._privacy_stream_chunks(chunks(), context)]
+        assert len(result) == 100
+
+    asyncio.run(exercise())
+    assert len(checks) <= 2, "Policy resolution must not scale with chunk count"
+    assert loop_thread not in checks, "Filesystem and session resolution must not block the event loop"
+
+
+def test_sse_blocked_policy_check_does_not_block_another_stream(tmp_path, monkeypatch):
+    relay = OpenAIRelay(GatewayConfig(runtime_dir=tmp_path))
+    blocked = threading.Event()
+    release = threading.Event()
+
+    def checked(context):
+        if context.session_id == "slow":
+            blocked.set()
+            assert release.wait(timeout=2), "The event loop could not release the policy worker"
+
+    monkeypatch.setattr(relay, "_require_privacy", checked)
+
+    async def exercise():
+        async def chunks():
+            yield b"fixture"
+
+        async def consume(name):
+            context = RelayRequestContext(name, relay.config, False, False, "root")
+            return [chunk async for chunk in relay._privacy_stream_chunks(chunks(), context)]
+
+        slow = asyncio.create_task(consume("slow"))
+        try:
+            while not blocked.is_set():
+                await asyncio.sleep(0.001)
+            assert await asyncio.wait_for(consume("fast"), timeout=1) == [b"fixture"]
+            assert not slow.done()
+        finally:
+            release.set()
+            await slow
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("change", ["approval", "provider", "session", "unreadable_policy"])
+def test_sse_refresh_rejects_revoked_context_before_delivering_next_chunk(tmp_path, monkeypatch, change):
+    from evander.relays import openai
+
+    monkeypatch.setattr(openai, "_PRIVACY_STREAM_RECHECK_SECONDS", 0.02)
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directories = DirectoryStore(config.directories_store_path)
+    directories.ensure_root()
+    store = DirectoryConfigStore(directories, runtime_dir=tmp_path)
+    settings = policy()
+    store.write("root", domain="privacy", payload={"privacy": settings})
+    relay = OpenAIRelay(config)
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    session = SessionManifest(
+        session_id="stream", directory_path="root", allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    sessions.upsert_session(session)
+    context = RelayRequestContext("stream", config, False, False, "root")
+    closed = []
+
+    async def exercise():
+        async def chunks():
+            try:
+                yield b"first"
+                await asyncio.sleep(0.2)
+                yield b"must not be delivered"
+            finally:
+                closed.append(True)
+
+        stream = relay._privacy_stream_chunks(chunks(), context)
+        assert await anext(stream) == b"first"
+        if change == "approval":
+            settings["provider_policy"]["approvals"][0]["status"] = "revoked"
+            store.write("root", domain="privacy", payload={"privacy": settings})
+        elif change == "provider":
+            store.write("root", domain="providers", payload={"openai_api_base_url": "https://other.example/v1"})
+        elif change == "session":
+            sessions.upsert_session(session.model_copy(update={"expires_at": datetime.now(UTC) - timedelta(seconds=1)}))
+        else:
+            (tmp_path / "directory-config/root/privacy.json").write_text("{invalid")
+        with pytest.raises(PrivacyDispatchDenied):
+            await asyncio.wait_for(anext(stream), timeout=1)
+
+    asyncio.run(exercise())
+    assert closed
+
+
 def test_relay_persistent_context_rejects_changed_provider_and_session(tmp_path):
     settings = policy()
     relay = OpenAIRelay(
