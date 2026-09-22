@@ -182,7 +182,7 @@ from .domain.governance import (
     _governance_goals_with_generated_ids,
     _record_governance_membership_change_agenda,
 )
-from .domain.project_status import _recalculate_project_status
+from .domain.project_status import _recalculate_project_status, blocker_affected_project_ids
 from .domain.operator_directives import append_operator_directive
 from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
@@ -1040,6 +1040,7 @@ class TeamAdminService:
                     f"recovery; use POST /candidate-correction-recoveries/{blocker.id} "
                     "with retry or create_verified_replacement"
                 )
+            blocked_project_ids = blocker_affected_project_ids(state, blocker)
             now = utc_now()
             route_before_resolution = blocker.route.value
             if (
@@ -1078,6 +1079,8 @@ class TeamAdminService:
                         "route_before_resolution": route_before_resolution,
                     }
                 )
+                for project_id in sorted(blocked_project_ids):
+                    _recalculate_project_status(state, project_id)
                 return state
             _prepare_blocker_source_for_resolution(
                 state,
@@ -1180,6 +1183,8 @@ class TeamAdminService:
                     "route_before_resolution": route_before_resolution,
                 }
             )
+            for project_id in sorted(blocked_project_ids):
+                _recalculate_project_status(state, project_id)
             return state
 
         state = self._repository.update_with_outbox(

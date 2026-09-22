@@ -11,6 +11,15 @@
   empty bypass lanes, fresh operation keys for changed repairs, and preservation of human edits.
   Keep layout findings separate from write success and snapshot conflict detection.
 
+## 2026-09-22 - Restore projects after terminal blocker recovery (0.57.3)
+
+- Recalculate every directly affected project's status when an operator resolves a terminal
+  blocker, including terminal-release review blockers that the project-status display omits.
+- Resolve project targets from blocker, task, and source relationships without recomputing all
+  projects' task assessments while the state write is locked.
+- Preserve execution-stall quarantine for post-release reports while covering the operator path
+  that cancels unnecessary triage, closes its feedback case, and resolves the stale stall.
+
 ## 2026-09-21 - Keep Miro diagrams individually editable (0.57.2)
 
 - Make separate native shapes, text and connectors the default for human-agent collaboration,
