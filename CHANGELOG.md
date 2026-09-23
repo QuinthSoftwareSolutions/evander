@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-23 - Reduce Admin Web read overhead (0.61.1)
+
+- Let execution-history clients omit exact match counts while retaining cursor pagination;
+  show loaded rows and whether more are available in the workflow editor.
+- Find execution-history availability bounds with index seeks and move history reads and
+  response serialization off the web event loop, preserving authorization checks.
+- Filter session inventories before sorting so narrow views only sort their matching rows.
+
 ## 2026-09-23 - Unify the Admin Web design (0.61.0)
 
 - Offer a temporary Classic / New UI selector, defaulting to a frozen main UI until

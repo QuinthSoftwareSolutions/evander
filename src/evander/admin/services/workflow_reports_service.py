@@ -597,6 +597,7 @@ class WorkflowReportsAdminService:
         filters: list[Mapping[str, Any]],
         limit: int,
         cursor: str | None,
+        include_total: bool = True,
     ) -> WorkflowNodeExecutionSearchPayload:
         stores = self._workflow_run_store_paths()
         payload = search_node_executions(
@@ -608,6 +609,7 @@ class WorkflowReportsAdminService:
             filters=filters,
             limit=limit,
             cursor=cursor,
+            include_total=include_total,
             full_retention_days=int(
                 stores["orchestration_retention_days"]
                 if stores.get("orchestration_retention_days") is not None

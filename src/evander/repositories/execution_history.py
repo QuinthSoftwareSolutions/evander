@@ -702,6 +702,7 @@ def search_node_executions(
     cursor: str | None,
     full_retention_days: int,
     compact_retention_days: int,
+    include_total: bool = True,
 ) -> dict[str, Any]:
     ensure_orchestration_schema(path)
     where, params = _history_search_predicates(
@@ -727,12 +728,14 @@ def search_node_executions(
             statuses=statuses,
             filters=filters,
         )
-        matched = int(
-            connection.execute(
-                f"SELECT COUNT(*) {base_from} WHERE {' AND '.join(where)}",
-                params,
-            ).fetchone()[0]
-        )
+        matched = None
+        if include_total:
+            matched = int(
+                connection.execute(
+                    f"SELECT COUNT(*) {base_from} WHERE {' AND '.join(where)}",
+                    params,
+                ).fetchone()[0]
+            )
         rows = connection.execute(
             f"""
             SELECT h.*,
@@ -1122,18 +1125,25 @@ def _history_availability(
     full_retention_days: int,
     compact_retention_days: int,
 ) -> dict[str, Any]:
-    bounds = connection.execute(
-        """
-        SELECT MIN(started_at) AS earliest, MAX(started_at) AS latest
-        FROM workflow_node_execution_history
-        WHERE node_id = ? AND started_at >= ? AND started_at < ?
-        """,
-        (
-            node_id,
-            _storage_timestamp(started_from),
-            _storage_timestamp(started_to),
-        ),
-    ).fetchone()
+    # Separate index seeks avoid scanning the whole window for a combined
+    # MIN/MAX aggregate, including when the caller opts out of an exact count.
+    bounds: dict[str, str | None] = {}
+    for name, order in (("earliest", "ASC"), ("latest", "DESC")):
+        row = connection.execute(
+            f"""
+            SELECT started_at
+            FROM workflow_node_execution_history
+            WHERE node_id = ? AND started_at >= ? AND started_at < ?
+            ORDER BY started_at {order}
+            LIMIT 1
+            """,
+            (
+                node_id,
+                _storage_timestamp(started_from),
+                _storage_timestamp(started_to),
+            ),
+        ).fetchone()
+        bounds[name] = row["started_at"] if row is not None else None
     state_row = connection.execute(
         "SELECT value_json FROM orchestration_metadata WHERE key = ?",
         ("execution_history_backfill",),

@@ -746,11 +746,10 @@ def workflow_routes(
                 request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory_path
             )
 
-    async def post_node_execution_search(request: Request) -> JSONResponse:
+    def build_node_execution_search_response(
+        request: Request, search: WorkflowNodeExecutionSearchRequestPayload
+    ) -> JSONResponse:
         try:
-            search = WorkflowNodeExecutionSearchRequestPayload.model_validate(
-                await json_body(request)
-            )
             execution_directory_paths = (
                 service.workflow_config_admin.read_workflow_node_execution_authorization_paths(
                     node_id=search.node_id,
@@ -771,6 +770,7 @@ def workflow_routes(
                 filters=[item.model_dump(mode="json") for item in search.filters],
                 limit=search.limit,
                 cursor=search.cursor,
+                include_total=search.include_total,
             )
             require_node_execution_read(
                 request,
@@ -789,11 +789,19 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
-    async def post_node_execution_fields(request: Request) -> JSONResponse:
+    async def post_node_execution_search(request: Request) -> JSONResponse:
         try:
-            search = WorkflowNodeExecutionFieldsRequestPayload.model_validate(
+            search = WorkflowNodeExecutionSearchRequestPayload.model_validate(
                 await json_body(request)
             )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        return await run_in_threadpool(build_node_execution_search_response, request, search)
+
+    def build_node_execution_fields_response(
+        request: Request, search: WorkflowNodeExecutionFieldsRequestPayload
+    ) -> JSONResponse:
+        try:
             execution_directory_paths = (
                 service.workflow_config_admin.read_workflow_node_execution_authorization_paths(
                     node_id=search.node_id,
@@ -828,7 +836,16 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
-    async def get_node_execution_detail(request: Request) -> JSONResponse:
+    async def post_node_execution_fields(request: Request) -> JSONResponse:
+        try:
+            search = WorkflowNodeExecutionFieldsRequestPayload.model_validate(
+                await json_body(request)
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        return await run_in_threadpool(build_node_execution_fields_response, request, search)
+
+    def build_node_execution_detail_response(request: Request) -> JSONResponse:
         execution_key = str(request.path_params.get("execution_key") or "").strip()
         try:
             if not execution_key:
@@ -861,6 +878,9 @@ def workflow_routes(
         except PermissionError as exc:
             return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
+
+    async def get_node_execution_detail(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_node_execution_detail_response, request)
 
     async def get_run_detail(request: Request) -> JSONResponse:
         query = request.query_params

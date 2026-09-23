@@ -75,9 +75,7 @@ class SessionAdminService:
             else set()
         )
         summaries: list[SessionSummary] = []
-        for session_id, manifest in sorted(
-            self._sessions_by_id().items(), key=session_helpers.session_sort_key
-        ):
+        for session_id, manifest in self._sessions_by_id().items():
             if direct_only:
                 if session_id not in owned_session_ids:
                     continue
@@ -99,6 +97,7 @@ class SessionAdminService:
                     is_expired=is_expired,
                 )
             )
+        summaries.sort(key=lambda item: (item.created_at, item.expires_at, item.session_id))
         return summaries
 
     def get_session_summary(self, session_id: str) -> SessionSummary:
