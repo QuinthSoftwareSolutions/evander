@@ -68,6 +68,39 @@ When no asset directory is configured, Admin Web serves the bundled defaults fro
 
 ## Shared Shell
 
+### Appearance and record navigation
+
+During the design rollout, the header's **UI** selector offers **Classic** and **New UI**.
+Classic is the default. Switching reloads the current page after a confirmation; save
+any edits first. The browser remembers your choice, and each open tab keeps its own
+version. Both versions operate on the same live data and share your signed-in session.
+Only the selected version and its matching built-in add-on assets are loaded.
+
+Use `/?admin_ui=classic` or `/?admin_ui=new` to open a particular version directly.
+The following appearance and list-navigation controls describe New UI.
+
+New UI uses a consistent compact layout. The browser remembers the light/dark theme,
+and embedded add-ons receive the same theme. Touch devices retain larger control targets.
+
+Most pages start with a searchable list. Select an item to open its
+inspector, then choose **View agent**, **View session**, or the corresponding
+page-specific action for forms, controls, logs, and history.
+Close the inspector or press Escape to return focus to the selected record. On narrow
+screens the inspector opens as a dialog. The inventory and full record retain their
+filters and local editing state while switching between them.
+
+Click an inventory column header to sort ascending; click again for descending.
+The arrow indicates direction. Names use natural ordering (Agent 2 before Agent 10),
+numbers and dates use their actual values, and unavailable values stay last. Sorting
+keeps the current filters and inspected record, including when returning from the full record.
+
+Release news remains visible on the Dashboard. **Read article** opens a larger reader;
+**Older** and **Newer** browse the archive. Version, build, and changelog details are
+available below the story. Team views keep their existing destinations; narrow screens
+use a view selector, and task-board filters can be expanded when needed.
+
+### Navigation and context
+
 ![Admin dashboard and navigation](assets/admin-ui/manual-dashboard.png)
 
 Every Admin UI section uses the same shell:

@@ -1,0 +1,2 @@
+/* Domain geometry stays below the shared design system in the cascade. */
+@import "../styles.css" layer(admin-structure);

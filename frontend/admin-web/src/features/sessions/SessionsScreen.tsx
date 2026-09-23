@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
@@ -6,6 +6,9 @@ import { JsonObjectKeyValueEditor, StringListEditor } from "../admin/StructuredP
 import { CleanupIcon, DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
+import { RecordInspector } from "../admin/RecordInspector";
+import { SortableTableHeader, useTableSort } from "../admin/SortableTableHeader";
+import { timestampSortValue } from "../admin/tableSorting";
 import type {
   AgentCreateCommunicationTargetOption,
   AgentCreateEmailMailboxOption,
@@ -1228,6 +1231,9 @@ export function SessionsScreen() {
   const [response, setResponse] = useState<SessionListResponse | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [deepLinkSessionId, setDeepLinkSessionId] = useState(() => sessionIdFromHash());
+  const [recordView, setRecordView] = useState(() => Boolean(sessionIdFromHash()) && readAdminHashQuery().get("inspect") !== "1");
+  const [inspectorOpen, setInspectorOpen] = useState(() => readAdminHashQuery().get("inspect") === "1");
+  const inspectorTriggerRef = useRef<HTMLElement | null>(null);
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [catalog, setCatalog] = useState<SessionCatalogResponse | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("active");
@@ -1301,6 +1307,8 @@ export function SessionsScreen() {
     const syncDeepLink = () => {
       const nextSessionId = sessionIdFromHash();
       setDeepLinkSessionId(nextSessionId);
+      setRecordView(Boolean(nextSessionId) && readAdminHashQuery().get("inspect") !== "1");
+      setInspectorOpen(Boolean(nextSessionId) && readAdminHashQuery().get("inspect") === "1");
       if (nextSessionId) {
         setSelectedSessionId(nextSessionId);
         setSessionFilter(nextSessionId);
@@ -1540,6 +1548,19 @@ export function SessionsScreen() {
       .filter((item) => matchesFilter(item, sessionFilter))
       .sort((left, right) => sessionListCollator.compare(left.session_id, right.session_id));
   }, [activeTab, response, sessionFilter]);
+
+  const { sortedRows: sortedInventoryItems, sort: inventorySort, toggleSort: toggleInventorySort } = useTableSort(
+    visibleItems,
+    (item, column) => {
+      switch (column) {
+        case "Session": return item.session_id;
+        case "State": return lifecycleLabel(item);
+        case "Model": return item.model;
+        case "Expires": return timestampSortValue(item.expires_at);
+        default: return null;
+      }
+    },
+  );
 
   useEffect(() => {
     if (!response) {
@@ -2273,21 +2294,45 @@ export function SessionsScreen() {
     }
   }
 
+  function inspectSession(sessionId: string, trigger: HTMLElement) {
+    if (sessionId !== selectedSessionId && (modelDirty || toolsDirty || policyDirty)
+      && !window.confirm("Discard unsaved session changes and select another session?")) return;
+    setDeepLinkSessionId("");
+    inspectorTriggerRef.current = trigger;
+    setSelectedSessionId(sessionId);
+    setInspectorOpen(true);
+    window.history.replaceState(null, "", `#sessions?${new URLSearchParams({ session_id: sessionId, inspect: "1" })}`);
+  }
+
+  function openFullRecord() {
+    setRecordView(true);
+    window.history.replaceState(null, "", `#sessions?${new URLSearchParams({ session_id: selectedSessionId })}`);
+    window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".session-record .record-back")?.focus());
+  }
+
+  function closeInspector() {
+    setInspectorOpen(false);
+    window.history.replaceState(null, "", "#sessions");
+  }
+
   return (
-    <div className="feature-page sessions-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
+    <>
+      <section className="collection-page sessions-inventory" hidden={recordView} aria-label="Sessions list">
+        <header className="collection-heading">
           <div>
-            <div className="eyebrow">Session control</div>
             <h1>Sessions</h1>
+            <p>Compare lifecycle, model, and expiry. Inspect a session to see its access and recent signals.</p>
           </div>
-        </div>
-        {mutationLocked ? <div className="callout warning-callout">Unlock privileged operations to renew, revoke, edit, or schedule sessions.</div> : null}
-        <label className="field-stack">
-          <span>Find session</span>
-          <input value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)} placeholder="session, VM, issue, model" />
-        </label>
-        <div className="toolbar-grid sessions-filter-grid">
+        </header>
+        <div className="collection-toolbar">
+          <label className="field-stack collection-search">
+            <span>Find session</span>
+            <input
+              value={sessionFilter}
+              onChange={(event) => setSessionFilter(event.target.value)}
+              placeholder="session, VM, issue, model"
+            />
+          </label>
           <label className="field-stack">
             <span>State</span>
             <select value={activeTab} onChange={(event) => setActiveTab(event.target.value as TabKey)}>
@@ -2295,999 +2340,1391 @@ export function SessionsScreen() {
               <option value="expired">Expired ({response?.counts.expired ?? 0})</option>
             </select>
           </label>
+          <span className="panel-meta" role="status">
+            {response ? `${visibleItems.length} ${visibleItems.length === 1 ? "session" : "sessions"}` : "Loading sessions…"}
+          </span>
         </div>
-        <div className="feature-list session-list">
-          {visibleItems.map((item) => (
-            <button
-              key={item.session_id}
-              type="button"
-              className={`feature-list-item session-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
-              onClick={() => {
-                setDeepLinkSessionId("");
-                setSelectedSessionId(item.session_id);
-              }}
-            >
-              <div className="feature-list-title-row session-list-item-row">
-                <Tooltip content={`Session id: ${item.session_id}`}>
-                  <strong>{item.session_id}</strong>
-                </Tooltip>
-                <span className={`status-pill session-state-pill state-${lifecycleClass(item)}`}>{lifecycleLabel(item)}</span>
-              </div>
-              {item.container_lifecycle?.last_signal_at ? (
-                <div className="feature-list-meta">Last signal {formatTimestamp(item.container_lifecycle.last_signal_at)}</div>
-              ) : null}
-            </button>
-          ))}
-          {visibleItems.length === 0 ? <div className="empty-state">No sessions matched the current view.</div> : null}
-        </div>
-      </section>
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selectedSession?.session_id ?? "Select a session"}</h2>
-            <p className="muted-text">
-              {selectedSession
-                ? "Manage expiry, model and tool access, then inspect wake schedules and the live session summary."
-                : "Choose a session from the left to inspect and manage it."}
-            </p>
+        {error && !recordView ? (
+          <div className="callout error-callout" role="alert">
+            {error}
           </div>
-          {selectedSession ? (
-            <div className="feature-toolbar-actions icon-actions">
-              <Tooltip content={selectedSession.is_expired ? "This session has expired and can no longer be resumed until it is renewed." : "This session is active and can still be used by its guest agent."}>
+        ) : null}
+        <div className={`collection-workspace${inspectorOpen && selectedSession ? " has-inspector" : ""}`}>
+          <div className="collection-scroll">
+            <table className="collection-table">
+              <caption className="sr-only">Sessions</caption>
+              <thead>
+                <tr>
+                  {["Session", "State", "Model", "Expires"].map(column => (
+                    <SortableTableHeader key={column} column={column} sort={inventorySort} onSort={toggleInventorySort} />
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedInventoryItems.map((item) => (
+                  <tr key={item.session_id} data-selected={inspectorOpen && item.session_id === selectedSessionId}>
+                    <td>
+                      <button
+                        type="button"
+                        className="record-name"
+                        onClick={(event) => inspectSession(item.session_id, event.currentTarget)}
+                      >
+                        {item.session_id}
+                      </button>
+                      <small>
+                        {item.vm_id ?? "No VM"}
+                        {item.issue_number ? ` · Issue ${item.issue_number}` : ""}
+                      </small>
+                    </td>
+                    <td>
+                      <span className={`status-pill state-${lifecycleClass(item)}`}>{lifecycleLabel(item)}</span>
+                    </td>
+                    <td>{item.model ?? "Unset"}</td>
+                    <td className="record-time">{formatTimestamp(item.expires_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {response && !visibleItems.length ? (
+              <div className="empty-state">No sessions matched the current view.</div>
+            ) : null}
+          </div>
+          {inspectorOpen && selectedSession && !recordView ? (
+            <RecordInspector
+              key={selectedSessionId}
+              title={selectedSession.session_id}
+              subtitle={
                 <span className={`status-pill state-${lifecycleClass(selectedSession)}`}>
                   {lifecycleLabel(selectedSession)}
                 </span>
-              </Tooltip>
-              <Tooltip content={selectedSession.vm_id ? `Attached VM: ${selectedSession.vm_id}` : "This session is not currently attached to a VM."}>
-                <span className="panel-meta">{selectedSession.vm_id ?? "No VM"}</span>
-              </Tooltip>
-              <Tooltip content="Extend the session expiry without changing the current session identity or attached VM.">
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => setShowRenewModal(true)}
-                  disabled={busy === "renew" || mutationLocked}
-                  aria-label="Extend session"
-                >
-                  <ExtendIcon />
-                </button>
-              </Tooltip>
-              {cleanupSupported(selectedSession) ? (
-                <Tooltip content={selectedSession.container_lifecycle?.actions?.cleanup?.reason ?? "Remove worker-side container state while keeping the session record visible for audit."}>
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => void runSessionAction("cleanup")}
-                    disabled={busy === "cleanup" || mutationLocked}
-                    aria-label={busy === "cleanup" ? "Cleaning up session" : "Clean up session"}
-                  >
-                    {busy === "cleanup" ? "…" : <CleanupIcon />}
-                  </button>
-                </Tooltip>
+              }
+              returnFocus={() => inspectorTriggerRef.current}
+              onClose={closeInspector}
+              onOpenRecord={openFullRecord}
+              openRecordLabel="View session"
+            >
+              <h3>Overview</h3>
+              <dl className="property-grid">
+                <div>
+                  <dt>Directory</dt>
+                  <dd>{selectedSession.directory_path}</dd>
+                </div>
+                <div>
+                  <dt>Model</dt>
+                  <dd>{selectedSession.model ?? "Unset"}</dd>
+                </div>
+                <div>
+                  <dt>VM</dt>
+                  <dd>{selectedSession.vm_id ?? "None"}</dd>
+                </div>
+                <div>
+                  <dt>Issue</dt>
+                  <dd>{selectedSession.issue_number ?? "None"}</dd>
+                </div>
+                <div>
+                  <dt>Created</dt>
+                  <dd>{formatTimestamp(selectedSession.created_at)}</dd>
+                </div>
+                <div>
+                  <dt>Expires</dt>
+                  <dd>{formatTimestamp(selectedSession.expires_at)}</dd>
+                </div>
+                {selectedSession.container_lifecycle?.last_signal_at ? (
+                  <div>
+                    <dt>Last signal</dt>
+                    <dd>{formatTimestamp(selectedSession.container_lifecycle.last_signal_at)}</dd>
+                  </div>
+                ) : null}
+              </dl>
+              {detailLoading ? (
+                <p role="status">Loading access and schedules…</p>
+              ) : detailError ? (
+                <p className="callout error-callout" role="alert">
+                  {detailError}
+                </p>
+              ) : detail?.session.session_id === selectedSessionId ? (
+                <>
+                  <h3>Access and scheduling</h3>
+                  <dl className="property-grid">
+                    <div>
+                      <dt>Repositories</dt>
+                      <dd>{detail.git_grants?.length ?? 0} grants</dd>
+                    </div>
+                    <div>
+                      <dt>Wake schedules</dt>
+                      <dd>{detail.wake_schedules.length} configured</dd>
+                    </div>
+                  </dl>
+                </>
               ) : null}
-              <Tooltip content="Revoke the session so further guest access is denied even before the expiry time.">
-                <button
-                  type="button"
-                  onClick={() => void runSessionAction("revoke")}
-                  disabled={busy === "revoke" || mutationLocked}
-                  aria-label={busy === "revoke" ? "Revoking session" : "Revoke session"}
-                >
-                  {busy === "revoke" ? "…" : <RevokeIcon />}
-                </button>
-              </Tooltip>
-              <Tooltip content="Delete the session record and remove its saved local state from the host control plane.">
-                <button
-                  className="danger"
-                  type="button"
-                  onClick={() => void runSessionAction("delete")}
-                  disabled={busy === "delete" || mutationLocked}
-                  aria-label={busy === "delete" ? "Deleting session" : "Delete session"}
-                >
-                  {busy === "delete" ? "…" : <DeleteIcon />}
-                </button>
-              </Tooltip>
-            </div>
+              {modelDirty || toolsDirty || policyDirty ? (
+                <p className="callout warning-callout">
+                  This session has unsaved changes. View the session to continue editing.
+                </p>
+              ) : null}
+              <p className="muted-text">
+                View the session for access settings, lifecycle actions, and wake history.
+              </p>
+            </RecordInspector>
           ) : null}
         </div>
-
-        {error ? <div className="callout error-callout">{error}</div> : null}
-        {status ? <div className="callout success-callout">{status}</div> : null}
-        {selectedSession ? (
-          <div className="stack-layout">
-            <article className="panel">
-              <div className="panel-header">
-                <h3>Session overview</h3>
-              </div>
-              <div className="panel-body">
-                <dl className="property-grid">
-                  <div><dt>VM</dt><dd>{selectedSession.vm_id ?? "None"}</dd></div>
-                  <div><dt>Issue</dt><dd>{selectedSession.issue_number ?? "None"}</dd></div>
-                  <div><dt>Directory</dt><dd>{selectedSession.directory_path}</dd></div>
-                  <div><dt>Model</dt><dd>{selectedSession.model ?? "Unset"}</dd></div>
-                  {selectedSession.runtime_image ? (
-                    selectedSession.runtime_image.backend === "container_worker_vm" ? (
-                      <>
-                        <div>
-                          <dt>Container image</dt>
-                          <dd>
-                            <Tooltip content={runtimeImageTooltip(selectedSession)}>
-                              <span>{runtimeImagePrimaryText(selectedSession)}</span>
-                            </Tooltip>
-                          </dd>
-                        </div>
-                        {selectedSession.runtime_image.image_alias ? (
-                          <div>
-                            <dt>Container image alias</dt>
-                            <dd>{selectedSession.runtime_image.image_alias}</dd>
-                          </div>
-                        ) : null}
-                      </>
-                    ) : (
-                      <>
-                        <div>
-                          <dt>VM template</dt>
-                          <dd>
-                            <Tooltip content={runtimeImageTooltip(selectedSession)}>
-                              <span>{runtimeImagePrimaryText(selectedSession)}</span>
-                            </Tooltip>
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>VM image ref</dt>
-                          <dd>
-                            <Tooltip content={runtimeImageTooltip(selectedSession)}>
-                              <span>{selectedSession.runtime_image.image_ref ?? "Unavailable"}</span>
-                            </Tooltip>
-                          </dd>
-                        </div>
-                      </>
-                    )
-                  ) : null}
-                  <div><dt>Created</dt><dd>{formatTimestamp(selectedSession.created_at)}</dd></div>
-                  <div><dt>Expires</dt><dd>{formatTimestamp(selectedSession.expires_at)}</dd></div>
-                </dl>
-              </div>
-            </article>
-            <article className="panel">
-              <details className="compact-disclosure session-repository-access">
-                <summary className="compact-disclosure-summary feature-list-title-row">
-                  <h3>Repository access</h3>
-                  <span className="panel-meta">{(detail?.git_grants ?? []).length} grants</span>
-                </summary>
-                <div className="panel-body stack-layout">
-                {sortedGitGrants.length > 0 ? (
-                  <div className="session-git-grant-table-wrap">
-                    <table className="session-git-grant-table">
-                      <thead>
-                        <tr>
-                          <th scope="col">Repository ID</th>
-                          <th scope="col">Name</th>
-                          <th scope="col">URL</th>
-                          <th scope="col">Access</th>
-                          <th scope="col"><span className="sr-only">Actions</span></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedGitGrants.map((grant) => {
-                          const repository = gitRepositoriesById.get(grant.managed_repo_id);
-                          const displayName = repository?.display_name?.trim();
-                          const canonicalUrl = repository?.canonical_repository_url?.trim();
-                          return (
-                            <tr key={grant.managed_repo_id}>
-                              <td><code>{grant.managed_repo_id}</code></td>
-                              <td>{displayName || "Unavailable"}</td>
-                              <td className="session-git-grant-url">{canonicalUrl || "Unavailable"}</td>
-                              <td>{grant.access_mode} · {grant.lifetime} · {grant.execution_backend ?? "agent"}</td>
-                              <td className="session-git-grant-action">
-                                <button
-                                  type="button"
-                                  className="admin-shell-button admin-shell-button-muted"
-                                  onClick={() => void revokeGitGrant(grant)}
-                                  disabled={mutationLocked || busy === `git-revoke:${grant.managed_repo_id}`}
-                                >
-                                  {busy === `git-revoke:${grant.managed_repo_id}` ? "Revoking…" : "Revoke"}
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+      </section>
+      <div className="feature-page sessions-page session-record" hidden={!recordView}>
+        <section className="feature-sidebar">
+          <button
+            className="record-back"
+            type="button"
+            onClick={() => {
+              setRecordView(false);
+              setDeepLinkSessionId("");
+              window.history.replaceState(
+                null,
+                "",
+                `#sessions?${new URLSearchParams({ session_id: selectedSessionId, inspect: "1" })}`,
+              );
+              setInspectorOpen(true);
+            }}
+          >
+            ← Sessions
+          </button>
+          <div className="feature-sidebar-header">
+            <div>
+              <div className="eyebrow">Session control</div>
+              <h1>Sessions</h1>
+            </div>
+          </div>
+          {mutationLocked ? (
+            <div className="callout warning-callout">
+              Unlock privileged operations to renew, revoke, edit, or schedule sessions.
+            </div>
+          ) : null}
+          <label className="field-stack">
+            <span>Find session</span>
+            <input
+              value={sessionFilter}
+              onChange={(event) => setSessionFilter(event.target.value)}
+              placeholder="session, VM, issue, model"
+            />
+          </label>
+          <div className="toolbar-grid sessions-filter-grid">
+            <label className="field-stack">
+              <span>State</span>
+              <select value={activeTab} onChange={(event) => setActiveTab(event.target.value as TabKey)}>
+                <option value="active">Active ({response?.counts.active ?? 0})</option>
+                <option value="expired">Expired ({response?.counts.expired ?? 0})</option>
+              </select>
+            </label>
+          </div>
+          <div className="feature-list session-list">
+            {visibleItems.map((item) => (
+              <button
+                key={item.session_id}
+                type="button"
+                className={`feature-list-item session-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
+                onClick={() => {
+                  setDeepLinkSessionId("");
+                  setSelectedSessionId(item.session_id);
+                }}
+              >
+                <div className="feature-list-title-row session-list-item-row">
+                  <Tooltip content={`Session id: ${item.session_id}`}>
+                    <strong>{item.session_id}</strong>
+                  </Tooltip>
+                  <span className={`status-pill session-state-pill state-${lifecycleClass(item)}`}>
+                    {lifecycleLabel(item)}
+                  </span>
+                </div>
+                {item.container_lifecycle?.last_signal_at ? (
+                  <div className="feature-list-meta">
+                    Last signal {formatTimestamp(item.container_lifecycle.last_signal_at)}
                   </div>
-                ) : (
-                  <div className="empty-state">No managed repository grants.</div>
-                )}
-                <div className="feature-toolbar">
-                  <label className="field-stack">
-                    <span>Managed repository ID</span>
-                    <select
-                      value={gitGrantRepoId}
-                      onChange={(event) => setGitGrantRepoId(event.target.value)}
-                      disabled={mutationLocked}
-                    >
-                      <option value="">Select a repository</option>
-                      {gitRepositories.map((repository) => (
-                        <option key={repository.managed_repo_id} value={repository.managed_repo_id}>
-                          {repository.display_name
-                            ? `${repository.display_name} (${repository.managed_repo_id})`
-                            : repository.managed_repo_id}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field-stack">
-                    <span>Access</span>
-                    <select
-                      value={gitGrantAccessMode}
-                      onChange={(event) => setGitGrantAccessMode(event.target.value as "read-only" | "write")}
-                      disabled={mutationLocked}
-                    >
-                      <option value="read-only">Read only</option>
-                      <option value="write">Write</option>
-                    </select>
-                  </label>
+                ) : null}
+              </button>
+            ))}
+            {visibleItems.length === 0 ? (
+              <div className="empty-state">No sessions matched the current view.</div>
+            ) : null}
+          </div>
+        </section>
+        <section className="feature-content">
+          <div className="feature-toolbar">
+            <div>
+              <h2>{selectedSession?.session_id ?? "Select a session"}</h2>
+              <p className="muted-text">
+                {selectedSession
+                  ? "Manage expiry, model and tool access, then inspect wake schedules and the live session summary."
+                  : "Choose a session from the left to inspect and manage it."}
+              </p>
+            </div>
+            {selectedSession ? (
+              <div className="feature-toolbar-actions icon-actions">
+                <Tooltip
+                  content={
+                    selectedSession.is_expired
+                      ? "This session has expired and can no longer be resumed until it is renewed."
+                      : "This session is active and can still be used by its guest agent."
+                  }
+                >
+                  <span className={`status-pill state-${lifecycleClass(selectedSession)}`}>
+                    {lifecycleLabel(selectedSession)}
+                  </span>
+                </Tooltip>
+                <Tooltip
+                  content={
+                    selectedSession.vm_id
+                      ? `Attached VM: ${selectedSession.vm_id}`
+                      : "This session is not currently attached to a VM."
+                  }
+                >
+                  <span className="panel-meta">{selectedSession.vm_id ?? "No VM"}</span>
+                </Tooltip>
+                <Tooltip content="Extend the session expiry without changing the current session identity or attached VM.">
                   <button
                     type="button"
-                    className="admin-shell-button"
-                    onClick={() => void saveGitGrant(false)}
-                    disabled={mutationLocked || !gitGrantRepoId.trim() || busy?.startsWith("git-")}
+                    className="primary"
+                    onClick={() => setShowRenewModal(true)}
+                    disabled={busy === "renew" || mutationLocked}
+                    aria-label="Extend session"
                   >
-                    Grant access
+                    <ExtendIcon />
                   </button>
+                </Tooltip>
+                {cleanupSupported(selectedSession) ? (
+                  <Tooltip
+                    content={
+                      selectedSession.container_lifecycle?.actions?.cleanup?.reason ??
+                      "Remove worker-side container state while keeping the session record visible for audit."
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => void runSessionAction("cleanup")}
+                      disabled={busy === "cleanup" || mutationLocked}
+                      aria-label={busy === "cleanup" ? "Cleaning up session" : "Clean up session"}
+                    >
+                      {busy === "cleanup" ? "…" : <CleanupIcon />}
+                    </button>
+                  </Tooltip>
+                ) : null}
+                <Tooltip content="Revoke the session so further guest access is denied even before the expiry time.">
                   <button
                     type="button"
-                    className="admin-shell-button"
-                    onClick={() => void saveGitGrant(true)}
-                    disabled={mutationLocked || !gitGrantRepoId.trim() || busy?.startsWith("git-")}
+                    onClick={() => void runSessionAction("revoke")}
+                    disabled={busy === "revoke" || mutationLocked}
+                    aria-label={busy === "revoke" ? "Revoking session" : "Revoke session"}
                   >
-                    Grant and clone
+                    {busy === "revoke" ? "…" : <RevokeIcon />}
                   </button>
-                </div>
-                <p className="panel-meta">
-                  Read-only session grants support repeated clone, fetch, and pull. Revocation leaves existing checkout files in place.
-                </p>
-                </div>
-              </details>
-            </article>
-            {selectedSession.container_lifecycle ? (
+                </Tooltip>
+                <Tooltip content="Delete the session record and remove its saved local state from the host control plane.">
+                  <button
+                    className="danger"
+                    type="button"
+                    onClick={() => void runSessionAction("delete")}
+                    disabled={busy === "delete" || mutationLocked}
+                    aria-label={busy === "delete" ? "Deleting session" : "Delete session"}
+                  >
+                    {busy === "delete" ? "…" : <DeleteIcon />}
+                  </button>
+                </Tooltip>
+              </div>
+            ) : null}
+          </div>
+
+          {error ? <div className="callout error-callout">{error}</div> : null}
+          {status ? <div className="callout success-callout">{status}</div> : null}
+          {selectedSession ? (
+            <div className="stack-layout">
               <article className="panel">
                 <div className="panel-header">
-                  <h3>Container lifecycle</h3>
-                  <span className={`status-pill state-${lifecycleClass(selectedSession)}`}>{lifecycleLabel(selectedSession)}</span>
+                  <h3>Session overview</h3>
                 </div>
                 <div className="panel-body">
-                  {selectedSession.container_lifecycle.cleanup_error ? (
-                    <div className="callout error-callout">{selectedSession.container_lifecycle.cleanup_error}</div>
-                  ) : null}
                   <dl className="property-grid">
-                    <div><dt>Last signal</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.last_signal_at)}</dd></div>
-                    <div><dt>Last heartbeat</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.last_heartbeat_at)}</dd></div>
-                    <div><dt>Last completion</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.last_completion_at)}</dd></div>
-                    <div><dt>Cleanup attempted</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.cleanup_attempted_at)}</dd></div>
-                    <div><dt>Cleanup completed</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.cleanup_completed_at)}</dd></div>
-                    <div><dt>Recovery</dt><dd>{selectedSession.container_lifecycle.actions?.recovery?.supported ? selectedSession.container_lifecycle.actions.recovery.label ?? "Available" : selectedSession.container_lifecycle.actions?.recovery?.reason ?? "Unavailable"}</dd></div>
+                    <div>
+                      <dt>VM</dt>
+                      <dd>{selectedSession.vm_id ?? "None"}</dd>
+                    </div>
+                    <div>
+                      <dt>Issue</dt>
+                      <dd>{selectedSession.issue_number ?? "None"}</dd>
+                    </div>
+                    <div>
+                      <dt>Directory</dt>
+                      <dd>{selectedSession.directory_path}</dd>
+                    </div>
+                    <div>
+                      <dt>Model</dt>
+                      <dd>{selectedSession.model ?? "Unset"}</dd>
+                    </div>
+                    {selectedSession.runtime_image ? (
+                      selectedSession.runtime_image.backend === "container_worker_vm" ? (
+                        <>
+                          <div>
+                            <dt>Container image</dt>
+                            <dd>
+                              <Tooltip content={runtimeImageTooltip(selectedSession)}>
+                                <span>{runtimeImagePrimaryText(selectedSession)}</span>
+                              </Tooltip>
+                            </dd>
+                          </div>
+                          {selectedSession.runtime_image.image_alias ? (
+                            <div>
+                              <dt>Container image alias</dt>
+                              <dd>{selectedSession.runtime_image.image_alias}</dd>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <>
+                          <div>
+                            <dt>VM template</dt>
+                            <dd>
+                              <Tooltip content={runtimeImageTooltip(selectedSession)}>
+                                <span>{runtimeImagePrimaryText(selectedSession)}</span>
+                              </Tooltip>
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>VM image ref</dt>
+                            <dd>
+                              <Tooltip content={runtimeImageTooltip(selectedSession)}>
+                                <span>{selectedSession.runtime_image.image_ref ?? "Unavailable"}</span>
+                              </Tooltip>
+                            </dd>
+                          </div>
+                        </>
+                      )
+                    ) : null}
+                    <div>
+                      <dt>Created</dt>
+                      <dd>{formatTimestamp(selectedSession.created_at)}</dd>
+                    </div>
+                    <div>
+                      <dt>Expires</dt>
+                      <dd>{formatTimestamp(selectedSession.expires_at)}</dd>
+                    </div>
                   </dl>
                 </div>
               </article>
-            ) : null}
-            <div className="feature-grid">
               <article className="panel">
-                <div className="panel-header">
-                  <h3>Model and access</h3>
-                  <span className="panel-meta">{modelDirty || toolsDirty || policyDirty ? "Unsaved changes" : "In sync"}</span>
-                </div>
-                <div className="panel-body session-tools-panel">
-                  <label className="field-stack">
-                    <span>Model</span>
-                    <input
-                      list="session-model-suggestions"
-                      value={modelDraft}
-                      onChange={(event) => {
-                        setModelDraft(event.target.value);
-                        setModelDirty(true);
-                        setStatus(null);
-                      }}
-                      placeholder="Required to start or resume the agent"
-                      disabled={mutationLocked}
-                    />
-                    <datalist id="session-model-suggestions">
-                      {(catalog?.model_options ?? []).map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </datalist>
-                  </label>
-                  <label className="field-stack">
-                    <span>Model relay</span>
-                    <p className="field-description">
-                      Select where Codex model requests are routed. Directory default inherits the selected
-                      directory&apos;s provider mode.
-                    </p>
-                    <select
-                      value={policyDraft.modelProviderMode}
-                      onChange={(event) =>
-                        updatePolicyDraft({
-                          modelProviderMode: event.target.value as SessionModelProviderModeSelection,
-                        })
-                      }
-                      disabled={mutationLocked}
-                    >
-                      <option value="">Directory default</option>
-                      {(catalog?.model_provider_modes?.length
-                        ? catalog.model_provider_modes
-                        : SESSION_MODEL_PROVIDER_MODE_OPTIONS
-                      ).map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="field-stack">
-                    <span>Allowed tools</span>
-                    <div className="session-tool-groups">
-                      {groupedToolOptions.map((group) => {
-                        const enabledCount = group.items.filter((tool) => toolsDraft.includes(tool.value)).length;
-                        const approvalRequiredCount = group.items.filter(
-                          (tool) => toolsDraft.includes(tool.value) && (
-                            policyDraft.approvalRequiredTools.includes(tool.value) ||
-                            inheritedApprovalRequiredForTool(tool.value)
-                          ),
-                        ).length;
-                        return (
-                          <details key={group.name} className="compact-disclosure session-tool-group">
-                            <summary className="compact-disclosure-summary session-tool-group-summary">
-                              <span>{group.name}</span>
-                              <span className="panel-meta">
-                                {enabledCount} of {group.items.length} enabled
-                                {approvalRequiredCount > 0 ? ` • ${approvalRequiredCount} approval required` : ""}
-                              </span>
-                            </summary>
-                            <div className="feature-list compact-list session-tool-list">
-                              {group.items.map((tool) => {
-                                const toolDescription = describeTool(tool);
-                                const isEnabled = toolsDraft.includes(tool.value);
-                                const toolRule = effectiveRuleForTool(tool.value);
-                                const isDenied = Boolean(toolRule?.denied);
-                                const isInheritedApprovalRequired = inheritedApprovalRequiredForTool(tool.value);
-                                const isLocalApprovalRequired = policyDraft.approvalRequiredTools.includes(tool.value);
-                                const isApprovalRequired = isLocalApprovalRequired || isInheritedApprovalRequired;
-                                return (
-                                  <div key={tool.value} className={`session-tool-row${isDenied ? " denied" : ""}`}>
-                                    <label className="session-tool-row-main">
-                                      <input
-                                        type="checkbox"
-                                        checked={isEnabled}
-                                        onChange={() => toggleTool(tool.value)}
-                                        disabled={mutationLocked || isDenied}
-                                      />
-                                      <Tooltip
-                                        content={toolDescription}
-                                        className="session-tool-copy"
-                                        focusable
-                                        ariaLabel={`${tool.label}: ${toolDescription}`}
-                                      >
-                                        <span>{tool.label}</span>
-                                      </Tooltip>
-                                    </label>
-                                    <div className="session-tool-row-meta">
-                                      {isDenied ? (
-                                        <span className="status-pill state-failed session-tool-badge">Denied by policy</span>
-                                      ) : null}
-                                      {isInheritedApprovalRequired && !isDenied ? (
-                                        <span className="status-pill state-idle session-tool-badge">Admin required</span>
-                                      ) : null}
-                                      {isApprovalRequired ? (
-                                        <span className="status-pill state-idle session-tool-badge">Approval required</span>
-                                      ) : null}
-                                      <label className="checkbox-row session-tool-approval-row">
-                                        <input
-                                          type="checkbox"
-                                          checked={isApprovalRequired}
-                                          onChange={() => toggleApprovalRequirement(tool.value)}
-                                          disabled={mutationLocked || !isEnabled || isDenied || isInheritedApprovalRequired}
-                                          aria-label={`Require approval for ${tool.label}`}
-                                        />
-                                        <span>Require approval</span>
-                                      </label>
-                                      {isApprovalRequired && isEnabled && !isDenied ? (
-                                        <Tooltip content={`Configure approval expiry, use limit, and argument matching for ${tool.label}.`}>
-                                          <button
-                                            type="button"
-                                            className="session-tool-settings-button"
-                                            onClick={() => openApprovalSettings(tool.value)}
-                                            disabled={mutationLocked}
-                                            aria-label={`Configure approval settings for ${tool.label}`}
-                                          >
-                                            <SettingsIcon />
-                                          </button>
-                                        </Tooltip>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </details>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className="field-stack">
-                    <span>Allowed scripts</span>
-                    <p className="field-description">
-                      One script name per row. Blank rows are ignored, extra spaces are trimmed, and duplicates are
-                      removed.
-                    </p>
-                    <StringListEditor
-                      values={policyDraft.allowedScriptNames}
-                      onChange={(nextValues) => updatePolicyDraft({ allowedScriptNames: nextValues })}
-                      disabled={mutationLocked}
-                      itemLabel="Script name"
-                      addLabel="Add script"
-                      placeholder="Enter a script name"
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Connector grants</span>
-                    <p className="field-description">
-                      Map each connector ID to a JSON array of operation names. The session must also allow the
-                      list_connectors and call_connector MCP tools before the agent can discover or invoke grants.
-                    </p>
-                    <JsonObjectKeyValueEditor
-                      value={policyDraft.connectorGrants}
-                      onChange={(nextValue) => updatePolicyDraft({ connectorGrants: nextValue })}
-                      onValidationChange={(validationError) => {
-                        setConnectorGrantsError(validationError);
-                        if (validationError) {
-                          setPolicyDirty(true);
-                          setStatus(null);
-                        }
-                      }}
-                      fieldLabel="Connector grants"
-                      disabled={mutationLocked}
-                      addLabel="Add connector grant"
-                      emptyState="No connector operations are granted to this session."
-                    />
-                  </div>
-                  <div className="field-stack wide-field">
-                    <span>Host directory grants</span>
-                    <p className="field-description">
-                      Select capabilities on named host directories. Selecting one also enables its dedicated
-                      host_directory MCP tool; removing a grant leaves explicitly allowed tools unchanged.
-                    </p>
-                    <HostDirectoryGrantSelector
-                      values={policyDraft.hostDirectoryGrants}
-                      options={hostDirectoryOptions}
-                      onChange={updateHostDirectoryGrants}
-                      disabled={mutationLocked}
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Approval notifications</span>
-                    <p className="field-description">
-                      Notification-only host targets that receive approval requests for this session.
-                      These IDs must resolve to notify-capable communication targets in the selected directory.
-                    </p>
-                    {renderApprovalNotificationTargetEditor()}
-                  </div>
-                  <div className="field-stack wide-field">
-                    <span>Contacts</span>
-                    <p className="field-description">
-                      Choose whether this session can use every contact visible in its directory or only an explicit
-                      allowlist. An explicit allowlist with no contact IDs blocks access to every contact.
-                    </p>
-                    <div className="inline-actions compact-actions" role="radiogroup" aria-label="Contact access">
-                      <label className="checkbox-row">
-                        <input
-                          type="radio"
-                          name="session-contact-access-mode"
-                          checked={policyDraft.allowedContactIds === null}
-                          onChange={() => updatePolicyDraft({ allowedContactIds: null })}
-                          disabled={mutationLocked}
-                        />
-                        <span>All directory contacts</span>
-                      </label>
-                      <label className="checkbox-row">
-                        <input
-                          type="radio"
-                          name="session-contact-access-mode"
-                          checked={policyDraft.allowedContactIds !== null}
-                          onChange={() => updatePolicyDraft({ allowedContactIds: policyDraft.allowedContactIds ?? [] })}
-                          disabled={mutationLocked}
-                        />
-                        <span>Explicit allowlist</span>
-                      </label>
-                    </div>
-                    {policyDraft.allowedContactIds === null ? (
-                      <div className="callout">
-                        This session inherits access to all contacts visible in its directory.
+                <details className="compact-disclosure session-repository-access">
+                  <summary className="compact-disclosure-summary feature-list-title-row">
+                    <h3>Repository access</h3>
+                    <span className="panel-meta">{(detail?.git_grants ?? []).length} grants</span>
+                  </summary>
+                  <div className="panel-body stack-layout">
+                    {sortedGitGrants.length > 0 ? (
+                      <div className="session-git-grant-table-wrap">
+                        <table className="session-git-grant-table">
+                          <thead>
+                            <tr>
+                              <th scope="col">Repository ID</th>
+                              <th scope="col">Name</th>
+                              <th scope="col">URL</th>
+                              <th scope="col">Access</th>
+                              <th scope="col">
+                                <span className="sr-only">Actions</span>
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sortedGitGrants.map((grant) => {
+                              const repository = gitRepositoriesById.get(grant.managed_repo_id);
+                              const displayName = repository?.display_name?.trim();
+                              const canonicalUrl = repository?.canonical_repository_url?.trim();
+                              return (
+                                <tr key={grant.managed_repo_id}>
+                                  <td>
+                                    <code>{grant.managed_repo_id}</code>
+                                  </td>
+                                  <td>{displayName || "Unavailable"}</td>
+                                  <td className="session-git-grant-url">{canonicalUrl || "Unavailable"}</td>
+                                  <td>
+                                    {grant.access_mode} · {grant.lifetime} · {grant.execution_backend ?? "agent"}
+                                  </td>
+                                  <td className="session-git-grant-action">
+                                    <button
+                                      type="button"
+                                      className="admin-shell-button admin-shell-button-muted"
+                                      onClick={() => void revokeGitGrant(grant)}
+                                      disabled={mutationLocked || busy === `git-revoke:${grant.managed_repo_id}`}
+                                    >
+                                      {busy === `git-revoke:${grant.managed_repo_id}` ? "Revoking…" : "Revoke"}
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
                     ) : (
-                      <StringListEditor
-                        values={policyDraft.allowedContactIds}
-                        onChange={(nextValues) => updatePolicyDraft({ allowedContactIds: nextValues })}
-                        disabled={mutationLocked}
-                        itemLabel="Contact ID"
-                        addLabel="Add contact"
-                        placeholder="Enter a configured contact ID"
-                        emptyState="No contacts are allowed."
-                      />
+                      <div className="empty-state">No managed repository grants.</div>
                     )}
-                  </div>
-                  {policyDraft.communicationTargetIds === null || policyDraft.emailMailboxGrants === null ? (
-                    <div className="field-stack wide-field">
-                      <div className="callout">
-                        This session uses the legacy communication policy. It remains unchanged until you explicitly
-                        convert it to managed communication targets and mailbox grants.
-                      </div>
-                      <button type="button" className="admin-action-button compact" disabled={mutationLocked} onClick={convertLegacyCommunicationPolicy}>
-                        Convert to managed grants
+                    <div className="feature-toolbar">
+                      <label className="field-stack">
+                        <span>Managed repository ID</span>
+                        <select
+                          value={gitGrantRepoId}
+                          onChange={(event) => setGitGrantRepoId(event.target.value)}
+                          disabled={mutationLocked}
+                        >
+                          <option value="">Select a repository</option>
+                          {gitRepositories.map((repository) => (
+                            <option key={repository.managed_repo_id} value={repository.managed_repo_id}>
+                              {repository.display_name
+                                ? `${repository.display_name} (${repository.managed_repo_id})`
+                                : repository.managed_repo_id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field-stack">
+                        <span>Access</span>
+                        <select
+                          value={gitGrantAccessMode}
+                          onChange={(event) => setGitGrantAccessMode(event.target.value as "read-only" | "write")}
+                          disabled={mutationLocked}
+                        >
+                          <option value="read-only">Read only</option>
+                          <option value="write">Write</option>
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="admin-shell-button"
+                        onClick={() => void saveGitGrant(false)}
+                        disabled={mutationLocked || !gitGrantRepoId.trim() || busy?.startsWith("git-")}
+                      >
+                        Grant access
+                      </button>
+                      <button
+                        type="button"
+                        className="admin-shell-button"
+                        onClick={() => void saveGitGrant(true)}
+                        disabled={mutationLocked || !gitGrantRepoId.trim() || busy?.startsWith("git-")}
+                      >
+                        Grant and clone
                       </button>
                     </div>
-                  ) : null}
-                  {policyDraft.communicationTargetIds === null ? (
-                    <>
+                    <p className="panel-meta">
+                      Read-only session grants support repeated clone, fetch, and pull. Revocation leaves existing
+                      checkout files in place.
+                    </p>
+                  </div>
+                </details>
+              </article>
+              {selectedSession.container_lifecycle ? (
+                <article className="panel">
+                  <div className="panel-header">
+                    <h3>Container lifecycle</h3>
+                    <span className={`status-pill state-${lifecycleClass(selectedSession)}`}>
+                      {lifecycleLabel(selectedSession)}
+                    </span>
+                  </div>
+                  <div className="panel-body">
+                    {selectedSession.container_lifecycle.cleanup_error ? (
+                      <div className="callout error-callout">{selectedSession.container_lifecycle.cleanup_error}</div>
+                    ) : null}
+                    <dl className="property-grid">
+                      <div>
+                        <dt>Last signal</dt>
+                        <dd>{formatTimestamp(selectedSession.container_lifecycle.last_signal_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Last heartbeat</dt>
+                        <dd>{formatTimestamp(selectedSession.container_lifecycle.last_heartbeat_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Last completion</dt>
+                        <dd>{formatTimestamp(selectedSession.container_lifecycle.last_completion_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Cleanup attempted</dt>
+                        <dd>{formatTimestamp(selectedSession.container_lifecycle.cleanup_attempted_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Cleanup completed</dt>
+                        <dd>{formatTimestamp(selectedSession.container_lifecycle.cleanup_completed_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Recovery</dt>
+                        <dd>
+                          {selectedSession.container_lifecycle.actions?.recovery?.supported
+                            ? (selectedSession.container_lifecycle.actions.recovery.label ?? "Available")
+                            : (selectedSession.container_lifecycle.actions?.recovery?.reason ?? "Unavailable")}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                </article>
+              ) : null}
+              <div className="feature-grid">
+                <article className="panel">
+                  <div className="panel-header">
+                    <h3>Model and access</h3>
+                    <span className="panel-meta">
+                      {policyBoundSessionId !== selectedSessionId
+                        ? "Loading"
+                        : modelDirty || toolsDirty || policyDirty
+                          ? "Unsaved changes"
+                          : "In sync"}
+                    </span>
+                  </div>
+                  {policyBoundSessionId === selectedSessionId ? (
+                    <div className="panel-body session-tools-panel">
+                      <label className="field-stack">
+                        <span>Model</span>
+                        <input
+                          list="session-model-suggestions"
+                          value={modelDraft}
+                          onChange={(event) => {
+                            setModelDraft(event.target.value);
+                            setModelDirty(true);
+                            setStatus(null);
+                          }}
+                          placeholder="Required to start or resume the agent"
+                          disabled={mutationLocked}
+                        />
+                        <datalist id="session-model-suggestions">
+                          {(catalog?.model_options ?? []).map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </datalist>
+                      </label>
+                      <label className="field-stack">
+                        <span>Model relay</span>
+                        <p className="field-description">
+                          Select where Codex model requests are routed. Directory default inherits the selected
+                          directory&apos;s provider mode.
+                        </p>
+                        <select
+                          value={policyDraft.modelProviderMode}
+                          onChange={(event) =>
+                            updatePolicyDraft({
+                              modelProviderMode: event.target.value as SessionModelProviderModeSelection,
+                            })
+                          }
+                          disabled={mutationLocked}
+                        >
+                          <option value="">Directory default</option>
+                          {(catalog?.model_provider_modes?.length
+                            ? catalog.model_provider_modes
+                            : SESSION_MODEL_PROVIDER_MODE_OPTIONS
+                          ).map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                       <div className="field-stack">
-                        <span>Legacy Discord allowlist</span>
-                        <StringListEditor values={policyDraft.discordChannelAllowlist} onChange={(nextValues) => updatePolicyDraft({ discordChannelAllowlist: nextValues })} disabled={mutationLocked} itemLabel="Target id" addLabel="Add allowlist row" placeholder="channel-id or communication-target-id" />
+                        <span>Allowed tools</span>
+                        <div className="session-tool-groups">
+                          {groupedToolOptions.map((group) => {
+                            const enabledCount = group.items.filter((tool) => toolsDraft.includes(tool.value)).length;
+                            const approvalRequiredCount = group.items.filter(
+                              (tool) =>
+                                toolsDraft.includes(tool.value) &&
+                                (policyDraft.approvalRequiredTools.includes(tool.value) ||
+                                  inheritedApprovalRequiredForTool(tool.value)),
+                            ).length;
+                            return (
+                              <details key={group.name} className="compact-disclosure session-tool-group">
+                                <summary className="compact-disclosure-summary session-tool-group-summary">
+                                  <span>{group.name}</span>
+                                  <span className="panel-meta">
+                                    {enabledCount} of {group.items.length} enabled
+                                    {approvalRequiredCount > 0 ? ` • ${approvalRequiredCount} approval required` : ""}
+                                  </span>
+                                </summary>
+                                <div className="feature-list compact-list session-tool-list">
+                                  {group.items.map((tool) => {
+                                    const toolDescription = describeTool(tool);
+                                    const isEnabled = toolsDraft.includes(tool.value);
+                                    const toolRule = effectiveRuleForTool(tool.value);
+                                    const isDenied = Boolean(toolRule?.denied);
+                                    const isInheritedApprovalRequired = inheritedApprovalRequiredForTool(tool.value);
+                                    const isLocalApprovalRequired = policyDraft.approvalRequiredTools.includes(
+                                      tool.value,
+                                    );
+                                    const isApprovalRequired = isLocalApprovalRequired || isInheritedApprovalRequired;
+                                    return (
+                                      <div key={tool.value} className={`session-tool-row${isDenied ? " denied" : ""}`}>
+                                        <label className="session-tool-row-main">
+                                          <input
+                                            type="checkbox"
+                                            checked={isEnabled}
+                                            onChange={() => toggleTool(tool.value)}
+                                            disabled={mutationLocked || isDenied}
+                                          />
+                                          <Tooltip
+                                            content={toolDescription}
+                                            className="session-tool-copy"
+                                            focusable
+                                            ariaLabel={`${tool.label}: ${toolDescription}`}
+                                          >
+                                            <span>{tool.label}</span>
+                                          </Tooltip>
+                                        </label>
+                                        <div className="session-tool-row-meta">
+                                          {isDenied ? (
+                                            <span className="status-pill state-failed session-tool-badge">
+                                              Denied by policy
+                                            </span>
+                                          ) : null}
+                                          {isInheritedApprovalRequired && !isDenied ? (
+                                            <span className="status-pill state-idle session-tool-badge">
+                                              Admin required
+                                            </span>
+                                          ) : null}
+                                          {isApprovalRequired ? (
+                                            <span className="status-pill state-idle session-tool-badge">
+                                              Approval required
+                                            </span>
+                                          ) : null}
+                                          <label className="checkbox-row session-tool-approval-row">
+                                            <input
+                                              type="checkbox"
+                                              checked={isApprovalRequired}
+                                              onChange={() => toggleApprovalRequirement(tool.value)}
+                                              disabled={
+                                                mutationLocked || !isEnabled || isDenied || isInheritedApprovalRequired
+                                              }
+                                              aria-label={`Require approval for ${tool.label}`}
+                                            />
+                                            <span>Require approval</span>
+                                          </label>
+                                          {isApprovalRequired && isEnabled && !isDenied ? (
+                                            <Tooltip
+                                              content={`Configure approval expiry, use limit, and argument matching for ${tool.label}.`}
+                                            >
+                                              <button
+                                                type="button"
+                                                className="session-tool-settings-button"
+                                                onClick={() => openApprovalSettings(tool.value)}
+                                                disabled={mutationLocked}
+                                                aria-label={`Configure approval settings for ${tool.label}`}
+                                              >
+                                                <SettingsIcon />
+                                              </button>
+                                            </Tooltip>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </details>
+                            );
+                          })}
+                        </div>
                       </div>
                       <div className="field-stack">
-                        <span>Legacy Teams allowlist</span>
-                        <StringListEditor values={policyDraft.teamsChannelAllowlist} onChange={(nextValues) => updatePolicyDraft({ teamsChannelAllowlist: nextValues })} disabled={mutationLocked} itemLabel="Target id" addLabel="Add allowlist row" placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>" />
+                        <span>Allowed scripts</span>
+                        <p className="field-description">
+                          One script name per row. Blank rows are ignored, extra spaces are trimmed, and duplicates are
+                          removed.
+                        </p>
+                        <StringListEditor
+                          values={policyDraft.allowedScriptNames}
+                          onChange={(nextValues) => updatePolicyDraft({ allowedScriptNames: nextValues })}
+                          disabled={mutationLocked}
+                          itemLabel="Script name"
+                          addLabel="Add script"
+                          placeholder="Enter a script name"
+                        />
                       </div>
-                    </>
-                  ) : (
-                    <div className="field-stack wide-field agent-communication-targets-field">
-                      <span>Communication targets</span>
-                      <p className="field-description">Teams and Discord destinations plus outbound email recipients. These grants do not grant mailbox access.</p>
-                      <CommunicationTargetCheckboxTable
-                        values={policyDraft.communicationTargetIds}
-                        options={selectedSession?.communication_target_options ?? []}
-                        onChange={(nextValues) => updatePolicyDraft({ communicationTargetIds: nextValues })}
-                        disabled={mutationLocked}
-                        emptyState="No communication targets are granted to this session."
-                      />
-                    </div>
-                  )}
-                  {policyDraft.emailMailboxGrants !== null ? (
-                    <div className="field-stack wide-field agent-communication-targets-field">
-                      <span>Email mailbox access</span>
-                      <p className="field-description">Read-only access is independent of send destinations. Draft and send access are explicit mailbox capabilities.</p>
-                      <EmailMailboxGrantEditor
-                        grants={policyDraft.emailMailboxGrants}
-                        options={selectedSession?.email_mailbox_options ?? []}
-                        onChange={(nextGrants) => updatePolicyDraft({ emailMailboxGrants: nextGrants })}
-                        disabled={mutationLocked}
-                        emptyState={
-                          (selectedSession?.email_mailbox_options ?? []).length > 0
-                            ? "No mailbox accounts are granted to this session."
-                            : "No mailbox accounts are available under this session's directory policy. Configure the mailbox allowlist and folder policy first."
-                        }
-                      />
-                      {(selectedSession?.email_mailbox_options ?? []).length === 0 ? (
-                        <div className="inline-actions compact-actions">
-                          <button type="button" className="admin-action-button compact" onClick={openMailboxConfiguration}>
-                            Configure mailbox access
+                      <div className="field-stack">
+                        <span>Connector grants</span>
+                        <p className="field-description">
+                          Map each connector ID to a JSON array of operation names. The session must also allow the
+                          list_connectors and call_connector MCP tools before the agent can discover or invoke grants.
+                        </p>
+                        <JsonObjectKeyValueEditor
+                          value={policyDraft.connectorGrants}
+                          onChange={(nextValue) => updatePolicyDraft({ connectorGrants: nextValue })}
+                          onValidationChange={(validationError) => {
+                            setConnectorGrantsError(validationError);
+                            if (validationError) {
+                              setPolicyDirty(true);
+                              setStatus(null);
+                            }
+                          }}
+                          fieldLabel="Connector grants"
+                          disabled={mutationLocked}
+                          addLabel="Add connector grant"
+                          emptyState="No connector operations are granted to this session."
+                        />
+                      </div>
+                      <div className="field-stack wide-field">
+                        <span>Host directory grants</span>
+                        <p className="field-description">
+                          Select capabilities on named host directories. Selecting one also enables its dedicated
+                          host_directory MCP tool; removing a grant leaves explicitly allowed tools unchanged.
+                        </p>
+                        <HostDirectoryGrantSelector
+                          values={policyDraft.hostDirectoryGrants}
+                          options={hostDirectoryOptions}
+                          onChange={updateHostDirectoryGrants}
+                          disabled={mutationLocked}
+                        />
+                      </div>
+                      <div className="field-stack">
+                        <span>Approval notifications</span>
+                        <p className="field-description">
+                          Notification-only host targets that receive approval requests for this session. These IDs must
+                          resolve to notify-capable communication targets in the selected directory.
+                        </p>
+                        {renderApprovalNotificationTargetEditor()}
+                      </div>
+                      <div className="field-stack wide-field">
+                        <span>Contacts</span>
+                        <p className="field-description">
+                          Choose whether this session can use every contact visible in its directory or only an explicit
+                          allowlist. An explicit allowlist with no contact IDs blocks access to every contact.
+                        </p>
+                        <div className="inline-actions compact-actions" role="radiogroup" aria-label="Contact access">
+                          <label className="checkbox-row">
+                            <input
+                              type="radio"
+                              name="session-contact-access-mode"
+                              checked={policyDraft.allowedContactIds === null}
+                              onChange={() => updatePolicyDraft({ allowedContactIds: null })}
+                              disabled={mutationLocked}
+                            />
+                            <span>All directory contacts</span>
+                          </label>
+                          <label className="checkbox-row">
+                            <input
+                              type="radio"
+                              name="session-contact-access-mode"
+                              checked={policyDraft.allowedContactIds !== null}
+                              onChange={() =>
+                                updatePolicyDraft({ allowedContactIds: policyDraft.allowedContactIds ?? [] })
+                              }
+                              disabled={mutationLocked}
+                            />
+                            <span>Explicit allowlist</span>
+                          </label>
+                        </div>
+                        {policyDraft.allowedContactIds === null ? (
+                          <div className="callout">
+                            This session inherits access to all contacts visible in its directory.
+                          </div>
+                        ) : (
+                          <StringListEditor
+                            values={policyDraft.allowedContactIds}
+                            onChange={(nextValues) => updatePolicyDraft({ allowedContactIds: nextValues })}
+                            disabled={mutationLocked}
+                            itemLabel="Contact ID"
+                            addLabel="Add contact"
+                            placeholder="Enter a configured contact ID"
+                            emptyState="No contacts are allowed."
+                          />
+                        )}
+                      </div>
+                      {policyDraft.communicationTargetIds === null || policyDraft.emailMailboxGrants === null ? (
+                        <div className="field-stack wide-field">
+                          <div className="callout">
+                            This session uses the legacy communication policy. It remains unchanged until you explicitly
+                            convert it to managed communication targets and mailbox grants.
+                          </div>
+                          <button
+                            type="button"
+                            className="admin-action-button compact"
+                            disabled={mutationLocked}
+                            onClick={convertLegacyCommunicationPolicy}
+                          >
+                            Convert to managed grants
                           </button>
                         </div>
                       ) : null}
-                    </div>
-                  ) : null}
-                  <label className="checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={policyDraft.webSearchEnabled}
-                      onChange={(event) => updatePolicyDraft({ webSearchEnabled: event.target.checked })}
-                      disabled={mutationLocked}
-                    />
-                    <span>Web search</span>
-                  </label>
-                  <div className="field-stack">
-                    <span>HTTP targets</span>
-                    <HttpTargetsEditor
-                      entries={policyDraft.httpTargets}
-                      onChange={(nextEntries) => {
-                        setPolicyDraft((current) => ({
-                          ...current,
-                          httpTargets: nextEntries,
-                          httpTargetsSourceError: null,
-                        }));
-                        setHttpTargetsDirty(true);
-                        setPolicyDirty(true);
-                        setStatus(null);
-                      }}
-                      onValidationChange={setHttpTargetsError}
-                      sourceError={policyDraft.httpTargetsSourceError}
-                      sessionId={selectedSession.session_id}
-                      directoryPath={selectedSession.directory_path}
-                      disabled={mutationLocked}
-                    />
-                  </div>
-                  <div className="field-stack session-communication-files">
-                    <span>Communication files</span>
-                    <div className="session-communication-file-toggles">
-                      <label className="checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={policyDraft.communicationFileReceiveEnabled}
-                          onChange={(event) => updatePolicyDraft({ communicationFileReceiveEnabled: event.target.checked })}
-                          disabled={mutationLocked}
-                        />
-                        <span>Receive inbound files</span>
-                      </label>
-                      <label className="checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={policyDraft.communicationFileSendEnabled}
-                          onChange={(event) => updatePolicyDraft({ communicationFileSendEnabled: event.target.checked })}
-                          disabled={mutationLocked}
-                        />
-                        <span>Send files</span>
-                      </label>
-                      <label className="checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={policyDraft.communicationFileRequireApprovalForSend}
-                          onChange={(event) => updatePolicyDraft({ communicationFileRequireApprovalForSend: event.target.checked })}
-                          disabled={mutationLocked}
-                        />
-                        <span>Require approval for sends</span>
-                      </label>
-                    </div>
-                  </div>
-                  <label className="field-stack">
-                    <span>Communication file max bytes</span>
-                    <p className="field-description">
-                      Size in bytes. Enter a non-negative whole number; blank keeps no explicit session value and
-                      falls back to the effective policy. 0 allows only zero-byte files.
-                    </p>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      inputMode="numeric"
-                      value={policyDraft.communicationFileMaxBytes}
-                      onChange={(event) => updatePolicyDraft({ communicationFileMaxBytes: event.target.value })}
-                      disabled={mutationLocked}
-                    />
-                  </label>
-                  <div className="field-stack">
-                    <span>Allowed MIME types</span>
-                    <p className="field-description">
-                      One MIME type per row. Blank rows are ignored, extra spaces are trimmed, and duplicates are
-                      removed.
-                    </p>
-                    <StringListEditor
-                      values={policyDraft.communicationFileAllowedMimeTypes}
-                      onChange={(nextValues) => updatePolicyDraft({ communicationFileAllowedMimeTypes: nextValues })}
-                      disabled={mutationLocked}
-                      itemLabel="MIME type"
-                      addLabel="Add MIME type"
-                      placeholder="text/plain"
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Allowed extensions</span>
-                    <p className="field-description">
-                      One suffix per row, such as <code>.txt</code> or <code>.pdf</code>. Entries must start with a
-                      leading dot, blank rows are ignored, and duplicates are removed.
-                    </p>
-                    <StringListEditor
-                      values={policyDraft.communicationFileAllowedExtensions}
-                      onChange={(nextValues) => updatePolicyDraft({ communicationFileAllowedExtensions: nextValues })}
-                      disabled={mutationLocked}
-                      itemLabel="Extension"
-                      addLabel="Add extension"
-                      placeholder=".txt"
-                      validateItem={(value) => validateLeadingDotExtensionValue(value)}
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Blocked extensions</span>
-                    <p className="field-description">
-                      One suffix per row, such as <code>.exe</code> or <code>.sh</code>. Entries must start with a
-                      leading dot, blank rows are ignored, and duplicates are removed.
-                    </p>
-                    <StringListEditor
-                      values={policyDraft.communicationFileBlockedExtensions}
-                      onChange={(nextValues) => updatePolicyDraft({ communicationFileBlockedExtensions: nextValues })}
-                      disabled={mutationLocked}
-                      itemLabel="Extension"
-                      addLabel="Add extension"
-                      placeholder=".exe"
-                      validateItem={(value) => validateLeadingDotExtensionValue(value)}
-                    />
-                  </div>
-                  <div className="field-stack">
-                    <span>Metadata</span>
-                    <p className="field-description">
-                      Must be a JSON object. Nested values are edited as JSON snippets and preserved when unchanged.
-                    </p>
-                    <JsonObjectKeyValueEditor
-                      value={policyDraft.metadata}
-                      onChange={(nextValue) => {
-                        setMetadataDirty(true);
-                        updatePolicyDraft({ metadata: nextValue });
-                      }}
-                      onValidationChange={(error) => {
-                        setPolicyMetadataError(error);
-                        if (error) {
-                          setMetadataDirty(true);
-                          setPolicyDirty(true);
-                          setStatus(null);
-                        }
-                      }}
-                      fieldLabel="Metadata"
-                      disabled={mutationLocked}
-                      addLabel="Add row"
-                      emptyState="No metadata rows are configured."
-                    />
-                  </div>
-                  <div className="feature-toolbar-actions session-panel-actions">
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => void saveSessionSettings()}
-                      disabled={busy === "settings" || mutationLocked || (!modelDirty && !toolsDirty && !policyDirty)}
-                    >
-                      {busy === "settings" ? "Saving..." : "Save changes"}
-                    </button>
-                  </div>
-                </div>
-              </article>
-              <article className="panel">
-                <div className="panel-header">
-                  <h3>Wake schedules</h3>
-                  <div className="feature-toolbar-actions session-wake-actions">
-                    <span className="panel-meta">{wakeScheduleCountLabel}</span>
-                    {hiddenPastOneTimeWakeScheduleCount > 0 || showPastOneTimeWakeSchedules ? (
-                      <label className="checkbox-row session-wake-history-toggle">
-                        <input
-                          type="checkbox"
-                          checked={showPastOneTimeWakeSchedules}
-                          onChange={(event) => setShowPastOneTimeWakeSchedules(event.target.checked)}
-                        />
-                        <span>Show past one-time</span>
-                      </label>
-                    ) : null}
-                    <button type="button" onClick={resetWakeEditor} disabled={mutationLocked || (!editingWakeRequestId && !wakePrompt && !wakeCron && !wakeResumeAt && wakeMode === "same_context" && wakeEnabled)}>
-                      Create new
-                    </button>
-                    {selectedWakeSchedule && canToggleWakeScheduleEnabled(selectedWakeSchedule) ? (
-                      <button type="button" onClick={() => void toggleWakeScheduleEnabled(selectedWakeSchedule)} disabled={busy === `wake-toggle-${selectedWakeSchedule.request_id}` || mutationLocked}>
-                        {selectedWakeSchedule.enabled ? "Disable selected" : "Enable selected"}
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="panel-body">
-                  <label className="field-stack">
-                    <span>Prompt</span>
-                    <textarea rows={4} value={wakePrompt} onChange={(event) => setWakePrompt(event.target.value)} disabled={wakeEditorLocked} />
-                  </label>
-                  <div className="field-stack">
-                    <span>Schedule type</span>
-                    <div className="inline-actions compact-actions session-schedule-type-toggle">
-                      <button
-                        type="button"
-                        className={wakeScheduleKind === "cron" ? "primary" : ""}
-                        onClick={() => setScheduleKind("cron")}
-                        disabled={wakeEditorLocked}
-                      >
-                        Recurring
-                      </button>
-                      <button
-                        type="button"
-                        className={wakeScheduleKind === "resume_at" ? "primary" : ""}
-                        onClick={() => setScheduleKind("resume_at")}
-                        disabled={wakeEditorLocked}
-                      >
-                        One time
-                      </button>
-                    </div>
-                  </div>
-                  {wakeScheduleKind === "cron" ? (
-                    <label className="field-stack">
-                      <span>Cron</span>
-                      <input value={wakeCron} onChange={(event) => setWakeCron(event.target.value)} placeholder="*/30 * * * *" disabled={wakeEditorLocked} />
-                    </label>
-                  ) : (
-                    <label className="field-stack">
-                      <span>Resume at</span>
-                      <input type="datetime-local" value={wakeResumeAt} onChange={(event) => setWakeResumeAt(event.target.value)} disabled={wakeEditorLocked} />
-                    </label>
-                  )}
-                  <label className="field-stack">
-                    <span>Resume mode</span>
-                    <select value={wakeMode} onChange={(event) => setWakeMode(event.target.value)} disabled={wakeEditorLocked}>
-                      {(catalog?.resume_mode_options ?? []).map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="checkbox-row">
-                    <input type="checkbox" checked={wakeEnabled} onChange={(event) => setWakeEnabled(event.target.checked)} disabled={wakeEditorLocked} />
-                    <span>Enabled</span>
-                  </label>
-                  <div className="feature-toolbar-actions session-panel-actions">
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => void submitWakeSchedule(editingWakeRequestId ? "update" : "create")}
-                      disabled={busy === "wake-create" || busy === "wake-update" || wakeEditorLocked}
-                    >
-                      {editingWakeRequestId ? (busy === "wake-update" ? "Saving..." : "Save schedule") : (busy === "wake-create" ? "Creating..." : "Create wake schedule")}
-                    </button>
-                    {selectedWakeSchedule ? (
-                      <button
-                        className="danger"
-                        type="button"
-                        onClick={() => void deleteWakeSchedule(selectedWakeSchedule)}
-                        disabled={busy === `wake-delete-${selectedWakeSchedule.request_id}` || mutationLocked}
-                      >
-                        {busy === `wake-delete-${selectedWakeSchedule.request_id}` ? "Deleting..." : "Delete selected"}
-                      </button>
-                    ) : null}
-                  </div>
-                  <div className="feature-list compact-list">
-                    {detailLoading && selectedSessionId ? <div className="empty-state">Loading wake schedules...</div> : null}
-                    {!detailLoading && visibleWakeScheduleItems.map((item) => (
-                      <button
-                        key={item.request_id}
-                        type="button"
-                        className={`feature-list-item${editingWakeRequestId === item.request_id ? " selected" : ""}`}
-                        onClick={() => bindWakeSchedule(item.request_id)}
-                      >
-                        <div className="feature-list-title-row">
-                          <strong>{item.schedule_kind === "cron" ? item.cron : formatTimestamp(item.resume_at)}</strong>
-                          <span className={`status-pill state-${item.status === "cancelled" ? "idle" : item.enabled ? "running" : "idle"}`}>
-                            {item.status === "cancelled" ? "Cancelled" : item.enabled ? "Enabled" : "Disabled"}
-                          </span>
+                      {policyDraft.communicationTargetIds === null ? (
+                        <>
+                          <div className="field-stack">
+                            <span>Legacy Discord allowlist</span>
+                            <StringListEditor
+                              values={policyDraft.discordChannelAllowlist}
+                              onChange={(nextValues) => updatePolicyDraft({ discordChannelAllowlist: nextValues })}
+                              disabled={mutationLocked}
+                              itemLabel="Target id"
+                              addLabel="Add allowlist row"
+                              placeholder="channel-id or communication-target-id"
+                            />
+                          </div>
+                          <div className="field-stack">
+                            <span>Legacy Teams allowlist</span>
+                            <StringListEditor
+                              values={policyDraft.teamsChannelAllowlist}
+                              onChange={(nextValues) => updatePolicyDraft({ teamsChannelAllowlist: nextValues })}
+                              disabled={mutationLocked}
+                              itemLabel="Target id"
+                              addLabel="Add allowlist row"
+                              placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="field-stack wide-field agent-communication-targets-field">
+                          <span>Communication targets</span>
+                          <p className="field-description">
+                            Teams and Discord destinations plus outbound email recipients. These grants do not grant
+                            mailbox access.
+                          </p>
+                          <CommunicationTargetCheckboxTable
+                            values={policyDraft.communicationTargetIds}
+                            options={selectedSession?.communication_target_options ?? []}
+                            onChange={(nextValues) => updatePolicyDraft({ communicationTargetIds: nextValues })}
+                            disabled={mutationLocked}
+                            emptyState="No communication targets are granted to this session."
+                          />
                         </div>
-                        <div className="feature-list-meta">{item.prompt}</div>
-                        <div className="feature-list-meta">{item.resume_mode}</div>
-                      </button>
-                    ))}
-                    {!detailLoading && detail?.wake_schedules.length === 0 ? <div className="empty-state">No wake schedules configured.</div> : null}
-                    {!detailLoading && (detail?.wake_schedules.length ?? 0) > 0 && visibleWakeScheduleItems.length === 0 ? <div className="empty-state">Past one-time schedules hidden.</div> : null}
-                  </div>
-                  <div className="wake-ledger-section">
-                    <div className="panel-header wake-ledger-header">
-                      <div>
-                        <h4>Wake ledger</h4>
-                        <p className="field-description">
-                          Durable status entries for this session&apos;s scheduled wakes, including the latest dispatch summary and retryability.
-                        </p>
-                      </div>
-                      <div className="feature-toolbar-actions session-wake-actions">
-                        <label className="field-stack wake-ledger-filter">
-                          <span>Status</span>
-                          <select value={wakeLedgerFilter} onChange={(event) => setWakeLedgerFilter(event.target.value as WakeLedgerFilter)}>
-                            {WAKE_LEDGER_FILTER_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <span className="panel-meta">{visibleWakeLedgerItems.length} shown</span>
-                      </div>
-                    </div>
-                    {wakeLedgerError ? <div className="callout error-callout">{wakeLedgerError}</div> : null}
-                    <div className="feature-list compact-list wake-ledger-list">
-                      {visibleWakeLedgerItems.map((item) => (
-                        <div key={item.request_id} className="feature-list-item wake-ledger-item">
-                          <div className="feature-list-title-row">
-                            <strong>{item.request_id}</strong>
-                            <span className={`status-pill state-${wakeLedgerStatusClass(item.status)}`}>{wakeLedgerDisplayLabel(item)}</span>
-                          </div>
-                          <div className="feature-list-meta">
-                            {item.prompt_summary ?? item.redacted_prompt ?? "Prompt unavailable"}
-                          </div>
-                          <div className="feature-list-meta">
-                            {item.schedule_cron ? `Cron ${item.schedule_cron}` : `Resume ${formatTimestamp(item.resume_at ?? item.scheduled_for)}`}
-                          </div>
-                          <div className="feature-list-meta">
-                            {item.source ? `Source ${item.source}` : "Source unavailable"}
-                            {item.status_reason ? ` • ${item.status_reason}` : ""}
-                          </div>
-                          <div className="feature-list-meta">
-                            Updated {formatTimestamp(item.updated_at)}
-                            {item.status_updated_at ? ` • Status ${formatTimestamp(item.status_updated_at)}` : ""}
-                          </div>
-                          <div className="feature-list-meta">
-                            Latest dispatch{" "}
-                            {item.latest_dispatch
-                              ? `${item.latest_dispatch.status} at ${formatTimestamp(item.latest_dispatch.dispatched_at)}`
-                              : "none"}
-                          </div>
-                          {item.confirmation_state === "awaiting_confirmation" ? (
-                            <div className="feature-list-meta">Awaiting confirmation</div>
-                          ) : null}
-                          {item.completed_at ? (
-                            <div className="feature-list-meta">
-                              Completion evidence {formatWakeCompletionEvidence(item.completion_evidence) ?? "unavailable"}
-                            </div>
-                          ) : null}
-                          {item.failure_reason ? <div className="callout warning-callout">{item.failure_reason}</div> : null}
-                          {!item.failure_reason && item.latest_dispatch?.error ? (
-                            <div className="callout warning-callout">{item.latest_dispatch.error}</div>
-                          ) : null}
-                          <div className="feature-toolbar-actions compact-actions">
-                            <span className="panel-meta">
-                              {item.retry_available
-                                ? "Retry available"
-                                : item.completed_at
-                                  ? `Completed ${formatTimestamp(item.completed_at)}`
-                                  : item.enabled
-                                    ? "Enabled"
-                                    : "Disabled"}
-                            </span>
-                            {item.retry_available ? (
+                      )}
+                      {policyDraft.emailMailboxGrants !== null ? (
+                        <div className="field-stack wide-field agent-communication-targets-field">
+                          <span>Email mailbox access</span>
+                          <p className="field-description">
+                            Read-only access is independent of send destinations. Draft and send access are explicit
+                            mailbox capabilities.
+                          </p>
+                          <EmailMailboxGrantEditor
+                            grants={policyDraft.emailMailboxGrants}
+                            options={selectedSession?.email_mailbox_options ?? []}
+                            onChange={(nextGrants) => updatePolicyDraft({ emailMailboxGrants: nextGrants })}
+                            disabled={mutationLocked}
+                            emptyState={
+                              (selectedSession?.email_mailbox_options ?? []).length > 0
+                                ? "No mailbox accounts are granted to this session."
+                                : "No mailbox accounts are available under this session's directory policy. Configure the mailbox allowlist and folder policy first."
+                            }
+                          />
+                          {(selectedSession?.email_mailbox_options ?? []).length === 0 ? (
+                            <div className="inline-actions compact-actions">
                               <button
                                 type="button"
-                                className="primary"
-                                onClick={() => void retryWakeLedgerEntry(item)}
-                                disabled={busy === `wake-ledger-retry-${item.request_id}` || mutationLocked}
+                                className="admin-action-button compact"
+                                onClick={openMailboxConfiguration}
                               >
-                                {busy === `wake-ledger-retry-${item.request_id}` ? "Retrying..." : "Retry now"}
+                                Configure mailbox access
                               </button>
-                            ) : null}
-                          </div>
+                            </div>
+                          ) : null}
                         </div>
-                      ))}
-                      {wakeLedgerItems.length === 0 ? <div className="empty-state">No wake ledger entries available for this session.</div> : null}
-                      {wakeLedgerItems.length > 0 && visibleWakeLedgerItems.length === 0 ? <div className="empty-state">No wake ledger entries match the selected status.</div> : null}
+                      ) : null}
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={policyDraft.webSearchEnabled}
+                          onChange={(event) => updatePolicyDraft({ webSearchEnabled: event.target.checked })}
+                          disabled={mutationLocked}
+                        />
+                        <span>Web search</span>
+                      </label>
+                      <div className="field-stack">
+                        <span>HTTP targets</span>
+                        <HttpTargetsEditor
+                          entries={policyDraft.httpTargets}
+                          onChange={(nextEntries) => {
+                            setPolicyDraft((current) => ({
+                              ...current,
+                              httpTargets: nextEntries,
+                              httpTargetsSourceError: null,
+                            }));
+                            setHttpTargetsDirty(true);
+                            setPolicyDirty(true);
+                            setStatus(null);
+                          }}
+                          onValidationChange={setHttpTargetsError}
+                          sourceError={policyDraft.httpTargetsSourceError}
+                          sessionId={selectedSession.session_id}
+                          directoryPath={selectedSession.directory_path}
+                          disabled={mutationLocked}
+                        />
+                      </div>
+                      <div className="field-stack session-communication-files">
+                        <span>Communication files</span>
+                        <div className="session-communication-file-toggles">
+                          <label className="checkbox-row">
+                            <input
+                              type="checkbox"
+                              checked={policyDraft.communicationFileReceiveEnabled}
+                              onChange={(event) =>
+                                updatePolicyDraft({ communicationFileReceiveEnabled: event.target.checked })
+                              }
+                              disabled={mutationLocked}
+                            />
+                            <span>Receive inbound files</span>
+                          </label>
+                          <label className="checkbox-row">
+                            <input
+                              type="checkbox"
+                              checked={policyDraft.communicationFileSendEnabled}
+                              onChange={(event) =>
+                                updatePolicyDraft({ communicationFileSendEnabled: event.target.checked })
+                              }
+                              disabled={mutationLocked}
+                            />
+                            <span>Send files</span>
+                          </label>
+                          <label className="checkbox-row">
+                            <input
+                              type="checkbox"
+                              checked={policyDraft.communicationFileRequireApprovalForSend}
+                              onChange={(event) =>
+                                updatePolicyDraft({ communicationFileRequireApprovalForSend: event.target.checked })
+                              }
+                              disabled={mutationLocked}
+                            />
+                            <span>Require approval for sends</span>
+                          </label>
+                        </div>
+                      </div>
+                      <label className="field-stack">
+                        <span>Communication file max bytes</span>
+                        <p className="field-description">
+                          Size in bytes. Enter a non-negative whole number; blank keeps no explicit session value and
+                          falls back to the effective policy. 0 allows only zero-byte files.
+                        </p>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          inputMode="numeric"
+                          value={policyDraft.communicationFileMaxBytes}
+                          onChange={(event) => updatePolicyDraft({ communicationFileMaxBytes: event.target.value })}
+                          disabled={mutationLocked}
+                        />
+                      </label>
+                      <div className="field-stack">
+                        <span>Allowed MIME types</span>
+                        <p className="field-description">
+                          One MIME type per row. Blank rows are ignored, extra spaces are trimmed, and duplicates are
+                          removed.
+                        </p>
+                        <StringListEditor
+                          values={policyDraft.communicationFileAllowedMimeTypes}
+                          onChange={(nextValues) =>
+                            updatePolicyDraft({ communicationFileAllowedMimeTypes: nextValues })
+                          }
+                          disabled={mutationLocked}
+                          itemLabel="MIME type"
+                          addLabel="Add MIME type"
+                          placeholder="text/plain"
+                        />
+                      </div>
+                      <div className="field-stack">
+                        <span>Allowed extensions</span>
+                        <p className="field-description">
+                          One suffix per row, such as <code>.txt</code> or <code>.pdf</code>. Entries must start with a
+                          leading dot, blank rows are ignored, and duplicates are removed.
+                        </p>
+                        <StringListEditor
+                          values={policyDraft.communicationFileAllowedExtensions}
+                          onChange={(nextValues) =>
+                            updatePolicyDraft({ communicationFileAllowedExtensions: nextValues })
+                          }
+                          disabled={mutationLocked}
+                          itemLabel="Extension"
+                          addLabel="Add extension"
+                          placeholder=".txt"
+                          validateItem={(value) => validateLeadingDotExtensionValue(value)}
+                        />
+                      </div>
+                      <div className="field-stack">
+                        <span>Blocked extensions</span>
+                        <p className="field-description">
+                          One suffix per row, such as <code>.exe</code> or <code>.sh</code>. Entries must start with a
+                          leading dot, blank rows are ignored, and duplicates are removed.
+                        </p>
+                        <StringListEditor
+                          values={policyDraft.communicationFileBlockedExtensions}
+                          onChange={(nextValues) =>
+                            updatePolicyDraft({ communicationFileBlockedExtensions: nextValues })
+                          }
+                          disabled={mutationLocked}
+                          itemLabel="Extension"
+                          addLabel="Add extension"
+                          placeholder=".exe"
+                          validateItem={(value) => validateLeadingDotExtensionValue(value)}
+                        />
+                      </div>
+                      <div className="field-stack">
+                        <span>Metadata</span>
+                        <p className="field-description">
+                          Must be a JSON object. Nested values are edited as JSON snippets and preserved when unchanged.
+                        </p>
+                        <JsonObjectKeyValueEditor
+                          value={policyDraft.metadata}
+                          onChange={(nextValue) => {
+                            setMetadataDirty(true);
+                            updatePolicyDraft({ metadata: nextValue });
+                          }}
+                          onValidationChange={(error) => {
+                            setPolicyMetadataError(error);
+                            if (error) {
+                              setMetadataDirty(true);
+                              setPolicyDirty(true);
+                              setStatus(null);
+                            }
+                          }}
+                          fieldLabel="Metadata"
+                          disabled={mutationLocked}
+                          addLabel="Add row"
+                          emptyState="No metadata rows are configured."
+                        />
+                      </div>
+                      <div className="feature-toolbar-actions session-panel-actions">
+                        <button
+                          type="button"
+                          className="primary"
+                          onClick={() => void saveSessionSettings()}
+                          disabled={
+                            busy === "settings" || mutationLocked || (!modelDirty && !toolsDirty && !policyDirty)
+                          }
+                        >
+                          {busy === "settings" ? "Saving..." : "Save changes"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="muted-text" role="status">
+                      Loading access settings…
+                    </p>
+                  )}
+                </article>
+                <article className="panel">
+                  <div className="panel-header">
+                    <h3>Wake schedules</h3>
+                    <div className="feature-toolbar-actions session-wake-actions">
+                      <span className="panel-meta">{wakeScheduleCountLabel}</span>
+                      {hiddenPastOneTimeWakeScheduleCount > 0 || showPastOneTimeWakeSchedules ? (
+                        <label className="checkbox-row session-wake-history-toggle">
+                          <input
+                            type="checkbox"
+                            checked={showPastOneTimeWakeSchedules}
+                            onChange={(event) => setShowPastOneTimeWakeSchedules(event.target.checked)}
+                          />
+                          <span>Show past one-time</span>
+                        </label>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={resetWakeEditor}
+                        disabled={
+                          mutationLocked ||
+                          (!editingWakeRequestId &&
+                            !wakePrompt &&
+                            !wakeCron &&
+                            !wakeResumeAt &&
+                            wakeMode === "same_context" &&
+                            wakeEnabled)
+                        }
+                      >
+                        Create new
+                      </button>
+                      {selectedWakeSchedule && canToggleWakeScheduleEnabled(selectedWakeSchedule) ? (
+                        <button
+                          type="button"
+                          onClick={() => void toggleWakeScheduleEnabled(selectedWakeSchedule)}
+                          disabled={busy === `wake-toggle-${selectedWakeSchedule.request_id}` || mutationLocked}
+                        >
+                          {selectedWakeSchedule.enabled ? "Disable selected" : "Enable selected"}
+                        </button>
+                      ) : null}
                     </div>
                   </div>
-                </div>
+                  <div className="panel-body">
+                    <label className="field-stack">
+                      <span>Prompt</span>
+                      <textarea
+                        rows={4}
+                        value={wakePrompt}
+                        onChange={(event) => setWakePrompt(event.target.value)}
+                        disabled={wakeEditorLocked}
+                      />
+                    </label>
+                    <div className="field-stack">
+                      <span>Schedule type</span>
+                      <div className="inline-actions compact-actions session-schedule-type-toggle">
+                        <button
+                          type="button"
+                          className={wakeScheduleKind === "cron" ? "primary" : ""}
+                          onClick={() => setScheduleKind("cron")}
+                          disabled={wakeEditorLocked}
+                        >
+                          Recurring
+                        </button>
+                        <button
+                          type="button"
+                          className={wakeScheduleKind === "resume_at" ? "primary" : ""}
+                          onClick={() => setScheduleKind("resume_at")}
+                          disabled={wakeEditorLocked}
+                        >
+                          One time
+                        </button>
+                      </div>
+                    </div>
+                    {wakeScheduleKind === "cron" ? (
+                      <label className="field-stack">
+                        <span>Cron</span>
+                        <input
+                          value={wakeCron}
+                          onChange={(event) => setWakeCron(event.target.value)}
+                          placeholder="*/30 * * * *"
+                          disabled={wakeEditorLocked}
+                        />
+                      </label>
+                    ) : (
+                      <label className="field-stack">
+                        <span>Resume at</span>
+                        <input
+                          type="datetime-local"
+                          value={wakeResumeAt}
+                          onChange={(event) => setWakeResumeAt(event.target.value)}
+                          disabled={wakeEditorLocked}
+                        />
+                      </label>
+                    )}
+                    <label className="field-stack">
+                      <span>Resume mode</span>
+                      <select
+                        value={wakeMode}
+                        onChange={(event) => setWakeMode(event.target.value)}
+                        disabled={wakeEditorLocked}
+                      >
+                        {(catalog?.resume_mode_options ?? []).map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={wakeEnabled}
+                        onChange={(event) => setWakeEnabled(event.target.checked)}
+                        disabled={wakeEditorLocked}
+                      />
+                      <span>Enabled</span>
+                    </label>
+                    <div className="feature-toolbar-actions session-panel-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        onClick={() => void submitWakeSchedule(editingWakeRequestId ? "update" : "create")}
+                        disabled={busy === "wake-create" || busy === "wake-update" || wakeEditorLocked}
+                      >
+                        {editingWakeRequestId
+                          ? busy === "wake-update"
+                            ? "Saving..."
+                            : "Save schedule"
+                          : busy === "wake-create"
+                            ? "Creating..."
+                            : "Create wake schedule"}
+                      </button>
+                      {selectedWakeSchedule ? (
+                        <button
+                          className="danger"
+                          type="button"
+                          onClick={() => void deleteWakeSchedule(selectedWakeSchedule)}
+                          disabled={busy === `wake-delete-${selectedWakeSchedule.request_id}` || mutationLocked}
+                        >
+                          {busy === `wake-delete-${selectedWakeSchedule.request_id}`
+                            ? "Deleting..."
+                            : "Delete selected"}
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="feature-list compact-list">
+                      {detailLoading && selectedSessionId ? (
+                        <div className="empty-state">Loading wake schedules...</div>
+                      ) : null}
+                      {!detailLoading &&
+                        visibleWakeScheduleItems.map((item) => (
+                          <button
+                            key={item.request_id}
+                            type="button"
+                            className={`feature-list-item${editingWakeRequestId === item.request_id ? " selected" : ""}`}
+                            onClick={() => bindWakeSchedule(item.request_id)}
+                          >
+                            <div className="feature-list-title-row">
+                              <strong>
+                                {item.schedule_kind === "cron" ? item.cron : formatTimestamp(item.resume_at)}
+                              </strong>
+                              <span
+                                className={`status-pill state-${item.status === "cancelled" ? "idle" : item.enabled ? "running" : "idle"}`}
+                              >
+                                {item.status === "cancelled" ? "Cancelled" : item.enabled ? "Enabled" : "Disabled"}
+                              </span>
+                            </div>
+                            <div className="feature-list-meta">{item.prompt}</div>
+                            <div className="feature-list-meta">{item.resume_mode}</div>
+                          </button>
+                        ))}
+                      {!detailLoading && detail?.wake_schedules.length === 0 ? (
+                        <div className="empty-state">No wake schedules configured.</div>
+                      ) : null}
+                      {!detailLoading &&
+                      (detail?.wake_schedules.length ?? 0) > 0 &&
+                      visibleWakeScheduleItems.length === 0 ? (
+                        <div className="empty-state">Past one-time schedules hidden.</div>
+                      ) : null}
+                    </div>
+                    <div className="wake-ledger-section">
+                      <div className="panel-header wake-ledger-header">
+                        <div>
+                          <h4>Wake ledger</h4>
+                          <p className="field-description">
+                            Durable status entries for this session&apos;s scheduled wakes, including the latest
+                            dispatch summary and retryability.
+                          </p>
+                        </div>
+                        <div className="feature-toolbar-actions session-wake-actions">
+                          <label className="field-stack wake-ledger-filter">
+                            <span>Status</span>
+                            <select
+                              value={wakeLedgerFilter}
+                              onChange={(event) => setWakeLedgerFilter(event.target.value as WakeLedgerFilter)}
+                            >
+                              {WAKE_LEDGER_FILTER_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <span className="panel-meta">{visibleWakeLedgerItems.length} shown</span>
+                        </div>
+                      </div>
+                      {wakeLedgerError ? <div className="callout error-callout">{wakeLedgerError}</div> : null}
+                      <div className="feature-list compact-list wake-ledger-list">
+                        {visibleWakeLedgerItems.map((item) => (
+                          <div key={item.request_id} className="feature-list-item wake-ledger-item">
+                            <div className="feature-list-title-row">
+                              <strong>{item.request_id}</strong>
+                              <span className={`status-pill state-${wakeLedgerStatusClass(item.status)}`}>
+                                {wakeLedgerDisplayLabel(item)}
+                              </span>
+                            </div>
+                            <div className="feature-list-meta">
+                              {item.prompt_summary ?? item.redacted_prompt ?? "Prompt unavailable"}
+                            </div>
+                            <div className="feature-list-meta">
+                              {item.schedule_cron
+                                ? `Cron ${item.schedule_cron}`
+                                : `Resume ${formatTimestamp(item.resume_at ?? item.scheduled_for)}`}
+                            </div>
+                            <div className="feature-list-meta">
+                              {item.source ? `Source ${item.source}` : "Source unavailable"}
+                              {item.status_reason ? ` • ${item.status_reason}` : ""}
+                            </div>
+                            <div className="feature-list-meta">
+                              Updated {formatTimestamp(item.updated_at)}
+                              {item.status_updated_at ? ` • Status ${formatTimestamp(item.status_updated_at)}` : ""}
+                            </div>
+                            <div className="feature-list-meta">
+                              Latest dispatch{" "}
+                              {item.latest_dispatch
+                                ? `${item.latest_dispatch.status} at ${formatTimestamp(item.latest_dispatch.dispatched_at)}`
+                                : "none"}
+                            </div>
+                            {item.confirmation_state === "awaiting_confirmation" ? (
+                              <div className="feature-list-meta">Awaiting confirmation</div>
+                            ) : null}
+                            {item.completed_at ? (
+                              <div className="feature-list-meta">
+                                Completion evidence{" "}
+                                {formatWakeCompletionEvidence(item.completion_evidence) ?? "unavailable"}
+                              </div>
+                            ) : null}
+                            {item.failure_reason ? (
+                              <div className="callout warning-callout">{item.failure_reason}</div>
+                            ) : null}
+                            {!item.failure_reason && item.latest_dispatch?.error ? (
+                              <div className="callout warning-callout">{item.latest_dispatch.error}</div>
+                            ) : null}
+                            <div className="feature-toolbar-actions compact-actions">
+                              <span className="panel-meta">
+                                {item.retry_available
+                                  ? "Retry available"
+                                  : item.completed_at
+                                    ? `Completed ${formatTimestamp(item.completed_at)}`
+                                    : item.enabled
+                                      ? "Enabled"
+                                      : "Disabled"}
+                              </span>
+                              {item.retry_available ? (
+                                <button
+                                  type="button"
+                                  className="primary"
+                                  onClick={() => void retryWakeLedgerEntry(item)}
+                                  disabled={busy === `wake-ledger-retry-${item.request_id}` || mutationLocked}
+                                >
+                                  {busy === `wake-ledger-retry-${item.request_id}` ? "Retrying..." : "Retry now"}
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                        {wakeLedgerItems.length === 0 ? (
+                          <div className="empty-state">No wake ledger entries available for this session.</div>
+                        ) : null}
+                        {wakeLedgerItems.length > 0 && visibleWakeLedgerItems.length === 0 ? (
+                          <div className="empty-state">No wake ledger entries match the selected status.</div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              </div>
+              <article className="panel">
+                <details className="compact-disclosure">
+                  <summary className="compact-disclosure-summary feature-list-title-row">
+                    <h3>Session detail</h3>
+                    <span className="panel-meta">{detailError ? "Unavailable" : "Live summary"}</span>
+                  </summary>
+                  <pre className="log-view">
+                    {detailError ? detailError : JSON.stringify(detail?.summary_json ?? selectedSession, null, 2)}
+                  </pre>
+                </details>
               </article>
+              <RenewSessionModal
+                open={showRenewModal}
+                sessionId={selectedSession.session_id}
+                renewExtension={renewExtension}
+                presets={catalog?.renew_extension_presets ?? []}
+                busy={busy === "renew"}
+                locked={mutationLocked}
+                onChange={setRenewExtension}
+                onClose={() => setShowRenewModal(false)}
+                onSubmit={() => void runSessionAction("renew")}
+              />
+              <ApprovalSettingsModal
+                open={Boolean(approvalSettingsTool && approvalSettingsToolOption)}
+                toolLabel={approvalSettingsToolOption?.label ?? approvalSettingsTool}
+                toolValue={approvalSettingsTool}
+                settings={approvalSettingsDraftForTool(approvalSettingsTool)}
+                inheritedSettings={effectiveApprovalSettingsForTool(approvalSettingsTool)}
+                hardRule={effectiveRuleForTool(approvalSettingsTool)}
+                busy={busy === "settings"}
+                locked={mutationLocked}
+                onApply={(settings) => updateApprovalSettingsDraft(approvalSettingsTool, settings)}
+                onReset={() => resetApprovalSettingsDraft(approvalSettingsTool)}
+                onClose={() => setApprovalSettingsTool("")}
+                hasExplicitOverride={hasExplicitApprovalSettingsDraft(approvalSettingsTool)}
+              />
             </div>
-            <article className="panel">
-              <details className="compact-disclosure">
-                <summary className="compact-disclosure-summary feature-list-title-row">
-                  <h3>Session detail</h3>
-                  <span className="panel-meta">{detailError ? "Unavailable" : "Live summary"}</span>
-                </summary>
-                <pre className="log-view">
-                  {detailError
-                    ? detailError
-                    : JSON.stringify(detail?.summary_json ?? selectedSession, null, 2)}
-                </pre>
-              </details>
-            </article>
-            <RenewSessionModal
-              open={showRenewModal}
-              sessionId={selectedSession.session_id}
-              renewExtension={renewExtension}
-              presets={catalog?.renew_extension_presets ?? []}
-              busy={busy === "renew"}
-              locked={mutationLocked}
-              onChange={setRenewExtension}
-              onClose={() => setShowRenewModal(false)}
-              onSubmit={() => void runSessionAction("renew")}
-            />
-            <ApprovalSettingsModal
-              open={Boolean(approvalSettingsTool && approvalSettingsToolOption)}
-              toolLabel={approvalSettingsToolOption?.label ?? approvalSettingsTool}
-              toolValue={approvalSettingsTool}
-              settings={approvalSettingsDraftForTool(approvalSettingsTool)}
-              inheritedSettings={effectiveApprovalSettingsForTool(approvalSettingsTool)}
-              hardRule={effectiveRuleForTool(approvalSettingsTool)}
-              busy={busy === "settings"}
-              locked={mutationLocked}
-              onApply={(settings) => updateApprovalSettingsDraft(approvalSettingsTool, settings)}
-              onReset={() => resetApprovalSettingsDraft(approvalSettingsTool)}
-              onClose={() => setApprovalSettingsTool("")}
-              hasExplicitOverride={hasExplicitApprovalSettingsDraft(approvalSettingsTool)}
-            />
-          </div>
-        ) : (
-          <div className="empty-state">Select a session to inspect its details.</div>
-        )}
-      </section>
-    </div>
+          ) : (
+            <div className="empty-state">Select a session to inspect its details.</div>
+          )}
+        </section>
+      </div>
+    </>
   );
 }

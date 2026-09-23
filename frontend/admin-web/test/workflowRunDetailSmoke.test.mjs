@@ -715,7 +715,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
 
   await page.locator(".react-flow__node", { hasText: "Dispatch agent" }).click();
   await page.locator(".inspect-node-panel").getByRole("button", { name: "Tool call audit" }).click();
-  await assert.doesNotReject(() => page.getByText("Tool call audit log").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Tool Calls", exact: true }).waitFor({ state: "visible" }));
   assert.equal(await page.evaluate(() => window.location.hash), "#tool-calls?q=tool-req-1");
 
   assert.deepEqual(detailRequests, ["/api/workflow-editor/run-detail?event_id=evt-run-1"]);

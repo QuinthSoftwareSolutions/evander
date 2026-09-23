@@ -1,12 +1,24 @@
+import { onAddonPrivileges } from "./admin-design.js";
+
 const $ = selector => document.querySelector(selector);
 let current = null;
 let loadedDirectory = null;
 let busy = false;
+let privilegedUnlocked = false;
+const lockedMessage = 'Unlock privileged operations in Admin Web to edit settings or change Figma state.';
+function applyPrivileges() {
+  document.querySelectorAll('#connection-form input, #connection-form select, #connection-form button, #target-form input, #target-form select, #target-form button, #permissions-form input, #permissions-form select, #permissions-form button, [data-privileged-action]').forEach(control => {
+    control.disabled = busy || !privilegedUnlocked || !current;
+    control.title = privilegedUnlocked ? '' : lockedMessage;
+  });
+  $('#privilege-notice').hidden = privilegedUnlocked;
+}
 const directory = () => loadedDirectory || $('#directory').value.trim();
 $('#directory').value = new URLSearchParams(location.search).get('directory') || 'root';
 const status = (text, error=false) => { $('#status').textContent=text; $('#status').classList.toggle('error',error); };
 const endpoint = (path, params={}) => `/api/addons/figma-addon${path}?${new URLSearchParams({directory:directory(),...params})}`;
 async function api(path, method='GET', body=null, params={}) {
+  if(method!=='GET' && !privilegedUnlocked)throw new Error(lockedMessage);
   if(method!=='GET' && (!current || $('#directory').value.trim()!==loadedDirectory))throw new Error('Open the selected directory before making changes.');
   const response=await fetch(endpoint(path,params),{method,credentials:'same-origin',
     headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
@@ -15,7 +27,7 @@ async function api(path, method='GET', body=null, params={}) {
   return result;
 }
 function element(tag,text,className) {const e=document.createElement(tag);if(text!=null)e.textContent=text;if(className)e.className=className;return e;}
-function button(text,fn) {const b=element('button',text,'secondary');b.type='button';b.addEventListener('click',()=>run(b,fn));return b;}
+function button(text,fn) {const b=element('button',text,'secondary');b.type='button';b.dataset.privilegedAction='';b.addEventListener('click',()=>{if(!privilegedUnlocked){status(lockedMessage,true);return;}run(b,fn);});return b;}
 async function run(control,fn) {
   if(busy)return;
   busy=true;
@@ -25,9 +37,9 @@ async function run(control,fn) {
   controls.forEach(item=>{item.disabled=true;});
   status('Working…');
   try{await fn();status('Ready.');}catch(e){status(e.message,true);}
-  finally{controls.forEach((item,index)=>{item.disabled=previous[index];});busy=false;}
+  finally{controls.forEach((item,index)=>{item.disabled=previous[index];});busy=false;applyPrivileges();}
 }
-function form(id,fn) {$(id).addEventListener('submit',event=>{event.preventDefault();const data=Object.fromEntries(new FormData(event.target));run(event.submitter,()=>fn(data,event.target));});}
+function form(id,fn) {$(id).addEventListener('submit',event=>{event.preventDefault();if(!['#directory-form','#history-form'].includes(id)&&!privilegedUnlocked){status(lockedMessage,true);return;}const data=Object.fromEntries(new FormData(event.target));run(event.submitter,()=>fn(data,event.target));});}
 async function load(selectedDirectory=loadedDirectory) {
   const settings=await api('/settings','GET',null,{directory:selectedDirectory});
   if(selectedDirectory!==loadedDirectory){
@@ -78,6 +90,7 @@ function render() {
   }
   document.querySelectorAll('.target-select').forEach(select=>options(select,current.settings.targets));
   renderPermissions();
+  applyPrivileges();
 }
 form('#directory-form',async()=>{
   try{await load($('#directory').value.trim());}catch(error){$('#directory').value=loadedDirectory||'root';throw error;}
@@ -115,6 +128,8 @@ async function loadHistory() {
       if(result.observation_digest)detail.append(button('Accept current state and close operation',async()=>{
         await api('/resolve','POST',{target_id,operation_id:operation.operation_id,observation_digest:result.observation_digest});await loadHistory();}));
     }));}card.append(detail);operations.append(card);}
+  applyPrivileges();
 }
 form('#history-form',loadHistory);
+onAddonPrivileges(unlocked => { privilegedUnlocked=unlocked;applyPrivileges(); });
 run(null,()=>load($('#directory').value.trim()));

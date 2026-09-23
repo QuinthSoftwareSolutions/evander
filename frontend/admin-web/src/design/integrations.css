@@ -1,0 +1,383 @@
+/* Bundled integration workspaces: settings, review queues, and local history. */
+[data-admin-design][data-addon] :is(header h1, header h2) {
+  margin: 0;
+}
+[data-admin-design][data-addon] header p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+[data-admin-design][data-addon] :is(header, .panel-heading, .panel__header) {
+  gap: 12px;
+}
+[data-admin-design][data-addon] :is(.notice, #notice, #status, .skv-message):empty {
+  display: none;
+}
+[data-admin-design][data-addon] :is(.property-grid, .detail-grid) {
+  gap: 12px 24px;
+}
+[data-admin-design][data-addon] :is(.property-grid dt, .detail-grid dt) {
+  color: var(--ui-muted);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+[data-admin-design][data-addon] :is(.property-grid dd, .detail-grid dd) {
+  margin: 3px 0 0;
+  color: var(--ui-text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+[data-admin-design][data-addon] .table-wrap {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  overflow-x: auto;
+}
+[data-admin-design][data-addon] table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--ui-surface);
+}
+[data-admin-design][data-addon] :is(th, td) {
+  height: var(--ui-row-height);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+}
+[data-admin-design][data-addon] :is(button.active, button[aria-current="true"], button[aria-pressed="true"]) {
+  color: var(--ui-accent);
+  background: var(--ui-selected);
+}
+
+[data-addon="bokio"] .summary-grid {
+  display: grid;
+  grid-template-columns: 1.5fr repeat(3, 1fr);
+  padding: 0;
+  gap: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  overflow: hidden;
+}
+[data-addon="bokio"] .summary-card {
+  padding: 12px 16px;
+  border: 0;
+  border-right: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: var(--ui-surface);
+  box-shadow: none;
+  gap: 4px;
+}
+[data-addon="bokio"] .summary-card strong {
+  font-size: 22px;
+  font-weight: 600;
+}
+[data-addon="bokio"] .summary-card:first-child strong {
+  font-size: 15px;
+}
+[data-addon="bokio"] .summary-card small {
+  font-size: 11px;
+}
+[data-addon="bokio"] .workspace {
+  grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.5fr);
+  gap: 24px;
+  margin-top: 20px;
+}
+[data-addon="bokio"] :is(.queue, .detail, .operations-panel) {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+[data-addon="bokio"] .detail {
+  border-left: 1px solid var(--ui-border);
+  padding-left: 24px;
+}
+[data-addon="bokio"] .filters {
+  gap: 8px;
+  padding: 12px 0;
+}
+[data-addon="bokio"] .action-list {
+  gap: 0;
+}
+[data-addon="bokio"] .action-row {
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 10px 12px;
+  background: var(--ui-surface);
+}
+[data-addon="bokio"] .action-row.selected {
+  background: var(--ui-selected);
+  box-shadow: inset 2px 0 var(--ui-accent);
+}
+[data-addon="bokio"] :is(.action-note, .action-meta) {
+  font-weight: 400;
+}
+[data-addon="bokio"] .property-grid {
+  gap: 8px 24px;
+}
+[data-addon="bokio"] .property-grid div {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 4px 0;
+}
+[data-addon="bokio"] .property-grid dt {
+  font-size: 12px;
+  text-transform: none;
+}
+[data-addon="bokio"] .detail-header {
+  margin-bottom: 16px;
+}
+[data-addon="bokio"] .detail-section {
+  margin-top: 16px;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+}
+[data-addon="bokio"] .detail-section h3 {
+  font-size: 14px;
+}
+[data-addon="bokio"] .operations-panel {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ui-border);
+}
+[data-addon="bokio"] .operation-row {
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  padding: 10px 0;
+  background: transparent;
+}
+
+[data-addon="mssql_seed"] .page {
+  gap: 20px;
+}
+[data-addon="mssql_seed"] .panel {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  gap: 12px;
+}
+[data-addon="mssql_seed"] .actions {
+  padding: 12px 0;
+  background: var(--ui-canvas);
+  border-color: var(--ui-border);
+}
+[data-addon="mssql_seed"] #saveButton {
+  color: var(--ui-on-accent);
+  background: var(--ui-accent);
+  border-color: var(--ui-accent);
+}
+[data-addon="mssql_seed"] td {
+  vertical-align: middle;
+}
+[data-addon="mssql_seed"] th:last-child {
+  min-width: 92px;
+}
+[data-addon="mssql_seed"] #databasesBody td:last-child {
+  white-space: nowrap;
+}
+
+[data-addon="miro"] .layout {
+  grid-template-columns: 248px minmax(0, 1fr);
+  gap: 24px;
+}
+[data-addon="miro"] .layout > :is(aside, section) {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+[data-addon="miro"] .layout > aside {
+  border-right: 1px solid var(--ui-border);
+  padding-right: 16px;
+}
+[data-addon="miro"] #connections button {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 10px 8px;
+}
+[data-addon="miro"] #settings {
+  max-width: 1000px;
+}
+[data-addon="miro"] #boards {
+  border-top: 1px solid var(--ui-border);
+}
+[data-addon="miro"] .board {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ui-border);
+  margin: 0;
+}
+[data-addon="miro"] .checks {
+  gap: 12px 24px;
+  margin: 16px 0;
+}
+[data-addon="miro"] .operation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+}
+[data-addon="miro"] .operation button {
+  margin: 0;
+}
+[data-addon="miro"] #details:empty {
+  display: none;
+}
+
+[data-addon="figma"] main > section {
+  margin: 20px 0 0;
+  padding: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+  background: transparent;
+}
+[data-addon="figma"] header {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  align-items: baseline;
+}
+[data-addon="figma"] header > p {
+  grid-column: 2;
+}
+[data-addon="figma"] header > a {
+  font-size: 12px;
+}
+[data-addon="figma"] .card {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+[data-addon="figma"] .card strong {
+  font-size: 14px;
+}
+[data-addon="figma"] details {
+  margin: 12px 0 0;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+[data-addon="figma"] details > summary {
+  padding: 10px 12px;
+}
+[data-addon="figma"] details > form {
+  padding: 0 16px 16px;
+  margin-top: 8px;
+}
+[data-addon="figma"] .snapshots {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+[data-addon="figma"] .snapshot {
+  padding: 12px;
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+[data-addon="figma"] .snapshot img {
+  width: 100%;
+  max-height: 240px;
+}
+
+[data-addon="skatteverket"] .skv-shell {
+  width: auto;
+  max-width: none;
+}
+[data-addon="skatteverket"] .skv-header {
+  margin-bottom: 16px;
+}
+[data-addon="skatteverket"] .skv-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+[data-addon="skatteverket"] .skv-grid > article {
+  padding: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+}
+[data-addon="skatteverket"] .skv-grid > article h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+[data-addon="skatteverket"] .skv-grid .skv-wide {
+  grid-column: 1 / -1;
+}
+[data-addon="skatteverket"] .skv-connection-settings > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--ui-accent);
+  font-weight: 600;
+}
+[data-addon="skatteverket"] .skv-connection-settings > summary::before {
+  content: "›";
+}
+[data-addon="skatteverket"] .skv-connection-settings[open] > summary::before {
+  content: "⌄";
+}
+[data-addon="skatteverket"] .skv-connection-settings[open] > summary {
+  margin-bottom: 16px;
+}
+[data-addon="skatteverket"] :is(.skv-form, .skv-field-row, .skv-api-options) {
+  gap: 12px;
+}
+[data-addon="skatteverket"] .skv-api-picker {
+  padding: 12px;
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  border-radius: var(--ui-radius);
+}
+[data-addon="skatteverket"] .skv-list {
+  gap: 0;
+}
+[data-addon="skatteverket"] .skv-row {
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 10px 12px;
+  background: var(--ui-surface);
+}
+[data-addon="skatteverket"] .skv-form-actions {
+  padding-top: 12px;
+  border-top: 1px solid var(--ui-border);
+}
+
+@media (max-width: 800px) {
+  [data-addon="bokio"] .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  [data-addon="bokio"] .workspace,
+  [data-addon="miro"] .layout,
+  [data-addon="skatteverket"] .skv-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-addon="bokio"] .detail {
+    padding: 16px 0;
+    border: 0;
+    border-top: 1px solid var(--ui-border);
+  }
+  [data-addon="miro"] .layout > aside {
+    padding: 0 0 16px;
+    border: 0;
+    border-bottom: 1px solid var(--ui-border);
+  }
+  [data-addon="miro"] .grid,
+  [data-addon="figma"] .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-addon="skatteverket"] .skv-field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

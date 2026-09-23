@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -686,8 +688,14 @@ def test_graph_teams_direct_history_retries_retry_after_response(
         return httpx.Response(200, json={"value": []}, request=request)
 
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
-    monkeypatch.setattr("evander.services.time.sleep", sleeps.append)
-    monkeypatch.setattr("evander.services.random.uniform", lambda _low, _high: 0.5)
+    monkeypatch.setattr(
+        "evander.integration_services.teams.time",
+        SimpleNamespace(monotonic=time.monotonic, sleep=sleeps.append),
+    )
+    monkeypatch.setattr(
+        "evander.integration_services.teams.random",
+        SimpleNamespace(uniform=lambda _low, _high: 0.5),
+    )
     service = GraphTeamsService(
         JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope),
         token="graph-token",

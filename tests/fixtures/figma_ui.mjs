@@ -3,7 +3,12 @@ import fs from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../../src/evander_figma_addon/ui_static/figma.js', import.meta.url), 'utf8');
+const rawSource = fs.readFileSync(new URL('../../src/evander_figma_addon/ui_static/figma.js', import.meta.url), 'utf8');
+const source = rawSource.replace(
+  /^import \{ onAddonPrivileges \} from "\.\/admin-design\.js";\r?\n/m,
+  '',
+);
+assert.notEqual(source, rawSource, 'figma.js should import the shared privilege helper');
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function settings(fileKey) {
   return {
@@ -21,7 +26,7 @@ function page() {
   const nodes = new Map(), all = [], requests = [];
   class Element {
     constructor(tag = 'input') {
-      Object.assign(this, {tag, selectedValue: '', disabled: false, children: [], handlers: {}, data: {}});
+      Object.assign(this, {tag, selectedValue: '', disabled: false, children: [], handlers: {}, data: {}, dataset: {}});
       this.classList = {toggle() {}};
       all.push(this);
     }
@@ -54,6 +59,8 @@ function page() {
     },
     location: {search: '?directory=root/a', origin: 'https://evander.test'},
     history: {replaceState() {}}, URL, URLSearchParams, structuredClone,
+    // The race tests need an editable page; the shared module's privilege state is out of scope.
+    onAddonPrivileges: listener => listener(true),
     FormData: class { constructor(form) { return Object.entries(form.data); } },
     fetch(url, options) {
       return new Promise(resolve => requests.push({

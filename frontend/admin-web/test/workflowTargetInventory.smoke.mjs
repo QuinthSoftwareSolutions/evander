@@ -49,8 +49,10 @@ function workflowDocument() {
         id: "prompt-1",
         display_name: "Prompt persistent agent",
         type: "effect:agent:prompt",
-        target: "session-active",
-        prompt: "Continue the task.",
+        config: {
+          target: "session-active",
+          prompt: "Continue the task.",
+        },
       }],
       queries: [],
       edges: [],

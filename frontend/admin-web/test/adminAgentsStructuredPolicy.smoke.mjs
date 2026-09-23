@@ -344,6 +344,7 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   await editButton.click();
   await editDialog.waitFor({ state: "visible" });
   const replacementProfileSelect = editDialog.getByRole("combobox", { name: "Subscription profile" });
+  await replacementProfileSelect.locator('option[value="team-a"]').waitFor({ state: "attached" });
   assert.equal(await replacementProfileSelect.inputValue(), "team-a");
   await replacementProfileSelect.selectOption("team-b");
   await editDialog.getByRole("button", { name: "Save" }).click();

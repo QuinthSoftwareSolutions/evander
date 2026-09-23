@@ -190,9 +190,9 @@ export const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width
 
 export const WORKFLOW_TUTORIAL_PROGRESS_API_PATH = "/api/admin/user-preferences/workflow-tutorial-progress";
 
-export const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
+export const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 264;
 
-export const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
+export const WORKFLOW_SIDEBAR_MIN_WIDTH = 264;
 
 export const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
 

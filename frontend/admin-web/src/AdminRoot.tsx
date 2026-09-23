@@ -772,6 +772,7 @@ function addonUiPathWithDirectory(
     for (const [name, value] of new URLSearchParams(addonHashQuery)) {
       url.searchParams.set(name, value);
     }
+    url.searchParams.set("admin_ui", "new");
     if (/^[a-z][a-z0-9+.-]*:/i.test(uiPath)) {
       return url.toString();
     }

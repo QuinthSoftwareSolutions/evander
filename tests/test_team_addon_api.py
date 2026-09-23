@@ -6757,6 +6757,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     agent_create_stylesheet = enabled.get("/addons/team-addon/team-agent-create.css")
     assert agent_create_stylesheet.status_code == 200
     assert ".agent-crud-modal" in agent_create_stylesheet.text
+    admin_design_stylesheet = enabled.get("/addons/team-addon/admin-design.css")
+    assert admin_design_stylesheet.status_code == 200
+    assert 'url("./team-agent-create.css") layer(admin-addon-structure)' in admin_design_stylesheet.text
     assert ".agent-inbox-indicator" in stylesheet.text
     assert ".agent-inbox-icon" in stylesheet.text
     assert ".agent-inbox-popover" in stylesheet.text
@@ -6771,7 +6774,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert html.status_code == 200
     assert 'name="max_cost_usd"' in html.text
     assert "team-agent-create.js" in html.text
-    assert "team-agent-create.css" in html.text
+    assert 'href="admin-design.css"' in html.text
 
 
 def test_team_addon_admin_api_mutations_require_privileged_unlock(

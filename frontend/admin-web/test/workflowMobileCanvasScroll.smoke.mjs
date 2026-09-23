@@ -68,6 +68,23 @@ async function positionCanvasForTouch(page) {
   });
 }
 
+async function canvasBackgroundTouchPoint(page) {
+  const point = await page.locator(".canvas-shell").evaluate((canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    // The fitted nodes move when the toolbar changes height. Start the page-scroll
+    // gesture on background, keeping its full path inside the visible viewport.
+    for (let y = Math.max(rect.top + 30, 30); y < Math.min(rect.bottom - 200, innerHeight - 200); y += 30) {
+      for (const fraction of [0.9, 0.1, 0.5]) {
+        const x = rect.left + rect.width * fraction;
+        if (document.elementFromPoint(x, y)?.classList.contains("react-flow__pane")) return { x, y };
+      }
+    }
+    return null;
+  });
+  assert.ok(point, "expected visible canvas background for a page-scroll gesture");
+  return point;
+}
+
 test("workflow editor compact canvas lets one-finger touch scroll the page and two-finger touch pan the graph", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -176,6 +193,7 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
           id: "trigger-1",
           display_name: "Incoming command",
           type: "trigger:manual",
+          config: {},
         },
       ],
       gates: [],
@@ -184,6 +202,7 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
           id: "effect-1",
           display_name: "Dispatch agent",
           type: "effect:notify",
+          config: {},
         },
       ],
       queries: [],
@@ -411,10 +430,7 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
   assert.ok(canvasBox, "expected canvas shell bounds");
   assert.ok(canvasBox.width > 0 && canvasBox.height > 0, "expected canvas shell to have size");
 
-  const oneFingerStart = {
-    x: canvasBox.x + canvasBox.width * 0.78,
-    y: canvasBox.y + canvasBox.height * 0.58,
-  };
+  const oneFingerStart = await canvasBackgroundTouchPoint(page);
   const oneFingerBefore = await readCanvasState(page);
   await dragTouch(
     cdp,

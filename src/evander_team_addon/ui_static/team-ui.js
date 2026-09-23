@@ -256,6 +256,7 @@ let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 // separately whenever a view renderer replaces that DOM. Rendered keys include
 // their Team view so shared renderers cannot couple hidden view copies.
 const openTeamDisclosures = new Set();
+const defaultedTeamDisclosures = new Set();
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
 let projectCreateFormOpen = false;
@@ -264,6 +265,7 @@ const projectRecordSectionPages = {};
 const projectRecordShowRejected = new Set();
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
+let teamRecordReturnFocus = null;
 const expandedTeamRecordGroupIds = new Set();
 const teamRecordGroupTabs = {};
 const teamRecordGroupPages = {};
@@ -924,6 +926,30 @@ const timelineTypeOrder = [
 ];
 
 function bindTopLevelTabs() {
+  const tabs = Array.from(document.querySelectorAll(".team-view-tabs [data-team-view]"));
+  const viewSelect = document.getElementById("team-view-select");
+  if (viewSelect) {
+    tabs.forEach((tab) => viewSelect.add(new Option(tab.textContent.trim(), tab.dataset.teamView)));
+    viewSelect.addEventListener("change", () => setTeamView(viewSelect.value));
+  }
+  document.querySelector(".team-view-tabs")?.addEventListener("keydown", (event) => {
+    const index = tabs.indexOf(event.target);
+    if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    const next = tabs[nextIndex];
+    setTeamView(next.dataset.teamView);
+    next.focus({ preventScroll: true });
+    next.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+  document.querySelector("[data-team-detail-close]")?.addEventListener("click", closeTeamRecordInspector);
+  document.querySelector(".people-agent-detail-panel")?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeTeamRecordInspector();
+    }
+  });
   document.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-team-view], [data-team-link-view]");
     if (!button) {
@@ -1068,6 +1094,12 @@ function setTeamView(view) {
 
 function updateTeamViewTabs() {
   const unreadChatCount = unreadChatConversationCount();
+  const viewSelect = document.getElementById("team-view-select");
+  if (viewSelect) {
+    viewSelect.value = activeTeamView;
+    const chatOption = viewSelect.querySelector('option[value="chat"]');
+    if (chatOption) chatOption.textContent = unreadChatCount ? `Chat (${unreadChatCount} unread)` : "Chat";
+  }
   document.querySelectorAll("[data-team-view]").forEach((button) => {
     const active = (button.dataset.teamView || defaultTeamView) === activeTeamView;
     if (!button.dataset.teamViewBaseLabel) {
@@ -5307,6 +5339,7 @@ function applyChatCollectionPayload(
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   if (activeTeamView === "chat") {
+    renderShell();
     renderChat();
   }
   if (selectedChatConversationId) {
@@ -7105,7 +7138,7 @@ function renderCostCounter(
   const parts = [];
   const maxCost = numberOrNull(cost.max_cost_usd);
   const budgetWindowCost = numberOrNull(cost.budget_window_estimated_cost);
-  const displayedCost = budgetWindowCost === null ? numberOrZero(cost.estimated_cost) : budgetWindowCost;
+  const displayedCost = budgetWindowCost ?? numberOrNull(cost.estimated_cost) ?? 0;
   if (maxCost !== null) {
     parts.push(
       limitReached
@@ -9156,13 +9189,6 @@ function renderPeopleAgents(allAgents, agents) {
     return;
   }
 
-  if (!selectedTeamRecordId) {
-    const firstTeam = visibleTeams.find((team) => text(team.id) !== noTeamRecordId);
-    if (firstTeam) {
-      selectTeamRecord("team", firstTeam.id, { rerender: false });
-    }
-  }
-
   const scopedTeams = visibleTeams;
   const scopedTeamIds = visibleTeamIds;
   const scopedRecords = {
@@ -9171,24 +9197,15 @@ function renderPeopleAgents(allAgents, agents) {
     roles: roles.filter((role) => scopedTeamIds.has(text(role.team_id))).sort(compareTeamRoles),
   };
   const selectedRecord = selectedTeamRecordFrom(scopedRecords);
-  const hasRecords = scopedRecords.agents.length || scopedRecords.projects.length || scopedRecords.roles.length;
-
-  if (!hasRecords && selectedRecord?.kind !== "team") {
-    clearSelectedTeamRecord();
-    renderIntoActiveTargets(
-      "[data-teams-records-view]",
-      "<p class=\"empty-state\">No visible records.</p>",
-    );
-    renderIntoActiveTargets("[data-agent-detail-view]", renderTeamRecordDetail(null));
-    return;
-  }
-
   renderIntoActiveTargets("[data-teams-records-view]", `
     <div class="team-record-groups">
       ${scopedTeams.map((team) => renderTeamRecordGroup(team, scopedRecords)).join("")}
     </div>
   `);
   renderIntoActiveTargets("[data-agent-detail-view]", renderTeamRecordDetail(selectedRecord));
+  const detailPanel = document.querySelector(".people-agent-detail-panel");
+  if (detailPanel) detailPanel.hidden = !selectedRecord;
+  document.querySelector(".people-layout")?.classList.toggle("has-inspector", Boolean(selectedRecord));
 }
 
 function renderTeamRecordGroup(team, scopedRecords) {
@@ -9769,6 +9786,15 @@ function teamRecordCollection(records, kind) {
 function clearSelectedTeamRecord() {
   selectedTeamRecordKind = "agent";
   selectedTeamRecordId = null;
+  const panel = document.querySelector(".people-agent-detail-panel");
+  if (panel) panel.hidden = true;
+  document.querySelector(".people-layout")?.classList.remove("has-inspector");
+}
+
+function closeTeamRecordInspector() {
+  clearSelectedTeamRecord();
+  renderAgents();
+  if (teamRecordReturnFocus) document.querySelector(teamRecordReturnFocus)?.focus({ preventScroll: true });
 }
 
 function comparePeopleTeams(left, right) {
@@ -9834,8 +9860,11 @@ function selectTeamRecord(kind, recordId, { rerender = true } = {}) {
   }
   selectedTeamRecordKind = kind;
   selectedTeamRecordId = normalizedRecordId;
+  const attribute = kind === "team" ? "data-team-record-toggle" : `data-select-${kind}-id`;
+  teamRecordReturnFocus = `[${attribute}="${CSS.escape(normalizedRecordId)}"]`;
   if (rerender) {
     renderAgents();
+    document.querySelector("[data-team-detail-close]")?.focus({ preventScroll: true });
   }
 }
 
@@ -12763,6 +12792,8 @@ function renderProjectOutcomeKinds(definitions) {
 
 function renderProjectOutcomeKindCreateForm(project) {
   return `
+    <details class="project-outcome-create" ${teamDisclosureAttributes(teamDisclosureKey("projects", project.id, "create-outcome-kind"))}>
+    <summary>Add outcome kind</summary>
     <form
       class="project-review-profile-form"
       data-form-id="create-outcome-kind-form"
@@ -12783,6 +12814,7 @@ function renderProjectOutcomeKindCreateForm(project) {
       </div>
       <button type="submit">Add outcome kind</button>
     </form>
+    </details>
   `;
 }
 
@@ -13683,6 +13715,8 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
           : `<span class="task-board-history-note">${terminalCount} completed task${terminalCount === 1 ? "" : "s"} included in hierarchy</span>`
       }
     </div>
+    <details class="task-board-filter-disclosure" ${teamDisclosureAttributes("task-board-filters", { defaultOpen: window.matchMedia("(min-width: 801px)").matches })}>
+    <summary>Filters${[taskBoardCaseId, taskBoardQuery, taskBoardAssigneeId, taskBoardStateFilter, taskBoardReadinessFilter, taskBoardRootTaskId, taskBoardCompletedSince, taskBoardCompletedThrough].filter(Boolean).length ? " · active" : ""}</summary>
     <form class="task-board-filters" data-task-board-search-form data-form-id="task-board-search-form" data-form-draft-scope="${escapeAttr(`${selectedTaskBoardTeamId}:${selectedTaskBoardProjectId}`)}" role="search">
       <label>Case<select data-task-board-filter="case">${renderSelectOptions(caseOptions, { selectedValue: taskBoardCaseId, placeholder: "All cases" })}</select></label>
       <label class="task-board-search-filter">
@@ -13755,6 +13789,7 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
         Clear filters
       </button>
     </form>
+    </details>
   `;
 }
 
@@ -15248,10 +15283,14 @@ function teamDisclosureStateKey(key, view = activeTeamView) {
   return teamDisclosureKey(normalizedTeamView(view), normalizedKey);
 }
 
-function teamDisclosureAttributes(key) {
+function teamDisclosureAttributes(key, { defaultOpen = false } = {}) {
   const normalizedKey = teamDisclosureStateKey(key);
   if (!normalizedKey) {
     return "";
+  }
+  if (defaultOpen && !defaultedTeamDisclosures.has(normalizedKey)) {
+    defaultedTeamDisclosures.add(normalizedKey);
+    openTeamDisclosures.add(normalizedKey);
   }
   return `data-team-disclosure-key="${escapeAttr(normalizedKey)}"${openTeamDisclosures.has(normalizedKey) ? " open" : ""}`;
 }
@@ -18758,7 +18797,7 @@ function renderReleaseVerificationCommandResult(
       </div>
       ${metadata.length ? `<div class="meta-line">${escapeHtml(metadata.join(" · "))}</div>` : ""}
       ${result.evidence?.explanation ? `<p>${escapeHtml(result.evidence.explanation)}</p>` : ""}
-      ${result.toolchain_mounts?.length ? `<details><summary>Verifier toolchain identity</summary><ul>${result.toolchain_mounts.map(mount => `<li>${escapeHtml(mount.target)} ← ${escapeHtml(mount.source)}</li>`).join("")}</ul></details>` : ""}
+      ${result.toolchain_mounts?.length ? `<details ${teamDisclosureAttributes(teamDisclosureKey(disclosureKey, "toolchain"))}><summary>Verifier toolchain identity</summary><ul>${result.toolchain_mounts.map(mount => `<li>${escapeHtml(mount.target)} ← ${escapeHtml(mount.source)}</li>`).join("")}</ul></details>` : ""}
       ${result.log_artifact && result.job_id ? `<button type="button" data-retained-verifier-job="${escapeAttr(result.job_id)}" data-release-id="${escapeAttr(run.release_package_id)}">Read retained log</button>` : ""}
       ${decisiveError ? `<div class="release-verification-decisive-error"><strong>Decisive error:</strong> ${escapeHtml(decisiveError)}</div>` : ""}
       ${
@@ -18792,7 +18831,7 @@ function renderReleaseVerificationLiveOutput(run, result, index, releaseId) {
   const logText = text(log?.text);
   return `
     <li class="release-verification-live-output">
-      <details class="release-verification-log" open>
+      <details class="release-verification-log" ${teamDisclosureAttributes(teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "live", String(index)), { defaultOpen: true })}>
         <summary>Live verifier output · updates every 2 seconds</summary>
         ${log?.has_more_before ? `<p class="meta-line">Earlier log lines are omitted from this bounded tail.</p>` : ""}
         ${logText ? `<pre
@@ -18839,7 +18878,7 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
               ${run.retry_reason ? `<div class="meta-line"><strong>Retry comment:</strong> ${escapeHtml(run.retry_reason)}</div>` : ""}
               ${run.retry_requested_by ? `<div class="meta-line">Requested by ${escapeHtml(run.retry_requested_by)}</div>` : ""}
               ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
-              ${(run.generation_history || []).map(generation => `<details><summary>Interrupted workspace generation ${Number(generation.generation)}</summary>${renderReleaseVerificationCommandResults({ ...run, state: "interrupted", command_results: generation.command_results }, `release-detail:${releaseId}:verification:g${generation.generation}`, releaseId)}</details>`).join("")}
+              ${(run.generation_history || []).map(generation => `<details ${teamDisclosureAttributes(teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "generation", String(generation.generation)))}><summary>Interrupted workspace generation ${Number(generation.generation)}</summary>${renderReleaseVerificationCommandResults({ ...run, state: "interrupted", command_results: generation.command_results }, `release-detail:${releaseId}:verification:g${generation.generation}`, releaseId)}</details>`).join("")}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
               })}

@@ -9,7 +9,7 @@ from starlette.routing import Route
 
 from evander.addons import AddonContext
 
-_STATIC_ASSET_NAMES = frozenset({"skatteverket-ui.css", "skatteverket-ui.js"})
+_STATIC_ASSET_NAMES = frozenset({"skatteverket-ui.css", "skatteverket-ui.js", "admin-design.css", "admin-design.js"})
 
 
 def admin_ui_routes(_context: AddonContext) -> Sequence[Route]:

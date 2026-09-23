@@ -11,6 +11,8 @@ from evander.addons import AddonContext
 
 _STATIC_ASSET_NAMES = frozenset(
     {
+        "admin-design.css",
+        "admin-design.js",
         "team-ui.css",
         "team-ui.js",
         "team-case-board.js",

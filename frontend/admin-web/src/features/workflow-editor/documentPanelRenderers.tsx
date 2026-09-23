@@ -474,36 +474,16 @@ export function createDocumentPanelRenderers({
             </details>);
   }
 
-  function renderDesktopSavePanel() {
-    return (<div className="sidebar-section">
-              <div className="section-label">Save</div>
-              <button onClick={() => void validateDocument()} disabled={workflowReadLocked}>
-                Validate
-              </button>
-              <button onClick={undoWorkflowChange} disabled={!canUndoWorkflowChanges}>
-                Undo
-              </button>
-              <button className="primary" onClick={() => void saveDocument()} disabled={workflowMutationLocked}>
-                {saveState === "saving" ? "Saving..." : "Save workflow"}
-              </button>
-              <div className={`save-status save-status-${savePanelStatusTone}`} role="status" aria-live="polite">
-                <strong>
-                  {hasUnsavedWorkflowChanges
-                    ? "Unsaved workflow changes"
-                    : saveState === "saved"
-                      ? "Workflow saved"
-                      : "No unsaved workflow changes"}
-                </strong>
-                {hasUnsavedWorkflowChanges && dirtyNodeSummary ? <span>{dirtyNodeSummary}</span> : null}
-              </div>
-              {error ? <div className="error-box save-error-box">{error}</div> : null}
-              {document ? (
-                <div className="path-note">
-                  <div>{document.config_path}</div>
-                  <div>{document.layout_path}</div>
-                </div>
-              ) : null}
-            </div>);
+  function renderDesktopSourceFilesPanel() {
+    return document ? (
+      <details className="sidebar-section workflow-source-files">
+        <summary>Source files</summary>
+        <div className="path-note">
+          <div>{document.config_path}</div>
+          <div>{document.layout_path}</div>
+        </div>
+      </details>
+    ) : null;
   }
 
   return {
@@ -512,6 +492,6 @@ export function createDocumentPanelRenderers({
     renderSavePanelContent,
     renderDesktopGraphsPanel,
     renderDesktopCreatePanel,
-    renderDesktopSavePanel,
+    renderDesktopSourceFilesPanel,
   };
 }

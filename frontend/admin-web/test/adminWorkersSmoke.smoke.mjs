@@ -275,6 +275,8 @@ test("workers page supports compact navigation, non-overlapping polling, and act
   await page.goto(`http://127.0.0.1:${address.port}/#workers`, { waitUntil: "domcontentloaded" });
   await ensureSectionsExpanded(page);
   await page.getByRole("heading", { name: "Workers", exact: true }).waitFor({ state: "visible" });
+  await page.locator(".collection-table").getByRole("button", { name: "Trigger Orchestrator", exact: true }).click();
+  await page.getByRole("button", { name: "View worker" }).click();
   await page.locator(".worker-list-item.selected").waitFor({ state: "visible" });
 
   const selectedListText = await page.locator(".worker-list-item.selected").innerText();
@@ -352,6 +354,8 @@ test("workers page supports compact navigation, non-overlapping polling, and act
 
   // Completing an in-flight request after unmount must not recreate a timer.
   await page.evaluate(() => { window.location.hash = "#workers"; });
+  await page.locator(".collection-table").getByRole("button", { name: "Trigger Orchestrator", exact: true }).click();
+  await page.getByRole("button", { name: "View worker" }).click();
   await page.getByRole("button", { name: "Reload worker", exact: true }).waitFor({ state: "visible" });
   const unmountedPoll = blockNextLog();
   await page.clock.runFor(5000);
