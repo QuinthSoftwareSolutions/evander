@@ -627,7 +627,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             context=context,
         )
 
-    _register_slice5_tools(
+    _register_collaboration_tools(
         server,
         note_commands,
         memory_commands,
@@ -639,7 +639,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         attachment_storage,
         attachment_policy_service,
     )
-    _register_slice6_tools(
+    _register_work_management_tools(
         server,
         case_commands,
         task_creation_commands,
@@ -651,15 +651,15 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         resolver,
         context,
     )
-    _register_slice7_tools(
+    _register_delivery_review_tools(
         server,
         deliverable_submission_commands,
         review_commands,
         resolver,
         context,
     )
-    _register_slice8_tools(server, git_release_commands, resolver, context)
-    _register_slice9_tools(server, ephemeral_commands, resolver, context)
+    _register_git_release_tools(server, git_release_commands, resolver, context)
+    _register_ephemeral_worker_tools(server, ephemeral_commands, resolver, context)
     _register_read_tools(server, resolver, context)
 
     for tool_name in ORDINARY_TEAM_MCP_TOOL_NAMES:
@@ -678,7 +678,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     return MCP_TOOL_NAMES
 
 
-def _register_slice5_tools(
+def _register_collaboration_tools(
     server: FastMCP,
     note_commands: TeamNoteCommandService,
     memory_commands: TeamMemoryCommandService,
@@ -1324,7 +1324,7 @@ def _register_slice5_tools(
     )
 
 
-def _register_slice6_tools(
+def _register_work_management_tools(
     server: FastMCP,
     case_commands: TeamCaseCommandService,
     task_creation_commands: TeamTaskCreationCommandService,
@@ -2445,7 +2445,7 @@ def _register_slice6_tools(
     )
 
 
-def _register_slice7_tools(
+def _register_delivery_review_tools(
     server: FastMCP,
     deliverable_commands: TeamDeliverableSubmissionCommandService,
     review_commands: TeamReviewCommandService,
@@ -2888,7 +2888,7 @@ def _register_slice7_tools(
     )
 
 
-def _register_slice8_tools(
+def _register_git_release_tools(
     server: FastMCP,
     command_service: TeamGitReleaseCommandService,
     resolver: TeamMcpContextResolver,
@@ -3395,7 +3395,7 @@ def _team_mcp_memory_artifact_publisher(context: AddonContext):
     return _publish
 
 
-def _register_slice9_tools(
+def _register_ephemeral_worker_tools(
     server: FastMCP,
     command_service: TeamEphemeralCommandService,
     resolver: TeamMcpContextResolver,
