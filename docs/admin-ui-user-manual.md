@@ -80,6 +80,11 @@ Close the inspector or press Escape to return focus to the selected record. On n
 screens the inspector opens as a dialog. The inventory and full record retain their
 filters and local editing state while switching between them.
 
+Click an inventory column header to sort ascending; click again for descending.
+The arrow indicates direction. Names use natural ordering (Agent 2 before Agent 10),
+numbers and dates use their actual values, and unavailable values stay last. Sorting
+keeps the current filters and inspected record, including when returning from the full record.
+
 Release news remains visible on the Dashboard. **Read article** opens a larger reader;
 **Older** and **Newer** browse the archive. Version, build, and changelog details are
 available below the story. Team views keep their existing destinations; narrow screens

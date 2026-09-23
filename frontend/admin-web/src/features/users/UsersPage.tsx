@@ -4,6 +4,7 @@ import { usersModeFromHash, usersModeHash, type AdminUsersMode } from "../../adm
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "../admin/AdminContext";
 import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { timestampSortValue } from "../admin/tableSorting";
 import { readAdminHashQuery } from "../admin/hash";
 import { Tooltip } from "../admin/Tooltip";
 import type {
@@ -554,10 +555,12 @@ export function UsersPage() {
               description: user.login,
               href: `${usersModeHash("users")}?${new URLSearchParams({ login: user.login })}`,
               cells: [
-                (user.group_assignments ?? [])
-                  .map((assignment) => groupLabel(groupsById.get(assignment.group_id), assignment.group_id))
-                  .join(", ") || "No groups",
-                formatTimestamp(user.last_login_at),
+                {
+                  value: (user.group_assignments ?? [])
+                    .map((assignment) => groupLabel(groupsById.get(assignment.group_id), assignment.group_id))
+                    .join(", ") || "No groups",
+                },
+                { value: timestampSortValue(user.last_login_at), content: formatTimestamp(user.last_login_at) },
               ],
               facts: [
                 ["Login", user.login],
@@ -572,7 +575,10 @@ export function UsersPage() {
               title: group.display_name,
               description: group.group_id,
               href: `${usersModeHash("groups")}?${new URLSearchParams({ group_id: group.group_id })}`,
-              cells: [group.is_required ? "Required" : "Custom", group.permissions.length],
+              cells: [
+                { value: group.is_required ? "Required" : "Custom" },
+                { value: group.permissions.length },
+              ],
               facts: [
                 ["Group", group.group_id],
                 ["Description", group.description],

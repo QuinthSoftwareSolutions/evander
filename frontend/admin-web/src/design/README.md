@@ -12,6 +12,9 @@ standalone add-ons. See `docs/design/admin-web-direction.md` and the rollout led
 - `RecordWorkspace` retains the inventory and full form while switching views.
   `RecordInspector` is a companion pane on desktop and a native modal on narrow screens.
   Record selection stays in the URL; close restores focus to the triggering record.
+  Inventory column headers toggle ascending/descending sorting. Give each cell its raw
+  `value` (numeric counts/bytes or parsed timestamps) and optional rendered `content`;
+  never sort formatted display strings or badges. Missing values stay last.
 - `preferences.ts` owns the local density preference. `addon-context.js` consumes
   same-origin parent context and supports standalone theme/density defaults.
 

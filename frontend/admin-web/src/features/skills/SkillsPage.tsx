@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { ApiError, fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { timestampSortValue } from "../admin/tableSorting";
 import { readAdminHashQuery } from "../admin/hash";
 import type {
   SkillLibraryDetail,
@@ -303,7 +304,10 @@ export function SkillsPage() {
         id: item.name,
         title: item.name,
         href: `#skills?${new URLSearchParams({ skill: item.name })}`,
-        cells: [formatBytes(item.size_bytes), formatTimestamp(item.updated_at)],
+        cells: [
+          { value: item.size_bytes, content: formatBytes(item.size_bytes) },
+          { value: timestampSortValue(item.updated_at), content: formatTimestamp(item.updated_at) },
+        ],
         facts: [
           ["Name", item.name],
           ["Size", formatBytes(item.size_bytes)],

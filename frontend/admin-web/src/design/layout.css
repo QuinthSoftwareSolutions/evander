@@ -199,6 +199,23 @@
 }
 [data-admin-design] .feature-sidebar-header {
   margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[data-admin-design] .feature-sidebar-header > .inline-actions {
+  flex-basis: 100%;
+  justify-content: flex-start;
+  gap: 6px;
+}
+[data-admin-design] .feature-sidebar .config-field-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-admin-design] .feature-sidebar .config-field-grid > .field-stack {
+  margin-bottom: 0;
+}
+[data-admin-design] .feature-sidebar :is(.field-stack, input, select, textarea) {
+  min-width: 0;
+  max-width: 100%;
 }
 [data-admin-design] :is(.feature-sidebar-header h1, .feature-toolbar h2, .admin-header h1) {
   font-size: 22px;

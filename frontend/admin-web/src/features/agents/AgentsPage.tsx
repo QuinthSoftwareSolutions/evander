@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { timestampSortValue } from "../admin/tableSorting";
 import {
   DisableIcon,
   DestroyIcon,
@@ -2105,11 +2106,16 @@ export function AgentsPage() {
           description: item.session_id ?? "No linked session",
           href: `#agents?${new URLSearchParams({ agent_id: item.agent_id })}`,
           cells: [
-            <span className={`status-pill state-${agentExecutionDisplay(item).className}`}>
-              {agentExecutionDisplay(item).label}
-            </span>,
-            backendLabel(item.backend),
-            formatTimestamp(item.updated_at),
+            {
+              value: agentExecutionDisplay(item).label,
+              content: (
+                <span className={`status-pill state-${agentExecutionDisplay(item).className}`}>
+                  {agentExecutionDisplay(item).label}
+                </span>
+              ),
+            },
+            { value: backendLabel(item.backend) },
+            { value: timestampSortValue(item.updated_at), content: formatTimestamp(item.updated_at) },
           ],
           facts: [
             ["Agent", item.agent_id],

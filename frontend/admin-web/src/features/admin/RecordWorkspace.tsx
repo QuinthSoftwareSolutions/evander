@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { RecordInspector } from "./RecordInspector";
 import { readAdminHashQuery } from "./hash";
+import { SortableTableHeader, useTableSort } from "./SortableTableHeader";
+import type { TableSortValue } from "./tableSorting";
 
 export type WorkspaceRecord = {
   id: string;
   title: string;
   description?: ReactNode;
-  cells: ReactNode[];
+  cells: Array<{ value: TableSortValue; content?: ReactNode }>;
   facts: Array<[string, ReactNode]>;
   href?: string;
 };
@@ -63,6 +65,10 @@ export function RecordWorkspace({
             .includes(search.trim().toLocaleLowerCase()),
         )
       : records;
+  const { sortedRows, sort, toggleSort } = useTableSort(visibleRecords, (record, column) => {
+    const index = columns.indexOf(column);
+    return index === 0 ? record.title : record.cells[index - 1]?.value;
+  });
 
   const replaceHash = useCallback((hash: string) => {
     window.history.replaceState(null, "", hash);
@@ -155,14 +161,12 @@ export function RecordWorkspace({
               <thead>
                 <tr>
                   {columns.map((column) => (
-                    <th scope="col" key={column}>
-                      {column}
-                    </th>
+                    <SortableTableHeader key={column} column={column} sort={sort} onSort={toggleSort} />
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {visibleRecords.map((record) => (
+                {sortedRows.map((record) => (
                   <tr key={record.id} data-selected={inspectOpen && record.id === selectedId}>
                     <td>
                       <button
@@ -181,7 +185,7 @@ export function RecordWorkspace({
                       {record.description ? <small>{record.description}</small> : null}
                     </td>
                     {record.cells.map((cell, index) => (
-                      <td key={index}>{cell}</td>
+                      <td key={index}>{cell.content === undefined ? cell.value : cell.content}</td>
                     ))}
                   </tr>
                 ))}

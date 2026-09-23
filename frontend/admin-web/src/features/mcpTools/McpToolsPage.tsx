@@ -267,11 +267,16 @@ export function McpToolsPage() {
         description: item.value,
         href: `#mcp-tools?${new URLSearchParams({ tool: item.value })}`,
         cells: [
-          item.group ?? "Other",
-          <span className={`status-pill state-${item.denied ? "denied" : item.approval_required ? "pending" : "pass"}`}>
-            {item.denied ? "Denied" : item.approval_required ? "Approval required" : "Allowed"}
-          </span>,
-          ruleHasLocalContent(draftPolicies[item.value]) ? "Local rule" : "Inherited/default",
+          { value: item.group ?? "Other" },
+          {
+            value: item.denied ? "Denied" : item.approval_required ? "Approval required" : "Allowed",
+            content: (
+              <span className={`status-pill state-${item.denied ? "denied" : item.approval_required ? "pending" : "pass"}`}>
+                {item.denied ? "Denied" : item.approval_required ? "Approval required" : "Allowed"}
+              </span>
+            ),
+          },
+          { value: ruleHasLocalContent(draftPolicies[item.value]) ? "Local rule" : "Inherited/default" },
         ],
         facts: [
           ["Tool", item.value],

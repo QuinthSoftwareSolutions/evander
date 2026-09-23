@@ -241,11 +241,16 @@ export function VmsPage() {
         title: item.vm_name,
         href: `#vms?${new URLSearchParams({ vm_name: item.vm_name })}`,
         cells: [
-          <span className={`status-pill state-${item.libvirt_state === "running" ? "running" : "idle"}`}>
-            {item.libvirt_state}
-          </span>,
-          item.session_ids.length,
-          item.ip_address ?? "Unknown",
+          {
+            value: item.libvirt_state,
+            content: (
+              <span className={`status-pill state-${item.libvirt_state === "running" ? "running" : "idle"}`}>
+                {item.libvirt_state}
+              </span>
+            ),
+          },
+          { value: item.session_ids.length },
+          { value: item.ip_address, content: item.ip_address ?? "Unknown" },
         ],
         facts: [
           ["VM", item.vm_name],

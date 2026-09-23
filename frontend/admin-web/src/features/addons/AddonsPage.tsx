@@ -193,12 +193,15 @@ export function AddonsPage() {
         description: addon.addon_id ?? addon.source,
         href: `#addons?${new URLSearchParams({ addon: addon.candidate_key })}`,
         cells: [
-          <span
-            className={`status-pill ${statusClass(addon, addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false)}`}
-          >
-            {statusLabel(addon, addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false)}
-          </span>,
-          capabilityLabels(addon).join(", "),
+          {
+            value: statusLabel(addon, addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false),
+            content: (
+              <span className={`status-pill ${statusClass(addon, addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false)}`}>
+                {statusLabel(addon, addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false)}
+              </span>
+            ),
+          },
+          { value: capabilityLabels(addon).join(", ") },
         ],
         facts: [
           ["ID", addon.addon_id],

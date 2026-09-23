@@ -86,6 +86,36 @@
 [data-admin-design] .collection-table tr[data-selected="true"] {
   background: var(--ui-selected);
 }
+[data-admin-design] .collection-table th.sortable-column {
+  padding: 0;
+}
+[data-admin-design] .table-sort-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: max(var(--ui-row-height), var(--ui-control-height));
+  padding: var(--ui-row-padding) 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+}
+[data-admin-design] .table-sort-button svg {
+  flex-shrink: 0;
+}
+[data-admin-design] .table-sort-button:hover,
+[data-admin-design] .sortable-column:is([aria-sort="ascending"], [aria-sort="descending"]) .table-sort-button {
+  background: var(--ui-selected);
+  color: var(--ui-accent);
+}
+[data-admin-design] .table-sort-button:focus-visible {
+  outline-offset: -3px;
+}
 [data-admin-design] .collection-table .record-name {
   display: inline;
   min-height: 0;
@@ -195,7 +225,7 @@
   min-height: 100%;
 }
 [data-admin-design] .workspace-record-navigation {
-  padding: 12px 16px 0;
+  padding: 12px 16px;
 }
 [data-admin-design] .workspace-full-record .feature-page {
   min-height: 0;

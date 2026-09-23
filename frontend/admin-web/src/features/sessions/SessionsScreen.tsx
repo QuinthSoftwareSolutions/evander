@@ -7,6 +7,8 @@ import { CleanupIcon, DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from ".
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import { RecordInspector } from "../admin/RecordInspector";
+import { SortableTableHeader, useTableSort } from "../admin/SortableTableHeader";
+import { timestampSortValue } from "../admin/tableSorting";
 import type {
   AgentCreateCommunicationTargetOption,
   AgentCreateEmailMailboxOption,
@@ -1547,6 +1549,19 @@ export function SessionsScreen() {
       .sort((left, right) => sessionListCollator.compare(left.session_id, right.session_id));
   }, [activeTab, response, sessionFilter]);
 
+  const { sortedRows: sortedInventoryItems, sort: inventorySort, toggleSort: toggleInventorySort } = useTableSort(
+    visibleItems,
+    (item, column) => {
+      switch (column) {
+        case "Session": return item.session_id;
+        case "State": return lifecycleLabel(item);
+        case "Model": return item.model;
+        case "Expires": return timestampSortValue(item.expires_at);
+        default: return null;
+      }
+    },
+  );
+
   useEffect(() => {
     if (!response) {
       return;
@@ -2340,14 +2355,13 @@ export function SessionsScreen() {
               <caption className="sr-only">Session inventory</caption>
               <thead>
                 <tr>
-                  <th scope="col">Session</th>
-                  <th scope="col">State</th>
-                  <th scope="col">Model</th>
-                  <th scope="col">Expires</th>
+                  {["Session", "State", "Model", "Expires"].map(column => (
+                    <SortableTableHeader key={column} column={column} sort={inventorySort} onSort={toggleInventorySort} />
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {visibleItems.map((item) => (
+                {sortedInventoryItems.map((item) => (
                   <tr key={item.session_id} data-selected={inspectorOpen && item.session_id === selectedSessionId}>
                     <td>
                       <button

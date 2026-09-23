@@ -263,11 +263,16 @@ export function ConnectorsPage({
         description: connector.connector_id,
         href: `#connectors?${new URLSearchParams({ connector_id: connector.connector_id })}`,
         cells: [
-          connector.driver,
-          <span className={`status-pill state-${connector.auth_status.available ? "pass" : "warning"}`}>
-            {connector.auth_status.available ? "Available" : "Unavailable"}
-          </span>,
-          Object.keys(connector.operations).length,
+          { value: connector.driver },
+          {
+            value: connector.auth_status.available ? "Available" : "Unavailable",
+            content: (
+              <span className={`status-pill state-${connector.auth_status.available ? "pass" : "warning"}`}>
+                {connector.auth_status.available ? "Available" : "Unavailable"}
+              </span>
+            ),
+          },
+          { value: Object.keys(connector.operations).length },
         ],
         facts: [
           ["Connector", connector.connector_id],

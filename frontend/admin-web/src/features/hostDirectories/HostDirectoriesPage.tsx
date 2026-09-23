@@ -541,11 +541,16 @@ export function HostDirectoriesPage({
         description: record.root,
         href: `#host-directories?${new URLSearchParams({ directory_id: record.directory_id })}`,
         cells: [
-          <span className={`status-pill ${record.disabled ? "state-idle" : healthClass(record.health)}`}>
-            {record.disabled ? "Disabled" : healthLabel(record.health)}
-          </span>,
-          record.capabilities.join(", ") || "None",
-          record.defined_here ? "Local override" : record.source_directory_path || "Inherited",
+          {
+            value: record.disabled ? "Disabled" : healthLabel(record.health),
+            content: (
+              <span className={`status-pill ${record.disabled ? "state-idle" : healthClass(record.health)}`}>
+                {record.disabled ? "Disabled" : healthLabel(record.health)}
+              </span>
+            ),
+          },
+          { value: record.capabilities.join(", ") || "None" },
+          { value: record.defined_here ? "Local override" : record.source_directory_path || "Inherited" },
         ],
         facts: [
           ["ID", record.directory_id],

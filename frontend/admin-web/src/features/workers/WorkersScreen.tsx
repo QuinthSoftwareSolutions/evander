@@ -515,9 +515,12 @@ export function WorkersScreen() {
         title: worker.name,
         href: `#workers?${new URLSearchParams({ worker_id: worker.worker_id })}`,
         cells: [
-          <span className={`status-pill state-${workerStatus(worker).className}`}>{workerStatus(worker).label}</span>,
-          worker.unit,
-          worker.result ?? "—",
+          {
+            value: workerStatus(worker).label,
+            content: <span className={`status-pill state-${workerStatus(worker).className}`}>{workerStatus(worker).label}</span>,
+          },
+          { value: worker.unit },
+          { value: worker.result, content: worker.result ?? "—" },
         ],
         facts: [
           ["Unit", worker.unit],

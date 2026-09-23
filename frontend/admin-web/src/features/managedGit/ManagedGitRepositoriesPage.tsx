@@ -3,6 +3,7 @@ import { RepositoryIndexPanel } from "./RepositoryIndexPanel";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { timestampSortValue } from "../admin/tableSorting";
 import { readAdminHashQuery } from "../admin/hash";
 
 type ManagedGitBinding = {
@@ -369,9 +370,9 @@ export function ManagedGitRepositoriesPage({
         description: repository.canonical_repository_url,
         href: `#git-repositories?${new URLSearchParams({ repository_id: repository.managed_repo_id })}`,
         cells: [
-          providerLabel(repository.provider),
-          repository.directory_path,
-          formatTimestamp(repository.refreshed_at),
+          { value: providerLabel(repository.provider) },
+          { value: repository.directory_path },
+          { value: timestampSortValue(repository.refreshed_at), content: formatTimestamp(repository.refreshed_at) },
         ],
         facts: [
           ["Repository", repository.managed_repo_id],

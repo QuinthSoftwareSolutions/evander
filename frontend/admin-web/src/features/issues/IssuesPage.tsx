@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { timestampSortValue } from "../admin/tableSorting";
 import { readAdminHashQuery } from "../admin/hash";
 import { CreateVmIcon, DeleteIcon, EditIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
@@ -557,9 +558,12 @@ export function IssuesPage() {
         title: `${item.issue_number} · ${item.title}`,
         href: `#issues?${new URLSearchParams({ issue_id: item.issue_id })}`,
         cells: [
-          <span className={`status-pill state-${issueStateClass(item.state)}`}>{item.state ?? "New"}</span>,
-          issueSourceLabel(item.source_type),
-          formatTimestamp(item.updated_at),
+          {
+            value: item.state ?? "New",
+            content: <span className={`status-pill state-${issueStateClass(item.state)}`}>{item.state ?? "New"}</span>,
+          },
+          { value: issueSourceLabel(item.source_type) },
+          { value: timestampSortValue(item.updated_at), content: formatTimestamp(item.updated_at) },
         ],
         facts: [
           ["Issue", item.issue_number],

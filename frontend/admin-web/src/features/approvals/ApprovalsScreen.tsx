@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { timestampSortValue } from "../admin/tableSorting";
 import { Tooltip } from "../admin/Tooltip";
 import { hashQueryParam } from "../../adminRouting";
 
@@ -657,9 +658,9 @@ export function ApprovalsScreen() {
         description: displayToolName(item),
         href: `#approvals?${new URLSearchParams({ request_id: item.request_id })}`,
         cells: [
-          <span className={`status-pill state-${item.status}`}>{item.status}</span>,
-          item.session_id,
-          formatTimestamp(item.created_at),
+          { value: item.status, content: <span className={`status-pill state-${item.status}`}>{item.status}</span> },
+          { value: item.session_id },
+          { value: timestampSortValue(item.created_at), content: formatTimestamp(item.created_at) },
         ],
         facts: [
           ["Request", item.request_id],

@@ -6,6 +6,9 @@
   Compact/Comfortable density preference across Admin Web and all six standalone add-ons.
 - Replace repeated record cards with comparable inventories and closable inspectors,
   retaining full forms, deep links, filtering context, and narrow-screen dialogs.
+- Add sortable inventory headers with text, numeric, and chronological ordering;
+  fit full-record sidebar filters and actions within the compact layout, with space
+  between back navigation and record panels.
 - Refine workflow commands, configuration, reports, Team workspaces and boards,
   integration settings, login, notifications, and the assistant with the same visual system.
 - Keep release news prominent, with readable articles, images, archive navigation,

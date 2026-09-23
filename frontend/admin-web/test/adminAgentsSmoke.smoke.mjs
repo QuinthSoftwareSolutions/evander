@@ -20,7 +20,7 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-test("admin shell agents page deep-links to a selected agent", async (t) => {
+test("admin shell agents page supports deep links, inventory sorting, and compact full records", { timeout: 60000 }, async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -633,7 +633,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     summaryRefreshRequest,
     page.locator(".feature-sidebar-header").getByRole("button", { name: "Refresh", exact: true }).click(),
   ]);
-  assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1&session_id=session-1");
+  assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1");
   assert.match(await page.locator(".agent-list-item.selected").innerText(), /Dispatch agent/);
   assert.match(await page.locator(".feature-toolbar h2").innerText(), /Dispatch agent/);
   await steeringButton.click();
@@ -657,6 +657,51 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.match(manualSummaryRefreshRequest, /omit_vm_state=true/);
   assert.equal(new URL(`http://localhost${manualSummaryRefreshRequest}`).searchParams.get("_dashboard"), "1");
   assert.equal(new URL(`http://localhost${manualSummaryRefreshRequest}`).searchParams.get("_dashboard_refresh"), "1");
+
+  await reopenedSteeringDialog.getByRole("button", { name: "Close" }).click();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("button", { name: "← Agents inventory", exact: true }).click();
+  const inventory = page.getByRole("region", { name: "Agents inventory", exact: true });
+  const rowNames = inventory.locator("tbody .record-name");
+  await inventory.getByRole("button", { name: "Sort by Agent, ascending", exact: true }).click();
+  assert.deepEqual(await rowNames.allTextContents(), ["Container worker", "Dispatch agent"]);
+  const nameHeader = inventory.getByRole("columnheader").filter({ hasText: "Agent" });
+  assert.equal(await nameHeader.getAttribute("aria-sort"), "ascending");
+  await nameHeader.getByRole("button").focus();
+  await page.keyboard.press("Enter");
+  assert.deepEqual(await rowNames.allTextContents(), ["Dispatch agent", "Container worker"]);
+  assert.equal(await nameHeader.getAttribute("aria-sort"), "descending");
+  await inventory.getByRole("button", { name: "Sort by Updated, ascending", exact: true }).click();
+  assert.deepEqual(await rowNames.allTextContents(), ["Container worker", "Dispatch agent"]);
+  await inventory.getByRole("button", { name: "Sort by Updated, descending", exact: true }).press("Space");
+  assert.deepEqual(await rowNames.allTextContents(), ["Dispatch agent", "Container worker"]);
+  assert.equal(await nameHeader.getAttribute("aria-sort"), "none");
+  assert.equal(await inventory.getByRole("combobox", { name: /^Status/ }).inputValue(), "active");
+  assert.equal(await inventory.locator('tr[data-selected="true"] .record-name').innerText(), "Dispatch agent");
+  assert.equal(await page.locator(".record-inspector h2").innerText(), "Dispatch agent");
+  await inventory.getByRole("searchbox", { name: "Search agents" }).fill("Dispatch");
+  assert.deepEqual(await rowNames.allTextContents(), ["Dispatch agent"]);
+  await inventory.getByRole("searchbox", { name: "Search agents" }).fill("");
+  assert.deepEqual(await rowNames.allTextContents(), ["Dispatch agent", "Container worker"]);
+  await page.getByRole("button", { name: "Open full record", exact: true }).click();
+
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const sidebar = page.locator(".agents-page .feature-sidebar");
+    const overflow = await sidebar.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return [...element.querySelectorAll(".agents-filter-grid, input, select, .feature-sidebar-header button")]
+        .filter(control => {
+          const box = control.getBoundingClientRect();
+          return box.width > 0 && (box.left < bounds.left || box.right > bounds.right);
+        }).map(control => control.tagName);
+    });
+    assert.deepEqual(overflow, [], `Sidebar controls overflow at ${width}px`);
+    const backButton = await page.getByRole("button", { name: "← Agents inventory", exact: true }).boundingBox();
+    const panel = await sidebar.boundingBox();
+    assert.ok(panel.y - (backButton.y + backButton.height) >= 12, `Back button touches the filter panel at ${width}px`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  }
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

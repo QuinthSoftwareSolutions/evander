@@ -346,6 +346,40 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
   };
 }
 
+test("session inventory sorts columns without changing the inspected session or filters", { timeout: 30000 }, async t => {
+  const { address, page, sessionListResponse, pageErrors } = await createSessionsSmokeHarness(t, makeSessionRecord());
+  page.setDefaultTimeout(5000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  sessionListResponse.items.push(
+    makeSessionRecord({ session_id: "session-10", expires_at: "2026-06-01T01:00:00+02:00", model: "model-10" }),
+    makeSessionRecord({ session_id: "session-2", expires_at: "2026-05-31T23:30:00Z", model: "model-2" }),
+  );
+  sessionListResponse.counts = { total: 3, active: 3, expired: 0 };
+  sessionListResponse.status_ids.active = sessionListResponse.items.map(item => item.session_id);
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions`, { waitUntil: "domcontentloaded" });
+  const inventory = page.getByRole("region", { name: "Sessions inventory", exact: true });
+  await inventory.getByRole("button", { name: "session-1", exact: true }).click();
+  await page.locator(".record-inspector h2").waitFor();
+  const rowNames = inventory.locator("tbody .record-name");
+  await inventory.getByRole("button", { name: "Sort by Session, ascending", exact: true }).click();
+  assert.deepEqual(await rowNames.allTextContents(), ["session-1", "session-2", "session-10"]);
+  await inventory.getByRole("button", { name: "Sort by Expires, ascending", exact: true }).click();
+  assert.deepEqual(await rowNames.allTextContents(), ["session-1", "session-10", "session-2"]);
+  await inventory.getByRole("button", { name: "Sort by Expires, descending", exact: true }).click();
+  assert.deepEqual(await rowNames.allTextContents(), ["session-2", "session-10", "session-1"]);
+  assert.equal(await inventory.getByRole("columnheader").filter({ hasText: "Expires" }).getAttribute("aria-sort"), "descending");
+  assert.equal(await inventory.locator('tr[data-selected="true"] .record-name').innerText(), "session-1");
+  assert.equal(await page.locator(".record-inspector h2").innerText(), "session-1");
+  await inventory.getByLabel("Find session", { exact: true }).fill("session-1");
+  assert.deepEqual(await rowNames.allTextContents(), ["session-10", "session-1"]);
+  await inventory.getByLabel("Find session", { exact: true }).fill("");
+  assert.deepEqual(await rowNames.allTextContents(), ["session-2", "session-10", "session-1"]);
+  await page.getByRole("button", { name: "Open full record", exact: true }).click();
+  await page.getByRole("button", { name: "← Sessions inventory", exact: true }).click();
+  assert.deepEqual(await rowNames.allTextContents(), ["session-2", "session-10", "session-1"]);
+  assert.deepEqual(pageErrors, []);
+});
+
 test("admin shell sessions page identifies repository grants with repository metadata", async (t) => {
   const {
     address,
