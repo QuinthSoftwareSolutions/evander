@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from datetime import datetime
 
 from pydantic import Field, model_validator
@@ -1029,9 +1031,11 @@ class TeamState(TeamModel):
                 blocked_by.append(dependency_id)
         return blocked_by
 
-    def subtask_counts(self, task_id: str) -> dict[str, int]:
+    def subtask_counts(
+        self, task_id: str, *, child_task_ids: Sequence[str] | None = None,
+    ) -> dict[str, int]:
         counts = {"total": 0, "accepted": 0, "finished": 0, "blocked": 0, "open": 0}
-        for child_id in self.child_task_ids(task_id):
+        for child_id in self.child_task_ids(task_id) if child_task_ids is None else child_task_ids:
             child = self.tasks[child_id]
             counts["total"] += 1
             if child.state == TeamTaskState.ACCEPTED:

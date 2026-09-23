@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evander.admin.services.snapshot_cache import SnapshotCache
 from evander.admin.services.vm_agent.common import (
     Any,
     ContainerSessionLifecycle,
@@ -108,10 +109,97 @@ class VmAgentContainerSessionLifecycleMixin:
             return "failed"
         return "unknown"
 
-    def _session_summary_with_container_lifecycle(self, summary: SessionSummary) -> SessionSummary:
+    def _container_lifecycle_records_by_session(
+        self, session_ids: list[str]
+    ) -> dict[str, list[Any]]:
+        if not session_ids:
+            return {}
+        repository = self._container_worker_execution_repository()
+        list_lifecycle_records = getattr(repository, "list_lifecycle_records", None)
+        if not callable(list_lifecycle_records):
+            return {
+                value: self._container_execution_records_for_session(value) for value in session_ids
+            }
+
+        def collect() -> dict[str, list[Any]]:
+            return {
+                session_id: self._lifecycle_relevant_records(records)
+                for session_id, records in list_lifecycle_records(session_ids).items()
+            }
+
+        # Atomic replacement, WAL appends/checkpoints, and other-process writes
+        # all change this signature. Cache only compact lifecycle inputs; expiry
+        # and session metadata are evaluated afresh on every request.
+        path = getattr(repository, "path", None)
+        if path is None or len(session_ids) > 256:
+            return collect()
+        signatures = []
+        for candidate in (path, path.with_name(path.name + "-wal")):
+            try:
+                stat = candidate.stat()
+                signatures.append(
+                    (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                )
+            except FileNotFoundError:
+                signatures.append(None)
+        cache = getattr(self, "_container_lifecycle_snapshots", None)
+        if cache is None:
+            cache = SnapshotCache(ttl_seconds=30.0, max_entries=2)
+            self._container_lifecycle_snapshots = cache
+        return cache.read((str(path), tuple(signatures), tuple(sorted(session_ids))), collect)
+
+    def _lifecycle_relevant_records(self, records: list[Any]) -> list[Any]:
+        """Keep only records that can influence the existing lifecycle evaluator."""
+        ordered = sorted(records, key=self._container_execution_sort_key, reverse=True)
+        if not ordered:
+            return []
+        chosen = {ordered[0].execution_id: ordered[0]}
+        first_fields: set[str] = set()
+        maxima: dict[str, tuple[datetime, Any]] = {}
+        for record in ordered:
+            metadata = self._container_record_lifecycle_metadata(record)
+            for label, keys in (
+                ("status", ("cleanup_status", "state")),
+                ("error", ("cleanup_error",)),
+            ):
+                if label in first_fields:
+                    continue
+                if any(
+                    metadata.get(key) is not None
+                    and (not isinstance(metadata[key], str) or metadata[key].strip())
+                    for key in keys
+                ):
+                    first_fields.add(label)
+                    chosen[record.execution_id] = record
+            timestamps = {
+                key: _coerce_optional_datetime(metadata.get(key))
+                for key in ("cleanup_attempted_at", "cleanup_completed_at")
+            }
+            timestamps["finished_at"] = getattr(record, "finished_at", None)
+            status = self._container_execution_lifecycle_status(record)
+            if status in {"starting", "running"}:
+                # Preserve one of each active status, even without a heartbeat.
+                if status not in first_fields:
+                    first_fields.add(status)
+                    chosen[record.execution_id] = record
+                timestamps["heartbeat"] = getattr(record, "updated_at", None)
+            for key, value in timestamps.items():
+                if isinstance(value, datetime) and (key not in maxima or value > maxima[key][0]):
+                    maxima[key] = (value, record)
+        for _, record in maxima.values():
+            chosen[record.execution_id] = record
+        return list(chosen.values())
+
+    def _session_summary_with_container_lifecycle(
+        self,
+        summary: SessionSummary,
+        *,
+        executions: list[Any] | None = None,
+    ) -> SessionSummary:
         if not self._is_container_session(summary):
             return summary.model_copy(update={"container_lifecycle": None})
-        executions = self._container_execution_records_for_session(summary.session_id)
+        if executions is None:
+            executions = self._container_execution_records_for_session(summary.session_id)
         lifecycle = self._container_session_lifecycle(summary, executions=executions)
         return summary.model_copy(update={"container_lifecycle": lifecycle})
 
@@ -124,7 +212,11 @@ class VmAgentContainerSessionLifecycleMixin:
         if not self._is_container_session(session):
             return None
         execution_records = sorted(
-            list(executions or self._container_execution_records_for_session(session.session_id)),
+            list(
+                executions
+                if executions is not None
+                else self._container_execution_records_for_session(session.session_id)
+            ),
             key=self._container_execution_sort_key,
             reverse=True,
         )

@@ -29,20 +29,30 @@ from .model_tasks import (
     AgentTask,
     OutcomeKindDefinition,
     OutcomeKindSnapshot,
+    TaskAssessment,
 )
 
 
-def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, Any]:
+def task_payload_with_derived(
+    state: TeamState, task: AgentTask, *, child_task_ids: Sequence[str] | None = None,
+    assessment: TaskAssessment | None = None,
+) -> dict[str, Any]:
     payload = task.model_dump(mode="json")
-    payload["child_task_ids"] = state.child_task_ids(task.id)
+    payload["child_task_ids"] = (
+        state.child_task_ids(task.id) if child_task_ids is None else list(child_task_ids)
+    )
     payload["dependency_status"] = state.dependency_status(task.id)
     payload["blocked_by_task_ids"] = state.blocked_by_task_ids(task.id)
-    payload["subtask_counts"] = state.subtask_counts(task.id)
+    payload["subtask_counts"] = state.subtask_counts(
+        task.id, child_task_ids=payload["child_task_ids"],
+    )
     payload["waiting_reason"] = _task_waiting_reason(state, task)
     if task.assignment_mode == "role":
         from .services.domain.role_task_queue import role_queue_wait_reason
 
-        payload["assignment_wait_reason"] = role_queue_wait_reason(state, task)
+        payload["assignment_wait_reason"] = role_queue_wait_reason(
+            state, task, assessment=assessment,
+        )
         role = state.roles.get(task.assignment_role_id or "")
         payload["assignment_role_name"] = role.name if role is not None else task.assignment_role_id
     return payload

@@ -101,6 +101,17 @@ class SessionAdminService:
             )
         return summaries
 
+    def get_session_summary(self, session_id: str) -> SessionSummary:
+        manifest = self._session_repository().get_session(session_id)
+        if manifest is None:
+            raise ValueError(f"Unknown session: {session_id}")
+        return SessionSummary(
+            **manifest.model_dump(),
+            issue_number=session_helpers.extract_issue_number(manifest.vm_id)
+            or session_helpers.extract_issue_number(session_id),
+            is_expired=manifest.expires_at <= session_helpers.utc_now(),
+        )
+
     def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
         session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()

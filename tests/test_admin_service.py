@@ -15535,7 +15535,10 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainStatus": "0",
         },
     }
-    monkeypatch.setattr(worker_control_service, "_systemctl_show", lambda unit: payloads[unit])
+    monkeypatch.setattr(
+        worker_control_service, "_systemctl_show_many",
+        lambda units: {unit: payloads[unit] for unit in units},
+    )
 
     summaries = service.operations_admin.list_background_workers()
 
@@ -15588,7 +15591,7 @@ def test_list_background_workers_marks_unavailable_when_systemctl_fails(
     def _raise(unit: str) -> dict[str, str]:
         raise RuntimeError(f"cannot inspect {unit}")
 
-    monkeypatch.setattr(worker_control_service, "_systemctl_show", _raise)
+    monkeypatch.setattr(worker_control_service, "_systemctl_show_many", _raise)
 
     summaries = service.operations_admin.list_background_workers()
 

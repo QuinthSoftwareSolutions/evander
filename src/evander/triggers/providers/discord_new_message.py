@@ -3,19 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from evander.messaging.discord_inbox_store import DiscordInboxStore
-from evander.models import DiscordMessageEnvelope
 from evander.events.models import TriggerEvent
 from evander.events.provider_models import DiscordNewMessageTriggerDefinition
 from evander.triggers.providers._cursor_state import (
     TriggerCursorStore,
-    latest_cursor_timestamp_text,
-    merge_cursor_ids,
 )
 from evander.triggers.providers.base import TriggerProviderBase
 
 
 class DiscordNewMessageTriggerProvider(TriggerProviderBase):
-    _RECENT_MESSAGE_LIMIT = 512
+    _POLL_MESSAGE_LIMIT = 200
 
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
@@ -34,27 +31,13 @@ class DiscordNewMessageTriggerProvider(TriggerProviderBase):
         channel_filter = {value.strip() for value in trigger.channel_ids if value.strip()}
         user_filter = {value.strip() for value in trigger.user_ids if value.strip()}
 
-        candidates: list[DiscordMessageEnvelope] = []
-        if channel_filter:
-            messages = inbox_store.list_all_messages(channel_ids=sorted(channel_filter)).messages
-        else:
-            # Preserve the legacy compatibility path for unfiltered Discord triggers.
-            messages = [
-                DiscordMessageEnvelope.model_validate(raw)
-                for raw in inbox_store.read_raw().get("messages", {}).values()
-                if isinstance(raw, dict)
-            ]
-
-        for message in messages:
-            if channel_filter and message.channel_id not in channel_filter:
-                continue
-            if user_filter and message.author_id not in user_filter:
-                continue
-            if cursor is not None and message.created_at < cursor:
-                continue
-            candidates.append(message)
-
-        candidates.sort(key=lambda message: (message.created_at, message.message_id))
+        candidates = inbox_store.list_trigger_messages(
+            channel_ids=sorted(channel_filter),
+            author_ids=sorted(user_filter),
+            created_at=cursor,
+            acknowledged_ids=recent_message_ids,
+            limit=self._POLL_MESSAGE_LIMIT,
+        )
 
         events: list[TriggerEvent] = []
         for message in candidates:
@@ -126,13 +109,13 @@ def _acknowledge_message(
     message_id: str,
     occurred_at: datetime,
 ) -> dict[str, object]:
-    state["last_created_at"] = latest_cursor_timestamp_text(
-        state.get("last_created_at"),
-        occurred_at,
-    )
-    state["recent_message_ids"] = merge_cursor_ids(
-        state.get("recent_message_ids"),
-        [message_id],
-        limit=DiscordNewMessageTriggerProvider._RECENT_MESSAGE_LIMIT,
-    )
+    previous = _parse_dt(state.get("last_created_at"))
+    if previous is not None and occurred_at < previous:
+        return state
+    # Keep the whole boundary timestamp until it advances. A bounded page can split
+    # a timestamp group larger than the old 512-ID window; evicting IDs would replay
+    # its first page forever. Older timestamp IDs no longer affect delivery.
+    previous_ids = state.get("recent_message_ids", []) if previous == occurred_at else []
+    state["last_created_at"] = occurred_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    state["recent_message_ids"] = list(dict.fromkeys([*previous_ids, message_id]))
     return state

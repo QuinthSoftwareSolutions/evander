@@ -156,6 +156,7 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
             self.vm_agent_admin = self
 
         def list_vms(self, **kwargs):
+            assert kwargs["target_vm_name"] == "vm-issue-14724"
             return responses.pop(0)
 
     class _QueueStub:

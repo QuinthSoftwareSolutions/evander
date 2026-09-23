@@ -416,6 +416,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                         now=now,
                         lease_seconds=self._LEASE_RENEWAL_SECONDS,
                         renew_within_seconds=self._LEASE_RENEWAL_WINDOW_SECONDS,
+                        include_state=False,
                     )
             except TeamStateConflictError:
                 # Completion, expiry, or replacement won the atomic state race.

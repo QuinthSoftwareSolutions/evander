@@ -151,18 +151,22 @@ def _team_state_payload_for_request(
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from .services.domain.project_status import project_blocking_sources
+    from .services.domain.task_assessment import TaskAssessmentService
+
+    assessment_service = TaskAssessmentService(state)
     payload = team_state_payload(
         state,
         session_records=session_records,
         agent_execution_records=agent_execution_records,
+        task_assessments=assessment_service.assess_all(),
     )
-    from .services.domain.project_status import project_blocking_sources
-
     for project_id, project_payload in payload.get("projects", {}).items():
         if isinstance(project_payload, dict):
             project_payload["blocking_sources"] = project_blocking_sources(
                 state,
                 project_id,
+                assessment_service=assessment_service,
             )
     apply_compact_human_review_projection(payload, state)
     _add_team_resource_tokens(payload, state)

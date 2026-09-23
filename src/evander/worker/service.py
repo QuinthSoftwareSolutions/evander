@@ -97,6 +97,7 @@ from .models import (
     validate_worker_component_id,
 )
 from .mssql import WorkerMssqlProvisioner, WorkerMssqlStore
+from .log_projection import JsonlProjectionCache, merge_tail_log_snapshot, read_log_tail
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import safe_subprocess_error, sanitize_metadata, sanitize_text
@@ -916,10 +917,11 @@ class WorkerDaemon:
     def _raw_logs(self, record: WorkerJobRecord, *, tail_lines: int | None = None) -> str:
         log_path = self._log_path(record)
         if _worker_job_uses_codex_subscription(record):
-            text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+            if not log_path.exists():
+                return ""
             if tail_lines is not None and tail_lines > 0:
-                return "\n".join(text.splitlines()[-tail_lines:]) + ("\n" if text else "")
-            return text
+                return read_log_tail(log_path, tail_lines)
+            return log_path.read_text(encoding="utf-8")
         try:
             try:
                 text = self.container_runtime.get_logs(record, tail_lines=tail_lines)
@@ -1169,40 +1171,16 @@ class WorkerDaemon:
         metadata: dict[str, object] | None = None,
         include_running_context: bool = False,
     ) -> list[str]:
-        messages: list[str] = []
-        seen: set[str] = set()
-        active_tool_calls: dict[str, str] = {}
-        latest_event_timestamp: str | None = None
-        for path in _codex_session_jsonl_paths(agent_home, thread_id):
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-            for raw_line in lines:
-                try:
-                    event = json.loads(raw_line)
-                except ValueError:
-                    continue
-                if not _codex_event_is_in_window(
-                    event, started_at=started_at, finished_at=finished_at
-                ):
-                    continue
-                latest_event_timestamp = _latest_codex_timestamp(
-                    latest_event_timestamp,
-                    event.get("timestamp"),
-                )
-                for message in _codex_messages_from_session_event(
-                    event,
-                    active_tool_calls=active_tool_calls,
-                ):
-                    if not message:
-                        continue
-                    if _is_session_message_artifact(message):
-                        continue
-                    if message in seen:
-                        continue
-                    seen.add(message)
-                    messages.append(message)
+        projection = _codex_session_projection(
+            agent_home,
+            thread_id,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        messages = projection["messages"]
+        seen = projection["seen"]
+        active_tool_calls = projection["active_tool_calls"]
+        latest_event_timestamp = projection["latest_event_timestamp"]
         if include_running_context:
             for message in _codex_running_context_messages(
                 latest_event_timestamp=latest_event_timestamp,
@@ -1235,28 +1213,24 @@ class WorkerDaemon:
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
     ) -> list[str]:
-        messages: list[str] = []
-        seen: set[str] = set()
-        for path in _claude_session_jsonl_paths(agent_home, thread_id):
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-            for raw_line in lines:
-                try:
-                    event = json.loads(raw_line)
-                except ValueError:
+        def consume(state, event):
+            if not _codex_event_is_in_window(event, started_at=started_at, finished_at=finished_at):
+                return
+            for message in _claude_messages_from_session_event(event):
+                if not message or _is_session_message_artifact(message) or message in state["seen"]:
                     continue
-                if not _codex_event_is_in_window(
-                    event, started_at=started_at, finished_at=finished_at
-                ):
-                    continue
-                for message in _claude_messages_from_session_event(event):
-                    if not message or _is_session_message_artifact(message) or message in seen:
-                        continue
-                    seen.add(message)
-                    messages.append(message)
-        return messages
+                state["seen"].add(message)
+                state["messages"].append(message)
+                state["message_chars"] += len(message)
+
+        projection = _TRANSCRIPT_PROJECTIONS.read(
+            ("claude", started_at, finished_at),
+            _claude_session_jsonl_paths(agent_home, thread_id),
+            factory=_empty_transcript_projection,
+            consume=consume,
+            weight=_transcript_projection_weight,
+        )
+        return projection["messages"]
 
     def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
@@ -5859,60 +5833,22 @@ def _codex_session_outcome(
     metadata: dict[str, object] | None = None,
     log_text: str | None = None,
 ) -> dict[str, object] | None:
-    task_complete_without_final_message = False
-    explicit_failure_message: str | None = None
-    explicit_failure_event_type: str | None = None
-    last_token_usage: dict[str, int] | None = None
-    model_context_window: int | None = None
-    assistant_text_seen = False
-    successful_empty_final_completion_tool: str | None = None
-    task_completed_by_successful_empty_final_tool = False
-    saw_event = False
-
-    for event in _iter_codex_session_events(
+    projection = _codex_session_projection(
         agent_home,
         thread_id,
         started_at=started_at,
         finished_at=finished_at,
-    ):
-        saw_event = True
-        event_type = str(event.get("type") or "")
-        if _codex_event_is_token_count(event):
-            token_usage, context_window = _codex_token_count_details(event)
-            if token_usage:
-                last_token_usage = token_usage
-            if context_window is not None:
-                model_context_window = context_window
-            continue
-        if any(
-            message.strip()
-            for message in _codex_messages_from_session_event(
-                event,
-                include_progress=False,
-            )
-        ):
-            assistant_text_seen = True
-        completion_tool = _codex_successful_empty_final_completion_tool(event)
-        if completion_tool is not None:
-            successful_empty_final_completion_tool = completion_tool
-        if event_type in {"error", "turn.failed"}:
-            message = _codex_event_error_message(event)
-            if message:
-                explicit_failure_message = message
-                explicit_failure_event_type = event_type
-            continue
-        if event_type != "event_msg":
-            continue
-        payload = event.get("payload")
-        if not isinstance(payload, dict):
-            continue
-        if str(payload.get("type") or "") != "task_complete":
-            continue
-        if not _codex_first_text(payload.get("last_agent_message")).strip():
-            task_complete_without_final_message = True
-            task_completed_by_successful_empty_final_tool = (
-                successful_empty_final_completion_tool is not None
-            )
+    )
+    task_complete_without_final_message = projection["task_complete_without_final_message"]
+    explicit_failure_message = projection["explicit_failure_message"]
+    explicit_failure_event_type = projection["explicit_failure_event_type"]
+    last_token_usage = projection["last_token_usage"]
+    model_context_window = projection["model_context_window"]
+    assistant_text_seen = projection["assistant_text_seen"]
+    task_completed_by_successful_empty_final_tool = projection[
+        "task_completed_by_successful_empty_final_tool"
+    ]
+    saw_event = projection["saw_event"]
 
     if not saw_event:
         return None
@@ -6345,24 +6281,7 @@ def _session_id_from_codex_jsonl(path: Path) -> str | None:
 
 
 def _merge_tail_log_snapshot(log_path: Path, tail_text: str) -> None:
-    if not tail_text:
-        return
-    if not log_path.exists():
-        log_path.write_text(tail_text, encoding="utf-8")
-        return
-    try:
-        existing = log_path.read_text(encoding="utf-8")
-    except OSError:
-        existing = ""
-    if not existing or tail_text.startswith(existing):
-        log_path.write_text(tail_text, encoding="utf-8")
-        return
-    overlap = min(len(existing), len(tail_text))
-    for size in range(overlap, 0, -1):
-        if existing.endswith(tail_text[:size]):
-            log_path.write_text(existing + tail_text[size:], encoding="utf-8")
-            return
-    log_path.write_text(existing.rstrip("\n") + "\n" + tail_text, encoding="utf-8")
+    merge_tail_log_snapshot(log_path, tail_text)
 
 
 def _log_page_from_end(
@@ -6573,6 +6492,125 @@ def _codex_running_context_messages(
     return messages
 
 
+_TRANSCRIPT_PROJECTIONS = JsonlProjectionCache()
+
+
+def _empty_transcript_projection() -> dict[str, Any]:
+    return {
+        "messages": [],
+        "seen": set(),
+        "message_chars": 0,
+        "active_tool_calls": {},
+        "active_started_at": {},
+        "latest_event_timestamp": None,
+        "task_complete_without_final_message": False,
+        "explicit_failure_message": None,
+        "explicit_failure_event_type": None,
+        "last_token_usage": None,
+        "model_context_window": None,
+        "assistant_text_seen": False,
+        "successful_empty_final_completion_tool": None,
+        "task_completed_by_successful_empty_final_tool": False,
+        "saw_event": False,
+    }
+
+
+def _transcript_projection_weight(state: dict[str, Any]) -> int:
+    # Bound retained derived text and collection overhead, never raw transcript data.
+    return (
+        4096
+        + state["message_chars"] * 8
+        + len(state["messages"]) * 256
+        + sum(
+            256 + 8 * (len(key) + len(value)) for key, value in state["active_tool_calls"].items()
+        )
+        + 8 * len(state["explicit_failure_message"] or "")
+    )
+
+
+def _codex_session_projection(
+    agent_home: Path,
+    thread_id: str,
+    *,
+    started_at: datetime | None,
+    finished_at: datetime | None,
+    include_messages: bool = True,
+) -> dict[str, Any]:
+    def consume(state, event):
+        if not isinstance(event, dict) or not _codex_event_is_in_window(
+            event,
+            started_at=started_at,
+            finished_at=finished_at,
+        ):
+            return
+        timestamp = event.get("timestamp")
+        state["latest_event_timestamp"] = _latest_codex_timestamp(
+            state["latest_event_timestamp"],
+            timestamp,
+        )
+        active = state["active_tool_calls"]
+        before = set(active)
+        messages = _codex_messages_from_session_event(event, active_tool_calls=active)
+        for call_id in set(active) - before:
+            if isinstance(timestamp, str) and _parse_codex_timestamp(timestamp) is not None:
+                state["active_started_at"][call_id] = timestamp.strip()
+        state["active_started_at"] = {
+            call_id: started
+            for call_id, started in state["active_started_at"].items()
+            if call_id in active
+        }
+        if not include_messages:
+            return
+        for message in messages:
+            if not message or _is_session_message_artifact(message) or message in state["seen"]:
+                continue
+            state["messages"].append(message)
+            state["seen"].add(message)
+            state["message_chars"] += len(message)
+        state["saw_event"] = True
+        event_type = str(event.get("type") or "")
+        if _codex_event_is_token_count(event):
+            token_usage, context_window = _codex_token_count_details(event)
+            if token_usage:
+                state["last_token_usage"] = token_usage
+            if context_window is not None:
+                state["model_context_window"] = context_window
+            return
+        if any(
+            message.strip()
+            for message in _codex_messages_from_session_event(event, include_progress=False)
+        ):
+            state["assistant_text_seen"] = True
+        completion_tool = _codex_successful_empty_final_completion_tool(event)
+        if completion_tool is not None:
+            state["successful_empty_final_completion_tool"] = completion_tool
+        if event_type in {"error", "turn.failed"}:
+            message = _codex_event_error_message(event)
+            if message:
+                state["explicit_failure_message"] = message
+                state["explicit_failure_event_type"] = event_type
+            return
+        payload = event.get("payload")
+        if (
+            event_type == "event_msg"
+            and isinstance(payload, dict)
+            and str(payload.get("type") or "") == "task_complete"
+        ):
+            if not _codex_first_text(payload.get("last_agent_message")).strip():
+                state["task_complete_without_final_message"] = True
+                state["task_completed_by_successful_empty_final_tool"] = (
+                    state["successful_empty_final_completion_tool"] is not None
+                )
+
+    return _TRANSCRIPT_PROJECTIONS.read(
+        ("codex" if include_messages else "active", started_at, finished_at),
+        _codex_session_jsonl_paths(agent_home, thread_id),
+        factory=_empty_transcript_projection,
+        consume=consume,
+        weight=_transcript_projection_weight,
+    )
+
+
 def _codex_active_tool_context(
     agent_home: Path,
     thread_id: str,
@@ -6581,33 +6619,16 @@ def _codex_active_tool_context(
     finished_at: datetime | None = None,
 ) -> dict[str, str] | None:
     """Return a small, sanitized view of the latest still-open Codex tool call."""
-    active_tool_calls: dict[str, str] = {}
-    active_started_at: dict[str, str] = {}
-    latest_event_timestamp: str | None = None
-    for path in _codex_session_jsonl_paths(agent_home, thread_id):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for raw_line in lines:
-            try:
-                event = json.loads(raw_line)
-            except ValueError:
-                continue
-            if not _codex_event_is_in_window(event, started_at=started_at, finished_at=finished_at):
-                continue
-            timestamp = event.get("timestamp") if isinstance(event, dict) else None
-            latest_event_timestamp = _latest_codex_timestamp(latest_event_timestamp, timestamp)
-            before = set(active_tool_calls)
-            _codex_messages_from_session_event(event, active_tool_calls=active_tool_calls)
-            for call_id in set(active_tool_calls) - before:
-                if isinstance(timestamp, str) and _parse_codex_timestamp(timestamp) is not None:
-                    active_started_at[call_id] = timestamp.strip()
-            active_started_at = {
-                call_id: started
-                for call_id, started in active_started_at.items()
-                if call_id in active_tool_calls
-            }
+    projection = _codex_session_projection(
+        agent_home,
+        thread_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        include_messages=False,
+    )
+    active_tool_calls = projection["active_tool_calls"]
+    active_started_at = projection["active_started_at"]
+    latest_event_timestamp = projection["latest_event_timestamp"]
     if not active_tool_calls:
         return None
     call_id = next(reversed(active_tool_calls))

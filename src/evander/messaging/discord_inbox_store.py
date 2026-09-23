@@ -444,6 +444,56 @@ class DiscordInboxStore:
         )
         return DiscordInboxListResult(messages=messages, next_cursor=next_cursor)
 
+    def list_trigger_messages(
+        self,
+        *,
+        channel_ids: list[str],
+        author_ids: list[str],
+        created_at: datetime | None,
+        acknowledged_ids: list[str],
+        limit: int = 200,
+    ) -> list[DiscordMessageEnvelope]:
+        """Read a bounded trigger page, including unacknowledged timestamp ties."""
+        clauses, params = [], []
+        for column, values in (("channel_id", channel_ids), ("author_id", author_ids)):
+            if values:
+                clauses.append(f"{column} IN (SELECT value FROM json_each(?))")
+                params.append(_json_dumps(values))
+        if created_at is not None:
+            cursor = self._datetime_to_storage(created_at)
+            clauses.append("created_at >= ?")
+            params.append(cursor)
+            if acknowledged_ids:
+                clauses.append(
+                    "(created_at > ? OR message_id NOT IN (SELECT value FROM json_each(?)))"
+                )
+                params.extend((cursor, _json_dumps(acknowledged_ids)))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        messages: list[DiscordMessageEnvelope] = []
+        page_limit = max(1, min(limit, 512))
+        after: tuple[str, str] | None = None
+        with self._lock, self._connect() as connection:
+            while len(messages) < page_limit:
+                page_where, page_params = where, list(params)
+                if after is not None:
+                    page_where += (
+                        " AND " if page_where else " WHERE "
+                    ) + "(created_at,message_id) > (?,?)"
+                    page_params.extend(after)
+                rows = connection.execute(
+                    "SELECT created_at,message_id,payload_json FROM discord_inbox_messages"
+                    + page_where
+                    + " ORDER BY created_at ASC, message_id ASC LIMIT ?",
+                    (*page_params, page_limit - len(messages)),
+                ).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    if (message := self._validate_message(row["payload_json"])) is not None:
+                        messages.append(message)
+                after = (rows[-1]["created_at"], rows[-1]["message_id"])
+        return messages
+
     def read_raw(self) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
             cursor_rows = connection.execute(

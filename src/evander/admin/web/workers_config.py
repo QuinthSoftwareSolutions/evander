@@ -9,6 +9,7 @@ from types import UnionType
 from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
@@ -16,6 +17,7 @@ from starlette.routing import BaseRoute, Route
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.payloads import AdminRevisionConflict
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+from evander.admin.worker_config import _worker_definition
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.config_tooltips import CONFIG_FIELD_TOOLTIPS
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
@@ -194,9 +196,7 @@ _LLM_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "voice_media_controller_token_env"),
     ("providers", "voice_media_controller_request_timeout_seconds"),
 )
-_CLASSIFICATION_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
-    ("providers", "classification"),
-)
+_CLASSIFICATION_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (("providers", "classification"),)
 _SEMANTIC_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "semantic_store_provider"),
     ("providers", "qdrant_base_url"),
@@ -1398,14 +1398,14 @@ def worker_config_routes(
     async def list_workers(_: Request) -> JSONResponse:
         workers = [
             _normalize_worker_summary(summary)
-            for summary in service.operations_admin.list_background_workers()
+            for summary in await run_in_threadpool(service.operations_admin.list_background_workers)
         ]
         return JSONResponse({"workers": workers})
 
     async def get_worker(request: Request) -> JSONResponse:
         worker_id = str(request.path_params.get("worker_id") or "").strip()
         try:
-            payload = _worker_detail(service, worker_id)
+            payload = await run_in_threadpool(_worker_detail, service, worker_id)
         except ValueError as exc:
             return _error_response(str(exc), status_code=404)
         return JSONResponse(payload)
@@ -1417,17 +1417,19 @@ def worker_config_routes(
         except ValueError:
             return _error_response("lines must be an integer", status_code=400)
         try:
-            detail = _worker_detail(service, worker_id)
-            text = service.operations_admin.get_background_worker_log_snapshot(
-                worker_id, lines=lines
+            worker = _worker_definition(worker_id)
+            if worker is None:
+                raise ValueError(f"Unknown worker: {worker_id}")
+            text = await run_in_threadpool(
+                service.operations_admin.get_background_worker_log_snapshot, worker_id, lines=lines
             )
         except ValueError as exc:
             return _error_response(str(exc), status_code=404)
         return JSONResponse(
             {
                 "worker_id": worker_id,
-                "worker_name": detail["summary"]["name"],
-                "unit": detail["summary"]["unit"],
+                "worker_name": worker[1],
+                "unit": worker[2],
                 "lines": lines,
                 "text": text,
             }
@@ -1468,9 +1470,13 @@ def worker_config_routes(
         worker_id = str(request.path_params.get("worker_id") or "").strip()
         action = str(request.path_params.get("action") or "").strip()
         if action == "start":
-            result = service.operations_admin.start_background_worker(worker_id)
+            result = await run_in_threadpool(
+                service.operations_admin.start_background_worker, worker_id
+            )
         elif action == "stop":
-            result = service.operations_admin.stop_background_worker(worker_id)
+            result = await run_in_threadpool(
+                service.operations_admin.stop_background_worker, worker_id
+            )
         else:
             return _error_response(f"Unsupported worker action: {action}", status_code=404)
         status_code = (
@@ -1480,7 +1486,9 @@ def worker_config_routes(
         )
         payload = {
             "result": _json_payload(result),
-            "worker": _worker_detail(service, worker_id) if result.success else None,
+            "worker": await run_in_threadpool(_worker_detail, service, worker_id)
+            if result.success
+            else None,
         }
         return JSONResponse(payload, status_code=status_code)
 

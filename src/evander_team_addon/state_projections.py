@@ -32,6 +32,7 @@ from .model_state import (
     TeamState,
 )
 from .model_tasks import (
+    TaskAssessment,
     external_source_evidence_snapshot_payload,
 )
 from .release_projections import (
@@ -50,6 +51,7 @@ def team_state_payload(
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
     now: datetime | None = None,
+    task_assessments: Mapping[str, TaskAssessment] | None = None,
 ) -> dict[str, Any]:
     # Keep the model layer independent from domain services at import time while
     # still routing every task read through the canonical recursive evaluator.
@@ -73,7 +75,7 @@ def team_state_payload(
         )
         for agent_id, agent in state.agents.items()
     }
-    assessments = assess_tasks(state)
+    assessments = assess_tasks(state) if task_assessments is None else task_assessments
     payload["tasks"] = {
         task_id: task_payload_with_assessment(
             state,

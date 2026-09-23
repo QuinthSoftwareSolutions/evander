@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Callable, TypeVar
 
 from .models import TeamOutboxStatus, TeamState
@@ -266,3 +266,32 @@ def _grouped_rows(
     for row in connection.execute(query):
         grouped.setdefault(row["owner_id"], []).append(mapper(row))
     return grouped
+
+
+def _json_values_equal(before: Any, after: Any) -> bool:
+    """Compare dumped JSON values without encoding every historical record.
+
+    Python equality alone conflates bool/int and int/float values in arbitrary
+    command payloads. Preserve the previous canonical JSON comparison, including
+    signed zero, while avoiding two serialized copies of each unchanged record.
+    """
+    if before is after:
+        return True
+    if type(before) is not type(after):
+        return False
+    if isinstance(before, dict):
+        return before.keys() == after.keys() and all(
+            _json_values_equal(value, after[key]) for key, value in before.items()
+        )
+    if isinstance(before, list):
+        return len(before) == len(after) and all(
+            _json_values_equal(left, right) for left, right in zip(before, after)
+        )
+    if isinstance(before, float):
+        return repr(before) == repr(after)
+    return before == after
+
+
+def _utc_datetime_value(value: Any) -> datetime:
+    parsed = _datetime_value(value)
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
