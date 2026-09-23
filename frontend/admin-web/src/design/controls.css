@@ -33,9 +33,18 @@
 [data-admin-design]
   :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select) {
   min-height: var(--ui-control-height);
-  height: var(--ui-control-height);
   padding: 5px 9px;
   border: 1px solid var(--ui-control-border);
+}
+
+[data-admin-design]
+  :is(
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+    select:not([multiple]):not([size]),
+    select:not([multiple])[size="0"],
+    select:not([multiple])[size="1"]
+  ) {
+  height: var(--ui-control-height);
 }
 
 [data-admin-design] textarea {

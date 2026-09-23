@@ -12,6 +12,8 @@
   and build/changelog details. Preserve configuration fields and revision-gated saves.
 - Apply the existing privilege-lock state consistently to skill, add-on, and integration
   mutation controls, while preserving drafts and read access.
+- Keep record selection and deep links synchronized during hash navigation and sidebar changes;
+  preserve inherited Miro operation recovery and the requested row counts of select listboxes.
 
 ## 2026-09-23 - Make private package routing directory scoped (0.60.0)
 

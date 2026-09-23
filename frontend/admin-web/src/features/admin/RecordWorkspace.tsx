@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { RecordInspector } from "./RecordInspector";
 import { readAdminHashQuery } from "./hash";
 
@@ -45,9 +45,11 @@ export function RecordWorkspace({
 }) {
   const [recordOpen, setRecordOpen] = useState(initialRecordOpen && readAdminHashQuery().get("inspect") !== "1");
   const [inspectOpen, setInspectOpen] = useState(readAdminHashQuery().get("inspect") === "1");
+  const [routeHash, setRouteHash] = useState(() => window.location.hash);
   const backRef = useRef<HTMLButtonElement>(null);
   const selectionTriggerRef = useRef<HTMLElement | null>(null);
   const appliedRouteRef = useRef("");
+  const previousSelectedIdRef = useRef(selectedId);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const [search, setSearch] = useState("");
@@ -62,26 +64,39 @@ export function RecordWorkspace({
         )
       : records;
 
+  const replaceHash = useCallback((hash: string) => {
+    window.history.replaceState(null, "", hash);
+    appliedRouteRef.current = window.location.hash;
+    setRouteHash(window.location.hash);
+  }, []);
+
   useEffect(() => {
+    const selectionChanged = previousSelectedIdRef.current !== selectedId;
+    previousSelectedIdRef.current = selectedId;
     const hash = window.location.hash;
-    if (appliedRouteRef.current === hash) return;
     const query = readAdminHashQuery(hash);
     const routeKeys = recordRouteKeys.split(",").filter((key) => key && query.has(key));
-    if (!routeKeys.length) {
-      appliedRouteRef.current = hash;
-      return;
-    }
     const record = records.find(
       (candidate) =>
         candidate.href && routeKeys.some((key) => readAdminHashQuery(candidate.href).get(key) === query.get(key)),
     );
-    if (!record) return;
-    appliedRouteRef.current = hash;
-    if (record.id !== selectedId) onSelectRef.current(record.id);
-  }, [records, recordRouteKeys, selectedId]);
+    if (appliedRouteRef.current !== hash) {
+      // Wait for routed records to load before allowing selection to update the URL.
+      if (routeKeys.length && !record) return;
+      appliedRouteRef.current = hash;
+      if (record && record.id !== selectedId) {
+        onSelectRef.current(record.id);
+        return;
+      }
+    }
+    if (recordOpen && selectionChanged && selected?.href && record?.id !== selectedId) {
+      replaceHash(selected.href);
+    }
+  }, [records, recordRouteKeys, selectedId, selected?.href, recordOpen, routeHash, replaceHash]);
 
   useEffect(() => {
     const followHash = () => {
+      setRouteHash(window.location.hash);
       const query = readAdminHashQuery();
       if (recordRouteKeys.split(",").some((key) => key && query.has(key))) {
         setRecordOpen(query.get("inspect") !== "1");
@@ -94,7 +109,7 @@ export function RecordWorkspace({
 
   function openRecord() {
     setRecordOpen(true);
-    if (selected?.href) window.history.replaceState(null, "", selected.href);
+    if (selected?.href) replaceHash(selected.href);
     window.requestAnimationFrame(() => backRef.current?.focus());
   }
 
@@ -102,7 +117,7 @@ export function RecordWorkspace({
     const query = readAdminHashQuery();
     for (const key of recordRouteKeys.split(",")) query.delete(key);
     query.delete("inspect");
-    window.history.replaceState(null, "", `${window.location.hash.split("?")[0]}${query.size ? `?${query}` : ""}`);
+    replaceHash(`${window.location.hash.split("?")[0]}${query.size ? `?${query}` : ""}`);
     setRecordOpen(true);
     window.requestAnimationFrame(() => backRef.current?.focus());
   }
@@ -158,11 +173,7 @@ export function RecordWorkspace({
                           selectionTriggerRef.current = event.currentTarget;
                           setInspectOpen(true);
                           if (record.href)
-                            window.history.replaceState(
-                              null,
-                              "",
-                              `${record.href}${record.href.includes("?") ? "&" : "?"}inspect=1`,
-                            );
+                            replaceHash(`${record.href}${record.href.includes("?") ? "&" : "?"}inspect=1`);
                         }}
                       >
                         {record.title}
@@ -189,11 +200,7 @@ export function RecordWorkspace({
                 const query = readAdminHashQuery();
                 for (const key of recordRouteKeys.split(",")) query.delete(key);
                 query.delete("inspect");
-                window.history.replaceState(
-                  null,
-                  "",
-                  `${window.location.hash.split("?")[0]}${query.size ? `?${query}` : ""}`,
-                );
+                replaceHash(`${window.location.hash.split("?")[0]}${query.size ? `?${query}` : ""}`);
               }}
               onOpenRecord={openRecord}
             >
@@ -219,11 +226,7 @@ export function RecordWorkspace({
               setRecordOpen(false);
               setInspectOpen(true);
               if (selected?.href)
-                window.history.replaceState(
-                  null,
-                  "",
-                  `${selected.href}${selected.href.includes("?") ? "&" : "?"}inspect=1`,
-                );
+                replaceHash(`${selected.href}${selected.href.includes("?") ? "&" : "?"}inspect=1`);
             }}
           >
             ← {title} inventory

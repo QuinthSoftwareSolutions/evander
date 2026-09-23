@@ -33,7 +33,11 @@ let privilegedUnlocked = false;
 const lockedMessage = "Unlock privileged operations in Admin Web to edit settings or change Miro state.";
 function applyPrivileges() {
   const inherited = Boolean(state.selected && state.selected.config.directory_path !== state.directory);
-  document.querySelectorAll('#settings input, #settings button, #new, [data-privileged-action]').forEach(control => {
+  document.querySelectorAll('[data-privileged-action], #new').forEach(control => {
+    control.disabled = !privilegedUnlocked;
+    control.title = !privilegedUnlocked ? lockedMessage : '';
+  });
+  document.querySelectorAll('#settings input, #settings button').forEach(control => {
     control.disabled = !privilegedUnlocked || inherited;
     control.title = !privilegedUnlocked ? lockedMessage : inherited ? `Load ${state.selected.config.directory_path} to edit this connection.` : '';
   });
