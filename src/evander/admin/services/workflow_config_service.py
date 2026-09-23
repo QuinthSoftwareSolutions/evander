@@ -230,6 +230,19 @@ class WorkflowConfigAdminService:
     ) -> list[WorkflowEditorGraphMetadata]:
         return self._coerce_workflow_editor_graphs(raw_graphs, strict=strict)
 
+    def normalize_workflow_editor_graphs_for_config(
+        self,
+        *,
+        config: dict[str, object],
+        graphs: object,
+        strict: bool = True,
+    ) -> list[WorkflowEditorGraphMetadata]:
+        return self._workflow_editor_graphs_for_config(
+            config=config,
+            graphs=graphs,
+            strict=strict,
+        )
+
     def validate_workflow_editor_document(
         self,
         *,

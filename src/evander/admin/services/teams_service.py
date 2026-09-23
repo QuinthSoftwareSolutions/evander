@@ -319,8 +319,7 @@ class TeamsAdminService:
             allowed_user_targets=allowed_user_targets,
         )
         resolve_user_id = getattr(teams_service, "resolve_user_id_for_reference", None)
-        ensure_chat = getattr(teams_service, "ensure_one_on_one_chat", None)
-        if not callable(resolve_user_id) or not callable(ensure_chat):
+        if not callable(resolve_user_id):
             raise ValueError(
                 f"Directory '{normalized_directory}' does not support Teams direct-chat resolution."
             )
@@ -344,10 +343,23 @@ class TeamsAdminService:
             seen_user_ids.add(user_id_key)
             resolved_users.append((user_ref, user_id))
 
+        chat_service = self._deps.runtime.teams_service_for_directory(
+            normalized_directory,
+            allowed_channel_targets=[],
+            allowed_user_targets=[
+                normalize_teams_user_target(user_id) for _, user_id in resolved_users
+            ],
+        )
+        ensure_chat = getattr(chat_service, "ensure_one_on_one_chat", None)
+        if not callable(ensure_chat):
+            raise ValueError(
+                f"Directory '{normalized_directory}' does not support Teams direct-chat resolution."
+            )
+
         resolutions: list[dict[str, str]] = []
         for user_ref, user_id in resolved_users:
             try:
-                chat_target = str(ensure_chat(user_ref) or "").strip()
+                chat_target = str(ensure_chat(user_id) or "").strip()
             except Exception as exc:
                 raise ValueError(
                     f"Microsoft Graph could not ensure a one-to-one chat for Teams user "
