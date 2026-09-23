@@ -7,6 +7,10 @@
 - Find execution-history availability bounds with index seeks and move history reads and
   response serialization off the web event loop, preserving authorization checks.
 - Filter session inventories before sorting so narrow views only sort their matching rows.
+- Read workflow run and recent-activity display fields directly from SQLite instead of
+  hydrating and serializing full execution payloads; keep control operations on full records.
+- Resolve communication targets once per workflow catalog request, retaining directory and
+  capability filtering without introducing a shared configuration cache.
 
 ## 2026-09-23 - Unify the Admin Web design (0.61.0)
 

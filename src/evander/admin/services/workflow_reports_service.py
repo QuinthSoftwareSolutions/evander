@@ -399,24 +399,23 @@ class WorkflowReportsAdminService:
 
         queue_store, effect_store, gate_store = self._workflow_run_store_bundle(stores)
         queue_payload = {
-            record.event_id: record.model_dump(mode="json")
-            for record in queue_store.list_active_records()
+            record["event_id"]: record for record in queue_store.list_active_summaries()
         }
         execution_payload = {
-            record.execution_id: record.model_dump(mode="json")
-            for record in effect_store.list_active_records()
+            record["execution_id"]: record for record in effect_store.list_active_summaries()
         }
         gate_payload = {
-            record.execution_id: record.model_dump(mode="json")
-            for record in gate_store.list_active_records()
+            record["execution_id"]: record for record in gate_store.list_active_summaries()
         }
-        queue_recent_records = queue_store.list_activity_between(
+        queue_recent_records = queue_store.list_activity_summaries_between(
             start_at=lookback_start, end_at=now
         )
-        execution_recent_records = effect_store.list_activity_between(
+        execution_recent_records = effect_store.list_activity_summaries_between(
             start_at=lookback_start, end_at=now
         )
-        gate_recent_records = gate_store.list_activity_between(start_at=lookback_start, end_at=now)
+        gate_recent_records = gate_store.list_activity_summaries_between(
+            start_at=lookback_start, end_at=now
+        )
 
         for event_id, raw_record in queue_payload.items():
             if not isinstance(raw_record, dict):
@@ -463,7 +462,7 @@ class WorkflowReportsAdminService:
                 error=_coerce_optional_string(raw_record.get("error")),
                 resumable=bool(
                     _coerce_optional_string(raw_record.get("source_node_id"))
-                    and isinstance(raw_record.get("input_payload"), dict)
+                    and raw_record.get("has_input_payload")
                 ),
             )
 
@@ -490,7 +489,7 @@ class WorkflowReportsAdminService:
                 error=_coerce_optional_string(raw_record.get("error")),
                 resumable=bool(
                     _coerce_optional_string(raw_record.get("source_node_id"))
-                    and isinstance(raw_record.get("input_payload"), dict)
+                    and raw_record.get("has_input_payload")
                 ),
             )
 

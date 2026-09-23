@@ -508,6 +508,51 @@ class SqliteExecutionRepository(Generic[TRecord]):
             ).fetchall()
         return [self._record_from_row(row) for row in rows]
 
+    def list_active_summaries(self) -> list[dict[str, Any]]:
+        """Read display metadata without hydrating execution inputs and outputs."""
+        return self._list_run_summaries(
+            where="status IN ('running', 'waiting', 'failed', 'completion_pending', 'error_routed')"
+            " AND dismissed_at IS NULL",
+            parameters=(),
+            newest_first=True,
+        )
+
+    def list_activity_summaries_between(
+        self, *, start_at: datetime, end_at: datetime
+    ) -> list[dict[str, Any]]:
+        return self._list_run_summaries(
+            where="COALESCE(finished_at, started_at) BETWEEN ? AND ?",
+            parameters=(datetime_to_storage(start_at), datetime_to_storage(end_at)),
+            newest_first=False,
+        )
+
+    def _list_run_summaries(
+        self, *, where: str, parameters: tuple[Any, ...], newest_first: bool
+    ) -> list[dict[str, Any]]:
+        # These projections are only for display. Control operations must still
+        # read full records, including the actual input required to resume a run.
+        # Missing legacy input_payload fields default to {} in the record models.
+        # Keep extra activity timestamps too: the renderer considers all of them.
+        order = "DESC" if newest_first else "ASC"
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT execution_id, event_id, trace_id, source_node_id, source_trigger_type,
+                       {self.node_id_field}, status, started_at, finished_at, dismissed_at,
+                       json_extract(payload_json, '$.error') AS error,
+                       COALESCE(json_type(payload_json, '$.input_payload'), 'object') = 'object'
+                           AS has_input_payload,
+                       json_extract(payload_json, '$.occurred_at') AS occurred_at,
+                       json_extract(payload_json, '$.inflight_at') AS inflight_at,
+                       json_extract(payload_json, '$.delivered_at') AS delivered_at
+                FROM {self.table_name}
+                WHERE {where}
+                ORDER BY COALESCE(finished_at, started_at) {order}, execution_id {order}
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_records_for_event(
         self, event_id: str, *, statuses: set[str] | None = None
     ) -> list[TRecord]:
