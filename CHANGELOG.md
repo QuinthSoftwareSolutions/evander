@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-23 - Resolve Teams direct chats from UPNs (0.62.0)
+
+- Let workflow editors choose direct-chat setup by UPN or retain explicit Teams chat and sender
+  IDs. Resolve direct-chat UPNs through host-owned Microsoft Graph access during revision-gated
+  saves, ensure each one-to-one chat, and persist canonical user and chat IDs while keeping the
+  readable UPNs in the form.
+
 ## 2026-09-23 - Unify the Admin Web design (0.61.0)
 
 - Offer a temporary Classic / New UI selector, defaulting to a frozen main UI until
