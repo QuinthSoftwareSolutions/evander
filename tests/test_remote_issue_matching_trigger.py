@@ -106,7 +106,7 @@ def test_remote_issue_matching_trigger_emits_ado_compat_aliases(
     _IssueServiceStub.calls = []
     _IssueServiceStub.result = {
         "provider": "azure_devops",
-        "project": "APP",
+        "project": "App",
         "items": [
             {
                 "remote_issue_id": "101",
@@ -120,7 +120,7 @@ def test_remote_issue_matching_trigger_emits_ado_compat_aliases(
         display_name="Remote ADO issue match",
         type="trigger:remote-issue-matching",
         provider="ado",
-        project="APP",
+        project="App",
     )
     provider = RemoteIssueMatchingTriggerProvider()
     provider.initialize(
@@ -135,7 +135,7 @@ def test_remote_issue_matching_trigger_emits_ado_compat_aliases(
     events = provider.poll()
     assert len(events) == 1
     assert events[0].payload["provider"] == "azure_devops"
-    assert events[0].payload["project"] == "APP"
+    assert events[0].payload["project"] == "App"
     assert events[0].payload["work_item_id"] == "101"
     assert events[0].payload["changed_at"] == "2026-06-01T10:00:00Z"
     assert events[0].payload["work_item"]["title"] == "Fix deploy"

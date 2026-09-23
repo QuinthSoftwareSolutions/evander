@@ -1,0 +1,18 @@
+{
+  "enabled": false,
+  "tracked_ref": "main",
+  "image": "code-index",
+  "semantic": true,
+  "scip": true,
+  "npm_restore": "locked",
+  "refresh_on_git_change": true,
+  "refresh_interval_seconds": 3600,
+  "worker_cpus": 1,
+  "dotnet_projects": ["src/SampleApp.slnx"],
+  "typescript_projects": [
+    "frontend/tsconfig.json"
+  ],
+  "includes": ["**/*.cs", "**/*.ts", "**/*.html", "**/*.scss", "**/*.css", "**/*.md", "**/*.sql", "**/*.xml"],
+  "timeout_seconds": 3600,
+  "retention_days": 30
+}

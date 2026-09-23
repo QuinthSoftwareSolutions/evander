@@ -424,7 +424,7 @@ async function createAdminPage(t, options = {}) {
           provider: "azure_devops",
           display_name: "exampleindustry/Project/Receptionist",
           default_branch: payload.default_branch ?? "main",
-          host_commit_identity: { name: "Truman Bot", email: "truman@example.com" },
+          host_commit_identity: { name: "Evander Bot", email: "evander@example.com" },
           bindings: [],
         };
         options.gitRepositories = [...(options.gitRepositories ?? []), repository];
@@ -696,7 +696,7 @@ test("managed Git page registers and maintains repositories through the Admin AP
       provider: "github",
       display_name: "example/existing",
       default_branch: "main",
-      host_commit_identity: { name: "Truman Bot", email: "truman@example.com" },
+      host_commit_identity: { name: "Evander Bot", email: "evander@example.com" },
       bindings: [],
     },
   ];
@@ -800,7 +800,7 @@ test("repository index history defaults to newest ready snapshots and pages thro
     provider: "github",
     display_name: "example/existing",
     default_branch: "main",
-    host_commit_identity: { name: "Truman Bot", email: "truman@example.com" },
+    host_commit_identity: { name: "Evander Bot", email: "evander@example.com" },
     bindings: [],
   }];
   const { address, page } = await createAdminPage(t, {

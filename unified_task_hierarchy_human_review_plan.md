@@ -1412,7 +1412,7 @@ Update the canonical Evander manual chapters and generated publications with:
 - worktree cleanup and recovery;
 - operator repair of invalid legacy state.
 
-Include one complete APP walkthrough covering the combined lifecycle.
+Include one complete App walkthrough covering the combined lifecycle.
 
 ## Migration and compatibility
 
@@ -1793,11 +1793,11 @@ If approval quorum support is implemented:
 - `changes_requested` immediately vetoes the candidate attempt; and
 - late decisions cannot alter any terminal result.
 
-### Representative APP end-to-end
+### Representative App end-to-end
 
 Keep one combined, representative end-to-end flow:
 
-1. create an aggregate APP outcome task;
+1. create an aggregate App outcome task;
 2. decompose it three levels, including a self-owned implementation child;
 3. accept leaf contributions and integrate direct-child sources;
 4. submit and accept the root deliverable;
@@ -1835,7 +1835,7 @@ Before enabling the combined behavior:
 - rebuild the canonical Evander user manual and run its generated-output check;
 - add changelog entries in every implementation slice.
 
-The release is ready only when the combined APP journey passes and current
+The release is ready only when the combined App journey passes and current
 ungated projects retain their existing behavior.
 
 ## Explicit non-goals

@@ -4107,7 +4107,7 @@ def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path:
                 "pr_feedback_streams": [
                     {
                         "provider": "azure_devops",
-                        "repo": "exampleindustry/Example Industry APP/ExampleIndustryAPP",
+                        "repo": "exampleindustry/Example Industry App/SampleApplication",
                         "pr_id": "5857",
                     }
                 ]
@@ -4124,7 +4124,7 @@ def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path:
         {
             "session_id": "session-1",
             "provider": "azure-devops",
-            "repo": "exampleindustry/Example Industry APP/ExampleIndustryAPP",
+            "repo": "exampleindustry/Example Industry App/SampleApplication",
             "pr_id": "5857",
             "thread_id": "29797",
             "comment_id": "1",

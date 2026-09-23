@@ -6710,7 +6710,7 @@ test("team add-on distinguishes governance portfolio roll-ups from individual sp
   };
   initialState.teams["team-delta"] = {
     id: "team-delta",
-    name: "APP Dev Team",
+    name: "App Dev Team",
     manager_agent_id: null,
     operator_communication_target_id: null,
     project_ids: [],
@@ -12687,8 +12687,8 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     published_commit_sha: null,
     published_at: null,
     candidate_checkout: {
-      canonical_repository_identity: "azure-devops:example/app/ExampleIndustryAPP",
-      repository_display_name: "ExampleIndustryAPP",
+      canonical_repository_identity: "azure-devops:example/app/SampleApplication",
+      repository_display_name: "SampleApplication",
       managed_repo_id: "mr_0123456789abcdef0123",
       release_ref: "refs/heads/team/alpha/releases/human",
       candidate_commit_sha: "candidate111",
@@ -12876,7 +12876,7 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await candidateCheckout.getByRole("heading", { name: "Test this candidate" }).waitFor({
     state: "visible",
   });
-  await candidateCheckout.getByText("ExampleIndustryAPP", { exact: true }).waitFor({
+  await candidateCheckout.getByText("SampleApplication", { exact: true }).waitFor({
     state: "visible",
   });
   await candidateCheckout

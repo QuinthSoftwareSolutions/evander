@@ -397,7 +397,7 @@ The UI should provide a recursive task-tree view showing:
 - contradictory or invalid lifecycle states;
 - task-to-worktree mapping for the owning agent.
 
-Documentation should include one complete APP example from root decomposition
+Documentation should include one complete App example from root decomposition
 through child handoff, integration, final review, rework, and release. Guidance
 rollout must refresh existing persistent sessions rather than updating only newly
 created agents.

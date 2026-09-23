@@ -153,7 +153,7 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
             effects.append(definition)
             return SimpleNamespace(
                 execute=lambda: {
-                    "target_dir": "/home/agent/repos/APP",
+                    "target_dir": "/home/agent/repos/App",
                     "container_image": resolved_image,
                 }
             )
@@ -182,8 +182,8 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
     )
     assert effects[-1].pinned_commit_sha == SHA
     assert effects[-1].git_access_mode == "read-only"
-    assert jobs[0].working_directory == "/home/agent/repos/APP"
-    assert "/home/agent/repos/APP" in jobs[0].command[-1]
+    assert jobs[0].working_directory == "/home/agent/repos/App"
+    assert "/home/agent/repos/App" in jobs[0].command[-1]
     assert not effects[0].allowed_tools
     assert effects[0].nuget is scip
     assert ("export DOTNET_ROOT=" in jobs[0].command[-1]) is scip
@@ -236,7 +236,7 @@ def test_worker_provisions_approved_alias_and_submits_resolved_image(
 
     def clone_info(**kwargs):
         clone_calls.append(kwargs)
-        return {"clone_url": "/managed/APP.git", "repo_name": "APP"}
+        return {"clone_url": "/managed/App.git", "repo_name": "App"}
 
     service.managed_git.clone_info = clone_info
     service.managed_git.bind = lambda **kwargs: bindings.append(kwargs)
@@ -275,12 +275,12 @@ def test_worker_provisions_approved_alias_and_submits_resolved_image(
     assert clone_calls == [
         {"managed_repo_id": REPO, "directory_path": "root/app", "session_id": build["session_id"]}
     ]
-    assert backend.cloned_repos[0]["repo_source"] == "/managed/APP.git"
+    assert backend.cloned_repos[0]["repo_source"] == "/managed/App.git"
     assert backend.cloned_repos[0]["clone_branch"] == "main"
     assert bindings == [
         {"managed_repo_id": REPO, "kind": "sessions", "binding_id": build["session_id"]}
     ]
-    assert jobs[0].working_directory == "/home/agent/repos/APP"
+    assert jobs[0].working_directory == "/home/agent/repos/App"
     assert jobs[0].image == resolved_image
     assert sessions.get_session(build["session_id"]).metadata["container_worker"] == {
         "image": resolved_image,

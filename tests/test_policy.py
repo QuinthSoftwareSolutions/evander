@@ -120,7 +120,7 @@ def make_ado_tool_policy_engine(tmp_path: Path) -> tuple[PolicyEngine, SessionMa
                                 "id": "project",
                                 "path": "project",
                                 "operator": "fixed",
-                                "value": "Truman",
+                                "value": "Evander",
                                 "case_sensitive": False,
                             }
                         ],
@@ -1487,7 +1487,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         session,
         ToolName.CREATE_ADO_BACKLOG_ITEM,
         {
-            "project": "truman",
+            "project": "evander",
             "type": "task",
             "title": "IMPLEMENT POLICY ENGINE",
             "state": "ready",
@@ -1502,7 +1502,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
     [
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "task",
                 "title": "",
                 "state": "ready",
@@ -1516,7 +1516,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         ),
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "bug",
                 "title": "IMPLEMENT POLICY ENGINE",
                 "state": "ready",
@@ -1530,7 +1530,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         ),
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "task",
                 "title": "IMPLEMENT POLICY ENGINE",
                 "state": "ready",
@@ -1558,7 +1558,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         ),
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "task",
                 "title": "Ship policy engine",
                 "state": "ready",
@@ -1572,7 +1572,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         ),
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "task",
                 "title": "IMPLEMENT POLICY ENGINE",
                 "state": "blocked",
@@ -1631,13 +1631,13 @@ def test_require_approved_rejects_payload_mismatch(tmp_path: Path) -> None:
 
 def test_build_payload_diagnostic_reports_changed_missing_and_extra_fields() -> None:
     approved = {
-        "project": "Truman",
+        "project": "Evander",
         "title": "Implement policy engine",
         "details": {"owner": "alice", "count": 1},
         "tags": ["alpha", "beta"],
     }
     attempted = {
-        "project": "Truman",
+        "project": "Evander",
         "title": "Implement approval diagnostics",
         "details": {"count": 1},
         "tags": ["alpha", "gamma", "delta"],
@@ -3051,7 +3051,7 @@ def test_require_pr_feedback_stream_enforces_allowlist(tmp_path: Path) -> None:
 
 def test_require_pr_feedback_stream_accepts_unambiguous_ado_repo_alias(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    canonical_repo = "exampleindustry/Example Industry APP/ExampleIndustryAPP"
+    canonical_repo = "exampleindustry/Example Industry App/SampleApplication"
     engine.config.pr_map_path.write_text(
         json.dumps(
             {
@@ -3072,7 +3072,7 @@ def test_require_pr_feedback_stream_accepts_unambiguous_ado_repo_alias(tmp_path:
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         metadata={
             "pr_feedback_streams": [
-                {"provider": "azure_devops", "repo": "ExampleIndustryAPP", "pr_id": "9463"}
+                {"provider": "azure_devops", "repo": "SampleApplication", "pr_id": "9463"}
             ]
         },
     )
@@ -3093,12 +3093,12 @@ def test_require_pr_feedback_stream_rejects_ambiguous_ado_repo_alias(tmp_path: P
                 "entries": {
                     "one": {
                         "provider": "azure_devops",
-                        "repo": "organization-one/project/ExampleIndustryAPP",
+                        "repo": "organization-one/project/SampleApplication",
                         "pr_id": "9463",
                     },
                     "two": {
                         "provider": "azure_devops",
-                        "repo": "organization-two/project/ExampleIndustryAPP",
+                        "repo": "organization-two/project/SampleApplication",
                         "pr_id": "9463",
                     },
                 }
@@ -3112,7 +3112,7 @@ def test_require_pr_feedback_stream_rejects_ambiguous_ado_repo_alias(tmp_path: P
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         metadata={
             "pr_feedback_streams": [
-                {"provider": "azure_devops", "repo": "ExampleIndustryAPP", "pr_id": "9463"}
+                {"provider": "azure_devops", "repo": "SampleApplication", "pr_id": "9463"}
             ]
         },
     )
@@ -3121,14 +3121,14 @@ def test_require_pr_feedback_stream_rejects_ambiguous_ado_repo_alias(tmp_path: P
         engine.require_pr_feedback_stream(
             session,
             provider="azure_devops",
-            repo="organization-one/project/ExampleIndustryAPP",
+            repo="organization-one/project/SampleApplication",
             pr_id="9463",
         )
 
 
 def test_require_pr_feedback_stream_rejects_cross_org_ssh_repo_alias(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    mapped_repo = "organization-two/project/ExampleIndustryAPP"
+    mapped_repo = "organization-two/project/SampleApplication"
     engine.config.pr_map_path.write_text(
         json.dumps(
             {
@@ -3152,7 +3152,7 @@ def test_require_pr_feedback_stream_rejects_cross_org_ssh_repo_alias(tmp_path: P
                 {
                     "provider": "azure_devops",
                     "repo": (
-                        "ssh://git@ssh.dev.azure.com/v3/organization-one/project/ExampleIndustryAPP"
+                        "ssh://git@ssh.dev.azure.com/v3/organization-one/project/SampleApplication"
                     ),
                     "pr_id": "9463",
                 }

@@ -890,7 +890,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
                 "match_count": 1,
                 "channels": [
                     {
-                        "display_name": "Truman",
+                        "display_name": "Evander",
                         "channel_id": "19:abc@thread.skype",
                         "allowlist_entry": f"{team_id}/19:abc@thread.skype",
                     }
@@ -913,7 +913,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
             "--team-id",
             "team-123",
             "--name",
-            "Truman",
+            "Evander",
         ],
     )
 
@@ -934,7 +934,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
     assert "should-not-leak" not in list_result.output
 
     assert channels_result.exit_code == 0
-    assert "Truman" in channels_result.output
+    assert "Evander" in channels_result.output
     assert "19:abc@thread.skype" in channels_result.output
     assert "team-123/19:abc@thread.skype" in channels_result.output
 

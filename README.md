@@ -475,10 +475,6 @@ For private PR feedback polling, the service environment must provide `GITHUB_TO
 
 ### Azure DevOps worker and work-item workflows
 
-The opt-in [APP PR testing workflow](docs/app-pr-testing.md) handles
-`!TEST <environment>` comments by waiting for the current PR build, redeploying
-an existing named demo, and asking the same PR reviewer to prepare test data.
-
 `evander-ado-worker` now owns Azure DevOps PR feedback and completion polling only. For
 foreground operation, run:
 
@@ -874,7 +870,7 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   with its own `message_filter`.
 - The initial supported filter shape is content substring matching:
   - `{"target":"team-id/channel-id"}`
-  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Truman Bot"}}}`
+  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Evander Bot"}}}`
   - optional `case_sensitive: true|false` (default `false`)
 - `trigger:communication:new-message` provides the provider-neutral inbound message path for
   directory-scoped communication targets. It requires explicit `communication_target_ids`, defaults

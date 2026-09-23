@@ -428,7 +428,8 @@ are not baked into the image. Populate them from the control plane with
 so restores use the control-plane NuGet relay and workers receive an additive global-packages
 archive. If the restore target and .NET toolchain are on the worker itself, run the script there
 with `--local --dotnet <worker-dotnet-path>` and point `NUGET_RELAY_BASE_URL` at the control-plane
-relay. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
+relay. For private packages, pass the same patterns configured in the target directory with
+repeatable `--private-package-pattern` options. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
 `/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
 without the runner image hard-coding a host-specific user id.
 

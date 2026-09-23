@@ -10,7 +10,6 @@ export type HttpTargetDraftEntry = {
 
 export type HttpTargetsDraft = {
   entries: HttpTargetDraftEntry[];
-  legacyFallback: boolean;
   sourceError: string | null;
 };
 
@@ -49,24 +48,16 @@ export function httpTargetsDraftFromMetadata(
 ): HttpTargetsDraft {
   const sourceMetadata = metadata ?? {};
   const canonical = sourceMetadata.http_targets;
-  let legacyFallback = false;
   let rawTargets: unknown;
 
   if (canonical !== undefined && canonical !== null) {
     if (!isRecord(canonical)) {
       return {
         entries: [],
-        legacyFallback: false,
         sourceError: "HTTP targets metadata must be a JSON object.",
       };
     }
     rawTargets = canonical.targets;
-  } else {
-    const exampleMes = sourceMetadata.example_app;
-    if (isRecord(exampleMes) && exampleMes.environments !== undefined) {
-      rawTargets = exampleMes.environments;
-      legacyFallback = true;
-    }
   }
 
   if (rawTargets === undefined || rawTargets === null) {
@@ -75,7 +66,6 @@ export function httpTargetsDraftFromMetadata(
   if (!isRecord(rawTargets)) {
     return {
       entries: [],
-      legacyFallback,
       sourceError: "HTTP targets must contain a targets object.",
     };
   }
@@ -105,7 +95,7 @@ export function httpTargetsDraftFromMetadata(
     };
   });
 
-  return { entries, legacyFallback, sourceError };
+  return { entries, sourceError };
 }
 
 export function httpTargetsValidationError(

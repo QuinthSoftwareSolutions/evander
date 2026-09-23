@@ -181,20 +181,20 @@ get additive tables/columns; keep normal pre-upgrade backups. Immutable context
 history is durable and currently retained until an operator-managed retention
 policy is introduced—there is no automatic pruning in this version.
 
-## APP rollout boundary
+## App rollout boundary
 
 This change supplies application code, tests and an opt-in
 [workflow example](../config/workflow-packs/case-context.v1-example.json).
-It does **not** deploy services or edit the live `truman-control-plane` workflows.
+It does **not** deploy services or edit live control-plane workflows.
 
 After Jonathan's CI/CD deployment is confirmed:
 
-1. Re-read deployed capabilities, the APP agent/session configuration, and current
+1. Re-read deployed capabilities, the App agent/session configuration, and current
    intake, owner-comment and release workflow documents with their revisions/locks.
 2. Add source capture after intake creates/resolves its case, and after relevant
    ADO owner/Trudy discussion updates, before dispatching dependent work. Use the
    existing case identity, host connector and directory; do not derive authority
-   or recipient sessions from comment text. Update the APP planner/implementer/
+   or recipient sessions from comment text. Update the App planner/implementer/
    reviewer guidance to record concise decisions and rationale at useful handoffs.
 3. Before the main release-packager prompt, query context by the **exact release
    package**, refresh its returned case IDs, then snapshot using the exact
@@ -209,7 +209,7 @@ After Jonathan's CI/CD deployment is confirmed:
    existing v5 output JSON schema, size limits, artifact paths and verification
    policy; do not introduce a release-description test rerun.
 5. Keep snapshot identity across packaging retries/repair prompts. Do not reuse the
-   APP-specific change for another packager path (for example OPC) without reviewing
+   App-specific change for another packager path (for example OPC) without reviewing
    that workflow's scope. Save through supported revision-pinned APIs, validate and
    read back. Never overwrite live pack files from a stale local copy.
 6. Run a bounded synthetic case through capture, note, correction, resumed-wake

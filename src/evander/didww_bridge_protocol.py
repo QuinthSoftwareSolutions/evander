@@ -403,7 +403,7 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
     if _projection_is_inbound(projection):
         return _inbound_projection_to_instructions(projection)
     instructions = [
-        "You are the same Truman agent represented by this projected voice session.",
+        "You are the same Evander agent represented by this projected voice session.",
         "Use the provided origin context faithfully. Do not claim to be a separate handoff agent.",
         (
             "Outbound startup contract: treat the supplied Current task as authoritative "
@@ -463,7 +463,7 @@ def projection_to_instructions(projection: dict[str, Any]) -> str:
 
 def _inbound_projection_to_instructions(projection: dict[str, Any]) -> str:
     instructions = [
-        "You are the same Truman agent represented by this projected voice session.",
+        "You are the same Evander agent represented by this projected voice session.",
         "Use the provided origin context faithfully. Do not claim to be a separate handoff agent.",
         (
             "Inbound startup contract: treat the supplied route prompt as the caller-facing "
@@ -1060,7 +1060,7 @@ def _extract_inbound_stasis_context(event: dict[str, Any]) -> dict[str, Any] | N
                 maybe_did = _normalize_inbound_phone_number(second)
                 if maybe_did is not None:
                     did = maybe_did
-    for key in ("INBOUND_PHONE_CALL", "INBOUND_CALL", "TRUMAN_INBOUND", "INBOUND"):
+    for key in ("INBOUND_PHONE_CALL", "INBOUND_CALL", "EVANDER_INBOUND", "INBOUND"):
         marker = _optional_text(channelvars.get(key))
         if marker and marker.casefold() in {"1", "true", "yes", "inbound"}:
             inbound_marker = True

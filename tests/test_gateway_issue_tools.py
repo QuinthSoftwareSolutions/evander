@@ -765,7 +765,7 @@ def test_update_ado_backlog_tags_merges_existing_tags(
             calls.append({"read": kwargs})
             return {
                 "remote_issue_id": "15446",
-                "fields": {"System.Tags": "auto-dev; truman"},
+                "fields": {"System.Tags": "auto-dev; evander"},
             }
 
         def update_remote_issue(self, **kwargs: object) -> dict[str, object]:
@@ -786,8 +786,8 @@ def test_update_ado_backlog_tags_merges_existing_tags(
         {
             "session_id": "session-1",
             "id": 15446,
-            "project": "Example Industry APP",
-            "add_tags": ["auto-dev-approved", "truman"],
+            "project": "Example Industry App",
+            "add_tags": ["auto-dev-approved", "evander"],
         },
     )
 
@@ -795,18 +795,18 @@ def test_update_ado_backlog_tags_merges_existing_tags(
         "provider": "azure_devops",
         "remote_issue_id": "15446",
         "directory_path": "root/team-a",
-        "project": "Example Industry APP",
+        "project": "Example Industry App",
         "include_comments": False,
     }
     assert calls[2]["update"] == {
         "provider": "azure_devops",
         "remote_issue_id": "15446",
         "directory_path": "root/team-a",
-        "project": "Example Industry APP",
+        "project": "Example Industry App",
         "state": None,
-        "fields": {"System.Tags": "auto-dev; truman; auto-dev-approved"},
+        "fields": {"System.Tags": "auto-dev; evander; auto-dev-approved"},
     }
-    assert result["tags"] == ["auto-dev", "truman", "auto-dev-approved"]
+    assert result["tags"] == ["auto-dev", "evander", "auto-dev-approved"]
     assert result["added_tags"] == ["auto-dev-approved"]
     assert result["removed_tags"] == []
 
@@ -868,7 +868,7 @@ def test_update_ado_backlog_title_updates_system_title(
         {
             "session_id": "session-1",
             "id": 15446,
-            "project": "Example Industry APP",
+            "project": "Example Industry App",
             "title": "  Renamed backlog item  ",
         },
     )
@@ -878,7 +878,7 @@ def test_update_ado_backlog_title_updates_system_title(
         "provider": "azure_devops",
         "remote_issue_id": "15446",
         "directory_path": "root/team-a",
-        "project": "Example Industry APP",
+        "project": "Example Industry App",
         "state": None,
         "fields": {"System.Title": "Renamed backlog item"},
     }

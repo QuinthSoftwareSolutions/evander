@@ -1979,7 +1979,7 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
             }
         ],
         dependency_merge_author_name="Jonathan Quinth",
-        dependency_merge_author_email="operator@example.invalid",
+        dependency_merge_author_email="jonathan.quinth@exampleindustry.com",
     )
 
     prepared = daemon.prepare_task_worktree("session-1", request)
@@ -2176,7 +2176,7 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
         base_ref="main",
         dependency_git_sources=dependency_rows,
         dependency_merge_author_name="Jonathan Quinth",
-        dependency_merge_author_email="operator@example.invalid",
+        dependency_merge_author_email="jonathan.quinth@exampleindustry.com",
         dependency_composition_commit_message=("Compose accepted dependencies for task task-ui"),
     )
     prepared = daemon.prepare_task_worktree("session-1", request)
@@ -2203,7 +2203,7 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
         "Compose accepted dependencies for task task-ui",
         " ".join([base_commit, *dependency_commits]),
         "Jonathan Quinth",
-        "operator@example.invalid",
+        "jonathan.quinth@exampleindustry.com",
         "Evander Team Dependency Composer",
         "team-dependencies@evander.invalid",
     ]
@@ -4723,9 +4723,9 @@ def test_session_file_write_removes_stale_managed_sections(tmp_path: Path) -> No
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         "# Base\n\n"
-        "<!-- evander-managed-section:truman-team-addon:begin -->\n"
+        "<!-- evander-managed-section:prior-team-addon:begin -->\n"
         "Old guidance\n"
-        "<!-- evander-managed-section:truman-team-addon:end -->\n\n"
+        "<!-- evander-managed-section:prior-team-addon:end -->\n\n"
         "<!-- evander-managed-section:evander-team-addon:begin -->\n"
         "Team guidance v1\n"
         "<!-- evander-managed-section:evander-team-addon:end -->\n",
@@ -4744,14 +4744,14 @@ def test_session_file_write_removes_stale_managed_sections(tmp_path: Path) -> No
                     "overwrite": True,
                     "merge_strategy": "managed_section",
                     "section_id": "evander-team-addon",
-                    "remove_section_ids": ["truman-team-addon"],
+                    "remove_section_ids": ["prior-team-addon"],
                 }
             ]
         },
     )
 
     assert replaced.status_code == 200
-    assert "truman-team-addon" not in target.read_text(encoding="utf-8")
+    assert "prior-team-addon" not in target.read_text(encoding="utf-8")
     assert "Team guidance v2" in target.read_text(encoding="utf-8")
 
 
@@ -5355,18 +5355,18 @@ def test_session_repo_clone_clones_into_named_repo_under_agent_home(tmp_path: Pa
     first = client.post(
         "/v1/sessions/session-1/repo",
         headers=_auth(),
-        json={"repo_source": str(source), "repo_name": "ExampleIndustryAPP"},
+        json={"repo_source": str(source), "repo_name": "SampleApplication"},
     )
     second = client.post(
         "/v1/sessions/session-1/repo",
         headers=_auth(),
-        json={"repo_source": str(source), "repo_name": "ExampleIndustryAPP"},
+        json={"repo_source": str(source), "repo_name": "SampleApplication"},
     )
 
     assert first.status_code == 200
     assert first.json()["cloned"] is True
-    assert first.json()["target_dir"] == "/home/agent/repos/ExampleIndustryAPP"
-    assert first.json()["guest_repo_name"] == "ExampleIndustryAPP"
+    assert first.json()["target_dir"] == "/home/agent/repos/SampleApplication"
+    assert first.json()["guest_repo_name"] == "SampleApplication"
     assert second.status_code == 200
     assert second.json()["cloned"] is False
     checkout = (
@@ -5376,7 +5376,7 @@ def test_session_repo_clone_clones_into_named_repo_under_agent_home(tmp_path: Pa
         / "session-1"
         / "agent_home"
         / "repos"
-        / "ExampleIndustryAPP"
+        / "SampleApplication"
     )
     assert (checkout / "README.md").read_text(encoding="utf-8") == "hello\n"
 
@@ -5430,7 +5430,7 @@ def test_session_repo_clone_rejects_conflicting_non_empty_target(tmp_path: Path)
         / "session-1"
         / "agent_home"
         / "repos"
-        / "ExampleIndustryAPP"
+        / "SampleApplication"
     )
     conflict.mkdir(parents=True)
     (conflict / "README.md").write_text("not this repo\n", encoding="utf-8")
@@ -5438,7 +5438,7 @@ def test_session_repo_clone_rejects_conflicting_non_empty_target(tmp_path: Path)
     response = client.post(
         "/v1/sessions/session-1/repo",
         headers=_auth(),
-        json={"repo_source": str(source), "repo_name": "ExampleIndustryAPP"},
+        json={"repo_source": str(source), "repo_name": "SampleApplication"},
     )
 
     assert response.status_code == 400

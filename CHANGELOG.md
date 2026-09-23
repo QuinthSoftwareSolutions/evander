@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-23 - Make private package routing directory scoped (0.60.0)
+
+- Read optional private NuGet package patterns from directory provider state when preparing
+  container sessions, with no customer-specific package mapping in the default configuration.
+- Read retired Team guidance section IDs from directory provider state when reseeding agents.
+- Preserve live Teams notification settings when deployments stop using checked-in host overrides.
+- Remove customer-specific demo examples and retired metadata handling after migrating live
+  workflow writes to generic HTTP targets.
+- Use Evander branding in guest guidance, assistant prompts, Admin Web, and the landing page.
+- Move deployment-specific host and website settings out of tracked defaults.
+
 ## 2026-09-23 - Optimize control-plane hot paths (0.59.2)
 
 - Paginate Team task reads before enrichment, reuse task and project assessments, index
@@ -199,7 +210,7 @@
 - Allow declarative workflow document patches to position every namespaced node while preserving
   unrelated graph positions and replacing only patch-owned coordinates when reapplied.
 - Include layout changes in preview, validation, no-op detection, and revision-safe saves, and
-  provide a readable horizontal-lane layout for the APP PR-testing workflow.
+  provide a readable horizontal-lane layout for the App PR-testing workflow.
 
 ## 2026-09-20 - Make Admin Web lists easier to scan (0.51.0)
 
@@ -293,16 +304,16 @@
 - Upgrade eligible pre-0.44.1 system-created human-review aggregation parents to coordination
   tasks during reconciliation so existing correction workflows gain the same protections.
 
-## 2026-09-17 - Test APP feature branches from PR comments (0.45.0)
+## 2026-09-17 - Test App feature branches from PR comments (0.45.0)
 
-- Add an opt-in APP `!TEST <environment>` workflow migration: acknowledge the pinned PR build,
+- Add an opt-in App `!TEST <environment>` workflow migration: acknowledge the pinned PR build,
   wait for it, redeploy an existing named demo, and resume the same PR reviewer with managed demo
   skills to prepare data and explain how to test. Missing, stale, failed and busy deployments
   receive deterministic replies; duplicate comment delivery is suppressed.
 - Add directory-scoped ADO build lookup/wait providers and additive agent skill installation.
 - Keep command syntax, environment rules, routing, messages and prompts in declarative workflow
   configuration. Provide generic text-regex and build-filter queries and a revision-safe patch
-  installer instead of a APP-specific runtime provider or Python workflow builder.
+  installer instead of a App-specific runtime provider or Python workflow builder.
 - Route terminal agent execution failures and timeouts through an explicitly connected prompt
   `error` port, while preserving legacy behavior for workflows without one.
 
@@ -395,7 +406,7 @@
   recipe version when browsing history.
 - Enforce release-directory scope before collecting associated review/verification evidence,
   and include contributed child task history in contexts captured before a release exists.
-- Document the staged APP integration; deployment and live workflow edits remain separate.
+- Document the staged App integration; deployment and live workflow edits remain separate.
 
 ## 2026-09-15 - Lower orchestration handoff latency (0.41.1)
 
@@ -454,7 +465,7 @@
 
 ## 2026-09-11 - Faster repeat repository indexes (0.40.1)
 
-- Index the APP .NET workspace through its tracked solution instead of starting a
+- Index the App .NET workspace through its tracked solution instead of starting a
   separate restore and Roslyn process for every project.
 - Drain up to 16,384 cached semantic vectors per reconciliation pass while retaining
   the existing 512-chunk bound for new embeddings and the 30-second time budget.
@@ -492,7 +503,7 @@
 - Inherit task case membership across operator, workflow and agent task creation,
   including out-of-order batches; preserve explicitly selected correction cases.
 - Add atomic source-based reuse to the create-case workflow action.
-- Add an optional revision-checked APP backfill helper for linking existing work
+- Add an optional revision-checked App backfill helper for linking existing work
   to intake cases without posting comments or dispatching work.
 - Preserve Team/project selection through embedded-board navigation; cache shared
   case-less lineage and retain valid agent-action creations when other plans have
@@ -554,7 +565,7 @@
   when project authorization is lost and avoiding duplicates on repeated wakes.
 - Export versioned SQLite/SCIP bundles with a standalone Python query tool and optional
   embeddings for external coding workflows. Include a pinned worker image build,
-  APP profile, retrieval benchmark and operational documentation.
+  App profile, retrieval benchmark and operational documentation.
 - Allow release cancellation to retire its reviews while retaining the frozen
   reviewer membership and recorded decisions as history. Continue validating the
   required reviewer slots and excluding superseded review attempts.
@@ -719,7 +730,7 @@
 - Keep same-account OAuth-to-PAT fallback and duplicate-creation guards while preventing bot
   fallback under this policy. Record explicit reasons for missing context, creator mismatches,
   and bot reconciliation when fallback is allowed.
-- Let the APP attribution migration enable the policy on both PR paths after deployment.
+- Let the App attribution migration enable the policy on both PR paths after deployment.
   Use configured pack references, create valid intake tasks, and preserve existing validation
   warnings during repair.
 
@@ -964,7 +975,7 @@
   with direct Images API and Responses tool enforcement across HTTP and WebSocket relay paths.
 - Added bounded JSON and multipart request handling, host-owned authentication, and usage auditing
   that records hashes and sizes without retaining prompts, uploads, or generated image data.
-- Enabled the capability only in the APP demo and demo-modification workflows while keeping all
+- Enabled the capability only in the App demo and demo-modification workflows while keeping all
   other sessions disabled by default, and documented the guest image-generation handoff.
 
 ## 2026-08-31 - On-Demand Managed Reference Repositories
@@ -984,9 +995,9 @@
 - Kept failed or interrupted maintenance retryable by releasing the process lock automatically and
   recording the completed retention date only after all bounded batches finish.
 
-## 2026-08-31 - Resumable APP Demo Modifications
+## 2026-08-31 - Resumable App Demo Modifications
 
-- Added an operator workflow example for direct post-deployment APP demo changes that reuses the
+- Added an operator workflow example for direct post-deployment App demo changes that reuses the
   deterministic demo agent, refreshes its session for eight hours, and queues the request on the
   existing Codex thread without starting another Azure DevOps deployment.
 
@@ -1011,14 +1022,14 @@
 
 - Added an allowlist-gated, size- and document-bounded Elasticsearch bulk-index tool and workflow
   effect with deterministic document IDs for idempotent synthetic demo-history seeding.
-- Extended the APP demo operating guidance to populate three weeks of production-metrics history
+- Extended the App demo operating guidance to populate three weeks of production-metrics history
   before creating and verifying Kibana dashboards.
 
 ## 2026-08-30 - Session-scoped Browser Target Access
 
 - Added an authenticated forward proxy that lets seeded browsers use the real origins of a
   session's configured HTTP targets without weakening VM or container default-deny egress.
-- Wired the browser proxy into both execution backends and updated APP demo workflows to browse
+- Wired the browser proxy into both execution backends and updated App demo workflows to browse
   the public UI origin while retaining the path-based relay for programmatic API traffic.
 
 ## 2026-08-30 - Team Preparation Generation Safety
@@ -1129,7 +1140,7 @@
   resolved opaque-token tenants through concrete configuration or authenticated credential
   metadata, preserved existing refresh grants, and replaced subscriptions when callback URLs change.
 - Added secret-free Admin and health status, IPv4/IPv6 listener verification, callback-host-aware
-  Caddy routing, systemd and Ansible deployment wiring, and a CI/CD-owned Truman configuration while
+  Caddy routing, systemd and Ansible deployment wiring, and a CI/CD-owned Evander configuration while
   local deployments remain polling-only by default.
 
 ## 2026-08-26 - SQLite Events, Team Chat, And Release Reliability
@@ -1207,7 +1218,7 @@
 
 - Added a read-only managed-Git merge-base query that refreshes and pins the PR target branch
   separately from canonical publication leases.
-- Based True APP release PR titles and descriptions on the complete candidate branch against the
+- Based True App release PR titles and descriptions on the complete candidate branch against the
   pinned `main` target, including correction successors, and moved Tricia's packaging runs to
   `gpt-5.6-terra`.
 
@@ -1909,7 +1920,7 @@
 
 - Kept an active Git work context alive while its owning dispatch has an unexpired preparation reservation, preventing delayed local-inference prompt delivery from abandoning the context before the agent can submit its work.
 
-## 2026-08-10 - APP Dev Team Discord Routing
+## 2026-08-10 - App Dev Team Discord Routing
 
 - Added a `content_starts_with` filter to provider-neutral communication-message triggers, enabling a shared Discord channel to route only explicit, leading agent-address messages into the durable Team Chat lifecycle.
 - Fixed session-scoped Discord replies so outbound Team Chat delivery checks the replying agent's `write` grant instead of an unrelated inbox-read allowlist.
@@ -3861,7 +3872,7 @@
 - Added structured HTTP target alias and base-URL editors to agent creation, agent policy editing,
   and Sessions policy editing so operators no longer need to modify raw session metadata.
 - Validated and narrowly merged canonical HTTP target updates, preserved workflow-owned target
-  metadata, supported legacy APP target conversion, and made an explicitly empty target set deny
+  metadata, supported legacy App target conversion, and made an explicitly empty target set deny
   the legacy fallback.
 
 ## 2026-07-23 - Team Outcome And Recovery Reliability
@@ -5828,7 +5839,7 @@
   `evander_openai_relay` provider with websocket support disabled, preventing
   startup websocket prewarm failures against the host OpenAI relay.
 - Bumped Team Add-on agent guidance seeding so active agents remove stale
-  `truman-team-addon` managed guidance sections when current
+  `evander-team-addon` managed guidance sections when current
   `evander-team-addon` MCP guidance is reseeded.
 
 ## 2026-06-26 - Team Add-on Debounced Wake Requests
@@ -6726,7 +6737,7 @@ material. Newer entries are added incrementally as changes land.
 - Added optional Team Add-on agent avatars with add-on-private WebP storage,
   upload normalization, generated-preview acceptance, and removal routes.
 - Added OpenAI-backed generated avatar previews for persistent Team agents
-  without exposing avatar metadata to agent runtime prompts or core Truman
+  without exposing avatar metadata to agent runtime prompts or core Evander
   session identity.
 - Rendered avatars with initials fallbacks in Team agent lists, People details,
   org-chart nodes, and agent edit dialogs.
@@ -7765,7 +7776,7 @@ material. Newer entries are added incrementally as changes land.
   update the gateway-owned voice-session store and schedule the originating
   agent's reconciliation wake.
 - Collapsed fixed inbound route configuration to one `session_id` field for the
-  active Truman session that owns projection and reconciliation.
+  active Evander session that owns projection and reconciliation.
 - Extended the bridge store and call record payloads to keep inbound route
   metadata redacted, including DID/caller hashes and route identifiers, while
   preserving outbound call behavior.
@@ -7967,9 +7978,9 @@ material. Newer entries are added incrementally as changes land.
   applying action artifacts, and a packaged runtime workflow definition.
 - Added event-mediated ephemeral worker assignments to the Team Add-on, including
   per-parent concurrency limits, add-on-owned lifecycle state, completion
-  routing, and cleanup through existing Truman agent create/prompt/destroy nodes.
+  routing, and cleanup through existing Evander agent create/prompt/destroy nodes.
 - Kept team runtime state canonical under the add-on while mirroring only a
-  compact `metadata.team_addon` index into Truman session metadata.
+  compact `metadata.team_addon` index into Evander session metadata.
 - Added an optional package-owned Team Add-on Admin Web UI mounted under
   `/addons/team-addon/`, with state overview and setup forms backed by the
   add-on API.
@@ -7987,7 +7998,7 @@ material. Newer entries are added incrementally as changes land.
   deliverables, review requests, and release packages.
 - Exposed initial Team Add-on Admin API routes under `/api/addons/team-addon`
   while keeping canonical state under `runtime/addons/team-addon/state.json`
-  and leaving Truman core session/workflow schemas team-agnostic.
+  and leaving Evander core session/workflow schemas team-agnostic.
 
 ## 2026-06-09 - Optional Add-on Boundary
 
@@ -7995,7 +8006,7 @@ material. Newer entries are added incrementally as changes land.
   runtime storage namespacing, Admin Web API/UI mount hooks, and workflow
   provider bridging for optional opinionated modules.
 - Kept add-ons disabled by default and documented that domain-specific concepts
-  such as hierarchical agent teams belong outside Truman core.
+  such as hierarchical agent teams belong outside Evander core.
 - Required Admin Web authentication for add-on UI routes mounted under
   `/addons/<addon_id>/` when Admin Web auth is enabled.
 - Made workflow validation preserve `effect:agent:create` execution-backend
@@ -8376,10 +8387,10 @@ material. Newer entries are added incrementally as changes land.
 - Fixed the Admin Web model pricing source URL row styling so its grid layout
   is not overridden by shared inline action styles.
 
-## 2026-06-04 - Truman Auto-dev Issue Owner Attribution
+## 2026-06-04 - Evander Auto-dev Issue Owner Attribution
 
 - Added auto-dev workflow owner gating with `gate:filter`, requiring a valid
-  Azure DevOps `System.AssignedTo` identity before Truman claims a work item.
+  Azure DevOps `System.AssignedTo` identity before Evander claims a work item.
 - Frozen the resolved `issue_owner` into created issue-session metadata and
   configured agent repo Git identity from that frozen owner for commit/blame
   attribution.
@@ -9019,7 +9030,7 @@ material. Newer entries are added incrementally as changes land.
   workflows without invoking host-side Bash.
 - Preserved ADO pipeline run outputs such as `run_id` and `run_url` when checked
   failed, canceled, or timed-out runs are recorded as failed effects.
-- Updated checked-in APP demo workflow examples to queue the provisioning
+- Updated checked-in App demo workflow examples to queue the provisioning
   pipeline, derive relay metadata with `gate:map`, and store it through
   `effect:session:update-metadata`.
 - Replaced the checked-in synthetic workflow's host Bash example with a safe
@@ -9072,12 +9083,12 @@ material. Newer entries are added incrementally as changes land.
 ## 2026-05-25 - Admin Sign-In Branding
 
 - Moved sign-in branding into a top bar with the company logo on the left,
-  the theme toggle centered, and a smaller evander logo on the right.
+  the theme toggle centered, and a smaller Evander logo on the right.
 
 ## 2026-05-25 - Hybrid Voice Delegation
 
 - Added durable live voice query records so Realtime phone sessions can delegate
-  file/tool/context questions back to the originating Truman agent without
+  file/tool/context questions back to the originating Evander agent without
   blocking the call.
 - Added the explicit `submit_voice_query_response` tool, voice media controller
   endpoints, Realtime `query_origin_agent` function-call handling, and
@@ -9227,7 +9238,7 @@ material. Newer entries are added incrementally as changes land.
 - Added `trigger:teams:direct-message` for allowlisted one-on-one Microsoft
   Teams direct messages to the delegated Teams identity, backed by host-side
   Teams ingest polling.
-- Documented the Teams direct-message trigger and updated example Truman packs
+- Documented the Teams direct-message trigger and updated example Evander packs
   with a separate direct-message prompt path.
 - Fixed Teams direct-message ingest so enabled triggers poll on cold start
   without active sessions, disabled triggers are ignored, and one-on-one chats

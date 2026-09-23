@@ -940,7 +940,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert all(call[1] == "agent" for call in vm_copy_calls)
     assert all(
         call[2][0]["destination_path"] == "/home/agent/AGENTS.md"
-        and "evander Control Plane" in str(call[2][0]["content"])
+        and "Evander Control Plane" in str(call[2][0]["content"])
         and "search_documentation" in str(call[2][0]["content"])
         for call in vm_copy_calls
     )
@@ -1162,7 +1162,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert all(
         any(
             file.get("destination_path") == "/home/agent/AGENTS.md"
-            and "evander Control Plane" in str(file.get("content") or "")
+            and "Evander Control Plane" in str(file.get("content") or "")
             and "search_documentation" in str(file.get("content") or "")
             for file in files
         )

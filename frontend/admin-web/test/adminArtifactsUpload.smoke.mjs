@@ -252,7 +252,7 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
     }
   });
 
-  const uploadDir = mkdtempSync(path.join(os.tmpdir(), "truman-artifact-upload-"));
+  const uploadDir = mkdtempSync(path.join(os.tmpdir(), "evander-artifact-upload-"));
   const uploadFilePath = path.join(uploadDir, "sample.txt");
   writeFileSync(uploadFilePath, "artifact payload\n");
 

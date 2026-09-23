@@ -258,7 +258,7 @@
         "config": {
           "directories": [
             "root/example-industry/app",
-            "root/example-industry/scanspac"
+            "root/example-industry/secondary-app"
           ]
         },
         "display_name": "Ticket created",
@@ -276,7 +276,7 @@
       {
         "config": {
           "ado_organization": "exampleindustry",
-          "project": "Example Industry APP",
+          "project": "Example Industry App",
           "provider": "ado"
         },
         "display_name": "PR feedback",
@@ -371,7 +371,7 @@
             ]
           }
         },
-        "display_name": "Filter APP ticket directory",
+        "display_name": "Filter App ticket directory",
         "id": "gate-filter-6",
         "outputs": {
           "ticket": {
@@ -447,13 +447,13 @@
           "when": {
             "all": [
               {
-                "equals": "root/example-industry/scanspac",
+                "equals": "root/example-industry/secondary-app",
                 "left": "${{trigger-ticket-created-main.ticket.directory_path}}"
               }
             ]
           }
         },
-        "display_name": "Filter Scanspac ticket directory",
+        "display_name": "Filter SecondaryApp ticket directory",
         "id": "gate-filter-7",
         "outputs": {
           "ticket": {
@@ -527,16 +527,16 @@
       {
         "config": {
           "template": {
-            "ado_project": "Example Industry APP",
-            "agents_template_path": "/home/jonathan/evander/templates/guest-AGENTS-new.md.tmpl",
+            "ado_project": "Example Industry App",
+            "agents_template_path": "/opt/evander/templates/guest-AGENTS-new.md.tmpl",
             "branch": "main",
             "directory_path": "root/example-industry/app",
             "directory_slug": "root-example-industry-app",
-            "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+            "frontend_host_checkout": "/srv/example-repos/SampleApplication",
             "frontend_install_roots": [
-              "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+              "/srv/example-repos/SampleApplication/Src/Clients"
             ],
-            "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
+            "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20App/SampleApplication",
             "ticket": {
               "body": "${{gate-filter-6.ticket.body}}",
               "comments": "${{gate-filter-6.ticket.comments ?? []}}",
@@ -562,7 +562,7 @@
             }
           }
         },
-        "display_name": "Map APP ticket routing",
+        "display_name": "Map App ticket routing",
         "id": "gate-map-1",
         "outputs": {
           "ado_project": {
@@ -598,17 +598,17 @@
       {
         "config": {
           "template": {
-            "ado_project": "Example Industry Scanspac",
-            "agents_template_path": "/home/jonathan/evander/templates/guest-AGENTS-new.md.tmpl",
-            "branch": "Scanspac",
-            "directory_path": "root/example-industry/scanspac",
-            "directory_slug": "root-example-industry-scanspac",
-            "frontend_host_checkout": "/home/jonathan/Documents/Repos/Scanspac",
+            "ado_project": "Example Industry SecondaryApp",
+            "agents_template_path": "/opt/evander/templates/guest-AGENTS-new.md.tmpl",
+            "branch": "SecondaryApp",
+            "directory_path": "root/example-industry/secondary-app",
+            "directory_slug": "root-example-industry-secondary-app",
+            "frontend_host_checkout": "/srv/example-repos/SecondaryApp",
             "frontend_install_roots": [
-              "/home/jonathan/Documents/Repos/Scanspac/Src/MesAdmin",
-              "/home/jonathan/Documents/Repos/Scanspac/Src/StationGUI"
+              "/srv/example-repos/SecondaryApp/Src/AppAdmin",
+              "/srv/example-repos/SecondaryApp/Src/StationGUI"
             ],
-            "repo_source": "/home/jonathan/Documents/Repos/Scanspac",
+            "repo_source": "/srv/example-repos/SecondaryApp",
             "ticket": {
               "body": "${{gate-filter-7.ticket.body}}",
               "comments": "${{gate-filter-7.ticket.comments ?? []}}",
@@ -634,7 +634,7 @@
             }
           }
         },
-        "display_name": "Map Scanspac ticket routing",
+        "display_name": "Map SecondaryApp ticket routing",
         "id": "gate-map-2",
         "outputs": {
           "ado_project": {
@@ -1002,7 +1002,7 @@
           "when": {
             "all": [
               {
-                "equals": "provision_exampleindustry_app_demo_environment.sh",
+                "equals": "provision_demo_environment",
                 "left": "${{trigger-script-run-request-1.script_name}}"
               },
               {
@@ -1016,7 +1016,7 @@
             ]
           }
         },
-        "display_name": "Allow APP demo provision requests",
+        "display_name": "Allow App demo provision requests",
         "id": "gate-filter-5",
         "outputs": {
           "parameters": {
@@ -1128,7 +1128,7 @@
               "destination_path": "/home/agent/PLANS.md",
               "overwrite": true,
               "source_format": "file",
-              "source_path": "/home/jonathan/evander/templates/PLANS.md"
+              "source_path": "/opt/evander/templates/PLANS.md"
             }
           ],
           "target": "${{effect-vm-clone-repo-1.session_id}}",
@@ -1371,7 +1371,7 @@
         "config": {
           "model": "gpt-6-luna",
           "queue_key": "teams:${{trigger-teams-new-message-2.channel_target}}:${{trigger-teams-new-message-2.message_id ?? trigger-teams-new-message-2.cursor}}",
-          "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a Teams message on channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" with target_type=\"${{trigger-teams-new-message-2.target_type}}\", cursor=\"${{trigger-teams-new-message-2.cursor}}\", message_id=\"${{trigger-teams-new-message-2.message_id}}\", and thread_id=\"${{trigger-teams-new-message-2.thread_id}}\". The triggering Teams message content is:\n${{trigger-teams-new-message-2.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. Fetch Teams messages from that target specifically by calling teams_get_messages with channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" and a small limit, then prioritize the message with the triggering message_id above if fetched history includes older thread context. For each Teams message you read and intend to respond to or act upon, first call add_message_reaction with provider=\"teams\", the message_id, the Teams channel_target, and an appropriate emoji so the user can see the message has been acknowledged. Use metadata.target when present; otherwise use the triggering channel_target above. For channel targets, post replies using thread_id=\"${{trigger-teams-new-message-2.thread_id}}\" when it is non-empty; for chat targets, omit thread_id. If the user asks you to notify, loop in, or mention a person in a channel reply, pass that person's exact Graph user ID, UPN, or mail address in teams_post_status mentions; plain @name text in message does not notify users. If a user asks you to do something that takes time, such as analyze the codebase, or start a long-running task, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
+          "prompt": "You are Evander, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a Teams message on channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" with target_type=\"${{trigger-teams-new-message-2.target_type}}\", cursor=\"${{trigger-teams-new-message-2.cursor}}\", message_id=\"${{trigger-teams-new-message-2.message_id}}\", and thread_id=\"${{trigger-teams-new-message-2.thread_id}}\". The triggering Teams message content is:\n${{trigger-teams-new-message-2.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. Fetch Teams messages from that target specifically by calling teams_get_messages with channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" and a small limit, then prioritize the message with the triggering message_id above if fetched history includes older thread context. For each Teams message you read and intend to respond to or act upon, first call add_message_reaction with provider=\"teams\", the message_id, the Teams channel_target, and an appropriate emoji so the user can see the message has been acknowledged. Use metadata.target when present; otherwise use the triggering channel_target above. For channel targets, post replies using thread_id=\"${{trigger-teams-new-message-2.thread_id}}\" when it is non-empty; for chat targets, omit thread_id. If the user asks you to notify, loop in, or mention a person in a channel reply, pass that person's exact Graph user ID, UPN, or mail address in teams_post_status mentions; plain @name text in message does not notify users. If a user asks you to do something that takes time, such as analyze the codebase, or start a long-running task, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
           "resume_thread_metadata_key": "teams:${{trigger-teams-new-message-2.channel_target}}:agent_thread_id",
           "target": "vm-example-receptionist",
           "vm_name": "vm-example-receptionist",
@@ -1385,7 +1385,7 @@
         "config": {
           "model": "gpt-6-luna",
           "queue_key": "teams:${{trigger-teams-direct-message-1.channel_target}}:${{trigger-teams-direct-message-1.message_id ?? trigger-teams-direct-message-1.cursor}}",
-          "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a one-on-one Teams direct message on channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" with cursor=\"${{trigger-teams-direct-message-1.cursor}}\" and message_id=\"${{trigger-teams-direct-message-1.message_id}}\". The triggering Teams direct message content is:\n${{trigger-teams-direct-message-1.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. If Teams tools are available for this direct-message chat, acknowledge the triggering message with add_message_reaction using provider=\"teams\", the triggering message_id, and channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\". Respond to the user in the same Teams chat with teams_post_status using channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" and omit thread_id. If a user asks you to do something that takes time, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
+          "prompt": "You are Evander, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a one-on-one Teams direct message on channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" with cursor=\"${{trigger-teams-direct-message-1.cursor}}\" and message_id=\"${{trigger-teams-direct-message-1.message_id}}\". The triggering Teams direct message content is:\n${{trigger-teams-direct-message-1.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. If Teams tools are available for this direct-message chat, acknowledge the triggering message with add_message_reaction using provider=\"teams\", the triggering message_id, and channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\". Respond to the user in the same Teams chat with teams_post_status using channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" and omit thread_id. If a user asks you to do something that takes time, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
           "resume_thread_metadata_key": "teams:${{trigger-teams-direct-message-1.channel_target}}:agent_thread_id",
           "target": "vm-example-receptionist",
           "vm_name": "vm-example-receptionist",
@@ -1433,7 +1433,7 @@
       {
         "config": {
           "directory_path": "root/example-industry/app",
-          "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP"
+          "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20App/SampleApplication"
         },
         "display_name": "Ensure managed Review repository",
         "id": "effect-git-ensure-managed-repo-2",
@@ -1457,7 +1457,7 @@
               "destination_path": "${{effect-vm-clone-repo-2.target_dir}}/.evander/bin/setup_review_repo.sh",
               "mode": "0755",
               "overwrite": true,
-              "source_path": "/home/jonathan/evander/scripts/guest/setup_review_repo.sh"
+              "source_path": "/opt/evander/scripts/guest/setup_review_repo.sh"
             }
           ],
           "target": "${{effect-vm-clone-repo-2.vm_name}}",
@@ -1481,9 +1481,9 @@
       },
       {
         "config": {
-          "host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients",
+          "host_checkout": "/srv/example-repos/SampleApplication/Src/Clients",
           "install_roots": [
-            "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+            "/srv/example-repos/SampleApplication/Src/Clients"
           ],
           "target": "${{effect-vm-clone-repo-2.session_id}}",
           "vm_user": "agent"
@@ -1499,7 +1499,7 @@
               "destination_path": "/home/agent/AGENTS.md",
               "overwrite": true,
               "source_format": "template",
-              "source_path": "/home/jonathan/evander/templates/guest-AGENTS-review.md.tmpl"
+              "source_path": "/opt/evander/templates/guest-AGENTS-review.md.tmpl"
             },
             {
               "content": "${{trigger-review-new-request-1.review_request}}",
@@ -1529,9 +1529,9 @@
       {
         "config": {
           "check": true,
-          "directory_path": "root/example/truman",
+          "directory_path": "root/example/evander",
           "pipeline_id": 12345,
-          "project": "Example Industry APP",
+          "project": "Example Industry App",
           "variables": {
             "resourceBaseName": "${{gate-filter-5.parameters.0}}",
             "environmentAlias": "${{gate-filter-5.parameters.0}}",
@@ -1540,7 +1540,7 @@
           "timeout_seconds": 3600,
           "poll_interval_seconds": 10
         },
-        "display_name": "Run APP demo provisioning pipeline",
+        "display_name": "Run App demo provisioning pipeline",
         "id": "effect-ado-pipeline-run-1",
         "outputs": {
           "completed": {
@@ -1651,43 +1651,11 @@
                     }
                   }
                 }
-              },
-              "example_app": {
-                "environments": {
-                  "${{gate-filter-5.parameters.0}}": {
-                    "base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
-                    "metadata": {
-                      "api_alias": "${{gate-filter-5.parameters.0}}-api",
-                      "api_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
-                      "public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                      "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                      "resource_base_name": "${{gate-filter-5.parameters.0}}",
-                      "provisioning_status": "succeeded",
-                      "ui_alias": "${{gate-filter-5.parameters.0}}-ui",
-                      "ui_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                      "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
-                      "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}"
-                    }
-                  }
-                }
-              },
-              "example_app_last_provision": {
-                "environment_alias": "${{gate-filter-5.parameters.0}}",
-                "app_api_alias": "${{gate-filter-5.parameters.0}}-api",
-                "app_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
-                "app_public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                "app_ui_alias": "${{gate-filter-5.parameters.0}}-ui",
-                "provisioning_status": "succeeded",
-                "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                "resource_base_name": "${{gate-filter-5.parameters.0}}",
-                "session_id": "${{gate-filter-5.session_id}}",
-                "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
-                "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}"
               }
             }
           }
         },
-        "display_name": "Map APP demo provisioning metadata",
+        "display_name": "Map App demo provisioning metadata",
         "id": "gate-map-app-demo-metadata-1",
         "outputs": {
           "environment_alias": {
@@ -1734,7 +1702,7 @@
           "metadata": "${{gate-map-app-demo-metadata-1.session_metadata_patch}}",
           "target": "${{gate-filter-5.session_id}}"
         },
-        "display_name": "Store APP provisioning metadata",
+        "display_name": "Store App provisioning metadata",
         "id": "effect-session-update-metadata-6",
         "type": "effect:session:update-metadata"
       },
@@ -1743,19 +1711,19 @@
           "enabled": true,
           "target": "${{gate-filter-5.session_id}}"
         },
-        "display_name": "Enable image generation for APP demo",
+        "display_name": "Enable image generation for App demo",
         "id": "effect-session-set-image-generation-1",
         "type": "effect:session:set-image-generation-enabled"
       },
       {
         "config": {
           "model": "gpt-6-sol",
-          "prompt": "The host-side APP demo environment provisioning request '${{gate-filter-5.request_id}}' has completed.\n\nEnvironment alias: ${{gate-map-app-demo-metadata-1.environment_alias}}\nAPP API alias: ${{gate-map-app-demo-metadata-1.app_api_alias}}\nAPP UI alias: ${{gate-map-app-demo-metadata-1.app_ui_alias}}\nAPP API base URL: ${{gate-map-app-demo-metadata-1.app_base_url}}\nPublic UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}}\nPublic domain: ${{gate-map-app-demo-metadata-1.public_domain}}\n\nProvisioning pipeline run: ${{effect-ado-pipeline-run-1.run_url ?? effect-ado-pipeline-run-1.run_id}}\n\nContinue the same user task in this session. Use the provisioned environment alias named above when referring to this environment. For browser work, launch Chromium with the seeded launch helper and navigate to the Public UI URL above; the session browser proxy preserves the application's real origin. For programmatic API access, use $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_api_alias}}/.\n\nWhen generated images are needed for the requested demo, the user explicitly authorizes the imagegen skill's API/CLI fallback through the host OpenAI relay. Do not ask for separate confirmation. Use it only for assets for this named demo environment.\n\nDon't forget to message to the user to let them know that the demo has been successfully provisioned, through whatever channel the user's original request arrived (Teams, Discord, Email, or a plain prompt). When you do, give the user the public URL to the demo instance so they can follow along.",
+          "prompt": "The host-side App demo environment provisioning request '${{gate-filter-5.request_id}}' has completed.\n\nEnvironment alias: ${{gate-map-app-demo-metadata-1.environment_alias}}\nApp API alias: ${{gate-map-app-demo-metadata-1.app_api_alias}}\nApp UI alias: ${{gate-map-app-demo-metadata-1.app_ui_alias}}\nApp API base URL: ${{gate-map-app-demo-metadata-1.app_base_url}}\nPublic UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}}\nPublic domain: ${{gate-map-app-demo-metadata-1.public_domain}}\n\nProvisioning pipeline run: ${{effect-ado-pipeline-run-1.run_url ?? effect-ado-pipeline-run-1.run_id}}\n\nContinue the same user task in this session. Use the provisioned environment alias named above when referring to this environment. For browser work, launch Chromium with the seeded launch helper and navigate to the Public UI URL above; the session browser proxy preserves the application's real origin. For programmatic API access, use $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_api_alias}}/.\n\nWhen generated images are needed for the requested demo, the user explicitly authorizes the imagegen skill's API/CLI fallback through the host OpenAI relay. Do not ask for separate confirmation. Use it only for assets for this named demo environment.\n\nDon't forget to message to the user to let them know that the demo has been successfully provisioned, through whatever channel the user's original request arrived (Teams, Discord, Email, or a plain prompt). When you do, give the user the public URL to the demo instance so they can follow along.",
           "resume_thread_id": "${{query-session-context-4.metadata.agent_thread_id ?? null}}",
           "target": "${{gate-filter-5.session_id}}",
           "vm_user": "agent"
         },
-        "display_name": "Resume after APP provisioning",
+        "display_name": "Resume after App provisioning",
         "id": "effect-agent-prompt-9",
         "type": "effect:agent:prompt"
       },

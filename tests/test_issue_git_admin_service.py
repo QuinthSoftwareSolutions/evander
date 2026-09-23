@@ -421,12 +421,12 @@ def test_issue_git_admin_service_get_issue_passes_remote_reference_project(
         title="Issue",
         body="Body",
         yaml_path=str(tmp_path / "issues" / "15446.yaml"),
-        directory_path="root/example/truman/auto-dev",
+        directory_path="root/example/evander/auto-dev",
         source_type="remote_proxy",
         remote_reference=RemoteIssueReference(
             provider="azure_devops",
             organization="https://dev.azure.com/exampleindustry",
-            project="Example Industry APP",
+            project="Example Industry App",
             work_item_id="15446",
         ),
     )
@@ -438,8 +438,8 @@ def test_issue_git_admin_service_get_issue_passes_remote_reference_project(
         {
             "provider": "azure_devops",
             "remote_issue_id": "15446",
-            "directory_path": "root/example/truman/auto-dev",
-            "project": "Example Industry APP",
+            "directory_path": "root/example/evander/auto-dev",
+            "project": "Example Industry App",
             "include_comments": True,
         }
     ]
@@ -471,12 +471,12 @@ def test_issue_git_admin_service_update_issue_passes_remote_reference_project(
         title="Issue",
         body="Body",
         yaml_path=str(tmp_path / "issues" / "15446.yaml"),
-        directory_path="root/example/truman/auto-dev",
+        directory_path="root/example/evander/auto-dev",
         source_type="remote_proxy",
         remote_reference=RemoteIssueReference(
             provider="azure_devops",
             organization="https://dev.azure.com/exampleindustry",
-            project="Example Industry APP",
+            project="Example Industry App",
             work_item_id="15446",
         ),
     )
@@ -488,8 +488,8 @@ def test_issue_git_admin_service_update_issue_passes_remote_reference_project(
         {
             "provider": "azure_devops",
             "remote_issue_id": "15446",
-            "directory_path": "root/example/truman/auto-dev",
-            "project": "Example Industry APP",
+            "directory_path": "root/example/evander/auto-dev",
+            "project": "Example Industry App",
             "state": "In Progress",
             "fields": None,
         }
@@ -498,8 +498,8 @@ def test_issue_git_admin_service_update_issue_passes_remote_reference_project(
         {
             "provider": "azure_devops",
             "remote_issue_id": "15446",
-            "directory_path": "root/example/truman/auto-dev",
-            "project": "Example Industry APP",
+            "directory_path": "root/example/evander/auto-dev",
+            "project": "Example Industry App",
             "include_comments": True,
         }
     ]

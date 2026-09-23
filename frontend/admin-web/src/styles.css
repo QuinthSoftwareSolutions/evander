@@ -1771,7 +1771,7 @@ body {
 }
 
 .admin-login-company-logo,
-.admin-login-truman-logo {
+.admin-login-evander-logo {
   display: block;
   object-fit: contain;
   filter: var(--admin-login-logo-filter);
@@ -1784,7 +1784,7 @@ body {
   height: clamp(8.5rem, 16vw, 12rem);
 }
 
-.admin-login-truman-logo {
+.admin-login-evander-logo {
   justify-self: end;
   width: clamp(21rem, 36vw, 28rem);
   height: clamp(8rem, 13vw, 11rem);
@@ -13350,7 +13350,7 @@ button.mobile-record-card:focus-visible,
     height: clamp(5rem, 16vw, 7rem);
   }
 
-  .admin-login-truman-logo {
+  .admin-login-evander-logo {
     width: clamp(11rem, 34vw, 18rem);
     height: clamp(4.5rem, 14vw, 7rem);
   }
@@ -13383,7 +13383,7 @@ button.mobile-record-card:focus-visible,
     height: clamp(4.25rem, 20vw, 6rem);
   }
 
-  .admin-login-truman-logo {
+  .admin-login-evander-logo {
     grid-area: product;
     width: clamp(10rem, 52vw, 14rem);
     height: clamp(4.5rem, 20vw, 6rem);

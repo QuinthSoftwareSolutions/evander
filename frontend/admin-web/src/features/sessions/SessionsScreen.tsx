@@ -277,7 +277,6 @@ type SessionPolicyDraft = {
   webSearchEnabled: boolean;
   metadata: Record<string, unknown>;
   httpTargets: HttpTargetDraftEntry[];
-  httpTargetsLegacyFallback: boolean;
   httpTargetsSourceError: string | null;
 };
 
@@ -472,7 +471,6 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     webSearchEnabled: Boolean(session.web_search_enabled),
     metadata: metadataWithoutSessionModelProviderMode(metadataWithoutHttpTargets(session.metadata)),
     httpTargets: httpTargetsDraft.entries,
-    httpTargetsLegacyFallback: httpTargetsDraft.legacyFallback,
     httpTargetsSourceError: httpTargetsDraft.sourceError,
   };
 }
@@ -1265,7 +1263,6 @@ export function SessionsScreen() {
     webSearchEnabled: false,
     metadata: {},
     httpTargets: [],
-    httpTargetsLegacyFallback: false,
     httpTargetsSourceError: null,
   });
   const [policyDirty, setPolicyDirty] = useState(false);
@@ -2895,7 +2892,6 @@ export function SessionsScreen() {
                         setPolicyDraft((current) => ({
                           ...current,
                           httpTargets: nextEntries,
-                          httpTargetsLegacyFallback: false,
                           httpTargetsSourceError: null,
                         }));
                         setHttpTargetsDirty(true);
@@ -2903,7 +2899,6 @@ export function SessionsScreen() {
                         setStatus(null);
                       }}
                       onValidationChange={setHttpTargetsError}
-                      legacyFallback={policyDraft.httpTargetsLegacyFallback}
                       sourceError={policyDraft.httpTargetsSourceError}
                       sessionId={selectedSession.session_id}
                       directoryPath={selectedSession.directory_path}

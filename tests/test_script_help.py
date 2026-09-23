@@ -31,7 +31,6 @@ SCRIPTS = [
     "handle_git_push_trigger.sh",
     "prewarm_container_worker_nuget_cache.sh",
     "prewarm_nuget_cache.sh",
-    "provision_exampleindustry_app_demo_environment.sh",
     "seed_workflow_run_inspector_demo.sh",
     "resume_issue_agent.sh",
     "set_issue_agent_state.sh",

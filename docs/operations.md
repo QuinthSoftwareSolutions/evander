@@ -107,31 +107,6 @@ If ADO continues to report no PR, publication remains pending for operator inves
 do not blindly clear the guard or recreate the PR. Verify the source/target branches
 and provider result before an operator resolves an unconfirmed attempt.
 
-After CI/CD deploys version 0.25.0 or later on the control plane and compatible worker code,
-preview the operator-owned APP workflow migration:
-
-```bash
-./.venv/bin/python scripts/update_app_ado_attribution_workflow.py --runtime-dir runtime
-```
-
-Add `--apply` to save through the Admin workflow service. The script validates current
-documents, honors revisions and locks, preserves deduplication state, and reads back each
-saved revision. It links the ADO directive to a deterministic intake task, preserves the
-planning handoff's origin, and carries publication context through both PR paths.
-Existing validation warnings are retained; new diagnostics and validation errors block a save.
-It does not backfill tasks or change previously created commits and PRs. Check the trigger
-orchestrator's successful configuration reload after saving.
-
-After deploying 0.28.0 or later, preview the required personal creator policy with:
-
-```bash
-./.venv/bin/python scripts/update_app_ado_attribution_workflow.py --runtime-dir runtime --require-personal
-```
-
-Add `--apply` after reviewing the preview. The flag sets `require_personal` on both the normal
-and artifact-repair PR paths. Without the flag, existing creator policies are preserved.
-Use the configured pack references (normally `team-runtime.v1.json` and
-`app-dev-team-lifecycle.v1.json`), and run as the service user to preserve file ownership.
 
 ## Host Packages
 
@@ -681,7 +656,7 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   owner/audit metadata only; workflow graph visibility is controlled by Admin Web group assignments
   and direct workflow grants. Saving from a filtered view keeps unchanged graph metadata entries
   intact, so graphs outside the selected directory are not rewritten by the presentation filter.
-- For the live Weekly APP Audit graph, use Admin Web or the workflow API to edit the audit
+- For the live Weekly App Audit graph, use Admin Web or the workflow API to edit the audit
   `effect:agent:create` node and set `npm_registry_url` to the control-plane facade URL,
   `http://<control-plane-private-ip>:11881/`. Keep the other container-worker agent-create nodes
   on Nexus-backed registry defaults so only audit sessions opt into the facade.
@@ -1128,13 +1103,15 @@ and record the backup SHA-256 in the resulting artifact bundle.
 
   ```bash
   ./scripts/prewarm_container_worker_nuget_cache.sh \
-    --worker truman-worker-1 \
-    --target /srv/source/AcmePlatform/Src/App.slnx
+    --worker worker.example.test \
+    --target /srv/sample/SampleApp.slnx
   ```
 
 - The script restores into a temporary global-packages folder, includes the
   worker restore-support package used by the offline smoke test, and extracts
   the archive additively into each worker cache.
+- For a private feed, repeat `--private-package-pattern` for the package ID patterns
+  configured under `provider_state.nuget.private_package_patterns` in the owning directory.
 - When the `.NET` toolchain and checkout are already on the worker, run the
   same script on that worker with `--local --dotnet /var/lib/agent-worker/toolchain-cache/dotnet/dotnet`
   and set `NUGET_RELAY_BASE_URL` to the control-plane relay URL visible from the
@@ -1225,7 +1202,7 @@ and record the backup SHA-256 in the resulting artifact bundle.
 - OpenAI image generation and editing are denied by default. Set the session
   policy flag `image_generation_enabled: true` only for agents that should be
   allowed to call `POST /v1/images/generations`, `POST /v1/images/edits`, or
-  declare Responses `image_generation` tools. The standard APP demo workflows
+  declare Responses `image_generation` tools. The standard App demo workflows
   opt in after provisioning metadata is stored; ordinary sessions remain
   disabled.
 - Direct image requests use host-injected OpenAI authentication. Generation
@@ -1854,7 +1831,7 @@ For verbal ADO approval flows, have the agent read the call transcript, identify
 approved work item IDs, and call:
 
 ```json
-{"session_id":"session-1","id":15446,"project":"Example Industry APP","add_tags":["auto-dev-approved"]}
+{"session_id":"session-1","id":15446,"project":"Example Industry App","add_tags":["auto-dev-approved"]}
 ```
 
 Audit/result behavior:
@@ -2186,13 +2163,13 @@ Example policy that constrains `create_ado_backlog_item`:
     "create_ado_backlog_item": [
       {
         "id": "app-ado-work-item-constraints",
-        "name": "APP backlog item constraints",
+        "name": "App backlog item constraints",
         "constraints": [
           {
             "id": "project-fixed",
             "path": "project",
             "operator": "fixed",
-            "value": "Example Industry APP"
+            "value": "Example Industry App"
           },
           {
             "id": "type-allowed",
@@ -3083,7 +3060,7 @@ Workflow work-item intake example:
     "provider": "azure_devops",
     "directory_path": "root/team-a",
     "states": ["Committed"],
-    "tags_any": ["truman"],
+    "tags_any": ["evander"],
     "top": 50
   }
 }
@@ -3110,7 +3087,7 @@ GitHub issue intake example:
     "directory_path": "root/team-a",
     "repo": "owner/repo",
     "state": "open",
-    "labels_any": ["truman"],
+    "labels_any": ["evander"],
     "comment_contains": "@WorkflowBot",
     "top": 50
   }
@@ -3202,56 +3179,6 @@ authentication state.
 Renewal runs on the next context request when state is near expiry, including after
 an idle period longer than the site's lifetime. Existing open contexts retain the
 site's expiry. No scheduled job or additional firewall rule is required.
-
-### APP demo provisioning workflow
-
-- `trigger:script-run-request` is wired to accept exactly one host-approved provisioning wrapper:
-  `provision_exampleindustry_app_demo_environment.sh`.
-- The checked-in workflow no longer runs a host-side Bash provisioning script. It queues a typed
-  Azure DevOps pipeline with `effect:ado:pipeline-run`, waits for the terminal result, and then
-  maps the deterministic demo URLs and aliases with `gate:map`.
-- The Azure DevOps pipeline owns Azure resource creation, deployment, and any cloud-side
-  prerequisites. The effect uses the directory-scoped Azure DevOps provider configuration and PAT
-  to queue and poll the pipeline.
-- The first request parameter must be a lowercase alphanumeric resource name. The gate rejects
-  names outside `^[a-z0-9]+$` so `gate:map` can safely derive DNS labels without string
-  normalization helpers.
-- The mapped `session_metadata_patch` object appends two relay targets under
-  `metadata.http_targets.targets`: `<environment-alias>-api` for backend/API traffic and
-  `<environment-alias>-ui` for browser/DOM traffic. It keeps the APP-specific
-  `metadata.example_app.environments.<environment-alias>` record for convenience and refreshes
-  `metadata.example_app_last_provision` with the selected environment alias plus its API alias,
-  UI alias, `app_base_url` (API base URL), and `app_public_url` (public UI URL).
-- The trigger graph writes that metadata patch into the originating session and resumes the same
-  session with the provisioning pipeline run URL in the follow-up prompt.
-- Guests use the API relay alias for programmatic traffic. Seeded browsers navigate to the public
-  UI URL through the session browser proxy, preserving the APP UI origin and its API CORS policy.
-- Container-backed agents receive `HTTP_TARGET_RELAY_BASE_URL` and should treat it as an opaque
-  relay prefix; tokenized sessions may include relay auth in that prefix. Build relay URLs as
-  `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/`. Browser automation uses
-  `EVANDER_PLAYWRIGHT_LAUNCH_HELPER` and the public UI URL.
-
-The older `scripts/provision_exampleindustry_app_demo_environment.sh` wrapper is retained only for
-compatibility with older live workflow packs and should not be used for new provisioning graphs.
-
-For changes after deployment, enable `app-demo-modification.v1-example.json` as an operator-owned
-workflow pack (copy it to the corresponding `.json` name and add that name to the active workflow
-pack list). Its `external.app-demo-change-requested` path is deliberately independent of the
-provisioning graph:
-
-- the authenticated caller supplies a validated resource base name and instructions while the
-  host-facing API derives all target URLs and the deterministic `demo-agent-<resource>` session;
-- `effect:agent:create` with `existing_agent_behavior: upsert` preserves an existing container
-  session and thread metadata, while allowing a minimal demo to gain an agent on its first change;
-- `effect:session:renew-if-expired` uses both `extend_by: 8h` and
-  `renew_if_expires_within: 8h`, so every accepted change gets a fresh eight-hour working window;
-- APP, browser-proxy, and optional Elastic target metadata are refreshed before the session context
-  is read; and
-- `effect:agent:enqueue-prompt` resumes `metadata.agent_thread_id` and serializes overlapping
-  modification requests without queueing an Azure DevOps pipeline.
-
-Treat the workflow event machine token as a host secret. Do not expose it to the DemoPage browser,
-and do not accept caller-selected session IDs or arbitrary URLs in this ingress path.
 
 ### Teams and Discord ingest workers
 
@@ -3367,7 +3294,7 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    Additional directory-specific key env vars should be supplied through `config/admin-web.env`,
    `secrets.env`, or the service manager environment. The HTTP
    target relay is auth-transparent and exists to enforce destination allowlisting for approved external web
-   endpoints. In the APP demo workflow, guests authenticate to APP interactively or with
+   endpoints. In the App demo workflow, guests authenticate to App interactively or with
    guest-managed bearer tokens/cookies through that relay path.
 5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
    and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
@@ -3834,5 +3761,5 @@ to a one-hour minimum interval and one CPU, with one compiler job across the run
 The interval and CPU allowance are configurable; turn off automatic refresh for a
 manually scheduled baseline. Search changed and dirty files in the agent checkout.
 See
-[Repository indexing](repository-indexing.md) for image preparation, APP configuration,
+[Repository indexing](repository-indexing.md) for image preparation, App configuration,
 the reconciliation workflow, CLI commands, recovery, retention and external queries.
