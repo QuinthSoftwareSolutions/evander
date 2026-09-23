@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-23 - Make workflow node types easier to distinguish (0.61.1)
+
+- Give triggers, gates, effects, and queries distinct amber, green, blue, and purple
+  type bands, tinted backgrounds, and clearer labels in both New UI themes.
+- Keep selection, error, disabled, unsaved, and execution indicators visible alongside
+  node type styling.
+
 ## 2026-09-23 - Unify the Admin Web design (0.61.0)
 
 - Offer a temporary Classic / New UI selector, defaulting to a frozen main UI until
