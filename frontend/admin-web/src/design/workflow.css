@@ -1,0 +1,332 @@
+/* Workflow keeps its canvas geometry. Commands occupy one row; the resizable rail
+   is reserved for the selected node and collapsible libraries. */
+[data-admin-design] .workflow-embedded-page {
+  display: flex;
+  flex-direction: column;
+}
+[data-admin-design] .workflow-command-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  flex: none;
+}
+[data-admin-design] .workflow-command-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+[data-admin-design] .workflow-command-title h1 {
+  margin: 0;
+  font-size: 20px;
+}
+[data-admin-design] .workflow-command-title > span {
+  color: var(--ui-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+[data-admin-design] .workflow-command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+[data-admin-design] .workflow-command-bar .save-status {
+  margin: 0 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  gap: 2px;
+}
+[data-admin-design] .save-status {
+  padding: 8px 10px;
+  border-radius: var(--ui-radius);
+  background: var(--ui-navigation);
+  border-color: var(--ui-border);
+  color: var(--ui-muted);
+}
+[data-admin-design] .save-status strong {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 500;
+}
+[data-admin-design] .save-status-dirty {
+  color: var(--ui-warning);
+}
+[data-admin-design] .save-status-saved {
+  color: var(--ui-success);
+}
+[data-admin-design] .workflow-command-error {
+  margin: 0;
+  padding: 8px 16px;
+  flex: none;
+}
+[data-admin-design] .workflow-embedded-page > .app-shell {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+[data-admin-design] .admin-workflow-panel .sidebar {
+  padding: 8px 12px;
+  backdrop-filter: none;
+}
+[data-admin-design] .sidebar p {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+[data-admin-design] .sidebar button {
+  margin-bottom: 6px;
+  padding: 5px 9px;
+}
+[data-admin-design] .sidebar-section > summary {
+  min-height: var(--ui-control-height);
+  font-size: 13px;
+  cursor: pointer;
+}
+[data-admin-design] details.sidebar-section:not([open]) {
+  padding: 4px 0;
+}
+[data-admin-design] .sidebar-section > summary .section-label {
+  margin: 0;
+  text-transform: none;
+  font-size: 13px;
+  letter-spacing: 0;
+  color: var(--ui-text);
+}
+[data-admin-design] .workflow-source-files {
+  color: var(--ui-muted);
+}
+[data-admin-design] :is(.path-note, .inspector-summary, .inspector-label span, .inspector-metadata-field span) {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+[data-admin-design] :is(.inspector-label, .inspector-field, .inspector-metadata-field) {
+  margin-bottom: 12px;
+  gap: 6px;
+}
+[data-admin-design] .inspector-metadata-field code {
+  background: var(--ui-navigation);
+  color: var(--ui-text);
+  border-color: var(--ui-border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+[data-admin-design] :is(.create-group, .create-subgroup) {
+  background: transparent;
+  border-color: var(--ui-border);
+  border-radius: 0;
+  padding: 6px 0;
+}
+[data-admin-design] :is(.create-group-summary, .create-subgroup-summary) {
+  padding: 6px 0;
+  color: var(--ui-text);
+}
+[data-admin-design] :is(.create-group-count, .create-subgroup-count, .current-runs-count, .workflow-graphs-count) {
+  color: var(--ui-muted);
+  background: var(--ui-subtle);
+  border-radius: 4px;
+  font-size: 11px;
+}
+[data-admin-design]
+  :is(.create-group-description, .workflow-graph-meta, .runtime-run-meta, .runtime-summary, .node-id) {
+  color: var(--ui-muted);
+}
+[data-admin-design] .workflow-graph-list {
+  gap: 0;
+}
+[data-admin-design]
+  :is(.runtime-run-card, .workflow-graph-editor, .problems-panel, .problem-item, .node-execution-history) {
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+  box-shadow: none;
+  padding: 10px;
+}
+[data-admin-design] :is(.runtime-run-event, .workflow-graph-name, .problem-message, .node-title) {
+  color: var(--ui-text);
+}
+[data-admin-design] :is(.problem-meta, .runtime-run-node) {
+  color: var(--ui-muted);
+}
+[data-admin-design] :is(.error-box, .runtime-run-error) {
+  background: var(--ui-danger-surface);
+  color: var(--ui-danger);
+  border-color: var(--ui-danger);
+  border-radius: var(--ui-radius);
+}
+[data-admin-design] .canvas-shell {
+  background: var(--ui-canvas);
+}
+[data-admin-design] .react-flow {
+  --xy-background-color-default: var(--ui-canvas);
+  --xy-background-pattern-dots-color-default: var(--ui-border);
+  --xy-edge-stroke-default: var(--ui-muted);
+  --xy-controls-button-background-color-default: var(--ui-surface);
+  --xy-controls-button-color-default: var(--ui-text);
+  --xy-controls-button-border-color-default: var(--ui-border);
+}
+[data-admin-design] .workflow-sidebar-resize-handle {
+  background: var(--ui-canvas);
+}
+[data-admin-design] .workflow-sidebar-resize-handle::before {
+  background: var(--ui-border);
+}
+[data-admin-design] .workflow-sidebar-resize-handle::after {
+  background: var(--ui-muted);
+}
+[data-admin-design] :is(.workflow-pack-canvas-control, .workflow-generator-canvas-control) {
+  gap: 6px;
+}
+[data-admin-design] :is(.workflow-pack-canvas-button, .workflow-generator-canvas-button) {
+  width: var(--ui-control-height);
+  height: var(--ui-control-height);
+  padding: 7px;
+}
+[data-admin-design]
+  :is(
+    .workflow-pack-history-popover,
+    .workflow-generator-canvas-panel,
+    .node-context-menu,
+    .workflow-tutorial-bubble,
+    .compact-workflow-sheet
+  ) {
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  border-radius: var(--ui-dialog-radius);
+  box-shadow: var(--ui-shadow);
+}
+[data-admin-design] :is(.workflow-pack-history-row, .workflow-tutorial-chooser-item) {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 12px;
+  box-shadow: none;
+}
+[data-admin-design] :is(.workflow-pack-history-row.selected, .workflow-pack-history-row:hover) {
+  background: var(--ui-selected);
+}
+[data-admin-design]
+  :is(
+    .workflow-pack-history-detail,
+    .workflow-pack-history-diff,
+    .workflow-pack-history-revisions,
+    .workflow-generator-prompt textarea
+  ) {
+  background: var(--ui-navigation);
+  border-color: var(--ui-border);
+  color: var(--ui-text);
+  border-radius: var(--ui-radius);
+}
+[data-admin-design]
+  :is(
+    .workflow-pack-history-pack-name,
+    .workflow-pack-history-revisions dd,
+    .workflow-tutorial-bubble p,
+    .workflow-tutorial-chooser-item p
+  ) {
+  color: var(--ui-text);
+}
+[data-admin-design]
+  :is(
+    .workflow-pack-history-row small,
+    .workflow-pack-history-row > span:last-child,
+    .workflow-pack-history-revisions dt,
+    .workflow-pack-history-diff small,
+    .workflow-generator-header p
+  ) {
+  color: var(--ui-muted);
+}
+[data-admin-design] .node-card {
+  background: var(--ui-surface);
+  border-radius: 8px;
+  border-color: var(--ui-border);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
+  color: var(--ui-text);
+}
+[data-admin-design] .node-card.selected {
+  border-color: var(--ui-accent);
+  box-shadow: 0 0 0 2px var(--ui-selected);
+}
+[data-admin-design] .node-card.node-trigger {
+  border-top-color: var(--ui-accent);
+}
+[data-admin-design] .node-card.node-gate {
+  border-top-color: var(--ui-warning);
+}
+[data-admin-design] .node-card.node-effect {
+  border-top-color: var(--ui-success);
+}
+[data-admin-design] .node-card.node-query {
+  border-top-color: #9687c9;
+}
+[data-admin-design] .node-card:is(.invalid, .runtime-failed) {
+  border-color: var(--ui-danger);
+}
+[data-admin-design] .node-card.unsaved {
+  outline: 1px dashed var(--ui-warning);
+  outline-offset: 3px;
+}
+[data-admin-design] .node-card.trigger-disabled {
+  background: var(--ui-navigation);
+}
+[data-admin-design] .node-kind {
+  font-size: 10px;
+}
+[data-admin-design]
+  :is(.node-runtime-badge, .node-diagnostic-badge, .node-unsaved-badge, .node-disabled-badge, .runtime-run-state) {
+  border-radius: 4px;
+}
+[data-admin-design] .workflow-graph-canvas-label {
+  color: var(--ui-muted);
+  border-color: var(--ui-border);
+  background: var(--ui-navigation);
+  border-radius: var(--ui-radius);
+}
+[data-admin-design] .workflow-graph-canvas-label.selected {
+  color: var(--ui-accent);
+  background: var(--ui-selected);
+}
+@media (max-width: 980px) {
+  [data-admin-design] .workflow-command-bar {
+    padding: 8px 12px;
+    gap: 6px 12px;
+  }
+  [data-admin-design] .workflow-command-title h1 {
+    font-size: 18px;
+  }
+  [data-admin-design] .workflow-command-actions {
+    display: none;
+  }
+  [data-admin-design] .workflow-command-bar .save-status {
+    font-size: 11px;
+  }
+  [data-admin-design] .admin-workflow-panel .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-admin-design] .compact-workflow-toolbar {
+    padding: 8px;
+    gap: 6px;
+    background: var(--ui-surface);
+    border-color: var(--ui-border);
+  }
+  [data-admin-design] .compact-workflow-toolbar-button.active {
+    background: var(--ui-selected);
+    color: var(--ui-accent);
+    border-color: var(--ui-accent);
+  }
+  [data-admin-design] .compact-workflow-sheet-header {
+    padding: 12px 16px;
+    background: var(--ui-surface);
+    border-color: var(--ui-border);
+  }
+  [data-admin-design] .compact-workflow-sheet-body {
+    padding: 16px;
+  }
+}

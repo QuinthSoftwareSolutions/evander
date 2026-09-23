@@ -393,7 +393,7 @@ test("admin shell sessions page identifies repository grants with repository met
   assert.equal(await repositoryAccess.evaluate((element) => element.open), false);
   await repositoryAccess.locator("summary").click();
 
-  const grant = page.locator(".session-git-grant-table tbody tr");
+  const grant = page.locator(".session-git-grant-table tbody tr").filter({ hasText: "mr_286e7730d5c3c49f5f89" });
   await grant.getByText("exampleindustry/Casat/Casat", { exact: true }).waitFor({ state: "visible" });
   assert.match(await grant.innerText(), /https:\/\/dev\.azure\.com\/exampleindustry\/Casat\/_git\/Casat/);
   assert.match(await grant.innerText(), /mr_286e7730d5c3c49f5f89/);
@@ -519,8 +519,8 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByLabel("Find session").waitFor({ state: "visible" }));
-  assert.equal(await page.getByLabel("Find session").inputValue(), "session-1");
+  await assert.doesNotReject(() => page.getByRole("textbox", { name: "Find session", exact: true }).waitFor({ state: "visible" }));
+  assert.equal(await page.getByRole("textbox", { name: "Find session", exact: true }).inputValue(), "session-1");
   assert.equal(await page.getByRole("combobox", { name: "State" }).inputValue(), "active");
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").getByText("session-1").waitFor({ state: "visible" }));
@@ -1572,7 +1572,7 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
 
-  await page.getByLabel("Find session").fill("");
+  await page.getByRole("textbox", { name: "Find session", exact: true }).fill("");
   await page.locator(".session-list-item").filter({ hasText: "libvirt-legacy" }).click();
   await assert.match(await page.locator(".feature-content").innerText(), /Legacy session: VM template metadata unavailable/);
 
@@ -1586,10 +1586,10 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   assert.ok(cleanupButtonBox, "expected cleanup toolbar button to have a bounding box");
   assert.ok(cleanupButtonBox.width <= 40, `expected cleanup toolbar button to stay icon-sized, got ${cleanupButtonBox.width}`);
 
-  await page.getByPlaceholder("session, VM, issue, model").fill("container");
+  await page.getByRole("textbox", { name: "Find session", exact: true }).fill("container");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 1);
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 0);
-  await page.getByPlaceholder("session, VM, issue, model").fill("libvirt-explicit");
+  await page.getByRole("textbox", { name: "Find session", exact: true }).fill("libvirt-explicit");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 1);
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 0);
 

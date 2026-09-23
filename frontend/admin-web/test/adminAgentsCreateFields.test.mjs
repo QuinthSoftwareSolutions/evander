@@ -135,7 +135,7 @@ test("container Codex usage can switch per agent without transporting credential
   assert.doesNotMatch(editPayloadSource, /allowed_tools|model:|ttl_hours|labels:|web_search_enabled|grants|http_targets/);
   assert.doesNotMatch(subscriptionsPage, /accessToken|refreshToken|OPENAI_API_KEY/);
   assert.match(subscriptionsPage, /\/api\/admin\/codex-subscriptions/);
-  assert.match(subscriptionsPage, /Worker-owned authentication/);
+  assert.match(subscriptionsPage, /workerUrl \?\? "No container worker configured"/);
   assert.match(subscriptionsPage, /Pinned account id/);
   assert.match(subscriptionsPage, /Rate limits/);
   assert.match(subscriptionsPage, /Queued prompts/);

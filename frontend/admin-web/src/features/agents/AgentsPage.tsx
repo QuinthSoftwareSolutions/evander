@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { RecordWorkspace } from "../admin/RecordWorkspace";
 import {
   DisableIcon,
   DestroyIcon,
@@ -2085,38 +2086,50 @@ export function AgentsPage() {
   }
 
   return (
-    <div className="agents-page-shell">
-      <div className="feature-page agents-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Agent sessions</div>
-            <h1>Agents</h1>
-          </div>
-          <div className="inline-actions compact-actions">
-            <button className="admin-action-button compact" type="button" onClick={() => void handleManualRefresh()} disabled={loading}>
-              Refresh
-            </button>
-            <button
-              type="button"
-              className={`admin-action-button compact${showCreateForm ? "" : " primary"}`}
-              onClick={() => {
-                setShowCreateForm(true);
-                setShowEditForm(false);
-                setShowSkillInstallForm(false);
-                setInlineValidation("");
-              }}
-              disabled={busyAction !== null || !privilegedUnlocked}
-            >
-              Create
-            </button>
-          </div>
-        </div>
-        {!privilegedUnlocked ? (
-          <div className="callout warning-callout">Unlock privileged operations to create, edit, stop, destroy, or resume targets.</div>
-        ) : null}
-        <div className="config-field-grid agents-filter-grid">
-          <label className="field-stack">
+    <RecordWorkspace
+      title="Agents"
+      description="Inspect execution state, session context, and recent activity. Open a record for controls and logs."
+      columns={["Agent", "Execution", "Backend", "Updated"]}
+      selectedId={selectedAgentKey}
+      loading={loading}
+      error={error}
+      initialRecordOpen={hashSelectionActive}
+      recordRouteKeys="agent_id,session_id"
+      records={[...filteredItems]
+        .sort((a, b) =>
+          (a.target_name || a.agent_id).localeCompare(b.target_name || b.agent_id, undefined, { numeric: true }),
+        )
+        .map((item) => ({
+          id: agentKey(item),
+          title: item.target_name || item.agent_id,
+          description: item.session_id ?? "No linked session",
+          href: `#agents?${new URLSearchParams({ agent_id: item.agent_id })}`,
+          cells: [
+            <span className={`status-pill state-${agentExecutionDisplay(item).className}`}>
+              {agentExecutionDisplay(item).label}
+            </span>,
+            backendLabel(item.backend),
+            formatTimestamp(item.updated_at),
+          ],
+          facts: [
+            ["Agent", item.agent_id],
+            ["Session", item.session_id ?? "None"],
+            ["Directory", item.directory_path],
+            ["Backend", backendLabel(item.backend)],
+            ["Execution", agentExecutionDisplay(item).label],
+            ["Updated", formatTimestamp(item.updated_at)],
+          ],
+        }))}
+      onSelect={(id) => {
+        setSelectedKey(id);
+        setShowPromptForm(false);
+        setShowEditForm(false);
+        setShowSkillInstallForm(false);
+        setShowOperatorSteeringDialog(false);
+      }}
+      filters={
+        <>
+          <label className="field-stack collection-search">
             <span>Search agents</span>
             <input
               type="search"
@@ -2136,887 +2149,1092 @@ export function AgentsPage() {
           <label className="field-stack">
             <span>Status</span>
             <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
-              <option value="all">All</option>
+              <option value="all">All states</option>
               <option value="active">Active</option>
               <option value="inactive">Inactive</option>
             </select>
           </label>
-        </div>
-        <div className="feature-list vm-list agent-list">
-          {(["libvirt_vm", "container_worker_vm"] as AgentBackend[]).map((backend) => {
-            const group = groupedItems[backend];
-            if (group.length === 0) return null;
-            return (
-              <div className="agent-list-section" key={backend}>
-                <div className="section-label agent-list-heading">{backendLabel(backend)}</div>
-                {group.map((item) => {
-                  const runtimeImageSummary = runtimeImageListSummary(agentRuntimeImage(item));
-                  const queueSummary = promptQueueForAgent(item);
-                  const executionDisplay = agentExecutionDisplay(item);
-                  const codexUsage = codexUsageForAgent(item);
-                  const targetStateText = agentTargetStateText(item);
-                  const identifier = item.target_name || item.agent_id;
-                  const hoverSummary = [
-                    `Agent id: ${item.agent_id}`,
-                    `Session: ${item.session_id ?? "None"}`,
-                    `Directory: ${item.directory_path}`,
-                    targetStateText,
-                    runtimeImageSummary,
-                    codexUsage ? `Codex usage: ${codexUsage.label} (${codexUsage.sourceLabel})` : null,
-                    queueSummary.record_count > 0 || queueSummary.read_error
-                      ? `Prompt queue: ${promptQueueSummaryText(queueSummary)}`
-                      : null,
-                  ].filter((value): value is string => Boolean(value)).join("\n");
-                  return (
+        </>
+      }
+      actions={(openRecord) => (
+        <>
+          <button type="button" disabled={loading} onClick={() => void handleManualRefresh()}>
+            Refresh
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busyAction !== null || !privilegedUnlocked}
+            title={!privilegedUnlocked ? "Unlock privileged operations to create agents" : undefined}
+            onClick={() => {
+              setShowCreateForm(true);
+              setShowEditForm(false);
+              setShowSkillInstallForm(false);
+              setInlineValidation("");
+              openRecord();
+            }}
+          >
+            Create agent
+          </button>
+        </>
+      )}
+      inspectorContent={
+        selectedAgent ? (
+          <p className="muted-text">
+            {agentTargetStateText(selectedAgent)}. Open the full record to prompt, inspect logs, or manage this agent.
+          </p>
+        ) : null
+      }
+    >
+      <div className="agents-page-shell">
+        <div className="feature-page agents-page">
+          <section className="feature-sidebar">
+            <div className="feature-sidebar-header">
+              <div>
+                <div className="eyebrow">Agent sessions</div>
+                <h1>Agents</h1>
+              </div>
+              <div className="inline-actions compact-actions">
+                <button
+                  className="admin-action-button compact"
+                  type="button"
+                  onClick={() => void handleManualRefresh()}
+                  disabled={loading}
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  className={`admin-action-button compact${showCreateForm ? "" : " primary"}`}
+                  onClick={() => {
+                    setShowCreateForm(true);
+                    setShowEditForm(false);
+                    setShowSkillInstallForm(false);
+                    setInlineValidation("");
+                  }}
+                  disabled={busyAction !== null || !privilegedUnlocked}
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+            {!privilegedUnlocked ? (
+              <div className="callout warning-callout">
+                Unlock privileged operations to create, edit, stop, destroy, or resume targets.
+              </div>
+            ) : null}
+            <div className="config-field-grid agents-filter-grid">
+              <label className="field-stack">
+                <span>Search agents</span>
+                <input
+                  type="search"
+                  value={agentSearch}
+                  placeholder="Name, ID, session, or directory"
+                  onChange={(event) => setAgentSearch(event.target.value)}
+                />
+              </label>
+              <label className="field-stack">
+                <span>Backend</span>
+                <select
+                  value={backendFilter}
+                  onChange={(event) => setBackendFilter(event.target.value as BackendFilter)}
+                >
+                  <option value="all">All backends</option>
+                  <option value="libvirt_vm">VM agents</option>
+                  <option value="container_worker_vm">Container agents</option>
+                </select>
+              </label>
+              <label className="field-stack">
+                <span>Status</span>
+                <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
+                  <option value="all">All</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </label>
+            </div>
+            <div className="feature-list vm-list agent-list">
+              {(["libvirt_vm", "container_worker_vm"] as AgentBackend[]).map((backend) => {
+                const group = groupedItems[backend];
+                if (group.length === 0) return null;
+                return (
+                  <div className="agent-list-section" key={backend}>
+                    <div className="section-label agent-list-heading">{backendLabel(backend)}</div>
+                    {group.map((item) => {
+                      const runtimeImageSummary = runtimeImageListSummary(agentRuntimeImage(item));
+                      const queueSummary = promptQueueForAgent(item);
+                      const executionDisplay = agentExecutionDisplay(item);
+                      const codexUsage = codexUsageForAgent(item);
+                      const targetStateText = agentTargetStateText(item);
+                      const identifier = item.target_name || item.agent_id;
+                      const hoverSummary = [
+                        `Agent id: ${item.agent_id}`,
+                        `Session: ${item.session_id ?? "None"}`,
+                        `Directory: ${item.directory_path}`,
+                        targetStateText,
+                        runtimeImageSummary,
+                        codexUsage ? `Codex usage: ${codexUsage.label} (${codexUsage.sourceLabel})` : null,
+                        queueSummary.record_count > 0 || queueSummary.read_error
+                          ? `Prompt queue: ${promptQueueSummaryText(queueSummary)}`
+                          : null,
+                      ]
+                        .filter((value): value is string => Boolean(value))
+                        .join("\n");
+                      return (
+                        <Tooltip
+                          key={agentKey(item)}
+                          content={hoverSummary}
+                          className="agent-list-item-tooltip"
+                          triggerClassName="agent-list-item-tooltip-trigger"
+                          bubbleClassName="agent-list-item-tooltip-bubble"
+                          inline={false}
+                        >
+                          <button
+                            type="button"
+                            className={`feature-list-item vm-list-item agent-list-item${selectedAgentKey === agentKey(item) ? " selected" : ""}`}
+                            aria-label={`${identifier}, ${executionDisplay.label}`}
+                            onClick={() => {
+                              setSelectedKey(agentKey(item));
+                              setShowPromptForm(false);
+                              setShowEditForm(false);
+                              setShowSkillInstallForm(false);
+                              setShowOperatorSteeringDialog(false);
+                            }}
+                          >
+                            <div className="feature-list-title-row vm-list-item-row">
+                              <strong>{identifier}</strong>
+                              <span className={`status-pill vm-status-pill state-${executionDisplay.className}`}>
+                                {executionDisplay.label}
+                              </span>
+                            </div>
+                            {codexUsage ? (
+                              <div className="agent-list-usage-row">
+                                <span className={`agent-codex-usage mode-${codexUsage.mode}`}>{codexUsage.label}</span>
+                                <span>{codexUsage.sourceLabel}</span>
+                              </div>
+                            ) : null}
+                          </button>
+                        </Tooltip>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+              {!loading && filteredItems.length === 0 ? (
+                <div className="empty-state">No agents found for the selected filters.</div>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="feature-content">
+            <div className="feature-toolbar">
+              <div>
+                <h2>{selectedAgent?.target_name ?? "Select an agent"}</h2>
+                <p className="muted-text">
+                  {selectedAgent
+                    ? `${backendLabel(selectedAgent.backend)} / ${selectedAgent.directory_path}`
+                    : "Choose an agent from the left to inspect details and logs."}
+                </p>
+                {selectedAgentCodexUsage ? (
+                  <div className="agent-detail-usage">
+                    <strong>Codex usage: {selectedAgentCodexUsage.label}</strong>
+                    <span>{selectedAgentCodexUsage.sourceLabel}</span>
+                  </div>
+                ) : null}
+              </div>
+              {selectedAgent ? (
+                <div className="feature-toolbar-actions icon-actions">
+                  <Tooltip
+                    content={`Agent execution status: ${selectedExecutionDisplay?.label ?? "Unknown"}. ${selectedTargetStateText ?? ""}`}
+                  >
+                    <span className={`status-pill state-${selectedExecutionDisplay?.className ?? "idle"}`}>
+                      {selectedExecutionDisplay?.label ?? "Unknown"}
+                    </span>
+                  </Tooltip>
+                  {canEditCodexUsage ? (
+                    <Tooltip content="Edit this container agent's Codex usage mode.">
+                      <button
+                        type="button"
+                        className={`admin-icon-button${showEditForm ? " primary" : ""}`}
+                        onClick={openEditForm}
+                        disabled={!canMutate}
+                        aria-label="Edit Codex usage"
+                      >
+                        {busyAction === "edit-agent" ? "..." : <EditIcon />}
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip content="Copy managed Codex skills into the selected session.">
+                    <button
+                      type="button"
+                      className={`admin-icon-button${showSkillInstallForm ? " primary" : ""}`}
+                      onClick={openSkillInstallForm}
+                      disabled={!canMutate || !canInstallSkills}
+                      aria-label="Install skills"
+                    >
+                      {busyAction === "install-skills" ? "..." : <SkillIcon />}
+                    </button>
+                  </Tooltip>
+                  {showStart ? (
+                    <Tooltip content="Start the selected VM.">
+                      <button
+                        className="admin-icon-button"
+                        type="button"
+                        onClick={() => void runAgentAction("start")}
+                        disabled={!canMutate}
+                        aria-label="Start VM"
+                      >
+                        {busyAction === "start" ? "..." : <StartIcon />}
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  {showShutdown ? (
+                    <Tooltip content="Request a graceful shutdown for the selected VM.">
+                      <button
+                        className="admin-icon-button"
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Shut down ${selectedAgent.target_name}?`)) {
+                            void runAgentAction("shutdown");
+                          }
+                        }}
+                        disabled={!canMutate}
+                        aria-label="Shut down VM"
+                      >
+                        {busyAction === "shutdown" ? "..." : <PowerIcon />}
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  {showContainerStop ? (
+                    <Tooltip content="Stop the selected worker job.">
+                      <button
+                        className="admin-icon-button"
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Stop ${selectedAgent.target_name}?`)) {
+                            void runAgentAction("stop");
+                          }
+                        }}
+                        disabled={!canMutate}
+                        aria-label="Stop worker job"
+                      >
+                        {busyAction === "stop" ? "..." : <StopIcon />}
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  {showEnable ? (
+                    <Tooltip content="Enable the guest agent.">
+                      <button
+                        className="admin-icon-button"
+                        type="button"
+                        onClick={() => void runAgentAction("enable-agent")}
+                        disabled={!canMutate}
+                        aria-label="Enable agent"
+                      >
+                        <EnableIcon />
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  {showDisable ? (
+                    <Tooltip content="Disable the guest agent.">
+                      <button
+                        className="admin-icon-button"
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Disable the agent for ${selectedAgent.target_name}?`)) {
+                            void runAgentAction("disable-agent");
+                          }
+                        }}
+                        disabled={!canMutate}
+                        aria-label="Disable agent"
+                      >
+                        <DisableIcon />
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  {showKill ? (
+                    <Tooltip content="Force-kill the currently running guest agent process.">
+                      <button
+                        className="admin-icon-button"
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Kill the running agent on ${selectedAgent.target_name}?`)) {
+                            void runAgentAction("kill-agent", { pid: agentPid });
+                          }
+                        }}
+                        disabled={!canMutate}
+                        aria-label="Kill agent"
+                      >
+                        <KillIcon />
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  {canPromptAgent ? (
+                    <Tooltip content="Prompt agent">
+                      <button
+                        type="button"
+                        className={`admin-icon-button${showPromptForm ? " primary" : ""}`}
+                        onClick={() => {
+                          if (showPromptForm) {
+                            setShowPromptForm(false);
+                            return;
+                          }
+                          openPromptForm();
+                        }}
+                        disabled={!canMutate}
+                        aria-label="Prompt agent"
+                      >
+                        <ResumeIcon />
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip content="Queue or review operator steering notes.">
+                    <button
+                      type="button"
+                      className={`admin-icon-button${showOperatorSteeringDialog ? " primary" : ""}`}
+                      onClick={() => {
+                        setShowOperatorSteeringDialog(true);
+                        void refreshOperatorSteering();
+                      }}
+                      aria-label="Operator steering"
+                    >
+                      <SteeringIcon />
+                    </button>
+                  </Tooltip>
+                  {showDestroy ? (
                     <Tooltip
-                      key={agentKey(item)}
-                      content={hoverSummary}
-                      className="agent-list-item-tooltip"
-                      triggerClassName="agent-list-item-tooltip-trigger"
-                      bubbleClassName="agent-list-item-tooltip-bubble"
-                      inline={false}
+                      content={
+                        selectedAgent.backend === "container_worker_vm"
+                          ? "Delete the worker target and linked session."
+                          : "Destroy the VM and remove the linked session."
+                      }
                     >
                       <button
                         type="button"
-                        className={`feature-list-item vm-list-item agent-list-item${selectedAgentKey === agentKey(item) ? " selected" : ""}`}
-                        aria-label={`${identifier}, ${executionDisplay.label}`}
+                        className="admin-icon-button danger"
                         onClick={() => {
-                          setSelectedKey(agentKey(item));
-                          setShowPromptForm(false);
-                          setShowEditForm(false);
-                          setShowSkillInstallForm(false);
-                          setShowOperatorSteeringDialog(false);
+                          if (window.confirm(`Destroy ${selectedAgent.target_name}?`)) {
+                            void handleDeleteAgent();
+                          }
                         }}
+                        disabled={!canMutate}
+                        aria-label="Destroy target"
                       >
-                        <div className="feature-list-title-row vm-list-item-row">
-                          <strong>{identifier}</strong>
-                          <span className={`status-pill vm-status-pill state-${executionDisplay.className}`}>
-                            {executionDisplay.label}
-                          </span>
-                        </div>
-                        {codexUsage ? (
-                          <div className="agent-list-usage-row">
-                            <span className={`agent-codex-usage mode-${codexUsage.mode}`}>
-                              {codexUsage.label}
-                            </span>
-                            <span>{codexUsage.sourceLabel}</span>
-                          </div>
-                        ) : null}
+                        {busyAction === "delete-agent" ? "..." : <DestroyIcon />}
                       </button>
                     </Tooltip>
-                  );
-                })}
-              </div>
-            );
-          })}
-          {!loading && filteredItems.length === 0 ? <div className="empty-state">No agents found for the selected filters.</div> : null}
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selectedAgent?.target_name ?? "Select an agent"}</h2>
-            <p className="muted-text">
-              {selectedAgent
-                ? `${backendLabel(selectedAgent.backend)} / ${selectedAgent.directory_path}`
-                : "Choose an agent from the left to inspect details and logs."}
-            </p>
-            {selectedAgentCodexUsage ? (
-              <div className="agent-detail-usage">
-                <strong>Codex usage: {selectedAgentCodexUsage.label}</strong>
-                <span>{selectedAgentCodexUsage.sourceLabel}</span>
-              </div>
-            ) : null}
-          </div>
-          {selectedAgent ? (
-            <div className="feature-toolbar-actions icon-actions">
-              <Tooltip content={`Agent execution status: ${selectedExecutionDisplay?.label ?? "Unknown"}. ${selectedTargetStateText ?? ""}`}>
-                <span className={`status-pill state-${selectedExecutionDisplay?.className ?? "idle"}`}>
-                  {selectedExecutionDisplay?.label ?? "Unknown"}
-                </span>
-              </Tooltip>
-              {canEditCodexUsage ? (
-                <Tooltip content="Edit this container agent's Codex usage mode.">
-                  <button
-                    type="button"
-                    className={`admin-icon-button${showEditForm ? " primary" : ""}`}
-                    onClick={openEditForm}
-                    disabled={!canMutate}
-                    aria-label="Edit Codex usage"
-                  >
-                    {busyAction === "edit-agent" ? "..." : <EditIcon />}
-                  </button>
-                </Tooltip>
-              ) : null}
-              <Tooltip content="Copy managed Codex skills into the selected session.">
-                <button
-                  type="button"
-                  className={`admin-icon-button${showSkillInstallForm ? " primary" : ""}`}
-                  onClick={openSkillInstallForm}
-                  disabled={!canMutate || !canInstallSkills}
-                  aria-label="Install skills"
-                >
-                  {busyAction === "install-skills" ? "..." : <SkillIcon />}
-                </button>
-              </Tooltip>
-              {showStart ? (
-                <Tooltip content="Start the selected VM.">
-                  <button className="admin-icon-button" type="button" onClick={() => void runAgentAction("start")} disabled={!canMutate} aria-label="Start VM">
-                    {busyAction === "start" ? "..." : <StartIcon />}
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showShutdown ? (
-                <Tooltip content="Request a graceful shutdown for the selected VM.">
-                  <button
-                    className="admin-icon-button"
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Shut down ${selectedAgent.target_name}?`)) {
-                        void runAgentAction("shutdown");
-                      }
-                    }}
-                    disabled={!canMutate}
-                    aria-label="Shut down VM"
-                  >
-                    {busyAction === "shutdown" ? "..." : <PowerIcon />}
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showContainerStop ? (
-                <Tooltip content="Stop the selected worker job.">
-                  <button
-                    className="admin-icon-button"
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Stop ${selectedAgent.target_name}?`)) {
-                        void runAgentAction("stop");
-                      }
-                    }}
-                    disabled={!canMutate}
-                    aria-label="Stop worker job"
-                  >
-                    {busyAction === "stop" ? "..." : <StopIcon />}
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showEnable ? (
-                <Tooltip content="Enable the guest agent.">
-                  <button className="admin-icon-button" type="button" onClick={() => void runAgentAction("enable-agent")} disabled={!canMutate} aria-label="Enable agent">
-                    <EnableIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showDisable ? (
-                <Tooltip content="Disable the guest agent.">
-                  <button
-                    className="admin-icon-button"
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Disable the agent for ${selectedAgent.target_name}?`)) {
-                        void runAgentAction("disable-agent");
-                      }
-                    }}
-                    disabled={!canMutate}
-                    aria-label="Disable agent"
-                  >
-                    <DisableIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showKill ? (
-                <Tooltip content="Force-kill the currently running guest agent process.">
-                  <button
-                    className="admin-icon-button"
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Kill the running agent on ${selectedAgent.target_name}?`)) {
-                        void runAgentAction("kill-agent", { pid: agentPid });
-                      }
-                    }}
-                    disabled={!canMutate}
-                    aria-label="Kill agent"
-                  >
-                    <KillIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              {canPromptAgent ? (
-                <Tooltip content="Prompt agent">
-                  <button
-                    type="button"
-                    className={`admin-icon-button${showPromptForm ? " primary" : ""}`}
-                    onClick={() => {
-                      if (showPromptForm) {
-                        setShowPromptForm(false);
-                        return;
-                      }
-                      openPromptForm();
-                    }}
-                    disabled={!canMutate}
-                    aria-label="Prompt agent"
-                  >
-                    <ResumeIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              <Tooltip content="Queue or review operator steering notes.">
-                <button
-                  type="button"
-                  className={`admin-icon-button${showOperatorSteeringDialog ? " primary" : ""}`}
-                  onClick={() => {
-                    setShowOperatorSteeringDialog(true);
-                    void refreshOperatorSteering();
-                  }}
-                  aria-label="Operator steering"
-                >
-                  <SteeringIcon />
-                </button>
-              </Tooltip>
-              {showDestroy ? (
-                <Tooltip content={selectedAgent.backend === "container_worker_vm" ? "Delete the worker target and linked session." : "Destroy the VM and remove the linked session."}>
-                  <button
-                    type="button"
-                    className="admin-icon-button danger"
-                    onClick={() => {
-                      if (window.confirm(`Destroy ${selectedAgent.target_name}?`)) {
-                        void handleDeleteAgent();
-                      }
-                    }}
-                    disabled={!canMutate}
-                    aria-label="Destroy target"
-                  >
-                    {busyAction === "delete-agent" ? "..." : <DestroyIcon />}
-                  </button>
-                </Tooltip>
+                  ) : null}
+                </div>
               ) : null}
             </div>
-          ) : null}
-        </div>
 
-        {status ? <div className="callout success-callout">{status}</div> : null}
-        {error ? <div className="callout error-callout">{error}</div> : null}
+            {status ? <div className="callout success-callout">{status}</div> : null}
+            {error ? <div className="callout error-callout">{error}</div> : null}
 
-        {showCreateForm ? (
-          <AgentCreateDialog
-            directoryPath={selectedDirectoryPath}
-            privilegedUnlocked={privilegedUnlocked}
-            onClose={() => setShowCreateForm(false)}
-            onCreate={handleCreateAgentSubmit}
-          />
-        ) : null}
+            {showCreateForm ? (
+              <AgentCreateDialog
+                directoryPath={selectedDirectoryPath}
+                privilegedUnlocked={privilegedUnlocked}
+                onClose={() => setShowCreateForm(false)}
+                onCreate={handleCreateAgentSubmit}
+              />
+            ) : null}
 
-        {showEditForm && selectedAgent && selectedAgentCodexUsage ? (
-          <div className="modal-backdrop" role="presentation">
-            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Edit Codex usage">
-              <div className="modal-header">
-                <div>
-                  <h2>Edit Codex usage</h2>
-                  <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
-                </div>
-                <button className="admin-action-button compact" type="button" onClick={() => setShowEditForm(false)} disabled={busyAction === "edit-agent"}>
-                  Close
-                </button>
-              </div>
-              <div className="modal-body">
-                {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
-                <div className="config-field-grid">
-                  <label className="field-stack">
-                    <span>Codex usage</span>
-                    <select
-                      value={editForm.codexAuthMode}
-                      onChange={(event) =>
-                        setEditForm((current) => ({
-                          ...current,
-                          codexAuthMode: event.target.value,
-                        }))
-                      }
+            {showEditForm && selectedAgent && selectedAgentCodexUsage ? (
+              <div className="modal-backdrop" role="presentation">
+                <section
+                  className="modal-card agent-crud-modal"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Edit Codex usage"
+                >
+                  <div className="modal-header">
+                    <div>
+                      <h2>Edit Codex usage</h2>
+                      <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
+                    </div>
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      onClick={() => setShowEditForm(false)}
+                      disabled={busyAction === "edit-agent"}
                     >
-                      <option value="">Directory default</option>
-                      <option value="metered_api">Metered API</option>
-                      <option value="chatgpt_subscription">ChatGPT subscription</option>
-                    </select>
-                    <span className="field-description">
-                      Applies on the next turn. A running turn keeps the route it started with.
-                    </span>
-                  </label>
-                  {formUsesSubscription(editForm) ? (
-                    <label className="field-stack">
-                      <span>Subscription profile</span>
-                      <select
-                        value={editForm.subscriptionProfileId}
-                        onChange={(event) =>
-                          setEditForm((current) => ({
-                            ...current,
-                            subscriptionProfileId: event.target.value,
-                          }))
+                      Close
+                    </button>
+                  </div>
+                  <div className="modal-body">
+                    {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
+                    <div className="config-field-grid">
+                      <label className="field-stack">
+                        <span>Codex usage</span>
+                        <select
+                          value={editForm.codexAuthMode}
+                          onChange={(event) =>
+                            setEditForm((current) => ({
+                              ...current,
+                              codexAuthMode: event.target.value,
+                            }))
+                          }
+                        >
+                          <option value="">Directory default</option>
+                          <option value="metered_api">Metered API</option>
+                          <option value="chatgpt_subscription">ChatGPT subscription</option>
+                        </select>
+                        <span className="field-description">
+                          Applies on the next turn. A running turn keeps the route it started with.
+                        </span>
+                      </label>
+                      {formUsesSubscription(editForm) ? (
+                        <label className="field-stack">
+                          <span>Subscription profile</span>
+                          <select
+                            value={editForm.subscriptionProfileId}
+                            onChange={(event) =>
+                              setEditForm((current) => ({
+                                ...current,
+                                subscriptionProfileId: event.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">Select a profile</option>
+                            {editSubscriptionProfiles.map((profile) => (
+                              <option key={profile.profile_id} value={profile.profile_id}>
+                                {profile.display_name} ({profile.profile_id})
+                              </option>
+                            ))}
+                          </select>
+                          <span className="field-description">
+                            {editSubscriptionProfilesLoading
+                              ? "Loading profiles..."
+                              : editSubscriptionProfiles.length === 0
+                                ? "No enabled profiles are available on this worker. Create or enable one on Subscriptions."
+                                : "You can change the profile later without replacing the agent session."}
+                          </span>
+                        </label>
+                      ) : null}
+                    </div>
+                    <div className="inline-actions compact-actions">
+                      <button
+                        className="admin-action-button primary compact"
+                        type="button"
+                        disabled={!privilegedUnlocked || busyAction === "edit-agent"}
+                        onClick={() => void handleEditAgent()}
+                      >
+                        {busyAction === "edit-agent" ? "Saving..." : "Save"}
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            ) : null}
+
+            {showSkillInstallForm && selectedAgent ? (
+              <div className="modal-backdrop" role="presentation">
+                <section
+                  className="modal-card agent-crud-modal"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Install skills"
+                >
+                  <div className="modal-header">
+                    <div>
+                      <h2>Install skills</h2>
+                      <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
+                    </div>
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      onClick={() => setShowSkillInstallForm(false)}
+                      disabled={busyAction === "install-skills"}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <div className="modal-body">
+                    {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
+                    <div className="field-stack">
+                      <span>Codex skills</span>
+                      <div className="checkbox-grid skill-checkbox-grid">
+                        {skillOptions.map((skill) => (
+                          <label key={skill.name} className="checkbox-row agent-checkbox-row">
+                            <input
+                              type="checkbox"
+                              checked={skillInstallForm.codexSkills.includes(skill.name)}
+                              onChange={(event) => toggleInstallSkill(skill.name, event.target.checked)}
+                            />
+                            <span>{skill.name}</span>
+                          </label>
+                        ))}
+                        {skillOptions.length === 0 ? <div className="empty-state">No managed skills.</div> : null}
+                      </div>
+                    </div>
+                    <div className="inline-actions compact-actions">
+                      <button
+                        className="admin-action-button primary compact"
+                        type="button"
+                        disabled={
+                          !privilegedUnlocked ||
+                          busyAction === "install-skills" ||
+                          skillInstallForm.codexSkills.length === 0
+                        }
+                        onClick={() => void handleInstallSkills()}
+                      >
+                        {busyAction === "install-skills" ? "Installing..." : "Install"}
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            ) : null}
+
+            {showPromptForm && selectedAgent ? (
+              <div className="modal-backdrop" role="presentation">
+                <section
+                  className="modal-card agent-crud-modal"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Prompt agent"
+                >
+                  <div className="modal-header">
+                    <div>
+                      <h2>Prompt agent</h2>
+                    </div>
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      onClick={() => setShowPromptForm(false)}
+                      disabled={busyAction === "prompt-agent"}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <div className="modal-body">
+                    <div className="config-field-grid">
+                      <label className="field-stack">
+                        <span>Prompt</span>
+                        <textarea
+                          rows={5}
+                          value={agentPrompt}
+                          onChange={(event) => setAgentPrompt(event.target.value)}
+                        />
+                      </label>
+                      <label className="field-stack">
+                        <span>Resume thread ID</span>
+                        <input
+                          value={agentPromptResumeThreadId}
+                          onChange={(event) => setAgentPromptResumeThreadId(event.target.value)}
+                          placeholder="Optional"
+                        />
+                      </label>
+                    </div>
+                    <div className="inline-actions compact-actions">
+                      <button
+                        className="admin-action-button primary compact"
+                        type="button"
+                        disabled={!canMutate || !agentPrompt.trim()}
+                        onClick={() =>
+                          void runAgentAction("prompt-agent", {
+                            prompt: agentPrompt.trim(),
+                            resume_thread_id: agentPromptResumeThreadId.trim() || null,
+                          })
                         }
                       >
-                        <option value="">Select a profile</option>
-                        {editSubscriptionProfiles.map((profile) => (
-                          <option key={profile.profile_id} value={profile.profile_id}>
-                            {profile.display_name} ({profile.profile_id})
-                          </option>
-                        ))}
-                      </select>
-                      <span className="field-description">
-                        {editSubscriptionProfilesLoading
-                          ? "Loading profiles..."
-                          : editSubscriptionProfiles.length === 0
-                            ? "No enabled profiles are available on this worker. Create or enable one on Subscriptions."
-                            : "You can change the profile later without replacing the agent session."}
-                      </span>
-                    </label>
-                  ) : null}
-                </div>
-                <div className="inline-actions compact-actions">
-                  <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>
-                    {busyAction === "edit-agent" ? "Saving..." : "Save"}
-                  </button>
-                </div>
-              </div>
-            </section>
-          </div>
-        ) : null}
-
-        {showSkillInstallForm && selectedAgent ? (
-          <div className="modal-backdrop" role="presentation">
-            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Install skills">
-              <div className="modal-header">
-                <div>
-                  <h2>Install skills</h2>
-                  <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
-                </div>
-                <button className="admin-action-button compact" type="button" onClick={() => setShowSkillInstallForm(false)} disabled={busyAction === "install-skills"}>
-                  Close
-                </button>
-              </div>
-              <div className="modal-body">
-                {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
-                <div className="field-stack">
-                  <span>Codex skills</span>
-                  <div className="checkbox-grid skill-checkbox-grid">
-                    {skillOptions.map((skill) => (
-                      <label key={skill.name} className="checkbox-row agent-checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={skillInstallForm.codexSkills.includes(skill.name)}
-                          onChange={(event) => toggleInstallSkill(skill.name, event.target.checked)}
-                        />
-                        <span>{skill.name}</span>
-                      </label>
-                    ))}
-                    {skillOptions.length === 0 ? <div className="empty-state">No managed skills.</div> : null}
-                  </div>
-                </div>
-                <div className="inline-actions compact-actions">
-                  <button
-                    className="admin-action-button primary compact"
-                    type="button"
-                    disabled={!privilegedUnlocked || busyAction === "install-skills" || skillInstallForm.codexSkills.length === 0}
-                    onClick={() => void handleInstallSkills()}
-                  >
-                    {busyAction === "install-skills" ? "Installing..." : "Install"}
-                  </button>
-                </div>
-              </div>
-            </section>
-          </div>
-        ) : null}
-
-        {showPromptForm && selectedAgent ? (
-          <div className="modal-backdrop" role="presentation">
-            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Prompt agent">
-              <div className="modal-header">
-                <div>
-                  <h2>Prompt agent</h2>
-                </div>
-                <button className="admin-action-button compact" type="button" onClick={() => setShowPromptForm(false)} disabled={busyAction === "prompt-agent"}>
-                  Close
-                </button>
-              </div>
-              <div className="modal-body">
-                <div className="config-field-grid">
-                  <label className="field-stack">
-                    <span>Prompt</span>
-                    <textarea rows={5} value={agentPrompt} onChange={(event) => setAgentPrompt(event.target.value)} />
-                  </label>
-                  <label className="field-stack">
-                    <span>Resume thread ID</span>
-                    <input
-                      value={agentPromptResumeThreadId}
-                      onChange={(event) => setAgentPromptResumeThreadId(event.target.value)}
-                      placeholder="Optional"
-                    />
-                  </label>
-                </div>
-                <div className="inline-actions compact-actions">
-                  <button
-                    className="admin-action-button primary compact"
-                    type="button"
-                    disabled={!canMutate || !agentPrompt.trim()}
-                    onClick={() =>
-                      void runAgentAction("prompt-agent", {
-                        prompt: agentPrompt.trim(),
-                        resume_thread_id: agentPromptResumeThreadId.trim() || null,
-                      })
-                    }
-                  >
-                    {busyAction === "prompt-agent" ? "Prompting..." : "Prompt agent"}
-                  </button>
-                </div>
-              </div>
-            </section>
-          </div>
-        ) : null}
-
-        {showOperatorSteeringDialog && selectedAgent ? (
-          <div className="modal-backdrop" role="presentation">
-            <section
-              className="modal-card agent-crud-modal agent-steering-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="operator-steering-dialog-title"
-            >
-              <div className="modal-header">
-                <div>
-                  <h2 id="operator-steering-dialog-title">Operator steering</h2>
-                  <p>{selectedAgent.session_id ?? selectedAgent.agent_id} / {operatorSteeringMeta}</p>
-                </div>
-                <div className="agent-steering-modal-actions">
-                  <button
-                    className="admin-action-button compact"
-                    type="button"
-                    aria-label="Refresh operator steering"
-                    onClick={() => void refreshOperatorSteering()}
-                    disabled={operatorSteeringLoading || !operatorSteeringSessionId || !canReadWorkflowRuns}
-                  >
-                    Refresh
-                  </button>
-                  <button
-                    className="admin-action-button compact"
-                    type="button"
-                    onClick={() => setShowOperatorSteeringDialog(false)}
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-              <div className="modal-body">
-                {renderOperatorSteeringPanel()}
-              </div>
-            </section>
-          </div>
-        ) : null}
-
-        {selectedAgent ? (
-          <>
-            <div className="feature-grid">
-              <article className="panel">
-                <div className="panel-header">
-                  <h3>Target</h3>
-                  <span className="panel-meta">{selectedAgent.backend}</span>
-                </div>
-                <dl className="property-grid">
-                  <div>
-                    <dt>Agent id</dt>
-                    <dd>{selectedAgent.agent_id}</dd>
-                  </div>
-                  <div>
-                    <dt>Session</dt>
-                    <dd>{selectedAgent.session_id ?? "None"}</dd>
-                  </div>
-                  <div>
-                    <dt>Directory</dt>
-                    <dd>{selectedAgent.directory_path}</dd>
-                  </div>
-                  {selectedAgentCodexUsage ? (
-                    <div>
-                      <dt>Codex usage</dt>
-                      <dd>
-                        {selectedAgentCodexUsage.label} ({selectedAgentCodexUsage.sourceLabel})
-                      </dd>
+                        {busyAction === "prompt-agent" ? "Prompting..." : "Prompt agent"}
+                      </button>
                     </div>
-                  ) : null}
-                  <div>
-                    <dt>Prompt queue</dt>
-                    <dd>{promptQueueSummaryText(selectedPromptQueue)}</dd>
                   </div>
-                  <div>
-                    <dt>Updated</dt>
-                    <dd>{formatTimestamp(selectedAgent.updated_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Started</dt>
-                    <dd>{formatTimestamp(selectedAgent.started_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Finished</dt>
-                    <dd>{formatTimestamp(selectedAgent.finished_at)}</dd>
-                  </div>
-                </dl>
-              </article>
+                </section>
+              </div>
+            ) : null}
 
-              <article className="panel">
-                <div className="panel-header">
-                  <h3>{selectedAgent.backend === "container_worker_vm" ? "Worker session" : "VM host"}</h3>
-                  <span className="panel-meta">{selectedTargetStateText}</span>
-                </div>
-                <dl className="property-grid">
-                  {selectedAgent.backend === "container_worker_vm" ? (
-                    <>
+            {showOperatorSteeringDialog && selectedAgent ? (
+              <div className="modal-backdrop" role="presentation">
+                <section
+                  className="modal-card agent-crud-modal agent-steering-modal"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="operator-steering-dialog-title"
+                >
+                  <div className="modal-header">
+                    <div>
+                      <h2 id="operator-steering-dialog-title">Operator steering</h2>
+                      <p>
+                        {selectedAgent.session_id ?? selectedAgent.agent_id} / {operatorSteeringMeta}
+                      </p>
+                    </div>
+                    <div className="agent-steering-modal-actions">
+                      <button
+                        className="admin-action-button compact"
+                        type="button"
+                        aria-label="Refresh operator steering"
+                        onClick={() => void refreshOperatorSteering()}
+                        disabled={operatorSteeringLoading || !operatorSteeringSessionId || !canReadWorkflowRuns}
+                      >
+                        Refresh
+                      </button>
+                      <button
+                        className="admin-action-button compact"
+                        type="button"
+                        onClick={() => setShowOperatorSteeringDialog(false)}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                  <div className="modal-body">{renderOperatorSteeringPanel()}</div>
+                </section>
+              </div>
+            ) : null}
+
+            {selectedAgent ? (
+              <>
+                <div className="feature-grid">
+                  <article className="panel">
+                    <div className="panel-header">
+                      <h3>Target</h3>
+                      <span className="panel-meta">{selectedAgent.backend}</span>
+                    </div>
+                    <dl className="property-grid">
                       <div>
-                        <dt>Executions</dt>
-                        <dd>{hostNumber(selectedAgent.host, "execution_count") ?? selectedExecutions.length}</dd>
+                        <dt>Agent id</dt>
+                        <dd>{selectedAgent.agent_id}</dd>
                       </div>
                       <div>
-                        <dt>Active runs</dt>
-                        <dd>{hostNumber(selectedAgent.host, "active_execution_count") ?? 0}</dd>
+                        <dt>Session</dt>
+                        <dd>{selectedAgent.session_id ?? "None"}</dd>
                       </div>
                       <div>
-                        <dt>Latest execution</dt>
-                        <dd>{hostString(selectedAgent.host, "latest_execution_id") ?? "None"}</dd>
+                        <dt>Directory</dt>
+                        <dd>{selectedAgent.directory_path}</dd>
                       </div>
-                      <div>
-                        <dt>Worker URL</dt>
-                        <dd>{hostString(selectedAgent.host, "worker_url") ?? "Unknown"}</dd>
-                      </div>
-                      <div>
-                        <dt>Container image</dt>
-                        <dd>
-                          <Tooltip content={runtimeImageTooltip(selectedRuntimeImage)}>
-                            <span>{runtimeImagePrimaryText(selectedRuntimeImage)}</span>
-                          </Tooltip>
-                        </dd>
-                      </div>
-                      {selectedRuntimeImage?.image_alias ? (
+                      {selectedAgentCodexUsage ? (
                         <div>
-                          <dt>Container image alias</dt>
-                          <dd>{selectedRuntimeImage.image_alias}</dd>
+                          <dt>Codex usage</dt>
+                          <dd>
+                            {selectedAgentCodexUsage.label} ({selectedAgentCodexUsage.sourceLabel})
+                          </dd>
                         </div>
                       ) : null}
                       <div>
-                        <dt>Latest status</dt>
-                        <dd>{hostString(selectedAgent.host, "last_status") ?? selectedAgent.status}</dd>
+                        <dt>Prompt queue</dt>
+                        <dd>{promptQueueSummaryText(selectedPromptQueue)}</dd>
                       </div>
                       <div>
-                        <dt>Subscription profile</dt>
-                        <dd>{selectedAgent.subscription_profile_id ?? selectedAgentPolicy?.effective_subscription_profile_id ?? "None"}</dd>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div>
-                        <dt>Power</dt>
-                        <dd>{powerState}</dd>
+                        <dt>Updated</dt>
+                        <dd>{formatTimestamp(selectedAgent.updated_at)}</dd>
                       </div>
                       <div>
-                        <dt>IP address</dt>
-                        <dd>{hostString(selectedAgent.host, "ip_address") ?? "Unknown"}</dd>
+                        <dt>Started</dt>
+                        <dd>{formatTimestamp(selectedAgent.started_at)}</dd>
                       </div>
                       <div>
-                        <dt>Agent state</dt>
-                        <dd>{agentState}</dd>
+                        <dt>Finished</dt>
+                        <dd>{formatTimestamp(selectedAgent.finished_at)}</dd>
                       </div>
-                      <div>
-                        <dt>Agent pid</dt>
-                        <dd>{agentPid ?? "Not running"}</dd>
-                      </div>
-                      <div>
-                        <dt>Repositories</dt>
-                        <dd>{hostStringList(guestAgent, "repo_names").join(", ") || "None"}</dd>
-                      </div>
-                      <div>
-                        <dt>Issue</dt>
-                        <dd>{hostString(selectedAgent.host, "issue_number") ?? "None"}</dd>
-                      </div>
-                      {selectedRuntimeImage ? (
+                    </dl>
+                  </article>
+
+                  <article className="panel">
+                    <div className="panel-header">
+                      <h3>{selectedAgent.backend === "container_worker_vm" ? "Worker session" : "VM host"}</h3>
+                      <span className="panel-meta">{selectedTargetStateText}</span>
+                    </div>
+                    <dl className="property-grid">
+                      {selectedAgent.backend === "container_worker_vm" ? (
                         <>
                           <div>
-                            <dt>VM template</dt>
+                            <dt>Executions</dt>
+                            <dd>{hostNumber(selectedAgent.host, "execution_count") ?? selectedExecutions.length}</dd>
+                          </div>
+                          <div>
+                            <dt>Active runs</dt>
+                            <dd>{hostNumber(selectedAgent.host, "active_execution_count") ?? 0}</dd>
+                          </div>
+                          <div>
+                            <dt>Latest execution</dt>
+                            <dd>{hostString(selectedAgent.host, "latest_execution_id") ?? "None"}</dd>
+                          </div>
+                          <div>
+                            <dt>Worker URL</dt>
+                            <dd>{hostString(selectedAgent.host, "worker_url") ?? "Unknown"}</dd>
+                          </div>
+                          <div>
+                            <dt>Container image</dt>
                             <dd>
                               <Tooltip content={runtimeImageTooltip(selectedRuntimeImage)}>
                                 <span>{runtimeImagePrimaryText(selectedRuntimeImage)}</span>
                               </Tooltip>
                             </dd>
                           </div>
+                          {selectedRuntimeImage?.image_alias ? (
+                            <div>
+                              <dt>Container image alias</dt>
+                              <dd>{selectedRuntimeImage.image_alias}</dd>
+                            </div>
+                          ) : null}
                           <div>
-                            <dt>VM image ref</dt>
+                            <dt>Latest status</dt>
+                            <dd>{hostString(selectedAgent.host, "last_status") ?? selectedAgent.status}</dd>
+                          </div>
+                          <div>
+                            <dt>Subscription profile</dt>
                             <dd>
-                              <Tooltip content={runtimeImageTooltip(selectedRuntimeImage)}>
-                                <span>{selectedRuntimeImage.image_ref ?? "Unavailable"}</span>
-                              </Tooltip>
+                              {selectedAgent.subscription_profile_id ??
+                                selectedAgentPolicy?.effective_subscription_profile_id ??
+                                "None"}
                             </dd>
                           </div>
                         </>
-                      ) : null}
-                    </>
-                  )}
-                  {selectedLabels.length > 0 ? (
-                    <div className="agent-labels-property field-span-2">
-                      <dt>Labels</dt>
-                      <dd className="agent-inline-label-list">
-                        {selectedLabels.map(([key, value]) => (
-                          <span className="agent-inline-label" key={key}>
-                            <strong>{key}</strong>
-                            <span>{value}</span>
-                          </span>
-                        ))}
-                      </dd>
-                    </div>
-                  ) : null}
-                </dl>
-              </article>
-            </div>
-
-            {selectedPromptQueue.record_count > 0 || selectedPromptQueue.read_error ? (
-              <article className="panel agent-prompt-queue-panel">
-                <div className="panel-header">
-                  <h3>Prompt queue</h3>
-                  <span className="panel-meta">{promptQueueSummaryText(selectedPromptQueue)}</span>
-                </div>
-                {selectedPromptQueue.read_error ? (
-                  <div className="callout error-callout">{selectedPromptQueue.read_error}</div>
-                ) : null}
-                {selectedPromptQueue.record_count > 0 ? (
-                  <>
-                    <dl className="property-grid agent-prompt-queue-summary-grid">
-                      <div>
-                        <dt>Oldest queued</dt>
-                        <dd>{formatTimestamp(selectedPromptQueue.oldest_created_at)}</dd>
-                      </div>
-                      <div>
-                        <dt>Newest update</dt>
-                        <dd>{formatTimestamp(selectedPromptQueue.newest_updated_at)}</dd>
-                      </div>
-                    </dl>
-                    <div className="agent-prompt-queue-list">
-                      {selectedPromptQueue.records.map((record) => (
-                        <div className="agent-prompt-queue-row" key={record.queue_key}>
-                          <div className="agent-prompt-queue-row-main">
-                            <strong>{record.queue_key}</strong>
-                            <span>{record.effect_id}</span>
-                          </div>
-                          <div className="agent-prompt-queue-row-meta">
-                            <span>{record.session_id ?? "No session"}</span>
-                            <span>{record.target}</span>
-                            <span>{formatTimestamp(record.updated_at)}</span>
-                            <span>
-                              {record.coalesced_count} prompt{record.coalesced_count === 1 ? "" : "s"}
-                            </span>
-                            {record.subscription_profile_id ? <span>Profile: {record.subscription_profile_id}</span> : null}
-                            {record.queue_reason ? <span>Reason: {record.queue_reason}</span> : null}
-                            {record.retry_not_before ? <span>Retry after: {formatTimestamp(record.retry_not_before)}</span> : null}
-                          </div>
-                          {record.prompt_preview ? (
-                            <p className="agent-prompt-queue-preview">{record.prompt_preview}</p>
-                          ) : null}
-                          {record.subscription_profile_id ? (
-                            <button
-                              className="admin-action-button compact danger"
-                              type="button"
-                              disabled={!privilegedUnlocked || busyAction !== null}
-                              onClick={() => void handleCancelQueuedPrompt(record)}
-                            >
-                              {busyAction === `cancel-queue:${record.queue_key}` ? "Cancelling..." : "Cancel queued prompt"}
-                            </button>
-                          ) : null}
-                        </div>
-                      ))}
-                      {selectedPromptQueue.truncated_count > 0 ? (
-                        <div className="empty-state compact-empty-state">
-                          {selectedPromptQueue.truncated_count} additional queued record{selectedPromptQueue.truncated_count === 1 ? "" : "s"} not shown.
-                        </div>
-                      ) : null}
-                    </div>
-                  </>
-                ) : null}
-              </article>
-            ) : null}
-
-            {selectedMetadata ? (
-              <details className="panel compact-disclosure">
-                <summary className="panel-header compact-disclosure-summary">
-                  <h3>Metadata</h3>
-                  <span className="panel-meta">Worker-supplied context</span>
-                </summary>
-                <pre className="log-view compact-log-view">{JSON.stringify(selectedMetadata, null, 2)}</pre>
-              </details>
-            ) : null}
-
-            {selectedAgent.backend === "container_worker_vm" ? (
-              <details className="panel compact-disclosure">
-                <summary className="panel-header compact-disclosure-summary">
-                  <h3>Executions</h3>
-                  <span className="panel-meta">
-                    {agentExecutionHistory.loading
-                      ? "Loading..."
-                      : `${selectedExecutions.length} loaded${agentExecutionHistory.hasMore ? "+" : ""}`}
-                  </span>
-                </summary>
-                {agentExecutionHistory.error ? (
-                  <div className="callout error-callout">{agentExecutionHistory.error}</div>
-                ) : null}
-                {selectedExecutions.length > 0 ? (
-                  <div className="agent-execution-list">
-                    {selectedExecutions.map((execution) => {
-                      const executionCanStop = isActiveStatus(execution.status);
-                      const activeTool = hostRecord(execution.metadata, "active_tool");
-                      const activeToolSummary = hostString(activeTool, "summary");
-                      const activeToolStartedAt = hostString(activeTool, "started_at");
-                      const activeTestTool = isInterruptibleTestTool(activeToolSummary);
-                      return (
-                        <div className="agent-execution-row" key={execution.execution_id}>
+                      ) : (
+                        <>
                           <div>
-                            <strong>{execution.execution_id}</strong>
-                            <span>{execution.worker_job_id}</span>
+                            <dt>Power</dt>
+                            <dd>{powerState}</dd>
                           </div>
-                          <div className="agent-execution-status-actions">
-                            <span className={`status-pill state-${statusClass(execution.status)}`}>
-                              {execution.status}
-                            </span>
-                            {executionCanStop ? (
-                              activeTestTool ? (
-                                <Tooltip content="Send SIGTERM only to a recognized active test process group; the agent container stays running.">
-                                  <button
-                                    type="button"
-                                    className="admin-icon-button agent-execution-stop-button"
-                                    onClick={() => {
-                                      if (window.confirm(`Interrupt the active test tool in ${execution.execution_id}?`)) {
-                                        void runContainerExecutionAction(execution, "interrupt-active-tool");
-                                      }
-                                    }}
-                                    disabled={!canMutate}
-                                    aria-label={`Interrupt active test tool in ${execution.execution_id}`}
-                                  >
-                                    {busyAction === `interrupt-active-tool:${execution.execution_id}` ? "..." : "Interrupt tool"}
-                                  </button>
-                                </Tooltip>
-                              ) : null
-                            ) : null}
-                            {executionCanStop ? (
-                              <Tooltip content="Stop this running container execution.">
+                          <div>
+                            <dt>IP address</dt>
+                            <dd>{hostString(selectedAgent.host, "ip_address") ?? "Unknown"}</dd>
+                          </div>
+                          <div>
+                            <dt>Agent state</dt>
+                            <dd>{agentState}</dd>
+                          </div>
+                          <div>
+                            <dt>Agent pid</dt>
+                            <dd>{agentPid ?? "Not running"}</dd>
+                          </div>
+                          <div>
+                            <dt>Repositories</dt>
+                            <dd>{hostStringList(guestAgent, "repo_names").join(", ") || "None"}</dd>
+                          </div>
+                          <div>
+                            <dt>Issue</dt>
+                            <dd>{hostString(selectedAgent.host, "issue_number") ?? "None"}</dd>
+                          </div>
+                          {selectedRuntimeImage ? (
+                            <>
+                              <div>
+                                <dt>VM template</dt>
+                                <dd>
+                                  <Tooltip content={runtimeImageTooltip(selectedRuntimeImage)}>
+                                    <span>{runtimeImagePrimaryText(selectedRuntimeImage)}</span>
+                                  </Tooltip>
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>VM image ref</dt>
+                                <dd>
+                                  <Tooltip content={runtimeImageTooltip(selectedRuntimeImage)}>
+                                    <span>{selectedRuntimeImage.image_ref ?? "Unavailable"}</span>
+                                  </Tooltip>
+                                </dd>
+                              </div>
+                            </>
+                          ) : null}
+                        </>
+                      )}
+                      {selectedLabels.length > 0 ? (
+                        <div className="agent-labels-property field-span-2">
+                          <dt>Labels</dt>
+                          <dd className="agent-inline-label-list">
+                            {selectedLabels.map(([key, value]) => (
+                              <span className="agent-inline-label" key={key}>
+                                <strong>{key}</strong>
+                                <span>{value}</span>
+                              </span>
+                            ))}
+                          </dd>
+                        </div>
+                      ) : null}
+                    </dl>
+                  </article>
+                </div>
+
+                {selectedPromptQueue.record_count > 0 || selectedPromptQueue.read_error ? (
+                  <article className="panel agent-prompt-queue-panel">
+                    <div className="panel-header">
+                      <h3>Prompt queue</h3>
+                      <span className="panel-meta">{promptQueueSummaryText(selectedPromptQueue)}</span>
+                    </div>
+                    {selectedPromptQueue.read_error ? (
+                      <div className="callout error-callout">{selectedPromptQueue.read_error}</div>
+                    ) : null}
+                    {selectedPromptQueue.record_count > 0 ? (
+                      <>
+                        <dl className="property-grid agent-prompt-queue-summary-grid">
+                          <div>
+                            <dt>Oldest queued</dt>
+                            <dd>{formatTimestamp(selectedPromptQueue.oldest_created_at)}</dd>
+                          </div>
+                          <div>
+                            <dt>Newest update</dt>
+                            <dd>{formatTimestamp(selectedPromptQueue.newest_updated_at)}</dd>
+                          </div>
+                        </dl>
+                        <div className="agent-prompt-queue-list">
+                          {selectedPromptQueue.records.map((record) => (
+                            <div className="agent-prompt-queue-row" key={record.queue_key}>
+                              <div className="agent-prompt-queue-row-main">
+                                <strong>{record.queue_key}</strong>
+                                <span>{record.effect_id}</span>
+                              </div>
+                              <div className="agent-prompt-queue-row-meta">
+                                <span>{record.session_id ?? "No session"}</span>
+                                <span>{record.target}</span>
+                                <span>{formatTimestamp(record.updated_at)}</span>
+                                <span>
+                                  {record.coalesced_count} prompt{record.coalesced_count === 1 ? "" : "s"}
+                                </span>
+                                {record.subscription_profile_id ? (
+                                  <span>Profile: {record.subscription_profile_id}</span>
+                                ) : null}
+                                {record.queue_reason ? <span>Reason: {record.queue_reason}</span> : null}
+                                {record.retry_not_before ? (
+                                  <span>Retry after: {formatTimestamp(record.retry_not_before)}</span>
+                                ) : null}
+                              </div>
+                              {record.prompt_preview ? (
+                                <p className="agent-prompt-queue-preview">{record.prompt_preview}</p>
+                              ) : null}
+                              {record.subscription_profile_id ? (
                                 <button
+                                  className="admin-action-button compact danger"
                                   type="button"
-                                  className="admin-icon-button danger agent-execution-stop-button"
-                                  onClick={() => {
-                                    if (window.confirm(`Stop container execution ${execution.execution_id}?`)) {
-                                      void runContainerExecutionAction(execution, "stop");
-                                    }
-                                  }}
-                                  disabled={!canMutate}
-                                  aria-label={`Stop container execution ${execution.execution_id}`}
+                                  disabled={!privilegedUnlocked || busyAction !== null}
+                                  onClick={() => void handleCancelQueuedPrompt(record)}
                                 >
-                                  {busyAction === `stop:${execution.execution_id}` ? "..." : <StopIcon />}
+                                  {busyAction === `cancel-queue:${record.queue_key}`
+                                    ? "Cancelling..."
+                                    : "Cancel queued prompt"}
                                 </button>
-                              </Tooltip>
-                            ) : null}
+                              ) : null}
+                            </div>
+                          ))}
+                          {selectedPromptQueue.truncated_count > 0 ? (
+                            <div className="empty-state compact-empty-state">
+                              {selectedPromptQueue.truncated_count} additional queued record
+                              {selectedPromptQueue.truncated_count === 1 ? "" : "s"} not shown.
+                            </div>
+                          ) : null}
+                        </div>
+                      </>
+                    ) : null}
+                  </article>
+                ) : null}
+
+                {selectedMetadata ? (
+                  <details className="panel compact-disclosure">
+                    <summary className="panel-header compact-disclosure-summary">
+                      <h3>Metadata</h3>
+                      <span className="panel-meta">Worker-supplied context</span>
+                    </summary>
+                    <pre className="log-view compact-log-view">{JSON.stringify(selectedMetadata, null, 2)}</pre>
+                  </details>
+                ) : null}
+
+                {selectedAgent.backend === "container_worker_vm" ? (
+                  <details className="panel compact-disclosure">
+                    <summary className="panel-header compact-disclosure-summary">
+                      <h3>Executions</h3>
+                      <span className="panel-meta">
+                        {agentExecutionHistory.loading
+                          ? "Loading..."
+                          : `${selectedExecutions.length} loaded${agentExecutionHistory.hasMore ? "+" : ""}`}
+                      </span>
+                    </summary>
+                    {agentExecutionHistory.error ? (
+                      <div className="callout error-callout">{agentExecutionHistory.error}</div>
+                    ) : null}
+                    {selectedExecutions.length > 0 ? (
+                      <div className="agent-execution-list">
+                        {selectedExecutions.map((execution) => {
+                          const executionCanStop = isActiveStatus(execution.status);
+                          const activeTool = hostRecord(execution.metadata, "active_tool");
+                          const activeToolSummary = hostString(activeTool, "summary");
+                          const activeToolStartedAt = hostString(activeTool, "started_at");
+                          const activeTestTool = isInterruptibleTestTool(activeToolSummary);
+                          return (
+                            <div className="agent-execution-row" key={execution.execution_id}>
+                              <div>
+                                <strong>{execution.execution_id}</strong>
+                                <span>{execution.worker_job_id}</span>
+                              </div>
+                              <div className="agent-execution-status-actions">
+                                <span className={`status-pill state-${statusClass(execution.status)}`}>
+                                  {execution.status}
+                                </span>
+                                {executionCanStop ? (
+                                  activeTestTool ? (
+                                    <Tooltip content="Send SIGTERM only to a recognized active test process group; the agent container stays running.">
+                                      <button
+                                        type="button"
+                                        className="admin-icon-button agent-execution-stop-button"
+                                        onClick={() => {
+                                          if (
+                                            window.confirm(
+                                              `Interrupt the active test tool in ${execution.execution_id}?`,
+                                            )
+                                          ) {
+                                            void runContainerExecutionAction(execution, "interrupt-active-tool");
+                                          }
+                                        }}
+                                        disabled={!canMutate}
+                                        aria-label={`Interrupt active test tool in ${execution.execution_id}`}
+                                      >
+                                        {busyAction === `interrupt-active-tool:${execution.execution_id}`
+                                          ? "..."
+                                          : "Interrupt tool"}
+                                      </button>
+                                    </Tooltip>
+                                  ) : null
+                                ) : null}
+                                {executionCanStop ? (
+                                  <Tooltip content="Stop this running container execution.">
+                                    <button
+                                      type="button"
+                                      className="admin-icon-button danger agent-execution-stop-button"
+                                      onClick={() => {
+                                        if (window.confirm(`Stop container execution ${execution.execution_id}?`)) {
+                                          void runContainerExecutionAction(execution, "stop");
+                                        }
+                                      }}
+                                      disabled={!canMutate}
+                                      aria-label={`Stop container execution ${execution.execution_id}`}
+                                    >
+                                      {busyAction === `stop:${execution.execution_id}` ? "..." : <StopIcon />}
+                                    </button>
+                                  </Tooltip>
+                                ) : null}
+                              </div>
+                              <div className="agent-execution-meta">
+                                <span>{formatTimestamp(execution.started_at ?? execution.created_at)}</span>
+                                <span>{execution.image ?? "Image unknown"}</span>
+                                {activeToolSummary ? (
+                                  <span title={activeToolSummary}>
+                                    Active tool: {activeToolSummary}
+                                    {activeToolStartedAt ? ` since ${formatTimestamp(activeToolStartedAt)}` : ""}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="empty-state compact-empty-state">
+                        {agentExecutionHistory.loading
+                          ? "Loading execution history..."
+                          : "No executions have run for this session."}
+                      </div>
+                    )}
+                    {agentExecutionHistory.hasMore ? (
+                      <div className="inline-actions compact-actions">
+                        <button
+                          type="button"
+                          className="admin-action-button compact"
+                          onClick={() => void loadMoreAgentExecutions()}
+                          disabled={agentExecutionHistory.loadingMore}
+                        >
+                          {agentExecutionHistory.loadingMore ? "Loading..." : "Load more executions"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </details>
+                ) : null}
+
+                {createOperations.length > 0 ? (
+                  <details className="panel compact-disclosure" open={activeCreateOperationCount > 0}>
+                    <summary className="panel-header compact-disclosure-summary">
+                      <h3>Create operations</h3>
+                      <span className="panel-meta">
+                        {activeCreateOperationCount > 0
+                          ? `${activeCreateOperationCount} active`
+                          : `${createOperations.length} recent`}
+                      </span>
+                    </summary>
+                    <div className="agent-execution-list">
+                      {createOperations.map((operation) => (
+                        <div className="agent-execution-row" key={operation.operation_id}>
+                          <div className="agent-execution-title">
+                            <span className={`status-pill ${statusClass(operation.status)}`}>
+                              {statusLabel(operation.status)}
+                            </span>
+                            <span>{operation.target_name}</span>
                           </div>
                           <div className="agent-execution-meta">
-                            <span>{formatTimestamp(execution.started_at ?? execution.created_at)}</span>
-                            <span>{execution.image ?? "Image unknown"}</span>
-                            {activeToolSummary ? (
-                              <span title={activeToolSummary}>
-                                Active tool: {activeToolSummary}
-                                {activeToolStartedAt ? ` since ${formatTimestamp(activeToolStartedAt)}` : ""}
-                              </span>
-                            ) : null}
+                            <span>{operation.backend === "libvirt_vm" ? "VM agent" : "Container worker"}</span>
+                            <span>{formatTimestamp(operation.updated_at)}</span>
+                          </div>
+                          <div className="agent-execution-meta">
+                            <span>{createOperationMessage(operation)}</span>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="empty-state compact-empty-state">
-                    {agentExecutionHistory.loading
-                      ? "Loading execution history..."
-                      : "No executions have run for this session."}
-                  </div>
-                )}
-                {agentExecutionHistory.hasMore ? (
-                  <div className="inline-actions compact-actions">
-                    <button
-                      type="button"
-                      className="admin-action-button compact"
-                      onClick={() => void loadMoreAgentExecutions()}
-                      disabled={agentExecutionHistory.loadingMore}
-                    >
-                      {agentExecutionHistory.loadingMore ? "Loading..." : "Load more executions"}
-                    </button>
-                  </div>
-                ) : null}
-              </details>
-            ) : null}
-
-            {createOperations.length > 0 ? (
-              <details className="panel compact-disclosure" open={activeCreateOperationCount > 0}>
-                <summary className="panel-header compact-disclosure-summary">
-                  <h3>Create operations</h3>
-                  <span className="panel-meta">
-                    {activeCreateOperationCount > 0 ? `${activeCreateOperationCount} active` : `${createOperations.length} recent`}
-                  </span>
-                </summary>
-                <div className="agent-execution-list">
-                  {createOperations.map((operation) => (
-                    <div className="agent-execution-row" key={operation.operation_id}>
-                      <div className="agent-execution-title">
-                        <span className={`status-pill ${statusClass(operation.status)}`}>
-                          {statusLabel(operation.status)}
-                        </span>
-                        <span>{operation.target_name}</span>
-                      </div>
-                      <div className="agent-execution-meta">
-                        <span>{operation.backend === "libvirt_vm" ? "VM agent" : "Container worker"}</span>
-                        <span>{formatTimestamp(operation.updated_at)}</span>
-                      </div>
-                      <div className="agent-execution-meta">
-                        <span>{createOperationMessage(operation)}</span>
-                      </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              </details>
-            ) : null}
+                  </details>
+                ) : null}
 
-            {actionLog.length > 0 ? (
-              <details className="panel compact-disclosure">
-                <summary className="panel-header compact-disclosure-summary">
-                  <h3>Recent actions</h3>
-                  <span className="panel-meta">{actionLog.length} recent</span>
-                </summary>
-                <pre className="log-view compact-log-view">
-                  {actionLog.map((entry) => `[${formatTimestamp(entry.at)}] ${entry.message}`).join("\n")}
-                </pre>
-              </details>
-            ) : null}
+                {actionLog.length > 0 ? (
+                  <details className="panel compact-disclosure">
+                    <summary className="panel-header compact-disclosure-summary">
+                      <h3>Recent actions</h3>
+                      <span className="panel-meta">{actionLog.length} recent</span>
+                    </summary>
+                    <pre className="log-view compact-log-view">
+                      {actionLog.map((entry) => `[${formatTimestamp(entry.at)}] ${entry.message}`).join("\n")}
+                    </pre>
+                  </details>
+                ) : null}
 
-            <article className="panel">
-              <div className="panel-header agent-log-header">
-                <div>
-                  <h3>Logs</h3>
-                  <span className="panel-meta">
-                    {logTitle} / {logRangeLabel}
-                    {agentLog.pendingLiveUpdate ? " / live update waiting" : ""}
-                  </span>
-                </div>
-                <form
-                  className="agent-log-search"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    reloadLog(logSearchInput);
-                  }}
-                >
-                  <input
-                    value={logSearchInput}
-                    onChange={(event) => setLogSearchInput(event.target.value)}
-                    placeholder="Search logs"
-                    aria-label="Search logs"
-                  />
-                  <button className="admin-action-button compact" type="submit" disabled={agentLog.loading}>
-                    Search
-                  </button>
-                  {agentLog.appliedQuery ? (
+                <article className="panel">
+                  <div className="panel-header agent-log-header">
+                    <div>
+                      <h3>Logs</h3>
+                      <span className="panel-meta">
+                        {logTitle} / {logRangeLabel}
+                        {agentLog.pendingLiveUpdate ? " / live update waiting" : ""}
+                      </span>
+                    </div>
+                    <form
+                      className="agent-log-search"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        reloadLog(logSearchInput);
+                      }}
+                    >
+                      <input
+                        value={logSearchInput}
+                        onChange={(event) => setLogSearchInput(event.target.value)}
+                        placeholder="Search logs"
+                        aria-label="Search logs"
+                      />
+                      <button className="admin-action-button compact" type="submit" disabled={agentLog.loading}>
+                        Search
+                      </button>
+                      {agentLog.appliedQuery ? (
+                        <button
+                          className="admin-action-button compact"
+                          type="button"
+                          onClick={() => {
+                            setLogSearchInput("");
+                            reloadLog("");
+                          }}
+                          disabled={agentLog.loading}
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </form>
+                  </div>
+                  <div className="agent-log-controls">
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      onClick={() => void loadOlderLogLines()}
+                      disabled={agentLog.loading || agentLog.loadingOlder || !agentLog.hasMoreBefore}
+                    >
+                      {agentLog.loadingOlder ? "Loading..." : "Load older"}
+                    </button>
                     <button
                       className="admin-action-button compact"
                       type="button"
@@ -3024,81 +3242,59 @@ export function AgentsPage() {
                         setLogSearchInput("");
                         reloadLog("");
                       }}
-                      disabled={agentLog.loading}
+                      disabled={agentLog.loading && !agentLog.text}
                     >
-                      Clear
+                      Latest
                     </button>
+                    {agentLog.loading ? <span className="panel-meta">Loading...</span> : null}
+                    {agentLog.error ? <span className="panel-meta error-text">{agentLog.error}</span> : null}
+                  </div>
+                  {selectedAgent?.backend === "container_worker_vm" ? (
+                    <div className="agent-log-tabs" role="tablist" aria-label="Log view">
+                      <button
+                        type="button"
+                        role="tab"
+                        className={activeLogView === "executions" ? "active" : ""}
+                        aria-selected={activeLogView === "executions"}
+                        onClick={() => changeLogView("executions")}
+                        disabled={agentLog.loading && activeLogView === "executions"}
+                      >
+                        Executions
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        className={activeLogView === "threads" ? "active" : ""}
+                        aria-selected={activeLogView === "threads"}
+                        onClick={() => changeLogView("threads")}
+                        disabled={agentLog.loading && activeLogView === "threads"}
+                      >
+                        Threads
+                      </button>
+                    </div>
                   ) : null}
-                </form>
-              </div>
-              <div className="agent-log-controls">
-                <button
-                  className="admin-action-button compact"
-                  type="button"
-                  onClick={() => void loadOlderLogLines()}
-                  disabled={agentLog.loading || agentLog.loadingOlder || !agentLog.hasMoreBefore}
-                >
-                  {agentLog.loadingOlder ? "Loading..." : "Load older"}
-                </button>
-                <button
-                  className="admin-action-button compact"
-                  type="button"
-                  onClick={() => {
-                    setLogSearchInput("");
-                    reloadLog("");
-                  }}
-                  disabled={agentLog.loading && !agentLog.text}
-                >
-                  Latest
-                </button>
-                {agentLog.loading ? <span className="panel-meta">Loading...</span> : null}
-                {agentLog.error ? <span className="panel-meta error-text">{agentLog.error}</span> : null}
-              </div>
-              {selectedAgent?.backend === "container_worker_vm" ? (
-                <div className="agent-log-tabs" role="tablist" aria-label="Log view">
-                  <button
-                    type="button"
-                    role="tab"
-                    className={activeLogView === "executions" ? "active" : ""}
-                    aria-selected={activeLogView === "executions"}
-                    onClick={() => changeLogView("executions")}
-                    disabled={agentLog.loading && activeLogView === "executions"}
+                  <pre
+                    ref={logViewRef}
+                    className={`log-view vm-agent-log ${selectedAgent?.backend === "container_worker_vm" ? "has-log-tabs" : ""}`}
+                    onScroll={(event) => {
+                      const atBottom = isScrolledToBottom(event.currentTarget);
+                      logSticksToBottomRef.current = atBottom;
+                      if (atBottom && agentLog.pendingLiveUpdate && !agentLog.loading) {
+                        pendingLogScrollRef.current = "bottom";
+                        setAgentLog((current) => ({ ...current, pendingLiveUpdate: false }));
+                      }
+                    }}
                   >
-                    Executions
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    className={activeLogView === "threads" ? "active" : ""}
-                    aria-selected={activeLogView === "threads"}
-                    onClick={() => changeLogView("threads")}
-                    disabled={agentLog.loading && activeLogView === "threads"}
-                  >
-                    Threads
-                  </button>
-                </div>
-              ) : null}
-              <pre
-                ref={logViewRef}
-                className={`log-view vm-agent-log ${selectedAgent?.backend === "container_worker_vm" ? "has-log-tabs" : ""}`}
-                onScroll={(event) => {
-                  const atBottom = isScrolledToBottom(event.currentTarget);
-                  logSticksToBottomRef.current = atBottom;
-                  if (atBottom && agentLog.pendingLiveUpdate && !agentLog.loading) {
-                    pendingLogScrollRef.current = "bottom";
-                    setAgentLog((current) => ({ ...current, pendingLiveUpdate: false }));
-                  }
-                }}
-              >
-                {agentLog.text}
-              </pre>
-            </article>
-          </>
-        ) : (
-          <div className="empty-state">Select an agent to inspect details and logs.</div>
-        )}
-      </section>
+                    {agentLog.text}
+                  </pre>
+                </article>
+              </>
+            ) : (
+              <div className="empty-state">Select an agent to inspect details and logs.</div>
+            )}
+          </section>
+        </div>
       </div>
-    </div>
+    </RecordWorkspace>
   );
 }

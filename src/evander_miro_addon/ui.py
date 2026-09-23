@@ -12,7 +12,7 @@ def admin_ui_routes(_context):
 
     async def asset(request):
         name = request.path_params["name"]
-        if name not in {"miro.js", "miro.css"}:
+        if name not in {"miro.js", "miro.css", "admin-design.css", "admin-design.js"}:
             return Response("Not found", status_code=404)
         return FileResponse(ROOT / name)
 

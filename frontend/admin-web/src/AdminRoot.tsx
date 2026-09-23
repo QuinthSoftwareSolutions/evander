@@ -1,6 +1,7 @@
 import { FormEvent, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { PersonalAdoConnections } from "./features/users/PersonalAdoConnections";
+import { applyAdminDensity, initialAdminDensity, type AdminDensity } from "./design/preferences";
 
 import companyLogoDark from "../branding/qss-dark.png";
 import companyLogoLight from "../branding/qss-light.png";
@@ -789,6 +790,7 @@ function AddonView({
   selectedDirectoryPath,
   privilegedUnlocked,
   theme,
+  density,
   onFrameLoad,
   onNavigateToSession,
 }: {
@@ -796,6 +798,7 @@ function AddonView({
   selectedDirectoryPath: string;
   privilegedUnlocked: boolean;
   theme: AdminTheme;
+  density: AdminDensity;
   onFrameLoad?: () => void;
   onNavigateToSession?: (sessionId: string) => void;
 }) {
@@ -833,6 +836,7 @@ function AddonView({
       {
         type: "admin-addon-context",
         theme,
+        density,
         privileged_operations: { unlocked: privilegedUnlocked },
       },
       window.location.origin,
@@ -848,7 +852,7 @@ function AddonView({
 
   useEffect(() => {
     postAddonContext();
-  }, [privilegedUnlocked, theme, iframeSrc]);
+  }, [privilegedUnlocked, theme, density, iframeSrc]);
 
   useEffect(() => {
     function handleAddonNavigation(event: MessageEvent<unknown>) {
@@ -875,7 +879,7 @@ function AddonView({
 
     window.addEventListener("message", handleAddonNavigation);
     return () => window.removeEventListener("message", handleAddonNavigation);
-  }, [onNavigateToSession, privilegedUnlocked, theme]);
+  }, [onNavigateToSession, privilegedUnlocked, theme, density]);
 
   function handleFrameLoad() {
     postAddonContext();
@@ -1499,6 +1503,7 @@ function LoginScreen({
 
 export default function AdminRoot() {
   const [theme, setTheme] = useState<AdminTheme>(() => getInitialTheme());
+  const [density, setDensity] = useState<AdminDensity>(initialAdminDensity);
   const [branding, setBranding] = useState<AdminBrandingConfig>(
     () => BOOTSTRAPPED_ADMIN_BRANDING ?? EMPTY_ADMIN_BRANDING,
   );
@@ -1580,6 +1585,10 @@ export default function AdminRoot() {
     document.documentElement.style.colorScheme = theme;
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    applyAdminDensity(density);
+  }, [density]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2170,6 +2179,13 @@ export default function AdminRoot() {
           <div className="admin-shell-actions">
             <div className="admin-shell-action-group">
               {session.auth_mode !== "none" ? <PersonalAdoConnections directoryPath={selectedDirectoryPath} /> : null}
+              <label className="admin-density-control">
+                <span>Density</span>
+                <select aria-label="Display density" value={density} onChange={event => setDensity(event.target.value as AdminDensity)}>
+                  <option value="compact">Compact</option>
+                  <option value="comfortable">Comfortable</option>
+                </select>
+              </label>
               <button
                 type="button"
                 className="admin-shell-button admin-shell-button-muted admin-theme-toggle-button"
@@ -2316,6 +2332,7 @@ export default function AdminRoot() {
                   selectedDirectoryPath={selectedDirectoryPath}
                   privilegedUnlocked={privilegeUnlocked}
                   theme={theme}
+                  density={density}
                   onFrameLoad={() => {
                     void refreshAuthSession();
                   }}

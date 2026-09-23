@@ -3100,8 +3100,8 @@ export default function App() {
     return documentPanelRenderers.renderDesktopCreatePanel();
   }
 
-  function renderDesktopSavePanel(): ReactNode {
-    return documentPanelRenderers.renderDesktopSavePanel();
+  function renderDesktopSourceFilesPanel(): ReactNode {
+    return documentPanelRenderers.renderDesktopSourceFilesPanel();
   }
 
   function renderDesktopSelectionInspectorPanel(): ReactNode {
@@ -3117,13 +3117,41 @@ export default function App() {
   }
 
   return (
-    <div className="admin-page workflow-embedded-page">
+    <div className="admin-page workflow-embedded-page" onKeyDown={handleAppShellKeyDown}>
+      <header className="workflow-command-bar">
+        <div className="workflow-command-title">
+          <h1>{isInspectMode ? "Run inspection" : "Workflow"}</h1>
+          <span>{selectedWorkflowPack?.display_name || selectedWorkflowPack?.reference || "Workflow editor"}</span>
+        </div>
+        {!isInspectMode ? (
+          <>
+            <div className={`save-status save-status-${savePanelStatusTone}`} role="status" aria-live="polite">
+              <strong>
+                {hasUnsavedWorkflowChanges
+                  ? "Unsaved workflow changes"
+                  : saveState === "saved"
+                    ? "Workflow saved"
+                    : "No unsaved workflow changes"}
+              </strong>
+              {hasUnsavedWorkflowChanges && dirtyNodeSummary ? <span>{dirtyNodeSummary}</span> : null}
+            </div>
+            <div className="workflow-command-actions">
+              <button type="button" onClick={fitWorkflowCanvas} disabled={!flowInstance}>Fit</button>
+              <button type="button" onClick={() => void validateDocument()} disabled={workflowReadLocked}>Validate</button>
+              <button type="button" onClick={undoWorkflowChange} disabled={!canUndoWorkflowChanges}>Undo</button>
+              <button type="button" className="primary" onClick={() => void saveDocument()} disabled={workflowMutationLocked}>
+                {saveState === "saving" ? "Saving..." : "Save workflow"}
+              </button>
+            </div>
+          </>
+        ) : null}
+      </header>
+      {!isInspectMode && error ? <div className="error-box save-error-box workflow-command-error">{error}</div> : null}
       <div
         className={`app-shell workflow-editor-shell${isResizingSidebar ? " is-resizing-sidebar" : ""}${isInspectMode ? " is-inspect-mode" : ""}${isCompactCanvasTouchMode ? ` compact-mode-${compactCanvasMode}` : ""}`}
         ref={appShellRef}
         style={appShellStyle}
         tabIndex={-1}
-        onKeyDown={handleAppShellKeyDown}
       >
         <aside className="sidebar">
           {isInspectMode ? (
@@ -3145,7 +3173,7 @@ export default function App() {
 
             {renderDesktopCreatePanel()}
 
-            {renderDesktopSavePanel()}
+            {renderDesktopSourceFilesPanel()}
 
             {renderDesktopSelectionInspectorPanel()}
 

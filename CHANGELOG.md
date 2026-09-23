@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-23 - Unify the Admin Web design (0.61.0)
+
+- Introduce shared light/dark colors, typography, spacing, controls, and a remembered
+  Compact/Comfortable density preference across Admin Web and all six standalone add-ons.
+- Replace repeated record cards with comparable inventories and closable inspectors,
+  retaining full forms, deep links, filtering context, and narrow-screen dialogs.
+- Refine workflow commands, configuration, reports, Team workspaces and boards,
+  integration settings, login, notifications, and the assistant with the same visual system.
+- Keep release news prominent, with readable articles, images, archive navigation,
+  and build/changelog details. Preserve configuration fields and revision-gated saves.
+- Apply the existing privilege-lock state consistently to skill, add-on, and integration
+  mutation controls, while preserving drafts and read access.
+
 ## 2026-09-23 - Make private package routing directory scoped (0.60.0)
 
 - Read optional private NuGet package patterns from directory provider state when preparing

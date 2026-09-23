@@ -2748,7 +2748,6 @@ export function ConfigurationScreen() {
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
-            <div className="eyebrow">Directory-scoped configuration</div>
             <h1>Configuration</h1>
           </div>
         </div>

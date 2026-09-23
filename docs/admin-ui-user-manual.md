@@ -68,6 +68,25 @@ When no asset directory is configured, Admin Web serves the bundled defaults fro
 
 ## Shared Shell
 
+### Appearance and record navigation
+
+The header's **Density** selector switches between **Compact** and **Comfortable**.
+The browser remembers the setting, alongside the light/dark theme. Embedded add-ons
+receive the same appearance settings. Touch devices retain larger control targets.
+
+Most record pages start with a searchable inventory. Select a record name to open its
+inspector, then choose **Open full record** for forms, actions, logs, and history.
+Close the inspector or press Escape to return focus to the selected record. On narrow
+screens the inspector opens as a dialog. The inventory and full record retain their
+filters and local editing state while switching between them.
+
+Release news remains visible on the Dashboard. **Read article** opens a larger reader;
+**Older** and **Newer** browse the archive. Version, build, and changelog details are
+available below the story. Team views keep their existing destinations; narrow screens
+use a view selector, and task-board filters can be expanded when needed.
+
+### Navigation and context
+
 ![Admin dashboard and navigation](assets/admin-ui/manual-dashboard.png)
 
 Every Admin UI section uses the same shell:

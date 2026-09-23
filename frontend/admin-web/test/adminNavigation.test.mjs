@@ -656,7 +656,7 @@ test("subscriptions page shows worker profile identity and capacity", async (t) 
   });
 
   await page.getByRole("heading", { name: "Subscriptions" }).waitFor({ state: "visible" });
-  await page.getByRole("heading", { name: "Team A" }).waitFor({ state: "visible" });
+  await page.locator(".subscription-profile-summary").filter({ hasText: "Team A" }).click();
   const pageText = await page.locator(".feature-page").innerText();
   assert.match(pageText, /http:\/\/worker\.test:11888/);
   assert.match(pageText, /team-a@example\.test/);
@@ -717,7 +717,8 @@ test("managed Git page registers and maintains repositories through the Admin AP
   await page.goto(`http://127.0.0.1:${address.port}/#git-repositories`, {
     waitUntil: "domcontentloaded",
   });
-  await page.getByRole("heading", { level: 1, name: "Managed Git", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("heading", { level: 1, name: "Git repositories", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Register repository", exact: true }).click();
   assert.deepEqual(gitRepositoryRequests[0], {
     directoryPath: "root",
     includeDescendants: "true",
@@ -814,6 +815,8 @@ test("repository index history defaults to newest ready snapshots and pages thro
     waitUntil: "domcontentloaded",
   });
   const panel = page.locator(".managed-git-index-panel");
+  await page.locator(".collection-table tbody button").first().click();
+  await page.getByRole("button", { name: "Open full record" }).click();
   await panel.getByText("1–20 of 25", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await panel.locator(".managed-git-index-build").count(), 20);
   const newestReady = panel.locator(".managed-git-index-build").first();
@@ -855,7 +858,7 @@ test("quick navigator filters destinations and supports keyboard navigation", as
   await search.press("ArrowDown");
   assert.equal(await page.getByRole("option", { name: /Dashboard/ }).getAttribute("aria-selected"), "true");
   await search.fill("managed codex");
-  assert.equal(await page.getByRole("option").count(), 1);
+  assert.equal(await page.getByRole("dialog", { name: "Find a page" }).getByRole("option").count(), 1);
   await assert.doesNotReject(() => page.getByRole("option", { name: /Skills/ }).getByText("Automation").waitFor({ state: "visible" }));
   await search.press("Enter");
   await page.waitForFunction(() => window.location.hash === "#skills");
