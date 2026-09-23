@@ -2,8 +2,13 @@
 
 ## 2026-09-23 - Unify the Admin Web design (0.61.0)
 
-- Introduce shared light/dark colors, typography, spacing, controls, and a remembered
-  Compact/Comfortable density preference across Admin Web and all six standalone add-ons.
+- Offer a temporary Classic / New UI selector, defaulting to a frozen main UI until
+  testing is complete. Load only the chosen host and add-on assets, remember the
+  browser preference, and confirm before leaving unsaved work.
+- Use page-specific actions such as View agent, View session, and View repository,
+  with simpler list navigation and add-on labels.
+- Introduce shared light/dark colors, typography, controls, and consistent compact spacing
+  across Admin Web and all six standalone add-ons, with larger touch targets where needed.
 - Replace repeated record cards with comparable inventories and closable inspectors,
   retaining full forms, deep links, filtering context, and narrow-screen dialogs.
 - Add sortable inventory headers with text, numeric, and chronological ordering;
@@ -17,6 +22,8 @@
   mutation controls, while preserving drafts and read access.
 - Keep record selection and deep links synchronized during hash navigation and sidebar changes;
   preserve inherited Miro operation recovery and the requested row counts of select listboxes.
+- Preserve fractional Team cost totals, refresh the Chat revision indicator, and disable
+  transitions under reduced motion so Org chart nodes remain visible.
 
 ## 2026-09-23 - Make private package routing directory scoped (0.60.0)
 

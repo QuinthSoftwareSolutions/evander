@@ -1195,7 +1195,7 @@ function DashboardPanel({
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
-  if (eyebrow === "Agent inventory") {
+  if (eyebrow === "Agents") {
     return null;
   }
 
@@ -1398,7 +1398,7 @@ function DashboardAgentInventory({
   const inactiveCount = agents.length - activeCount;
   return (
     <div className="dashboard-agent-inventory">
-      <div className="dashboard-agent-icon-grid" aria-label="Agent inventory">
+      <div className="dashboard-agent-icon-grid" aria-label="Agents">
         {sortedAgents.map((agent) => {
           const tone = agentInventoryTone(agent);
           return (
@@ -2513,7 +2513,7 @@ export function OperationsDashboard() {
             </DashboardBlock>
 
             <DashboardBlock
-              title="Agent inventory"
+              title="Agents"
               state={state.agents}
               missingFallback="No agents are available for the selected directory and its descendants."
               summary={agentSummary(agents)}
@@ -2573,7 +2573,7 @@ export function OperationsDashboard() {
           </DashboardPanel>
 
           <DashboardPanel
-            eyebrow="Agent inventory"
+            eyebrow="Agents"
             title="Live execution targets"
             statusClassName={stateClassName(statusTone(state.agents))}
             statusLabel={statusLabel(state.agents)}

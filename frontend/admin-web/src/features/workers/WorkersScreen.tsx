@@ -502,6 +502,7 @@ export function WorkersScreen() {
 
   return (
     <RecordWorkspace
+      recordLabel="worker"
       title="Workers"
       description="Compare host service health. Open a worker record for logs and global settings."
       columns={["Worker", "State", "Unit", "Result"]}
@@ -569,7 +570,7 @@ export function WorkersScreen() {
       inspectorContent={
         isDirty ? (
           <p className="callout warning-callout">
-            Unsaved worker settings are preserved. Open the full record to continue editing.
+            Unsaved worker settings are preserved. View the worker to continue editing.
           </p>
         ) : null
       }

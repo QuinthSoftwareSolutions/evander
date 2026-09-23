@@ -660,8 +660,8 @@ test("admin shell agents page supports deep links, inventory sorting, and compac
 
   await reopenedSteeringDialog.getByRole("button", { name: "Close" }).click();
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.getByRole("button", { name: "← Agents inventory", exact: true }).click();
-  const inventory = page.getByRole("region", { name: "Agents inventory", exact: true });
+  await page.getByRole("button", { name: "← Agents", exact: true }).click();
+  const inventory = page.getByRole("region", { name: "Agents list", exact: true });
   const rowNames = inventory.locator("tbody .record-name");
   await inventory.getByRole("button", { name: "Sort by Agent, ascending", exact: true }).click();
   assert.deepEqual(await rowNames.allTextContents(), ["Container worker", "Dispatch agent"]);
@@ -683,7 +683,7 @@ test("admin shell agents page supports deep links, inventory sorting, and compac
   assert.deepEqual(await rowNames.allTextContents(), ["Dispatch agent"]);
   await inventory.getByRole("searchbox", { name: "Search agents" }).fill("");
   assert.deepEqual(await rowNames.allTextContents(), ["Dispatch agent", "Container worker"]);
-  await page.getByRole("button", { name: "Open full record", exact: true }).click();
+  await page.getByRole("button", { name: "View agent", exact: true }).click();
 
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
@@ -697,7 +697,7 @@ test("admin shell agents page supports deep links, inventory sorting, and compac
         }).map(control => control.tagName);
     });
     assert.deepEqual(overflow, [], `Sidebar controls overflow at ${width}px`);
-    const backButton = await page.getByRole("button", { name: "← Agents inventory", exact: true }).boundingBox();
+    const backButton = await page.getByRole("button", { name: "← Agents", exact: true }).boundingBox();
     const panel = await sidebar.boundingBox();
     assert.ok(panel.y - (backButton.y + backButton.height) >= 12, `Back button touches the filter panel at ${width}px`);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));

@@ -6,23 +6,30 @@ The authorized full rollout covers all 21 built-in destinations, six standalone 
 and shared dialogs and controls. Release news remains prominent, with images, authorship,
 a readable article view, archive navigation, and changelog access.
 
-Worktree: `/tmp/evander-admin-design` · branch: `feature/admin-design-system`.
+Branch: `feature/admin-design-system`.
 Starting main: `6b88a08b8cd8423d2737e9670a467df44669b1ed`.
 Integration base: `c564a87bf9533fe02027fe1b72e1a3f8c96b338e` (`example/main`).
-The implementation is prepared on the feature branch for review and publication. No deployment or live configuration/workflow change is part of this work.
+The implementation has passed the full local test suites and is ready for publication.
+No deployment or live configuration/workflow change is part of this work.
 The original study and browser evidence are preserved outside the repository.
 
 ## Design and implementation
 
 The [original direction](admin-web-direction.md) and [interactive concept](admin-web-concept.html)
 record the study. The implementation uses shared semantic colors, typography, spacing,
-controls, light/dark themes, and a remembered Compact/Comfortable density setting.
+controls, light/dark themes, and consistent compact spacing.
 
-- Comparable records use aligned inventories, dividers, and a closable inspector. Long
-  forms and evidence remain available through **Open full record**. Inventory and record
+- Comparable records use aligned lists, dividers, and a closable inspector. Long
+  forms and evidence remain available through **View agent**, **View session**, and
+  equivalent page-specific actions. The list and detail view
   stay mounted to retain filters and local state.
-- The global rail is 208 px. Compact controls and one-line rows start at 32/40 px;
-  Comfortable uses 40/48 px. Coarse pointer controls retain 44 px targets.
+- A temporary **Classic / New UI** header selector defaults to a frozen snapshot of main.
+  It remembers the choice, preserves the current URL, confirms before switching, and
+  loads only the selected application's assets and matching built-in add-ons. Both
+  versions use the same authenticated backend. Packaging and removal are documented in
+  [classic/README.md](../../frontend/admin-web/classic/README.md).
+- The global rail is 208 px. Controls and one-line rows start at 32/40 px.
+  Coarse pointer controls retain 44 px targets. There is no density selector.
 - Inspectors are companion panes on desktop and native dialogs on narrow screens.
   Keyboard close, focus restoration, and narrow dialog Tab navigation are handled.
 - Workflow commands sit above the canvas; the default rail is 264 px and remains resizable.
@@ -34,7 +41,7 @@ controls, light/dark themes, and a remembered Compact/Comfortable density settin
   validation, dirty state, and conflict behavior. Mutations retain existing API
   authorization and revision boundaries.
 - Canonical assets live in [src/design](../../frontend/admin-web/src/design/README.md).
-  The build distributes matching CSS and a theme/density/privilege context bridge to
+  The build distributes matching CSS and a theme/privilege context bridge to
   six standalone add-ons. Generated copies are checked for drift.
 
 ## Surface coverage
@@ -44,7 +51,7 @@ explicitly. Browser checks used populated synthetic fixtures, not production dat
 
 | Surface | Implemented design | Verification |
 | --- | --- | --- |
-| Shell, directory, identity, lock, navigation, density | Compact shell and controls; responsive navigation; shared appearance | Desktop/phone in both themes; page finder and keyboard checks; persisted 40/48 px row heights |
+| Shell, directory, identity, lock, navigation | Compact shell and controls; responsive navigation; shared appearance | Desktop/phone in both themes; page finder and keyboard checks; compact row heights |
 | Login, deployment/loading/error surfaces | Shared type, controls, spacing and state colors; single-column login | Login at both widths; existing state paths retained; asset readiness and missing-data checks |
 | Dashboard | Metric strip, attention/status rows, prominent release story and reader | Both themes/widths; deep links, missing news, article images, archive, Escape and focus return |
 | Sessions | Searchable inventory, inspector, full access/wake record; selected-record loading guard | Session/Agent smoke batch: 11 passed; narrow inspector keyboard/close checks; full forms rendered |
@@ -91,7 +98,7 @@ Tables, boards, graphs, and conversations can retain their own scrolling regions
 Additional checks covered:
 
 - 14 shared-surface scenarios: session inspection/focus/Tab/Escape/full record, release
-  reader images/archive, density persistence, personal connections, notifications,
+  reader images/archive, compact layout, personal connections, notifications,
   assistant draft preservation, and login.
 - 22 full-record renders across desktop/phone plus two locked Skills/Add-ons checks.
   Git's phone form initially overflowed; its final readback and the Users phone refinement
@@ -165,14 +172,14 @@ deployable checkout must build and carry these assets; the tracked `dist/index.h
 is insufficient. Version files are synchronized at 0.61.0 with one matching changelog entry.
 The user manual and canonical design maintenance notes are updated.
 
-### Limits
+### Initial verification limits
 
 The broad frontend command `timeout 150s npm test` timed out with exit 124. Its last
 reported results were 279 passing, eight failing, and two cancelled tests. Failures included
 obsolete labels, navigation/disclosure expectations, and a source marker; these were
 corrected and focused reruns passed. The cancelled tutorial checks also passed in focused
-runs. The broad command was not rerun after reaching its bound, so this rollout does
-**not** claim a green full suite. No stalled test process was kept.
+runs. That initial review used bounded focused reruns. The subsequent full-suite
+validation below supersedes this earlier limit. No stalled test process was kept.
 
 The review used local synthetic data and Chromium. It does not establish production data
 coverage, every possible provider schema, all browser engines, or complete accessibility
@@ -203,7 +210,43 @@ Post-integration verification:
   checks passed against the rebuilt bundle.
 - 73 Python checks passed, including the nine UI/asset/configuration regressions above and
   the current Admin performance regression suite.
-- Final source and staged whitespace checks passed. The earlier full frontend-suite timeout
-  remains the limit recorded above; this integration used bounded focused runs.
+- Final source and staged whitespace checks passed. This integration used bounded focused
+  runs; the subsequent full-suite validation below covers the completed branch.
 
 Integration logs use the `integration-` prefix in the external review directory.
+
+## Final full-suite validation
+
+The final local validation on 23 September includes the temporary Classic / New UI
+selector, natural record-action labels, and removal of the Compact / Comfortable
+selector. New UI and all six add-ons always use compact spacing; existing saved
+Comfortable preferences no longer affect layout, and coarse-pointer targets remain larger.
+
+| Command | Result |
+| --- | --- |
+| `timeout 1200s ./.venv/bin/pytest -q` | 8,453 passed, seven warnings, 630.42 s |
+| `timeout 300s npm test` | 295 passed, no failures or skips, 36.85 s |
+| `timeout 300s npm run test:smoke` | 167 passed, no failures or skips, 152.22 s |
+| Final affected Python UI/asset batch | 51 passed, 1.94 s |
+| `timeout 120s npm run build` | TypeScript, New UI, and frozen Classic installation passed |
+| `npm run check:design-assets` | All six generated add-on asset pairs match their sources |
+
+The full Python suite preceded the final frontend-only fixes; the affected Python
+UI/asset batch was rerun against the final build. Frontend commands ran from
+`frontend/admin-web`, with the two full frontend suites run sequentially.
+
+The earlier 300 s smoke run timed out while obsolete workflow fixtures were failing.
+Those fixtures now use the current nested node `config` contract. Browser tests now open
+the relevant inspectors and disclosures, wait for loaded subscription choices, and
+assert current review payloads and permissions. Existing checks also caught and now
+cover fractional cost totals, Chat revision refresh, and reduced-motion Org chart
+visibility. The final full smoke run passed every test within its bound.
+
+Production-build browser checks verify Classic as default, URL and per-tab selection,
+remembered preferences, cancellation with drafts intact, native unsaved-change vetoes,
+fallback switching when the app fails to load, and matching add-on assets. Request
+assertions confirm that each version loads only its own application bundle.
+
+Logs are retained locally as `/tmp/evander-ui-full-pytest.log` and
+`/tmp/evander-ui-compact-{build,full-node,full-smoke,python-ui}.log`.
+The synthetic-data and browser-coverage limits above still apply.

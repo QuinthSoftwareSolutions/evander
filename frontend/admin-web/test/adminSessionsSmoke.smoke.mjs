@@ -357,7 +357,7 @@ test("session inventory sorts columns without changing the inspected session or 
   sessionListResponse.counts = { total: 3, active: 3, expired: 0 };
   sessionListResponse.status_ids.active = sessionListResponse.items.map(item => item.session_id);
   await page.goto(`http://127.0.0.1:${address.port}/#sessions`, { waitUntil: "domcontentloaded" });
-  const inventory = page.getByRole("region", { name: "Sessions inventory", exact: true });
+  const inventory = page.getByRole("region", { name: "Sessions list", exact: true });
   await inventory.getByRole("button", { name: "session-1", exact: true }).click();
   await page.locator(".record-inspector h2").waitFor();
   const rowNames = inventory.locator("tbody .record-name");
@@ -374,8 +374,8 @@ test("session inventory sorts columns without changing the inspected session or 
   assert.deepEqual(await rowNames.allTextContents(), ["session-10", "session-1"]);
   await inventory.getByLabel("Find session", { exact: true }).fill("");
   assert.deepEqual(await rowNames.allTextContents(), ["session-2", "session-10", "session-1"]);
-  await page.getByRole("button", { name: "Open full record", exact: true }).click();
-  await page.getByRole("button", { name: "← Sessions inventory", exact: true }).click();
+  await page.getByRole("button", { name: "View session", exact: true }).click();
+  await page.getByRole("button", { name: "← Sessions", exact: true }).click();
   assert.deepEqual(await rowNames.allTextContents(), ["session-2", "session-10", "session-1"]);
   assert.deepEqual(pageErrors, []);
 });

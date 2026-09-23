@@ -254,6 +254,7 @@ export function ConnectorsPage({
 
   return (
     <RecordWorkspace
+      recordLabel="connector"
       title="Connectors"
       description="Inspect available integrations, authentication status, and agent-visible operations."
       columns={["Connector", "Driver", "Authentication", "Operations"]}
@@ -314,7 +315,7 @@ export function ConnectorsPage({
           {selected?.description ? <p>{selected.description}</p> : null}
           {dirty ? (
             <p className="callout warning-callout">
-              Unsaved directory configuration is preserved. Open the full record to continue editing.
+              Unsaved directory configuration is preserved. View the connector to continue editing.
             </p>
           ) : null}
         </>

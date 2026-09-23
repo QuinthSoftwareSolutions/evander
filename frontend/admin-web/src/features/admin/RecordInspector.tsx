@@ -7,6 +7,7 @@ export function RecordInspector({
   children,
   onClose,
   onOpenRecord,
+  openRecordLabel = "View details",
   returnFocus,
   className = "",
 }: {
@@ -15,6 +16,7 @@ export function RecordInspector({
   children: ReactNode;
   onClose: () => void;
   onOpenRecord?: () => void;
+  openRecordLabel?: string;
   returnFocus?: () => HTMLElement | null;
   className?: string;
 }) {
@@ -59,7 +61,7 @@ export function RecordInspector({
       {onOpenRecord ? (
         <footer className="record-inspector-footer">
           <button type="button" className="primary" onClick={onOpenRecord}>
-            Open full record
+            {openRecordLabel}
           </button>
         </footer>
       ) : null}

@@ -203,7 +203,7 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
-  const inventory = page.getByRole("region", { name: "Approvals inventory" });
+  const inventory = page.getByRole("region", { name: "Approvals list" });
   await inventory.getByText("More filters", { exact: true }).click();
   assert.equal(await inventory.getByLabel("Exclude sub-directories").isChecked(), false);
   await inventory.locator(".collection-toolbar").getByText("Exclude sub-directories", { exact: true }).hover();
@@ -226,7 +226,7 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
   await assert.doesNotReject(() =>
     page.getByRole("tooltip").getByText("Show requests older than the entered number of minutes.", { exact: true }).waitFor({ state: "visible" }),
   );
-  await assert.doesNotReject(() => page.getByText("No records match this view.").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("No approvals match these filters.").waitFor({ state: "visible" }));
 
   assert.equal(await page.evaluate(() => window.location.hash), "#approvals");
   assert.equal(await navEntry.count(), 1);

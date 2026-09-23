@@ -3029,6 +3029,7 @@ async function openBrowserPage(
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
+  page.setDefaultTimeout(10000);
   await t.after(async () => {
     await page.close().catch(() => {});
     await context.close().catch(() => {});
@@ -3481,6 +3482,7 @@ test("team add-on copies a clean team configuration with existing and new core s
 
   await waitForRevision(page, 8);
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
 
   const dialog = page.locator("#org-action-modal");
@@ -3566,6 +3568,7 @@ test("team add-on copies all source sessions by default without individual setup
   const page = await openBrowserPage(t, port);
   await waitForRevision(page, 8);
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
   const form = page.locator("form[data-team-copy-form]");
   const selects = form.locator("[data-team-copy-session-select]");
@@ -3603,6 +3606,7 @@ test("team add-on retains completed session copies when another session fails", 
   });
   await waitForRevision(page, 8);
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
   const form = page.locator("form[data-team-copy-form]");
   await form.getByRole("button", { name: "Copy team" }).click();
@@ -3648,6 +3652,7 @@ test("team add-on submits the source revision shown by the copy preview", async 
     "expected Team state stream to be open before testing the copy preview",
   );
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
   const copyForm = page.locator("form[data-team-copy-form]");
   await copyForm.waitFor({ state: "visible" });
@@ -3691,6 +3696,7 @@ test("team add-on hides copy for archived teams", async (t) => {
   await waitForRevision(page, 8);
   await page.locator("#show-archived-toggle").check();
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator("#people-agent-detail-view").getByText("archived", { exact: true }).waitFor({
     state: "visible",
   });
@@ -3719,6 +3725,7 @@ test("team add-on team editor selects from all registered communication targets"
   const page = await openBrowserPage(t, port);
 
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-edit-type="team"][data-edit-id="team"]').click();
 
   const form = page.locator("#edit-record-form");
@@ -3839,6 +3846,7 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   await waitForRevision(page, 8);
   await openProjects(page);
   const panel = page.locator("#team-projects-page");
+  await panel.locator("summary", { hasText: "Add outcome kind" }).click();
   const teamWideOutcomeLabel = panel.locator(
     'form[data-form-id="create-outcome-kind-form"] label.checkbox-label',
     { hasText: "Team-wide definition" },
@@ -3894,6 +3902,7 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   assert.equal(projectRequest.payload.name, "Follow-up project");
   assert.deepEqual(projectRequest.payload.git, {
     managed_repo_id: "mr_primary_project",
+    directory_path: "root",
     agent_author_identity: {
       name: "Project Author",
       email: "author@example.test",
@@ -5050,6 +5059,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   assert.equal(mutationRequests[1].payload.lead_agent_id, managerId);
   assert.deepEqual(mutationRequests[1].payload.git, {
     managed_repo_id: "mr_0123456789abcdef0123",
+    directory_path: "root",
     base_branch: "main",
   });
   assert.equal(mutationRequests[2].payload.team_id, teamId);
@@ -5595,7 +5605,7 @@ test("team add-on lets operators revoke direct agent-issued stand-downs and expl
   );
 });
 
-test("team add-on project catalog uses growing cards with concise project metadata", async (t) => {
+test("team add-on project list keeps names and metadata readable in compact rows", async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.name = "Accounting Department";
   initialState.projects.project.name = "Bookkeeping Operations";
@@ -5644,14 +5654,17 @@ test("team add-on project catalog uses growing cards with concise project metada
       const title = element.querySelector(".projects-focus-row-primary strong");
       const titleRange = document.createRange();
       titleRange.selectNodeContents(title);
+      const row = element.getBoundingClientRect();
+      const titleBounds = titleRange.getBoundingClientRect();
       return {
-        width: element.getBoundingClientRect().width,
-        titleLineCount: titleRange.getClientRects().length,
+        width: row.width,
+        textFits: titleBounds.left >= row.left && titleBounds.right <= row.right
+          && titleBounds.top >= row.top && titleBounds.bottom <= row.bottom,
       };
     }),
   );
-  assert.ok(layout.every(({ width }) => width > 250), `expected growing cards: ${JSON.stringify(layout)}`);
-  assert.equal(layout[0].titleLineCount, 1, `expected Bookkeeping Operations to stay intact: ${JSON.stringify(layout[0])}`);
+  assert.ok(layout.every(({ width, textFits }) => width > 0 && textFits), `expected fully visible names: ${JSON.stringify(layout)}`);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 });
 
 test("team add-on review profiles and task descendants prioritize display names", async (t) => {
@@ -5841,6 +5854,7 @@ test("team add-on project controls follow privilege changes and partial rerender
   await waitForRevision(page, 8);
   await openProjects(page);
   const projectsPage = page.locator("#team-projects-page");
+  await projectsPage.locator("summary", { hasText: "Add outcome kind" }).click();
   const createProjectButton = projectsPage.getByRole("button", { name: "Create project" }).first();
   const addOutcomeButton = projectsPage.getByRole("button", { name: "Add outcome kind" });
   const addReviewProfileButton = projectsPage.getByRole("button", { name: "Add review profile" });
@@ -5942,6 +5956,7 @@ test("team add-on state refresh preserves scoped no-id form and unsubmitted sear
     "expected Team state stream to be open before testing form drafts",
   );
   await openProjects(page);
+  await page.locator("#team-projects-page summary", { hasText: "Add outcome kind" }).click();
   const alphaOutcomeForm = page.locator(
     '#team-projects-page form[data-form-id="create-outcome-kind-form"][data-form-draft-scope="alpha-project"]',
   );
@@ -8832,6 +8847,14 @@ test("team add-on Chat preserves a reader position across a state-stream refresh
     () => stateStreamCount() > 0,
     "expected Team state stream to be open before forcing a refresh",
   );
+  await page.waitForFunction(() => {
+    const list = document.querySelector(".chat-message-list");
+    return list && list.scrollHeight - list.clientHeight - list.scrollTop <= 1;
+  });
+  // Let the initial two-frame bottom anchoring finish before simulating a reader.
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
 
   const before = await messageList.evaluate((element) => {
     const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
@@ -11013,7 +11036,7 @@ test("team add-on Teams agent detail inbox popover stays reachable and scrollabl
   });
 
   await waitForRevision(page, 4);
-  await page.getByRole("tab", { name: "Teams" }).click();
+  await page.locator("#team-view-select").selectOption("people");
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   const alphaGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-alpha"]');
   await alphaGroup.locator(".team-record-group-header").click();
@@ -11460,11 +11483,13 @@ test("team add-on UI renders git refs and releases and submits a review decision
       criterion_id: "tests",
       state: "passed",
       finding: "Added acceptance notes",
+      evidence_refs: [],
     },
     {
       criterion_id: "docs",
       state: "passed",
       finding: "README updated",
+      evidence_refs: [],
     },
   ]);
   assert.deepEqual(decisionRequest.payload.finding_resolutions, [
@@ -11481,11 +11506,13 @@ test("team add-on UI renders git refs and releases and submits a review decision
       criterion_id: "tests",
       state: "passed",
       finding: "Added acceptance notes",
+      evidence_refs: [],
     },
     {
       criterion_id: "docs",
       state: "passed",
       finding: "README updated",
+      evidence_refs: [],
     },
   ]);
   await openDeliveryRow(waitingRow);
@@ -12223,7 +12250,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   await createTaskForm.locator('[name="task_author_email"]').fill("alice@example.test");
   await createTaskForm.locator('[name="git_base_branch"]').fill("feature/demo");
   await createTaskForm.locator('[name="parent_task_id"]').selectOption("task-planned");
-  await createTaskForm.locator('[name="originating_task_id"]').selectOption("task-open");
+  await createTaskForm.locator('[name="originating_task_id"]').selectOption("task-waiting");
   await createTaskForm.locator('[name="require_git_provenance"]').check();
   await createTaskForm.getByRole("button", { name: "Create task" }).click();
   await waitForCondition(
@@ -12243,7 +12270,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   assert.equal(createRequest.payload.task_kind, "support");
   assert.deepEqual(createRequest.payload.authored_by, { name: "Alice Example", email: "alice@example.test" });
   assert.equal(createRequest.payload.parent_task_id, "task-planned");
-  assert.equal(createRequest.payload.originating_task_id, "task-open");
+  assert.equal(createRequest.payload.originating_task_id, "task-waiting");
   assert.equal(createRequest.payload.integration_boundary, false);
   assert.deepEqual(createRequest.payload.deliverable_contract, {
     require_git_provenance: true,
@@ -12574,11 +12601,11 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   await childCard
     .getByText("Worktree: /home/agent/worktrees/task-pending")
     .waitFor({ state: "visible" });
-  await childCard.getByText("Waiting on 1 blocked dependency", { exact: true }).waitFor({
+  await childCard.getByText("Waiting on 1 dependency; at least one blocked", { exact: true }).waitFor({
     state: "visible",
   });
   const childBlockers = childCard.locator(".task-board-card-blockers");
-  await childBlockers.getByText("Waiting on blocked dependencies:", { exact: true }).waitFor({
+  await childBlockers.getByText("Waiting on dependencies:", { exact: true }).waitFor({
     state: "visible",
   });
   await childBlockers.getByText("Assigned blocker:", { exact: true }).waitFor({
@@ -12949,7 +12976,12 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await detail.getByRole("heading", { name: "Automated verification" }).waitFor({
     state: "visible",
   });
-  await detail.getByText(/release-smoke: passed - All release checks passed\./).waitFor({
+  const verificationCommand = detail.locator(".release-verification-command-result").filter({
+    has: page.getByText("Command: release-smoke", { exact: true }),
+  });
+  await verificationCommand.getByText("Passed", { exact: true }).waitFor({ state: "visible" });
+  await verificationCommand.locator("summary", { hasText: "Show captured command log" }).click();
+  await verificationCommand.getByText("All release checks passed.", { exact: true }).waitFor({
     state: "visible",
   });
   await detail.getByRole("heading", { name: "Agent review decisions" }).waitFor({
@@ -12957,7 +12989,8 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   });
   await detail
     .getByText(
-      /Sealed cohort:\s*Accepted · 1 of 1 resolved\. Correction work starts only after every cohort slot is accepted or rejected\./,
+      "Sealed cohort: Accepted · 1 of 1 resolved. Correction work starts only after every cohort slot is accepted or rejected.",
+      { exact: true },
     )
     .waitFor({ state: "visible" });
   await detail.getByText("Release scope: passed - Scope matches the candidate.").waitFor({
@@ -13079,10 +13112,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await waitForRevision(page, state.revision);
   await findingEditor.getByRole("button", { name: "Add finding" }).click();
   assert.equal(
-    await findingRows.nth(0).locator('[role="group"][aria-label="Affected work"]').count(),
-    0,
-    "a sole candidate deliverable should be inferred rather than shown as a selector",
+    await findingRows.nth(0).locator('input[name="human_finding_target_deliverable_ids"]').count(),
+    1,
+    "a sole deliverable still needs an explicit choice between its work and the entire release",
   );
+  assert.equal(await findingRows.nth(0).getByLabel("Entire release candidate").isChecked(), false);
   await findingRows.nth(0).getByRole("button", { name: "Remove finding 1" }).click();
   state.human_review_requests[humanRequest.id].target_deliverable_options =
     allTargetOptions;
@@ -13147,6 +13181,13 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     .nth(0)
     .locator('textarea[name="human_finding_evidence_refs"]')
     .fill("artifact-space:finding-one");
+  await decisionForm.getByRole("button", { name: "Request changes" }).click();
+  assert.equal(findingsDecisionPayload, null, "findings must identify their affected work");
+  assert.equal(
+    await findingRows.nth(0).getByLabel("Entire release candidate").evaluate((field) => field.validationMessage),
+    "Select the entire release candidate or at least one affected deliverable.",
+  );
+  await findingRows.nth(0).getByLabel("Entire release candidate").check();
   await findingEditor.getByRole("button", { name: "Add finding" }).click();
   await decisionForm.getByRole("button", { name: "Request changes" }).click();
   assert.equal(
@@ -13185,11 +13226,13 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     [
       {
         text: "[P1] Keep this finding intact, including its explanatory comma.",
+        target_scope: "release_candidate",
         target_deliverable_ids: [],
         evidence_refs: ["artifact-space:finding-one"],
       },
       {
         text: "[P2] Keep a second finding intact, too.",
+        target_scope: "deliverables",
         target_deliverable_ids: ["deliverable-child-a"],
         evidence_refs: ["artifact-space:finding-two"],
       },
@@ -13205,12 +13248,14 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   const carriedFindingConfirmation = decisionForm.locator(
     '[data-confirm-finding-id="human-finding-carried-accessibility"]',
   );
-  const carriedFindingConfirmationBox = await carriedFindingConfirmation.boundingBox();
+  const carriedFindingConfirmationLabel = carriedFindingConfirmation.locator("..");
+  const carriedFindingConfirmationBox = await carriedFindingConfirmationLabel.boundingBox();
   assert.ok(
     carriedFindingConfirmationBox?.width >= 20 && carriedFindingConfirmationBox?.height >= 20,
-    "carried-finding confirmation checkbox should have a visible 20px target",
+    "carried-finding confirmation should retain a visible clickable label target",
   );
-  await carriedFindingConfirmation.check();
+  await carriedFindingConfirmationLabel.click();
+  assert.equal(await carriedFindingConfirmation.isChecked(), true);
   await decisionForm
     .locator('textarea[name="summary"]')
     .fill("Smoke test passed against the pinned preview.");

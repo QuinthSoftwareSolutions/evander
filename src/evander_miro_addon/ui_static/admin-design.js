@@ -26,12 +26,10 @@ function applyAppearance(data) {
     root.dataset.theme = data.theme;
     root.style.colorScheme = data.theme;
   }
-  if (data.density === "compact" || data.density === "comfortable") root.dataset.density = data.density;
 }
 
 applyAppearance({
   theme: stored("admin-web:theme") ?? (systemTheme.matches ? "dark" : "light"),
-  density: stored("admin-web:density") ?? "compact",
 });
 
 systemTheme.addEventListener("change", (event) => {

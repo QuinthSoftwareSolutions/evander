@@ -59,7 +59,7 @@ Density comes primarily from removing duplicate structure, reducing unnecessary 
 
 Selecting a record opens a consistent inspector. It shows identity, state, key facts, recent activity, and the most useful next actions. A full record provides room for long policy forms, transcripts, evidence, and durable history.
 
-On closing the inspector, restore focus, selection, filter, sorting, and scroll position. Encode important record selection in the URL. Persist user column/density preferences separately from shared configuration. A long editing task should not be forced into a narrow drawer.
+On closing the inspector, restore focus, selection, filter, sorting, and scroll position. Encode important record selection in the URL. Persist user column preferences separately from shared configuration. A long editing task should not be forced into a narrow drawer.
 
 ### 4. Make the important differences visible
 
@@ -83,7 +83,7 @@ Locked mutation entry points are disabled with an accessible explanation; search
 
 Use the same semantic tokens and control states in React screens, Team's static UI, and embedded workbenches. The iframe boundary is an implementation constraint, not a reason to vary the visual language.
 
-The host already passes theme and privilege context to add-ons. Extend that contract deliberately for density if needed, with origin/source checks and sensible standalone defaults. Generated Team bundles must participate in the eventual rollout.
+The host already passes theme and privilege context to add-ons. Keep origin/source checks and sensible standalone theme defaults; spacing is consistently compact. Generated Team bundles must participate in the eventual rollout.
 
 ## Proposed visual system
 
@@ -97,8 +97,8 @@ These are starting dimensions to evaluate, not a blanket CSS scaling operation.
 | Spacing | A 4 px base; 8 px within controls, 12–16 px within related groups, 24 px between distinct working areas. |
 | Context bar | 48 px at ordinary desktop sizes; allow expansion/reflow where content requires it. |
 | Global navigation | Approximately 208 px expanded. Keep collapse and page search; show tooltips/accessible names when collapsed. |
-| Controls | About 32 px in Compact mode and 38–40 px in Comfortable mode. Larger touch targets for primary navigation and actions. |
-| Data rows | 40 px minimum for one-line Compact rows; 48 px Comfortable; natural height for wrapped content. |
+| Controls | About 32 px in the compact layout. Larger touch targets for primary navigation and actions. |
+| Data rows | 40 px minimum for one-line rows; natural height for wrapped content. |
 | Corners | 4–6 px for controls and ordinary surfaces; 8–10 px for dialogs. Fully round shapes reserved for avatars or a meaningful badge. |
 | Elevation | Borders and surface tones for persistent regions. Shadow mainly for drawers, menus, and dialogs. |
 | Inspector | About 340–400 px when space permits; full record view available. At narrow widths use an accessible sheet or dedicated page. |
@@ -176,7 +176,7 @@ Prefer small, reviewable changes. Keep each migrated page internally consistent.
 
 The five working navigation destinations are Dashboard, Teams, Sessions, Workflow, and Configuration. Other navigation entries open a short coverage note so the full information architecture stays visible.
 
-Try Compact/Comfortable and light/dark; search/filter sessions and tasks; open and close inspectors; switch the task list to a board; inspect workflow nodes and show/hide runs; open release stories and browse between them. Configuration has Communication targets and Agent runtime sketches. Unlocking affects only sample editing in the page; it never authenticates to a service or writes to live state.
+Try light/dark; search/filter sessions and tasks; open and close inspectors; switch the task list to a board; inspect workflow nodes and show/hide runs; open release stories and browse between them. Configuration has Communication targets and Agent runtime sketches. Unlocking affects only sample editing in the page; it never authenticates to a service or writes to live state.
 
 Full policy forms, backend saves, real graph editing, all Team subviews, notification content, and configuration schema coverage are outside the standalone sketch. Those entry points explain their intended destination. The study does not claim these functions are implemented.
 
@@ -184,6 +184,6 @@ Full policy forms, backend saves, real graph editing, all Team subviews, notific
 
 The five sketches were opened in Chromium at 1440 × 900 and 390 × 844. The dashboard was also captured at 1280 × 800. The browser pass reported no JavaScript page errors or page-wide horizontal overflow at the narrow size; tables and the graph keep their own scrolling regions.
 
-Checked news expansion and previous/next browsing, session search and filter preservation on inspector close, task list/board record parity, node inspection, locked setting controls, sample override/save/readback across section changes, theme switching, and Comfortable row height. This verifies the standalone prototype's demonstrated interactions, not application behavior or complete accessibility.
+Checked news expansion and previous/next browsing, session search and filter preservation on inspector close, task list/board record parity, node inspection, locked setting controls, sample override/save/readback across section changes, theme switching, and row height. The density selector was removed on 23 September at the operator's request; the prototype and implementation now always use compact spacing. This verifies the standalone prototype's demonstrated interactions, not application behavior or complete accessibility.
 
 Proposed captures are retained outside the repository in the operator-owned review directory.

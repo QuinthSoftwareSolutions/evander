@@ -550,6 +550,7 @@ export function IssuesPage() {
 
   return (
     <RecordWorkspace
+      recordLabel="issue"
       title="Issues"
       description="Browse local issues and their source context. Open an issue to read its description or launch work."
       columns={["Issue", "State", "Source", "Updated"]}

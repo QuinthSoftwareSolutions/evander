@@ -79,17 +79,6 @@
   max-width: 28ch;
   overflow-wrap: anywhere;
 }
-[data-admin-design] .admin-density-control {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--ui-muted);
-}
-[data-admin-design] .admin-density-control select {
-  font-size: 12px;
-  max-width: 128px;
-}
 [data-admin-design] .admin-notification-button {
   min-width: 32px;
   width: 32px;
@@ -475,9 +464,6 @@
   [data-admin-design] .admin-shell-actions {
     gap: 8px;
     padding: 6px 12px;
-  }
-  [data-admin-design] .admin-density-control > span {
-    display: none;
   }
   [data-admin-design] .admin-identity {
     max-width: 18ch;

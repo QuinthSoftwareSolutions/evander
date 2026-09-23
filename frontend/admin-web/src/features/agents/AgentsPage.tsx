@@ -2088,8 +2088,9 @@ export function AgentsPage() {
 
   return (
     <RecordWorkspace
+      recordLabel="agent"
       title="Agents"
-      description="Inspect execution state, session context, and recent activity. Open a record for controls and logs."
+      description="Inspect execution state, session context, and recent activity. Select an agent for controls and logs."
       columns={["Agent", "Execution", "Backend", "Updated"]}
       selectedId={selectedAgentKey}
       loading={loading}
@@ -2187,7 +2188,7 @@ export function AgentsPage() {
       inspectorContent={
         selectedAgent ? (
           <p className="muted-text">
-            {agentTargetStateText(selectedAgent)}. Open the full record to prompt, inspect logs, or manage this agent.
+            {agentTargetStateText(selectedAgent)}. View the agent to prompt, inspect logs, or manage this agent.
           </p>
         ) : null
       }

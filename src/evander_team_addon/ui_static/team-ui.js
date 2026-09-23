@@ -5339,6 +5339,7 @@ function applyChatCollectionPayload(
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   if (activeTeamView === "chat") {
+    renderShell();
     renderChat();
   }
   if (selectedChatConversationId) {
@@ -7137,7 +7138,7 @@ function renderCostCounter(
   const parts = [];
   const maxCost = numberOrNull(cost.max_cost_usd);
   const budgetWindowCost = numberOrNull(cost.budget_window_estimated_cost);
-  const displayedCost = budgetWindowCost === null ? numberOrZero(cost.estimated_cost) : budgetWindowCost;
+  const displayedCost = budgetWindowCost ?? numberOrNull(cost.estimated_cost) ?? 0;
   if (maxCost !== null) {
     parts.push(
       limitReached

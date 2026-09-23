@@ -649,8 +649,9 @@ export function ApprovalsScreen() {
 
   return (
     <RecordWorkspace
+      recordLabel="request"
       title="Approvals"
-      description="Inspect the intended effect and evidence before deciding a request. Decisions are made in the full record."
+      description="Inspect the intended effect and evidence before deciding a request. Decisions are made on the request page."
       columns={["Request", "Status", "Session", "Created"]}
       records={items.map((item) => ({
         id: item.request_id,

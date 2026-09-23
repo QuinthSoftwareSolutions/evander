@@ -532,8 +532,9 @@ export function HostDirectoriesPage({
 
   return (
     <RecordWorkspace
+      recordLabel="directory"
       title="Host directories"
-      description="Compare granted filesystem roots, capabilities, and inherited sources. Inspect recovery and policy in the full record."
+      description="Compare granted filesystem roots, capabilities, and inherited sources. Inspect recovery and policy on the directory page."
       columns={["Directory", "Health", "Capabilities", "Source"]}
       records={visibleRecords.map((record) => ({
         id: record.directory_id,
@@ -602,7 +603,7 @@ export function HostDirectoriesPage({
       inspectorContent={
         dirty ? (
           <p className="callout warning-callout">
-            Unsaved directory configuration is preserved. Open the full record to continue editing.
+            Unsaved directory configuration is preserved. View the directory to continue editing.
           </p>
         ) : null
       }

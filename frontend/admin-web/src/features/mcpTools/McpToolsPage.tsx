@@ -258,6 +258,7 @@ export function McpToolsPage() {
 
   return (
     <RecordWorkspace
+      recordLabel="tool"
       title="MCP Tools"
       description="Compare effective access and approval requirements. Open a tool to manage the local directory policy."
       columns={["Tool", "Group", "Effective access", "Rule source"]}

@@ -544,8 +544,9 @@ export function UsersPage() {
 
   return (
     <RecordWorkspace
+      recordLabel={isUsersMode ? "user" : "group"}
       title="Users & Groups"
-      description="Inspect identities, group membership, and directory scope. Manage permissions in the full record."
+      description="Inspect identities, group membership, and directory scope. Select a user or group to manage permissions."
       columns={isUsersMode ? ["User", "Groups", "Last login"] : ["Group", "Type", "Permissions"]}
       records={
         isUsersMode

@@ -297,6 +297,7 @@ export function SkillsPage() {
 
   return (
     <RecordWorkspace
+      recordLabel="skill"
       title="Skills"
       description="Search the managed skill library. Open a skill to read its content, update it, or inspect workflow references."
       columns={["Skill", "Size", "Updated"]}

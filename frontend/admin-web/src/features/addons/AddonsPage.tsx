@@ -184,8 +184,9 @@ export function AddonsPage() {
 
   return (
     <RecordWorkspace
+      recordLabel="add-on"
       title="Add-ons"
-      description="Compare installed extensions, their capabilities, and runtime state. Manage enablement in the full record."
+      description="Compare installed extensions, their capabilities, and runtime state. Manage add-ons on the add-on page."
       columns={["Add-on", "State", "Capabilities"]}
       records={(state?.addons ?? []).map((addon) => ({
         id: addon.candidate_key,
@@ -227,7 +228,7 @@ export function AddonsPage() {
             Refresh
           </button>
           <button type="button" onClick={openRecord}>
-            Manage enablement{dirty ? " · Unsaved" : ""}
+            Manage add-ons{dirty ? " · Unsaved" : ""}
           </button>
         </>
       )}

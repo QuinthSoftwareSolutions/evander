@@ -70,12 +70,21 @@ When no asset directory is configured, Admin Web serves the bundled defaults fro
 
 ### Appearance and record navigation
 
-The header's **Density** selector switches between **Compact** and **Comfortable**.
-The browser remembers the setting, alongside the light/dark theme. Embedded add-ons
-receive the same appearance settings. Touch devices retain larger control targets.
+During the design rollout, the header's **UI** selector offers **Classic** and **New UI**.
+Classic is the default. Switching reloads the current page after a confirmation; save
+any edits first. The browser remembers your choice, and each open tab keeps its own
+version. Both versions operate on the same live data and share your signed-in session.
+Only the selected version and its matching built-in add-on assets are loaded.
 
-Most record pages start with a searchable inventory. Select a record name to open its
-inspector, then choose **Open full record** for forms, actions, logs, and history.
+Use `/?admin_ui=classic` or `/?admin_ui=new` to open a particular version directly.
+The following appearance and list-navigation controls describe New UI.
+
+New UI uses a consistent compact layout. The browser remembers the light/dark theme,
+and embedded add-ons receive the same theme. Touch devices retain larger control targets.
+
+Most pages start with a searchable list. Select an item to open its
+inspector, then choose **View agent**, **View session**, or the corresponding
+page-specific action for forms, controls, logs, and history.
 Close the inspector or press Escape to return focus to the selected record. On narrow
 screens the inspector opens as a dialog. The inventory and full record retain their
 filters and local editing state while switching between them.

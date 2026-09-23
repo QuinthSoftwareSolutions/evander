@@ -11,6 +11,8 @@ import "./design/workspaces.css";
 import "./design/workflow.css";
 import "./design/surfaces.css";
 
+document.documentElement.dataset.adminDesign = "";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AdminRoot />

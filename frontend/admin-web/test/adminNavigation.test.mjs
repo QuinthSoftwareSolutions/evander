@@ -816,7 +816,7 @@ test("repository index history defaults to newest ready snapshots and pages thro
   });
   const panel = page.locator(".managed-git-index-panel");
   await page.locator(".collection-table tbody button").first().click();
-  await page.getByRole("button", { name: "Open full record" }).click();
+  await page.getByRole("button", { name: "View repository" }).click();
   await panel.getByText("1–20 of 25", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await panel.locator(".managed-git-index-build").count(), 20);
   const newestReady = panel.locator(".managed-git-index-build").first();

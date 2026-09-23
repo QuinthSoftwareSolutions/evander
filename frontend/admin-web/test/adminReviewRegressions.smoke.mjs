@@ -66,9 +66,9 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
       await page.evaluate(() => { location.hash = "#skills?skill=beta&inspect=1"; });
       await page.locator(".record-inspector").getByRole("heading", { name: "beta", exact: true }).waitFor();
       await page.getByRole("button", { name: "Close inspector", exact: true }).click();
-      const inventory = page.getByRole("region", { name: "Skills inventory", exact: true });
+      const inventory = page.getByRole("region", { name: "Skills list", exact: true });
       await inventory.getByRole("button", { name: "alpha", exact: true }).click();
-      await page.getByRole("button", { name: "Open full record", exact: true }).click();
+      await page.getByRole("button", { name: "View skill", exact: true }).click();
       await fullRecord.locator(".skill-list-item").filter({ hasText: "beta" }).click();
       await page.waitForURL("**/#skills?skill=beta");
       await fullRecord.getByRole("heading", { name: "beta", exact: true }).waitFor();
@@ -144,7 +144,7 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
     }
   });
 
-  await t.test("host and Team listboxes retain four and five visible rows in both densities", async () => {
+  await t.test("host and Team listboxes retain four and five visible rows in the compact layout", async () => {
     const page = await browser.newPage();
     page.setDefaultTimeout(5000);
     try {
@@ -162,18 +162,15 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
           <script>document.querySelectorAll('select[size]').forEach(select => {
             for (let row = 0; row < select.size; row++) select.add(new Option('Option ' + row, String(row), row % 2 === 0, row % 2 === 0));
           });</script></body></html>`);
-        for (const density of ["compact", "comfortable"]) {
-          await page.evaluate((density) => { document.documentElement.dataset.density = density; }, density);
-          const sizes = await page.locator("select").evaluateAll((selects) => selects.map((select) => ({
-            id: select.id, height: select.getBoundingClientRect().height,
-            controlHeight: parseFloat(getComputedStyle(select).getPropertyValue("--ui-control-height")),
-            rows: select.size, optionHeight: select.options[0].getBoundingClientRect().height,
-          })));
-          assert.equal(sizes[0].height, sizes[0].controlHeight);
-          for (const size of sizes.slice(1)) {
-            assert.ok(size.height >= size.rows * size.optionHeight, `${size.id} must show ${size.rows} rows (${density})`);
-            assert.ok(size.height > sizes[0].height * 2, `${size.id} must remain a listbox (${density})`);
-          }
+        const sizes = await page.locator("select").evaluateAll((selects) => selects.map((select) => ({
+          id: select.id, height: select.getBoundingClientRect().height,
+          controlHeight: parseFloat(getComputedStyle(select).getPropertyValue("--ui-control-height")),
+          rows: select.size, optionHeight: select.options[0].getBoundingClientRect().height,
+        })));
+        assert.equal(sizes[0].height, sizes[0].controlHeight);
+        for (const size of sizes.slice(1)) {
+          assert.ok(size.height >= size.rows * size.optionHeight, `${size.id} must show ${size.rows} rows`);
+          assert.ok(size.height > sizes[0].height * 2, `${size.id} must remain a listbox`);
         }
       }
     } finally {

@@ -233,8 +233,9 @@ export function VmsPage() {
 
   return (
     <RecordWorkspace
+      recordLabel="VM"
       title="VMs"
-      description="Compare virtual machine state and linked sessions. Open a record for lifecycle controls and guest details."
+      description="Compare virtual machine state and linked sessions. Select a VM for controls and guest details."
       columns={["VM", "Power state", "Sessions", "Address"]}
       records={sortedItems.map((item) => ({
         id: item.vm_name,

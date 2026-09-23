@@ -64,13 +64,6 @@
   --ui-shadow: 0 16px 48px rgb(0 0 0 / 32%);
 }
 
-:root[data-density="comfortable"] {
-  --ui-control-height: 40px;
-  --ui-row-height: 48px;
-  --ui-row-padding: 10px;
-  --ui-section-padding: 20px;
-}
-
 @media (pointer: coarse) {
   :root {
     --ui-control-height: 44px;
@@ -322,7 +315,7 @@
   [data-admin-design] *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: 0s !important;
     scroll-behavior: auto !important;
   }
 }

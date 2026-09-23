@@ -16,6 +16,7 @@ export type WorkspaceRecord = {
 /** Shared collection/inspection/full-record navigation. Both work surfaces retain their state. */
 export function RecordWorkspace({
   title,
+  recordLabel,
   description,
   columns,
   records,
@@ -31,6 +32,7 @@ export function RecordWorkspace({
   children,
 }: {
   title: string;
+  recordLabel: string;
   description: string;
   columns: string[];
   records: WorkspaceRecord[];
@@ -130,7 +132,7 @@ export function RecordWorkspace({
 
   return (
     <div className="record-workspace">
-      <section className="collection-page" hidden={recordOpen} aria-label={`${title} inventory`}>
+      <section className="collection-page" hidden={recordOpen} aria-label={`${title} list`}>
         <header className="collection-heading">
           <div>
             <h1>{title}</h1>
@@ -146,7 +148,7 @@ export function RecordWorkspace({
             </label>
           )}
           <span className="panel-meta" role="status">
-            {loading && !records.length ? "Loading…" : `${visibleRecords.length} records`}
+            {loading && !records.length ? "Loading…" : `${visibleRecords.length} ${visibleRecords.length === 1 ? recordLabel : title.toLocaleLowerCase()}`}
           </span>
         </div>
         {error && !recordOpen ? (
@@ -191,7 +193,7 @@ export function RecordWorkspace({
                 ))}
               </tbody>
             </table>
-            {!visibleRecords.length && !loading ? <div className="empty-state">No records match this view.</div> : null}
+            {!visibleRecords.length && !loading ? <div className="empty-state">No {title.toLocaleLowerCase()} match these filters.</div> : null}
           </div>
           {inspectOpen && selected && !recordOpen ? (
             <RecordInspector
@@ -207,6 +209,7 @@ export function RecordWorkspace({
                 replaceHash(`${window.location.hash.split("?")[0]}${query.size ? `?${query}` : ""}`);
               }}
               onOpenRecord={openRecord}
+              openRecordLabel={`View ${recordLabel}`}
             >
               <dl className="property-grid">
                 {selected.facts.map(([label, value]) => (
@@ -233,7 +236,7 @@ export function RecordWorkspace({
                 replaceHash(`${selected.href}${selected.href.includes("?") ? "&" : "?"}inspect=1`);
             }}
           >
-            ← {title} inventory
+            ← {title}
           </button>
         </div>
         {children}

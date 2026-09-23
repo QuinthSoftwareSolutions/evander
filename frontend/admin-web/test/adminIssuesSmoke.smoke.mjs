@@ -232,7 +232,7 @@ test("admin shell issues page exposes VM bootstrap labels and tooltips", async (
     page.getByRole("heading", { name: "Issues", level: 1 }).waitFor({ state: "visible" }),
   );
   await page.locator(".collection-table tbody button").first().click();
-  await page.getByRole("button", { name: "Open full record" }).click();
+  await page.getByRole("button", { name: "View issue" }).click();
   await assert.doesNotReject(() => page.getByRole("button", { name: "Create VM" }).waitFor({ state: "visible" }));
   await page.getByRole("button", { name: "Create VM" }).hover();
   await assert.doesNotReject(() =>

@@ -361,8 +361,9 @@ export function ManagedGitRepositoriesPage({
 
   return (
     <RecordWorkspace
+      recordLabel="repository"
       title="Git repositories"
-      description="Compare repository sources, directory scope, and refresh state. Inspect bindings and maintenance in a full record."
+      description="Compare repository sources, directory scope, and refresh state. Inspect bindings and maintenance on the repository page."
       columns={["Repository", "Provider", "Directory", "Last refreshed"]}
       records={visibleRepositories.map((repository) => ({
         id: repository.managed_repo_id,

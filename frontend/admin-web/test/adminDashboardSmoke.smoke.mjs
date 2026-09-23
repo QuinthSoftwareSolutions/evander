@@ -1373,7 +1373,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.equal(await systemHealthPanel.getByText("Admin state", { exact: true }).count(), 0);
   assert.equal(await systemHealthPanel.getByText("Deployment", { exact: true }).count(), 0);
   const capacityBlock = systemHealthPanel.locator(".dashboard-block-capacity");
-  const agentInventoryBlock = systemHealthPanel.locator(".dashboard-block-agent-inventory");
+  const agentInventoryBlock = systemHealthPanel.locator(".dashboard-block-agents");
   const workersBlock = systemHealthPanel.locator(".dashboard-block-workers");
   const capacityBox = await capacityBlock.boundingBox();
   const agentInventoryBox = await agentInventoryBlock.boundingBox();

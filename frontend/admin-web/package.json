@@ -11,7 +11,7 @@
     "build:team-agent-create": "vite build --config vite.team-agent-create.config.ts",
     "sync:design": "node scripts/sync-design-assets.mjs",
     "check:design-assets": "node scripts/sync-design-assets.mjs --check",
-    "build": "npm run sync:design && tsc -b && vite build",
+    "build": "npm run sync:design && tsc -b && vite build && python3 scripts/classic-ui.py install",
     "preview": "vite preview"
   },
   "dependencies": {

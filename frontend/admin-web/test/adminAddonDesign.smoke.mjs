@@ -21,7 +21,7 @@ test("standalone add-ons share host appearance, preserve fields through locking,
       if (!packages[addon]) { res.writeHead(404); res.end(); return; }
       res.setHeader("Content-Type", "text/html");
       res.end(`<!doctype html><title>Add-on context fixture</title><style>body{margin:0}iframe{border:0;width:100%;height:100dvh;display:block}</style><iframe title="Add-on" src="/addons/${addon}-addon/ui/index.html"></iframe><script>
-        window.context={theme:'light',density:'compact',privileged_operations:{unlocked:false}};
+        window.context={theme:'light',privileged_operations:{unlocked:false}};
         window.publish=()=>{const frame=document.querySelector('iframe');frame.contentWindow.postMessage({type:'admin-addon-context',...window.context},location.origin);frame.contentWindow.postMessage({type:'admin-privileged-operations',...window.context},location.origin);};
         addEventListener('message',event=>{if(event.origin===location.origin&&event.data?.type==='admin-addon-ready')window.publish();});
         document.querySelector('iframe').addEventListener('load',window.publish);
@@ -54,6 +54,7 @@ test("standalone add-ons share host appearance, preserve fields through locking,
   ];
   for (const item of cases) await t.test(item.id, async () => {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await context.addInitScript(() => localStorage.setItem("admin-web:density", "comfortable"));
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
@@ -83,8 +84,9 @@ test("standalone add-ons share host appearance, preserve fields through locking,
 
       for (const theme of ["light", "dark"]) for (const width of [1440, 390]) {
         await page.setViewportSize({ width, height: 900 });
-        await page.evaluate(theme => { window.context.theme = theme; window.context.density = theme === 'dark' ? 'comfortable' : 'compact'; window.publish(); }, theme);
-        await frame.waitForFunction(theme => document.documentElement.dataset.theme === theme && document.documentElement.dataset.density === (theme === 'dark' ? 'comfortable' : 'compact'), theme);
+        await page.evaluate(theme => { window.context.theme = theme; window.publish(); }, theme);
+        await frame.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
+        assert.equal(await frame.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--ui-control-height").trim()), "32px");
         assert.equal(await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${item.id} ${theme} ${width}px must fit the viewport`);
         await page.screenshot({ path: path.join(output, `rollout-addon-${item.id}-${theme}-${width}.png`) });
       }

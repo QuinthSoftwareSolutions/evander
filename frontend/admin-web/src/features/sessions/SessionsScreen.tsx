@@ -2317,7 +2317,7 @@ export function SessionsScreen() {
 
   return (
     <>
-      <section className="collection-page sessions-inventory" hidden={recordView} aria-label="Sessions inventory">
+      <section className="collection-page sessions-inventory" hidden={recordView} aria-label="Sessions list">
         <header className="collection-heading">
           <div>
             <h1>Sessions</h1>
@@ -2341,7 +2341,7 @@ export function SessionsScreen() {
             </select>
           </label>
           <span className="panel-meta" role="status">
-            {response ? `${visibleItems.length} sessions` : "Loading sessions…"}
+            {response ? `${visibleItems.length} ${visibleItems.length === 1 ? "session" : "sessions"}` : "Loading sessions…"}
           </span>
         </div>
         {error && !recordView ? (
@@ -2352,7 +2352,7 @@ export function SessionsScreen() {
         <div className={`collection-workspace${inspectorOpen && selectedSession ? " has-inspector" : ""}`}>
           <div className="collection-scroll">
             <table className="collection-table">
-              <caption className="sr-only">Session inventory</caption>
+              <caption className="sr-only">Sessions</caption>
               <thead>
                 <tr>
                   {["Session", "State", "Model", "Expires"].map(column => (
@@ -2401,6 +2401,7 @@ export function SessionsScreen() {
               returnFocus={() => inspectorTriggerRef.current}
               onClose={closeInspector}
               onOpenRecord={openFullRecord}
+              openRecordLabel="View session"
             >
               <h3>Overview</h3>
               <dl className="property-grid">
@@ -2458,11 +2459,11 @@ export function SessionsScreen() {
               ) : null}
               {modelDirty || toolsDirty || policyDirty ? (
                 <p className="callout warning-callout">
-                  This session has unsaved changes. Open the full record to continue editing.
+                  This session has unsaved changes. View the session to continue editing.
                 </p>
               ) : null}
               <p className="muted-text">
-                Open the full record for access settings, lifecycle actions, and wake history.
+                View the session for access settings, lifecycle actions, and wake history.
               </p>
             </RecordInspector>
           ) : null}
@@ -2484,7 +2485,7 @@ export function SessionsScreen() {
               setInspectorOpen(true);
             }}
           >
-            ← Sessions inventory
+            ← Sessions
           </button>
           <div className="feature-sidebar-header">
             <div>
