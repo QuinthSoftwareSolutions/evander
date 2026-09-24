@@ -94,7 +94,7 @@
 }
 [data-admin-design] .admin-shell.workflow-sidebar-collapsed .admin-shell-layout,
 [data-admin-design] .admin-shell.workflow-focus.workflow-sidebar-collapsed .admin-shell-layout {
-  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-columns: 76px minmax(0, 1fr);
 }
 [data-admin-design] .admin-shell-nav {
   padding: 10px;

@@ -21,7 +21,7 @@ CLASSIC_ADDONS = {
 }
 
 
-def selected_ui(request: Request, *, default: str = "classic") -> str:
+def selected_ui(request: Request, *, default: str = "new") -> str:
     explicit = request.query_params.get("admin_ui")
     if explicit in VERSIONS:
         return explicit

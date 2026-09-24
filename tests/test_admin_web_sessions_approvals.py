@@ -1096,6 +1096,7 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         {"value": "local_openai", "label": "Local OpenAI"},
         {"value": "azure_openai", "label": "Azure OpenAI"},
         {"value": "anthropic", "label": "Anthropic"},
+        {"value": "openrouter", "label": "OpenRouter"},
     ]
     assert any(
         item["field_name"] == "tool_argument_policies"

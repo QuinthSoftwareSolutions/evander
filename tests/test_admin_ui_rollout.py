@@ -18,14 +18,14 @@ from evander.admin.web.ui_rollout import addon_rollout_routes, selected_ui
 @pytest.mark.parametrize(
     ("query", "cookie", "expected"),
     [
-        ("", "", "classic"),
+        ("", "", "new"),
         ("", "admin_ui_version=new", "new"),
         ("admin_ui=classic", "admin_ui_version=new", "classic"),
         ("admin_ui=new", "admin_ui_version=classic", "new"),
-        ("admin_ui=../secret", "admin_ui_version=invalid", "classic"),
+        ("admin_ui=../secret", "admin_ui_version=invalid", "new"),
     ],
 )
-def test_ui_selection_is_explicit_then_remembered_then_classic(query, cookie, expected):
+def test_ui_selection_is_explicit_then_remembered_then_defaults_to_new(query, cookie, expected):
     request = Request(
         {"type": "http", "query_string": query.encode(), "headers": [(b"cookie", cookie.encode())]}
     )
@@ -46,20 +46,20 @@ def test_root_serves_only_selected_bundle_and_preserves_branding(tmp_path, monke
     client = TestClient(
         web_app.create_app(build_admin_runtime(write_runtime_config(tmp_path / "state")))
     )
-    classic = client.get("/")
-    assert classic.status_code == 200
-    assert "/classic/assets/classic.js" in classic.text
-    assert "/assets/new.js" not in classic.text
-    assert 'data-admin-ui-version="classic"' in classic.text
-    assert "__ADMIN_WEB_BRANDING__" in classic.text
-    assert classic.headers["cache-control"] == "private, no-store"
-    assert classic.headers["vary"] == "Cookie"
-    client.cookies.set("admin_ui_version", "new")
-    new = client.get("/index.html")
+    new = client.get("/")
+    assert new.status_code == 200
     assert "/assets/new.js" in new.text
     assert "/classic/assets/classic.js" not in new.text
     assert 'data-admin-ui-version="new"' in new.text
-    assert "/classic/assets/classic.js" in client.get("/?admin_ui=classic").text
+    assert "__ADMIN_WEB_BRANDING__" in new.text
+    assert new.headers["cache-control"] == "private, no-store"
+    assert new.headers["vary"] == "Cookie"
+    client.cookies.set("admin_ui_version", "classic")
+    classic = client.get("/index.html")
+    assert "/classic/assets/classic.js" in classic.text
+    assert "/assets/new.js" not in classic.text
+    assert 'data-admin-ui-version="classic"' in classic.text
+    assert "/assets/new.js" in client.get("/?admin_ui=new").text
 
 
 def test_classic_assets_readiness_checks_the_packaged_dependencies(tmp_path):

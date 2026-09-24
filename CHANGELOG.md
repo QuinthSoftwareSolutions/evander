@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-24 - Guard pinned Team integration bases (0.63.1)
+## 2026-09-24 - Guard pinned Team integration bases (0.63.3)
 
 - Inherit parent commit pins when creating children in the same Git workstream,
   including nested and batch-created tasks, so later branch advances cannot change their base.
@@ -8,6 +8,16 @@
   integration base, including nested compositions and missing source provenance.
 - Recheck contribution bases at submission and require server verification before integration
   acceptance, preserving existing accepted history and requiring explicit recovery for mismatches.
+
+## 2026-09-24 - Make New UI the default (0.63.2)
+
+- Make New UI the default while retaining the Classic UI picker and saved preference.
+- Widen the collapsed navigation so section labels stay on one line.
+
+## 2026-09-24 - Align provider catalog regression expectations (0.63.1)
+
+- Include OpenRouter in Admin Web provider-mode catalog assertions so the checked
+  options match the supported agent and session creation modes.
 
 ## 2026-09-24 - Pinned OpenRouter Codex routing (0.63.0)
 
