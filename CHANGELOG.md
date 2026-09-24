@@ -11,6 +11,8 @@
   hydrating and serializing full execution payloads; keep control operations on full records.
 - Resolve communication targets once per workflow catalog request, retaining directory and
   capability filtering without introducing a shared configuration cache.
+- Keep cleanup audit tests independent of the current date by aligning the journal's
+  retention clock with their simulated cleanup timestamps.
 
 ## 2026-09-23 - Unify the Admin Web design (0.61.0)
 
