@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-24 - Restore Codex subscription auth availability (0.63.6)
+
+- Give each subscription auth container an ephemeral writable home so Codex can inspect and
+  create legacy workspace configuration when the container runs as the worker service account.
+- Keep durable credentials isolated in the existing private profile mount.
+
 ## 2026-09-24 - Correct release news pager arrows (0.63.5)
 
 - Match the Newer and Older arrow icons to their button labels in the dashboard and article reader.

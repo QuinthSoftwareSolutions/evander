@@ -230,6 +230,8 @@ def _codex_auth_command(
             auth_container_name,
             "--network",
             docker_network,
+            "--tmpfs",
+            "/home/agent:rw,noexec,nosuid,nodev,size=16m,mode=1777",
             "-v",
             f"{auth_home}:/codex-auth",
             "-e",
