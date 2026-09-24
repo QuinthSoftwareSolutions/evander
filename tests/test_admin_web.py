@@ -1994,6 +1994,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {"value": "openai_public", "label": "Public OpenAI"},
         {"value": "local_openai", "label": "Local OpenAI"},
         {"value": "azure_openai", "label": "Azure OpenAI"},
+        {"value": "openrouter", "label": "OpenRouter"},
     ]
     assert agent_create_fields["provider"]["label"] == "VM provider"
     assert agent_create_fields["provider"]["metadata"] == {"execution_backends": ["libvirt_vm"]}
@@ -15737,6 +15738,7 @@ def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path
         {"value": "openai_public", "label": "Public OpenAI"},
         {"value": "local_openai", "label": "Local OpenAI"},
         {"value": "azure_openai", "label": "Azure OpenAI"},
+        {"value": "openrouter", "label": "OpenRouter"},
     ]
     assert body["libvirt"]["default_template"] == "default"
     assert body["libvirt"]["templates"] == [
