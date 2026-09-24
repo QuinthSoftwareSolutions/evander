@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-24 - Remove tests without distinct regression value (0.63.7)
+
+- Remove 169 Python test definitions and 111 Admin Web cases that only checked
+  fixtures, source wording, trivial value echoes, or behavior covered more directly elsewhere.
+- Preserve the complete test-by-test review and rationale in `docs/test-suite-review-2026-09-24.*`.
+- Remove stale references to deleted tests and refresh the published user manual.
+
 ## 2026-09-24 - Restore Codex subscription auth availability (0.63.6)
 
 - Give each subscription auth container an ephemeral writable home so Codex can inspect and

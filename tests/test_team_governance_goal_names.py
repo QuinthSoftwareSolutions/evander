@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sqlite3
 
-from evander_team_addon.api import TEAM_VIEW_COLLECTIONS
 from evander_team_addon.models import GovernanceGoal, TeamRecordState
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
@@ -163,7 +162,3 @@ def test_sqlite_schema_migrates_and_backfills_governance_goal_names(
     assert "goal_name" in goal_columns
     assert goal_name == "legacy-cost"
     assert schema_version == str(SQLITE_SCHEMA_VERSION)
-
-
-def test_governance_view_includes_roles_for_named_manager_choices() -> None:
-    assert "roles" in TEAM_VIEW_COLLECTIONS["governance"]

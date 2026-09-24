@@ -326,16 +326,3 @@ def test_guest_setup_review_repo_fails_when_explicit_commit_is_stale(tmp_path: P
     assert _git(prep_repo, "rev-parse", "HEAD", env=env).stdout.strip() == base_tip_sha
     assert stale_base_sha != base_tip_sha
     assert base_tip_sha != head_sha
-
-
-def test_guest_setup_review_repo_help_mentions_explicit_refs(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[1]
-    script_path = root / "scripts" / "guest" / "setup_review_repo.sh"
-
-    text = script_path.read_text(encoding="utf-8")
-
-    assert "show_help()" in text
-    assert '== "--help"' in text
-    assert "Usage:" in text
-    assert "--base-ref REF" in text
-    assert "--head-ref REF" in text

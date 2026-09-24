@@ -90,11 +90,7 @@ class SuiteReporter:
             if (
                 name.endswith("_docs.py")
                 or name.startswith("test_documentation")
-                or name
-                in {
-                    "test_evander_user_manual.py",
-                    "test_operator_field_help_inventory.py",
-                }
+                or name == "test_evander_user_manual.py"
             ):
                 item.add_marker(pytest.mark.documentation)
 

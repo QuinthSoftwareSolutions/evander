@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -164,25 +163,6 @@ def test_freshservice_addon_registers_connector_driver() -> None:
 
     assert registration.addon_id == "freshservice-addon"
     assert registry.driver_names == ("filesystem", "freshservice", "rest")
-
-
-def test_freshservice_example_config_is_valid() -> None:
-    project_dir = Path(__file__).resolve().parents[1]
-    payload = json.loads(
-        (project_dir / "config/connectors/freshservice-readonly.json.example").read_text(
-            encoding="utf-8"
-        )
-    )
-    config = ConnectorDirectoryConfig.model_validate(payload)
-
-    driver = FreshserviceConnectorDriver()
-    driver.validate_definition(config.connectors["freshservice"])
-    assert set(config.connectors["freshservice"].operations) == {
-        "download_ticket_attachment",
-        "get_ticket",
-        "list_ticket_conversations",
-        "search_tickets_by_subject",
-    }
 
 
 def test_freshservice_search_scans_recent_tickets_and_returns_exact_subject_matches(

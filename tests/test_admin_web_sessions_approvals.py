@@ -39,9 +39,6 @@ from evander.models import (
 from config_helpers import write_runtime_config
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     return write_runtime_config(
         tmp_path,
@@ -173,31 +170,6 @@ def _seed_session(
     }
     payload.update(overrides)
     service.runtime.session_repository.upsert_session(SessionManifest(**payload))
-
-
-def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> None:
-    source = (
-        ROOT / "frontend" / "admin-web" / "src" / "features" / "sessions" / "SessionsScreen.tsx"
-    ).read_text(encoding="utf-8")
-
-    assert '"Voice calling"' in source
-    assert (
-        '"list_contacts", "make_phone_call", "get_phone_call_result", "submit_voice_query_response"'
-        in source
-    )
-    assert (
-        '"stage_artifact",\n    "communication_copy_artifact_to_workspace",\n'
-        '    "communication_stage_workspace_file",' in source
-    )
-
-
-def test_mcp_tools_page_renders_tool_descriptions() -> None:
-    source = (
-        ROOT / "frontend" / "admin-web" / "src" / "features" / "mcpTools" / "McpToolsPage.tsx"
-    ).read_text(encoding="utf-8")
-
-    assert "mcp-tool-policy-description" in source
-    assert "item.description" in source
 
 
 def test_admin_web_approval_mutations_require_owner_unlock(

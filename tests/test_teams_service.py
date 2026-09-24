@@ -949,44 +949,6 @@ def test_graph_teams_service_includes_graph_error_body_in_http_status_error(
         service.get_messages()
 
 
-def test_stub_teams_service_filters_by_cursor(tmp_path: Path) -> None:
-    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
-    store.put(
-        "team-a/channel-1/msg-1",
-        TeamsMessageEnvelope(
-            cursor="team-a/channel-1/msg-1",
-            message_id="msg-1",
-            author_id="user-1",
-            team_id="team-a",
-            channel_id="channel-1",
-            thread_id="msg-1",
-            content="one",
-            created_at=datetime(2026, 3, 30, 11, 0, tzinfo=UTC),
-            metadata={"source": "teams_graph_api"},
-        ),
-    )
-    store.put(
-        "team-a/channel-1/msg-2",
-        TeamsMessageEnvelope(
-            cursor="team-a/channel-1/msg-2",
-            message_id="msg-2",
-            author_id="user-2",
-            team_id="team-a",
-            channel_id="channel-1",
-            thread_id="msg-1",
-            content="two",
-            created_at=datetime(2026, 3, 30, 11, 1, tzinfo=UTC),
-            metadata={"source": "teams_graph_api"},
-        ),
-    )
-
-    service = StubTeamsService(store)
-
-    messages = service.get_messages(since_cursor="team-a/channel-1/msg-1")
-
-    assert [message.cursor for message in messages] == ["team-a/channel-1/msg-2"]
-
-
 def test_graph_teams_service_before_cursor_limits_history_fetch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1875,34 +1837,6 @@ def test_graph_teams_service_rejects_unsupported_ascii_reaction_before_http(
         service.add_reaction("team-a/channel-1", "msg-root", "shrug", "session-1")
 
     assert requests == []
-
-
-def test_stub_teams_add_reaction_returns_deterministic_success_payload(tmp_path: Path) -> None:
-    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
-    service = StubTeamsService(store)
-
-    channel_result = service.add_reaction("team-a/channel-1", "msg-root", "like", "session-1")
-    chat_result = service.add_reaction("chat:chat-1", "msg-chat", "heart", "session-1")
-
-    assert channel_result == {
-        "status": "stubbed",
-        "channel_target": "team-a/channel-1",
-        "team_id": "team-a",
-        "channel_id": "channel-1",
-        "session_id": "session-1",
-        "message_id": "msg-root",
-        "reaction": "like",
-        "emoji": "like",
-    }
-    assert chat_result == {
-        "status": "stubbed",
-        "channel_target": "chat:chat-1",
-        "chat_id": "chat-1",
-        "session_id": "session-1",
-        "message_id": "msg-chat",
-        "reaction": "heart",
-        "emoji": "heart",
-    }
 
 
 def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_content(

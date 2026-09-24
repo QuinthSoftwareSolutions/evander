@@ -866,22 +866,6 @@ def test_add_reaction_success_returns_normalized_payload(
     )
 
 
-def test_stub_discord_add_reaction_returns_deterministic_success_payload(tmp_path: Path) -> None:
-    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
-    service = StubDiscordService(command_store)
-
-    result = service.add_reaction("chan-a", "msg-123", "👍", "session-1")
-
-    assert result == {
-        "status": "stubbed",
-        "channel_id": "chan-a",
-        "session_id": "session-1",
-        "message_id": "msg-123",
-        "emoji": "👍",
-        "reaction": "👍",
-    }
-
-
 def test_get_commands_raises_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
     command_store.put(

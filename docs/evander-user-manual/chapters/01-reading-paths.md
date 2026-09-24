@@ -133,4 +133,4 @@ Non-mutating observation is the safest first move, but commands that assemble th
 - `docs/architecture.md`, `docs/operations.md`, and `docs/configuration-reference.md` — core architecture, operator procedures, and configuration fields.
 - `src/evander/admin/composition.py` and `src/evander/runtime.py` — current runtime assembly and shared services.
 - `src/evander/models.py` — canonical session, approval, event, and other durable record models.
-- `tests/test_systemd_docs.py`, `tests/test_container_worker_docs.py`, and `tests/test_workflow_run_inspector_demo_docs.py` — examples of documentation claims kept executable through tests.
+- `tests/test_documentation_integrity.py` and `tests/test_evander_user_manual.py` — documentation link and publication checks.

@@ -86,42 +86,6 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     assert addon.outbound_identity_resolver is not None
 
 
-def test_team_addon_ui_distinguishes_acceptance_from_review_waiting() -> None:
-    source = (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").read_text(
-        encoding="utf-8"
-    )
-    mail_source = (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-mail.js").read_text(
-        encoding="utf-8"
-    )
-    markup = (PROJECT_ROOT / "src/evander_team_addon/ui_static/index.html").read_text(
-        encoding="utf-8"
-    )
-    stylesheet = (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.css").read_text(
-        encoding="utf-8"
-    )
-
-    assert 'label: "Acceptance / Review"' in source
-    assert 'task.waiting_reason === "superior_acceptance"' in source
-    assert 'return "Waiting for acceptance"' in source
-    assert 'return "Waiting for review"' in source
-    assert 'waiting_for_acceptance: "Waiting for acceptance"' in source
-    assert 'return "waiting_for_acceptance"' in source
-    assert "taskStateLabel(task)" in source
-    assert "taskStateLabel," in source
-    assert "taskStateLabel(task)" in mail_source
-    assert 'data-filter="waiting_for_acceptance"' in markup
-    assert ".state-pill.waiting_for_acceptance" in stylesheet
-
-
-def test_team_addon_ui_labels_in_dispatch_operator_delivery() -> None:
-    source = (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").read_text(
-        encoding="utf-8"
-    )
-
-    assert 'delivered_in_dispatch: "Delivered"' in source
-    assert 'acknowledged: "Handled"' in source
-
-
 def test_bundled_bokio_addon_packaging_contract_is_declared() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 

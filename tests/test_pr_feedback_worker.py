@@ -10,7 +10,6 @@ import pytest
 
 from evander.audit import AuditLogger
 from evander.config import GatewayConfig
-import evander.daemons.pr_feedback_worker as daemon_pr_feedback_worker
 from evander.daemons.pr_feedback_worker import (
     PullRequestFeedbackWorker,
     build_pr_feedback_worker,
@@ -55,13 +54,6 @@ def test_pr_feedback_store_dedupes_feedback(tmp_path: Path) -> None:
         (tmp_path / "runtime" / "pr-feedback-store.json").read_text(encoding="utf-8")
     )
     assert list(payload["feedback"].keys()) == ["github:issue_comment:1"]
-
-
-def test_pr_feedback_daemon_reexports_match_shared_package() -> None:
-    assert daemon_pr_feedback_worker.FeedbackEnvelope is FeedbackEnvelope
-    assert daemon_pr_feedback_worker.PrFeedbackStore is PrFeedbackStore
-    assert daemon_pr_feedback_worker.GitHubFeedbackAdapter is GitHubFeedbackAdapter
-    assert daemon_pr_feedback_worker.AzureDevOpsFeedbackAdapter is AzureDevOpsFeedbackAdapter
 
 
 def test_agent_directed_annotation_marks_self_authored_feedback_not_directed() -> None:

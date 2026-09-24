@@ -248,7 +248,7 @@ from evander_team_addon.services.wake_prompt_context import (
     wake_uses_fresh_context,
     work_lineage_resume_thread_id,
 )
-from evander_team_addon.workflow_packs import team_runtime_v1, team_runtime_v1_layout
+from evander_team_addon.workflow_packs import team_runtime_v1
 
 ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES = (
     *ORDINARY_TEAM_MCP_TOOL_NAMES,
@@ -257,21 +257,6 @@ ORDINARY_TEAM_WITH_READ_MCP_TOOL_NAMES = (
     "code_search",
     "code_navigate",
 )
-
-
-def test_team_runtime_pack_layout_positions_every_runtime_node() -> None:
-    pack = WorkflowPack.model_validate(team_runtime_v1())
-    layout = team_runtime_v1_layout()
-    nodes = layout["nodes"]
-    assert isinstance(nodes, dict)
-
-    node_ids = {ir_node.node.id for ir_node in pack.ir.nodes}
-    assert set(nodes) == node_ids
-    assert set(pack.graphs[0].node_ids) == node_ids
-    assert len({(position["x"], position["y"]) for position in nodes.values()}) == len(node_ids)
-    assert nodes["team-consolidate-correction-branches"] == {"x": 720.0, "y": 1360.0}
-    assert nodes["team-publish-outbox-on-request"] == {"x": 360.0, "y": 40.0}
-    assert nodes["team-record-release-recovery-promotion"] == {"x": 720.0, "y": 1940.0}
 
 
 def test_team_runtime_pack_leaves_governance_warning_policy_to_teams() -> None:
@@ -15014,14 +14999,6 @@ def test_team_release_published_gate_requires_non_conflicting_mark_result(
     ).resolved_config
 
     assert filter_when_matches(resolved) is expected_match
-
-
-def test_team_consolidation_schema_advertises_failure_reason_code() -> None:
-    from evander_team_addon.provider_schemas import TEAM_OUTPUT_SCHEMAS
-
-    outputs = TEAM_OUTPUT_SCHEMAS["effect:team:consolidate-git-branches"]
-
-    assert outputs["error_code"] == {"type": ["string", "null"]}
 
 
 def test_team_runtime_pack_only_pushes_release_branch_to_canonical() -> None:

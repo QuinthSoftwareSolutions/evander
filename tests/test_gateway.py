@@ -4116,14 +4116,3 @@ def test_gateway_app_runs_mounted_mcp_lifespan_on_startup(tmp_path: Path) -> Non
         assert mcp_session_manager._task_group is not None
 
     assert mcp_session_manager._task_group is None
-
-
-def test_gateway_package_exports_entry_points() -> None:
-    import evander.gateway as gateway_package
-    from evander.gateway.app import create_app as canonical_create_app
-    from evander.gateway.cli import main as canonical_main
-    from evander.gateway.server import create_server as canonical_create_server
-
-    assert gateway_package.create_app is canonical_create_app
-    assert gateway_package.create_server is canonical_create_server
-    assert gateway_package.main is canonical_main

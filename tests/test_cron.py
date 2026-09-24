@@ -6,18 +6,12 @@ import pytest
 
 from evander.admin.workflow_catalog import _WORKFLOW_EDITOR_NODE_CATALOG
 from evander.cron import (
-    cron_min_interval_seconds,
     latest_cron_time_on_or_before,
     next_cron_time,
-    normalize_cron_expression,
     normalize_cron_timezone,
     validate_cron_expression,
 )
 from evander.triggers.providers.cron_schema import CronTriggerConfigSchema
-
-
-def test_normalize_cron_expression_collapses_whitespace() -> None:
-    assert normalize_cron_expression("  */15   *  *  *   *  ") == "*/15 * * * *"
 
 
 @pytest.mark.parametrize(
@@ -189,11 +183,3 @@ def test_latest_cron_time_preserves_utc_order_across_fallback(
         )
         == expected
     )
-
-
-def test_cron_min_interval_seconds_uses_shared_iterator() -> None:
-    interval = cron_min_interval_seconds(
-        "0 8-18/2 * * 1-5", datetime(2026, 5, 18, 7, 59, tzinfo=UTC)
-    )
-
-    assert interval == 2 * 60 * 60

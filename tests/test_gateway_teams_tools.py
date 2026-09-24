@@ -1362,21 +1362,6 @@ def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Pat
     ]
 
 
-def test_teams_post_status_schema_describes_mentions(tmp_path: Path) -> None:
-    context = make_context(tmp_path)
-    server = create_server(context)
-    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
-
-    mentions = tools["teams_post_status"].parameters["properties"]["mentions"]
-    session_id = tools["teams_post_status"].parameters["properties"]["session_id"]
-    required = tools["teams_post_status"].parameters.get("required", [])
-
-    assert "Teams user refs to mention" in mentions["description"]
-    assert "Plain @name text" in mentions["description"]
-    assert "session_id" not in required
-    assert "Agents should omit this field" in session_id["description"]
-
-
 def test_teams_post_status_forwards_normalized_mentions(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(

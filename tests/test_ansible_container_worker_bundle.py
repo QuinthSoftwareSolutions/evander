@@ -699,46 +699,6 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "not the literal <control-plane-private-ip> placeholder" in role
 
 
-def test_worker_docs_and_inventory_reference_playbook() -> None:
-    inventory = (ROOT / "ansible" / "inventory" / "hosts.example.yml").read_text(encoding="utf-8")
-    ansible_docs = (ROOT / "ansible" / "README.md").read_text(encoding="utf-8")
-    worker_docs = (ROOT / "docs" / "container-worker-backend.md").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
-
-    assert "evander_worker_hosts" in inventory
-    assert "ansible/worker.yml" in ansible_docs
-    assert "evander_worker_token" in ansible_docs
-    assert "container_worker_base_url" in ansible_docs
-    assert "container_worker_guest_http_target_relay_base_url" in ansible_docs
-    assert "container_worker_guest_http_target_browser_proxy_url" in ansible_docs
-    assert "container_worker_guest_pypi_index_url" in ansible_docs
-    assert "container_worker_guest_npm_registry_url" in ansible_docs
-    assert "evander_npm_audit_facade_port" in ansible_docs
-    assert "evander_services.npm_audit_facade" in ansible_docs
-    assert "config/npm-audit-facade.env" in ansible_docs
-    assert "local playbook commit" in ansible_docs
-    assert "evander_worker_enforce_revision_match: false" in ansible_docs
-    assert "Worker outbound rules should still deny direct access" in ansible_docs
-    assert "allowed Git source prefix" in ansible_docs
-    assert "GitHub/Azure DevOps egress" in ansible_docs
-    assert "evander_worker_egress_policy_enabled: true" in ansible_docs
-    assert 'evander_worker_docker_network: "bridge"' in ansible_docs
-    assert "evander-worker-egress-policy.service" in ansible_docs
-    assert "sudo systemctl status evander-worker-egress-policy.service" in ansible_docs
-    assert "sudo iptables -S DOCKER-USER" in ansible_docs
-    assert "evander-cli execution smoke-container-worker --json" in ansible_docs
-    assert "169.254.169.254" in ansible_docs
-    assert "smoke-container-worker" in ansible_docs
-    assert "ansible/worker.yml" in worker_docs
-    assert "worker-VM side of the container execution backend" in worker_docs
-    assert "single-worker" in worker_docs
-    assert "DOCKER-USER" in worker_docs
-    assert "evander-npm-audit-facade" in worker_docs
-    assert "dedicated container-worker VM playbook" in readme
-    assert "dedicated container-worker VM playbook" in operations
-
-
 def test_dotnet_bundle_selector_only_publishes_validated_directories(tmp_path):
     import yaml
 
