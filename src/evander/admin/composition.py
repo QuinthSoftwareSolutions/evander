@@ -528,6 +528,7 @@ def _build_admin_runtime_components(
             normalize_directory_reference=normalize_directory_reference,
             addon_catalog=addon_catalog,
             managed_git_admin=managed_git_admin,
+            teams_admin=teams_admin,
         )
     )
     addon_admin = AddonAdminService(

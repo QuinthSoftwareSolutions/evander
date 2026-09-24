@@ -374,6 +374,7 @@ class RuntimeContext:
         directory_path: str,
         *,
         allowed_channel_targets: Sequence[str],
+        allowed_user_targets: Sequence[str] = (),
     ) -> TeamsService:
         if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
             return self.teams_service
@@ -385,13 +386,20 @@ class RuntimeContext:
                 if str(target or "").strip()
             }
         )
+        exact_user_targets = sorted(
+            {
+                str(target or "").strip()
+                for target in allowed_user_targets
+                if str(target or "").strip()
+            }
+        )
         return _build_teams_service(
             resolved_config,
             self.teams_messages,
             self.session_repository,
             directory_path=directory_path,
             allowed_channel_targets_provider=lambda: exact_targets,
-            allowed_user_targets_provider=lambda: [],
+            allowed_user_targets_provider=lambda: exact_user_targets,
             user_chat_cache=self.teams_user_chat_cache,
         )
 

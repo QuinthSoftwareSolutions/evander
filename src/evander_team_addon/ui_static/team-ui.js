@@ -7,6 +7,19 @@ import {
   replaceCaseBoardLocation,
   taskBoardViewSearchParams,
 } from "./team-case-board.js";
+import {
+  defaultTeamView,
+  emptyChatState,
+  emptyCostState,
+  emptyState,
+  emptyTimelineState,
+  normalizedTeamView,
+  readAddonDeepLinkParams,
+  readChatDeepLink,
+  readHumanReviewDeepLink,
+  readStoredTeamView,
+  storeTeamView,
+} from "./team-ui-state.js";
 
 const API_BASE = "/api/addons/team-addon";
 
@@ -137,29 +150,10 @@ const defaultPlanningTaskStates = new Set([
   "blocked",
   "waiting_for_review",
 ]);
-const defaultTeamView = "people";
-const teamViewStorageKey = "team-addon:active-view";
 const chatReadStorageKey = "team-addon:chat:read-markers";
 const chatNotificationSoundStorageKey = "team-addon:chat:notification-sound-muted";
 const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
-const teamViewIds = new Set([
-  "workspace",
-  "operations",
-  "delivery",
-  "memory",
-  "projects",
-  "task-board",
-  "cases",
-  "people",
-  "chat",
-  "mail",
-  "activity",
-  "governance",
-  "planning",
-  "timeline",
-  "org",
-]);
 const teamStateCollectionKeys = [
   "teams",
   "governance_groups",
@@ -757,102 +751,6 @@ document.addEventListener("DOMContentLoaded", () => {
   void bootTeamAddon();
 });
 
-function emptyState() {
-  return {
-    revision: 0,
-    teams: {},
-    governance_groups: {},
-    governance_agenda: {},
-    governance_runtimes: {},
-    projects: {},
-    roles: {},
-    agents: {},
-    project_assignments: {},
-    agent_runtimes: {},
-    cases: {},
-    tasks: {},
-    deliverables: {},
-    review_requests: {},
-    outcome_kind_definitions: {},
-    review_profiles: {},
-    inbox: {},
-    blockers: {},
-    blocker_events: {},
-    dependency_composition_recoveries: {},
-    action_records: {},
-    release_packages: {},
-    dispatches: {},
-    worktree_cleanup_candidates: {},
-    git_work_contexts: {},
-    ephemeral_assignments: {},
-    git_promotions: {},
-    stand_downs: {},
-    runtime_operations: {
-      generated_at: null,
-      agents: [],
-      attention: [],
-    },
-    resource_tokens: {},
-    available_role_permissions: [],
-  };
-}
-
-function emptyTimelineState() {
-  return {
-    revision: 0,
-    derived: true,
-    audit_log: false,
-    source: "derived_from_current_team_state",
-    description:
-      "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
-    filters: {},
-    timestampless_count: 0,
-    total_count: 0,
-    limit: 10,
-    offset: 0,
-    has_more: false,
-    facets: {
-      types: [],
-      statuses: [],
-    },
-    entries: [],
-  };
-}
-
-function emptyCostState() {
-  return {
-    generated_at: null,
-    coverage_status: "partial",
-    coverage_reasons: ["costs_not_loaded"],
-    team_costs: {},
-    governance_group_costs: {},
-    project_costs: {},
-    unattributed_costs: null,
-    source_counts: {},
-    events_count: 0,
-    priced_events_count: 0,
-    unpriced_events_count: 0,
-    backfill: null,
-    error: null,
-  };
-}
-
-function emptyChatState() {
-  return {
-    revision: 0,
-    selected_conversation_id: null,
-    current_operator: null,
-    selected_operator: null,
-    can_view_all_operators: false,
-    read_only: false,
-    operator_options: [],
-    eligible_agents: [],
-    conversations: [],
-    loading: false,
-    error: null,
-  };
-}
-
 const decisionStates = ["accepted", "rejected", "blocked"];
 const inboxItemLabels = {
   operator_directive: "Operator directive",
@@ -975,68 +873,6 @@ function bindWorkspaceAttentionPagination() {
       behavior: "auto",
     });
   });
-}
-
-function normalizedTeamView(view) {
-  return teamViewIds.has(view) ? view : defaultTeamView;
-}
-
-function readStoredTeamView() {
-  try {
-    const storedView = window.localStorage.getItem(teamViewStorageKey);
-    const normalizedView = normalizedTeamView(storedView);
-    if (storedView && storedView !== normalizedView) {
-      window.localStorage.setItem(teamViewStorageKey, normalizedView);
-    }
-    return normalizedView;
-  } catch {
-    return defaultTeamView;
-  }
-}
-
-function readAddonDeepLinkParams() {
-  const params = new URLSearchParams(window.location.search);
-  const hash = String(window.location.hash || "");
-  const hashQueryIndex = hash.indexOf("?");
-  if (hashQueryIndex >= 0) {
-    const hashParams = new URLSearchParams(hash.slice(hashQueryIndex + 1));
-    hashParams.forEach((value, key) => {
-      if (!params.has(key)) {
-        params.set(key, value);
-      }
-    });
-  }
-  return params;
-}
-
-function readHumanReviewDeepLink() {
-  const params = readAddonDeepLinkParams();
-  const enabled = params.get("view") === "my-human-reviews";
-  return {
-    enabled,
-    requestId: enabled
-      ? String(params.get("human_review_request_id") || "").trim()
-      : "",
-  };
-}
-
-function readChatDeepLink() {
-  const params = readAddonDeepLinkParams();
-  const enabled = params.get("view") === "chat";
-  return {
-    enabled,
-    conversationId: enabled
-      ? String(params.get("conversation_id") || "").trim()
-      : "",
-  };
-}
-
-function storeTeamView(view) {
-  try {
-    window.localStorage.setItem(teamViewStorageKey, normalizedTeamView(view));
-  } catch {
-    // Storage can be unavailable in hardened browser contexts.
-  }
 }
 
 function bindPageLifecycle() {
@@ -1312,6 +1148,14 @@ function openOrgAgentContextMenu(detail) {
     agentId,
     items: [
       {
+        action: "open-chat",
+        label: "Open chat",
+        disabled: chatState.read_only || !agent,
+        disabledReason: chatState.read_only
+          ? "This chat history is read-only."
+          : "Agent is no longer available.",
+      },
+      {
         action: "open-session",
         label: "Open session",
         disabled: !text(agent?.session_id),
@@ -1435,6 +1279,10 @@ function closeOrgContextMenu() {
 }
 
 function handleOrgContextAction(action, context) {
+  if (action === "open-chat") {
+    void openChatForAgent(context.agentId);
+    return;
+  }
   if (action === "open-session") {
     navigateToAgentSession(state.agents?.[context.agentId]?.session_id);
     return;
@@ -1631,7 +1479,12 @@ function renderTeamCopySessionOptions(selectedValue = "") {
   });
 }
 
-function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
+function renderTeamCopyDialogBody(
+  team,
+  configuration,
+  sourceRevision,
+  sourceConfigurationToken,
+) {
   const excludedProjects = values(state.projects).filter((project) =>
     text(project.team_id) === text(team.id)
     && !["active", "blocked"].includes(text(project.status)),
@@ -1654,6 +1507,7 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
       data-form-id="team-copy-form"
       data-source-team-id="${escapeAttr(team.id)}"
       data-source-revision="${escapeAttr(sourceRevision)}"
+      data-source-configuration-token="${escapeAttr(sourceConfigurationToken)}"
     >
       <label>New team name <input name="name" required value="${escapeAttr(`${team.name || team.id} Copy`)}" /></label>
       <div class="team-copy-summary" role="note">
@@ -1718,9 +1572,19 @@ async function openTeamCopyDialog(teamId) {
   }
   configuration = teamCopyConfiguration(team.id);
   const sourceRevision = state.revision;
+  const sourceConfigurationToken = text(team.copy_configuration_token);
+  if (!sourceConfigurationToken) {
+    setStatus("The Team copy preview is unavailable. Reload the page and try again.", "error");
+    return;
+  }
   showOrgActionDialog({
     title: `Copy ${team.name || team.id}`,
-    bodyHtml: renderTeamCopyDialogBody(team, configuration, sourceRevision),
+    bodyHtml: renderTeamCopyDialogBody(
+      team,
+      configuration,
+      sourceRevision,
+      sourceConfigurationToken,
+    ),
   });
   syncTeamCopySessionSelections(document.querySelector("#team-copy-form"));
 }
@@ -1836,8 +1700,14 @@ async function submitTeamCopyForm(form) {
   const sourceTeamId = text(form.dataset.sourceTeamId);
   const sessionSelects = Array.from(form.querySelectorAll("[data-team-copy-session-select]"));
   if (sessionSelects.some((select) => !text(select.value))) {
-    if (Number(form.dataset.sourceRevision) !== state.revision) {
-      setStatus("The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.", "warning");
+    const currentConfigurationToken = text(
+      state.teams?.[sourceTeamId]?.copy_configuration_token,
+    );
+    if (
+      currentConfigurationToken
+      && currentConfigurationToken !== text(form.dataset.sourceConfigurationToken)
+    ) {
+      setStatus("The source Team configuration changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.", "warning");
       return false;
     }
     form.dataset.copyingSessions = "true";
@@ -1878,6 +1748,7 @@ async function submitTeamCopyForm(form) {
       name: text(form.elements.name?.value),
       agent_session_ids: agentSessionIds,
       expected_revision: Number(form.dataset.sourceRevision),
+      source_configuration_token: text(form.dataset.sourceConfigurationToken),
     },
     { resetOnSuccess: false, detailedResult: true },
   );
@@ -1885,7 +1756,7 @@ async function submitTeamCopyForm(form) {
     if (result.failureReason === "conflict") {
       pendingConflictRetry = null;
       setStatus(
-        "The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
+        "The source Team configuration changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
         "warning",
       );
     }
@@ -2721,6 +2592,13 @@ function bindRecordEditing() {
     if (openSessionButton) {
       event.preventDefault();
       navigateToAgentSession(openSessionButton.dataset.openSessionId);
+      return;
+    }
+
+    const openChatButton = event.target.closest("[data-open-chat-agent-id]");
+    if (openChatButton) {
+      event.preventDefault();
+      void openChatForAgent(openChatButton.dataset.openChatAgentId);
       return;
     }
 
@@ -5652,6 +5530,29 @@ async function createOrFocusChat(agentId) {
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Chat could not be opened.", "error");
   }
+}
+
+async function openChatForAgent(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return;
+  }
+  if (chatState.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
+  setTeamView("chat");
+  try {
+    await loadView("chat");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Chat view failed to load.", "error");
+    return;
+  }
+  if (chatState.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
+  await createOrFocusChat(normalizedAgentId);
 }
 
 async function submitChatMessage(form) {
@@ -9151,6 +9052,7 @@ function renderAgents() {
                     <div class="record-actions">
                       ${renderAgentRosterStatusPill(details)}
                       ${renderAgentStandDownControls(details.id, details)}
+                      ${renderOpenAgentChatButton(details.id)}
                       ${renderOpenAgentSessionButton(details.sessionId)}
                       ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
                       ${editButton("agent", details.id)}
@@ -10400,6 +10302,7 @@ function renderChatNewPicker() {
   if (!elements.chatNewPicker) {
     return;
   }
+  const previousScrollTop = chatAgentPickerScrollTop();
   if (chatState.read_only) {
     elements.chatNewPicker.hidden = true;
     elements.chatNewPicker.innerHTML = "";
@@ -10420,6 +10323,22 @@ function renderChatNewPicker() {
       </div>
     `
     : `<p class="empty-state">No available agents.</p>`;
+  restoreChatAgentPickerScrollTop(previousScrollTop);
+}
+
+function chatAgentPickerScrollTop() {
+  const picker = elements.chatNewPicker?.querySelector(".chat-agent-picker");
+  return picker instanceof HTMLElement ? picker.scrollTop : null;
+}
+
+function restoreChatAgentPickerScrollTop(scrollTop) {
+  if (scrollTop === null) {
+    return;
+  }
+  const picker = elements.chatNewPicker?.querySelector(".chat-agent-picker");
+  if (picker instanceof HTMLElement) {
+    picker.scrollTop = scrollTop;
+  }
 }
 
 function renderChatConversationRow(conversation) {
@@ -11221,6 +11140,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       </div>
       <div class="record-actions agent-detail-actions">
         ${renderAgentStandDownControls(details.id, details)}
+        ${renderOpenAgentChatButton(details.id)}
         ${renderOpenAgentSessionButton(details.sessionId)}
         ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
         ${editButton("agent", details.id)}
@@ -11366,6 +11286,14 @@ function renderOpenAgentSessionButton(sessionId) {
     return "";
   }
   return `<button class="record-action" type="button" data-open-session-id="${escapeAttr(normalizedSessionId)}">Open session</button>`;
+}
+
+function renderOpenAgentChatButton(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return "";
+  }
+  return `<button class="record-action" type="button" data-open-chat-agent-id="${escapeAttr(normalizedAgentId)}" ${chatState.read_only ? 'disabled title="This chat history is read-only."' : ""}>Chat</button>`;
 }
 
 function navigateToAgentSession(sessionId) {

@@ -193,6 +193,8 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "projects",
         "roles",
         "agents",
+        "outcome_kind_definitions",
+        "review_profiles",
         "agent_runtimes",
         "stand_downs",
         "tasks",

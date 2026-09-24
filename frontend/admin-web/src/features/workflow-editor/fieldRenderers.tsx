@@ -41,6 +41,7 @@ import {
   renderStringInput,
   stringMapRowsToObject,
   supportsStructuredToolArgumentPolicies,
+  teamsDirectChatModeHidesField,
 } from "./fieldModels";
 import { SessionListMetadataRules } from "./SessionListMetadataRules";
 import { ToolArgumentPolicyField } from "./ToolArgumentPolicyField";
@@ -564,6 +565,9 @@ export function createFieldRenderers({
   function renderField(field: WorkflowEditorFieldDefinition) {
     const selectedNodeType = selectedNode?.type;
     if (adoQueryModeHidesField(selectedNodeType, field.key, inspectorKnownValues)) {
+      return null;
+    }
+    if (teamsDirectChatModeHidesField(selectedNodeType, field.key, inspectorKnownValues)) {
       return null;
     }
     const value = inspectorKnownValues[field.key];

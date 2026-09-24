@@ -879,8 +879,12 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   targets. The host-side Teams and Discord ingest workers feed their host-owned inbox stores; email
   targets are read through the configured mailbox provider during trigger polling. Trigger outputs
   do not expose communication target auth profile references.
-- Direct-message triggers require both chat targets and a sender allowlist:
-  - `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
+- Direct-message triggers support two Admin Web setup modes:
+  - `Direct chats by UPN` accepts `direct_chat_user_upns`; saving resolves each user through
+    Microsoft Graph, ensures the one-to-one chat, and persists the resulting `sender_user_ids`
+    and `chat:<chat-id>` targets alongside the readable UPNs.
+  - `Existing chat IDs` preserves the explicit target and sender form:
+    `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
 - Session manifests opt into Teams access explicitly:
 

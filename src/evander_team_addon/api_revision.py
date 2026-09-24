@@ -18,6 +18,7 @@ from .models import (
     TeamState,
     project_assignments_for_agent,
 )
+from .services.admin_service import team_copy_configuration_token
 
 
 def _trim_resource_tokens(payload: dict[str, Any], collection: str, keep_ids: set[str]) -> None:
@@ -43,6 +44,20 @@ def _add_team_resource_tokens(payload: dict[str, Any], state: TeamState) -> None
             row = rows.get(item_id)
             if isinstance(row, dict):
                 row["resource_token"] = token
+
+
+def _add_team_copy_configuration_tokens(payload: dict[str, Any], state: TeamState) -> None:
+    teams = payload.get("teams")
+    if not isinstance(teams, dict):
+        return
+    for team_id, team_payload in teams.items():
+        if not isinstance(team_payload, dict):
+            continue
+        try:
+            token = team_copy_configuration_token(state, str(team_id))
+        except ValueError:
+            continue
+        team_payload["copy_configuration_token"] = token
 
 
 def _add_team_resource_tokens_for_collections(

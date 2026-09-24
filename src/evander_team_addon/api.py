@@ -492,6 +492,12 @@ from .api_requests import (
     _with_privileged_operations as _with_privileged_operations,
 )
 from .api_revision import (
+    _add_team_copy_configuration_tokens as _add_team_copy_configuration_tokens,
+)
+from .services.admin_service import (
+    team_copy_configuration_token as team_copy_configuration_token,
+)
+from .api_revision import (
     _add_team_resource_tokens as _add_team_resource_tokens,
 )
 from .api_revision import (

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-23 - Reduce Admin Web read overhead (0.61.1)
+## 2026-09-24 - Reduce Admin Web read overhead (0.62.4)
 
 - Let execution-history clients omit exact match counts while retaining cursor pagination;
   show loaded rows and whether more are available in the workflow editor.
@@ -13,6 +13,47 @@
   capability filtering without introducing a shared configuration cache.
 - Keep cleanup audit tests independent of the current date by aligning the journal's
   retention clock with their simulated cleanup timestamps.
+
+## 2026-09-24 - Stable Team copy previews (0.62.3)
+
+- Keep Team copy previews valid while tasks, inbox items, dispatches, runtime state, cost history,
+  and other excluded operational records continue changing.
+- Reject a stale copy only when the stable source configuration graph changed, including Team
+  settings, projects, roles, agents, assignments, review profiles, and outcome kinds.
+
+## 2026-09-24 - Improve Team chat navigation and stability (0.62.2)
+
+- Preserve the new-chat agent picker position through Team state refreshes, so operators can
+  select agents far down the list without being returned to its start.
+- Add direct Chat actions in the Teams agent detail and Org chart agent menu.
+
+## 2026-09-24 - Make workflow node types easier to distinguish (0.62.1)
+
+- Give triggers, gates, effects, and queries distinct amber, green, blue, and purple
+  type bands, tinted backgrounds, and clearer labels in both New UI themes.
+- Keep selection, error, disabled, unsaved, and execution indicators visible alongside
+  node type styling.
+
+## 2026-09-24 - Resolve Teams direct chats from UPNs (0.62.0)
+
+- Let workflow editors choose direct-chat setup by UPN or retain explicit Teams chat and sender
+  IDs. Resolve direct-chat UPNs through host-owned Microsoft Graph access during revision-gated
+  saves, ensure each one-to-one chat, and persist canonical user and chat IDs while keeping the
+  readable UPNs in the form.
+
+## 2026-09-24 - Separate oversized maintenance responsibilities (0.61.1)
+
+- Move Team agent leasing, action application, task administration, and task-update
+  execution into named domain modules while retaining service constructors, method
+  signatures, revision checks, clock behavior, and outbox transactions.
+- Give worker Git workspace preparation, dependency composition, and cleanup a dedicated
+  implementation boundary while preserving established exception and helper imports.
+- Replace numbered Team MCP registration slices with domain names without changing tool
+  registration order, names, descriptions, or handlers.
+- Separate Team UI state and routing, session approval policy and dialogs, DIDWW delegated
+  origin queries, and OpenAI usage accounting from their oversized entry points.
+- Document the compatibility contracts for the new boundaries and keep their implementation
+  bodies mechanically equivalent to the prior code.
 
 ## 2026-09-23 - Unify the Admin Web design (0.61.0)
 
