@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-09-24 - Correct release news pager arrows (0.63.5)
+
+- Match the Newer and Older arrow icons to their button labels in the dashboard and article reader.
+
 ## 2026-09-24 - Reduce test-suite duplication and execution overhead (0.63.4)
 
 - Add a bounded complete Python runner with four parallel workers, a separate phase for
