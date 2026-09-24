@@ -1376,7 +1376,7 @@ def test_pr_feedback_suppressed_agent_authored_feedback_advances_cursor(
                 "display_name": "PR feedback",
                 "type": "trigger:pull-request:new-feedback",
                 "provider": "local",
-                "agent_author_names": ["evander Bot"],
+                "agent_author_names": ["Evander Bot"],
                 "suppress_agent_authored_feedback": True,
             }
         ),
@@ -1388,7 +1388,7 @@ def test_pr_feedback_suppressed_agent_authored_feedback_advances_cursor(
         provider="local",
         repo="org/repo",
         pr_id="11",
-        author="evander Bot",
+        author="Evander Bot",
         body="I handled this.",
         created_at=created_at,
     )
@@ -1425,7 +1425,7 @@ def test_pr_feedback_suppressed_github_feedback_updates_next_poll_cursor(
                 "display_name": "PR feedback",
                 "type": "trigger:pull-request:new-feedback",
                 "provider": "github",
-                "agent_author_names": ["evander Bot"],
+                "agent_author_names": ["Evander Bot"],
                 "suppress_agent_authored_feedback": True,
             }
         ),
@@ -1441,7 +1441,7 @@ def test_pr_feedback_suppressed_github_feedback_updates_next_poll_cursor(
                     provider="github",
                     repo="org/repo",
                     pr_id="11",
-                    author="evander Bot",
+                    author="Evander Bot",
                     body="I handled this.",
                     created_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
                 )
@@ -2168,8 +2168,8 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
                 "display_name": "PR GitHub",
                 "type": "trigger:pull-request:new-feedback",
                 "provider": "github",
-                "agent_author_names": ["evander Bot"],
-                "agent_mention_names": ["Truman Bot"],
+                "agent_author_names": ["Evander Bot"],
+                "agent_mention_names": ["Evander Bot"],
                 "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
             }
         ),
@@ -2187,7 +2187,7 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
                     author="reviewer",
                     body="Can you make this change?",
                     created_at=datetime(2026, 4, 8, 5, 33, 41, tzinfo=timezone.utc),
-                    metadata={"prior_thread_comment_author_names": ["evander Bot"]},
+                    metadata={"prior_thread_comment_author_names": ["Evander Bot"]},
                 ),
                 PrFeedbackItem(
                     feedback_id="github:comment:2",
@@ -2195,7 +2195,7 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
                     repo="org/repo",
                     pr_id="11",
                     author="reviewer",
-                    body="@Truman Bot can you take this?",
+                    body="@Evander Bot can you take this?",
                     created_at=datetime(2026, 4, 8, 5, 33, 42, tzinfo=timezone.utc),
                 ),
                 PrFeedbackItem(

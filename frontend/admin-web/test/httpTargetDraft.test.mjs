@@ -36,7 +36,6 @@ test("HTTP target drafts preserve canonical target metadata and normalize payloa
 
   const draft = httpTargetsDraftFromMetadata(metadata);
 
-  assert.equal(draft.legacyFallback, false);
   assert.equal(draft.sourceError, null);
   assert.deepEqual(
     draft.entries.map(({ alias, baseUrl, metadata: targetMetadata }) => ({
@@ -63,9 +62,9 @@ test("HTTP target drafts preserve canonical target metadata and normalize payloa
   assert.deepEqual(metadataWithoutHttpTargets(metadata), { keep: "value" });
 });
 
-test("HTTP target drafts surface legacy APP targets and explicit empty payloads", () => {
+test("HTTP target drafts ignore unrelated metadata and support empty payloads", () => {
   const draft = httpTargetsDraftFromMetadata({
-    example_app: {
+    other_feature: {
       environments: {
         ui: {
           base_url: "https://ui.example.test",
@@ -75,9 +74,8 @@ test("HTTP target drafts surface legacy APP targets and explicit empty payloads"
     },
   });
 
-  assert.equal(draft.legacyFallback, true);
   assert.equal(draft.sourceError, null);
-  assert.equal(draft.entries[0].alias, "ui");
+  assert.deepEqual(draft.entries, []);
   assert.deepEqual(httpTargetsPayload([]), { targets: {} });
 });
 

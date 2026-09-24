@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander_team_addon import provider_events
+
 import hashlib
 import json
 import shlex
@@ -38,7 +40,6 @@ from evander.workflow.packs import WorkflowPack
 from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 import evander_team_addon.outbox_publication as team_outbox_publication
-import evander_team_addon.providers as team_providers
 from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
 from evander_team_addon.costs import TeamCostService
@@ -755,8 +756,8 @@ class FakeRepoCloner:
             success=self.success,
             vm_name=str(kwargs.get("vm_name") or "vm-backend"),
             message=self.message,
-            target_dir="/home/agent/Truman",
-            guest_repo_name="Truman",
+            target_dir="/home/agent/Evander",
+            guest_repo_name="Evander",
         )
 
 
@@ -3315,7 +3316,7 @@ def test_systemd_team_wake_fails_before_leasing_when_runtime_generation_is_stale
 ) -> None:
     monkeypatch.setenv("INVOCATION_ID", "systemd-invocation")
     monkeypatch.setattr(
-        "evander_team_addon.providers.require_current_runtime_generation",
+        "evander_team_addon.provider_wake.require_current_runtime_generation",
         lambda _runtime_dir: (_ for _ in ()).throw(
             RuntimeError("Team runtime generation is not current")
         ),
@@ -3348,7 +3349,7 @@ def test_systemd_governance_wake_fails_before_state_access_when_generation_is_st
 ) -> None:
     monkeypatch.setenv("INVOCATION_ID", "systemd-invocation")
     monkeypatch.setattr(
-        "evander_team_addon.providers.require_current_runtime_generation",
+        "evander_team_addon.provider_wake_chat.require_current_runtime_generation",
         lambda _runtime_dir: (_ for _ in ()).throw(
             RuntimeError("Team runtime generation is not current")
         ),
@@ -3436,7 +3437,7 @@ def test_immediate_wake_can_skip_global_maintenance(
         _unexpected_maintenance,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.reconcile_current_human_review_assignments",
+        "evander_team_addon.provider_wake.reconcile_current_human_review_assignments",
         _unexpected_maintenance,
     )
     monkeypatch.setattr(
@@ -3516,7 +3517,12 @@ def test_wake_due_agents_provider_prompts_and_seeds_stable_session_metadata(
             type="effect:team:wake-due-agents",
         ),
         EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
+            resolved_config={
+                "runtime_dir": str(tmp_path),
+                "provider_state": {
+                    "team_addon": {"legacy_guidance_section_ids": ["previous-team-addon"]}
+                },
+            },
             agent_resumer=resumer,
             vm_file_copier=file_copier,
             session_lookup=session_store,
@@ -3541,7 +3547,7 @@ def test_wake_due_agents_provider_prompts_and_seeds_stable_session_metadata(
             "overwrite": True,
             "merge_strategy": "managed_section",
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
-            "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
+            "remove_section_ids": ["previous-team-addon"],
         }
     ]
     guidance = str(guidance_files[0]["content"])
@@ -4858,11 +4864,11 @@ def test_mutation_chat_does_not_prepare_git_or_review_artifacts(
         raise AssertionError("chat must not prepare repositories or review artifacts")
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repos",
+        "evander_team_addon.provider_wake._prepare_project_repos",
         _unexpected,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_review_artifacts_for_lease",
+        "evander_team_addon.provider_wake._prepare_review_artifacts_for_lease",
         _unexpected,
     )
     resumer = FakeResumer()
@@ -5594,7 +5600,7 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         TEAM_AGENT_GUIDANCE_SECTION_ID,
         TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
     ]
-    assert guidance_files[0]["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
+    assert guidance_files[0].get("remove_section_ids", []) == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     inactive_guidance = str(guidance_files[0]["content"])
     assert "not currently assigned to a Team" in inactive_guidance
     assert "Normal Team-agent task" in inactive_guidance
@@ -8598,7 +8604,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             base_branch="main",
             agent_author_identity=ProjectGitIdentity(
                 name="Jonathan Quinth",
-                email="operator@example.invalid",
+                email="jonathan.quinth@exampleindustry.com",
             ),
             agent_committer_identity=ProjectGitIdentity(
                 name="Evander Bot",
@@ -8634,7 +8640,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     result = provider.execute()
 
     assert result["success"] is True
-    author = task_authored_by or {"name": "Jonathan Quinth", "email": "operator@example.invalid"}
+    author = task_authored_by or {"name": "Jonathan Quinth", "email": "jonathan.quinth@exampleindustry.com"}
     worktree_commands = [str(call["command"]) for call in executor.calls]
     assert any("config --worktree author.name" in command and author["name"] in command for command in worktree_commands)
     assert any("config --worktree author.email" in command and author["email"] in command for command in worktree_commands)
@@ -8647,7 +8653,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             "vm_user": "agent",
             "directory_path": "root",
             "git_author_name": "Jonathan Quinth",
-            "git_author_email": "operator@example.invalid",
+            "git_author_email": "jonathan.quinth@exampleindustry.com",
             "git_committer_name": "Evander Bot",
             "git_committer_email": "evander@quinth.se",
             "git_access_mode": "write",
@@ -8655,7 +8661,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         }
     ]
     project_repo = result["dispatches"][0]["project_repo"]
-    assert project_repo["target_dir"] == "/home/agent/Truman"
+    assert project_repo["target_dir"] == "/home/agent/Evander"
     assert project_repo["base_branch"] == "main"
     assert project_repo["branch_context_id"]
     preparation_generation = task_git_work_context_generation(repo.read(), "task")
@@ -8663,7 +8669,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         f"agents/session-backend/tasks/task-0ebb429f-prep-{preparation_generation[:12]}"
     )
     expected_worktree_path = (
-        f"/home/agent/worktrees/Truman/task-0ebb429f-prep-{preparation_generation[:12]}"
+        f"/home/agent/worktrees/Evander/task-0ebb429f-prep-{preparation_generation[:12]}"
     )
     assert project_repo["agent_branch"] == expected_agent_branch
     git_context = project_repo["git_work_contexts"][0]
@@ -8689,7 +8695,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             "project_ids": ["project"],
             "dispatch_id": result["dispatches"][0]["dispatch_id"],
             "project_repo": project_repo,
-            "target_dir": "/home/agent/Truman",
+            "target_dir": "/home/agent/Evander",
         }
     ]
     assert result["failed_project_repo_preparations"] == []
@@ -8856,7 +8862,7 @@ def test_successor_context_records_verified_direct_dependency_git(
         agent_branch="agents/session-backend/tasks/task",
         base_branch="main",
         base_commit="c" * 40,
-        worktree_path="/home/agent/worktrees/Truman/task-0ebb429f",
+        worktree_path="/home/agent/worktrees/Evander/task-0ebb429f",
         dependency_git_sources=dependency_sources,
         expected_revision=repo.read().revision,
     )
@@ -9147,8 +9153,8 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     _prepare_project_repo_task_worktree(
         context,
         project_repo={
-            "guest_repo_name": "Truman",
-            "target_dir": "/home/agent/Truman",
+            "guest_repo_name": "Evander",
+            "target_dir": "/home/agent/Evander",
             "execution_backend": "libvirt_vm",
         },
         session_id="session-backend",
@@ -9173,7 +9179,7 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
         task_author_identity=ProjectGitIdentity(name="Task O'Connor", email="task@example.test"),
         dependency_merge_author_identity=ProjectGitIdentity(
             name="Jonathan Quinth",
-            email="operator@example.invalid",
+            email="jonathan.quinth@exampleindustry.com",
         ),
     )
 
@@ -9189,7 +9195,7 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert "config --worktree author.name" in command
     assert "config --worktree author.email task@example.test" in command
     assert "export GIT_AUTHOR_NAME='Jonathan Quinth'" in command
-    assert "export GIT_AUTHOR_EMAIL=operator@example.invalid" in command
+    assert "export GIT_AUTHOR_EMAIL=jonathan.quinth@exampleindustry.com" in command
     assert 'ls-remote --exit-code --heads origin "refs/heads/$branch"' in command
     assert 'push origin "HEAD:refs/heads/$branch"' in command
     assert "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'" in command
@@ -9282,7 +9288,7 @@ def test_libvirt_reused_worktree_without_server_base_authority_fails_closed(
             session_lookup=FakeSessionStore(),
         ),
         project_repo={
-            "guest_repo_name": "Truman",
+            "guest_repo_name": "Evander",
             "target_dir": str(control),
             "execution_backend": "libvirt_vm",
         },
@@ -9378,7 +9384,7 @@ def test_libvirt_task_pin_remains_authoritative_after_base_branch_advances(
             session_lookup=FakeSessionStore(),
         ),
         project_repo={
-            "guest_repo_name": "Truman",
+            "guest_repo_name": "Evander",
             "target_dir": str(control),
             "execution_backend": "libvirt_vm",
         },
@@ -9449,8 +9455,8 @@ def test_libvirt_worktree_preparation_preserves_reported_prepared_base() -> None
     _worktree_path, base_commit = _prepare_project_repo_task_worktree(
         context,
         project_repo={
-            "guest_repo_name": "Truman",
-            "target_dir": "/home/agent/Truman",
+            "guest_repo_name": "Evander",
+            "target_dir": "/home/agent/Evander",
             "execution_backend": "libvirt_vm",
         },
         session_id="session-backend",
@@ -9482,8 +9488,8 @@ def test_libvirt_worktree_preparation_rejects_missing_prepared_base_marker() -> 
         _prepare_project_repo_task_worktree(
             context,
             project_repo={
-                "guest_repo_name": "Truman",
-                "target_dir": "/home/agent/Truman",
+                "guest_repo_name": "Evander",
+                "target_dir": "/home/agent/Evander",
                 "execution_backend": "libvirt_vm",
             },
             session_id="session-backend",
@@ -9574,11 +9580,11 @@ def test_dependency_recovery_worktree_uses_pinned_commit_not_live_base_branch(
         return "/home/agent/worktrees/repo/recovery-task", base_commit
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: dependency_sources,
     )
 
@@ -9644,11 +9650,11 @@ def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
         return "/home/agent/worktrees/repo/task", pinned_commit
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: [],
     )
 
@@ -9704,7 +9710,7 @@ def test_coordination_task_is_excluded_from_git_preparation(
         raise AssertionError("coordination tasks must not prepare Git worktrees")
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _unexpected_prepare,
     )
 
@@ -9803,11 +9809,11 @@ def test_pinned_dependency_composition_receipt_retries_from_prepared_checkout_ba
         )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: dependency_sources,
     )
     original_create = TeamAdminService.create_git_work_context_with_id
@@ -9921,11 +9927,11 @@ def test_git_preparation_receipt_survives_context_commit_conflict_and_retries(
         )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: [],
     )
     original_create = TeamAdminService.create_git_work_context_with_id
@@ -10159,8 +10165,8 @@ def test_libvirt_dependency_git_failure_classification_uses_structured_conflict_
         _prepare_project_repo_task_worktree(
             context,
             project_repo={
-                "guest_repo_name": "Truman",
-                "target_dir": "/home/agent/Truman",
+                "guest_repo_name": "Evander",
+                "target_dir": "/home/agent/Evander",
                 "execution_backend": "libvirt_vm",
             },
             session_id="session-backend",
@@ -10702,11 +10708,11 @@ def test_git_context_transaction_revalidates_exact_dependency_generation(
         return "/home/agent/worktrees/repo/task", "c" * 40
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         _dependency_sources,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     original_create = TeamAdminService.create_git_work_context_with_id
@@ -10791,7 +10797,7 @@ def test_git_context_transaction_rejects_project_generation_change_during_prepar
         return "/home/agent/worktrees/repo/task", "c" * 40
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
 
@@ -11024,15 +11030,15 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
                 "success": True,
                 "message": "repo prepared",
                 "session_id": "session-backend",
-                "target_dir": "/home/agent/Truman",
-                "guest_repo_name": "Truman",
+                "target_dir": "/home/agent/Evander",
+                "guest_repo_name": "Evander",
                 "pr_notes_ref": "refs/notes/agent-pr/test",
                 "execution_backend": "libvirt_vm",
                 "vm_name": None,
             }
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        "evander_team_addon.provider_git_repositories.AgentCloneRepoEffectProvider",
         CapturingCloneProvider,
     )
     provider = TeamWakeDueAgentsEffectProvider()
@@ -11112,8 +11118,8 @@ def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
         def execute(self) -> dict[str, object]:
             return {
                 "success": True,
-                "target_dir": "/home/agent/Truman",
-                "guest_repo_name": "Truman",
+                "target_dir": "/home/agent/Evander",
+                "guest_repo_name": "Evander",
                 "pinned_ref": pinned_ref,
                 "pinned_commit_sha": commit_sha,
                 "commit_sha": commit_sha,
@@ -11132,7 +11138,7 @@ def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
 
     managed_git = _ManagedGit()
     monkeypatch.setattr(
-        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        "evander_team_addon.provider_git_repositories.AgentCloneRepoEffectProvider",
         _CapturingCloneProvider,
     )
     resumer = FakeResumer()
@@ -11165,7 +11171,7 @@ def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
     prompt_context = _team_context_from_prompt(str(resumer.calls[0]["prompt"]))
     snapshot_ref = prompt_context["reviews"][0]["repository_snapshot_ref"]
     assert prompt_context["review_repository_snapshots"][snapshot_ref]["commit_sha"] == commit_sha
-    assert prompt_context["project_repos"][0]["target_dir"] == "/home/agent/Truman"
+    assert prompt_context["project_repos"][0]["target_dir"] == "/home/agent/Evander"
     assert prompt_context["project_repos"][0]["pinned_ref"] == pinned_ref
 
 
@@ -11317,7 +11323,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
-    assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
+    assert copied_file.get("remove_section_ids", []) == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     assert "a superior may set state: finished on a subordinate non-terminal task" in str(
         copied_file["content"]
     )
@@ -11429,7 +11435,7 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
-    assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
+    assert copied_file.get("remove_section_ids", []) == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     assert 'Current display name: "Beatrice"' in str(copied_file["content"])
     prompt = str(resumer.calls[0]["prompt"])
     assert "Beatrice" not in prompt
@@ -13614,7 +13620,7 @@ def test_create_task_effect_reports_generated_id_from_atomic_mutation(
             return super().create_or_reprioritize_task_with_result(**kwargs)
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.TeamAdminService",
+        "evander_team_addon.provider_tasks.TeamAdminService",
         RacingTaskAdminService,
     )
     provider = TeamCreateTaskEffectProvider()
@@ -13932,7 +13938,7 @@ def test_create_case_effect_returns_generated_id_when_other_case_is_created(
             return super().create_case_with_id(**kwargs)
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.TeamAdminService",
+        "evander_team_addon.provider_tasks.TeamAdminService",
         RacingCaseAdminService,
     )
     provider = TeamCreateCaseEffectProvider()
@@ -14926,7 +14932,7 @@ def test_team_event_publisher_enriches_release_approval_handoff(
         return "publication-context"
 
     monkeypatch.setattr(
-        team_providers,
+        provider_events,
         "release_publication_context",
         _publication_context,
     )

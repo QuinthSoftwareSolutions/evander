@@ -136,7 +136,7 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
                 "config": {
                     "provider": "azure_devops",
                     "organization_url": " https://dev.azure.com/example/ ",
-                    "project": " APP ",
+                    "project": " App ",
                     "directories": [" root/team-a "],
                 },
             },
@@ -145,7 +145,7 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
 
     assert trigger.provider == "ado"
     assert trigger.organization_url == "https://dev.azure.com/example"
-    assert trigger.project == "APP"
+    assert trigger.project == "App"
     assert trigger.directories == ["root/team-a"]
 
 
@@ -161,7 +161,7 @@ def test_ado_work_item_comment_trigger_normalizes_config() -> None:
                 "type": "trigger:ado:work-item-comment-created",
                 "config": {
                     "directory_path": " root/team-a ",
-                    "project": " APP ",
+                    "project": " App ",
                     "states": [" New ", ""],
                     "tags_any": [" spec "],
                     "comment_contains": " @SpecAssistant ",
@@ -173,7 +173,7 @@ def test_ado_work_item_comment_trigger_normalizes_config() -> None:
     )
 
     assert trigger.directory_path == "root/team-a"
-    assert trigger.project == "APP"
+    assert trigger.project == "App"
     assert trigger.states == ["New"]
     assert trigger.tags_any == ["spec"]
     assert trigger.comment_contains == "@SpecAssistant"
@@ -309,7 +309,7 @@ def test_remote_issue_comment_trigger_normalizes_comment_filters() -> None:
                 "type": "trigger:remote-issue-comment-created",
                 "config": {
                     "provider": "ado",
-                    "project": " APP ",
+                    "project": " App ",
                     "comment_contains": " @Assistant ",
                     "comment_contains_any": [" fix ", ""],
                     "comment_author_exclude_ids": [" bot-id "],
@@ -320,7 +320,7 @@ def test_remote_issue_comment_trigger_normalizes_comment_filters() -> None:
 
     assert isinstance(trigger, RemoteIssueCommentCreatedTriggerDefinition)
     assert trigger.provider == "azure_devops"
-    assert trigger.project == "APP"
+    assert trigger.project == "App"
     assert trigger.comment_contains == "@Assistant"
     assert trigger.comment_contains_any == ["fix"]
     assert trigger.comment_author_exclude_ids == ["bot-id"]
@@ -705,16 +705,16 @@ def test_pr_feedback_trigger_accepts_agent_directed_identity_names() -> None:
             "display_name": "PR feedback",
             "type": "trigger:pull-request:new-feedback",
             "provider": "ado",
-            "agent_author_names": [" evander Bot ", "Truman Bot"],
-            "agent_mention_names": ["@evander", "Truman"],
+            "agent_author_names": [" Evander Bot ", "Evander Bot"],
+            "agent_mention_names": ["@Evander", "Evander"],
             "agent_author_ids": [" bot-id "],
             "agent_mention_ids": [" C74221CB-EE08-6A83-9055-AF01C3333112 "],
             "suppress_agent_authored_feedback": True,
         }
     )
 
-    assert trigger.agent_author_names == ["evander Bot", "Truman Bot"]
-    assert trigger.agent_mention_names == ["@evander", "Truman"]
+    assert trigger.agent_author_names == ["Evander Bot", "Evander Bot"]
+    assert trigger.agent_mention_names == ["@Evander", "Evander"]
     assert trigger.agent_author_ids == ["bot-id"]
     assert trigger.agent_mention_ids == ["C74221CB-EE08-6A83-9055-AF01C3333112"]
     assert trigger.suppress_agent_authored_feedback is True
@@ -799,7 +799,7 @@ def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
             "type": "trigger:ci:run:completed",
             "provider": "azure-pipelines",
             "ado_organization": " example ",
-            "project": " APP ",
+            "project": " App ",
             "repo": " ",
             "pipeline_id": "42",
             "pipeline_name": " nightly ",
@@ -810,7 +810,7 @@ def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
 
     assert trigger.provider == "ado_pipelines"
     assert trigger.ado_organization == "example"
-    assert trigger.project == "APP"
+    assert trigger.project == "App"
     assert trigger.repo is None
     assert trigger.pipeline_id == 42
     assert trigger.pipeline_name == "nightly"

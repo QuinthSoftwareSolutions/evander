@@ -244,7 +244,7 @@ static async Task RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket()
             },
             new Dictionary<string, object>
             {
-                ["prompt"] = "Represent the originating Truman agent.",
+                ["prompt"] = "Represent the originating Evander agent.",
             },
             (text, token) =>
             {
@@ -271,7 +271,7 @@ static async Task RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket()
     AssertEqual("Bearer sk-test", socket.Headers["Authorization"]);
     AssertContains("\"type\":\"session.update\"", socket.SentMessages[0]);
     AssertContains("\"voice\":\"cedar\"", socket.SentMessages[0]);
-    AssertContains("Represent the originating Truman agent.", socket.SentMessages[0]);
+    AssertContains("Represent the originating Evander agent.", socket.SentMessages[0]);
 
     await session.PushAudioAsync(new byte[640], CancellationToken.None);
     var appendEvent = socket.SentMessages.Single(item => item.Contains("input_audio_buffer.append"));

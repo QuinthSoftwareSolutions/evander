@@ -746,9 +746,9 @@ class GitMergePreflightEngine:
         if not tree_oid or left_commit is None or right_commit is None:
             return None
         env = {
-            "GIT_AUTHOR_NAME": "Truman Preflight",
+            "GIT_AUTHOR_NAME": "Evander Preflight",
             "GIT_AUTHOR_EMAIL": "preflight@example.invalid",
-            "GIT_COMMITTER_NAME": "Truman Preflight",
+            "GIT_COMMITTER_NAME": "Evander Preflight",
             "GIT_COMMITTER_EMAIL": "preflight@example.invalid",
             "GIT_AUTHOR_DATE": _FIXED_COMMIT_DATE,
             "GIT_COMMITTER_DATE": _FIXED_COMMIT_DATE,

@@ -1431,10 +1431,21 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:direct-message"
     )
     assert [field["key"] for field in teams_direct_message["fields"]] == [
+        "chat_target_mode",
+        "direct_chat_user_upns",
         "targets",
         "sender_user_ids",
         "message_filter",
     ]
+    mode_field = next(
+        field for field in teams_direct_message["fields"] if field["key"] == "chat_target_mode"
+    )
+    assert mode_field["default_value"] == "explicit"
+    assert [option["value"] for option in mode_field["options"]] == ["direct", "explicit"]
+    direct_chat_user_upns_field = next(
+        field for field in teams_direct_message["fields"] if field["key"] == "direct_chat_user_upns"
+    )
+    assert direct_chat_user_upns_field["kind"] == "string_list"
     targets_field = next(
         field for field in teams_direct_message["fields"] if field["key"] == "targets"
     )
@@ -1444,7 +1455,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     sender_user_ids_field = next(
         field for field in teams_direct_message["fields"] if field["key"] == "sender_user_ids"
     )
-    assert sender_user_ids_field["label"] == "Sender user IDs or emails"
+    assert sender_user_ids_field["label"] == "Allowed sender references"
     assert "UPNs, or mail addresses" in sender_user_ids_field["description"]
     deserialize_gate = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:deserialize"
@@ -2647,7 +2658,13 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
 
 def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> None:
     app_source = (
-        Path(__file__).resolve().parents[1] / "frontend" / "admin-web" / "src" / "App.tsx"
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "admin-web"
+        / "src"
+        / "features"
+        / "workflow-editor"
+        / "nodeDefaults.ts"
     ).read_text(encoding="utf-8")
 
     assert "dedupe:${{system.execution.event_id}}" in app_source
@@ -2726,11 +2743,11 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     )
     news_asset_dir = service.project_dir / "docs" / "assets" / "news"
     news_asset_dir.mkdir(parents=True)
-    (news_asset_dir / "truman-signature.svg").write_text(
+    (news_asset_dir / "evander-signature.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
         encoding="utf-8",
     )
-    (news_asset_dir / "truman-signature-inverse.svg").write_text(
+    (news_asset_dir / "evander-signature-inverse.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
         encoding="utf-8",
     )
@@ -2741,7 +2758,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         "### Practical tips\n\n"
         "- Open the dashboard first.\n\n"
         "- Download the changelog when you need the full record.\n\n"
-        '![Truman signature](docs/assets/news/truman-signature.svg "Signed by Truman")\n\n'
+        '![Evander signature](docs/assets/news/evander-signature.svg "Signed by Evander")\n\n'
         "The dashboard news feed explains what changed and how to use it.\n"
         "\n"
         "## 2026-05-20 - Earlier Update\n\n"
@@ -2753,7 +2770,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     response = client.get("/api/admin/release-info")
     older_response = client.get("/api/admin/release-info?news_index=1")
     invalid_response = client.get("/api/admin/release-info?news_index=-1")
-    asset_response = client.get("/api/admin/news/assets/truman-signature.svg")
+    asset_response = client.get("/api/admin/news/assets/evander-signature.svg")
     blocked_asset_response = client.get("/api/admin/news/assets/%2e%2e/NEWS.md")
 
     assert response.status_code == 200
@@ -2815,10 +2832,10 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
                     "text": None,
                     "level": None,
                     "items": [],
-                    "src": "/api/admin/news/assets/truman-signature.svg",
-                    "dark_src": "/api/admin/news/assets/truman-signature-inverse.svg",
-                    "alt": "Truman signature",
-                    "title": "Signed by Truman",
+                    "src": "/api/admin/news/assets/evander-signature.svg",
+                    "dark_src": "/api/admin/news/assets/evander-signature-inverse.svg",
+                    "alt": "Evander signature",
+                    "title": "Signed by Evander",
                 },
                 {
                     "kind": "paragraph",
@@ -2885,7 +2902,7 @@ def test_admin_web_release_info_is_protected_when_auth_required(
 
     protected_response = client.get("/api/admin/release-info")
     protected_download_response = client.get("/api/admin/release-info/changelog")
-    protected_asset_response = client.get("/api/admin/news/assets/truman-signature.svg")
+    protected_asset_response = client.get("/api/admin/news/assets/evander-signature.svg")
     state_response = client.get("/api/admin/state")
 
     assert protected_response.status_code == 401
@@ -4321,6 +4338,102 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
     assert generate_denied.json()["error"] == "Permission required: workflows.write"
     assert save_denied.status_code == 403
     assert save_denied.json()["error"] == "Permission required: workflows.write"
+
+
+def test_admin_web_workflow_save_authorizes_synthesized_graph_directories_before_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com")
+    store.upsert_user(login="scoped-writer@example.com")
+    store.remove_user_group_assignment(
+        login="scoped-writer@example.com", group_id="operator", directory_path="root"
+    )
+    store.grant_user_workflow_permission(
+        login="scoped-writer@example.com",
+        permission=WORKFLOWS_WRITE_PERMISSION,
+        directory_path="root/ops",
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+    _complete_azure_login(
+        app,
+        client,
+        login="scoped-writer@example.com",
+        display_name="Scoped Writer",
+    )
+    _unlock_privileged_operations(client)
+    resolution_calls: list[dict[str, object]] = []
+
+    def resolve_direct_chat_targets(**kwargs: object) -> list[dict[str, str]]:
+        resolution_calls.append(kwargs)
+        return [
+            {
+                "user_principal_name": "alias@example.com",
+                "user_id": "resolved-user-id",
+                "chat_target": "chat:resolved-chat-id",
+            }
+        ]
+
+    monkeypatch.setattr(
+        service.teams_admin,
+        "resolve_direct_chat_targets",
+        resolve_direct_chat_targets,
+    )
+    response = client.put(
+        "/api/workflow-editor/document",
+        json={
+            "config": canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "ops-start",
+                            "display_name": "Ops start",
+                            "type": "trigger:cron",
+                            "expression": "15 * * * *",
+                        },
+                        {
+                            "id": "direct-chat",
+                            "display_name": "Direct chat",
+                            "type": "trigger:teams:direct-message",
+                            "chat_target_mode": "direct",
+                            "direct_chat_user_upns": ["alias@example.com"],
+                            "targets": [],
+                            "sender_user_ids": [],
+                        },
+                    ],
+                    "gates": [],
+                    "effects": [],
+                    "queries": [],
+                    "edges": [],
+                }
+            ),
+            "layout": {
+                "nodes": {
+                    "ops-start": {"x": 100, "y": 100},
+                    "direct-chat": {"x": 100, "y": 300},
+                }
+            },
+            "graphs": [
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "directory_path": "root/ops",
+                    "user_ids": ["scoped-writer@example.com"],
+                    "node_ids": ["ops-start"],
+                }
+            ],
+            "expected_revision": "authorization-must-run-first",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "Permission required: workflows.write"
+    assert resolution_calls == []
 
 
 def test_admin_web_workflow_target_catalog_uses_workflow_permission(
@@ -7452,7 +7565,7 @@ def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> 
 
     response = client.post(
         "/api/admin/artifacts/uploads",
-        data={"key": "manuals/true-app/reviewed/run-1", "artifact_path": "input/reviewed.docx"},
+        data={"key": "manuals/sample-app/reviewed/run-1", "artifact_path": "input/reviewed.docx"},
         files={
             "file": (
                 "reviewed.docx",
@@ -7463,14 +7576,14 @@ def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> 
     )
     duplicate = client.post(
         "/api/admin/artifacts/uploads",
-        data={"key": "manuals/true-app/reviewed/run-1"},
+        data={"key": "manuals/sample-app/reviewed/run-1"},
         files={"file": ("reviewed.docx", b"again")},
     )
-    download = client.get("/api/admin/artifact-downloads/manuals%2Ftrue-app%2Freviewed%2Frun-1")
+    download = client.get("/api/admin/artifact-downloads/manuals%2Fsample-app%2Freviewed%2Frun-1")
 
     assert response.status_code == 201
     payload = response.json()
-    assert payload["key"] == "manuals/true-app/reviewed/run-1"
+    assert payload["key"] == "manuals/sample-app/reviewed/run-1"
     assert payload["session_id"] == "manual-upload"
     assert payload["source_file_count"] == 1
     assert payload["metadata"]["source"] == "manual_upload"

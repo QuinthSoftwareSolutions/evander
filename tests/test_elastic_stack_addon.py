@@ -755,7 +755,7 @@ def test_mcp_tools_are_policy_scoped_and_delegate_semantic_operations(monkeypatc
                 raise PolicyError("tool is not allowed")
             return SimpleNamespace(
                 session_id=session_id,
-                directory_path="root/example/true-app",
+                directory_path="root/example/sample-app",
                 metadata=_session_metadata(),
             )
 

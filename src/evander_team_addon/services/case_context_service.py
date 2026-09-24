@@ -262,7 +262,7 @@ def builtin_views() -> dict[str, CaseContextView]:
             ("request", "decisions", "delivery", "review", "verification", "sources", "plans"),
             6000,
         ),
-        ("app-release-brief", "APP release brief", SECTION_NAMES, 24000),
+        ("app-release-brief", "App release brief", SECTION_NAMES, 24000),
     ):
         result[name] = CaseContextView(
             id=f"builtin:{name}:1",

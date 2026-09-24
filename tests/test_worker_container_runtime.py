@@ -344,6 +344,54 @@ def test_docker_runtime_adds_worker_read_only_mounts(tmp_path: Path) -> None:
     assert "/cache/node:/opt/evander/toolchains/node-v24.14.0:ro" in args
 
 
+def test_session_pins_bundle_across_selector_switch_and_daemon_restart(tmp_path: Path) -> None:
+    first, second = tmp_path / "bundle-1", tmp_path / "bundle-2"
+    for bundle in (first, second):
+        (bundle / "sdk").mkdir(parents=True)
+        (bundle / "tools").mkdir()
+    selector = tmp_path / "dotnet-current"
+    selector.symlink_to(first)
+    mounts = [f"{selector}/sdk:/opt/sdk", f"{selector}/tools:/opt/tools"]
+    runtime = DockerContainerRuntime(read_only_mounts=mounts)
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker", "session-1")
+    record = _record(paths)
+    args = runtime._build_run_args(request=_request(), record=record, paths=paths)
+    assert f"{first}/sdk:/opt/sdk:ro" in args
+    replacement = tmp_path / "next"
+    replacement.symlink_to(second)
+    replacement.replace(selector)
+    runtime = DockerContainerRuntime(read_only_mounts=mounts)
+    same_session = runtime._build_run_args(request=_request(), record=record, paths=paths)
+    assert f"{first}/sdk:/opt/sdk:ro" in same_session
+    assert record.metadata["read_only_mounts"][1]["source"] == str(first / "tools")
+    new_paths = WorkerSessionPaths.resolve(tmp_path / "worker", "session-2")
+    assert runtime._session_read_only_mounts(new_paths)[0].host_path == str(second / "sdk")
+    (first / "sdk").rmdir()
+    with pytest.raises(ValueError, match="missing"):
+        runtime._session_read_only_mounts(paths)
+
+
+def test_related_mounts_resolve_the_selector_once(tmp_path: Path, monkeypatch) -> None:
+    first, second = tmp_path / "bundle-1", tmp_path / "bundle-2"
+    for bundle in (first, second):
+        (bundle / "sdk").mkdir(parents=True)
+        (bundle / "tools").mkdir()
+    selector = tmp_path / "current"
+    selector.symlink_to(first)
+    original = Path.resolve
+    def resolve(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        if path == selector:
+            selector.unlink()
+            selector.symlink_to(second)
+        return result
+    monkeypatch.setattr(Path, "resolve", resolve)
+    runtime = DockerContainerRuntime(read_only_mounts=[f"{selector}/sdk:/opt/sdk", f"{selector}/tools:/opt/tools"])
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker", "session-1")
+    resolved = runtime._session_read_only_mounts(paths)
+    assert [mount.host_path for mount in resolved] == [str(first / "sdk"), str(first / "tools")]
+
+
 def test_docker_runtime_mounts_passwd_for_numeric_container_user(tmp_path: Path) -> None:
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
     runtime = DockerContainerRuntime(

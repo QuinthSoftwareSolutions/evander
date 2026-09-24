@@ -77,7 +77,7 @@ def lifecycle(tmp_path, monkeypatch):
                 elif state.fail_setup == "clone":
                     raise TimeoutError("Clone failed")
                 return {
-                    "target_dir": "/home/agent/repos/APP",
+                    "target_dir": "/home/agent/repos/App",
                     "container_image": "evander-code-index:1",
                 }
 

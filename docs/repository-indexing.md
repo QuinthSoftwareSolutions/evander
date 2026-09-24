@@ -89,16 +89,13 @@ a new snapshot before querying or exporting under the new policy. Pre-upgrade sn
 also need rebuilding because their policy fingerprint predates this setting. Rebuild
 and deploy the indexing worker image together with this product update.
 
-`config/repository-indexing/app.json.example` is an opt-in APP profile. Set its worker
-ID if the directory has no appropriate default. The profile explicitly enables SCIP,
-indexes the tracked `Src/App.slnx` workspace in one Roslyn invocation and lists the APP
-frontend configurations explicitly. Its timeout is one hour. APP's frontend lockfiles
-are currently untracked, so the profile explicitly
-allows npm to resolve dependencies when a lock is missing. Resulting lock hashes are
-recorded per project. Retain those worker lockfiles to reproduce that resolution.
-The general default requires a package lock. A repository containing only an unrelated
-root lockfile does not satisfy a nested package's dependencies. npm workspace members
-share their owning root's restore and lockfile; membership is resolved by npm.
+`config/repository-indexing/app.json.example` is an opt-in sample profile. Set its worker
+ID if the directory has no appropriate default. The profile enables SCIP and shows how to
+index a solution as one Roslyn workspace alongside a frontend TypeScript project. Its timeout
+is one hour. Adapt the sample paths to the repository being indexed. The default requires
+package locks. A repository containing only an unrelated root lockfile does not satisfy a
+nested package's dependencies. npm workspace members share their owning root's restore and
+lockfile; membership is resolved by npm.
 
 Semantic indexing uses the owning directory's existing semantic provider settings:
 `semantic_embedding_provider`, `semantic_embedding_model`,
@@ -288,5 +285,5 @@ No live deployment is required for tests. Run the focused indexing tests and use
 commit. Report query relevance, navigation coverage, index size and measured latency
 separately from future token/cost savings.
 
-See [the APP validation report](repository-indexing-validation.md) for measured
+See [the App validation report](repository-indexing-validation.md) for measured
 coverage, retrieval results, portability checks and remaining validation limits.

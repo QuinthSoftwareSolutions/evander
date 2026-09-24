@@ -199,7 +199,7 @@ Directory-scoped config is rooted at `root`:
 
    ### Codex provider bootstrap
 
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay through the `evander_openai_relay` provider with bootstrap defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), disables Codex websocket prewarm for that relay provider, registers the host MCP gateway as `evander`, copies the host Codex model cache when available so offline guests see the same model menu, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay through the `evander_openai_relay` provider with bootstrap defaults (currently `model = "gpt-6-sol"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), disables Codex websocket prewarm for that relay provider, registers the host MCP gateway as `evander`, copies the host Codex model cache when available so offline guests see the same model menu, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
    ### Claude Code provider bootstrap
 
@@ -352,6 +352,9 @@ panel surfaces explicit missing reasons instead of inferring or inventing releas
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
 
+For pinned release reintegration, restart-safe verification, structured evidence and
+worker SDK rollout, see [Release recovery and verifier policy](docs/release-recovery-and-verifier-policy.md).
+
 For the complete layered technical reference to core Evander and the Team Add-on, including
 architecture, runbooks, diagrams, glossary, and linked subject index, see the
 [`Evander Technical Manual`](docs/evander-user-manual.md). The same edition is published as
@@ -471,10 +474,6 @@ For private PR feedback polling, the service environment must provide `GITHUB_TO
 `azure_devops_organization_url` is safely migrated when it names a public Azure DevOps organization.
 
 ### Azure DevOps worker and work-item workflows
-
-The opt-in [APP PR testing workflow](docs/app-pr-testing.md) handles
-`!TEST <environment>` comments by waiting for the current PR build, redeploying
-an existing named demo, and asking the same PR reviewer to prepare test data.
 
 `evander-ado-worker` now owns Azure DevOps PR feedback and completion polling only. For
 foreground operation, run:
@@ -871,7 +870,7 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   with its own `message_filter`.
 - The initial supported filter shape is content substring matching:
   - `{"target":"team-id/channel-id"}`
-  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Truman Bot"}}}`
+  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Evander Bot"}}}`
   - optional `case_sensitive: true|false` (default `false`)
 - `trigger:communication:new-message` provides the provider-neutral inbound message path for
   directory-scoped communication targets. It requires explicit `communication_target_ids`, defaults
@@ -880,8 +879,12 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   targets. The host-side Teams and Discord ingest workers feed their host-owned inbox stores; email
   targets are read through the configured mailbox provider during trigger polling. Trigger outputs
   do not expose communication target auth profile references.
-- Direct-message triggers require both chat targets and a sender allowlist:
-  - `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
+- Direct-message triggers support two Admin Web setup modes:
+  - `Direct chats by UPN` accepts `direct_chat_user_upns`; saving resolves each user through
+    Microsoft Graph, ensures the one-to-one chat, and persists the resulting `sender_user_ids`
+    and `chat:<chat-id>` targets alongside the readable UPNs.
+  - `Existing chat IDs` preserves the explicit target and sender form:
+    `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
 - Session manifests opt into Teams access explicitly:
 

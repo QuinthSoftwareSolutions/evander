@@ -19,6 +19,8 @@ Options:
   --relay-base-url URL
                       Control-plane NuGet relay base URL.
                       Default: http://127.0.0.1:11666
+  --private-package-pattern PATTERN
+                      Package ID pattern routed to the private feed. Repeat as needed.
   -h, --help          Show this help.
 
 Environment:
@@ -30,6 +32,7 @@ EOF
 
 WORKERS=()
 TARGETS=()
+PRIVATE_PACKAGE_PATTERNS=()
 LOCAL_UPDATE=false
 CACHE_PATH="${CONTAINER_WORKER_NUGET_CACHE_PATH:-/var/lib/agent-worker/toolchain-cache/nuget-cache-ro}"
 DOTNET_COMMAND="${DOTNET_COMMAND:-dotnet}"
@@ -86,6 +89,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       NUGET_RELAY_BASE_URL="${2%/}"
+      shift 2
+      ;;
+    --private-package-pattern)
+      if [[ -z "${2:-}" || ! "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._*-]*$ ]]; then
+        echo "--private-package-pattern requires a valid package ID pattern." >&2
+        exit 1
+      fi
+      PRIVATE_PACKAGE_PATTERNS+=("$2")
       shift 2
       ;;
     -h|--help)
@@ -177,9 +188,15 @@ cat > "${NUGET_CONFIG}" <<CONFIG
     <packageSource key="sandbox-nuget">
       <package pattern="*" />
     </packageSource>
-    <packageSource key="sandbox-azure">
-      <package pattern="ExampleIndustry.*" />
-    </packageSource>
+CONFIG
+if [[ ${#PRIVATE_PACKAGE_PATTERNS[@]} -gt 0 ]]; then
+  printf '    <packageSource key="sandbox-azure">\n' >> "${NUGET_CONFIG}"
+  for pattern in "${PRIVATE_PACKAGE_PATTERNS[@]}"; do
+    printf '      <package pattern="%s" />\n' "${pattern}" >> "${NUGET_CONFIG}"
+  done
+  printf '    </packageSource>\n' >> "${NUGET_CONFIG}"
+fi
+cat >> "${NUGET_CONFIG}" <<CONFIG
   </packageSourceMapping>
 </configuration>
 CONFIG

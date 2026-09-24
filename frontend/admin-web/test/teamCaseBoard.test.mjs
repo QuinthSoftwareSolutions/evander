@@ -27,7 +27,7 @@ test("case board follows children and correction origins, not dependencies or un
 });
 
 test("case permalink encodes IDs, drops privileged query values, and survives shell/login routing", () => {
-  const link = caseBoardPermalink("https://truman.test/?privileged_unlocked=true#workflow", "case A&42");
+  const link = caseBoardPermalink("https://evander.test/?privileged_unlocked=true#workflow", "case A&42");
   const url = new URL(link);
   assert.equal(url.search, "");
   assert.equal(url.hash, "#addon:team-addon?view=task-board&case_id=case+A%2642");
@@ -63,8 +63,8 @@ test("embedded case selection updates shell routing without reloading the board"
     win.parent = win;
     return win;
   }
-  const shell = mockWindow("https://truman.test/#addon:team-addon?view=task-board&case_id=old");
-  const board = mockWindow("https://truman.test/addon/index.html?directory_path=root&case_id=old#case_id=stale");
+  const shell = mockWindow("https://evander.test/#addon:team-addon?view=task-board&case_id=old");
+  const board = mockWindow("https://evander.test/addon/index.html?directory_path=root&case_id=old#case_id=stale");
   board.parent = shell;
   const context = { teamId: "team A", projectId: "project&1" };
   replaceCaseBoardLocation(board, "new case", context);

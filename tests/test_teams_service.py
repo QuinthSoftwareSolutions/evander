@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+from evander.admin.services.teams_service import TeamsAdminDependencies, TeamsAdminService
 from evander.models import TeamsMessageEnvelope
 from evander.services import GraphTeamsService, StubTeamsService, TeamsAuthenticationError
 from evander.storage import JsonStore
@@ -193,6 +196,96 @@ def test_graph_teams_service_resolves_mail_with_filter_fallback(tmp_path: Path) 
     assert [request.url.path for request in requests] == [
         "/v1.0/users/primary@example.com",
         "/v1.0/users",
+    ]
+
+
+def test_teams_admin_creates_direct_chat_with_resolved_graph_user_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/users/alias@example.com":
+            return httpx.Response(
+                404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request
+            )
+        if request.url.path == "/v1.0/users":
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "resolved-user-id", "mail": "alias@example.com"}]},
+                request=request,
+            )
+        if request.url.path == "/v1.0/me":
+            return httpx.Response(200, json={"id": "sender-user-id"}, request=request)
+        if request.url.path == "/v1.0/chats":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert [member["user@odata.bind"] for member in payload["members"]] == [
+                "https://graph.microsoft.com/v1.0/users('sender-user-id')",
+                "https://graph.microsoft.com/v1.0/users('resolved-user-id')",
+            ]
+            return httpx.Response(
+                201, json={"id": "19:resolved-user-chat@thread.v2"}, request=request
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    allowed_user_target_calls: list[list[str]] = []
+
+    class Runtime:
+        provider_config = SimpleNamespace(
+            resolve_for_directory=lambda _directory: SimpleNamespace(teams_backend="graph_api")
+        )
+
+        def teams_service_for_directory(
+            self,
+            directory_path: str,
+            *,
+            allowed_channel_targets: list[str],
+            allowed_user_targets: list[str],
+        ) -> GraphTeamsService:
+            assert directory_path == "root/ops"
+            assert allowed_channel_targets == []
+            allowed_user_target_calls.append(allowed_user_targets)
+            return GraphTeamsService(
+                store,
+                token="graph-token",
+                api_base_url="https://graph.microsoft.com/v1.0",
+                poll_limit=25,
+                timeout_seconds=5.0,
+                allowed_user_targets_provider=lambda: allowed_user_targets,
+                user_chat_cache={},
+                user_chat_cache_namespace="test-identity",
+            )
+
+    service = TeamsAdminService(
+        TeamsAdminDependencies(
+            runtime=Runtime(),
+            normalize_directory_reference=lambda reference: str(reference or "root"),
+        )
+    )
+
+    assert service.resolve_direct_chat_targets(
+        directory="root/ops",
+        user_refs=["alias@example.com"],
+    ) == [
+        {
+            "user_principal_name": "alias@example.com",
+            "user_id": "resolved-user-id",
+            "chat_target": "chat:19:resolved-user-chat@thread.v2",
+        }
+    ]
+    assert allowed_user_target_calls == [
+        ["user:alias@example.com"],
+        ["user:resolved-user-id"],
+    ]
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/alias@example.com",
+        "/v1.0/users",
+        "/v1.0/me",
+        "/v1.0/chats",
     ]
 
 
@@ -686,8 +779,14 @@ def test_graph_teams_direct_history_retries_retry_after_response(
         return httpx.Response(200, json={"value": []}, request=request)
 
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
-    monkeypatch.setattr("evander.services.time.sleep", sleeps.append)
-    monkeypatch.setattr("evander.services.random.uniform", lambda _low, _high: 0.5)
+    monkeypatch.setattr(
+        "evander.integration_services.teams.time",
+        SimpleNamespace(monotonic=time.monotonic, sleep=sleeps.append),
+    )
+    monkeypatch.setattr(
+        "evander.integration_services.teams.random",
+        SimpleNamespace(uniform=lambda _low, _high: 0.5),
+    )
     service = GraphTeamsService(
         JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope),
         token="graph-token",
@@ -2103,7 +2202,7 @@ def test_graph_teams_attachment_download_uses_graph_for_sharepoint_content_url(
 ) -> None:
     requests: list[httpx.Request] = []
     sharepoint_url = (
-        "https://example.invalid/sites/dev46/Delade dokument/Truman/Picture.png"
+        "https://exampleindustry.sharepoint.com/sites/dev46/Delade dokument/Evander/Picture.png"
     )
     encoded_share = (
         base64.urlsafe_b64encode(sharepoint_url.encode("utf-8")).decode("ascii").rstrip("=")
@@ -2169,7 +2268,7 @@ def test_graph_teams_attachment_download_follows_graph_redirect_without_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[httpx.Request] = []
-    sharepoint_url = "https://example.invalid/sites/dev46/Docs/Picture.png"
+    sharepoint_url = "https://exampleindustry.sharepoint.com/sites/dev46/Docs/Picture.png"
     encoded_share = (
         base64.urlsafe_b64encode(sharepoint_url.encode("utf-8")).decode("ascii").rstrip("=")
     )

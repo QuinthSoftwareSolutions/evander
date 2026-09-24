@@ -166,7 +166,9 @@ def test_pin_command_previews_then_persists_legacy_agents(tmp_path, monkeypatch)
 
     config = config_for(tmp_path)
     add_session(config)  # Older manifests can lack worker metadata and execution history.
-    monkeypatch.setattr(cli, "_load_runtime_config_from_option", lambda _path: config)
+    monkeypatch.setattr(
+        "evander.cli_runtime._load_runtime_config_from_option", lambda _path: config
+    )
     runner = CliRunner()
     result = runner.invoke(cli.app, ["execution", "pin-worker-assignments"])
     assert result.exit_code == 0, result.output
@@ -187,7 +189,9 @@ def test_pin_command_validates_all_agents_before_writing(tmp_path, monkeypatch):
     config = config_for(tmp_path)
     add_session(config, "a-valid")
     add_session(config, "z-unknown-worker", metadata={"worker_url": "http://unknown.test"})
-    monkeypatch.setattr(cli, "_load_runtime_config_from_option", lambda _path: config)
+    monkeypatch.setattr(
+        "evander.cli_runtime._load_runtime_config_from_option", lambda _path: config
+    )
     result = CliRunner().invoke(cli.app, ["execution", "pin-worker-assignments", "--apply"])
     assert result.exit_code != 0
     assert "original worker configuration" in result.output
@@ -291,7 +295,8 @@ def test_cli_existing_job_uses_assigned_token_even_when_new_token_is_unset(tmp_p
     monkeypatch.setenv("OLD_WORKER_TOKEN", "test-token")
     monkeypatch.delenv("NEW_WORKER_TOKEN", raising=False)
     monkeypatch.setattr(
-        cli, "_load_runtime_config_from_option", lambda _path: config_for(tmp_path, "new")
+        "evander.cli_runtime._load_runtime_config_from_option",
+        lambda _path: config_for(tmp_path, "new"),
     )
     backend = cli._build_execution_backend_for_kind(tmp_path, target="job")
     assert backend.client.base_url == old.container_worker_base_url
@@ -497,7 +502,9 @@ def test_pin_command_includes_execution_only_sessions_and_directory_evidence(tmp
             )
         )
     add_session(config, "manifest", directory_path="root/team")
-    monkeypatch.setattr(cli, "_load_runtime_config_from_option", lambda _path: config)
+    monkeypatch.setattr(
+        "evander.cli_runtime._load_runtime_config_from_option", lambda _path: config
+    )
     command = ["execution", "pin-worker-assignments", "--directory-path", "root/team"]
     runner = CliRunner()
     preview = runner.invoke(cli.app, command)
@@ -521,7 +528,8 @@ def test_pin_command_includes_execution_only_sessions_and_directory_evidence(tmp
     monkeypatch.setenv("TEAM_TOKEN", "test-token")
     monkeypatch.delenv("NEW_WORKER_TOKEN", raising=False)
     monkeypatch.setattr(
-        cli, "_load_runtime_config_from_option", lambda _path: config_for(tmp_path, "new")
+        "evander.cli_runtime._load_runtime_config_from_option",
+        lambda _path: config_for(tmp_path, "new"),
     )
     backend = cli._build_execution_backend_for_kind(tmp_path, target="second")
     assert backend.client.base_url == "http://team.test:11888"

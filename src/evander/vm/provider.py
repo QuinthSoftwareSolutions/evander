@@ -354,20 +354,30 @@ class LibvirtVmProvider(VmProvider):
         vm_user: str = "agent",
         directory_path: str | None = None,
         direct_only: bool = False,
+        target_vm_name: str | None = None,
     ) -> list[VmSummary]:
         deps = self.context.dependencies
         session_repository = _runtime_session_repository(deps.runtime)
-        session_ids_by_vm = _session_ids_by_vm(session_repository.list_sessions())
-        labels_by_vm = _labels_by_vm(session_repository.list_sessions())
-        directory_paths_by_vm = _directory_paths_by_vm(session_repository.list_sessions())
+        sessions = (
+            session_repository.list_sessions_for_vm(target_vm_name)
+            if target_vm_name
+            else session_repository.list_sessions()
+        )
+        session_ids_by_vm = _session_ids_by_vm(sessions)
+        labels_by_vm = _labels_by_vm(sessions)
+        directory_paths_by_vm = _directory_paths_by_vm(sessions)
         normalized_directory_path = deps.normalize_directory_path(directory_path)
         owned_vm_ids = (
             deps.direct_owned_entity_ids(normalized_directory_path, kind="vm")
             if direct_only
             else set()
         )
-        vm_names = vm_helpers.virsh_lines(
-            ["list", "--all" if include_inactive else "--state-running", "--name"]
+        vm_names = (
+            [target_vm_name]
+            if target_vm_name
+            else vm_helpers.virsh_lines(
+                ["list", "--all" if include_inactive else "--state-running", "--name"]
+            )
         )
         summaries: list[VmSummary] = []
         for vm_name in vm_names:
@@ -379,8 +389,13 @@ class LibvirtVmProvider(VmProvider):
                     continue
             elif directory_path is not None and normalized_directory_path not in vm_directory_paths:
                 continue
-            provider_state = vm_helpers.dominfo_field(vm_name, "State") or "unknown"
+            provider_state = vm_helpers.dominfo_field(vm_name, "State")
+            if target_vm_name and not provider_state:
+                continue
+            provider_state = provider_state or "unknown"
             power_state = normalize_power_state(provider_state)
+            if not include_inactive and power_state != "running":
+                continue
             host_control_status = deps.agent_control_store.status_for_vm(vm_name)
             ip_address = vm_helpers.resolve_vm_ip(vm_name) if power_state == "running" else None
             if power_state != "running":
@@ -504,6 +519,7 @@ class AzureVmProvider(VmProvider):
         vm_user: str = "agent",
         directory_path: str | None = None,
         direct_only: bool = False,
+        target_vm_name: str | None = None,
     ) -> list[VmSummary]:
         del vm_user, omit_state
         deps = self.context.dependencies
@@ -532,6 +548,8 @@ class AzureVmProvider(VmProvider):
         for item in self._client.list_vms(config=azure_config, include_inactive=include_inactive):
             vm_name = str(item.get("name") or item.get("vm_name") or "").strip()
             if not vm_name:
+                continue
+            if target_vm_name and vm_name != target_vm_name:
                 continue
             vm_directory_paths = directory_paths_by_vm.get(vm_name, [])
             if direct_only:
@@ -810,6 +828,7 @@ class AzureVmProvider(VmProvider):
 
 class VmProviderRegistry:
     def __init__(self, dependencies: Any) -> None:
+        self._dependencies = dependencies
         context = VmProviderContext(dependencies=dependencies)
         self._providers: dict[str, VmProvider] = {
             "libvirt": LibvirtVmProvider(context),
@@ -826,6 +845,16 @@ class VmProviderRegistry:
     def list_vms(self, **kwargs: Any) -> list[VmSummary]:
         requested_provider = str(kwargs.pop("provider", "") or "").strip().lower() or None
         provider_names = [requested_provider] if requested_provider else list(self._providers)
+        target_vm_name = kwargs.get("target_vm_name")
+        if target_vm_name and not requested_provider:
+            repository = _runtime_session_repository(self._dependencies.runtime)
+            provider_names = sorted(
+                {
+                    session_vm_provider(session)
+                    for session in repository.list_sessions_for_vm(target_vm_name)
+                }
+                or {"libvirt"}
+            )
         summaries: list[VmSummary] = []
         errors: list[RuntimeError] = []
         for provider_name in provider_names:

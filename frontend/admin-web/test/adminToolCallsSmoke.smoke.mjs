@@ -353,7 +353,7 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   await assert.doesNotReject(() => page.getByRole("button", { name: "Workflow run: run-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Agent: agent-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "VM: vm-2" }).waitFor({ state: "visible" }));
-  const detailStatus = page.locator(".tool-call-detail-panel > .panel-header .status-pill");
+  const detailStatus = page.locator(".record-inspector-subtitle");
   await assert.doesNotReject(() => detailStatus.waitFor({ state: "visible" }));
   assert.match(await detailStatus.innerText(), /pending approval/i);
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approval payload diagnostic" }).waitFor({ state: "visible" }));

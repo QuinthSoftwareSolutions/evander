@@ -60,13 +60,13 @@ def _detail(*, comments: list[dict[str, object]]) -> dict[str, object]:
     return {
         "provider": "azure_devops",
         "id": "101",
-        "project": "APP",
+        "project": "App",
         "title": "Refine spec",
         "state": "New",
         "changed_at": "2026-06-01T10:00:00Z",
         "fields": {
             "System.Id": 101,
-            "System.TeamProject": "APP",
+            "System.TeamProject": "App",
             "System.Tags": "spec-tag",
             "System.ChangedDate": "2026-06-01T10:00:00Z",
         },
@@ -84,8 +84,8 @@ def test_ado_work_item_comment_trigger_baselines_existing_comments(
     )
     _IssueServiceStub.calls = []
     _IssueServiceStub.query_result = {
-        "project": "APP",
-        "items": [{"id": "101", "fields": {"System.TeamProject": "APP"}}],
+        "project": "App",
+        "items": [{"id": "101", "fields": {"System.TeamProject": "App"}}],
     }
     _IssueServiceStub.detail_by_id = {
         "101": _detail(
@@ -112,7 +112,7 @@ def test_ado_work_item_comment_trigger_baselines_existing_comments(
     cursor_payload = json.loads(
         (tmp_path / "trigger-cursors-ado-work-item-comments.json").read_text(encoding="utf-8")
     )
-    stream_state = cursor_payload["ado-comment"]["streams"]["azure_devops|root/team-a|APP|101"]
+    stream_state = cursor_payload["ado-comment"]["streams"]["azure_devops|root/team-a|App|101"]
     assert stream_state["recent_comment_keys"] == ["c1"]
 
     _IssueServiceStub.detail_by_id = {
@@ -154,7 +154,7 @@ def test_ado_work_item_comment_trigger_uses_workflow_configured_filters(
         _IssueServiceStub,
     )
     _IssueServiceStub.calls = []
-    _IssueServiceStub.query_result = {"project": "APP", "items": [{"id": "101"}]}
+    _IssueServiceStub.query_result = {"project": "App", "items": [{"id": "101"}]}
     _IssueServiceStub.detail_by_id = {
         "101": _detail(
             comments=[
@@ -205,7 +205,7 @@ def test_ado_work_item_comment_trigger_supports_current_iteration_query(
         _IssueServiceStub,
     )
     _IssueServiceStub.calls = []
-    _IssueServiceStub.query_result = {"project": "APP", "items": [{"id": "101"}]}
+    _IssueServiceStub.query_result = {"project": "App", "items": [{"id": "101"}]}
     _IssueServiceStub.detail_by_id = {"101": _detail(comments=[])}
     provider = _provider(
         tmp_path,

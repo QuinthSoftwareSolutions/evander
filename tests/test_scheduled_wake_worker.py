@@ -89,7 +89,7 @@ def _register_container_session(
     *,
     session_id: str = "session-a",
     vm_provider: str | None = "container_worker_vm",
-    vm_provider_id: str | None = "truman",
+    vm_provider_id: str | None = "evander",
     model: str | None = None,
     metadata: dict[str, object] | None = None,
 ) -> None:
@@ -1021,7 +1021,7 @@ def test_scheduled_wake_worker_does_not_expire_subscription_capacity_queue(
             QueuedAgentPromptRecord(
                 queue_key="scheduled-wake:wake-capacity",
                 target=session.session_id,
-                vm_name="truman",
+                vm_name="evander",
                 session_id=session.session_id,
                 prompt=kwargs["prompt"],
                 effect_id="scheduled-wake:wake-capacity",

@@ -1195,7 +1195,7 @@ function DashboardPanel({
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
-  if (eyebrow === "Agent inventory") {
+  if (eyebrow === "Agents") {
     return null;
   }
 
@@ -1398,7 +1398,7 @@ function DashboardAgentInventory({
   const inactiveCount = agents.length - activeCount;
   return (
     <div className="dashboard-agent-inventory">
-      <div className="dashboard-agent-icon-grid" aria-label="Agent inventory">
+      <div className="dashboard-agent-icon-grid" aria-label="Agents">
         {sortedAgents.map((agent) => {
           const tone = agentInventoryTone(agent);
           return (
@@ -1606,10 +1606,11 @@ function ProductContextPanel({
   onLoadNewsEntry: (targetIndex: number) => void;
 }) {
   const releaseSummary = releaseInfoSummary(releaseInfo);
+  const readerRef = useRef<HTMLDialogElement>(null);
   return (
     <DashboardPanel
       eyebrow="Product context"
-      title="Version and changelog"
+      title="Release news"
       className="dashboard-release-panel"
       defaultOpen
       statusClassName={stateClassName(releaseInfoTone(releaseInfoState))}
@@ -1619,68 +1620,118 @@ function ProductContextPanel({
       {!releaseInfoState.loading && !releaseInfoState.error && releaseInfoState.missing && !releaseInfo ? (
         <div className="empty-state">{releaseInfoState.missing}</div>
       ) : null}
-      {releaseInfoState.error && !releaseInfo ? <div className="callout error-callout">{releaseInfoState.error}</div> : null}
+      {releaseInfoState.error && !releaseInfo ? (
+        <div className="callout error-callout">{releaseInfoState.error}</div>
+      ) : null}
 
       {releaseInfo ? (
         <div className="dashboard-product-context">
           {releaseInfo.news ? (
             <article className="release-news-entry">
-              <h3 className="release-news-title">{releaseInfo.news.heading ?? "Latest update"}</h3>
+              <div className="release-news-heading">
+                <h3 className="release-news-title">{releaseInfo.news.heading ?? "Latest update"}</h3>
+                <button type="button" onClick={() => readerRef.current?.showModal()}>
+                  Read article
+                </button>
+              </div>
               <div className="release-news-copy">
                 {releaseInfo.news.blocks.map((block, index) =>
                   renderReleaseNewsBlock(block, `${releaseInfo.news?.heading ?? "news"}-${block.kind}-${index}`),
                 )}
-            </div>
-            <p className="panel-meta release-news-source">
-              {[releaseInfo.news.source ?? "NEWS.md", releaseInfo.news.path ?? null].filter(Boolean).join(" · ")}
-            </p>
-            <div className="release-news-pager">
-              <button
-                type="button"
-                className="dashboard-icon-button release-news-page-button"
-                aria-label="Newer"
-                title="Show newer news entry"
-                disabled={!releaseInfo.news.has_previous || releaseInfoState.loading}
-                onClick={() => {
-                  if (releaseInfo.news?.previous_index != null) {
-                    onLoadNewsEntry(releaseInfo.news.previous_index);
-                  }
-                }}
-              >
-                <DashboardIcon name="newer" />
-              </button>
-              <span>
-                Entry {releaseInfo.news.index + 1}
-                {releaseInfo.news.index === 0 ? " · Latest" : ""}
-              </span>
-              <button
-                type="button"
-                className="dashboard-icon-button release-news-page-button"
-                aria-label="Older"
-                title="Show older news entry"
-                disabled={!releaseInfo.news.has_next || releaseInfoState.loading}
-                onClick={() => {
-                  if (releaseInfo.news?.next_index != null) {
-                    onLoadNewsEntry(releaseInfo.news.next_index);
-                  }
-                }}
-              >
-                <DashboardIcon name="older" />
+              </div>
+              <p className="panel-meta release-news-source">
+                {[releaseInfo.news.source ?? "NEWS.md", releaseInfo.news.path ?? null].filter(Boolean).join(" · ")}
+              </p>
+              <div className="release-news-pager">
+                <button
+                  type="button"
+                  className="dashboard-icon-button release-news-page-button"
+                  aria-label="Newer"
+                  title="Show newer news entry"
+                  disabled={!releaseInfo.news.has_previous || releaseInfoState.loading}
+                  onClick={() => {
+                    if (releaseInfo.news?.previous_index != null) {
+                      onLoadNewsEntry(releaseInfo.news.previous_index);
+                    }
+                  }}
+                >
+                  <DashboardIcon name="newer" />
+                </button>
+                <span>
+                  Entry {releaseInfo.news.index + 1}
+                  {releaseInfo.news.index === 0 ? " · Latest" : ""}
+                </span>
+                <button
+                  type="button"
+                  className="dashboard-icon-button release-news-page-button"
+                  aria-label="Older"
+                  title="Show older news entry"
+                  disabled={!releaseInfo.news.has_next || releaseInfoState.loading}
+                  onClick={() => {
+                    if (releaseInfo.news?.next_index != null) {
+                      onLoadNewsEntry(releaseInfo.news.next_index);
+                    }
+                  }}
+                >
+                  <DashboardIcon name="older" />
                 </button>
               </div>
             </article>
           ) : null}
 
-          <section className="dashboard-release-secondary" aria-label="Release metadata">
+          <dialog ref={readerRef} className="release-reader" aria-label="Release news archive">
+            <header className="release-reader-header">
+              <h2>Release news</h2>
+              <button type="button" onClick={() => readerRef.current?.close()}>
+                Close
+              </button>
+            </header>
+            {releaseInfo.news ? (
+              <article className="release-reader-article">
+                <h2>{releaseInfo.news.heading ?? "Latest update"}</h2>
+                <div className="release-news-copy">
+                  {releaseInfo.news.blocks.map((block, index) =>
+                    renderReleaseNewsBlock(block, `reader-${releaseInfo.news?.index}-${index}`),
+                  )}
+                </div>
+              </article>
+            ) : (
+              <p>No release story is available.</p>
+            )}
+            <footer className="release-reader-footer">
+              <button
+                type="button"
+                disabled={!releaseInfo.news?.has_previous || releaseInfoState.loading}
+                onClick={() => {
+                  if (releaseInfo.news?.previous_index != null) onLoadNewsEntry(releaseInfo.news.previous_index);
+                }}
+              >
+                ← Newer
+              </button>
+              <span>{releaseInfoState.loading ? "Loading…" : `Entry ${(releaseInfo.news?.index ?? 0) + 1}`}</span>
+              <button
+                type="button"
+                disabled={!releaseInfo.news?.has_next || releaseInfoState.loading}
+                onClick={() => {
+                  if (releaseInfo.news?.next_index != null) onLoadNewsEntry(releaseInfo.news.next_index);
+                }}
+              >
+                Older →
+              </button>
+            </footer>
+          </dialog>
+          <details className="dashboard-release-secondary">
+            <summary>Version {releaseInfo.version ?? "unavailable"} · Build and changelog</summary>
             <div className="dashboard-release-secondary-heading">
-              {releaseSummary ? (
-                <p className="panel-meta dashboard-release-summary">
-                  {releaseSummary}
-                </p>
-              ) : null}
+              {releaseSummary ? <p className="panel-meta dashboard-release-summary">{releaseSummary}</p> : null}
               {releaseInfo.changelog ? (
                 <div className="feature-toolbar-actions icon-actions dashboard-release-actions">
-                  <button type="button" aria-label="Download changelog" title="Download changelog" onClick={downloadChangelog}>
+                  <button
+                    type="button"
+                    aria-label="Download changelog"
+                    title="Download changelog"
+                    onClick={downloadChangelog}
+                  >
                     <DownloadIcon />
                   </button>
                 </div>
@@ -1701,14 +1752,18 @@ function ProductContextPanel({
                 },
                 {
                   label: "Changelog",
-                  value: releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable",
+                  value: releaseInfo.changelog
+                    ? (releaseInfo.changelog.heading ?? "Recent release entries")
+                    : "Changelog unavailable",
                   detail: releaseInfo.changelog
-                    ? [releaseInfo.changelog.source ?? "CHANGELOG.md", releaseInfo.changelog.path ?? null].filter(Boolean).join(" · ")
+                    ? [releaseInfo.changelog.source ?? "CHANGELOG.md", releaseInfo.changelog.path ?? null]
+                        .filter(Boolean)
+                        .join(" · ")
                     : "No changelog source.",
                 },
               ]}
             />
-          </section>
+          </details>
 
           {releaseInfo.missing_reasons.length > 0 ? (
             <div className="release-missing-list">
@@ -2170,16 +2225,17 @@ export function OperationsDashboard() {
     <div className="feature-page dashboard-page">
       <div className="admin-toolbar">
         <div className="dashboard-toolbar-copy">
-          <span className="section-label">Operations dashboard</span>
-          <strong>{selectedDirectoryPath}</strong>
+          <h1>Dashboard</h1>
           <span className="dashboard-toolbar-summary">
-            {state.lastRefreshedAt ? `Last refreshed ${formatTimestamp(state.lastRefreshedAt)}` : "Refreshing live control-plane data."}
+            {state.lastRefreshedAt
+              ? `Last refreshed ${formatTimestamp(state.lastRefreshedAt)}`
+              : "Refreshing live control-plane data."}
           </span>
         </div>
         <div className="status-pills">
-          <span className={`status-pill ${stateClassName(anyLoading ? "running" : "pass")}`}>{anyLoading ? "Refreshing" : "Live"}</span>
-          <span className={`status-pill ${stateClassName(statusByCountClass(state.approvals.data?.health.pending ?? 0))}`}>{state.approvals.data ? `${state.approvals.data.health.pending} approvals pending` : "Approvals pending"}</span>
-          <span className={`status-pill ${stateClassName(statusByCountClass(state.sessions.data?.counts.active ?? 0))}`}>{state.sessions.data ? `${state.sessions.data.counts.active} sessions active` : "Sessions"}</span>
+          <span className={`status-pill ${stateClassName(anyLoading ? "running" : "pass")}`}>
+            {anyLoading ? "Refreshing" : "Live"}
+          </span>
         </div>
         <div className="inline-actions">
           <button
@@ -2199,12 +2255,90 @@ export function OperationsDashboard() {
         </div>
       </div>
 
+      <div className="dashboard-metric-strip" aria-label="Operational summary">
+        {(
+          [
+            { label: "Active sessions", value: sessions?.counts.active, tab: "sessions", remote: state.sessions },
+            { label: "Pending approvals", value: approvals?.health.pending, tab: "approvals", remote: state.approvals },
+            { label: "Agents", value: state.agents.data ? agents.length : null, tab: "agents", remote: state.agents },
+            {
+              label: "Services running",
+              value: state.workers.data
+                ? `${workers.filter((worker) => worker.running).length} / ${workers.length}`
+                : null,
+              tab: "workers",
+              remote: state.workers,
+            },
+          ] as const
+        ).map((metric) => (
+          <button key={metric.label} type="button" onClick={() => openTab(metric.tab)}>
+            <span>{metric.label}</span>
+            <strong>{metric.value ?? (metric.remote.loading ? "…" : "Unavailable")}</strong>
+            {metric.remote.error || metric.remote.missing ? <small>Partial data</small> : null}
+          </button>
+        ))}
+      </div>
       <div className="dashboard-panel-grid">
         <div className="dashboard-panel-column dashboard-panel-column-primary">
-          <ProductContextPanel releaseInfo={releaseInfo} releaseInfoState={state.releaseInfo} onLoadNewsEntry={loadNewsEntry} />
+          <ProductContextPanel
+            releaseInfo={releaseInfo}
+            releaseInfoState={state.releaseInfo}
+            onLoadNewsEntry={loadNewsEntry}
+          />
         </div>
 
         <div className="dashboard-panel-column dashboard-panel-column-secondary">
+          <section className="dashboard-attention" aria-label="Needs attention">
+            <h2>Needs attention</h2>
+            {approvals?.health.pending ? (
+              <button type="button" onClick={() => openTab("approvals")}>
+                <span>
+                  <strong>{approvals.health.pending} pending approvals</strong>
+                  <small>Review requests and their intended effects</small>
+                </span>
+                <span aria-hidden="true">→</span>
+              </button>
+            ) : null}
+            {workers.filter((worker) => worker.failed).length ? (
+              <button type="button" onClick={() => openTab("workers")}>
+                <span>
+                  <strong>{workers.filter((worker) => worker.failed).length} failed services</strong>
+                  <small>Inspect service health and logs</small>
+                </span>
+                <span aria-hidden="true">→</span>
+              </button>
+            ) : null}
+            {capacityHealth?.control_plane.disk.health === "warning" ||
+            capacityHealth?.control_plane.disk.health === "critical" ? (
+              <button
+                type="button"
+                onClick={() =>
+                  document
+                    .querySelector<HTMLDetailsElement>(".dashboard-panel-column-secondary > .dashboard-panel")
+                    ?.setAttribute("open", "")
+                }
+              >
+                <span>
+                  <strong>Control-plane storage {capacityHealth.control_plane.disk.health}</strong>
+                  <small>Inspect capacity and storage details below</small>
+                </span>
+                <span aria-hidden="true">↓</span>
+              </button>
+            ) : null}
+            {[state.approvals, state.workers, state.capacityHealth].some((remote) => remote.error || remote.missing) ? (
+              <p className="callout warning-callout">
+                Some attention sources are unavailable. Review the status details below.
+              </p>
+            ) : !approvals || !state.workers.data || !capacityHealth ? (
+              <p className="muted-text" role="status">
+                Loading attention sources…
+              </p>
+            ) : !approvals.health.pending &&
+              !workers.some((worker) => worker.failed) &&
+              !["warning", "critical"].includes(capacityHealth.control_plane.disk.health) ? (
+              <p className="muted-text">No pending approvals, failed services, or storage warnings.</p>
+            ) : null}
+          </section>
           <DashboardPanel
             eyebrow="System health"
             title="Capacity and execution"
@@ -2379,7 +2513,7 @@ export function OperationsDashboard() {
             </DashboardBlock>
 
             <DashboardBlock
-              title="Agent inventory"
+              title="Agents"
               state={state.agents}
               missingFallback="No agents are available for the selected directory and its descendants."
               summary={agentSummary(agents)}
@@ -2416,9 +2550,11 @@ export function OperationsDashboard() {
                   <DashboardCompactRows>
                     {workers.map((worker) => {
                       const metadata = worker.description ?? worker.unit;
-                      const detailParts = [worker.unit, worker.main_pid == null ? null : `PID ${worker.main_pid}`, worker.detail].filter(
-                        (part): part is string => Boolean(part),
-                      );
+                      const detailParts = [
+                        worker.unit,
+                        worker.main_pid == null ? null : `PID ${worker.main_pid}`,
+                        worker.detail,
+                      ].filter((part): part is string => Boolean(part));
                       return (
                         <DashboardCompactRow
                           key={worker.worker_id}
@@ -2434,14 +2570,14 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-        </DashboardPanel>
+          </DashboardPanel>
 
-        <DashboardPanel
-          eyebrow="Agent inventory"
-          title="Live execution targets"
-          statusClassName={stateClassName(statusTone(state.agents))}
-          statusLabel={statusLabel(state.agents)}
-        >
+          <DashboardPanel
+            eyebrow="Agents"
+            title="Live execution targets"
+            statusClassName={stateClassName(statusTone(state.agents))}
+            statusLabel={statusLabel(state.agents)}
+          >
             <DashboardBlock
               title="Agents"
               state={state.agents}
@@ -2480,14 +2616,14 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-        </DashboardPanel>
+          </DashboardPanel>
 
-        <DashboardPanel
-          eyebrow="Automation activity"
-          title="Workflow runtime"
-          statusClassName={stateClassName(statusTone(state.workflowRuns))}
-          statusLabel={statusLabel(state.workflowRuns)}
-        >
+          <DashboardPanel
+            eyebrow="Automation activity"
+            title="Workflow runtime"
+            statusClassName={stateClassName(statusTone(state.workflowRuns))}
+            statusLabel={statusLabel(state.workflowRuns)}
+          >
             <DashboardBlock
               title="Workflow runs"
               state={state.workflowRuns}
@@ -2500,8 +2636,14 @@ export function OperationsDashboard() {
                   <DashboardMetricRows
                     items={[
                       { label: "Total", value: runSnapshot.runs.length },
-                      { label: "Active", value: countBy(runSnapshot.runs, (run) => runStatusTone(run.run_state) === "running") },
-                      { label: "Failed", value: countBy(runSnapshot.runs, (run) => runStatusTone(run.run_state) === "fail") },
+                      {
+                        label: "Active",
+                        value: countBy(runSnapshot.runs, (run) => runStatusTone(run.run_state) === "running"),
+                      },
+                      {
+                        label: "Failed",
+                        value: countBy(runSnapshot.runs, (run) => runStatusTone(run.run_state) === "fail"),
+                      },
                       { label: "Resumable", value: countBy(runSnapshot.runs, (run) => Boolean(run.resumable)) },
                     ]}
                   />
@@ -2511,10 +2653,20 @@ export function OperationsDashboard() {
                         key={run.event_id}
                         title={run.event_id}
                         meta={`${run.trace_id ?? "no trace"} · ${formatTimestamp(run.latest_activity_at ?? run.occurred_at)}`}
-                        detail={panelTitleList([run.source_node_id ?? "source missing", run.source_trigger_type ?? "trigger missing"])}
+                        detail={panelTitleList([
+                          run.source_node_id ?? "source missing",
+                          run.source_trigger_type ?? "trigger missing",
+                        ])}
                         links={
                           run.trace_id
-                            ? [{ tab: "workflow", label: "Trace", value: run.trace_id, params: { trace_id: run.trace_id } }]
+                            ? [
+                                {
+                                  tab: "workflow",
+                                  label: "Trace",
+                                  value: run.trace_id,
+                                  params: { trace_id: run.trace_id },
+                                },
+                              ]
                             : []
                         }
                         statusText={run.run_state}
@@ -2538,10 +2690,18 @@ export function OperationsDashboard() {
                   <DashboardMetricRows
                     items={[
                       { label: "Graphs", value: activityReport.graphs.length },
-                      { label: "Activities", value: activityReport.graphs.reduce((sum, graph) => sum + graph.activity_count, 0) },
+                      {
+                        label: "Activities",
+                        value: activityReport.graphs.reduce((sum, graph) => sum + graph.activity_count, 0),
+                      },
                       {
                         label: "Latest",
-                        value: activityReport.graphs.length === 0 ? "n/a" : formatTimestamp(activityReport.graphs[0]?.latest_activity_at ?? activityReport.generated_at),
+                        value:
+                          activityReport.graphs.length === 0
+                            ? "n/a"
+                            : formatTimestamp(
+                                activityReport.graphs[0]?.latest_activity_at ?? activityReport.generated_at,
+                              ),
                       },
                     ]}
                   />
@@ -2554,7 +2714,9 @@ export function OperationsDashboard() {
                         detail={formatTimestamp(graph.latest_activity_at ?? activityReport.generated_at)}
                         links={[
                           { tab: "reports", label: "Graph", value: graph.graph_id },
-                          ...(graph.node_ids[0] ? [{ tab: "workflow" as AdminTab, label: "Node", value: graph.node_ids[0] }] : []),
+                          ...(graph.node_ids[0]
+                            ? [{ tab: "workflow" as AdminTab, label: "Node", value: graph.node_ids[0] }]
+                            : []),
                         ]}
                         statusText={String(graph.activity_count)}
                         statusTone={statusByCountClass(graph.activity_count)}
@@ -2564,14 +2726,14 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-        </DashboardPanel>
+          </DashboardPanel>
 
-        <DashboardPanel
-          eyebrow="Human-control work"
-          title="Approvals and sessions"
-          statusClassName={stateClassName(approvalTone(approvals))}
-          statusLabel={approvals ? `${approvals.health.pending} pending` : statusLabel(state.approvals)}
-        >
+          <DashboardPanel
+            eyebrow="Human-control work"
+            title="Approvals and sessions"
+            statusClassName={stateClassName(approvalTone(approvals))}
+            statusLabel={approvals ? `${approvals.health.pending} pending` : statusLabel(state.approvals)}
+          >
             <DashboardBlock
               title="Approvals"
               state={state.approvals}
@@ -2587,7 +2749,10 @@ export function OperationsDashboard() {
                       { label: "Expired", value: approvals.health.expired },
                       {
                         label: "Oldest pending",
-                        value: approvals.health.oldest_pending_age_seconds == null ? "n/a" : formatRelativeSeconds(approvals.health.oldest_pending_age_seconds),
+                        value:
+                          approvals.health.oldest_pending_age_seconds == null
+                            ? "n/a"
+                            : formatRelativeSeconds(approvals.health.oldest_pending_age_seconds),
                       },
                     ]}
                   />
@@ -2597,10 +2762,23 @@ export function OperationsDashboard() {
                         key={item.request_id}
                         title={item.tool_name || item.action_type}
                         meta={`${item.session_id} · ${formatTimestamp(item.created_at)}`}
-                        detail={panelTitleList([item.human_summary ?? "No human summary", item.directory_path ?? "no directory"])}
+                        detail={panelTitleList([
+                          item.human_summary ?? "No human summary",
+                          item.directory_path ?? "no directory",
+                        ])}
                         links={[
-                          { tab: "sessions", label: "Session", value: item.session_id, params: { session_id: item.session_id } },
-                          { tab: "approvals", label: "Approval", value: item.request_id, params: { request_id: item.request_id } },
+                          {
+                            tab: "sessions",
+                            label: "Session",
+                            value: item.session_id,
+                            params: { session_id: item.session_id },
+                          },
+                          {
+                            tab: "approvals",
+                            label: "Approval",
+                            value: item.request_id,
+                            params: { request_id: item.request_id },
+                          },
                         ]}
                         statusText={item.status}
                         statusTone={approvalItemTone(item.status)}
@@ -2635,32 +2813,45 @@ export function OperationsDashboard() {
                     ]}
                   />
                   <DashboardCompactRows>
-                    {sessionItemsForStatus(sessions, "active").slice(0, 3).map((session) => (
-                      <DashboardCompactRow
-                        key={session.session_id}
-                        title={session.session_id}
-                        meta={panelTitleList([session.model ?? "no model", session.vm_id ?? "no VM", session.directory_path])}
-                        detail={sessionWakeCue(session) ?? "No wake-schedule cue exposed by the list payload."}
-                        links={[
-                          ...(session.issue_number ? [{ tab: "issues" as AdminTab, label: "Issue", value: session.issue_number }] : []),
-                          { tab: "sessions", label: "Session", value: session.session_id, params: { session_id: session.session_id } },
-                        ]}
-                        statusText={session.is_expired ? "Expired" : "Active"}
-                        statusTone={sessionItemTone(session)}
-                      />
-                    ))}
+                    {sessionItemsForStatus(sessions, "active")
+                      .slice(0, 3)
+                      .map((session) => (
+                        <DashboardCompactRow
+                          key={session.session_id}
+                          title={session.session_id}
+                          meta={panelTitleList([
+                            session.model ?? "no model",
+                            session.vm_id ?? "no VM",
+                            session.directory_path,
+                          ])}
+                          detail={sessionWakeCue(session) ?? "No wake-schedule cue exposed by the list payload."}
+                          links={[
+                            ...(session.issue_number
+                              ? [{ tab: "issues" as AdminTab, label: "Issue", value: session.issue_number }]
+                              : []),
+                            {
+                              tab: "sessions",
+                              label: "Session",
+                              value: session.session_id,
+                              params: { session_id: session.session_id },
+                            },
+                          ]}
+                          statusText={session.is_expired ? "Expired" : "Active"}
+                          statusTone={sessionItemTone(session)}
+                        />
+                      ))}
                   </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
-        </DashboardPanel>
+          </DashboardPanel>
 
-        <DashboardPanel
-          eyebrow="Explainability shortcuts"
-          title="Tool-call audit trail"
-          statusClassName={stateClassName(statusTone(state.toolCalls))}
-          statusLabel={statusLabel(state.toolCalls)}
-        >
+          <DashboardPanel
+            eyebrow="Explainability shortcuts"
+            title="Tool-call audit trail"
+            statusClassName={stateClassName(statusTone(state.toolCalls))}
+            statusLabel={statusLabel(state.toolCalls)}
+          >
             <DashboardBlock
               title="Tool calls"
               state={state.toolCalls}
@@ -2673,8 +2864,14 @@ export function OperationsDashboard() {
                   <DashboardMetricRows
                     items={[
                       { label: "Returned", value: toolCalls.counts?.returned ?? toolCalls.items.length },
-                      { label: "Success", value: toolCalls.counts?.status_counts?.success ?? toolCalls.counts?.success ?? 0 },
-                      { label: "Denied", value: toolCalls.counts?.status_counts?.denied ?? toolCalls.counts?.denied ?? 0 },
+                      {
+                        label: "Success",
+                        value: toolCalls.counts?.status_counts?.success ?? toolCalls.counts?.success ?? 0,
+                      },
+                      {
+                        label: "Denied",
+                        value: toolCalls.counts?.status_counts?.denied ?? toolCalls.counts?.denied ?? 0,
+                      },
                       { label: "Error", value: toolCalls.counts?.status_counts?.error ?? toolCalls.counts?.error ?? 0 },
                     ]}
                   />
@@ -2690,7 +2887,14 @@ export function OperationsDashboard() {
                         ])}
                         links={[
                           ...(item.session_id
-                            ? [{ tab: "sessions" as AdminTab, label: "Session", value: item.session_id, params: { session_id: item.session_id } }]
+                            ? [
+                                {
+                                  tab: "sessions" as AdminTab,
+                                  label: "Session",
+                                  value: item.session_id,
+                                  params: { session_id: item.session_id },
+                                },
+                              ]
                             : []),
                           ...(item.approval_request_id
                             ? [
@@ -2702,17 +2906,21 @@ export function OperationsDashboard() {
                                 },
                               ]
                             : []),
-                          ...(item.workflow_run_id ?? item.trace_id
+                          ...((item.workflow_run_id ?? item.trace_id)
                             ? [
                                 {
                                   tab: "workflow" as AdminTab,
                                   label: item.workflow_run_id ? "Run" : "Trace",
                                   value: item.workflow_run_id ?? item.trace_id ?? "",
-                                  params: item.workflow_run_id ? { run_id: item.workflow_run_id } : { trace_id: item.trace_id ?? "" },
+                                  params: item.workflow_run_id
+                                    ? { run_id: item.workflow_run_id }
+                                    : { trace_id: item.trace_id ?? "" },
                                 },
                               ]
                             : []),
-                          ...(item.agent_id ? [{ tab: "agents" as AdminTab, label: "Agent", value: item.agent_id }] : []),
+                          ...(item.agent_id
+                            ? [{ tab: "agents" as AdminTab, label: "Agent", value: item.agent_id }]
+                            : []),
                           ...(item.vm_id ? [{ tab: "vms" as AdminTab, label: "VM", value: item.vm_id }] : []),
                         ]}
                         statusText={toolCallStatus(item)}
@@ -2723,14 +2931,16 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-        </DashboardPanel>
+          </DashboardPanel>
 
-        <DashboardPanel
-          eyebrow="Onboarding / workflow actions"
-          title="Workflow document and catalog"
-          statusClassName={stateClassName(workflowDocumentTone(workflowDocument))}
-          statusLabel={workflowDocument ? `${workflowDocument.graphs.length} graphs` : statusLabel(state.workflowDocument)}
-        >
+          <DashboardPanel
+            eyebrow="Onboarding / workflow actions"
+            title="Workflow document and catalog"
+            statusClassName={stateClassName(workflowDocumentTone(workflowDocument))}
+            statusLabel={
+              workflowDocument ? `${workflowDocument.graphs.length} graphs` : statusLabel(state.workflowDocument)
+            }
+          >
             <DashboardBlock
               title="Workflow document"
               state={state.workflowDocument}
@@ -2742,7 +2952,7 @@ export function OperationsDashboard() {
                   <TabButton tab="configuration" label="Configuration" />
                 </>
               }
-              >
+            >
               {workflowDocument ? (
                 <div className="dashboard-block-stack">
                   <DashboardMetricRows
@@ -2782,7 +2992,7 @@ export function OperationsDashboard() {
                   <TabButton tab="configuration" label="Config" />
                 </>
               }
-              >
+            >
               {workflowCatalog ? (
                 <div className="dashboard-block-stack">
                   <DashboardMetricRows
@@ -2817,7 +3027,7 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-        </DashboardPanel>
+          </DashboardPanel>
         </div>
       </div>
     </div>

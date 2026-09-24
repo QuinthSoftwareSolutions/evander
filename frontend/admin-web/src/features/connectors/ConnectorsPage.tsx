@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson } from "../admin/api";
+import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { readAdminHashQuery } from "../admin/hash";
 
 type ConnectorOperation = {
   description: string;
@@ -64,7 +66,7 @@ export function ConnectorsPage({
 }) {
   const [state, setState] = useState<ConnectorState | null>(null);
   const [draft, setDraft] = useState("{}");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => readAdminHashQuery().get("connector_id"));
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -251,159 +253,255 @@ export function ConnectorsPage({
   }
 
   return (
-    <div className="feature-page connectors-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Approved host integrations</div>
-            <h1>Connectors</h1>
-          </div>
-          <button type="button" onClick={() => void refresh()} disabled={loading || saving}>
-            Refresh
-          </button>
-        </div>
-        <label className="field-stack">
-          <span>Search</span>
+    <RecordWorkspace
+      recordLabel="connector"
+      title="Connectors"
+      description="Inspect available integrations, authentication status, and agent-visible operations."
+      columns={["Connector", "Driver", "Authentication", "Operations"]}
+      records={visibleConnectors.map((connector) => ({
+        id: connector.connector_id,
+        title: connector.display_name,
+        description: connector.connector_id,
+        href: `#connectors?${new URLSearchParams({ connector_id: connector.connector_id })}`,
+        cells: [
+          { value: connector.driver },
+          {
+            value: connector.auth_status.available ? "Available" : "Unavailable",
+            content: (
+              <span className={`status-pill state-${connector.auth_status.available ? "pass" : "warning"}`}>
+                {connector.auth_status.available ? "Available" : "Unavailable"}
+              </span>
+            ),
+          },
+          { value: Object.keys(connector.operations).length },
+        ],
+        facts: [
+          ["Connector", connector.connector_id],
+          ["Driver", connector.driver],
+          ["Enabled", connector.disabled ? "No" : "Yes"],
+          ["Authentication", connector.auth_status.available ? "Available" : "Unavailable"],
+          ["Operations", Object.keys(connector.operations).length],
+        ],
+      }))}
+      selectedId={selectedId}
+      onSelect={setSelectedId}
+      loading={loading}
+      error={error}
+      initialRecordOpen={Boolean(readAdminHashQuery().get("connector_id"))}
+      recordRouteKeys="connector_id"
+      filters={
+        <label className="field-stack collection-search">
+          <span>Search connectors</span>
           <input
+            type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Name, ID, or driver"
           />
         </label>
-        <div className="feature-list">
-          {visibleConnectors.map((connector) => (
-            <button
-              key={connector.connector_id}
-              type="button"
-              className={`feature-list-item${selected?.connector_id === connector.connector_id ? " selected" : ""}`}
-              onClick={() => setSelectedId(connector.connector_id)}
-            >
-              <div className="feature-list-title-row">
-                <strong>{connector.display_name}</strong>
-                <span className={`status-pill ${connector.auth_status.available ? "state-running" : "state-failed"}`}>
-                  {connector.auth_status.available ? "Available" : "Auth missing"}
-                </span>
-              </div>
-              <div className="feature-list-meta">{connector.connector_id} · {connector.driver}</div>
-            </button>
-          ))}
-          {!loading && visibleConnectors.length === 0 ? (
-            <div className="empty-state">No connectors match this directory and filter.</div>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selected?.display_name ?? "Connector configuration"}</h2>
-            <p className="muted-text">
-              Definitions inherit by directory. Credentials remain host-owned environment secrets and are never shown here.
+      }
+      actions={(openRecord) => (
+        <>
+          <button type="button" disabled={loading || saving} onClick={() => void refresh()}>
+            Refresh
+          </button>
+          <button type="button" onClick={openRecord}>
+            Directory configuration
+          </button>
+        </>
+      )}
+      inspectorContent={
+        <>
+          {selected?.description ? <p>{selected.description}</p> : null}
+          {dirty ? (
+            <p className="callout warning-callout">
+              Unsaved directory configuration is preserved. View the connector to continue editing.
             </p>
-          </div>
-          <div className="feature-toolbar-actions">
-            <button
-              type="button"
-              onClick={() => activeState && setDraft(configText(activeState.config))}
-              disabled={!dirty || saving}
-            >
-              Reset
-            </button>
-            <button
-              type="button"
-              onClick={() => void testConnector()}
-              disabled={!selected?.health_operation || testing || saving || !privilegedUnlocked}
-            >
-              {testing ? "Testing..." : "Run health test"}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void save()}
-              disabled={!dirty || saving || !activeState || !privilegedUnlocked}
-            >
-              {saving ? "Saving..." : "Save configuration"}
-            </button>
-          </div>
-        </div>
-
-        {!privilegedUnlocked ? (
-          <div className="callout warning-callout">Unlock privileged operations to save configuration or run health tests.</div>
-        ) : null}
-        {error ? <div className="callout warning-callout">{error}</div> : null}
-        {status ? <div className="callout">{status}</div> : null}
-
-        {selected ? (
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Selected connector</h3>
-              <span className={`status-pill ${selected.disabled ? "state-idle" : "state-running"}`}>
-                {selected.disabled ? "Disabled" : "Enabled"}
-              </span>
-            </div>
-            <div className="detail-grid">
-              <div><span>ID</span><strong>{selected.connector_id}</strong></div>
-              <div><span>Driver</span><strong>{selected.driver}</strong></div>
-              <div><span>Authentication</span><strong>{selected.auth_status.type}</strong></div>
-              <div><span>Auth profile</span><strong>{selected.auth_profile ?? "None"}</strong></div>
-              <div><span>Health operation</span><strong>{selected.health_operation ?? "Not configured"}</strong></div>
-              <div><span>Operations</span><strong>{Object.keys(selected.operations).length}</strong></div>
-            </div>
-            <p>{selected.description}</p>
-          </article>
-        ) : null}
-
-        {selected ? (
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Agent-visible operations</h3>
-              <span className="status-pill">Per-session grants required</span>
-            </div>
-            <div className="detail-stack">
-              {Object.entries(selected.operations).map(([name, operation]) => (
-                <div className="detail-block" key={name}>
-                  <div className="feature-list-title-row">
-                    <strong>{name}</strong>
-                    <div className="status-pills">
-                      <span className={`status-pill ${operation.access === "write" ? "state-waiting" : "state-idle"}`}>
-                        {operation.access}
-                      </span>
-                      <span className="status-pill state-idle">{operation.result_mode}</span>
-                      {operation.requires_approval ? <span className="status-pill state-waiting">Approval</span> : null}
-                    </div>
-                  </div>
-                  <p className="muted-text">{operation.description}</p>
-                  <details>
-                    <summary>Input schema</summary>
-                    <pre>{JSON.stringify(operation.input_schema, null, 2)}</pre>
-                  </details>
-                </div>
-              ))}
-            </div>
-          </article>
-        ) : null}
-
-        <article className="panel">
-          <div className="panel-header">
+          ) : null}
+        </>
+      }
+    >
+      <div className="feature-page connectors-page">
+        <section className="feature-sidebar">
+          <div className="feature-sidebar-header">
             <div>
-              <h3>Directory override JSON</h3>
-              <p className="muted-text">Available drivers: {activeState?.driver_names.join(", ") || "loading"}</p>
+              <div className="eyebrow">Approved host integrations</div>
+              <h1>Connectors</h1>
             </div>
-            {dirty ? <span className="status-pill state-pending">Unsaved</span> : <span className="status-pill state-idle">Current</span>}
+            <button type="button" onClick={() => void refresh()} disabled={loading || saving}>
+              Refresh
+            </button>
           </div>
           <label className="field-stack">
-            <span>Connector definitions and auth profile references</span>
-            <textarea
-              className="json-editor"
-              rows={24}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              spellCheck={false}
-              disabled={saving}
-            />
+            <span>Search</span>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name, ID, or driver" />
           </label>
-        </article>
-      </section>
-    </div>
+          <div className="feature-list">
+            {visibleConnectors.map((connector) => (
+              <button
+                key={connector.connector_id}
+                type="button"
+                className={`feature-list-item${selected?.connector_id === connector.connector_id ? " selected" : ""}`}
+                onClick={() => setSelectedId(connector.connector_id)}
+              >
+                <div className="feature-list-title-row">
+                  <strong>{connector.display_name}</strong>
+                  <span className={`status-pill ${connector.auth_status.available ? "state-running" : "state-failed"}`}>
+                    {connector.auth_status.available ? "Available" : "Auth missing"}
+                  </span>
+                </div>
+                <div className="feature-list-meta">
+                  {connector.connector_id} · {connector.driver}
+                </div>
+              </button>
+            ))}
+            {!loading && visibleConnectors.length === 0 ? (
+              <div className="empty-state">No connectors match this directory and filter.</div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="feature-content">
+          <div className="feature-toolbar">
+            <div>
+              <h2>{selected?.display_name ?? "Connector configuration"}</h2>
+              <p className="muted-text">
+                Definitions inherit by directory. Credentials remain host-owned environment secrets and are never shown
+                here.
+              </p>
+            </div>
+            <div className="feature-toolbar-actions">
+              <button
+                type="button"
+                onClick={() => activeState && setDraft(configText(activeState.config))}
+                disabled={!dirty || saving}
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                onClick={() => void testConnector()}
+                disabled={!selected?.health_operation || testing || saving || !privilegedUnlocked}
+              >
+                {testing ? "Testing..." : "Run health test"}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void save()}
+                disabled={!dirty || saving || !activeState || !privilegedUnlocked}
+              >
+                {saving ? "Saving..." : "Save configuration"}
+              </button>
+            </div>
+          </div>
+
+          {!privilegedUnlocked ? (
+            <div className="callout warning-callout">
+              Unlock privileged operations to save configuration or run health tests.
+            </div>
+          ) : null}
+          {error ? <div className="callout warning-callout">{error}</div> : null}
+          {status ? <div className="callout">{status}</div> : null}
+
+          {selected ? (
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Selected connector</h3>
+                <span className={`status-pill ${selected.disabled ? "state-idle" : "state-running"}`}>
+                  {selected.disabled ? "Disabled" : "Enabled"}
+                </span>
+              </div>
+              <div className="detail-grid">
+                <div>
+                  <span>ID</span>
+                  <strong>{selected.connector_id}</strong>
+                </div>
+                <div>
+                  <span>Driver</span>
+                  <strong>{selected.driver}</strong>
+                </div>
+                <div>
+                  <span>Authentication</span>
+                  <strong>{selected.auth_status.type}</strong>
+                </div>
+                <div>
+                  <span>Auth profile</span>
+                  <strong>{selected.auth_profile ?? "None"}</strong>
+                </div>
+                <div>
+                  <span>Health operation</span>
+                  <strong>{selected.health_operation ?? "Not configured"}</strong>
+                </div>
+                <div>
+                  <span>Operations</span>
+                  <strong>{Object.keys(selected.operations).length}</strong>
+                </div>
+              </div>
+              <p>{selected.description}</p>
+            </article>
+          ) : null}
+
+          {selected ? (
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Agent-visible operations</h3>
+                <span className="status-pill">Per-session grants required</span>
+              </div>
+              <div className="detail-stack">
+                {Object.entries(selected.operations).map(([name, operation]) => (
+                  <div className="detail-block" key={name}>
+                    <div className="feature-list-title-row">
+                      <strong>{name}</strong>
+                      <div className="status-pills">
+                        <span
+                          className={`status-pill ${operation.access === "write" ? "state-waiting" : "state-idle"}`}
+                        >
+                          {operation.access}
+                        </span>
+                        <span className="status-pill state-idle">{operation.result_mode}</span>
+                        {operation.requires_approval ? (
+                          <span className="status-pill state-waiting">Approval</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <p className="muted-text">{operation.description}</p>
+                    <details>
+                      <summary>Input schema</summary>
+                      <pre>{JSON.stringify(operation.input_schema, null, 2)}</pre>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ) : null}
+
+          <article className="panel">
+            <div className="panel-header">
+              <div>
+                <h3>Directory override JSON</h3>
+                <p className="muted-text">Available drivers: {activeState?.driver_names.join(", ") || "loading"}</p>
+              </div>
+              {dirty ? (
+                <span className="status-pill state-pending">Unsaved</span>
+              ) : (
+                <span className="status-pill state-idle">Current</span>
+              )}
+            </div>
+            <label className="field-stack">
+              <span>Connector definitions and auth profile references</span>
+              <textarea
+                className="json-editor"
+                rows={24}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                spellCheck={false}
+                disabled={saving}
+              />
+            </label>
+          </article>
+        </section>
+      </div>
+    </RecordWorkspace>
   );
 }

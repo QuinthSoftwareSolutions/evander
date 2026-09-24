@@ -1,8 +1,8 @@
+import { readWorkflowEditorSource } from "./workflowEditorSource.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const app = readWorkflowEditorSource();
 
 test("workflow run snapshot refreshes keep document load errors separate", () => {
   const runSnapshotEffect = app.match(

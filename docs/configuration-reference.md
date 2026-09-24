@@ -1,5 +1,12 @@
 # Configuration Reference
 
+Project release policies support `reintegration`, `verification_max_generations`,
+`verification_log_retention_days` and opt-in per-command `result_protocol`,
+`allow_baseline_exceptions`, and `command_failure_action`. See
+[Release recovery and verifier policy](release-recovery-and-verifier-policy.md) for defaults,
+frozen-manifest semantics and safe rollout. Worker .NET paths use
+`evander_worker_dotnet_bundle_selector` with `sdk` and `tools` children.
+
 For Azure DevOps work-item images, the session needs `list_inline_media`, `download_inline_media`
 and `communication_copy_artifact_to_workspace`, plus `communication_file_receive_enabled: true`
 in its session or effective directory policy. Existing file size/type limits apply. See the
@@ -412,7 +419,7 @@ Type-specific keys:
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `content_starts_with`, `case_sensitive` |
 | `trigger:teams:new-message` | `targets` | `user_ids` |
-| `trigger:teams:direct-message` | `targets`, `sender_user_ids` | `message_filter` |
+| `trigger:teams:direct-message` | `targets`, `sender_user_ids` | `chat_target_mode`, `direct_chat_user_upns`, `message_filter` |
 | `trigger:email:new-message` | `mailbox_ids` | `folder` |
 | `trigger:host-directory:file-added` | `directory_id` | `path`, `recursive`, `include_globs`, `exclude_globs`, `settle_seconds` |
 | `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids`, `suppress_agent_authored_feedback` |
@@ -578,18 +585,8 @@ described above. Review requests are fed from the host-owned
 `runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Script run
 requests are fed from `runtime/script-run-requests-store.json`, which the `run_script(...)` MCP
 tool appends to after validating that the calling session is allowed to invoke the requested
-script name. The checked-in global workflow currently filters that trigger down to
-`provision_exampleindustry_app_demo_environment.sh`, queues a typed Azure DevOps pipeline run,
-maps the derived demo-environment relay metadata with `gate:map`, and resumes the originating
-session after `effect:session:update-metadata` stores that metadata.
-
-The `app-demo-modification.v1-example` pack is the no-deployment continuation path for an already
-deployed named demo. It consumes `external.app-demo-change-requested`, derives the deterministic
-session from `payload.resourceBaseName`, renews the session to an eight-hour window with
-`effect:session:renew-if-expired`, refreshes the APP/browser and optional Elastic target metadata,
-then uses `effect:agent:enqueue-prompt` with the stored `metadata.agent_thread_id`. The external
-publisher must retain the workflow-event token server-side and must derive rather than accept
-caller-selected target URLs or session IDs.
+script name. Operator-owned workflow packs can route the request to an approved host action,
+then store any resulting session metadata with `effect:session:update-metadata`.
 
 `trigger:approval:pending-created` watches the durable approval store for pending requests,
 scopes by `directory_path` with descendant matching, and accepts optional `action_types` and
@@ -1362,7 +1359,7 @@ Effect schema envelope example:
 }
 ```
 
-The checked-in APP provisioning workflow uses `effect:ado:pipeline-run` to queue an Azure DevOps
+The checked-in App provisioning workflow uses `effect:ado:pipeline-run` to queue an Azure DevOps
 deployment pipeline, then uses `gate:map` to derive fields such as `app_base_url`,
 `app_public_url`, `app_api_alias`, `app_ui_alias`, and `public_domain`. The mapped
 `session_metadata_patch` is stored with `effect:session:update-metadata` before the originating
@@ -1399,9 +1396,8 @@ backreferences. Text is bounded to 32768 characters and patterns to 4096. Use
 `gate:map` to construct targets from captures and `gate:switch` for validation or
 business decisions. Command syntax and URL naming are not provider behavior.
 
-The optional [APP PR testing example](app-pr-testing.md) composes these primitives
-entirely in JSON. [Workflow document patches](workflow-document-patches.md) install
-such node/edge configurations with revision-safe Admin saves.
+[Workflow document patches](workflow-document-patches.md) install node and edge
+configurations with revision-safe Admin saves.
 
 ### Graph examples
 
@@ -1802,7 +1798,9 @@ configuration file.
 | `gateway_url` | composed runtime config | `src/evander/cli.py` health checks / external endpoint references. |
 | `execution_backend`, `container_workers`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_active_tool_timeout_seconds`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and remains an inherited compatibility choice only for Codex sessions. `container_worker_base_url` selects the worker for new sessions. Existing sessions retain their saved worker connection settings, including the token environment-variable name, images, relay addresses, and database endpoint. Admin saves pin legacy sessions before changes; external configuration cutovers require `execution pin-worker-assignments --apply` under the original settings. Directory config never chooses, grants, or restricts that worker's subscription profiles. Named profile selection is session/workflow state. `container_worker_active_tool_timeout_seconds` defaults to 300 and lets the reconciler safely interrupt only a recognized stalled test or build process group while retaining the agent container; the 1800-second `container_worker_job_timeout_seconds` remains the whole-job fallback. `chatgpt_subscription` applies only to public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing stored session state. Unavailable subscription capacity queues rather than falling back to API billing. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
 | `agent_consultation_profiles`, `agent_consultation_default_profile`, `agent_consultation_max_wait_seconds`, `agent_consultation_retention_days`, `agent_consultation_token_secret_env` | root or directory `providers.json` | Request-scoped `consult_codebase` workers. Each named profile requires `model`, is restricted to `container_worker_vm`, and may set `agent_provider`, `model_provider_mode`, `container_image`, `timeout_seconds`, and `max_concurrency`. The gateway pins a managed-Git commit, persists the request, and returns after the bounded wait; the hidden system workflow creates and cleans up the worker. The token field names a host env var and defaults to `AGENT_PROMPT_TOKEN_SECRET`; it never contains the secret itself. |
-| `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_http_target_browser_proxy_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for model relays, MCP, HTTP-target API/browser access, and package restores. |
+| `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_http_target_browser_proxy_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root or directory `providers.json` | Container session bootstrap files under `/home/agent` for model relays, MCP, HTTP-target API/browser access, and package restores. |
+| `provider_state.nuget.private_package_patterns` | root or directory `providers.json` | Optional package ID patterns routed to the private Azure NuGet relay source in new container sessions. Defaults to an empty list. Set it in the directory that owns the private packages before switching from a hardcoded mapping. Example: `{"nuget":{"private_package_patterns":["Example.Private.*"]}}`. |
+| `provider_state.team_addon.legacy_guidance_section_ids` | root or directory `providers.json` | Optional managed-section IDs to remove when Team guidance is next seeded. Use this for deployment-specific retired section names; defaults to an empty list. Example: `{"team_addon":{"legacy_guidance_section_ids":["previous-team-addon"]}}`. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
 | `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `openai_image_generation_max_request_bytes`, `openai_image_edit_max_request_bytes`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/evander/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Image generation JSON defaults to a 1 MiB request limit; multipart image edits default to 256 MiB and are spooled and streamed without retaining their content. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `local_openai_max_concurrency` | root `providers.json` | Optional host-global limit for concurrent agent turns whose fully resolved provider mode is `local_openai`, across VM and container-worker backends. Excess prompts enter the durable FIFO prompt queue and are admitted as running turns finish. Omit the field for unlimited concurrency. Child directories cannot override it. |
@@ -2036,7 +2034,7 @@ of injecting host-side credentials. The separate managed website session endpoin
 operator-configured host logins only for targets carrying an explicit
 `managed_website_session` profile binding. Tokenized sessions may receive an
 `HTTP_TARGET_RELAY_BASE_URL` with relay auth embedded in the path prefix; guests should treat the
-base URL as opaque and append `/session/<session-id>/target/<alias>/`. The APP demo workflow is
+base URL as opaque and append `/session/<session-id>/target/<alias>/`. The App demo workflow is
 one consumer layered on top of this generic relay pattern and can register separate UI and API
 aliases for the same provisioned environment.
 
@@ -2323,13 +2321,13 @@ Example `policy.json` overlay:
     "create_ado_backlog_item": [
       {
         "id": "app-ado-work-item-constraints",
-        "name": "APP backlog item constraints",
+        "name": "App backlog item constraints",
         "constraints": [
           {
             "id": "project-fixed",
             "path": "project",
             "operator": "fixed",
-            "value": "Example Industry APP"
+            "value": "Example Industry App"
           },
           {
             "id": "type-allowed",
@@ -2443,9 +2441,13 @@ targets with `teams_chat_allowlist`, and one-on-one user send targets with
 Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
 `teams_post_status` can mention Graph users in channel posts, channel thread replies, and chat
 posts; user targets are resolved into one-on-one chats before sending.
-Direct-message trigger polling requires `targets` and `sender_user_ids` on
-`trigger:teams:direct-message`. Each target is a `chat:<chat-id>` value; sender entries can be
-Graph user IDs, UPNs, or mail addresses.
+Direct-message trigger polling uses resolved `targets` and `sender_user_ids` on
+`trigger:teams:direct-message`. In Admin Web, `chat_target_mode: direct` accepts readable
+`direct_chat_user_upns`; a revision-gated save resolves each UPN to its Graph user ID and ensures
+the corresponding one-to-one chat before persisting both canonical IDs. The UPNs remain stored for
+later editing. `chat_target_mode: explicit` retains the manual form, where each target is a
+`chat:<chat-id>` value and sender entries can be Graph user IDs, UPNs, or mail addresses. Existing
+definitions without `chat_target_mode` continue to use the explicit form.
 The Teams ingest worker persists backoff independently for each channel, chat, discovery endpoint,
 and user lookup. Retryable failure of one target does not delay healthy targets. Configure the
 initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and

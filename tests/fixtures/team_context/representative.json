@@ -859,7 +859,7 @@
             ]
           }
         ],
-        "superior_agent_id": "truman",
+        "superior_agent_id": "evander",
         "subordinates": [],
         "release_packages": {},
         "project_repo": {
@@ -1000,11 +1000,11 @@
       ]
     },
     {
-      "name": "Truman-management",
+      "name": "Evander-management",
       "lease": {
         "agent": {
-          "id": "truman",
-          "role_name": "Truman",
+          "id": "evander",
+          "role_name": "Evander",
           "role_description": "Plan, delegate, and supervise reviewed delivery.",
           "effective_role_permissions": [
             "create_root_task"
@@ -1024,7 +1024,7 @@
           {
             "id": "task-0",
             "project_id": "project-export",
-            "owner_agent_id": "truman",
+            "owner_agent_id": "evander",
             "title": "Export requirement 0",
             "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
             "priority": 1,
@@ -1057,7 +1057,7 @@
           {
             "id": "task-1",
             "project_id": "project-export",
-            "owner_agent_id": "truman",
+            "owner_agent_id": "evander",
             "title": "Export requirement 1",
             "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
             "priority": 2,
@@ -1090,7 +1090,7 @@
           {
             "id": "task-2",
             "project_id": "project-export",
-            "owner_agent_id": "truman",
+            "owner_agent_id": "evander",
             "title": "Export requirement 2",
             "description": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
             "priority": 3,
@@ -1123,7 +1123,7 @@
           {
             "id": "task-3",
             "project_id": "project-export",
-            "owner_agent_id": "truman",
+            "owner_agent_id": "evander",
             "title": "Export requirement 3",
             "description": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
             "priority": 4,
@@ -1156,7 +1156,7 @@
           {
             "id": "task-4",
             "project_id": "project-export",
-            "owner_agent_id": "truman",
+            "owner_agent_id": "evander",
             "title": "Export requirement 4",
             "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
             "priority": 5,
@@ -1189,7 +1189,7 @@
           {
             "id": "task-5",
             "project_id": "project-export",
-            "owner_agent_id": "truman",
+            "owner_agent_id": "evander",
             "title": "Export requirement 5",
             "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
             "priority": 6,
@@ -1225,8 +1225,8 @@
         "reviews": [],
         "dispatch": {
           "id": "dispatch-example",
-          "agent_id": "truman",
-          "session_id": "session-truman",
+          "agent_id": "evander",
+          "session_id": "session-evander",
           "cause_kind": "manager_fallback",
           "work_lineage_id": "lineage-0",
           "task_ids": [
@@ -1420,7 +1420,7 @@
             ]
           }
         ],
-        "superior_agent_id": "truman",
+        "superior_agent_id": "evander",
         "subordinates": [],
         "release_packages": {
           "release-0": {
@@ -1463,12 +1463,12 @@
             {
               "id": "context-0",
               "branch_context_id": "context-0",
-              "agent_id": "truman",
+              "agent_id": "evander",
               "task_id": "task-0",
               "base_branch": "main",
               "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "commit_sha": "0000000000000000000000000000000000000001",
-              "agent_branch": "agents/session-truman/task-0",
+              "agent_branch": "agents/session-evander/task-0",
               "dispatch_id": "dispatch-example",
               "worktree_path": "/home/agent/worktrees/export/task-0",
               "state": "active"
@@ -1476,12 +1476,12 @@
             {
               "id": "context-1",
               "branch_context_id": "context-1",
-              "agent_id": "truman",
+              "agent_id": "evander",
               "task_id": "task-1",
               "base_branch": "main",
               "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "commit_sha": "0000000000000000000000000000000000000002",
-              "agent_branch": "agents/session-truman/task-1",
+              "agent_branch": "agents/session-evander/task-1",
               "dispatch_id": "dispatch-example",
               "worktree_path": "/home/agent/worktrees/export/task-1",
               "state": "active"
@@ -1489,12 +1489,12 @@
             {
               "id": "context-2",
               "branch_context_id": "context-2",
-              "agent_id": "truman",
+              "agent_id": "evander",
               "task_id": "task-2",
               "base_branch": "main",
               "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "commit_sha": "0000000000000000000000000000000000000003",
-              "agent_branch": "agents/session-truman/task-2",
+              "agent_branch": "agents/session-evander/task-2",
               "dispatch_id": "dispatch-example",
               "worktree_path": "/home/agent/worktrees/export/task-2",
               "state": "active"
@@ -1502,12 +1502,12 @@
             {
               "id": "context-3",
               "branch_context_id": "context-3",
-              "agent_id": "truman",
+              "agent_id": "evander",
               "task_id": "task-3",
               "base_branch": "main",
               "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "commit_sha": "0000000000000000000000000000000000000004",
-              "agent_branch": "agents/session-truman/task-3",
+              "agent_branch": "agents/session-evander/task-3",
               "dispatch_id": "dispatch-example",
               "worktree_path": "/home/agent/worktrees/export/task-3",
               "state": "active"
@@ -1515,12 +1515,12 @@
             {
               "id": "context-4",
               "branch_context_id": "context-4",
-              "agent_id": "truman",
+              "agent_id": "evander",
               "task_id": "task-4",
               "base_branch": "main",
               "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "commit_sha": "0000000000000000000000000000000000000005",
-              "agent_branch": "agents/session-truman/task-4",
+              "agent_branch": "agents/session-evander/task-4",
               "dispatch_id": "dispatch-example",
               "worktree_path": "/home/agent/worktrees/export/task-4",
               "state": "active"
@@ -1528,12 +1528,12 @@
             {
               "id": "context-5",
               "branch_context_id": "context-5",
-              "agent_id": "truman",
+              "agent_id": "evander",
               "task_id": "task-5",
               "base_branch": "main",
               "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "commit_sha": "0000000000000000000000000000000000000006",
-              "agent_branch": "agents/session-truman/task-5",
+              "agent_branch": "agents/session-evander/task-5",
               "dispatch_id": "dispatch-example",
               "worktree_path": "/home/agent/worktrees/export/task-5",
               "state": "active"
@@ -1550,12 +1550,12 @@
               {
                 "id": "context-0",
                 "branch_context_id": "context-0",
-                "agent_id": "truman",
+                "agent_id": "evander",
                 "task_id": "task-0",
                 "base_branch": "main",
                 "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "commit_sha": "0000000000000000000000000000000000000001",
-                "agent_branch": "agents/session-truman/task-0",
+                "agent_branch": "agents/session-evander/task-0",
                 "dispatch_id": "dispatch-example",
                 "worktree_path": "/home/agent/worktrees/export/task-0",
                 "state": "active"
@@ -1563,12 +1563,12 @@
               {
                 "id": "context-1",
                 "branch_context_id": "context-1",
-                "agent_id": "truman",
+                "agent_id": "evander",
                 "task_id": "task-1",
                 "base_branch": "main",
                 "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "commit_sha": "0000000000000000000000000000000000000002",
-                "agent_branch": "agents/session-truman/task-1",
+                "agent_branch": "agents/session-evander/task-1",
                 "dispatch_id": "dispatch-example",
                 "worktree_path": "/home/agent/worktrees/export/task-1",
                 "state": "active"
@@ -1576,12 +1576,12 @@
               {
                 "id": "context-2",
                 "branch_context_id": "context-2",
-                "agent_id": "truman",
+                "agent_id": "evander",
                 "task_id": "task-2",
                 "base_branch": "main",
                 "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "commit_sha": "0000000000000000000000000000000000000003",
-                "agent_branch": "agents/session-truman/task-2",
+                "agent_branch": "agents/session-evander/task-2",
                 "dispatch_id": "dispatch-example",
                 "worktree_path": "/home/agent/worktrees/export/task-2",
                 "state": "active"
@@ -1589,12 +1589,12 @@
               {
                 "id": "context-3",
                 "branch_context_id": "context-3",
-                "agent_id": "truman",
+                "agent_id": "evander",
                 "task_id": "task-3",
                 "base_branch": "main",
                 "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "commit_sha": "0000000000000000000000000000000000000004",
-                "agent_branch": "agents/session-truman/task-3",
+                "agent_branch": "agents/session-evander/task-3",
                 "dispatch_id": "dispatch-example",
                 "worktree_path": "/home/agent/worktrees/export/task-3",
                 "state": "active"
@@ -1602,12 +1602,12 @@
               {
                 "id": "context-4",
                 "branch_context_id": "context-4",
-                "agent_id": "truman",
+                "agent_id": "evander",
                 "task_id": "task-4",
                 "base_branch": "main",
                 "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "commit_sha": "0000000000000000000000000000000000000005",
-                "agent_branch": "agents/session-truman/task-4",
+                "agent_branch": "agents/session-evander/task-4",
                 "dispatch_id": "dispatch-example",
                 "worktree_path": "/home/agent/worktrees/export/task-4",
                 "state": "active"
@@ -1615,12 +1615,12 @@
               {
                 "id": "context-5",
                 "branch_context_id": "context-5",
-                "agent_id": "truman",
+                "agent_id": "evander",
                 "task_id": "task-5",
                 "base_branch": "main",
                 "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "commit_sha": "0000000000000000000000000000000000000006",
-                "agent_branch": "agents/session-truman/task-5",
+                "agent_branch": "agents/session-evander/task-5",
                 "dispatch_id": "dispatch-example",
                 "worktree_path": "/home/agent/worktrees/export/task-5",
                 "state": "active"
@@ -1649,7 +1649,7 @@
             {
               "id": "task-0",
               "project_id": "project-export",
-              "owner_agent_id": "truman",
+              "owner_agent_id": "evander",
               "title": "Export requirement 0",
               "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
               "priority": 1,
@@ -1682,7 +1682,7 @@
             {
               "id": "task-1",
               "project_id": "project-export",
-              "owner_agent_id": "truman",
+              "owner_agent_id": "evander",
               "title": "Export requirement 1",
               "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
               "priority": 2,
@@ -1715,7 +1715,7 @@
             {
               "id": "task-2",
               "project_id": "project-export",
-              "owner_agent_id": "truman",
+              "owner_agent_id": "evander",
               "title": "Export requirement 2",
               "description": "When retrying the operation, reuse its saved input revision. A later source edit must not silently change a previously approved export. Include the input revision in the verification evidence so a reviewer can reproduce the result.",
               "priority": 3,
@@ -1748,7 +1748,7 @@
             {
               "id": "task-3",
               "project_id": "project-export",
-              "owner_agent_id": "truman",
+              "owner_agent_id": "evander",
               "title": "Export requirement 3",
               "description": "The interface should preserve prior exports and expose a reference to the new file. Accessibility labels and keyboard navigation follow the existing application conventions. Use the established export format rather than introducing a customer-specific schema.",
               "priority": 4,
@@ -1781,7 +1781,7 @@
             {
               "id": "task-4",
               "project_id": "project-export",
-              "owner_agent_id": "truman",
+              "owner_agent_id": "evander",
               "title": "Export requirement 4",
               "description": "The export must retain stable identifiers and produce deterministic ordering when multiple rows share a timestamp. An operator should be able to select the date range explicitly. Empty input is a successful empty export, with a header and no invented rows.",
               "priority": 5,
@@ -1814,7 +1814,7 @@
             {
               "id": "task-5",
               "project_id": "project-export",
-              "owner_agent_id": "truman",
+              "owner_agent_id": "evander",
               "title": "Export requirement 5",
               "description": "The report should distinguish a missing source from an empty source. A failed source query must expose its error through the existing status response and must not publish an apparently successful artifact. Existing authorization and review rules continue to apply.",
               "priority": 6,
@@ -2278,7 +2278,7 @@
             ]
           }
         ],
-        "superior_agent_id": "truman",
+        "superior_agent_id": "evander",
         "subordinates": [],
         "release_packages": {
           "release-0": {

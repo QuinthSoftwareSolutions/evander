@@ -710,60 +710,53 @@ export function ToolVisibilityPage() {
 
   return (
     <div className="feature-page tool-visibility-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
+      <section className="tool-visibility-picker">
+        <div className="collection-heading">
           <div>
-            <div className="eyebrow">Inspector</div>
             <h1>Tool Visibility</h1>
+            <p className="muted-text">Compare policy visibility, binding telemetry, and denied execution history.</p>
           </div>
-          <button className="admin-action-button compact" type="button" onClick={() => void refresh()}>
+          <button type="button" onClick={() => void refresh()}>
             Refresh
           </button>
         </div>
-
-        <div className="panel section-panel">
-          <div className="feature-list-title-row">
-            <strong>Directory scope</strong>
-            <span className="panel-meta">{selectedDirectoryPath}</span>
-          </div>
-          <div className="feature-list-meta">
-            {sessionScope.total} sessions indexed • {sessionScope.active} active • {sessionScope.expired} expired
-          </div>
-          <div className="feature-list-meta">Sessions are loaded with expired records included so stale clients remain inspectable.</div>
-          <div className="feature-toolbar-actions">
-            <button type="button" className="admin-action-button compact" onClick={openDirectoryPicker}>
-              Change directory
-            </button>
-          </div>
-        </div>
-
-        <label className="field-stack">
-          <span>Find session</span>
-          <input value={sessionSearch} onChange={(event) => setSessionSearch(event.target.value)} placeholder="session id, VM, provider, capability" />
-        </label>
-
-        <div className="feature-list session-list">
-          {filteredSessions.map((item) => (
-            <button
-              key={item.session_id}
-              type="button"
-              className={`feature-list-item session-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
-              onClick={() => selectSession(item.session_id)}
+        <div className="collection-toolbar">
+          <label className="field-stack collection-search">
+            <span>Find session</span>
+            <input
+              value={sessionSearch}
+              onChange={(event) => setSessionSearch(event.target.value)}
+              placeholder="Session, VM, provider, capability"
+            />
+          </label>
+          <label className="field-stack tool-visibility-session-picker">
+            <span>Session</span>
+            <select
+              value={selectedSessionId}
+              onChange={(event) => selectSession(event.target.value)}
+              disabled={showInitialLoader}
             >
-              <div className="feature-list-title-row session-list-item-row">
-                <strong>{item.session_id}</strong>
-                <span className={`status-pill ${item.is_expired ? "state-failed" : "state-running"}`}>{item.is_expired ? "Expired" : "Active"}</span>
-              </div>
-              <div className="feature-list-meta">{item.directory_path}</div>
-              <div className="feature-list-meta">
-                {item.vm_id ?? item.vm_provider_id ?? "No VM"}{item.vm_provider ? ` • ${item.vm_provider}` : ""}
-              </div>
-              <div className="feature-list-meta">{item.capability_profile ?? "Capability profile missing"}</div>
-            </button>
-          ))}
-          {showInitialLoader ? <div className="empty-state">Loading sessions...</div> : null}
-          {!showInitialLoader && filteredSessions.length === 0 ? <div className="empty-state">No sessions matched the current search.</div> : null}
+              {!filteredSessions.some((item) => item.session_id === selectedSessionId) && selectedSessionId ? (
+                <option value={selectedSessionId}>{selectedSessionId}</option>
+              ) : null}
+              {!selectedSessionId ? <option value="">Select a session</option> : null}
+              {filteredSessions.map((item) => (
+                <option key={item.session_id} value={item.session_id}>
+                  {item.session_id} · {item.is_expired ? "Expired" : "Active"} ·{" "}
+                  {item.capability_profile ?? "No capability profile"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="panel-meta">
+            {showInitialLoader
+              ? "Loading sessions…"
+              : `${sessionScope.total} indexed · ${sessionScope.active} active · ${sessionScope.expired} expired`}
+          </span>
         </div>
+        {!showInitialLoader && filteredSessions.length === 0 ? (
+          <p className="muted-text">No sessions matched the current search.</p>
+        ) : null}
       </section>
 
       <section className="feature-content">
@@ -771,7 +764,8 @@ export function ToolVisibilityPage() {
           <div>
             <h2>{selectedSession?.session_id ?? "Select a session"}</h2>
             <p className="muted-text">
-              Compare policy visibility, binding telemetry, and denied execution history without exposing raw tool arguments or results.
+              Compare policy visibility, binding telemetry, and denied execution history without exposing raw tool
+              arguments or results.
             </p>
           </div>
           <div className="feature-toolbar-actions">
@@ -783,7 +777,8 @@ export function ToolVisibilityPage() {
         </div>
 
         <div className="callout warning-callout">
-          MCP clients can cache a tool manifest on the client side. If policy changes, reconnect or refresh the client to pick up the latest manifest.
+          MCP clients can cache a tool manifest on the client side. If policy changes, reconnect or refresh the client
+          to pick up the latest manifest.
         </div>
         {notices.map((notice) => (
           <div key={`${notice.kind}:${notice.tool_name ?? "session"}`} className="callout warning-callout">
@@ -798,7 +793,10 @@ export function ToolVisibilityPage() {
           <>
             <div className="detail-grid tool-visibility-summary-grid">
               <SessionSummaryCard session={visibilityResponse.session_context} />
-              <BindingSummaryCard queryContext={visibilityResponse.query_context} binding={visibilityResponse.binding_context} />
+              <BindingSummaryCard
+                queryContext={visibilityResponse.query_context}
+                binding={visibilityResponse.binding_context}
+              />
               <CountsSummaryCard counts={counts} filteredCount={filteredTools.length} />
             </div>
 
@@ -807,17 +805,35 @@ export function ToolVisibilityPage() {
                 <div className="panel-header">
                   <div>
                     <h3>Tools</h3>
-                    <p className="muted-text">Filter the effective visibility table or inspect a denied-at-execution record.</p>
+                    <p className="muted-text">
+                      Filter the effective visibility table or inspect a denied-at-execution record.
+                    </p>
                   </div>
                   <div className="feature-toolbar-actions tool-visibility-filter-actions">
                     <label className="field-stack">
                       <span>Search</span>
-                      <input value={toolSearch} onChange={(event) => setToolSearch(event.target.value)} placeholder="tool, category, provider, reason" />
+                      <input
+                        value={toolSearch}
+                        onChange={(event) => setToolSearch(event.target.value)}
+                        placeholder="tool, category, provider, reason"
+                      />
                     </label>
                     <label className="field-stack">
                       <span>State</span>
-                      <select value={visibilityFilter} onChange={(event) => setVisibilityFilter(event.target.value as VisibilityFilter)}>
-                        {(["all", "visible", "hidden_by_policy", "unavailable_to_session", "denied_at_execution", "unknown"] as const).map((value) => (
+                      <select
+                        value={visibilityFilter}
+                        onChange={(event) => setVisibilityFilter(event.target.value as VisibilityFilter)}
+                      >
+                        {(
+                          [
+                            "all",
+                            "visible",
+                            "hidden_by_policy",
+                            "unavailable_to_session",
+                            "denied_at_execution",
+                            "unknown",
+                          ] as const
+                        ).map((value) => (
                           <option key={value} value={value}>
                             {visibilityFilterLabel(value)}
                           </option>
@@ -856,7 +872,9 @@ export function ToolVisibilityPage() {
                           </td>
                           <td>
                             <div className="status-pills">
-                              <span className={`status-pill ${stateClassForVisibility(item.visibility_state)}`}>{visibilityLabel(item.visibility_state)}</span>
+                              <span className={`status-pill ${stateClassForVisibility(item.visibility_state)}`}>
+                                {visibilityLabel(item.visibility_state)}
+                              </span>
                               {item.execution_state === "denied_at_execution" ? (
                                 <span className="status-pill state-failed">Denied at execution</span>
                               ) : null}
@@ -864,9 +882,7 @@ export function ToolVisibilityPage() {
                           </td>
                           <td>{item.source ?? "None"}</td>
                           <td>
-                            <div className="status-pills">
-                              {approvalBadge(item)}
-                            </div>
+                            <div className="status-pills">{approvalBadge(item)}</div>
                           </td>
                           <td>{lastDeniedLabel(item)}</td>
                         </tr>
@@ -882,7 +898,10 @@ export function ToolVisibilityPage() {
                   </table>
                 </div>
 
-                <div className="mobile-record-list tool-visibility-mobile-record-list" aria-label="Tool visibility records">
+                <div
+                  className="mobile-record-list tool-visibility-mobile-record-list"
+                  aria-label="Tool visibility records"
+                >
                   {filteredTools.map((item) => (
                     <button
                       key={item.tool_name}
@@ -893,7 +912,9 @@ export function ToolVisibilityPage() {
                     >
                       <div className="mobile-record-title-row">
                         <strong>{item.label ?? item.tool_name}</strong>
-                        <span className={`status-pill ${stateClassForVisibility(item.visibility_state)}`}>{visibilityLabel(item.visibility_state)}</span>
+                        <span className={`status-pill ${stateClassForVisibility(item.visibility_state)}`}>
+                          {visibilityLabel(item.visibility_state)}
+                        </span>
                       </div>
                       <div className="mobile-record-row">
                         <span>Tool</span>
@@ -938,7 +959,9 @@ export function ToolVisibilityPage() {
                     </p>
                   </div>
                   {selectedTool ? (
-                    <span className={`status-pill ${stateClassForVisibility(selectedTool.visibility_state)}`}>{visibilityLabel(selectedTool.visibility_state)}</span>
+                    <span className={`status-pill ${stateClassForVisibility(selectedTool.visibility_state)}`}>
+                      {visibilityLabel(selectedTool.visibility_state)}
+                    </span>
                   ) : (
                     <span className="panel-meta">{filteredTools.length} tools shown</span>
                   )}
@@ -994,7 +1017,9 @@ export function ToolVisibilityPage() {
                         <div className="feature-list-title-row">
                           <strong>Approval settings</strong>
                         </div>
-                        <div className="feature-list-meta">{summarizeApprovalSettings(selectedTool.approval_settings)}</div>
+                        <div className="feature-list-meta">
+                          {summarizeApprovalSettings(selectedTool.approval_settings)}
+                        </div>
                       </div>
                     ) : null}
 
@@ -1033,8 +1058,16 @@ export function ToolVisibilityPage() {
                         {Array.isArray(selectedTool.related_links) && selectedTool.related_links.length > 0 ? (
                           <div className="status-pills">
                             {selectedTool.related_links.map((link, index) => {
-                              const label = stringField(link, "label") ?? stringField(link, "tab") ?? stringField(link, "kind") ?? `Link ${index + 1}`;
-                              const value = stringField(link, "value") ?? stringField(link, "id") ?? stringField(link, "target") ?? "Unknown";
+                              const label =
+                                stringField(link, "label") ??
+                                stringField(link, "tab") ??
+                                stringField(link, "kind") ??
+                                `Link ${index + 1}`;
+                              const value =
+                                stringField(link, "value") ??
+                                stringField(link, "id") ??
+                                stringField(link, "target") ??
+                                "Unknown";
                               return (
                                 <span key={`${label}:${value}:${index}`} className="permission-chip">
                                   {label}: {value}

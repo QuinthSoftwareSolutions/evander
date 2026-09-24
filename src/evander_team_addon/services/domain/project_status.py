@@ -82,8 +82,10 @@ def blocker_affected_project_ids(state: TeamState, blocker: TeamBlocker) -> set[
 def project_blocking_sources(
     state: TeamState,
     project_id: str,
+    *,
+    assessment_service: TaskAssessmentService | None = None,
 ) -> list[dict[str, Any]]:
-    """Return the exact current records that make a project blocked."""
+    """Return current blockers, sharing assessment only within one state snapshot."""
 
     tasks = [task for task in state.tasks.values() if task.project_id == project_id]
     task_ids = {task.id for task in tasks}
@@ -105,7 +107,8 @@ def project_blocking_sources(
     }
     project = state.projects.get(project_id)
     rows: list[dict[str, Any]] = []
-    assessments = TaskAssessmentService(state).assess_all()
+    assessment_service = assessment_service or TaskAssessmentService(state)
+    assessments = {task.id: assessment_service.assess(task.id) for task in tasks}
     rows.extend(
         {
             "kind": "task",

@@ -50,9 +50,9 @@ def test_merge_managed_section_appends_after_existing_content() -> None:
 def test_merge_managed_section_removes_stale_sections_first() -> None:
     existing = (
         "intro\n\n"
-        "<!-- evander-managed-section:truman-team-addon:begin -->\n"
+        "<!-- evander-managed-section:prior-team-addon:begin -->\n"
         "stale\n"
-        "<!-- evander-managed-section:truman-team-addon:end -->\n\n"
+        "<!-- evander-managed-section:prior-team-addon:end -->\n\n"
         "<!-- evander-managed-section:evander-team-addon:begin -->\n"
         "old\n"
         "<!-- evander-managed-section:evander-team-addon:end -->\n"
@@ -62,10 +62,10 @@ def test_merge_managed_section_removes_stale_sections_first() -> None:
         existing,
         section_id="evander-team-addon",
         content="new",
-        remove_section_ids=["truman-team-addon"],
+        remove_section_ids=["prior-team-addon"],
     )
 
-    assert "truman-team-addon" not in merged
+    assert "prior-team-addon" not in merged
     assert merged == (
         "intro\n\n"
         "<!-- evander-managed-section:evander-team-addon:begin -->\n"

@@ -293,7 +293,7 @@ def test_projection_to_instructions_sets_natural_phone_behavior() -> None:
 
 def test_initial_outbound_call_uses_complete_objective_without_startup_scaffolding() -> None:
     objective = (
-        "Open with: Hi Jonathan, this is Truman calling about the auto-dev approval queue. "
+        "Open with: Hi Jonathan, this is Evander calling about the auto-dev approval queue. "
         "Briefly summarize the candidate work items and ask which IDs should be approved."
     )
     instructions = initial_outbound_call_instructions(
@@ -3625,7 +3625,7 @@ def test_realtime_end_call_duplicates_do_not_duplicate_cleanup(
 def test_goodbye_transcript_does_not_treat_inbound_greetings_as_closings() -> None:
     assert not didww_sip_bridge._is_goodbye_transcript("Thanks for calling, how can I help?")
     assert not didww_sip_bridge._is_goodbye_transcript(
-        "Thank you for calling Truman support. How may I direct your call?"
+        "Thank you for calling Evander support. How may I direct your call?"
     )
     assert not didww_sip_bridge._is_goodbye_transcript("Thanks for calling ops.")
 
@@ -6599,7 +6599,7 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
     payload = _phone_payload()
     payload["projection"] = {
         "task_prompt": (
-            "Open with: Hi Jonathan, it's Truman. Then share a concise interesting fact."
+            "Open with: Hi Jonathan, it's Evander. Then share a concise interesting fact."
         ),
         "startup_contract": {"complete_objective": True},
     }
@@ -6626,7 +6626,7 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
                         "call_id": "tool-call-real",
                         "name": "query_origin_agent",
                         "arguments": json.dumps(
-                            {"question": "Give me one Truman-specific interesting fact."}
+                            {"question": "Give me one Evander-specific interesting fact."}
                         ),
                     },
                 },
@@ -7254,7 +7254,7 @@ def test_script_instruction_question_answers_from_projection_without_origin_quer
     payload = _phone_payload()
     payload["projection"] = {
         "task_prompt": (
-            "Open with: Hi Jonathan, this is Truman calling about turn-taking. "
+            "Open with: Hi Jonathan, this is Evander calling about turn-taking. "
             "Ask whether the greeting sounded natural."
         ),
         "startup_contract": {"complete_objective": True},
@@ -7312,7 +7312,7 @@ def test_script_instruction_question_answers_from_projection_without_origin_quer
         "source": "projection",
         "answer": (
             "The projected calling task is already authoritative: Open with: Hi Jonathan, "
-            "this is Truman calling about turn-taking. Ask whether the greeting sounded natural."
+            "this is Evander calling about turn-taking. Ask whether the greeting sounded natural."
         ),
     }
     assert "projected calling task" in str(realtime.responses[0])
@@ -7325,7 +7325,7 @@ def test_empty_origin_query_during_complete_startup_uses_projection_not_clarific
     payload = _phone_payload()
     payload["projection"] = {
         "task_prompt": (
-            "Open with: Hi Jonathan, this is Truman calling about turn-taking. "
+            "Open with: Hi Jonathan, this is Evander calling about turn-taking. "
             "Ask whether the greeting sounded natural."
         ),
         "startup_contract": {"complete_objective": True},
@@ -7377,7 +7377,7 @@ def test_empty_origin_query_during_complete_startup_uses_projection_not_clarific
         "source": "projection",
         "answer": (
             "The projected calling task is already authoritative: Open with: Hi Jonathan, "
-            "this is Truman calling about turn-taking. Ask whether the greeting sounded natural."
+            "this is Evander calling about turn-taking. Ask whether the greeting sounded natural."
         ),
     }
     assert len(realtime.responses) == 1

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import asyncio
+from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from starlette.requests import Request
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
@@ -85,6 +88,23 @@ def _transcript_limit(value: Any) -> int:
 class ChatStore:
     path: Path
     lock: Lock = field(default_factory=Lock)
+    _transcripts: OrderedDict[tuple[Any, ...], tuple[dict[str, Any], int]] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _transcript_revision: tuple[int, ...] | None = field(default=None, init=False, repr=False)
+    _transcript_bytes: int = field(default=0, init=False, repr=False)
+
+    def _file_revision(self) -> tuple[int, ...] | None:
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    def _clear_transcripts(self) -> None:
+        self._transcripts.clear()
+        self._transcript_bytes = 0
+        self._transcript_revision = None
 
     @staticmethod
     def _empty_payload() -> dict[str, Any]:
@@ -115,6 +135,7 @@ class ChatStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_path, self.path)
+            self._clear_transcripts()
         finally:
             if temp_path.exists():
                 temp_path.unlink()
@@ -294,6 +315,20 @@ class ChatStore:
     ) -> dict[str, Any]:
         normalized_user_id = str(user_id or "").strip() or "anonymous"
         with self.lock:
+            revision = self._file_revision()
+            if revision != self._transcript_revision:
+                self._clear_transcripts()
+                self._transcript_revision = revision
+            key = (
+                normalized_user_id,
+                thread_id,
+                _transcript_limit(limit),
+                str(before or "").strip(),
+            )
+            cached = self._transcripts.get(key)
+            if cached is not None:
+                self._transcripts.move_to_end(key)
+                return deepcopy(cached[0])
             payload = self._read()
             thread = self._thread_for_user(
                 payload,
@@ -324,7 +359,7 @@ class ChatStore:
                     oldest_message_id = str(first.get("id") or "").strip() or None
                 if isinstance(last, dict):
                     newest_message_id = str(last.get("id") or "").strip() or None
-            return {
+            result = {
                 "thread_id": thread_id,
                 "messages": page,
                 "has_older": start_index > 0,
@@ -333,6 +368,14 @@ class ChatStore:
                 "assistant_session": _normalize_assistant_session(thread.get("assistant_session")),
                 "updated_at": thread.get("updated_at"),
             }
+            size = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+            if size <= 8 * 1024 * 1024:
+                self._transcripts[key] = (deepcopy(result), size)
+                self._transcript_bytes += size
+                while len(self._transcripts) > 64 or self._transcript_bytes > 8 * 1024 * 1024:
+                    _, (_, removed_size) = self._transcripts.popitem(last=False)
+                    self._transcript_bytes -= removed_size
+            return result
 
     def get_assistant_session(self, *, user_id: str, thread_id: str) -> dict[str, str | None]:
         normalized_user_id = str(user_id or "").strip() or "anonymous"
@@ -595,8 +638,9 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
     async def start_or_get_session(request: Request) -> JSONResponse:
         auth.require(request)
         user_id = user_id_for_request(request)
-        thread_id = store.get_or_create_thread(user_id)
-        effective_capability_mode, assistant_session = prepare_assistant_session(
+        thread_id = await run_in_threadpool(store.get_or_create_thread, user_id)
+        effective_capability_mode, assistant_session = await run_in_threadpool(
+            prepare_assistant_session,
             request=request,
             user_id=user_id,
             thread_id=thread_id,
@@ -613,17 +657,19 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
     async def start_new_session(request: Request) -> JSONResponse:
         auth.require(request)
         user_id = user_id_for_request(request)
-        thread_id = store.start_new_thread(user_id)
+        thread_id = await run_in_threadpool(store.start_new_thread, user_id)
         backend = str(getattr(service.config, "execution_backend", "libvirt_vm") or "libvirt_vm")
         reset_context = getattr(service.vm_agent_admin, "reset_chat_assistant_thread_context", None)
         if callable(reset_context):
-            reset_context(
+            await run_in_threadpool(
+                reset_context,
                 user_id=user_id,
                 backend=backend,
                 assistant_scope="admin_chat",
                 thread_id=thread_id,
             )
-        effective_capability_mode, assistant_session = prepare_assistant_session(
+        effective_capability_mode, assistant_session = await run_in_threadpool(
+            prepare_assistant_session,
             request=request,
             user_id=user_id,
             thread_id=thread_id,
@@ -650,10 +696,13 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
             return json_error("thread_id is required")
         user_id = user_id_for_request(request)
         try:
-            store.get_assistant_session(user_id=user_id, thread_id=thread_id)
+            await run_in_threadpool(
+                store.get_assistant_session, user_id=user_id, thread_id=thread_id
+            )
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
-        effective_capability_mode, assistant_session = prepare_assistant_session(
+        effective_capability_mode, assistant_session = await run_in_threadpool(
+            prepare_assistant_session,
             request=request,
             user_id=user_id,
             thread_id=thread_id,
@@ -687,7 +736,8 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
             return json_error("Assistant is disabled by admin settings.", status_code=403)
         user_id = user_id_for_request(request)
         try:
-            user_message = store.append_message(
+            user_message = await run_in_threadpool(
+                store.append_message,
                 user_id=user_id,
                 thread_id=thread_id,
                 role="user",
@@ -698,7 +748,8 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
             return json_error(str(exc), status_code=404)
         effective_capability_mode = capability_mode(request)
         try:
-            service.operations_admin.publish_chat_assistant_message(
+            await run_in_threadpool(
+                service.operations_admin.publish_chat_assistant_message,
                 user_id=user_id,
                 thread_id=thread_id,
                 user_message_id=user_message["id"],
@@ -706,7 +757,8 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
                 assistant_capability_mode=effective_capability_mode,
             )
         except Exception as exc:
-            store.mark_message_status(
+            await run_in_threadpool(
+                store.mark_message_status,
                 thread_id=thread_id,
                 message_id=user_message["id"],
                 status="failed",
@@ -716,13 +768,30 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
             {
                 "thread_id": thread_id,
                 "assistant_capability_mode": effective_capability_mode,
-                "assistant_session": store.get_assistant_session(
+                "assistant_session": await run_in_threadpool(
+                    store.get_assistant_session,
                     user_id=user_id,
                     thread_id=thread_id,
                 ),
                 "messages": [user_message],
             }
         )
+
+    def transcript_snapshot(
+        request: Request,
+        user_id: str,
+        thread_id: str,
+        limit: int,
+        before: str | None = None,
+    ) -> dict[str, Any]:
+        transcript = store.get_transcript(
+            user_id=user_id,
+            thread_id=thread_id,
+            limit=limit,
+            before=before,
+        )
+        transcript["assistant_capability_mode"] = capability_mode(request)
+        return transcript
 
     async def get_transcript(request: Request) -> JSONResponse:
         auth.require(request)
@@ -733,16 +802,13 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
         limit = _transcript_limit(request.query_params.get("limit"))
         before = str(request.query_params.get("before") or "").strip() or None
         try:
-            transcript = store.get_transcript(
-                user_id=user_id,
-                thread_id=thread_id,
-                limit=limit,
-                before=before,
+            return await run_in_threadpool(
+                lambda: JSONResponse(
+                    transcript_snapshot(request, user_id, thread_id, limit, before)
+                )
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
-        transcript["assistant_capability_mode"] = capability_mode(request)
-        return JSONResponse(transcript)
 
     async def stream_transcript(request: Request) -> StreamingResponse | JSONResponse:
         auth.require(request)
@@ -751,31 +817,28 @@ def chat_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Rou
             return json_error("thread_id is required")
         user_id = user_id_for_request(request)
         limit = _transcript_limit(request.query_params.get("limit"))
+
+        def serialized_snapshot() -> str:
+            return json.dumps(
+                transcript_snapshot(request, user_id, thread_id, limit), sort_keys=True
+            )
+
         try:
-            initial = store.get_transcript(user_id=user_id, thread_id=thread_id, limit=limit)
+            initial = await run_in_threadpool(serialized_snapshot)
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
 
         async def events():
-            last_serialized = ""
-            snapshot = dict(initial)
-            snapshot["assistant_capability_mode"] = capability_mode(request)
-            last_serialized = json.dumps(snapshot, sort_keys=True)
+            last_serialized = initial
             yield f"event: snapshot\ndata: {last_serialized}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
                 await asyncio.sleep(1.0)
                 try:
-                    snapshot = store.get_transcript(
-                        user_id=user_id,
-                        thread_id=thread_id,
-                        limit=limit,
-                    )
+                    serialized = await run_in_threadpool(serialized_snapshot)
                 except ValueError:
                     break
-                snapshot["assistant_capability_mode"] = capability_mode(request)
-                serialized = json.dumps(snapshot, sort_keys=True)
                 if serialized == last_serialized:
                     yield ": keepalive\n\n"
                     continue

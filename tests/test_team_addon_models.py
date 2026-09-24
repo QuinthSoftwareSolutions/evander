@@ -788,7 +788,7 @@ def test_project_git_config_accepts_distinct_agent_author_and_committer() -> Non
         managed_repo_id="mr_0123456789abcdefabcd",
         agent_author_identity=ProjectGitIdentity(
             name=" Jonathan Quinth ",
-            email=" operator@example.invalid ",
+            email=" jonathan.quinth@exampleindustry.com ",
         ),
         agent_committer_identity={
             "name": "Evander Bot",
@@ -798,7 +798,7 @@ def test_project_git_config_accepts_distinct_agent_author_and_committer() -> Non
 
     assert config.agent_author_identity == ProjectGitIdentity(
         name="Jonathan Quinth",
-        email="operator@example.invalid",
+        email="jonathan.quinth@exampleindustry.com",
     )
     assert config.agent_committer_identity == ProjectGitIdentity(
         name="Evander Bot",
@@ -1415,7 +1415,7 @@ def test_team_state_payload_classifies_stale_index_lock_release_blocker() -> Non
         release_branch="team/team/releases/release",
         git_promotion_record_ids=["promotion-1"],
         state=TeamRecordState.BLOCKED,
-        error=("fatal: Unable to create '/home/jonathan/true-app/.git/index.lock': File exists."),
+        error=("fatal: Unable to create '/home/jonathan/sample-app/.git/index.lock': File exists."),
     )
     state.git_promotions["promotion-1"] = GitPromotionRecord(
         id="promotion-1",

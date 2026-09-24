@@ -417,7 +417,7 @@ def test_retrieval_references_resolve_to_registered_tools_and_evidence_scope(
         )
 
 
-@pytest.mark.parametrize("agent_id,display_name", [("manager", "Truman"), ("lead", "Trudy")])
+@pytest.mark.parametrize("agent_id,display_name", [("manager", "Evander"), ("lead", "Trudy")])
 def test_management_lineage_switching_keeps_current_overview_without_expanding_scope(
     tmp_path: Path,
     agent_id: str,

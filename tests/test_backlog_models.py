@@ -22,7 +22,7 @@ def test_backlog_create_request_normalizes_fields() -> None:
         title="  Build dashboard  ",
         description="  <p>Keep html</p>  ",
         acceptance_criteria="  - must render  ",
-        tags=["  Truman ", "truman", "", "Backend", "backend  "],
+        tags=["  Evander ", "evander", "", "Backend", "backend  "],
         assigned_user="  Ada Lovelace  ",
         parent_backlog_item_id="  1234  ",
     )
@@ -33,7 +33,7 @@ def test_backlog_create_request_normalizes_fields() -> None:
     assert payload.title == "Build dashboard"
     assert payload.description == "<p>Keep html</p>"
     assert payload.acceptance_criteria == "- must render"
-    assert payload.tags == ["Truman", "Backend"]
+    assert payload.tags == ["Evander", "Backend"]
     assert payload.assigned_user == "Ada Lovelace"
     assert payload.parent_backlog_item_id == "1234"
 

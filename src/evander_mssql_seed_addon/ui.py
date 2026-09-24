@@ -9,7 +9,7 @@ from starlette.routing import Route
 
 from evander.addons import AddonContext
 
-_STATIC_ASSET_NAMES = frozenset({"mssql-seed-ui.css", "mssql-seed-ui.js"})
+_STATIC_ASSET_NAMES = frozenset({"mssql-seed-ui.css", "mssql-seed-ui.js", "admin-design.css", "admin-design.js"})
 
 
 def admin_ui_routes(_context: AddonContext) -> Sequence[Route]:

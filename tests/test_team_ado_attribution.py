@@ -73,7 +73,7 @@ def test_host_intake_captures_assignee_once_and_preserves_project_fallback(tmp_p
             title="Intake",
             description="Coordinate work",
             ado_work_item_id="123",
-            ado_project="APP",
+            ado_project="App",
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)}, provider_config_resolver=resolver

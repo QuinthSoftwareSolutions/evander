@@ -617,7 +617,7 @@ Document:
 
 - lifecycle containment versus dependencies and provenance;
 - role-scoped independent root creation;
-- one complete APP example from decomposition through child handoff,
+- one complete App example from decomposition through child handoff,
   integration, review, rework, and release;
 - worktree reclamation and recovery behavior;
 - operator repair procedures for contradictory legacy states.
@@ -689,7 +689,7 @@ phase.
 
 - guidance-version refresh reaches existing persistent sessions;
 - API, MCP, Admin, and review-cascade boundaries share the same task assessment;
-- one representative APP flow covers root decomposition, nested child handoff,
+- one representative App flow covers root decomposition, nested child handoff,
   integration, final review, rework, worktree cleanup, and release readiness.
 
 Use focused model, command, runtime, and provider tests for most cases. Keep one
@@ -710,7 +710,7 @@ permutation.
    task/worktree mappings.
 6. Add the single agent execution-stall incident, task-hierarchy-aware blocker
    routing, and complete blocker reason display.
-7. Finish recursive UI refinements, the APP walkthrough, migration operations,
+7. Finish recursive UI refinements, the App walkthrough, migration operations,
    and representative end-to-end rollout validation.
 
 Tests and changelog updates belong in every slice.

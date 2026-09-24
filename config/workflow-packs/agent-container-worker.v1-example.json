@@ -353,7 +353,7 @@
         "config": {
           "directories": [
             "root/example-industry/app",
-            "root/example-industry/scanspac"
+            "root/example-industry/secondary-app"
           ]
         },
         "display_name": "Ticket created",
@@ -371,7 +371,7 @@
       {
         "config": {
           "ado_organization": "exampleindustry",
-          "project": "Example Industry APP",
+          "project": "Example Industry App",
           "provider": "ado"
         },
         "display_name": "PR feedback",
@@ -474,8 +474,8 @@
       {
         "config": {
           "current_iteration": false,
-          "directory_path": "root/example/truman",
-          "project": "Example Industry APP",
+          "directory_path": "root/example/evander",
+          "project": "Example Industry App",
           "states": [
             "New",
             "To Do"
@@ -496,11 +496,11 @@
       },
       {
         "config": {
-          "directory_path": "root/example/truman/auto-dev",
-          "project": "Example Industry APP",
+          "directory_path": "root/example/evander/auto-dev",
+          "project": "Example Industry App",
           "skip": 0,
           "top": 50,
-          "wiql": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'Example Industry APP' AND [System.Tags] CONTAINS 'auto-dev' AND [System.Tags] NOT CONTAINS 'auto-dev-approved' AND [System.State] IN ('New', 'To Do') ORDER BY [System.ChangedDate] DESC, [System.Id] DESC"
+          "wiql": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'Example Industry App' AND [System.Tags] CONTAINS 'auto-dev' AND [System.Tags] NOT CONTAINS 'auto-dev-approved' AND [System.State] IN ('New', 'To Do') ORDER BY [System.ChangedDate] DESC, [System.Id] DESC"
         },
         "display_name": "Find auto-dev ADO items awaiting approval",
         "id": "query-ado-auto-dev-awaiting-approval-1",
@@ -557,7 +557,7 @@
               },
               {
                 "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
-                "not_equals": "truman@quinth.se"
+                "not_equals": "evander@example.test"
               }
             ]
           }
@@ -596,7 +596,7 @@
                 },
                 {
                   "left": "${{gate-for-auto-dev-1.current_element.assigned_to_identity.email ?? \"\"}}",
-                  "not_equals": "truman@quinth.se"
+                  "not_equals": "evander@example.test"
                 }
               ]
             }
@@ -628,10 +628,10 @@
       },
       {
         "config": {
-          "comment": "Truman auto-dev cannot claim this work item until System.AssignedTo is set to a human owner with a usable email address. Please assign the work item to the developer who will own the change, then leave it in New or To Do.",
-          "directory_path": "root/example/truman",
+          "comment": "Evander auto-dev cannot claim this work item until System.AssignedTo is set to a human owner with a usable email address. Please assign the work item to the developer who will own the change, then leave it in New or To Do.",
+          "directory_path": "root/example/evander",
           "idempotency_key": "auto-dev-missing-owner:${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.id}}:${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.rev ?? gate-dedupe-auto-dev-missing-owner-comment-1.current_element.changed_at ?? gate-dedupe-auto-dev-missing-owner-comment-1.current_index}}",
-          "project": "Example Industry APP",
+          "project": "Example Industry App",
           "work_item_id": "${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.id}}"
         },
         "display_name": "Comment on auto-dev missing owner",
@@ -640,12 +640,12 @@
       },
       {
         "config": {
-          "directory_path": "root/example/truman",
+          "directory_path": "root/example/evander",
           "expected_states": [
             "New",
             "To Do"
           ],
-          "project": "Example Industry APP",
+          "project": "Example Industry App",
           "state": "In Progress",
           "sync_proxy_cache": true,
           "work_item_id": "${{gate-filter-auto-dev-has-owner-1.current_element.id}}"
@@ -717,14 +717,14 @@
       {
         "config": {
           "template": {
-            "ado_project": "Example Industry APP",
-            "agents_template_path": "/home/jonathan/evander/templates/guest-AGENTS-new.md.tmpl",
+            "ado_project": "Example Industry App",
+            "agents_template_path": "/opt/evander/templates/guest-AGENTS-new.md.tmpl",
             "branch": "main",
-            "directory_path": "root/example/truman",
-            "directory_slug": "root-example-truman",
-            "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+            "directory_path": "root/example/evander",
+            "directory_slug": "root-example-evander",
+            "frontend_host_checkout": "/srv/example-repos/SampleApplication",
             "frontend_install_roots": [
-              "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+              "/srv/example-repos/SampleApplication/Src/Clients"
             ],
             "issue_owner": {
               "display_name": "${{effect-ado-update-work-item-auto-dev-1.remote_assigned_to_identity.display_name}}",
@@ -735,7 +735,7 @@
               "work_item_id": "${{effect-ado-update-work-item-auto-dev-1.work_item_id}}",
               "work_item_rev": "${{effect-ado-update-work-item-auto-dev-1.remote_work_item_rev ?? null}}"
             },
-            "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
+            "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20App/SampleApplication",
             "ticket": "${{effect-ado-update-work-item-auto-dev-1.ticket}}"
           }
         },
@@ -779,7 +779,7 @@
         "config": {
           "event_type": "auto_dev.poll.completed",
           "payload": {
-            "directory_path": "root/example/truman",
+            "directory_path": "root/example/evander",
             "item_count": "${{gate-for-auto-dev-1.item_count}}"
           }
         },
@@ -800,7 +800,7 @@
             "stage_artifact"
           ],
           "codex_skills": [],
-          "directory_path": "root/example/truman/auto-dev",
+          "directory_path": "root/example/evander/auto-dev",
           "discord_channels": [],
           "dotnet": false,
           "email_folders": [],
@@ -810,10 +810,10 @@
             "auto-dev-role": "ado_approval_caller",
             "vm-type": "auto-dev-approval-caller"
           },
-          "model": "gpt-5.5",
+          "model": "gpt-6-sol",
           "nuget": false,
           "playwright": false,
-          "session_id": "auto-dev-ado-approval-caller-root-example-truman-auto-dev",
+          "session_id": "auto-dev-ado-approval-caller-root-example-evander-auto-dev",
           "ttl_hours": 720,
           "vm_user": "agent"
         },
@@ -823,8 +823,8 @@
       },
       {
         "config": {
-          "model": "gpt-5.5",
-          "prompt": "You are the dedicated Truman auto-dev ADO approval caller.\n\nThere are ${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}} Azure DevOps work items awaiting human approval. These items are tagged auto-dev, are in New or To Do, and do not yet have auto-dev-approved.\n\nCandidate items JSON:\n${{gate-serialize-auto-dev-approval-items-1.content}}\n\nCall Jonathan using contact id \"jonathan_quinth\". In the call, give a concise spoken summary of the candidates using ID, title, state, and type. Keep the summary short enough to be useful over the phone. Ask which work item IDs should be approved.\n\nCall protocol:\n- Use make_phone_call with contact=\"jonathan_quinth\" and request_id=\"auto-dev-ado-approval:${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}:${{query-ado-auto-dev-awaiting-approval-1.items.0.id}}:${{system.now.utc_timestamp_compact}}\".\n- In the phone prompt, tell Jonathan that replying with issue numbers approves only those ADO work items.\n- Poll get_phone_call_result for that request_id until the call reaches a terminal status and a transcript or call analysis is available. If needed, wait about 15 seconds between polls.\n- Parse only explicit numeric work item IDs from the candidate list. If the spoken response is unclear, says none, or names an ID not in the candidate list, do not approve that item.\n- For each explicitly approved candidate ID, call update_ado_backlog_tags with project=\"Example Industry APP\" and add_tags=[\"auto-dev-approved\"].\n- Do not change System.State. Do not approve any item outside the candidate JSON.\n\nWhen finished, summarize which IDs were tagged and which candidate IDs were left unchanged.",
+          "model": "gpt-6-sol",
+          "prompt": "You are the dedicated Evander auto-dev ADO approval caller.\n\nThere are ${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}} Azure DevOps work items awaiting human approval. These items are tagged auto-dev, are in New or To Do, and do not yet have auto-dev-approved.\n\nCandidate items JSON:\n${{gate-serialize-auto-dev-approval-items-1.content}}\n\nCall the operator using contact id \"demo_operator\". In the call, give a concise spoken summary of the candidates using ID, title, state, and type. Keep the summary short enough to be useful over the phone. Ask which work item IDs should be approved.\n\nCall protocol:\n- Use make_phone_call with contact=\"demo_operator\" and request_id=\"auto-dev-ado-approval:${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}:${{query-ado-auto-dev-awaiting-approval-1.items.0.id}}:${{system.now.utc_timestamp_compact}}\".\n- In the phone prompt, tell the operator that replying with issue numbers approves only those ADO work items.\n- Poll get_phone_call_result for that request_id until the call reaches a terminal status and a transcript or call analysis is available. If needed, wait about 15 seconds between polls.\n- Parse only explicit numeric work item IDs from the candidate list. If the spoken response is unclear, says none, or names an ID not in the candidate list, do not approve that item.\n- For each explicitly approved candidate ID, call update_ado_backlog_tags with project=\"Example Industry App\" and add_tags=[\"auto-dev-approved\"].\n- Do not change System.State. Do not approve any item outside the candidate JSON.\n\nWhen finished, summarize which IDs were tagged and which candidate IDs were left unchanged.",
           "queue_key": "auto-dev-ado-approval-call:${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}:${{query-ado-auto-dev-awaiting-approval-1.items.0.id}}",
           "resume_thread_id": "${{query-session-context-auto-dev-approval-caller-1.metadata.agent_thread_id ?? null}}",
           "target": "${{effect-agent-create-auto-dev-approval-caller-1.session_id}}",
@@ -858,7 +858,7 @@
             ]
           }
         },
-        "display_name": "Filter APP ticket directory",
+        "display_name": "Filter App ticket directory",
         "id": "gate-filter-6",
         "outputs": {
           "ticket": {
@@ -934,13 +934,13 @@
           "when": {
             "all": [
               {
-                "equals": "root/example-industry/scanspac",
+                "equals": "root/example-industry/secondary-app",
                 "left": "${{trigger-ticket-created-main.ticket.directory_path}}"
               }
             ]
           }
         },
-        "display_name": "Filter Scanspac ticket directory",
+        "display_name": "Filter SecondaryApp ticket directory",
         "id": "gate-filter-7",
         "outputs": {
           "ticket": {
@@ -1014,17 +1014,17 @@
       {
         "config": {
           "template": {
-            "ado_project": "Example Industry APP",
-            "agents_template_path": "/home/jonathan/evander/templates/guest-AGENTS-new.md.tmpl",
+            "ado_project": "Example Industry App",
+            "agents_template_path": "/opt/evander/templates/guest-AGENTS-new.md.tmpl",
             "branch": "main",
             "directory_path": "root/example-industry/app",
             "directory_slug": "root-example-industry-app",
-            "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+            "frontend_host_checkout": "/srv/example-repos/SampleApplication",
             "frontend_install_roots": [
-              "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+              "/srv/example-repos/SampleApplication/Src/Clients"
             ],
             "issue_owner": null,
-            "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
+            "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20App/SampleApplication",
             "ticket": {
               "body": "${{gate-filter-6.ticket.body}}",
               "comments": "${{gate-filter-6.ticket.comments ?? []}}",
@@ -1050,7 +1050,7 @@
             }
           }
         },
-        "display_name": "Map APP ticket routing",
+        "display_name": "Map App ticket routing",
         "id": "gate-map-1",
         "outputs": {
           "ado_project": {
@@ -1089,18 +1089,18 @@
       {
         "config": {
           "template": {
-            "ado_project": "Example Industry Scanspac",
-            "agents_template_path": "/home/jonathan/evander/templates/guest-AGENTS-new.md.tmpl",
-            "branch": "Scanspac",
-            "directory_path": "root/example-industry/scanspac",
-            "directory_slug": "root-example-industry-scanspac",
-            "frontend_host_checkout": "/home/jonathan/Documents/Repos/Scanspac",
+            "ado_project": "Example Industry SecondaryApp",
+            "agents_template_path": "/opt/evander/templates/guest-AGENTS-new.md.tmpl",
+            "branch": "SecondaryApp",
+            "directory_path": "root/example-industry/secondary-app",
+            "directory_slug": "root-example-industry-secondary-app",
+            "frontend_host_checkout": "/srv/example-repos/SecondaryApp",
             "frontend_install_roots": [
-              "/home/jonathan/Documents/Repos/Scanspac/Src/MesAdmin",
-              "/home/jonathan/Documents/Repos/Scanspac/Src/StationGUI"
+              "/srv/example-repos/SecondaryApp/Src/AppAdmin",
+              "/srv/example-repos/SecondaryApp/Src/StationGUI"
             ],
             "issue_owner": null,
-            "repo_source": "/home/jonathan/Documents/Repos/Scanspac",
+            "repo_source": "/srv/example-repos/SecondaryApp",
             "ticket": {
               "body": "${{gate-filter-7.ticket.body}}",
               "comments": "${{gate-filter-7.ticket.comments ?? []}}",
@@ -1126,7 +1126,7 @@
             }
           }
         },
-        "display_name": "Map Scanspac ticket routing",
+        "display_name": "Map SecondaryApp ticket routing",
         "id": "gate-map-2",
         "outputs": {
           "ado_project": {
@@ -1500,7 +1500,7 @@
           "when": {
             "all": [
               {
-                "equals": "provision_exampleindustry_app_demo_environment.sh",
+                "equals": "provision_demo_environment",
                 "left": "${{trigger-script-run-request-1.script_name}}"
               },
               {
@@ -1514,7 +1514,7 @@
             ]
           }
         },
-        "display_name": "Allow APP demo provision requests",
+        "display_name": "Allow App demo provision requests",
         "id": "gate-filter-5",
         "outputs": {
           "parameters": {
@@ -1562,7 +1562,7 @@
             "issue_owner": "${{gate-merge-1.issue_owner ?? null}}",
             "issue_title": "${{gate-merge-1.ticket.title}}"
           },
-          "model": "gpt-5.4",
+          "model": "gpt-6-sol",
           "session_id": "issue-${{gate-merge-1.ticket.issue_number}}-${{gate-merge-1.directory_slug}}-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
           "ttl_hours": 48,
           "vm_user": "agent",
@@ -1625,7 +1625,7 @@
               "destination_path": "/home/agent/PLANS.md",
               "overwrite": true,
               "source_format": "file",
-              "source_path": "/home/jonathan/evander/templates/PLANS.md"
+              "source_path": "/opt/evander/templates/PLANS.md"
             }
           ],
           "target": "${{effect-agent-clone-repo-1.session_id}}",
@@ -1637,7 +1637,7 @@
       },
       {
         "config": {
-          "model": "gpt-5.4-mini",
+          "model": "gpt-6-luna",
           "prompt": "You have been issued the task described in ${{effect-agent-clone-repo-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-agent-clone-repo-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-agent-clone-repo-1.target_dir}}. The task file contains read-only planning context for the whole ticket plus the narrow sub-task you are authorized to implement. Follow the current sub-task only. Do not implement future steps unless that work is strictly required to complete the current step safely. Start from the files, patterns, and test commands suggested in the task file rather than rediscovering the repository broadly. If the suggested files or examples prove incomplete, expand your search narrowly and explain why. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete. Keep diagnostics bounded: use 'timeout --preserve-status <seconds> <command>' for long-running dotnet test/build attempts. Before build or test commands that use '--no-restore', run 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. When you have finished, commit and push your work using 'git push-agent'.",
           "target": "${{effect-agent-clone-repo-1.session_id}}",
           "vm_user": "agent"
@@ -1648,7 +1648,7 @@
       },
       {
         "config": {
-          "model": "gpt-5.4",
+          "model": "gpt-6-sol",
           "prompt": "Other agents have now implemented your plan. Please go over and verify their work. Check that the current state of the repository matches your expectations.\nBefore concluding, verify whether they completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes the configured PR notes ref together with your latest work.",
           "resume_thread_id": "${{effect-agent-prompt-4.thread_id}}",
           "target": "${{effect-agent-clone-repo-1.session_id}}",
@@ -1754,7 +1754,7 @@
       },
       {
         "config": {
-          "model": "gpt-5.4",
+          "model": "gpt-6-sol",
           "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-1.destination_branch}}\ngit merge origin/${{effect-pr-create-1.destination_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-1.destination_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
           "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.destination_branch}}",
           "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
@@ -1767,7 +1767,7 @@
       },
       {
         "config": {
-          "model": "gpt-5.4",
+          "model": "gpt-6-sol",
           "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-standalone.destination_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-standalone.destination_branch}}\ngit merge origin/${{effect-pr-create-standalone.destination_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-standalone.destination_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
           "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-standalone.destination_branch}}",
           "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
@@ -1815,7 +1815,7 @@
       },
       {
         "config": {
-          "model": "gpt-5.4",
+          "model": "gpt-6-sol",
           "prompt": "You have been issued the task described in ${{effect-agent-clone-repo-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-agent-clone-repo-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-agent-clone-repo-1.target_dir}}. Do not write any code or perform the task. Instead, study the code, understand the assignment, and produce an implementation plan for other agents. Use set_issue_plan MCP tool to store both a short plan summary and the ordered list of steps.\n\nThe goal is not just to list milestones. The goal is to eliminate rediscovery for the implementation agents. Each step must therefore be a self-contained implementation brief that tells a worker where to start and how to verify the result.\n\nFor the plan summary, write a concise orientation for implementers that covers: the intended end state, the main architectural constraints, the required sequencing, and any global risks or invariants that later steps must preserve.\n\nFor each step, write a compact but concrete brief that includes all of the following in plain text:\n- the exact objective of the step\n- the most likely files or directories to edit\n- any files or symbols that should be read first for reference\n- existing patterns, components, handlers, or tests that the worker should mirror\n- the preferred validation commands for that step\n- the definition of done for that step\n- any explicit out-of-scope warnings for that worker\n\nPrefer steps that are implementation-ready and narrowly scoped. Avoid generic instructions like 'inspect the repo' or 'figure out how X works' unless that investigation is itself the deliverable. If uncertainty remains, resolve as much of it as possible now by identifying the concrete files and patterns the worker should use. You must find a balance between overcomplicating your solution (do not add anything to the assignment or expand the scope) and doing too little (the solution must be robust, fulfill the requirements, and follow the patterns already present in the repository). After you have finished this, other agents will implement the plan and you will be asked to check their work.\nRead /home/agent/PLANS.md for some general guidance on plan authoring.",
           "target": "${{effect-agent-clone-repo-1.session_id}}",
           "vm_user": "agent"
@@ -1866,9 +1866,9 @@
       },
       {
         "config": {
-          "model": "gpt-5.4-mini",
+          "model": "gpt-6-luna",
           "queue_key": "teams:${{trigger-teams-new-message-2.channel_target}}:${{trigger-teams-new-message-2.message_id ?? trigger-teams-new-message-2.cursor}}",
-          "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a Teams message on channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" with target_type=\"${{trigger-teams-new-message-2.target_type}}\", cursor=\"${{trigger-teams-new-message-2.cursor}}\", message_id=\"${{trigger-teams-new-message-2.message_id}}\", and thread_id=\"${{trigger-teams-new-message-2.thread_id}}\". The triggering Teams message content is:\n${{trigger-teams-new-message-2.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. Fetch Teams messages from that target specifically by calling teams_get_messages with channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" and a small limit, then prioritize the message with the triggering message_id above if fetched history includes older thread context. For each Teams message you read and intend to respond to or act upon, first call add_message_reaction with provider=\"teams\", the message_id, the Teams channel_target, and an appropriate emoji so the user can see the message has been acknowledged. Use metadata.target when present; otherwise use the triggering channel_target above. For channel targets, post replies using thread_id=\"${{trigger-teams-new-message-2.thread_id}}\" when it is non-empty; for chat targets, omit thread_id. If the user asks you to notify, loop in, or mention a person in a channel reply, pass that person's exact Graph user ID, UPN, or mail address in teams_post_status mentions; plain @name text in message does not notify users. If a user asks you to do something that takes time, such as analyze the codebase, or start a long-running task, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
+          "prompt": "You are Evander, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a Teams message on channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" with target_type=\"${{trigger-teams-new-message-2.target_type}}\", cursor=\"${{trigger-teams-new-message-2.cursor}}\", message_id=\"${{trigger-teams-new-message-2.message_id}}\", and thread_id=\"${{trigger-teams-new-message-2.thread_id}}\". The triggering Teams message content is:\n${{trigger-teams-new-message-2.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. Fetch Teams messages from that target specifically by calling teams_get_messages with channel_target=\"${{trigger-teams-new-message-2.channel_target}}\" and a small limit, then prioritize the message with the triggering message_id above if fetched history includes older thread context. For each Teams message you read and intend to respond to or act upon, first call add_message_reaction with provider=\"teams\", the message_id, the Teams channel_target, and an appropriate emoji so the user can see the message has been acknowledged. Use metadata.target when present; otherwise use the triggering channel_target above. For channel targets, post replies using thread_id=\"${{trigger-teams-new-message-2.thread_id}}\" when it is non-empty; for chat targets, omit thread_id. If the user asks you to notify, loop in, or mention a person in a channel reply, pass that person's exact Graph user ID, UPN, or mail address in teams_post_status mentions; plain @name text in message does not notify users. If a user asks you to do something that takes time, such as analyze the codebase, or start a long-running task, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
           "resume_thread_metadata_key": "teams:${{trigger-teams-new-message-2.channel_target}}:agent_thread_id",
           "target": "vm-example-receptionist",
           "vm_name": "vm-example-receptionist",
@@ -1880,9 +1880,9 @@
       },
       {
         "config": {
-          "model": "gpt-5.4-mini",
+          "model": "gpt-6-luna",
           "queue_key": "teams:${{trigger-teams-direct-message-1.channel_target}}:${{trigger-teams-direct-message-1.message_id ?? trigger-teams-direct-message-1.cursor}}",
-          "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a one-on-one Teams direct message on channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" with cursor=\"${{trigger-teams-direct-message-1.cursor}}\" and message_id=\"${{trigger-teams-direct-message-1.message_id}}\". The triggering Teams direct message content is:\n${{trigger-teams-direct-message-1.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. If Teams tools are available for this direct-message chat, acknowledge the triggering message with add_message_reaction using provider=\"teams\", the triggering message_id, and channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\". Respond to the user in the same Teams chat with teams_post_status using channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" and omit thread_id. If a user asks you to do something that takes time, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
+          "prompt": "You are Evander, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a one-on-one Teams direct message on channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" with cursor=\"${{trigger-teams-direct-message-1.cursor}}\" and message_id=\"${{trigger-teams-direct-message-1.message_id}}\". The triggering Teams direct message content is:\n${{trigger-teams-direct-message-1.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. If Teams tools are available for this direct-message chat, acknowledge the triggering message with add_message_reaction using provider=\"teams\", the triggering message_id, and channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\". Respond to the user in the same Teams chat with teams_post_status using channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" and omit thread_id. If a user asks you to do something that takes time, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
           "resume_thread_metadata_key": "teams:${{trigger-teams-direct-message-1.channel_target}}:agent_thread_id",
           "target": "vm-example-receptionist",
           "vm_name": "vm-example-receptionist",
@@ -1915,7 +1915,7 @@
           "labels": {
             "vm-type": "review"
           },
-          "model": "gpt-5.4",
+          "model": "gpt-6-sol",
           "mssql": false,
           "nuget": true,
           "playwright": true,
@@ -1932,7 +1932,7 @@
       {
         "config": {
           "directory_path": "root/example-industry/app",
-          "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP"
+          "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20App/SampleApplication"
         },
         "display_name": "Ensure managed Review repository",
         "id": "effect-git-ensure-managed-repo-2",
@@ -1956,7 +1956,7 @@
               "destination_path": "${{effect-agent-clone-repo-2.target_dir}}/.evander/bin/setup_review_repo.sh",
               "mode": "0755",
               "overwrite": true,
-              "source_path": "/home/jonathan/evander/scripts/guest/setup_review_repo.sh"
+              "source_path": "/opt/evander/scripts/guest/setup_review_repo.sh"
             }
           ],
           "target": "${{effect-agent-clone-repo-2.session_id}}",
@@ -1980,9 +1980,9 @@
       },
       {
         "config": {
-          "host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients",
+          "host_checkout": "/srv/example-repos/SampleApplication/Src/Clients",
           "install_roots": [
-            "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+            "/srv/example-repos/SampleApplication/Src/Clients"
           ],
           "target": "${{effect-agent-clone-repo-2.session_id}}",
           "vm_user": "agent"
@@ -1998,7 +1998,7 @@
               "destination_path": "/home/agent/AGENTS.md",
               "overwrite": true,
               "source_format": "template",
-              "source_path": "/home/jonathan/evander/templates/guest-AGENTS-review.md.tmpl"
+              "source_path": "/opt/evander/templates/guest-AGENTS-review.md.tmpl"
             },
             {
               "content": "${{trigger-review-new-request-1.review_request}}",
@@ -2016,7 +2016,7 @@
       },
       {
         "config": {
-          "model": "gpt-5.4",
+          "model": "gpt-6-sol",
           "prompt": "You have been assigned the review task described in ${{effect-agent-clone-repo-2.target_dir}}/REVIEW_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-agent-clone-repo-2.target_dir}}/REVIEW_TASK.yaml before you begin. The repository is located at ${{effect-agent-clone-repo-2.target_dir}}. Keep diagnostics bounded: use 'timeout --preserve-status <seconds> <command>' for long-running dotnet test/build attempts. Before build or test commands that use '--no-restore', run 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. Post single file/line findings with post_pr_inline_comment so the PR UI anchors them to the diff. Use submit_pr_review for a summary with batched inline comments, and post_pr_comment only for top-level PR conversation comments.",
           "target": "${{effect-agent-clone-repo-2.session_id}}",
           "vm_user": "agent"
@@ -2028,9 +2028,9 @@
       {
         "config": {
           "check": true,
-          "directory_path": "root/example/truman",
+          "directory_path": "root/example/evander",
           "pipeline_id": 12345,
-          "project": "Example Industry APP",
+          "project": "Example Industry App",
           "variables": {
             "resourceBaseName": "${{gate-filter-5.parameters.0}}",
             "environmentAlias": "${{gate-filter-5.parameters.0}}",
@@ -2039,7 +2039,7 @@
           "timeout_seconds": 3600,
           "poll_interval_seconds": 10
         },
-        "display_name": "Run APP demo provisioning pipeline",
+        "display_name": "Run App demo provisioning pipeline",
         "id": "effect-ado-pipeline-run-1",
         "outputs": {
           "completed": {
@@ -2150,43 +2150,11 @@
                     }
                   }
                 }
-              },
-              "example_app": {
-                "environments": {
-                  "${{gate-filter-5.parameters.0}}": {
-                    "base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
-                    "metadata": {
-                      "api_alias": "${{gate-filter-5.parameters.0}}-api",
-                      "api_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
-                      "public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                      "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                      "resource_base_name": "${{gate-filter-5.parameters.0}}",
-                      "provisioning_status": "succeeded",
-                      "ui_alias": "${{gate-filter-5.parameters.0}}-ui",
-                      "ui_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                      "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
-                      "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}"
-                    }
-                  }
-                }
-              },
-              "example_app_last_provision": {
-                "environment_alias": "${{gate-filter-5.parameters.0}}",
-                "app_api_alias": "${{gate-filter-5.parameters.0}}-api",
-                "app_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
-                "app_public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                "app_ui_alias": "${{gate-filter-5.parameters.0}}-ui",
-                "provisioning_status": "succeeded",
-                "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
-                "resource_base_name": "${{gate-filter-5.parameters.0}}",
-                "session_id": "${{gate-filter-5.session_id}}",
-                "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
-                "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}"
               }
             }
           }
         },
-        "display_name": "Map APP demo provisioning metadata",
+        "display_name": "Map App demo provisioning metadata",
         "id": "gate-map-app-demo-metadata-1",
         "outputs": {
           "environment_alias": {
@@ -2233,7 +2201,7 @@
           "metadata": "${{gate-map-app-demo-metadata-1.session_metadata_patch}}",
           "target": "${{gate-filter-5.session_id}}"
         },
-        "display_name": "Store APP provisioning metadata",
+        "display_name": "Store App provisioning metadata",
         "id": "effect-session-update-metadata-6",
         "type": "effect:session:update-metadata"
       },
@@ -2242,25 +2210,25 @@
           "enabled": true,
           "target": "${{gate-filter-5.session_id}}"
         },
-        "display_name": "Enable image generation for APP demo",
+        "display_name": "Enable image generation for App demo",
         "id": "effect-session-set-image-generation-1",
         "type": "effect:session:set-image-generation-enabled"
       },
       {
         "config": {
-          "model": "gpt-5.4",
-          "prompt": "The host-side APP demo environment provisioning request '${{gate-filter-5.request_id}}' has completed.\n\nEnvironment alias: ${{gate-map-app-demo-metadata-1.environment_alias}}\nAPP API alias: ${{gate-map-app-demo-metadata-1.app_api_alias}}\nAPP UI alias: ${{gate-map-app-demo-metadata-1.app_ui_alias}}\nAPP API base URL: ${{gate-map-app-demo-metadata-1.app_base_url}}\nPublic UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}}\nPublic domain: ${{gate-map-app-demo-metadata-1.public_domain}}\n\nProvisioning pipeline run: ${{effect-ado-pipeline-run-1.run_url ?? effect-ado-pipeline-run-1.run_id}}\n\nContinue the same user task in this session. Use the provisioned environment alias named above when referring to this environment. For browser work, launch Chromium with the seeded launch helper and navigate to the Public UI URL above; the session browser proxy preserves the application's real origin. For programmatic API access, use $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_api_alias}}/.\n\nWhen generated images are needed for the requested demo, the user explicitly authorizes the imagegen skill's API/CLI fallback through the host OpenAI relay. Do not ask for separate confirmation. Use it only for assets for this named demo environment.\n\nDon't forget to message to the user to let them know that the demo has been successfully provisioned, through whatever channel the user's original request arrived (Teams, Discord, Email, or a plain prompt). When you do, give the user the public URL to the demo instance so they can follow along.",
+          "model": "gpt-6-sol",
+          "prompt": "The host-side App demo environment provisioning request '${{gate-filter-5.request_id}}' has completed.\n\nEnvironment alias: ${{gate-map-app-demo-metadata-1.environment_alias}}\nApp API alias: ${{gate-map-app-demo-metadata-1.app_api_alias}}\nApp UI alias: ${{gate-map-app-demo-metadata-1.app_ui_alias}}\nApp API base URL: ${{gate-map-app-demo-metadata-1.app_base_url}}\nPublic UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}}\nPublic domain: ${{gate-map-app-demo-metadata-1.public_domain}}\n\nProvisioning pipeline run: ${{effect-ado-pipeline-run-1.run_url ?? effect-ado-pipeline-run-1.run_id}}\n\nContinue the same user task in this session. Use the provisioned environment alias named above when referring to this environment. For browser work, launch Chromium with the seeded launch helper and navigate to the Public UI URL above; the session browser proxy preserves the application's real origin. For programmatic API access, use $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_api_alias}}/.\n\nWhen generated images are needed for the requested demo, the user explicitly authorizes the imagegen skill's API/CLI fallback through the host OpenAI relay. Do not ask for separate confirmation. Use it only for assets for this named demo environment.\n\nDon't forget to message to the user to let them know that the demo has been successfully provisioned, through whatever channel the user's original request arrived (Teams, Discord, Email, or a plain prompt). When you do, give the user the public URL to the demo instance so they can follow along.",
           "resume_thread_id": "${{query-session-context-4.metadata.agent_thread_id ?? null}}",
           "target": "${{gate-filter-5.session_id}}",
           "vm_user": "agent"
         },
-        "display_name": "Resume after APP provisioning",
+        "display_name": "Resume after App provisioning",
         "id": "effect-agent-prompt-9",
         "type": "effect:agent:prompt"
       },
       {
         "config": {
-          "model": "gpt-5.4",
+          "model": "gpt-6-sol",
           "prompt": "You have received PR feedback and must handle this exact feedback item before finishing.\n\nFeedback ID: ${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}\nProvider: ${{trigger-pull-request-new-feedback-1.feedback.provider}}\nRepo: ${{trigger-pull-request-new-feedback-1.feedback.repo}}\nPR: ${{trigger-pull-request-new-feedback-1.feedback.pr_id}}\nThread ID: ${{trigger-pull-request-new-feedback-1.feedback.thread_id}}\nComment ID: ${{trigger-pull-request-new-feedback-1.feedback.comment_id}}\nAuthor: ${{trigger-pull-request-new-feedback-1.feedback.author}}\nCreated: ${{trigger-pull-request-new-feedback-1.feedback.created_at}}\n\nFeedback body:\n${{trigger-pull-request-new-feedback-1.feedback.body}}\n\nUse list_all_feedback if you need surrounding PR context. You may also call list_unread_feedback to catch any other unread feedback, but do not skip the feedback item above just because it is no longer returned as unread. If the feedback references an attached file and the attachment tools are available, call list_pr_feedback_attachments with the Feedback ID, download the selected file with download_pr_feedback_attachment, and copy its artifact with communication_copy_artifact_to_workspace before inspecting it. Always respond to this feedback with post_pr_feedback_reply using the thread/comment identifiers above, even if it is just to acknowledge it. If code changes are needed, stage, commit, and push them before replying.",
           "queue_key": "pr-feedback:${{trigger-pull-request-new-feedback-1.session_id}}:${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}",
           "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id ?? null}}",

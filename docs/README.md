@@ -75,7 +75,7 @@ or API references:
 
 ## Managed Upstream Documentation
 
-Documentation below `frontend/truman-landing/.agents/` is managed skill or upstream framework
+Documentation below `frontend/evander-landing/.agents/` is managed skill or upstream framework
 content. Refresh it from its owning upstream source when dependencies change; do not treat it as
 an Evander API reference.
 

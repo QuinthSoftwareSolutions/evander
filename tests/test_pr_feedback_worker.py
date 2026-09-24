@@ -72,19 +72,19 @@ def test_agent_directed_annotation_marks_self_authored_feedback_not_directed() -
         pr_id="7566",
         thread_id="44",
         comment_id="5",
-        author="evander Bot",
+        author="Evander Bot",
         body="@<C74221CB-EE08-6A83-9055-AF01C3333112> I handled this.",
         created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
         metadata={
             "mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
-            "prior_thread_comment_author_names": ["evander Bot"],
+            "prior_thread_comment_author_names": ["Evander Bot"],
         },
     )
 
     annotated = annotate_agent_directed_feedback(
         item,
-        agent_author_names=["evander Bot"],
-        agent_mention_names=["Truman Bot"],
+        agent_author_names=["Evander Bot"],
+        agent_mention_names=["Evander Bot"],
         agent_mention_ids=["c74221cb-ee08-6a83-9055-af01c3333112"],
     )
 
@@ -922,8 +922,8 @@ def test_ado_mapping_exposes_thread_authors_and_mentions_for_filters() -> None:
                             {
                                 "id": 1,
                                 "author": {
-                                    "displayName": "evander Bot",
-                                    "uniqueName": "evander@example.com",
+                                    "displayName": "Evander Bot",
+                                    "uniqueName": "reviewer@example.test",
                                     "id": "bot-id",
                                 },
                                 "content": "Please update this.",
@@ -935,7 +935,7 @@ def test_ado_mapping_exposes_thread_authors_and_mentions_for_filters() -> None:
                                 "author": {"displayName": "Dev One"},
                                 "content": (
                                     "@<a href='#' data-vss-mention='version:2.0'>"
-                                    "Truman Bot</a> can you make the fix?"
+                                    "Evander Bot</a> can you make the fix?"
                                 ),
                                 "publishedDate": "2026-03-21T01:00:01Z",
                                 "isDeleted": False,
@@ -968,10 +968,10 @@ def test_ado_mapping_exposes_thread_authors_and_mentions_for_filters() -> None:
 
     assert len(result.feedback) == 3
     metadata = result.feedback[1].metadata
-    assert metadata["prior_thread_comment_author_names"] == ["evander Bot"]
-    assert metadata["prior_thread_comment_author_unique_names"] == ["evander@example.com"]
+    assert metadata["prior_thread_comment_author_names"] == ["Evander Bot"]
+    assert metadata["prior_thread_comment_author_unique_names"] == ["reviewer@example.test"]
     assert metadata["prior_thread_comment_author_ids"] == ["bot-id"]
-    assert metadata["mentioned_names"] == ["Truman Bot"]
+    assert metadata["mentioned_names"] == ["Evander Bot"]
     assert metadata["thread_comment_count"] == 2
     compact_metadata = result.feedback[2].metadata
     assert compact_metadata["prior_thread_comment_author_names"] == []
@@ -1060,7 +1060,7 @@ def test_ado_mapping_skips_system_review_state_change_comments_and_advances_curs
 
     result = adapter.poll(
         client=FakeClient(),
-        repo="exampleindustry/Example Industry APP/ExampleIndustryAPP",
+        repo="exampleindustry/Example Industry App/SampleApplication",
         pr_id="5822",
         cursor=None,
     )
@@ -1140,7 +1140,7 @@ def test_ado_mapping_skips_reviewer_membership_and_vote_events() -> None:
 
     result = adapter.poll(
         client=FakeClient(),
-        repo="exampleindustry/Example Industry APP/ExampleIndustryAPP",
+        repo="exampleindustry/Example Industry App/SampleApplication",
         pr_id="5822",
         cursor=None,
     )

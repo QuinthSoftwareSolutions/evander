@@ -1,8 +1,9 @@
+import { readWorkflowEditorSource } from "./workflowEditorSource.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const app = readWorkflowEditorSource();
 const types = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
 
 test("selected workflow nodes expose generic execution-history queries", () => {

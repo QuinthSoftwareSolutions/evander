@@ -28,7 +28,6 @@ SESSION_CONFIGURATION_METADATA = frozenset(
         "model_provider_mode",
         "labels",
         "http_targets",
-        "app",
         "codex_skills",
         "dotnet",
         "nuget",
