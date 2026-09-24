@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-24 - Make New UI the default (0.63.2)
+
+- Make New UI the default while retaining the Classic UI picker and saved preference.
+- Widen the collapsed navigation so section labels stay on one line.
+
 ## 2026-09-24 - Align provider catalog regression expectations (0.63.1)
 
 - Include OpenRouter in Admin Web provider-mode catalog assertions so the checked

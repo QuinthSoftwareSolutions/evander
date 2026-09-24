@@ -74,7 +74,7 @@ test("UI switching preserves the route, warns before leaving drafts, remembers t
   const requests = assetRequests(page);
   const pageErrors = [];
   page.on("pageerror", error => pageErrors.push(error.message));
-  await page.goto(`${url}/?review=keep#skills?skill=alpha`);
+  await page.goto(`${url}/?review=keep&admin_ui=classic#skills?skill=alpha`);
   await page.locator(".skill-editor").waitFor();
   assert.equal(await page.getByLabel("UI version", { exact: true }).inputValue(), "classic");
   assert.ok(requests.some(path => path.startsWith("/classic/assets/")));
