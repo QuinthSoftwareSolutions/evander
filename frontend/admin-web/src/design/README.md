@@ -17,6 +17,9 @@ standalone add-ons. See `docs/design/admin-web-direction.md` and the rollout led
   never sort formatted display strings or badges. Missing values stay last.
 - `addon-context.js` consumes same-origin parent theme and privilege context, with
   standalone theme defaults. Host and add-ons always use compact spacing.
+- `workflow.css` keeps node types recognizable with amber triggers, green gates,
+  blue effects, and purple queries in both themes. Type bands, tinted surfaces, and
+  text labels remain visible alongside selection, diagnostics, and execution badges.
 
 ## Build and distribution
 

@@ -244,9 +244,15 @@
   color: var(--ui-muted);
 }
 [data-admin-design] .node-card {
-  background: var(--ui-surface);
+  --node-color: var(--ui-accent);
+  --node-surface: var(--ui-surface);
+  --node-border: var(--ui-control-border);
+  /* Paint the type band inside the card so selection/error borders and canvas
+     geometry stay independent of the node's type. */
+  background: linear-gradient(var(--node-color), var(--node-color)) top / 100% 4px no-repeat,
+    var(--node-surface);
   border-radius: 8px;
-  border-color: var(--ui-border);
+  border-color: var(--node-border);
   box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
   color: var(--ui-text);
 }
@@ -255,16 +261,44 @@
   box-shadow: 0 0 0 2px var(--ui-selected);
 }
 [data-admin-design] .node-card.node-trigger {
-  border-top-color: var(--ui-accent);
+  --node-color: #99620d;
+  --node-surface: #fff4db;
+  --node-border: #d5ad61;
 }
 [data-admin-design] .node-card.node-gate {
-  border-top-color: var(--ui-warning);
+  --node-color: #23704b;
+  --node-surface: #e8f5ee;
+  --node-border: #7db996;
 }
 [data-admin-design] .node-card.node-effect {
-  border-top-color: var(--ui-success);
+  --node-color: #2865ad;
+  --node-surface: #eaf2ff;
+  --node-border: #86aedd;
 }
 [data-admin-design] .node-card.node-query {
-  border-top-color: #9687c9;
+  --node-color: #7947ac;
+  --node-surface: #f4ecfd;
+  --node-border: #b493d4;
+}
+[data-admin-design][data-theme="dark"] .node-card.node-trigger {
+  --node-color: #e5b654;
+  --node-surface: #352d20;
+  --node-border: #826333;
+}
+[data-admin-design][data-theme="dark"] .node-card.node-gate {
+  --node-color: #76cba2;
+  --node-surface: #1c332b;
+  --node-border: #3d7f63;
+}
+[data-admin-design][data-theme="dark"] .node-card.node-effect {
+  --node-color: #84b8fb;
+  --node-surface: #203149;
+  --node-border: #456e9f;
+}
+[data-admin-design][data-theme="dark"] .node-card.node-query {
+  --node-color: #c3a0ef;
+  --node-surface: #302740;
+  --node-border: #785994;
 }
 [data-admin-design] .node-card:is(.invalid, .runtime-failed) {
   border-color: var(--ui-danger);
@@ -273,11 +307,13 @@
   outline: 1px dashed var(--ui-warning);
   outline-offset: 3px;
 }
-[data-admin-design] .node-card.trigger-disabled {
-  background: var(--ui-navigation);
+[data-admin-design] .node-card.node-trigger.trigger-disabled {
+  --node-surface: var(--ui-navigation);
 }
 [data-admin-design] .node-kind {
-  font-size: 10px;
+  color: var(--node-color);
+  font-size: 11px;
+  font-weight: 700;
 }
 [data-admin-design]
   :is(.node-runtime-badge, .node-diagnostic-badge, .node-unsaved-badge, .node-disabled-badge, .runtime-run-state) {
