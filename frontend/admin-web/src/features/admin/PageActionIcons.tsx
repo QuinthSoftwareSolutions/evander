@@ -240,9 +240,9 @@ export function DashboardRefreshIcon() {
 }
 
 export function DashboardNewerIcon() {
-  return <ChevronRight {...DEFAULT_ICON_PROPS} />;
+  return <ChevronLeft {...DEFAULT_ICON_PROPS} />;
 }
 
 export function DashboardOlderIcon() {
-  return <ChevronLeft {...DEFAULT_ICON_PROPS} />;
+  return <ChevronRight {...DEFAULT_ICON_PROPS} />;
 }
