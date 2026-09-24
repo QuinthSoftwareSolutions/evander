@@ -78,11 +78,11 @@ def _anchors(path: Path) -> set[str]:
     return anchors
 
 
-def test_local_markdown_links_and_anchors_resolve() -> None:
+def _local_markdown_link_failures(sources: list[Path], root: Path) -> list[str]:
     failures: list[str] = []
     anchor_cache: dict[Path, set[str]] = {}
     ignored_schemes = ("http://", "https://", "mailto:", "tel:", "data:", "javascript:")
-    for source in _markdown_files():
+    for source in sources:
         text = _without_fenced_code(source.read_text(encoding="utf-8"))
         destinations = [_link_destination(value) for value in LINK_RE.findall(text)]
         destinations.extend(HTML_LINK_RE.findall(text))
@@ -96,18 +96,49 @@ def test_local_markdown_links_and_anchors_resolve() -> None:
             path_part = path_part.partition("?")[0]
             target = source if not path_part else (source.parent / path_part).resolve()
             if not target.exists():
-                failures.append(f"{source.relative_to(ROOT)}: missing {raw}")
+                failures.append(f"{source.relative_to(root)}: missing {raw}")
                 continue
             if separator and fragment and target.suffix.lower() == ".md":
                 if re.fullmatch(r"L\d+(?:-L\d+)?", fragment, re.IGNORECASE):
                     continue
-                anchors = anchor_cache.setdefault(target, _anchors(target))
+                if target not in anchor_cache:
+                    anchor_cache[target] = _anchors(target)
+                anchors = anchor_cache[target]
                 if fragment not in anchors:
                     failures.append(
-                        f"{source.relative_to(ROOT)}: missing anchor #{fragment} in "
-                        f"{target.relative_to(ROOT)}"
+                        f"{source.relative_to(root)}: missing anchor #{fragment} in "
+                        f"{target.relative_to(root)}"
                     )
+    return failures
+
+
+def test_local_markdown_links_and_anchors_resolve() -> None:
+    failures = _local_markdown_link_failures(_markdown_files(), ROOT)
     assert not failures, "\n" + "\n".join(failures)
+
+
+def test_link_checker_parses_repeated_target_once_without_losing_missing_anchor(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "source.md"
+    target = tmp_path / "target.md"
+    source.write_text(
+        "[first](target.md#section)\n[repeat](target.md#section)\n[missing](target.md#missing)\n",
+        encoding="utf-8",
+    )
+    target.write_text("# Section\n", encoding="utf-8")
+    parsed = []
+    original = _anchors
+
+    def anchors(path):
+        parsed.append(path)
+        return original(path)
+
+    monkeypatch.setattr(f"{__name__}._anchors", anchors)
+    assert _local_markdown_link_failures([source, target], tmp_path) == [
+        "source.md: missing anchor #missing in target.md"
+    ]
+    assert parsed == [target]
 
 
 def test_systemd_service_inventory_matches_installer() -> None:

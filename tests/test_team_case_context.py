@@ -10,7 +10,7 @@ from evander_team_addon.services.case_context_service import (
     make_note,
 )
 from evander_team_addon.services.commands.note_commands import TeamNoteCommandService
-from test_team_addon_repository import _lease_agent_dispatch, _seed_hierarchy
+from team_repository_support import _lease_agent_dispatch, _seed_hierarchy
 
 
 @pytest.fixture

@@ -18,7 +18,7 @@ and exact artifact names.
 PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py
 ```
 
-Optional report output path:
+Explicit report publication path:
 
 ```bash
 EVANDER_TRIGGER_CONFORMANCE_REPORT=runtime/trigger-conformance-report.json \
@@ -31,7 +31,7 @@ Paired effect suite:
 PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
 ```
 
-Optional report output path:
+Explicit report publication path:
 
 ```bash
 EVANDER_EFFECT_CONFORMANCE_REPORT=runtime/effect-conformance-report.json \
@@ -40,15 +40,14 @@ PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
 
 ## Conformance report artifact
 
-On every successful run, the suite writes a machine-readable JSON report to:
+Ordinary runs write reports into a unique directory under `.pytest_cache/d/conformance/`;
+the complete runner stores them with its execution ledgers. The test summary prints the paths.
+To publish reports to Admin Web, set `EVANDER_TRIGGER_CONFORMANCE_REPORT` or
+`EVANDER_EFFECT_CONFORMANCE_REPORT` explicitly as shown above.
 
-- `runtime/trigger-conformance-report.json` (default), or
-- the path in `EVANDER_TRIGGER_CONFORMANCE_REPORT`.
-
-The paired effect suite writes the same style of report to:
-
-- `runtime/effect-conformance-report.json` (default), or
-- the path in `EVANDER_EFFECT_CONFORMANCE_REPORT`.
+The controlling pytest process writes reports after all selected tests finish. Complete suites
+fail if requirements are missing or tests fail. Partial selections can run independently and
+produce an incomplete report rather than claiming full conformance.
 
 The report includes:
 

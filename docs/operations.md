@@ -3245,7 +3245,8 @@ Managed Git hook ingestion path:
 - Run `PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py` for the paired
   effect contract regression coverage and the generated effect conformance report.
 - See [conformance-reports.md](conformance-reports.md) for the shared Admin Web conformance report
-  view and the exact runtime artifact names it reads.
+  view, explicit publication commands, and the exact runtime artifact names it reads. Ordinary
+  pytest runs keep their reports in a unique test-cache directory.
 
 ## Systemd Services
 

@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import test from "node:test";
+import test, { before } from "node:test";
+import { createServer } from "vite";
+
+let buildCreatePayload;
+let emptyCreateForm;
+let parseDurationSeconds;
+before(async () => {
+  // Load the real module through the application resolver without opening a port.
+  const server = await createServer({
+    server: { middlewareMode: true },
+    appType: "custom",
+    logLevel: "error",
+  });
+  try {
+    ({ buildCreatePayload, emptyCreateForm, parseDurationSeconds } = await server.ssrLoadModule(
+      "/src/features/agents/agentCreateShared.ts",
+    ));
+  } finally {
+    await server.close();
+  }
+}, { timeout: 10000 });
 
 const agentsPage = readFileSync(
   new URL("../src/features/agents/AgentsPage.tsx", import.meta.url),
@@ -57,14 +77,6 @@ function buildCreatePayloadSource() {
   );
 }
 
-function parseDurationSecondsSource() {
-  return sourceBetweenIn(
-    agentCreateShared,
-    "function parseDurationSeconds(value: string): number | null {",
-    "export function buildCreatePayload(form: AgentCreateFormState, directoryPath: string): AgentCreateRequest {",
-  );
-}
-
 function handleCreateSubmitSource() {
   return sourceBetweenIn(
     agentCreateDialog,
@@ -108,12 +120,18 @@ test("create form state carries backend-aware provider and image selections", ()
 });
 
 test("container Codex usage can switch per agent without transporting credentials", () => {
-  const payloadSource = buildCreatePayloadSource();
-  assert.match(
-    payloadSource,
-    /codexAuthMode === "metered_api" \|\| codexAuthMode === "chatgpt_subscription"/,
-  );
-  assert.match(payloadSource, /payload\.codex_auth_mode = codexAuthMode/);
+  for (const backend of ["libvirt_vm", "container_worker_vm"]) {
+    for (const mode of ["metered_api", "chatgpt_subscription", "invalid", ""]) {
+      const payload = buildCreatePayload({ ...emptyCreateForm(), backend,
+        codexAuthMode: ` ${mode} `, subscriptionProfileId: " profile-one " }, "root");
+      assert.equal(payload.codex_auth_mode,
+        ["metered_api", "chatgpt_subscription"].includes(mode) ? mode : undefined);
+      assert.equal(payload.subscription_profile_id, mode === "chatgpt_subscription" ? "profile-one" : undefined);
+      for (const credential of ["access_token", "refresh_token", "api_key"]) {
+        assert.equal(Object.hasOwn(payload, credential), false);
+      }
+    }
+  }
   assert.match(
     agentCreateDialog,
     /showCreateCodexAuthMode =\s*createForm\.backend === "container_worker_vm"/,
@@ -180,65 +198,82 @@ test("agent list supports searching common agent identifiers", () => {
 });
 
 test("create TTL duration accepts seconds through weeks and emits seconds", () => {
-  const parser = parseDurationSecondsSource();
-  assert.match(parser, /s: 1,/);
-  assert.match(parser, /m: 60,/);
-  assert.match(parser, /h: 60 \* 60,/);
-  assert.match(parser, /d: 24 \* 60 \* 60,/);
-  assert.match(parser, /w: 7 \* 24 \* 60 \* 60,/);
-  assert.match(parser, /amount <= 0/);
-  const payloadSource = buildCreatePayloadSource();
-  assert.match(payloadSource, /const ttlSeconds = parseDurationSeconds\(form\.ttlDuration\);/);
-  assert.match(payloadSource, /if \(ttlSeconds != null\) payload\.ttl_seconds = ttlSeconds;/);
+  const units = [
+    [1, ["s", "sec", "secs", "second", "seconds"]],
+    [60, ["m", "min", "mins", "minute", "minutes"]],
+    [3600, ["h", "hr", "hrs", "hour", "hours"]],
+    [86400, ["d", "day", "days"]],
+    [604800, ["w", "week", "weeks"]],
+  ];
+  for (const [seconds, aliases] of units) {
+    for (const alias of aliases) {
+      const input = ` 2 ${alias.toUpperCase()} `;
+      assert.equal(parseDurationSeconds(input), 2 * seconds, input);
+      assert.equal(buildCreatePayload({ ...emptyCreateForm(), ttlDuration: input }, "root").ttl_seconds,
+        2 * seconds, `payload TTL: ${input}`);
+    }
+  }
+  for (const input of ["", " ", "0s", "-1m", "1.5h", "3", "1month", "seconds", `${"9".repeat(400)}s`]) {
+    assert.equal(parseDurationSeconds(input), null, input);
+    assert.equal(Object.hasOwn(buildCreatePayload({ ...emptyCreateForm(), ttlDuration: input }, "root"),
+      "ttl_seconds"), false, `invalid TTL must be omitted: ${input}`);
+  }
+  assert.equal(parseDurationSeconds("1s"), 1);
 });
 
 test("buildCreatePayload gates provider and image fields by backend", () => {
-  const source = buildCreatePayloadSource();
-  // agent_provider is emitted for both backends, but only when set.
-  assert.match(source, /if \(agentProvider\) payload\.agent_provider = agentProvider;/);
-  assert.match(source, /if \(modelProviderMode\) payload\.model_provider_mode = modelProviderMode;/);
-  // model is emitted for both backends, but only when set.
-  assert.match(source, /const model = optionalText\(form\.model\);\s*if \(model\) payload\.model = model;/);
-  // Seed/bootstrap capabilities are valid for both VM and container worker sessions.
-  assert.match(
-    source,
-    /payload\.dotnet = form\.dotnet;\s*payload\.nuget = form\.nuget;\s*payload\.playwright = form\.playwright;\s*if \(form\.backend === "libvirt_vm"\)/,
-  );
-  // vm_image is emitted only inside the libvirt branch (before the `else`),
-  // and container_image only in the container branch (after the `else`).
-  assert.match(
-    source,
-    /form\.backend === "libvirt_vm"\)\s*\{[\s\S]*?if \(vmImage\) payload\.vm_image = vmImage;[\s\S]*?\} else \{[\s\S]*?payload\.container_image = /,
-  );
-  // container_image must not leak into the libvirt branch.
-  const libvirtBranch = source.match(
-    /form\.backend === "libvirt_vm"\)\s*\{([\s\S]*?)\} else \{/,
-  );
-  assert.ok(libvirtBranch, "libvirt branch of buildCreatePayload not found");
-  assert.doesNotMatch(libvirtBranch[1], /payload\.container_image/);
-  assert.doesNotMatch(libvirtBranch[1], /payload\.target_name/);
-  // Initial policy fields are optional and emitted only after backend-specific target fields.
-  assert.match(source, /const initialPolicy = form\.initialPolicy;/);
-  for (const field of [
-    "labels",
-    "web_search_enabled",
-    "allowed_tools",
-    "allowed_script_names",
-    "communication_target_ids",
-    "email_mailbox_grants",
-    "http_targets",
-  ]) {
-    assert.match(source, new RegExp(`payload\\.${field}`));
+  for (const backend of ["libvirt_vm", "container_worker_vm"]) {
+    const form = {
+      ...emptyCreateForm(), backend, vmName: " vm-one ", targetName: " container-one ",
+      sessionId: " session-one ", ttlDuration: "2h", model: " model-one ",
+      provider: " vm-provider ", vmUser: " vm-user ", agentProvider: " codex ",
+      modelProviderMode: " openai_public ", vmImage: " vm-image ", containerImage: " runner:latest ",
+      workerId: " worker-one ", dotnet: true, nuget: true, playwright: true,
+      mssql: true, mssqlInitRoot: " /seed/database ",
+      initialPolicy: {
+        labels: { purpose: "test" }, webSearchEnabled: true,
+        allowedTools: [" git ", "git", "", "read"], connectorGrants: { files: ["read"] },
+        hostDirectoryGrants: { artifacts: ["read", "write"] },
+        allowedScriptNames: [" build ", "build", ""],
+        communicationTargetIds: [" target-one ", "target-one", ""],
+        emailMailboxGrants: [{ mailbox_id: "inbox-one", access: "read", folders: [" Inbox ", "Inbox", ""] }],
+        httpTargets: [{ id: "draft-one", alias: " docs ", baseUrl: " https://example.test/docs/ ",
+          metadata: { purpose: "reference" }, managedWebsiteSession: "login-one" }],
+        // Legacy and credential-bearing form fields must never leak into the request.
+        discord_channels: ["legacy"], teams_channel_allowlist: ["legacy"],
+        email_mailboxes: ["legacy"], email_folders: ["legacy"], codex_skills: ["legacy"],
+      },
+    };
+    const common = {
+      backend, session_id: "session-one", directory_path: "root/child", ttl_seconds: 7200,
+      model: "model-one", agent_provider: "codex", model_provider_mode: "openai_public",
+      dotnet: true, nuget: true, playwright: true, labels: { purpose: "test" },
+      web_search_enabled: true, allowed_tools: ["git", "read"], connector_grants: { files: ["read"] },
+      host_directory_grants: { artifacts: ["read", "write"] }, allowed_script_names: ["build"],
+      communication_target_ids: ["target-one"],
+      email_mailbox_grants: [{ mailbox_id: "inbox-one", access: "read", folders: ["Inbox"] }],
+      http_targets: { targets: { docs: { base_url: "https://example.test/docs",
+        metadata: { purpose: "reference" }, managed_website_session: "login-one" } } },
+    };
+    const target = backend === "libvirt_vm"
+      ? { vm_name: "vm-one", provider: "vm-provider", vm_user: "vm-user", vm_image: "vm-image",
+          mssql: true, mssql_init_root: "/seed/database" }
+      : { target_name: "container-one", container_image: "runner:latest", worker_id: "worker-one" };
+    assert.deepEqual(buildCreatePayload(form, " root/child "), { ...common, ...target }, backend);
+
+    const emptyTarget = backend === "libvirt_vm"
+      ? { vm_name: null, vm_user: "agent", mssql: false, mssql_init_root: null }
+      : { target_name: null, container_image: null };
+    assert.deepEqual(buildCreatePayload({ ...emptyCreateForm(), backend }, " "), {
+      backend, session_id: null, directory_path: null, ttl_seconds: 604800,
+      dotnet: false, nuget: false, playwright: false, ...emptyTarget,
+      communication_target_ids: [], email_mailbox_grants: [],
+    }, `empty optional fields: ${backend}`);
   }
-  for (const field of [
-    "discord_channels",
-    "teams_channel_allowlist",
-    "email_mailboxes",
-    "email_folders",
-  ]) {
-    assert.doesNotMatch(source, new RegExp(`payload\\.${field}`));
-  }
-  assert.doesNotMatch(source, /payload\.codex_skills/);
+  assert.equal(buildCreatePayload({ ...emptyCreateForm(), vmUser: " ", mssqlInitRoot: "/unused" }, "root").vm_user,
+    "agent");
+  assert.equal(buildCreatePayload({ ...emptyCreateForm(), mssqlInitRoot: "/unused" }, "root").mssql_init_root,
+    null, "disabled MSSQL must omit its init root");
 });
 
 test("create modal loads create-options for the selected directory", () => {

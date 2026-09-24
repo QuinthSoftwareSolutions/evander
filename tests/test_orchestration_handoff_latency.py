@@ -21,7 +21,7 @@ from evander.repositories.orchestration_db import connect_orchestration_db
 from evander_team_addon.providers import TeamAgentPromptCompletionFinalizeHook
 from evander_team_addon.sqlite_store import TeamStateSqliteStore
 from test_effect_orchestrator import _Factory, _ImmediateExecutor, _edge
-from test_team_addon_runtime import _seed_team, _team_runtime_service
+from team_runtime_support import _seed_team, _team_runtime_service
 
 
 class Clock:
@@ -810,6 +810,7 @@ def _seed_latency_history(worker, tmp_path):
         )
 
 
+@pytest.mark.performance
 def test_thirty_synthetic_chains_handoff_p95_under_two_seconds(tmp_path):
     """Local scheduler benchmark only: external work/model/clone are stubbed."""
     worker = _worker(tmp_path)

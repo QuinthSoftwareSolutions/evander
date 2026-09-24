@@ -36,7 +36,7 @@ from evander_team_addon.services.wake_prompt_context import (
 )
 
 from test_admin_service import build_admin_runtime, write_config
-from test_team_addon_runtime import _seed_team
+from team_runtime_support import _seed_team
 
 
 NATIVE_A = "01a085f1-767c-7592-a03e-b276a20b2aa1"

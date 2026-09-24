@@ -2865,8 +2865,12 @@ def test_container_preparation_records_legacy_worker_receipt(monkeypatch) -> Non
     assert receipt["receipt_reused"] is False
 
 
-def test_container_preparation_refuses_to_guess_legacy_base_from_task_head(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "reported_base",
+    [pytest.param(None, id="missing-base"), pytest.param("2" * 40, id="guest-reported-base")],
+)
+def test_container_preparation_requires_server_authoritative_base(
+    monkeypatch, reported_base: str | None,
 ) -> None:
     class FakeContainerBackend:
         def prepare_task_worktree(self, **kwargs: Any) -> SimpleNamespace:
@@ -2874,47 +2878,7 @@ def test_container_preparation_refuses_to_guess_legacy_base_from_task_head(
                 target_dir=_WORKTREE_PATH,
                 branch=kwargs["branch"],
                 commit_sha="2" * 40,
-                base_commit_sha=None,
-                created=False,
-            )
-
-    monkeypatch.setattr(
-        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
-        lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
-    )
-    monkeypatch.setattr(
-        "evander_team_addon.provider_git_worktrees.container_backend",
-        lambda *_args, **_kwargs: FakeContainerBackend(),
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match="no authoritative server-recorded base.*audited provenance recovery",
-    ):
-        _prepare_project_repo_task_worktree(
-            SimpleNamespace(metadata={"directory_path": "root"}),
-            project_repo={
-                "guest_repo_name": "project",
-                "target_dir": "/home/agent/repos/project",
-                "execution_backend": "container_worker_vm",
-            },
-            session_id="session-backend",
-            task_id="task",
-            agent_branch="agents/session-backend/tasks/task-12345678",
-            base_ref="main",
-        )
-
-
-def test_container_preparation_refuses_guest_reported_base_without_server_authority(
-    monkeypatch,
-) -> None:
-    class FakeContainerBackend:
-        def prepare_task_worktree(self, **kwargs: Any) -> SimpleNamespace:
-            return SimpleNamespace(
-                target_dir=_WORKTREE_PATH,
-                branch=kwargs["branch"],
-                commit_sha="2" * 40,
-                base_commit_sha="2" * 40,
+                base_commit_sha=reported_base,
                 created=False,
             )
 

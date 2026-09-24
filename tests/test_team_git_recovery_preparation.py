@@ -35,7 +35,7 @@ from evander_team_addon.services.domain.dependency_composition_recovery import (
     accept_dependency_composition_recovery,
 )
 from evander_team_addon.services.runtime_service import TeamRuntimeService
-from test_team_addon_runtime import _seed_team
+from team_runtime_support import _seed_team
 
 
 def _git(path: Path, *args: str) -> str:

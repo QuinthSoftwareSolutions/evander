@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from http_client_support import patch_httpx_client
+
 from contextlib import contextmanager
 import subprocess
 from pathlib import Path
@@ -21,14 +23,6 @@ from evander.pr_merge_preflight import (
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
-
-
-def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        "evander.services.httpx.Client",
-        lambda timeout: real_client(timeout=timeout, transport=transport),
-    )
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:

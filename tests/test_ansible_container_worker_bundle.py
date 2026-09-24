@@ -62,31 +62,6 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
         assert (ansible_dir / "roles" / role_name / "tasks" / "main.yml").exists()
 
 
-def test_worker_role_task_files_are_not_ignored_by_git() -> None:
-    role_task_paths = [
-        "ansible/roles/container_worker_runtime/tasks/main.yml",
-        "ansible/roles/worker_git_access/tasks/main.yml",
-        "ansible/roles/worker_package_cache_preflight/tasks/main.yml",
-        "ansible/roles/worker_dotnet_toolchain/tasks/main.yml",
-        "ansible/roles/worker_node_toolchain/tasks/main.yml",
-        "ansible/roles/worker_playwright_toolchain/tasks/main.yml",
-        "ansible/roles/worker_mssql/tasks/main.yml",
-        "ansible/roles/worker_mssql_client_toolchain/tasks/main.yml",
-        "ansible/roles/worker_container_egress_policy/tasks/main.yml",
-        "ansible/roles/container_worker_service/tasks/main.yml",
-        "ansible/roles/container_worker_verification/tasks/main.yml",
-    ]
-
-    for role_task_path in role_task_paths:
-        result = subprocess.run(
-            ["git", "check-ignore", "--quiet", "--", role_task_path],
-            cwd=ROOT,
-            check=False,
-        )
-
-        assert result.returncode == 1
-
-
 def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     text = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
         encoding="utf-8"

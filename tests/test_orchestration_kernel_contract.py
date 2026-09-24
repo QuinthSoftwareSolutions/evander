@@ -224,6 +224,7 @@ def test_wake_socket_path_is_derived_from_lock_path(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.performance
 def test_host_wake_sleeper_returns_when_notified(tmp_path: Path) -> None:
     wake_path = tmp_path / "worker.wake.sock"
     sleeper = HostWakeSleeper(wake_path)
@@ -238,6 +239,7 @@ def test_host_wake_sleeper_returns_when_notified(tmp_path: Path) -> None:
     assert time.monotonic() - started < 0.5
 
 
+@pytest.mark.performance
 def test_host_wake_sleeper_returns_when_additional_path_is_notified(tmp_path: Path) -> None:
     primary_path = tmp_path / "worker.wake.sock"
     scheduled_path = tmp_path / "scheduled-events.wake.sock"
@@ -253,6 +255,7 @@ def test_host_wake_sleeper_returns_when_additional_path_is_notified(tmp_path: Pa
     assert time.monotonic() - started < 0.5
 
 
+@pytest.mark.performance
 def test_host_wake_sleeper_preserves_live_shared_additional_path(tmp_path: Path) -> None:
     shared_path = tmp_path / "scheduled-events.wake.sock"
     first = HostWakeSleeper(
@@ -284,6 +287,7 @@ def test_host_wake_sleeper_preserves_live_shared_additional_path(tmp_path: Path)
         first.close()
 
 
+@pytest.mark.performance
 def test_host_wake_sleeper_recovers_stale_additional_path(tmp_path: Path) -> None:
     shared_path = tmp_path / "scheduled-events.wake.sock"
     stale_listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)

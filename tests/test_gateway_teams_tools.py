@@ -1,3 +1,7 @@
+
+from http_client_support import patch_httpx_client
+
+from gateway_tool_support import call_tool
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
@@ -170,16 +174,6 @@ def make_context(tmp_path: Path, **kwargs: object):
     return build_runtime(config)
 
 
-def call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
-
-
 def call_tool_with_context(
     server,
     name: str,
@@ -224,17 +218,6 @@ def write_root_communication_targets(context, targets: list[dict[str, object]]) 
         communication_targets_db_path(context.config.runtime_dir)
     )
     repository.write_overlay("root", {"targets": targets})
-
-
-def patch_httpx_client(
-    monkeypatch: pytest.MonkeyPatch,
-    transport: httpx.BaseTransport,
-) -> None:
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        "evander.services.httpx.Client",
-        lambda timeout: real_client(timeout=timeout, transport=transport),
-    )
 
 
 def test_teams_tools_use_ambient_session_context(tmp_path: Path) -> None:

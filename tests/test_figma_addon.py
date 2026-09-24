@@ -180,8 +180,67 @@ class FakeOAuth:
         return {"connected": True, "generation": "test-generation", "expires_at": 9999999999}
 
 
-class Canvas:
+class CanvasInterpreter:
+    """One bounded Node transport; each request starts with a fresh JS context."""
+
     def __init__(self):
+        script = Path(__file__).parent / "fixtures" / "figma_canvas.mjs"
+        self.process = subprocess.Popen(
+            ["node", str(script), "--worker"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.timeout = 5
+
+    def _exchange(self, request):
+        self.process.stdin.write(json.dumps(request) + "\n")
+        self.process.stdin.flush()
+        response = self.process.stdout.readline()
+        if not response:
+            raise AssertionError("Figma canvas worker exited: " + self.process.stderr.read())
+        return json.loads(response)
+
+    def execute(self, state, code):
+        pending = self.executor.submit(self._exchange, {"state": state, "code": code})
+        try:
+            return pending.result(timeout=self.timeout)
+        except TimeoutError:
+            self.process.kill()
+            self.process.wait(timeout=5)
+            raise AssertionError("Figma canvas operation exceeded its timeout") from None
+
+    def close(self):
+        self.executor.shutdown(wait=True, cancel_futures=True)
+        try:
+            self.process.stdin.close()
+        except BrokenPipeError:
+            pass
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=5)
+        finally:
+            self.process.stdout.close()
+            self.process.stderr.close()
+
+
+@pytest.fixture(scope="module")
+def canvas_interpreter():
+    interpreter = CanvasInterpreter()
+    try:
+        yield interpreter
+    finally:
+        interpreter.close()
+
+
+class Canvas:
+    def __init__(self, interpreter):
+        self.interpreter = interpreter
         self.state = None
         self.calls = []
         self.lose_next_write = False
@@ -206,16 +265,7 @@ class Canvas:
                     )
                 if name == "get_variable_defs":
                     return SimpleNamespace(structuredContent={"brand": "#112233"}, content=[])
-                script = Path(__file__).parent / "fixtures" / "figma_canvas.mjs"
-                response = subprocess.run(
-                    ["node", str(script)],
-                    input=json.dumps({"state": canvas.state, "code": arguments["code"]}),
-                    text=True,
-                    capture_output=True,
-                    check=True,
-                    timeout=5,
-                )
-                payload = json.loads(response.stdout)
+                payload = canvas.interpreter.execute(canvas.state, arguments["code"])
                 canvas.state = payload["state"]
                 if payload.get("error"):
                     raise FigmaError(payload["error"])
@@ -246,24 +296,152 @@ class Canvas:
         return Client(oauth, directory, connection_id, config)
 
 
-@pytest.fixture
-def studio(tmp_path):
-    canvas = Canvas()
-    Store(tmp_path).save_settings("root/design", 0, settings())
-
+def _studio_service(runtime_dir, canvas):
     def service(session="designer-a", operator=False, directory="root/design"):
         return FigmaService(
-            tmp_path,
+            runtime_dir,
             Actor(directory, session, operator=operator),
             client_factory=canvas.client,
             oauth=FakeOAuth(),
         )
 
+    return service
+
+
+@pytest.fixture(scope="module")
+def studio_seed(tmp_path_factory, canvas_interpreter):
+    """Validate once through the real gate, then freeze data, never mutable services."""
+    runtime_dir = tmp_path_factory.mktemp("figma-studio-seed")
+    canvas = Canvas(canvas_interpreter)
+    store = Store(runtime_dir)
+    store.save_settings("root/design", 0, settings())
+    service = _studio_service(runtime_dir, canvas)
     owner = service("owner", True)
     check = owner.test_authoring("mockups")
     assert check["status"] == "passed", check
     assert check["cleanup_complete"]
-    return service, canvas
+    return store.path.read_bytes(), json.dumps(canvas.state)
+
+
+def _fresh_studio(runtime_dir, interpreter, seed):
+    database, state = seed
+    Store(runtime_dir).path.write_bytes(database)
+    canvas = Canvas(interpreter)
+    canvas.state = json.loads(state)
+    return _studio_service(runtime_dir, canvas), canvas
+
+
+@pytest.fixture
+def studio(tmp_path, canvas_interpreter, studio_seed):
+    return _fresh_studio(tmp_path, canvas_interpreter, studio_seed)
+
+
+def test_canvas_worker_resets_js_globals_fonts_and_page_switches(canvas_interpreter):
+    first = canvas_interpreter.execute(
+        None,
+        """
+globalThis.previousRequest = true;
+await figma.loadFontAsync({family: 'Inter', style: 'Regular'});
+await figma.setCurrentPageAsync(figma.currentPage);
+const text = figma.createText();
+text.characters = 'First request';
+return text.id;
+""",
+    )
+    second = canvas_interpreter.execute(
+        first["state"],
+        f"""
+await figma.setCurrentPageAsync(figma.currentPage);
+const text = await figma.getNodeByIdAsync({json.dumps(first["result"])});
+let unloadedFont = false;
+try {{ text.characters = 'Must require a new font load'; }}
+catch (error) {{ unloadedFont = error.message === 'Unloaded font'; }}
+return {{previousRequest: Boolean(globalThis.previousRequest), unloadedFont,
+  characters: text.characters}};
+""",
+    )
+    assert second["result"] == {
+        "previousRequest": False,
+        "unloadedFont": True,
+        "characters": "First request",
+    }
+    empty = canvas_interpreter.execute(None, "return figma.currentPage.children.length;")
+    assert empty["result"] == 0
+    assert empty["state"]["next"] == 10
+
+
+def test_canvas_worker_matches_single_request_transport(canvas_interpreter):
+    request = {"state": None, "code": "return figma.createFrame().id;"}
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "fixtures" / "figma_canvas.mjs")],
+        input=json.dumps(request),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    )
+    assert canvas_interpreter.execute(**request) == json.loads(result.stdout)
+
+
+def test_canvas_cached_nodes_keep_live_properties_and_independent_clones(canvas_interpreter):
+    result = canvas_interpreter.execute(
+        None,
+        """
+const frame = figma.createFrame();
+frame.name = 'Before';
+const rectangle = figma.createRectangle();
+frame.appendChild(rectangle);
+const clone = frame.clone();
+frame.name = 'After';
+rectangle.width = 12;
+const sameNode = frame === await figma.getNodeByIdAsync(frame.id);
+rectangle.remove();
+return {sameNode, liveName: (await figma.getNodeByIdAsync(frame.id)).name,
+  removedNode: await figma.getNodeByIdAsync(rectangle.id), childCount: frame.children.length,
+  cloneName: clone.name, cloneWidth: clone.children[0].width,
+  cloneParent: clone.children[0].parent.id === clone.id};
+""",
+    )
+    assert result["result"] == {
+        "sameNode": True,
+        "liveName": "After",
+        "removedNode": None,
+        "childCount": 0,
+        "cloneName": "Before",
+        "cloneWidth": 100,
+        "cloneParent": True,
+    }
+
+
+def test_canvas_worker_timeout_reaps_process():
+    interpreter = CanvasInterpreter()
+    try:
+        assert interpreter.execute(None, "return true;")["result"] is True
+        interpreter.timeout = 0.05
+        with pytest.raises(AssertionError, match="exceeded its timeout"):
+            interpreter.execute(None, "await new Promise(() => {});")
+        assert interpreter.process.poll() is not None
+    finally:
+        interpreter.close()
+
+
+def test_studio_seed_clones_independent_canvas_and_database(
+    tmp_path, canvas_interpreter, studio_seed
+):
+    first, first_canvas = _fresh_studio(tmp_path / "first", canvas_interpreter, studio_seed)
+    second, second_canvas = _fresh_studio(tmp_path / "second", canvas_interpreter, studio_seed)
+    assert first().connection_status("studio")["authoring_ready"]
+    assert second().connection_status("studio")["authoring_ready"]
+    created = create_frame(first())
+    assert created in first_canvas.state["nodes"]
+    assert created not in second_canvas.state["nodes"]
+    assert second_canvas.calls == []
+    assert not second().store.records("snapshot", "root/design", "mockups", "testFile123")
+    run(first(), "snapshot", node_id=created, request_id="first-only")
+    assert first().store.records("snapshot", "root/design", "mockups", "testFile123")
+    assert not second().store.records("snapshot", "root/design", "mockups", "testFile123")
+    _, encoded_state = studio_seed
+    assert created not in json.loads(encoded_state)["nodes"]
 
 
 def run(service, operation, **kwargs):
@@ -297,8 +475,8 @@ def create_frame(service, request_id="new-frame", parent="0:1"):
     return result["result"]["createdNodeIds"][0]
 
 
-def test_gate_requires_real_create_edit_render_readback(tmp_path):
-    canvas = Canvas()
+def test_gate_requires_real_create_edit_render_readback(tmp_path, canvas_interpreter):
+    canvas = Canvas(canvas_interpreter)
     store = Store(tmp_path)
     store.save_settings("root/design", 0, settings())
     author = FigmaService(

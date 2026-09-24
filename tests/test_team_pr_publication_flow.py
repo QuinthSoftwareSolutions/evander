@@ -28,7 +28,7 @@ from evander_team_addon.services.domain.release_gates import (
 )
 from test_effect_pr_create_provider import _build_context
 from test_pr_publication_policy import publisher
-from test_team_addon_repository import _seed_hierarchy, _team_admin_service
+from team_repository_support import _seed_hierarchy, _team_admin_service
 from test_team_task_authorship import _create
 
 

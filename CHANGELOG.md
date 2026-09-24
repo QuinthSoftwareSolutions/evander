@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-24 - Reduce test-suite duplication and execution overhead (0.63.4)
+
+- Add a bounded complete Python runner with four parallel workers, a separate phase for
+  elapsed-time contracts, and execution ledgers that detect omitted or repeated cases.
+- Collect conformance evidence per test and publish reports after execution, preserving
+  complete traceability checks across reordered tests and parallel workers.
+- Consolidate duplicate tests and setup while retaining distinct authorization, boundary,
+  failure, and lifecycle scenarios; replace ineffective Git-ignore publication checks.
+- Reuse isolated Figma and browser harnesses, cache documentation anchor parsing, and stub
+  unnecessary SSH discovery. Keep fresh mutable state for each case.
+- Separate frontend test lanes with complete aggregate commands, replace selected source-text
+  assertions with behavior checks, and fix timer and asynchronous polling cleanup.
+- Retry SQLite's busy WAL initialization within the existing timeout, preserving concurrent
+  event-bus startup and publication when independent constructors race.
+
 ## 2026-09-24 - Guard pinned Team integration bases (0.63.3)
 
 - Inherit parent commit pins when creating children in the same Git workstream,

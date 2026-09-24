@@ -4,6 +4,8 @@ from config_helpers import canonical_worker_config
 
 from pathlib import Path
 
+import pytest
+
 from evander.workflow.compiler import (
     collect_domain_validation_diagnostics,
     compile_trigger_orchestrator_config,
@@ -47,54 +49,16 @@ def test_compile_trigger_orchestrator_config_is_valid_without_domain_transforms(
     assert "completion_trigger_id" not in await_gate.config
 
 
-def test_compile_reports_unported_agent_prompt_outbound_edges(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "runtime"
-    worker_config = canonical_worker_config(
-        {
-            "runtime_dir": runtime_dir,
-            "triggers": [
-                {
-                    "id": "cron-1",
-                    "display_name": "Every minute",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-1",
-                    "display_name": "Prompt",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": "Continue",
-                },
-                {
-                    "id": "effect-2",
-                    "display_name": "Update metadata",
-                    "type": "effect:session:update-metadata",
-                    "target": "session-1",
-                    "metadata": {"done": True},
-                },
-            ],
-            "edges": [
-                {"source_id": "cron-1", "target_id": "effect-1"},
-                {"source_id": "effect-1", "target_id": "effect-2"},
-            ],
-        }
-    )
-
-    _, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(worker_config)
-
-    assert any(
-        diagnostic.code == "node_capability"
-        and "effect:agent:prompt effect-1 uses invalid source_port value(s): None"
-        in diagnostic.message
-        for diagnostic in diagnostics
-    )
-
-
-def test_compile_reports_unported_agent_enqueue_prompt_outbound_edges(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("effect_type", "display_name"),
+    [
+        pytest.param("effect:agent:prompt", "Prompt", id="prompt"),
+        pytest.param("effect:agent:enqueue-prompt", "Enqueue", id="enqueue-prompt"),
+    ],
+)
+@pytest.mark.parametrize("source_port", [None, "error"], ids=["unported", "error"])
+def test_compile_agent_prompt_output_ports(
+    tmp_path: Path, effect_type: str, display_name: str, source_port: str | None
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     worker_config = canonical_worker_config(
@@ -111,8 +75,8 @@ def test_compile_reports_unported_agent_enqueue_prompt_outbound_edges(
             "effects": [
                 {
                     "id": "effect-1",
-                    "display_name": "Enqueue",
-                    "type": "effect:agent:enqueue-prompt",
+                    "display_name": display_name,
+                    "type": effect_type,
                     "session_id": "session-1",
                     "prompt": "Continue",
                 },
@@ -120,107 +84,32 @@ def test_compile_reports_unported_agent_enqueue_prompt_outbound_edges(
                     "id": "effect-2",
                     "display_name": "Update metadata",
                     "type": "effect:session:update-metadata",
-                    "target": "session-1",
+                    ("target" if source_port is None else "session_id"): "session-1",
                     "metadata": {"done": True},
                 },
             ],
             "edges": [
                 {"source_id": "cron-1", "target_id": "effect-1"},
-                {"source_id": "effect-1", "target_id": "effect-2"},
+                {
+                    "source_id": "effect-1",
+                    "target_id": "effect-2",
+                    **({} if source_port is None else {"source_port": source_port}),
+                },
             ],
         }
     )
 
     _, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(worker_config)
 
-    assert any(
-        diagnostic.code == "node_capability"
-        and "effect:agent:enqueue-prompt effect-1 uses invalid source_port value(s): None"
-        in diagnostic.message
-        for diagnostic in diagnostics
-    )
-
-
-def test_compile_accepts_agent_prompt_error_source_port(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "runtime"
-    worker_config = canonical_worker_config(
-        {
-            "runtime_dir": runtime_dir,
-            "triggers": [
-                {
-                    "id": "cron-1",
-                    "display_name": "Every minute",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-1",
-                    "display_name": "Prompt",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": "Continue",
-                },
-                {
-                    "id": "effect-2",
-                    "display_name": "Update metadata",
-                    "type": "effect:session:update-metadata",
-                    "session_id": "session-1",
-                    "metadata": {"done": True},
-                },
-            ],
-            "edges": [
-                {"source_id": "cron-1", "target_id": "effect-1"},
-                {"source_id": "effect-1", "target_id": "effect-2", "source_port": "error"},
-            ],
-        }
-    )
-
-    _, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(worker_config)
-
-    assert diagnostics == []
-
-
-def test_compile_accepts_agent_enqueue_prompt_error_source_port(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "runtime"
-    worker_config = canonical_worker_config(
-        {
-            "runtime_dir": runtime_dir,
-            "triggers": [
-                {
-                    "id": "cron-1",
-                    "display_name": "Every minute",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-1",
-                    "display_name": "Enqueue",
-                    "type": "effect:agent:enqueue-prompt",
-                    "session_id": "session-1",
-                    "prompt": "Continue",
-                },
-                {
-                    "id": "effect-2",
-                    "display_name": "Update metadata",
-                    "type": "effect:session:update-metadata",
-                    "session_id": "session-1",
-                    "metadata": {"done": True},
-                },
-            ],
-            "edges": [
-                {"source_id": "cron-1", "target_id": "effect-1"},
-                {"source_id": "effect-1", "target_id": "effect-2", "source_port": "error"},
-            ],
-        }
-    )
-
-    _, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(worker_config)
-
-    assert diagnostics == []
+    if source_port is None:
+        assert any(
+            diagnostic.code == "node_capability"
+            and f"{effect_type} effect-1 uses invalid source_port value(s): None"
+            in diagnostic.message
+            for diagnostic in diagnostics
+        )
+    else:
+        assert diagnostics == []
 
 
 def test_compile_trigger_orchestrator_config_with_diagnostics_reports_await_agent_domain_issue(

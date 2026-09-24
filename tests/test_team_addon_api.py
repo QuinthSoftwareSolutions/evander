@@ -10859,7 +10859,7 @@ def test_team_addon_admin_api_rejects_stale_revision(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("operation", ["task", "agent", "role", "register"])
 def test_role_queue_admin_edits_prompt_outbox_publication(tmp_path: Path, operation: str) -> None:
-    from test_team_addon_repository import _seed_hierarchy, _lease_agent_dispatch, _command_service
+    from team_repository_support import _seed_hierarchy, _lease_agent_dispatch, _command_service
 
     client = _client(tmp_path)
     repo = _seed_hierarchy(tmp_path / "runtime")

@@ -149,14 +149,3 @@ def test_sqlite_trigger_queue_publish_idempotency_and_transitions(tmp_path) -> N
     assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
     assert queue.mark_delivered("evt-1") is True
     assert queue.list_pending() == []
-
-
-def test_sqlite_trigger_queue_filters_pending_with_indexed_order(tmp_path) -> None:
-    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
-    queue.publish(_event(event_id="evt-2", trigger_id="discord", offset_seconds=2))
-    queue.publish(_event(event_id="evt-1", trigger_id="discord", offset_seconds=1))
-    queue.publish(_event(event_id="evt-3", trigger_id="email", offset_seconds=3))
-
-    filtered = queue.list_pending(trigger_id="discord", limit=1)
-
-    assert [item.event_id for item in filtered] == ["evt-1"]

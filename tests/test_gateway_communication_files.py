@@ -1,4 +1,5 @@
-import asyncio
+
+from gateway_tool_support import call_tool
 import base64
 import json
 from io import BytesIO
@@ -104,16 +105,6 @@ def make_context(tmp_path: Path, **kwargs: object):
         **kwargs,
     )
     return build_runtime(config)
-
-
-def call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
 
 
 def test_ado_comment_tool_schemas_describe_mentions(tmp_path: Path) -> None:

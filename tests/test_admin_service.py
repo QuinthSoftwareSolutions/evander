@@ -12520,10 +12520,12 @@ def test_conformance_reports_return_missing_guidance(tmp_path: Path) -> None:
     reports = {report.kind: report for report in payload.reports}
     assert reports["trigger"].state == "missing"
     assert reports["trigger"].guidance == (
+        "EVANDER_TRIGGER_CONFORMANCE_REPORT=runtime/trigger-conformance-report.json "
         "PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py"
     )
     assert reports["effect"].state == "missing"
     assert reports["effect"].guidance == (
+        "EVANDER_EFFECT_CONFORMANCE_REPORT=runtime/effect-conformance-report.json "
         "PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py"
     )
 

@@ -1,3 +1,5 @@
+
+from gateway_tool_support import call_tool as _call_tool
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import importlib
@@ -60,16 +62,6 @@ from evander.worker.models import (
     WorkerMssqlDatabaseState,
 )
 from config_helpers import canonical_workflow_payload, canonicalize_workflow_files
-
-
-def _call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
 
 
 def _call_tool_with_context(

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from evander_team_addon.services.domain.case_task import inherited_task_case_id
-from test_team_addon_repository import (
+from team_repository_support import (
     _command_service,
     _lease_agent_dispatch,
     _seed_hierarchy,

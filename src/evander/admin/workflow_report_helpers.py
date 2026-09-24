@@ -189,9 +189,11 @@ CONFORMANCE_REPORT_SNIPPET_LIMIT = 10
 CONFORMANCE_REPORT_TEXT_LIMIT = 500
 CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS = 120
 TRIGGER_CONFORMANCE_GUIDANCE = (
+    "EVANDER_TRIGGER_CONFORMANCE_REPORT=runtime/trigger-conformance-report.json "
     "PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py"
 )
 EFFECT_CONFORMANCE_GUIDANCE = (
+    "EVANDER_EFFECT_CONFORMANCE_REPORT=runtime/effect-conformance-report.json "
     "PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py"
 )
 CONFORMANCE_REPORT_SPECS = {

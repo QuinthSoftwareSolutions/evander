@@ -1,10 +1,28 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 
-import { chromium } from "playwright";
 import { createServer } from "vite";
+import {
+  browserHookTimeout, browserTestTimeout, listeningAddress, suiteBrowser, withTimeout,
+} from "./support/browserHarness.mjs";
+
+const browser = suiteBrowser();
+let serverPromise;
+after(async () => {
+  const server = await serverPromise?.catch(() => null);
+  await server?.close();
+}, { timeout: browserHookTimeout });
+
+function adminServer() {
+  serverPromise ??= createServer({
+    root: path.resolve(fileURLToPath(new URL("..", import.meta.url))),
+    server: { host: "127.0.0.1", port: 0 },
+    logLevel: "error",
+  });
+  return serverPromise;
+}
 
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
 const PRIVILEGE_UNLOCKED_STORAGE_KEY = "admin-web:privileges-unlocked";
@@ -184,33 +202,13 @@ const configurationStateResponse = {
 };
 
 async function createAdminPage(t, options = {}) {
-  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-  const server = await createServer({
-    root: projectRoot,
-    server: {
-      host: "127.0.0.1",
-      port: 0,
-    },
-    logLevel: "error",
-  });
-  let browser;
-  let context;
-  let page;
-  await t.after(async () => {
-    await page?.close().catch(() => {});
-    await context?.close().catch(() => {});
-    await browser?.close().catch(() => {});
-    await server.close().catch(() => {});
-  });
-
-  await server.listen();
-
-  const address = server.httpServer?.address();
-  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
-
-  browser = await chromium.launch({ headless: true });
-  context = await browser.newContext();
-  page = await context.newPage();
+  const server = await adminServer();
+  if (!server.httpServer?.listening) {
+    await withTimeout(server.listen(), 15_000, "Vite did not start within 15 seconds");
+  }
+  const address = listeningAddress(server);
+  const context = await browser.newContext(t);
+  const page = await context.newPage();
 
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -602,7 +600,7 @@ async function createAdminPage(t, options = {}) {
   return { address, page };
 }
 
-test("admin shell shows full section navigation on fresh load", async (t) => {
+test("admin shell shows full section navigation on fresh load", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t);
   await page.addInitScript((storageKey) => window.localStorage.removeItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY);
 
@@ -624,7 +622,7 @@ test("admin shell shows full section navigation on fresh load", async (t) => {
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "false");
 });
 
-test("subscriptions page shows worker profile identity and capacity", async (t) => {
+test("subscriptions page shows worker profile identity and capacity", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t, {
     subscriptionProfiles: [
       {
@@ -665,7 +663,7 @@ test("subscriptions page shows worker profile identity and capacity", async (t) 
   assert.match(pageText, /Pinned account id\s*account-a/i);
 });
 
-test("admin shell groups every destination and exposes descriptions as tooltips", async (t) => {
+test("admin shell groups every destination and exposes descriptions as tooltips", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t);
 
   await page.goto(`http://127.0.0.1:${address.port}/#agents`, {
@@ -684,7 +682,7 @@ test("admin shell groups every destination and exposes descriptions as tooltips"
   await assert.doesNotReject(() => page.getByRole("tooltip").getByText("Active and historical execution targets.").waitFor({ state: "visible" }));
 });
 
-test("managed Git page registers and maintains repositories through the Admin API", async (t) => {
+test("managed Git page registers and maintains repositories through the Admin API", { timeout: browserTestTimeout }, async (t) => {
   const gitRepositoryRequests = [];
   const gitRepositoryMutations = [];
   const gitRepositories = [
@@ -763,7 +761,7 @@ test("managed Git page registers and maintains repositories through the Admin AP
   });
 });
 
-test("repository index history defaults to newest ready snapshots and pages through all builds", async (t) => {
+test("repository index history defaults to newest ready snapshots and pages through all builds", { timeout: browserTestTimeout }, async (t) => {
   const indexBuildRequests = [];
   const readyBuilds = Array.from({ length: 25 }, (_, index) => ({
     id: `idx-ready-${String(index).padStart(2, "0")}`,
@@ -840,7 +838,7 @@ test("repository index history defaults to newest ready snapshots and pages thro
   await panel.locator(".managed-git-index-build").first().getByText("Newest", { exact: true }).waitFor({ state: "visible" });
 });
 
-test("quick navigator filters destinations and supports keyboard navigation", async (t) => {
+test("quick navigator filters destinations and supports keyboard navigation", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t);
 
   await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
@@ -873,7 +871,7 @@ test("quick navigator filters destinations and supports keyboard navigation", as
   assert.equal(await page.getByRole("dialog", { name: "Find a page" }).count(), 0);
 });
 
-test("configuration navigation focuses sections, searches technical fields, and preserves drafts", async (t) => {
+test("configuration navigation focuses sections, searches technical fields, and preserves drafts", { timeout: browserTestTimeout }, async (t) => {
   const configurationSaveRequests = [];
   const { address, page } = await createAdminPage(t, {
     session: {
@@ -941,7 +939,7 @@ test("configuration navigation focuses sections, searches technical fields, and 
   await assert.doesNotReject(() => page.getByRole("combobox", { name: "Section or utility", exact: true }).waitFor({ state: "visible" }));
 });
 
-test("quick navigator includes dynamic add-on destinations in Extensions", async (t) => {
+test("quick navigator includes dynamic add-on destinations in Extensions", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t, {
     addons: [
       {
@@ -969,7 +967,7 @@ test("quick navigator includes dynamic add-on destinations in Extensions", async
   await assert.doesNotReject(() => option.getByText("Extensions").waitFor({ state: "visible" }));
 });
 
-test("quick navigator shortcut does not replace another open modal", async (t) => {
+test("quick navigator shortcut does not replace another open modal", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t);
 
   await page.goto(`http://127.0.0.1:${address.port}/#dashboard`, {
@@ -982,7 +980,7 @@ test("quick navigator shortcut does not replace another open modal", async (t) =
   assert.equal(await page.getByRole("dialog", { name: "Find a page" }).count(), 0);
 });
 
-test("admin shell persisted collapsed navigation remains usable", async (t) => {
+test("admin shell persisted collapsed navigation remains usable", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t);
   await page.addInitScript((storageKey) => window.localStorage.setItem(storageKey, "true"), WORKFLOW_SIDEBAR_STORAGE_KEY);
 
@@ -1011,7 +1009,7 @@ test("admin shell persisted collapsed navigation remains usable", async (t) => {
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "true");
 });
 
-test("admin shell lock toggle syncs backend privilege state", async (t) => {
+test("admin shell lock toggle syncs backend privilege state", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t);
   const privilegedRequests = [];
   page.on("request", (request) => {
@@ -1051,7 +1049,7 @@ test("admin shell lock toggle syncs backend privilege state", async (t) => {
   assert.deepEqual(privilegedRequests, ["/api/admin/privileged/unlock", "/api/admin/privileged/lock"]);
 });
 
-test("admin shell clears local privilege state while lock request is pending", async (t) => {
+test("admin shell clears local privilege state while lock request is pending", { timeout: browserTestTimeout }, async (t) => {
   let markLockRequestStarted = () => {};
   let releaseLockRequest = () => {};
   const lockRequestStarted = new Promise((resolve) => {
@@ -1098,7 +1096,7 @@ test("admin shell clears local privilege state while lock request is pending", a
   await assert.doesNotReject(() => page.getByRole("button", { name: "Unlock", exact: true }).waitFor({ state: "visible" }));
 });
 
-test("admin shell renders enabled add-on navigation in an iframe", async (t) => {
+test("admin shell renders enabled add-on navigation in an iframe", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t, {
     addons: [
       {
@@ -1229,7 +1227,7 @@ test("admin shell renders enabled add-on navigation in an iframe", async (t) => 
   assert.equal(addonFrameRequests, 2);
 });
 
-test("admin shell gives embedded add-ons a usable mobile viewport", async (t) => {
+test("admin shell gives embedded add-ons a usable mobile viewport", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t, {
     addons: [
       {
@@ -1264,7 +1262,7 @@ test("admin shell gives embedded add-ons a usable mobile viewport", async (t) =>
   assert.ok(frameBox.width <= 390, `expected frame to stay within the mobile viewport, got ${frameBox.width}`);
 });
 
-test("Team add-on session navigation opens the selected session", async (t) => {
+test("Team add-on session navigation opens the selected session", { timeout: browserTestTimeout }, async (t) => {
   const session = {
     session_id: "session-team-worker",
     vm_id: null,
@@ -1316,7 +1314,7 @@ test("Team add-on session navigation opens the selected session", async (t) => {
   await page.locator(".session-list-item.selected", { hasText: "session-team-worker" }).waitFor({ state: "visible" });
 });
 
-test("admin shell shows unread user notifications from the header", async (t) => {
+test("admin shell shows unread user notifications from the header", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t, {
     addons: [
       {
@@ -1364,7 +1362,7 @@ test("admin shell shows unread user notifications from the header", async (t) =>
   );
 });
 
-test("admin shell keeps mobile section access and dashboard content in the first viewport", async (t) => {
+test("admin shell keeps mobile section access and dashboard content in the first viewport", { timeout: browserTestTimeout }, async (t) => {
   for (const storedCollapseState of [null, "true"]) {
     const { address, page } = await createAdminPage(t);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -1417,7 +1415,7 @@ test("admin shell keeps mobile section access and dashboard content in the first
   }
 });
 
-test("admin shell anchors expanded chat launcher to the viewport", async (t) => {
+test("admin shell anchors expanded chat launcher to the viewport", { timeout: browserTestTimeout }, async (t) => {
   const { address, page } = await createAdminPage(t, {
     assistant: {
       enabled: true,
