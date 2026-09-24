@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ApiError, fetchJson } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 import { Tooltip } from "../admin/Tooltip";
 import { RefreshIcon, SaveIcon, StartIcon, StopIcon } from "../admin/PageActionIcons";
@@ -244,7 +244,7 @@ export function WorkersScreen() {
         ? preferredWorkerId
         : currentWorkerId && payload.workers.some((worker) => worker.worker_id === currentWorkerId)
           ? currentWorkerId
-          : payload.workers[0]?.worker_id ?? "";
+          : "";
     if (nextWorkerId !== currentWorkerId) {
       setSelectedWorkerId(nextWorkerId);
     }
@@ -311,7 +311,8 @@ export function WorkersScreen() {
   }, [isDirty, selectedWorkerId]);
 
   const selectedSummary = useMemo(
-    () => workers.find((worker) => worker.worker_id === selectedWorkerId) ?? detail?.summary ?? null,
+    () => workers.find((worker) => worker.worker_id === selectedWorkerId)
+      ?? (detail?.summary.worker_id === selectedWorkerId ? detail.summary : null),
     [detail?.summary, selectedWorkerId, workers],
   );
   const visibleWorkers = useMemo(() => {
@@ -329,11 +330,10 @@ export function WorkersScreen() {
   const mutationLocked = !privilegedUnlocked;
 
   async function reloadSelectedWorker(options?: { preserveDraft?: boolean }) {
-    if (!selectedWorkerId) return;
     try {
       setLoading(true);
       await loadWorkers(selectedWorkerId, selectedWorkerId);
-      await loadWorkerDetail(selectedWorkerId, options);
+      if (selectedWorkerId) await loadWorkerDetail(selectedWorkerId, options);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -502,78 +502,13 @@ export function WorkersScreen() {
 
   return (
     <RecordWorkspace
-      recordLabel="worker"
-      title="Workers"
-      description="Compare host service health. Open a worker record for logs and global settings."
-      columns={["Worker", "State", "Unit", "Result"]}
       selectedId={selectedWorkerId}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("worker_id"))}
       recordRouteKeys="worker_id"
-      records={visibleWorkers.map((worker) => ({
+      records={workers.map((worker) => ({
         id: worker.worker_id,
-        title: worker.name,
         href: `#workers?${new URLSearchParams({ worker_id: worker.worker_id })}`,
-        cells: [
-          {
-            value: workerStatus(worker).label,
-            content: <span className={`status-pill state-${workerStatus(worker).className}`}>{workerStatus(worker).label}</span>,
-          },
-          { value: worker.unit },
-          { value: worker.result, content: worker.result ?? "—" },
-        ],
-        facts: [
-          ["Unit", worker.unit],
-          ["State", worker.active_state],
-          ["Sub state", worker.sub_state],
-          ["Result", worker.result],
-          ["Main PID", worker.main_pid],
-          ["Detail", worker.detail ?? worker.description],
-        ],
       }))}
       onSelect={handleSelectWorker}
-      filters={
-        <>
-          <label className="field-stack collection-search">
-            <span>Find worker</span>
-            <input
-              type="search"
-              value={searchQuery}
-              placeholder="Name, unit, or status"
-              onChange={(event) => setSearchQuery(event.target.value)}
-            />
-          </label>
-          <label className="field-stack">
-            <span>Status</span>
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value as WorkerStatusFilter)}
-            >
-              <option value="all">All states</option>
-              <option value="running">Running</option>
-              <option value="stopped">Stopped</option>
-              <option value="failed">Failed</option>
-            </select>
-          </label>
-        </>
-      }
-      actions={() => (
-        <button
-          type="button"
-          disabled={loading || acting !== null || saving}
-          onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
-        >
-          Refresh
-        </button>
-      )}
-      inspectorContent={
-        isDirty ? (
-          <p className="callout warning-callout">
-            Unsaved worker settings are preserved. View the worker to continue editing.
-          </p>
-        ) : null
-      }
     >
       <div className="feature-page workers-page">
         <section className="feature-sidebar">
@@ -674,7 +609,7 @@ export function WorkersScreen() {
         </section>
 
         <section className="feature-content">
-          <div className="feature-toolbar">
+          <div className="feature-toolbar" hidden={!selectedSummary}>
             <div>
               <h2>{selectedSummary?.name ?? "Select a worker"}</h2>
               <p className="muted-text">
@@ -748,7 +683,8 @@ export function WorkersScreen() {
             </div>
           ) : null}
 
-          <article className="panel detail-panel worker-overview-panel">
+          {!selectedSummary ? <RecordPlaceholder>Select a worker to view details</RecordPlaceholder> : null}
+          <article className="panel detail-panel worker-overview-panel" hidden={!selectedSummary}>
             <div className="panel-header">
               <div>
                 <h3>Overview</h3>
@@ -795,12 +731,10 @@ export function WorkersScreen() {
                   <strong>{selectedSummary.detail ?? "n/a"}</strong>
                 </div>
               </div>
-            ) : (
-              <div className="empty-state">Select a worker to inspect it.</div>
-            )}
+            ) : null}
           </article>
 
-          <article className="panel">
+          <article className="panel" hidden={!selectedSummary}>
             <div className="panel-header">
               <div>
                 <h3>Global settings</h3>
@@ -831,7 +765,7 @@ export function WorkersScreen() {
             )}
           </article>
 
-          <article className="panel">
+          <article className="panel" hidden={!selectedSummary}>
             <div className="panel-header">
               <div>
                 <h3>Recent log</h3>

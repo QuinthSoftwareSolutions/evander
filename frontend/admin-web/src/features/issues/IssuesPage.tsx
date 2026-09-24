@@ -2,8 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
-import { timestampSortValue } from "../admin/tableSorting";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 import { CreateVmIcon, DeleteIcon, EditIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
@@ -67,7 +66,6 @@ const VM_OPTION_HELP = {
 } as const;
 
 const REFRESH_MS = 10000;
-const ISSUE_SELECTION_STORAGE_KEY = "admin-web:issues:selected-issue";
 
 type IssueMetadataEntry = {
   label: string;
@@ -318,7 +316,7 @@ export function IssuesPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [stateFilter, setStateFilter] = useState(() => readAdminHashQuery().get("issue_id") ? "all" : "active");
   const [items, setItems] = useState<IssueRecord[]>([]);
-  const [selectedIssueId, setSelectedIssueId] = useState<string>("");
+  const [selectedIssueId, setSelectedIssueId] = useState<string>(() => readAdminHashQuery().get("issue_id") ?? "");
   const [selectedIssue, setSelectedIssue] = useState<IssueDetail | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -329,25 +327,6 @@ export function IssuesPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [validation, setValidation] = useState<string | null>(null);
-  const [selectionHydrated, setSelectionHydrated] = useState(false);
-
-  useEffect(() => {
-    const saved = readAdminHashQuery().get("issue_id") ?? window.localStorage.getItem(ISSUE_SELECTION_STORAGE_KEY);
-    if (saved) {
-      setSelectedIssueId(saved);
-    }
-    setSelectionHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (!selectionHydrated) return;
-    if (selectedIssueId) {
-      window.localStorage.setItem(ISSUE_SELECTION_STORAGE_KEY, selectedIssueId);
-      return;
-    }
-    window.localStorage.removeItem(ISSUE_SELECTION_STORAGE_KEY);
-  }, [selectedIssueId, selectionHydrated]);
-
   const selectedIssueRecord = useMemo(
     () => items.find((item) => item.issue_id === selectedIssueId) ?? null,
     [items, selectedIssueId],
@@ -376,7 +355,7 @@ export function IssuesPage() {
       if (current && payload.items.some((item) => item.issue_id === current)) {
         return current;
       }
-      return payload.items[0]?.issue_id ?? "";
+      return "";
     });
   }, [stateFilter, selectedDirectoryPath]);
 
@@ -543,6 +522,16 @@ export function IssuesPage() {
     }
   }
 
+  function selectIssue(id: string) {
+    if ((editing || creating) && !window.confirm("Discard the open issue form and select another issue?"))
+      return false;
+    setSelectedIssueId(id);
+    setCreating(false);
+    setEditing(false);
+    setCreatingVm(false);
+    setValidation(null);
+  }
+
   const showingForm = creating || editing;
   const activeIssueState = selectedIssue?.state ?? selectedIssueRecord?.state ?? "New";
   const selectedIssueBodyText = useMemo(() => (selectedIssue ? issueBodyText(selectedIssue) : ""), [selectedIssue]);
@@ -550,76 +539,13 @@ export function IssuesPage() {
 
   return (
     <RecordWorkspace
-      recordLabel="issue"
-      title="Issues"
-      description="Browse local issues and their source context. Open an issue to read its description or launch work."
-      columns={["Issue", "State", "Source", "Updated"]}
       records={sortedItems.map((item) => ({
         id: item.issue_id,
-        title: `${item.issue_number} · ${item.title}`,
         href: `#issues?${new URLSearchParams({ issue_id: item.issue_id })}`,
-        cells: [
-          {
-            value: item.state ?? "New",
-            content: <span className={`status-pill state-${issueStateClass(item.state)}`}>{item.state ?? "New"}</span>,
-          },
-          { value: issueSourceLabel(item.source_type) },
-          { value: timestampSortValue(item.updated_at), content: formatTimestamp(item.updated_at) },
-        ],
-        facts: [
-          ["Issue", item.issue_number],
-          ["State", item.state ?? "New"],
-          ["Directory", item.directory_path],
-          ["Source", issueSourceLabel(item.source_type)],
-          ["Repository", item.managed_repo_id ?? "None"],
-          ["Updated", formatTimestamp(item.updated_at)],
-        ],
       }))}
       selectedId={selectedIssueId}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("issue_id"))}
       recordRouteKeys="issue_id"
-      onSelect={(id) => {
-        if ((editing || creating) && !window.confirm("Discard the open issue form and inspect another issue?"))
-          return false;
-        setSelectedIssueId(id);
-        setCreating(false);
-        setEditing(false);
-        setCreatingVm(false);
-        setValidation(null);
-      }}
-      filters={
-        <label className="field-stack">
-          <span>State</span>
-          <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
-            <option value="active">Active</option>
-            <option value="all">All</option>
-            {ISSUE_STATES.map((state) => (
-              <option key={state} value={state}>
-                {state}
-              </option>
-            ))}
-          </select>
-        </label>
-      }
-      actions={(openRecord) => (
-        <button
-          type="button"
-          className="primary"
-          disabled={mutationLocked}
-          title={mutationLocked ? "Unlock privileged operations to create issues" : undefined}
-          onClick={() => {
-            setCreating(true);
-            setEditing(false);
-            setCreatingVm(false);
-            setForm({ ...EMPTY_FORM, vmOptions: { ...EMPTY_VM_OPTIONS } });
-            setValidation(null);
-            openRecord();
-          }}
-        >
-          New issue
-        </button>
-      )}
+      onSelect={selectIssue}
     >
       <div className="feature-page issues-page">
         <section className="feature-sidebar">
@@ -670,13 +596,7 @@ export function IssuesPage() {
                 key={item.issue_id}
                 type="button"
                 className={`feature-list-item issue-list-item${item.issue_id === selectedIssueId ? " selected" : ""}`}
-                onClick={() => {
-                  setSelectedIssueId(item.issue_id);
-                  setCreating(false);
-                  setEditing(false);
-                  setCreatingVm(false);
-                  setValidation(null);
-                }}
+                onClick={() => selectIssue(item.issue_id)}
               >
                 <div className="feature-list-title-row issue-list-item-row">
                   <strong>{item.issue_number}</strong>
@@ -1024,7 +944,7 @@ export function IssuesPage() {
               </div>
             </div>
           ) : (
-            <div className="empty-state">Select an issue or create a new one.</div>
+            <RecordPlaceholder>Select an issue to view details</RecordPlaceholder>
           )}
         </section>
       </div>

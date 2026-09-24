@@ -2,8 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
-import { timestampSortValue } from "../admin/tableSorting";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import {
   DisableIcon,
   DestroyIcon,
@@ -138,7 +137,6 @@ type AgentSkillInstallFormState = {
 const REFRESH_MS = 5000;
 const LOG_PAGE_LIMIT = 300;
 const LOG_SCROLL_BOTTOM_THRESHOLD = 24;
-const AGENT_SELECTION_STORAGE_KEY = "admin-web:agents:selected-agent";
 const AUTH_EXPIRED_MESSAGE = "Your admin session expired. Sign in again to resume live updates.";
 
 type AgentLogViewState = {
@@ -944,7 +942,6 @@ export function AgentsPage() {
     emptySkillInstallForm(),
   );
   const [inlineValidation, setInlineValidation] = useState("");
-  const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
@@ -954,7 +951,6 @@ export function AgentsPage() {
   const operatorSteeringDraftTargetRef = useRef<string | null>(null);
   const refreshAuthSessionRef = useRef(refreshAuthSession);
   const createOperationStatusesRef = useRef<Map<string, string>>(new Map());
-  const hashSelectionActive = Boolean(hashSelection.agentId || hashSelection.sessionId);
 
   useEffect(() => {
     refreshAuthSessionRef.current = refreshAuthSession;
@@ -964,8 +960,8 @@ export function AgentsPage() {
     const syncHashSelection = () => {
       const nextSelection = agentSelectionFromHash();
       setHashSelection(nextSelection);
+      setSelectedKey(null);
       if (nextSelection.agentId || nextSelection.sessionId) {
-        setSelectedKey(null);
         setAgentSearch("");
         setBackendFilter("all");
         setStatusFilter("all");
@@ -978,23 +974,6 @@ export function AgentsPage() {
       window.removeEventListener("hashchange", syncHashSelection);
     };
   }, []);
-
-  useEffect(() => {
-    const saved = window.localStorage.getItem(AGENT_SELECTION_STORAGE_KEY);
-    if (saved && !hashSelectionActive) {
-      setSelectedKey(saved);
-    }
-    setSelectionHydrated(true);
-  }, [hashSelectionActive]);
-
-  useEffect(() => {
-    if (!selectionHydrated) return;
-    if (selectedKey) {
-      window.localStorage.setItem(AGENT_SELECTION_STORAGE_KEY, selectedKey);
-      return;
-    }
-    window.localStorage.removeItem(AGENT_SELECTION_STORAGE_KEY);
-  }, [selectedKey, selectionHydrated]);
 
   useLayoutEffect(() => {
     const pending = pendingLogScrollRef.current;
@@ -1066,20 +1045,20 @@ export function AgentsPage() {
   const selectedListAgent = useMemo(
     () => {
       const explicitSelection = selectedKey
-        ? filteredItems.find((item) => agentKey(item) === selectedKey) ?? null
+        ? items.find((item) => agentKey(item) === selectedKey) ?? null
         : null;
       if (explicitSelection) {
         return explicitSelection;
       }
       const hashSelectionMatch = hashSelection.agentId || hashSelection.sessionId
-        ? filteredItems.find((item) => agentMatchesSelection(item, hashSelection)) ?? null
+        ? items.find((item) => agentMatchesSelection(item, hashSelection)) ?? null
         : null;
       if (hashSelectionMatch) {
         return hashSelectionMatch;
       }
-      return filteredItems[0] ?? null;
+      return null;
     },
-    [filteredItems, hashSelection, selectedKey],
+    [items, hashSelection, selectedKey],
   );
   const selectedAgentKey = selectedListAgent ? agentKey(selectedListAgent) : null;
   const selectedAgent = useMemo(() => {
@@ -2088,110 +2067,20 @@ export function AgentsPage() {
 
   return (
     <RecordWorkspace
-      recordLabel="agent"
-      title="Agents"
-      description="Inspect execution state, session context, and recent activity. Select an agent for controls and logs."
-      columns={["Agent", "Execution", "Backend", "Updated"]}
       selectedId={selectedAgentKey}
-      loading={loading}
-      error={error}
-      initialRecordOpen={hashSelectionActive}
       recordRouteKeys="agent_id,session_id"
-      records={[...filteredItems]
-        .sort((a, b) =>
-          (a.target_name || a.agent_id).localeCompare(b.target_name || b.agent_id, undefined, { numeric: true }),
-        )
-        .map((item) => ({
-          id: agentKey(item),
-          title: item.target_name || item.agent_id,
-          description: item.session_id ?? "No linked session",
-          href: `#agents?${new URLSearchParams({ agent_id: item.agent_id })}`,
-          cells: [
-            {
-              value: agentExecutionDisplay(item).label,
-              content: (
-                <span className={`status-pill state-${agentExecutionDisplay(item).className}`}>
-                  {agentExecutionDisplay(item).label}
-                </span>
-              ),
-            },
-            { value: backendLabel(item.backend) },
-            { value: timestampSortValue(item.updated_at), content: formatTimestamp(item.updated_at) },
-          ],
-          facts: [
-            ["Agent", item.agent_id],
-            ["Session", item.session_id ?? "None"],
-            ["Directory", item.directory_path],
-            ["Backend", backendLabel(item.backend)],
-            ["Execution", agentExecutionDisplay(item).label],
-            ["Updated", formatTimestamp(item.updated_at)],
-          ],
-        }))}
+      records={items.map((item) => ({
+        id: agentKey(item),
+        href: `#agents?${new URLSearchParams({ agent_id: item.agent_id })}`,
+      }))}
       onSelect={(id) => {
         setSelectedKey(id);
+        setHashSelection({ agentId: "", sessionId: "" });
         setShowPromptForm(false);
         setShowEditForm(false);
         setShowSkillInstallForm(false);
         setShowOperatorSteeringDialog(false);
       }}
-      filters={
-        <>
-          <label className="field-stack collection-search">
-            <span>Search agents</span>
-            <input
-              type="search"
-              value={agentSearch}
-              placeholder="Name, ID, session, or directory"
-              onChange={(event) => setAgentSearch(event.target.value)}
-            />
-          </label>
-          <label className="field-stack">
-            <span>Backend</span>
-            <select value={backendFilter} onChange={(event) => setBackendFilter(event.target.value as BackendFilter)}>
-              <option value="all">All backends</option>
-              <option value="libvirt_vm">VM agents</option>
-              <option value="container_worker_vm">Container agents</option>
-            </select>
-          </label>
-          <label className="field-stack">
-            <span>Status</span>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
-              <option value="all">All states</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </label>
-        </>
-      }
-      actions={(openRecord) => (
-        <>
-          <button type="button" disabled={loading} onClick={() => void handleManualRefresh()}>
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={busyAction !== null || !privilegedUnlocked}
-            title={!privilegedUnlocked ? "Unlock privileged operations to create agents" : undefined}
-            onClick={() => {
-              setShowCreateForm(true);
-              setShowEditForm(false);
-              setShowSkillInstallForm(false);
-              setInlineValidation("");
-              openRecord();
-            }}
-          >
-            Create agent
-          </button>
-        </>
-      )}
-      inspectorContent={
-        selectedAgent ? (
-          <p className="muted-text">
-            {agentTargetStateText(selectedAgent)}. View the agent to prompt, inspect logs, or manage this agent.
-          </p>
-        ) : null
-      }
     >
       <div className="agents-page-shell">
         <div className="feature-page agents-page">
@@ -2334,7 +2223,7 @@ export function AgentsPage() {
           </section>
 
           <section className="feature-content">
-            <div className="feature-toolbar">
+            <div className="feature-toolbar" hidden={!selectedAgent}>
               <div>
                 <h2>{selectedAgent?.target_name ?? "Select an agent"}</h2>
                 <p className="muted-text">
@@ -3297,7 +3186,7 @@ export function AgentsPage() {
                 </article>
               </>
             ) : (
-              <div className="empty-state">Select an agent to inspect details and logs.</div>
+              <RecordPlaceholder>Select an agent to view details</RecordPlaceholder>
             )}
           </section>
         </div>

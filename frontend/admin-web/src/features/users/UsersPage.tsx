@@ -3,8 +3,7 @@ import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 import { usersModeFromHash, usersModeHash, type AdminUsersMode } from "../../adminRouting";
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
-import { timestampSortValue } from "../admin/tableSorting";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 import { Tooltip } from "../admin/Tooltip";
 import type {
@@ -162,8 +161,10 @@ export function UsersPage() {
   const [groups, setGroups] = useState<AdminWebGroupRecord[]>([]);
   const [permissionCatalog, setPermissionCatalog] = useState<string[]>([]);
   const [contacts, setContacts] = useState<AdminContactSummary[]>([]);
-  const [selectedLogin, setSelectedLogin] = useState<string | null>(null);
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedLogin, setSelectedLogin] = useState<string | null>(() => readAdminHashQuery().get("login"));
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(() => readAdminHashQuery().get("group_id"));
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [creatingGroup, setCreatingGroup] = useState(false);
   const [form, setForm] = useState<UserFormState>(EMPTY_FORM);
   const [groupForm, setGroupForm] = useState<GroupFormState>(EMPTY_GROUP_FORM);
   const [loading, setLoading] = useState(false);
@@ -235,11 +236,11 @@ export function UsersPage() {
       setPermissionCatalog(payload.permission_catalog);
       setSelectedLogin((current) => {
         if (current && payload.users.some((user) => user.login === current)) return current;
-        return payload.users[0]?.login ?? null;
+        return null;
       });
       setSelectedGroupId((current) => {
         if (current && payload.groups.some((group) => group.group_id === current)) return current;
-        return payload.groups[0]?.group_id ?? null;
+        return null;
       });
       setError(null);
     } catch (reason) {
@@ -258,6 +259,7 @@ export function UsersPage() {
       setForm(EMPTY_FORM);
       return;
     }
+    setCreatingUser(false);
     setForm({
       login: selectedUser.login,
       displayName: selectedUser.display_name ?? "",
@@ -274,6 +276,7 @@ export function UsersPage() {
       setGroupForm(EMPTY_GROUP_FORM);
       return;
     }
+    setCreatingGroup(false);
     setGroupForm({
       groupId: selectedGroup.group_id,
       displayName: selectedGroup.display_name,
@@ -329,6 +332,7 @@ export function UsersPage() {
   }
 
   function beginNewUser() {
+    setCreatingUser(true);
     selectMode("users");
     setSelectedLogin(null);
     setForm({
@@ -345,6 +349,7 @@ export function UsersPage() {
   }
 
   function beginNewGroup() {
+    setCreatingGroup(true);
     selectMode("groups");
     setSelectedGroupId(null);
     setGroupForm(EMPTY_GROUP_FORM);
@@ -544,90 +549,30 @@ export function UsersPage() {
 
   return (
     <RecordWorkspace
-      recordLabel={isUsersMode ? "user" : "group"}
-      title="Users & Groups"
-      description="Inspect identities, group membership, and directory scope. Select a user or group to manage permissions."
-      columns={isUsersMode ? ["User", "Groups", "Last login"] : ["Group", "Type", "Permissions"]}
       records={
         isUsersMode
           ? sortedUsers.map((user) => ({
               id: user.login,
-              title: userLabel(user),
-              description: user.login,
               href: `${usersModeHash("users")}?${new URLSearchParams({ login: user.login })}`,
-              cells: [
-                {
-                  value: (user.group_assignments ?? [])
-                    .map((assignment) => groupLabel(groupsById.get(assignment.group_id), assignment.group_id))
-                    .join(", ") || "No groups",
-                },
-                { value: timestampSortValue(user.last_login_at), content: formatTimestamp(user.last_login_at) },
-              ],
-              facts: [
-                ["Login", user.login],
-                ["Name", userLabel(user)],
-                ["Local password", user.local_password_enabled ? "Enabled" : "Disabled"],
-                ["Contact", user.contact?.name ?? "None"],
-                ["Last login", formatTimestamp(user.last_login_at)],
-              ],
             }))
           : sortedGroups.map((group) => ({
               id: group.group_id,
-              title: group.display_name,
-              description: group.group_id,
               href: `${usersModeHash("groups")}?${new URLSearchParams({ group_id: group.group_id })}`,
-              cells: [
-                { value: group.is_required ? "Required" : "Custom" },
-                { value: group.permissions.length },
-              ],
-              facts: [
-                ["Group", group.group_id],
-                ["Description", group.description],
-                ["Type", group.is_required ? "Required" : "Custom"],
-                ["Permissions", group.permissions.join(", ")],
-              ],
             }))
       }
       selectedId={isUsersMode ? selectedLogin : selectedGroupId}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("login") || readAdminHashQuery().get("group_id"))}
       recordRouteKeys="login,group_id"
       onSelect={(id) => {
         if (!canManageUsers) return false;
+        if (id) {
+          setCreatingUser(false);
+          setCreatingGroup(false);
+        }
         if (isUsersMode) setSelectedLogin(id);
         else setSelectedGroupId(id);
         setStatus(null);
         setError(null);
       }}
-      filters={
-        <label className="field-stack">
-          <span>View</span>
-          <select value={activeMode} onChange={(event) => selectMode(event.target.value as AdminUsersMode)}>
-            <option value="users">Users</option>
-            <option value="groups">Groups</option>
-          </select>
-        </label>
-      }
-      actions={(openRecord) => (
-        <>
-          <button type="button" disabled={loading || !canManageUsers} onClick={() => void loadUsers()}>
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={!canManageUsers}
-            onClick={() => {
-              if (isUsersMode) beginNewUser();
-              else beginNewGroup();
-              openRecord();
-            }}
-          >
-            {isUsersMode ? "New user" : "New group"}
-          </button>
-        </>
-      )}
     >
       <div className="feature-page users-page">
         <section className="feature-sidebar">
@@ -756,6 +701,12 @@ export function UsersPage() {
           {status ? <div className="callout success-callout">{status}</div> : null}
           {error ? <div className="callout error-callout">{error}</div> : null}
 
+          {isUsersMode && !selectedUser && !creatingUser ? (
+            <RecordPlaceholder>Select a user to view details</RecordPlaceholder>
+          ) : !isUsersMode && !selectedGroup && !creatingGroup ? (
+            <RecordPlaceholder>Select a group to view details</RecordPlaceholder>
+          ) : null}
+
           <div
             id="users-page-users-panel"
             role="tabpanel"
@@ -763,7 +714,7 @@ export function UsersPage() {
             aria-labelledby="users-page-users-tab"
             hidden={activeMode !== "users"}
           >
-            {activeMode === "users" ? (
+            {activeMode === "users" && (selectedUser || creatingUser) ? (
               <>
                 <div className="feature-toolbar">
                   <div>
@@ -1131,7 +1082,7 @@ export function UsersPage() {
             aria-labelledby="users-page-groups-tab"
             hidden={activeMode !== "groups"}
           >
-            {activeMode === "groups" ? (
+            {activeMode === "groups" && (selectedGroup || creatingGroup) ? (
               <>
                 <div className="feature-toolbar">
                   <div>

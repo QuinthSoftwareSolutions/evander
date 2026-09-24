@@ -1476,7 +1476,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   });
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions", level: 1 }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.locator(".collection-table tbody tr").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".session-list-item").first().waitFor({ state: "visible" }));
   assert.equal(await page.getByRole("heading", { name: "Capacity and execution" }).count(), 0);
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions");
 
@@ -1529,7 +1529,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       (endpoint) => endpoint.startsWith("/api/admin/sessions?") && endpoint.includes("include_expired=true") && endpoint.includes("direct_only=true"),
     ),
   );
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1"));
+  assert.ok(!requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1"), "Session details load only after selection");
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/capacity-health?_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint.startsWith("/api/admin/release-info?") && endpoint.includes("news_index=0")));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document?_dashboard=1"));

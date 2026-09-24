@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson } from "../admin/api";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 
 type ConnectorOperation = {
@@ -96,7 +96,7 @@ export function ConnectorsPage({
       if (current && payload.connectors.some((connector) => connector.connector_id === current)) {
         return current;
       }
-      return payload.connectors[0]?.connector_id ?? null;
+      return null;
     });
     return true;
   }
@@ -254,72 +254,13 @@ export function ConnectorsPage({
 
   return (
     <RecordWorkspace
-      recordLabel="connector"
-      title="Connectors"
-      description="Inspect available integrations, authentication status, and agent-visible operations."
-      columns={["Connector", "Driver", "Authentication", "Operations"]}
-      records={visibleConnectors.map((connector) => ({
+      records={(activeState?.connectors ?? []).map((connector) => ({
         id: connector.connector_id,
-        title: connector.display_name,
-        description: connector.connector_id,
         href: `#connectors?${new URLSearchParams({ connector_id: connector.connector_id })}`,
-        cells: [
-          { value: connector.driver },
-          {
-            value: connector.auth_status.available ? "Available" : "Unavailable",
-            content: (
-              <span className={`status-pill state-${connector.auth_status.available ? "pass" : "warning"}`}>
-                {connector.auth_status.available ? "Available" : "Unavailable"}
-              </span>
-            ),
-          },
-          { value: Object.keys(connector.operations).length },
-        ],
-        facts: [
-          ["Connector", connector.connector_id],
-          ["Driver", connector.driver],
-          ["Enabled", connector.disabled ? "No" : "Yes"],
-          ["Authentication", connector.auth_status.available ? "Available" : "Unavailable"],
-          ["Operations", Object.keys(connector.operations).length],
-        ],
       }))}
       selectedId={selectedId}
       onSelect={setSelectedId}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("connector_id"))}
       recordRouteKeys="connector_id"
-      filters={
-        <label className="field-stack collection-search">
-          <span>Search connectors</span>
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Name, ID, or driver"
-          />
-        </label>
-      }
-      actions={(openRecord) => (
-        <>
-          <button type="button" disabled={loading || saving} onClick={() => void refresh()}>
-            Refresh
-          </button>
-          <button type="button" onClick={openRecord}>
-            Directory configuration
-          </button>
-        </>
-      )}
-      inspectorContent={
-        <>
-          {selected?.description ? <p>{selected.description}</p> : null}
-          {dirty ? (
-            <p className="callout warning-callout">
-              Unsaved directory configuration is preserved. View the connector to continue editing.
-            </p>
-          ) : null}
-        </>
-      }
     >
       <div className="feature-page connectors-page">
         <section className="feature-sidebar">
@@ -476,7 +417,9 @@ export function ConnectorsPage({
             </article>
           ) : null}
 
-          <article className="panel">
+          {!selected ? <RecordPlaceholder>Select a connector to view details</RecordPlaceholder> : null}
+          <details className="panel">
+            <summary>Directory configuration</summary>
             <div className="panel-header">
               <div>
                 <h3>Directory override JSON</h3>
@@ -499,7 +442,7 @@ export function ConnectorsPage({
                 disabled={saving}
               />
             </label>
-          </article>
+          </details>
         </section>
       </div>
     </RecordWorkspace>

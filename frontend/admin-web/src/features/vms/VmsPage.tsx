@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 import { DestroyIcon, PowerIcon, StartIcon, StopIcon, VmRunningIcon, VmStoppedIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
@@ -38,7 +38,6 @@ const EMPTY_VM_FORM: VmCreateFormState = {
 };
 
 const REFRESH_MS = 5000;
-const VM_SELECTION_STORAGE_KEY = "admin-web:vms:selected-vm";
 
 async function loadVmList(directoryPath: string, directOnly: boolean): Promise<VmListResponse> {
   const query = new URLSearchParams({
@@ -60,7 +59,8 @@ function appendLogEntry(
 export function VmsPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [items, setItems] = useState<VmRecord[]>([]);
-  const [selectedVmName, setSelectedVmName] = useState<string | null>(null);
+  const [selectedVmName, setSelectedVmName] = useState<string | null>(() => readAdminHashQuery().get("vm_name"));
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -69,25 +69,6 @@ export function VmsPage() {
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [showCreateVm, setShowCreateVm] = useState(false);
   const [createVmForm, setCreateVmForm] = useState<VmCreateFormState>(EMPTY_VM_FORM);
-  const [selectionHydrated, setSelectionHydrated] = useState(false);
-
-  useEffect(() => {
-    const saved = readAdminHashQuery().get("vm_name") ?? window.localStorage.getItem(VM_SELECTION_STORAGE_KEY);
-    if (saved) {
-      setSelectedVmName(saved);
-    }
-    setSelectionHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (!selectionHydrated) return;
-    if (selectedVmName) {
-      window.localStorage.setItem(VM_SELECTION_STORAGE_KEY, selectedVmName);
-      return;
-    }
-    window.localStorage.removeItem(VM_SELECTION_STORAGE_KEY);
-  }, [selectedVmName, selectionHydrated]);
-
   const sortedItems = useMemo(
     () =>
       [...items].sort((left, right) =>
@@ -97,7 +78,7 @@ export function VmsPage() {
   );
 
   const selectedVm = useMemo(
-    () => sortedItems.find((item) => item.vm_name === selectedVmName) ?? sortedItems[0] ?? null,
+    () => sortedItems.find((item) => item.vm_name === selectedVmName) ?? null,
     [sortedItems, selectedVmName],
   );
 
@@ -106,7 +87,7 @@ export function VmsPage() {
     setItems(payload.items);
     setSelectedVmName((current) => {
       if (current && payload.items.some((item) => item.vm_name === current)) return current;
-      return payload.items[0]?.vm_name ?? null;
+      return null;
     });
   }, [selectedDirectoryPath]);
 
@@ -231,67 +212,22 @@ export function VmsPage() {
   const showShutdown = selectedVm?.libvirt_state === "running";
   const actionDisabled = busyAction !== null || !privilegedUnlocked;
 
+  const visibleItems = sortedItems.filter((item) =>
+    [item.vm_name, ...item.session_ids].join(" ").toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
+
   return (
     <RecordWorkspace
-      recordLabel="VM"
-      title="VMs"
-      description="Compare virtual machine state and linked sessions. Select a VM for controls and guest details."
-      columns={["VM", "Power state", "Sessions", "Address"]}
       records={sortedItems.map((item) => ({
         id: item.vm_name,
-        title: item.vm_name,
         href: `#vms?${new URLSearchParams({ vm_name: item.vm_name })}`,
-        cells: [
-          {
-            value: item.libvirt_state,
-            content: (
-              <span className={`status-pill state-${item.libvirt_state === "running" ? "running" : "idle"}`}>
-                {item.libvirt_state}
-              </span>
-            ),
-          },
-          { value: item.session_ids.length },
-          { value: item.ip_address, content: item.ip_address ?? "Unknown" },
-        ],
-        facts: [
-          ["VM", item.vm_name],
-          ["Provider", item.provider],
-          ["Power state", item.libvirt_state],
-          ["Sessions", item.session_ids.join(", ") || "None"],
-          ["Directory", item.directory_paths.join(", ")],
-          ["Address", item.ip_address],
-          ["Updated", formatTimestamp(item.last_state_update_at)],
-        ],
       }))}
       selectedId={selectedVmName}
       onSelect={(id) => {
         setSelectedVmName(id);
         setInlineValidation("");
       }}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("vm_name"))}
       recordRouteKeys="vm_name"
-      actions={(openRecord) => (
-        <>
-          <button type="button" disabled={loading} onClick={() => void handleManualRefresh()}>
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={actionDisabled}
-            title={!privilegedUnlocked ? "Unlock privileged operations to create VMs" : undefined}
-            onClick={() => {
-              setShowCreateVm(true);
-              setInlineValidation("");
-              openRecord();
-            }}
-          >
-            New VM
-          </button>
-        </>
-      )}
     >
       <div className="feature-page vms-page">
         <section className="feature-sidebar">
@@ -322,8 +258,12 @@ export function VmsPage() {
               Unlock privileged operations to create VMs or change VM state.
             </div>
           ) : null}
+          <label className="field-stack">
+            <span>Find VMs</span>
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
+          </label>
           <div className="feature-list vm-list">
-            {sortedItems.map((item) => (
+            {visibleItems.map((item) => (
               <button
                 key={item.vm_name}
                 type="button"
@@ -348,14 +288,14 @@ export function VmsPage() {
                 </div>
               </button>
             ))}
-            {!loading && items.length === 0 ? (
+            {!loading && visibleItems.length === 0 ? (
               <div className="empty-state">No VMs found for the selected directory scope.</div>
             ) : null}
           </div>
         </section>
 
         <section className="feature-content">
-          <div className="feature-toolbar">
+          <div className="feature-toolbar" hidden={!selectedVm}>
             <div>
               <h2>{selectedVm?.vm_name ?? "Select a VM"}</h2>
               <p className="muted-text">
@@ -608,7 +548,7 @@ export function VmsPage() {
               ) : null}
             </>
           ) : (
-            <div className="empty-state">Select a VM to inspect host details.</div>
+            <RecordPlaceholder>Select a VM to view details</RecordPlaceholder>
           )}
         </section>
       </div>

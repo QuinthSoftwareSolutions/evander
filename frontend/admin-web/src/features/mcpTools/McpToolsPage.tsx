@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 import { SaveIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
@@ -147,7 +147,7 @@ export function McpToolsPage() {
         setDirty(false);
         setStatus(null);
         setError(null);
-        setSelectedTool((current) => current && payload.items.some((item) => item.value === current) ? current : payload.items[0]?.value ?? "");
+        setSelectedTool((current) => current && payload.items.some((item) => item.value === current) ? current : "");
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
       }
@@ -186,8 +186,8 @@ export function McpToolsPage() {
   }, [visibleItems]);
 
   const selectedItem = useMemo(
-    () => response?.items.find((item) => item.value === selectedTool) ?? visibleItems[0] ?? null,
-    [response?.items, selectedTool, visibleItems],
+    () => response?.items.find((item) => item.value === selectedTool) ?? null,
+    [response?.items, selectedTool],
   );
   const selectedRule: McpToolPolicyRule = selectedItem ? draftPolicies[selectedItem.value] ?? {} : {};
   const effectiveRule = selectedItem?.effective_policy ?? null;
@@ -258,62 +258,13 @@ export function McpToolsPage() {
 
   return (
     <RecordWorkspace
-      recordLabel="tool"
-      title="MCP Tools"
-      description="Compare effective access and approval requirements. Open a tool to manage the local directory policy."
-      columns={["Tool", "Group", "Effective access", "Rule source"]}
-      records={visibleItems.map((item) => ({
+      records={(response?.items ?? []).map((item) => ({
         id: item.value,
-        title: item.label,
-        description: item.value,
         href: `#mcp-tools?${new URLSearchParams({ tool: item.value })}`,
-        cells: [
-          { value: item.group ?? "Other" },
-          {
-            value: item.denied ? "Denied" : item.approval_required ? "Approval required" : "Allowed",
-            content: (
-              <span className={`status-pill state-${item.denied ? "denied" : item.approval_required ? "pending" : "pass"}`}>
-                {item.denied ? "Denied" : item.approval_required ? "Approval required" : "Allowed"}
-              </span>
-            ),
-          },
-          { value: ruleHasLocalContent(draftPolicies[item.value]) ? "Local rule" : "Inherited/default" },
-        ],
-        facts: [
-          ["Tool", item.value],
-          ["Group", item.group],
-          ["Access", item.denied ? "Denied" : item.approval_required ? "Approval required" : "Allowed"],
-          ["Source", ruleHasLocalContent(draftPolicies[item.value]) ? "Local rule" : "Inherited/default policy"],
-          ["Directory", selectedDirectoryPath],
-        ],
       }))}
-      selectedId={selectedItem?.value}
+      selectedId={selectedTool}
       onSelect={setSelectedTool}
-      loading={!response && !error}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("tool"))}
       recordRouteKeys="tool"
-      filters={
-        <label className="field-stack collection-search">
-          <span>Find tool</span>
-          <input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder="Tool name or description"
-          />
-        </label>
-      }
-      actions={(openRecord) => (
-        <button type="button" onClick={openRecord}>
-          Manage policy{dirty ? " · Unsaved" : ""}
-        </button>
-      )}
-      inspectorContent={
-        <>
-          {selectedItem?.description ? <p>{selectedItem.description}</p> : null}
-          {dirty ? <p className="callout warning-callout">The directory policy has unsaved changes.</p> : null}
-        </>
-      }
     >
       <div className="feature-page mcp-tools-page">
         <section className="feature-sidebar">
@@ -625,7 +576,7 @@ export function McpToolsPage() {
               </article>
             </div>
           ) : (
-            <div className="empty-state">Select an MCP tool to inspect its policy.</div>
+            <RecordPlaceholder>Select an MCP tool to view details</RecordPlaceholder>
           )}
         </section>
       </div>

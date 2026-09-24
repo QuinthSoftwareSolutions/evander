@@ -224,14 +224,22 @@
 [data-admin-design] .session-record {
   min-height: 100%;
 }
-[data-admin-design] .workspace-record-navigation {
-  padding: 12px 16px;
-}
 [data-admin-design] .workspace-full-record .feature-page {
-  min-height: 0;
+  min-height: 100%;
 }
-[data-admin-design] .record-back {
-  margin-bottom: 12px;
+[data-admin-design] .record-placeholder {
+  padding: 24px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+[data-admin-design] .record-placeholder h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+[data-admin-design] .record-placeholder p {
+  margin: 0;
+  color: var(--ui-muted);
 }
 [data-admin-design] .session-record .property-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

@@ -717,8 +717,8 @@ test("managed Git page registers and maintains repositories through the Admin AP
   await page.goto(`http://127.0.0.1:${address.port}/#git-repositories`, {
     waitUntil: "domcontentloaded",
   });
-  await page.getByRole("heading", { level: 1, name: "Git repositories", exact: true }).waitFor({ state: "visible" });
-  await page.getByRole("button", { name: "Register repository", exact: true }).click();
+  await page.getByRole("heading", { level: 1, name: "Managed Git", exact: true }).waitFor({ state: "visible" });
+  await page.locator(".managed-git-registration-panel > summary").click();
   assert.deepEqual(gitRepositoryRequests[0], {
     directoryPath: "root",
     includeDescendants: "true",
@@ -815,8 +815,7 @@ test("repository index history defaults to newest ready snapshots and pages thro
     waitUntil: "domcontentloaded",
   });
   const panel = page.locator(".managed-git-index-panel");
-  await page.locator(".collection-table tbody button").first().click();
-  await page.getByRole("button", { name: "View repository" }).click();
+  await page.locator(".managed-git-page .feature-list-item").first().click();
   await panel.getByText("1–20 of 25", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await panel.locator(".managed-git-index-build").count(), 20);
   const newestReady = panel.locator(".managed-git-index-build").first();

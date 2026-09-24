@@ -2,8 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { ApiError, fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
-import { timestampSortValue } from "../admin/tableSorting";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 import type {
   SkillLibraryDetail,
@@ -122,6 +121,7 @@ export function SkillsPage() {
   const [uploadFileName, setUploadFileName] = useState("");
   const [editContent, setEditContent] = useState("");
   const [replaceExisting, setReplaceExisting] = useState(false);
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -139,7 +139,7 @@ export function SkillsPage() {
     setSelectedName((current) => {
       if (nextSelectedName !== undefined) return nextSelectedName;
       if (current && nextItems.some((item) => item.name === current)) return current;
-      return nextItems[0]?.name ?? null;
+      return null;
     });
     setError(null);
     setDeleteConflict(null);
@@ -155,7 +155,7 @@ export function SkillsPage() {
         setSelectedName((current) =>
           current && nextItems.some((item) => item.name === current)
             ? current
-            : nextItems[0]?.name ?? null,
+            : null,
         );
         setError(null);
         setDeleteConflict(null);
@@ -295,48 +295,19 @@ export function SkillsPage() {
     }
   }
 
+  const visibleItems = items.filter((item) =>
+    item.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
+
   return (
     <RecordWorkspace
-      recordLabel="skill"
-      title="Skills"
-      description="Search the managed skill library. Open a skill to read its content, update it, or inspect workflow references."
-      columns={["Skill", "Size", "Updated"]}
       records={items.map((item) => ({
         id: item.name,
-        title: item.name,
         href: `#skills?${new URLSearchParams({ skill: item.name })}`,
-        cells: [
-          { value: item.size_bytes, content: formatBytes(item.size_bytes) },
-          { value: timestampSortValue(item.updated_at), content: formatTimestamp(item.updated_at) },
-        ],
-        facts: [
-          ["Name", item.name],
-          ["Size", formatBytes(item.size_bytes)],
-          ["Updated", formatTimestamp(item.updated_at)],
-        ],
       }))}
       selectedId={selectedName}
       onSelect={setSelectedName}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("skill"))}
       recordRouteKeys="skill"
-      actions={(openRecord) => (
-        <>
-          <button type="button" disabled={loading || busy !== null} onClick={() => void refreshSkills()}>
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={mutationLocked}
-            title={mutationLocked ? "Unlock privileged operations to upload skills." : undefined}
-            onClick={openRecord}
-          >
-            Upload skill
-          </button>
-        </>
-      )}
     >
       <div className="feature-page skills-page">
         <section className="feature-sidebar">
@@ -351,8 +322,12 @@ export function SkillsPage() {
               </button>
             </div>
           </div>
+          <label className="field-stack">
+            <span>Find skills</span>
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
+          </label>
           <div className="feature-list skill-list">
-            {items.map((item) => (
+            {visibleItems.map((item) => (
               <button
                 key={item.name}
                 type="button"
@@ -366,12 +341,12 @@ export function SkillsPage() {
                 <div className="feature-list-meta">{formatTimestamp(item.updated_at)}</div>
               </button>
             ))}
-            {!loading && items.length === 0 ? <div className="empty-state">No skills found.</div> : null}
+            {!loading && visibleItems.length === 0 ? <div className="empty-state">No skills found.</div> : null}
           </div>
         </section>
 
         <section className="feature-content">
-          <div className="feature-toolbar">
+          <div className="feature-toolbar" hidden={!selectedSkill}>
             <div>
               <h2>{selectedSkill?.name ?? "Managed skills"}</h2>
               <p className="muted-text">
@@ -402,8 +377,10 @@ export function SkillsPage() {
           ) : null}
           {status ? <div className="callout">{status}</div> : null}
 
+          {!selectedSkill ? <RecordPlaceholder>Select a skill to view details</RecordPlaceholder> : null}
           <div className="detail-grid skills-detail-grid">
-            <article className="panel">
+            <details className="panel skill-upload-panel">
+              <summary>Upload skill</summary>
               <div className="panel-header">
                 <h3>Upload</h3>
                 <span className="panel-meta">{uploadFileName || "Markdown"}</span>
@@ -451,9 +428,9 @@ export function SkillsPage() {
                   </button>
                 </div>
               </form>
-            </article>
+            </details>
 
-            <article className="panel">
+            {selectedSkill ? <article className="panel">
               <div className="panel-header">
                 <h3>Edit</h3>
                 <span className="panel-meta">{selectedSkill?.name ?? "None selected"}</span>
@@ -488,7 +465,7 @@ export function SkillsPage() {
               ) : (
                 <div className="empty-state">Select a skill to preview or edit.</div>
               )}
-            </article>
+            </article> : null}
           </div>
         </section>
       </div>
