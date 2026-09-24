@@ -404,27 +404,24 @@ def _graph_directories_from_payload(
     fallback_graphs: list[Any] | None = None,
 ) -> tuple[str, ...]:
     graphs_payload = payload.get("graphs")
-    submitted_graphs = service.workflow_config_admin.coerce_workflow_editor_graphs(
-        graphs_payload,
-        strict=False,
+    graphs_were_submitted = isinstance(graphs_payload, list)
+    graph_source = (
+        graphs_payload
+        if graphs_were_submitted
+        else [
+            graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
+            for graph in (fallback_graphs or [])
+        ]
+    )
+    normalized_graphs = service.workflow_config_admin.normalize_workflow_editor_graphs_for_config(
+        config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
+        graphs=graph_source,
+        strict=graphs_were_submitted,
     )
     directories = _graph_directory_paths(
-        [graph.model_dump(mode="json") for graph in submitted_graphs]
+        [graph.model_dump(mode="json") for graph in normalized_graphs]
     )
-    if directories:
-        return directories
-    if graphs_payload is None or (isinstance(graphs_payload, list) and len(graphs_payload) == 0):
-        fallback = fallback_graphs or []
-        fallback_directories = _graph_directory_paths(
-            [
-                graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
-                for graph in fallback
-            ]
-        )
-        if fallback_directories:
-            return fallback_directories
-        return ("root",)
-    return ()
+    return directories or ("root",)
 
 
 async def workflow_run_events(
@@ -980,7 +977,7 @@ def workflow_routes(
             auth.require(request)
             payload = await json_body(request)
             fallback_graphs = None
-            if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
+            if not isinstance(payload.get("graphs"), list):
                 fallback_graphs = service.workflow_config_admin.read_workflow_editor_document(
                     workflow_pack=(
                         str(payload.get("workflow_pack"))
@@ -1157,7 +1154,7 @@ def workflow_routes(
             session = auth.require(request)
             payload = await json_body(request)
             fallback_graphs = None
-            if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
+            if not isinstance(payload.get("graphs"), list):
                 fallback_graphs = service.workflow_config_admin.read_workflow_editor_document(
                     workflow_pack=(
                         str(payload.get("workflow_pack"))
@@ -1176,7 +1173,8 @@ def workflow_routes(
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)
             expected_revision = expected_revision_from_payload(payload)
-            save_result = service.workflow_config_admin.save_workflow_editor_document(
+            save_result = await run_in_threadpool(
+                service.workflow_config_admin.save_workflow_editor_document,
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
                 graphs=payload.get("graphs") if isinstance(payload.get("graphs"), list) else None,

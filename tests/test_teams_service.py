@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from evander.admin.services.teams_service import TeamsAdminDependencies, TeamsAdminService
 from evander.models import TeamsMessageEnvelope
 from evander.services import GraphTeamsService, StubTeamsService, TeamsAuthenticationError
 from evander.storage import JsonStore
@@ -195,6 +196,96 @@ def test_graph_teams_service_resolves_mail_with_filter_fallback(tmp_path: Path) 
     assert [request.url.path for request in requests] == [
         "/v1.0/users/primary@example.com",
         "/v1.0/users",
+    ]
+
+
+def test_teams_admin_creates_direct_chat_with_resolved_graph_user_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/users/alias@example.com":
+            return httpx.Response(
+                404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request
+            )
+        if request.url.path == "/v1.0/users":
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "resolved-user-id", "mail": "alias@example.com"}]},
+                request=request,
+            )
+        if request.url.path == "/v1.0/me":
+            return httpx.Response(200, json={"id": "sender-user-id"}, request=request)
+        if request.url.path == "/v1.0/chats":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert [member["user@odata.bind"] for member in payload["members"]] == [
+                "https://graph.microsoft.com/v1.0/users('sender-user-id')",
+                "https://graph.microsoft.com/v1.0/users('resolved-user-id')",
+            ]
+            return httpx.Response(
+                201, json={"id": "19:resolved-user-chat@thread.v2"}, request=request
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    allowed_user_target_calls: list[list[str]] = []
+
+    class Runtime:
+        provider_config = SimpleNamespace(
+            resolve_for_directory=lambda _directory: SimpleNamespace(teams_backend="graph_api")
+        )
+
+        def teams_service_for_directory(
+            self,
+            directory_path: str,
+            *,
+            allowed_channel_targets: list[str],
+            allowed_user_targets: list[str],
+        ) -> GraphTeamsService:
+            assert directory_path == "root/ops"
+            assert allowed_channel_targets == []
+            allowed_user_target_calls.append(allowed_user_targets)
+            return GraphTeamsService(
+                store,
+                token="graph-token",
+                api_base_url="https://graph.microsoft.com/v1.0",
+                poll_limit=25,
+                timeout_seconds=5.0,
+                allowed_user_targets_provider=lambda: allowed_user_targets,
+                user_chat_cache={},
+                user_chat_cache_namespace="test-identity",
+            )
+
+    service = TeamsAdminService(
+        TeamsAdminDependencies(
+            runtime=Runtime(),
+            normalize_directory_reference=lambda reference: str(reference or "root"),
+        )
+    )
+
+    assert service.resolve_direct_chat_targets(
+        directory="root/ops",
+        user_refs=["alias@example.com"],
+    ) == [
+        {
+            "user_principal_name": "alias@example.com",
+            "user_id": "resolved-user-id",
+            "chat_target": "chat:19:resolved-user-chat@thread.v2",
+        }
+    ]
+    assert allowed_user_target_calls == [
+        ["user:alias@example.com"],
+        ["user:resolved-user-id"],
+    ]
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/alias@example.com",
+        "/v1.0/users",
+        "/v1.0/me",
+        "/v1.0/chats",
     ]
 
 

@@ -605,13 +605,15 @@ class TeamsNewMessageTriggerDefinition(TriggerDefinition):
 
 class TeamsDirectMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:teams:direct-message"]
+    chat_target_mode: Literal["explicit", "direct"] | None = None
+    direct_chat_user_upns: list[str] | None = None
     targets: list[TeamsTargetDefinition] = Field(min_length=1)
     sender_user_ids: list[str] = Field(min_length=1)
     message_filter: TeamsMessageFilterDefinition | None = None
 
-    @field_validator("sender_user_ids", mode="before")
+    @field_validator("direct_chat_user_upns", "sender_user_ids", mode="before")
     @classmethod
-    def normalize_sender_user_ids(cls, value: object) -> object:
+    def normalize_sender_user_refs(cls, value: object) -> object:
         return normalize_string_list(value)
 
 
