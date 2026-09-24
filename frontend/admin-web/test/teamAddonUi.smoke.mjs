@@ -32,6 +32,7 @@ const teamViewIds = [
 test("team add-on static UI exposes runtime control hooks", async () => {
   const markup = await readFile(path.join(staticRoot, "index.html"), "utf8");
   const script = await readFile(path.join(staticRoot, "team-ui.js"), "utf8");
+  const stateScript = await readFile(path.join(staticRoot, "team-ui-state.js"), "utf8");
   const mailScript = await readFile(path.join(staticRoot, "team-mail.js"), "utf8");
   const stylesheet = await readFile(path.join(staticRoot, "team-ui.css"), "utf8");
   const orgFlowScript = await readFile(path.join(staticRoot, "team-org-flow.js"), "utf8");
@@ -65,7 +66,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /stand-down/);
   assert.match(script, /Handoff summary/);
   assert.match(script, /data-team-view/);
-  assert.match(script, /team-addon:active-view/);
+  assert.match(stateScript, /team-addon:active-view/);
   assert.doesNotMatch(markup, /data-team-view="setup"/);
   assert.doesNotMatch(markup, /team-setup-page/);
   assert.doesNotMatch(markup, /data-team-view="overview"/);
@@ -178,6 +179,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-view-tab-badge/);
   assert.match(script, /chatNotificationSoundStorageKey/);
   assert.match(script, /data-chat-notification-sound/);
+  assert.match(script, /data-open-chat-agent-id/);
+  assert.match(script, /openChatForAgent/);
   assert.match(script, /data-chat-attachment-input/);
   assert.match(script, /pendingChatAttachments/);
   assert.match(script, /chat\/attachment-policy/);
@@ -228,6 +231,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-org-flow:edit-agent/);
   assert.match(script, /team-org-flow:canvas-menu/);
   assert.match(script, /data-org-context-action/);
+  assert.match(script, /action: "open-chat"/);
   assert.match(script, /action: "open-session"/);
   assert.match(script, /governance-add-team/);
   assert.match(script, /data-core-agent-session-create/);
@@ -5516,6 +5520,55 @@ test("team add-on opens linked sessions from Teams and Org chart agents", async 
   );
 });
 
+test("team add-on opens chats from Teams and Org chart agents", async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-select-agent-id="manager"]').click();
+  const managerDetail = page.locator("#team-people-page .agent-detail", { hasText: "Ops Manager" });
+  await managerDetail.getByRole("button", { name: "Chat" }).click();
+  await page.locator("#team-chat-page").waitFor({ state: "visible" });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations" &&
+          request.payload?.agent_id === "manager",
+      ),
+    "expected the Teams chat action to open the selected agent conversation",
+  );
+
+  await openOrgChart(page);
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  await backendCard.waitFor({ state: "visible" });
+  await backendCard.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Open chat" }).click();
+  await page.locator("#team-chat-page").waitFor({ state: "visible" });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations" &&
+          request.payload?.agent_id === "backend",
+      ),
+    "expected the Org chart chat action to open the selected agent conversation",
+  );
+});
+
 test("team add-on privilege messages update controls without losing selected manager", async (t) => {
   const initialState = seededOrgChartState();
   const standDown = {
@@ -8958,6 +9011,49 @@ test("team add-on Chat preserves a reader position across a state-stream refresh
     `expected state refresh to preserve reading position, got ${after.scrollTop}, expected ${before.scrollTop}`,
   );
   assert.ok(after.maxTop - after.scrollTop > 96, "expected reader to remain away from the newest message");
+});
+
+test("team add-on Chat preserves the new-agent picker position across a state-stream refresh", async (t) => {
+  const { port, state, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.getByRole("button", { name: "New chat" }).click();
+  const picker = page.locator(".chat-agent-picker");
+  await picker.locator('[data-chat-agent-id="scroll-agent-30"]').waitFor({ state: "attached" });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before refreshing the new-chat picker",
+  );
+
+  const before = await picker.evaluate((element) => {
+    element.scrollTop = Math.max(64, Math.floor((element.scrollHeight - element.clientHeight) / 2));
+    element.dispatchEvent(new Event("scroll"));
+    return {
+      scrollTop: element.scrollTop,
+      maxTop: Math.max(0, element.scrollHeight - element.clientHeight),
+    };
+  });
+  assert.ok(before.maxTop > before.scrollTop, "expected a non-terminal new-chat picker position");
+
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected the test state revision to reach the Team client",
+  );
+  await waitForRevision(page, state.revision);
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+
+  const after = await picker.evaluate((element) => element.scrollTop);
+  assert.ok(
+    Math.abs(after - before.scrollTop) <= 4,
+    `expected the new-chat picker to retain its position, got ${after}, expected ${before.scrollTop}`,
+  );
 });
 
 test("team add-on Chat send keeps the selected message list anchored during send refreshes", async (t) => {
