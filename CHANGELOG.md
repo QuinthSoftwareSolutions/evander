@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-24 - Align provider catalog regression expectations (0.63.1)
+
+- Include OpenRouter in Admin Web provider-mode catalog assertions so the checked
+  options match the supported agent and session creation modes.
+
 ## 2026-09-24 - Pinned OpenRouter Codex routing (0.63.0)
 
 - Add an opt-in OpenRouter provider for Codex HTTP Responses requests and
