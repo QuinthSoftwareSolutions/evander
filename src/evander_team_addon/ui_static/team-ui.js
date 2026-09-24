@@ -1479,7 +1479,12 @@ function renderTeamCopySessionOptions(selectedValue = "") {
   });
 }
 
-function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
+function renderTeamCopyDialogBody(
+  team,
+  configuration,
+  sourceRevision,
+  sourceConfigurationToken,
+) {
   const excludedProjects = values(state.projects).filter((project) =>
     text(project.team_id) === text(team.id)
     && !["active", "blocked"].includes(text(project.status)),
@@ -1502,6 +1507,7 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
       data-form-id="team-copy-form"
       data-source-team-id="${escapeAttr(team.id)}"
       data-source-revision="${escapeAttr(sourceRevision)}"
+      data-source-configuration-token="${escapeAttr(sourceConfigurationToken)}"
     >
       <label>New team name <input name="name" required value="${escapeAttr(`${team.name || team.id} Copy`)}" /></label>
       <div class="team-copy-summary" role="note">
@@ -1566,9 +1572,19 @@ async function openTeamCopyDialog(teamId) {
   }
   configuration = teamCopyConfiguration(team.id);
   const sourceRevision = state.revision;
+  const sourceConfigurationToken = text(team.copy_configuration_token);
+  if (!sourceConfigurationToken) {
+    setStatus("The Team copy preview is unavailable. Reload the page and try again.", "error");
+    return;
+  }
   showOrgActionDialog({
     title: `Copy ${team.name || team.id}`,
-    bodyHtml: renderTeamCopyDialogBody(team, configuration, sourceRevision),
+    bodyHtml: renderTeamCopyDialogBody(
+      team,
+      configuration,
+      sourceRevision,
+      sourceConfigurationToken,
+    ),
   });
   syncTeamCopySessionSelections(document.querySelector("#team-copy-form"));
 }
@@ -1684,8 +1700,14 @@ async function submitTeamCopyForm(form) {
   const sourceTeamId = text(form.dataset.sourceTeamId);
   const sessionSelects = Array.from(form.querySelectorAll("[data-team-copy-session-select]"));
   if (sessionSelects.some((select) => !text(select.value))) {
-    if (Number(form.dataset.sourceRevision) !== state.revision) {
-      setStatus("The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.", "warning");
+    const currentConfigurationToken = text(
+      state.teams?.[sourceTeamId]?.copy_configuration_token,
+    );
+    if (
+      currentConfigurationToken
+      && currentConfigurationToken !== text(form.dataset.sourceConfigurationToken)
+    ) {
+      setStatus("The source Team configuration changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.", "warning");
       return false;
     }
     form.dataset.copyingSessions = "true";
@@ -1726,6 +1748,7 @@ async function submitTeamCopyForm(form) {
       name: text(form.elements.name?.value),
       agent_session_ids: agentSessionIds,
       expected_revision: Number(form.dataset.sourceRevision),
+      source_configuration_token: text(form.dataset.sourceConfigurationToken),
     },
     { resetOnSuccess: false, detailedResult: true },
   );
@@ -1733,7 +1756,7 @@ async function submitTeamCopyForm(form) {
     if (result.failureReason === "conflict") {
       pendingConflictRetry = null;
       setStatus(
-        "The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
+        "The source Team configuration changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
         "warning",
       );
     }

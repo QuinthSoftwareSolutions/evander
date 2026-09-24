@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-24 - Stable Team copy previews (0.62.3)
+
+- Keep Team copy previews valid while tasks, inbox items, dispatches, runtime state, cost history,
+  and other excluded operational records continue changing.
+- Reject a stale copy only when the stable source configuration graph changed, including Team
+  settings, projects, roles, agents, assignments, review profiles, and outcome kinds.
+
 ## 2026-09-24 - Improve Team chat navigation and stability (0.62.2)
 
 - Preserve the new-chat agent picker position through Team state refreshes, so operators can

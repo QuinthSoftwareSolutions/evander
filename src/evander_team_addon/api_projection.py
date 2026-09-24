@@ -71,6 +71,7 @@ from .api_requests import (
     _session_repository_from_context,
 )
 from .api_revision import (
+    _add_team_copy_configuration_tokens,
     _add_team_resource_tokens,
     _add_team_resource_tokens_for_collections,
     _team_resource_tokens_for_collections,
@@ -170,6 +171,7 @@ def _team_state_payload_for_request(
             )
     apply_compact_human_review_projection(payload, state)
     _add_team_resource_tokens(payload, state)
+    _add_team_copy_configuration_tokens(payload, state)
     _filter_external_source_evidence_payload(
         payload,
         allowed_snapshot_ids=_authorized_external_source_evidence_snapshot_ids(
@@ -414,6 +416,7 @@ def _view_payload_for_request(
             state,
             collections=collections,
             ids_by_collection=ids_by_collection,
+            include_copy_configuration_tokens=view == "people",
             runtime_dir=runtime_dir,
             session_records=session_records,
             agent_execution_records=agent_execution_records,
@@ -915,6 +918,7 @@ def _state_slice_payload_for_request(
     *,
     collections: set[str],
     ids_by_collection: Mapping[str, set[str]] | None = None,
+    include_copy_configuration_tokens: bool = False,
     runtime_dir: Path | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
@@ -978,6 +982,8 @@ def _state_slice_payload_for_request(
         collections=collections,
         ids_by_collection=scoped_ids,
     )
+    if include_copy_configuration_tokens:
+        _add_team_copy_configuration_tokens(payload, state)
     _filter_external_source_evidence_payload(
         payload,
         allowed_snapshot_ids=scoped_ids["external_source_evidence_snapshots"],
