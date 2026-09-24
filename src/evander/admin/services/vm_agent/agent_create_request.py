@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evander.provider_config import validate_openrouter_session
 from evander.admin.services.vm_agent.common import (
     Any,
     EffectiveVmDefaultsConfig,
@@ -468,6 +469,7 @@ class VmAgentCreateRequestMixin:
                 "metadata": metadata,
             }
         )
+        validate_openrouter_session(backend.config, manifest)
         manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,
@@ -701,6 +703,7 @@ class VmAgentCreateRequestMixin:
                 {"value": "openai_public", "label": "Public OpenAI"},
                 {"value": "local_openai", "label": "Local OpenAI"},
                 {"value": "azure_openai", "label": "Azure OpenAI"},
+                {"value": "openrouter", "label": "OpenRouter"},
             ],
             "communication_targets": [
                 option.model_dump(mode="json")

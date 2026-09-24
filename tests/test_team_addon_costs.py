@@ -544,6 +544,49 @@ def _usage_event(
     )
 
 
+def test_team_costs_include_reported_charges_in_full_and_incremental_budgets(tmp_path: Path):
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    _team_admin_service(repo).update_team(
+        team_id="team", max_cost_usd="2.50", set_max_cost_usd=True,
+    )
+    window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    service = TeamCostService(
+        runtime_dir=runtime_dir, state=repo.read(), usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    )
+
+    def record(cost):
+        store.upsert_event(_usage_event(
+            "router", session_id="session-manager", request_id="router-request",
+            provider="openrouter", model="openai/gpt-5.4", occurred_at=window_start,
+            raw_usage_metadata={
+                "usage": {"input_tokens": 1, "output_tokens": 1, "cost": cost,
+                          "cost_details": {"upstream_inference_cost": 100}},
+                "request_metadata": {"team_id": "team"},
+            },
+        ))
+
+    record("3.25")
+    full = service.costs_payload(backfill_transcripts=False)["team_costs"]["team"]
+    incremental = service.current_budget_costs_payload()["team_costs"]["team"]
+    for cost in (full, incremental):
+        assert cost["reported_cost"] == 3.25
+        assert cost["estimated_cost"] == 0
+        assert cost["total_cost"] == 3.25
+        assert cost["budget_window_total_cost"] == 3.25
+        assert cost["cost_limit_reached"] is True
+        assert cost["remaining_cost_usd"] == 0
+        assert cost["coverage_status"] == "complete"
+    record("1.25")
+    corrected = service.current_budget_costs_payload()["team_costs"]["team"]
+    assert corrected["total_cost"] == 1.25
+    assert corrected["events_count"] == 1
+    assert corrected["cost_limit_reached"] is False
+    assert corrected["remaining_cost_usd"] == 1.25
+
+
 def test_team_costs_count_team_roles_and_project_confident_usage(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_team(runtime_dir)

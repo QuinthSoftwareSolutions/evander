@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evander.provider_config import validate_openrouter_session
 from evander.admin.services.vm_agent.common import (
     Any,
     MODEL_PROVIDER_MODE_METADATA_KEY,
@@ -126,6 +127,10 @@ class VmAgentIssueCreateMixin:
                 manifest.model = self._deps.resolve_agent_model_for_session(manifest)
             except ValueError:
                 manifest.model = None
+        validate_openrouter_session(
+            self._deps.runtime.provider_config.resolve_for_directory(normalized_directory_path),
+            manifest,
+        )
         self._persist_session(resolved_session_id, manifest)
 
         def _issue_vm_failure(message: str) -> VmActionResult:

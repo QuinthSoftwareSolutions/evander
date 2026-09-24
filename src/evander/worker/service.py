@@ -4500,7 +4500,7 @@ def _codex_provider_kind(metadata: dict[str, object] | None) -> str:
     )
     if mode in _CODEX_LOCAL_MODEL_PROVIDER_MODES:
         return "local_model"
-    if mode in {"openai_public", "azure_openai", "anthropic"}:
+    if mode in {"openai_public", "azure_openai", "anthropic", "openrouter"}:
         return "cloud_or_unknown"
     return "unknown"
 

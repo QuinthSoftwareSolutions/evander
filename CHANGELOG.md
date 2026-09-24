@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-24 - Pinned OpenRouter Codex routing (0.63.0)
+
+- Add an opt-in OpenRouter provider for Codex HTTP Responses requests and
+  compaction passthrough, with exact session model allowlists, one configured
+  provider route, mandatory ZDR and parameter support, and disabled fallbacks.
+- Keep provider credentials on the host, reject guest routing overrides and
+  OpenRouter server tools, and expose provider settings in Admin Web.
+- Preserve implicit Anthropic routing when creating or reprovisioning Claude
+  agents in OpenRouter-default directories; explicit Claude/OpenRouter routing remains rejected.
+- Capture routing metadata and provider-reported USD charges without retaining
+  prompt or response content. Separate reported charges from catalog estimates
+  and include both in Team budgets, durable cost reports, and cost displays while
+  preserving fractional dollars.
+- Leave OpenRouter routes empty and public OpenAI as the default; live provider
+  compatibility and credentials require operator configuration.
+
 ## 2026-09-24 - Open Admin Web details directly (0.62.5)
 
 - Open Agents, Sessions, and the other record management pages directly in their

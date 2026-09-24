@@ -249,6 +249,7 @@ def effective_config_for_session(
     *,
     fallback_directory_path: str | None = None,
 ) -> GatewayConfig:
+    from evander.provider_config import OpenRouterSessionError
     from evander.admin.services.container_worker_assignment_service import (
         ContainerWorkerAssignmentError,
         ContainerWorkerAssignmentService,
@@ -259,7 +260,7 @@ def effective_config_for_session(
         if callable(resolve_for_session_id):
             try:
                 return resolve_for_session_id(session_id)
-            except ContainerWorkerAssignmentError:
+            except (ContainerWorkerAssignmentError, OpenRouterSessionError):
                 raise
             except ValueError:
                 pass

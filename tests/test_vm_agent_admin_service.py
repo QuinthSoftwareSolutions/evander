@@ -376,6 +376,11 @@ class FakeAdmin:
         self.runtime = SimpleNamespace(
             sessions=session_repository,
             session_repository=session_repository,
+            provider_config=SimpleNamespace(
+                resolve_for_directory=lambda directory_path: SimpleNamespace(
+                    model_provider_mode="openai_public"
+                )
+            ),
             policy_config=SimpleNamespace(
                 resolve_for_directory=lambda directory_path: SimpleNamespace(
                     directory_path=directory_path
@@ -1223,8 +1228,9 @@ def test_chat_assistant_libvirt_bootstraps_codex_when_missing(
     assert bootstrap_env["AGENT_MODEL"] == "gpt-test"
 
 
+@pytest.mark.parametrize("provider_mode", ["openai_public", "openrouter"])
 def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_mode: str
 ) -> None:
     existing = SessionManifest(
         session_id="assistant-shared",
@@ -1235,6 +1241,11 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
     sessions = FakeSessionsStore({"assistant-shared": existing})
     admin = FakeAdmin(sessions=sessions)
     admin.config.runtime_dir = tmp_path
+    if provider_mode == "openrouter":
+        existing.metadata["agent_provider"] = "claude"
+    admin.runtime.provider_config = SimpleNamespace(
+        resolve_for_directory=lambda _: SimpleNamespace(model_provider_mode=provider_mode)
+    )
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
 
     class Completed:
@@ -1260,6 +1271,31 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
     assert updated.vm_id == "assistant-shared"
     assert updated.vm_provider == "libvirt"
     assert updated.metadata["assistant_scope"] == "admin_chat"
+
+
+@pytest.mark.parametrize("model", [None, "unapproved/model"])
+def test_create_vm_rejects_unapproved_openrouter_model_before_provisioning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str | None
+) -> None:
+    admin = FakeAdmin()
+    config = GatewayConfig(runtime_dir=tmp_path, model_provider_mode="openrouter",
+                           openrouter_model_routes={"openai/gpt-5.4": "azure/eu"})
+    admin.runtime.provider_config = SimpleNamespace(resolve_for_directory=lambda _: config)
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    monkeypatch.setattr(
+        session_helpers,
+        "build_issue_session_manifest",
+        lambda **kwargs: SessionManifest(
+            session_id="router", allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    monkeypatch.setattr(vm_helpers, "dominfo_field", lambda *args: None)
+    monkeypatch.setattr(process_helpers, "run_subprocess",
+                        lambda *args, **kwargs: pytest.fail("unapproved session provisioned"))
+    with pytest.raises(ValueError, match="openrouter_model_routes"):
+        service.create_vm(provider="libvirt", vm_name="router", session_id="router", model=model)
+    assert admin.runtime.session_repository.get_session("router") is None
 
 
 def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:

@@ -6643,7 +6643,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'lockedAttrs("refresh transcript costs")' in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
-    assert "Blocked: estimated cost cap reached" in script.text
+    assert "Blocked: cost cap reached" in script.text
     assert "renderProjectCostCounter" in script.text
     assert "renderAgentInboxHeaderIndicators" in script.text
     assert "renderAgentInboxIndicatorIcon" in script.text

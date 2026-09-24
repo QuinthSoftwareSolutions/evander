@@ -2485,6 +2485,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     _field_option("openai_public", "Public OpenAI"),
                     _field_option("local_openai", "Local OpenAI"),
                     _field_option("azure_openai", "Azure OpenAI"),
+                    _field_option("openrouter", "OpenRouter"),
                 ],
             ),
             _field(

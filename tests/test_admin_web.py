@@ -12160,6 +12160,24 @@ def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path)
     assert email_cursor["recent_message_ids"] == []
 
 
+def test_admin_web_configuration_exposes_openrouter_policy(tmp_path: Path) -> None:
+    with TestClient(
+        create_app(build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True)))
+    ) as client:
+        response = client.get("/api/configuration/state")
+    assert response.status_code == 200
+    fields = {
+        field["field_name"]: field
+        for tab in response.json()["tabs"]
+        for section in tab["sections"]
+        for field in section["fields"]
+    }
+    assert "openrouter" in fields["model_provider_mode"]["options"]
+    assert fields["openrouter_model_routes"]["kind"] == "json"
+    assert "exact" in fields["openrouter_model_routes"]["tooltip"]
+    assert fields["openrouter_api_key_env"]["label"] == "OpenRouter API key env"
+
+
 def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> None:
     SqliteCommunicationTargetsRepository(
         communication_targets_db_path(tmp_path / "runtime")

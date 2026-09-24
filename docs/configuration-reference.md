@@ -1837,6 +1837,9 @@ container. Cloud network policy must likewise admit `11889` only from the worker
 | `openai_relay_host`, `openai_relay_port` | composed runtime config | `src/evander/relays/openai.py` listener bind. |
 | `openai_api_base_url` | composed runtime config | `src/evander/relays/openai.py` upstream URL base. |
 | `openai_api_key_env` | composed runtime config | `src/evander/relays/openai.py` env-var name lookup for API key. |
+| `openrouter_api_base_url` | root or directory `providers.json` | Host OpenRouter API base, default `https://openrouter.ai/api/v1`. |
+| `openrouter_api_key_env` | root or directory `providers.json` | Host environment variable name for OpenRouter credentials, default `OPENROUTER_API_KEY`. |
+| `openrouter_model_routes` | root or directory `providers.json` | Exact model ID to one provider endpoint slug, default `{}`. Canonical IDs only: aliases, routers, variants, presets, patterns, and multiple providers are rejected. |
 | `openai_relay_timeout_seconds` | composed runtime config | `src/evander/relays/openai.py` upstream request timeout. |
 | `openai_image_generation_max_request_bytes` | root or directory `providers.json` | Maximum accepted JSON body for `POST /v1/images/generations`; defaults to 1 MiB. |
 | `openai_image_edit_max_request_bytes` | root or directory `providers.json` | Maximum accepted multipart body for `POST /v1/images/edits`; defaults to 256 MiB. |
@@ -1854,6 +1857,12 @@ provider mode for that session while still inheriting the directory's endpoint
 and credential fields. This allows a single directory to host both public
 OpenAI Codex sessions and local OpenAI-compatible Codex sessions by setting
 session metadata to `openai_public` or `local_openai` per agent.
+
+`openrouter` is an additional Codex-only provider mode. Its session model must
+appear in `openrouter_model_routes`; each Responses or compaction request must
+use that exact model. The relay enforces `provider.order`, `provider.only`,
+`allow_fallbacks: false`, `require_parameters: true`, and `zdr: true`.
+See [OpenRouter](openrouter.md) for endpoint scope and activation checks.
 
 ### Smart switch gate
 
@@ -2650,7 +2659,8 @@ provider; unknown mailboxes and unsupported target providers fail validation.
 
 Credential selection follows `model_provider_mode`: `openai_public` reads `openai_api_key_env`,
 `azure_openai` reads `azure_openai_api_key_env` with the OpenAI env name as fallback, `anthropic`
-reads `anthropic_api_key_env`, and `local_openai` uses `local_openai_api_key`. Guests retain only a
+reads `anthropic_api_key_env`, `openrouter` reads `openrouter_api_key_env`, and
+`local_openai` uses `local_openai_api_key`. Guests retain only a
 placeholder API key and never receive these host credentials.
 ## Repository indexing configuration
 

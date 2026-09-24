@@ -92,6 +92,14 @@ OPENAI_COMPATIBLE_HTTP_ENDPOINTS = {
 OPENAI_COMPATIBLE_WEBSOCKET_ENDPOINTS = {
     "responses",
 }
+OPENROUTER_HTTP_ENDPOINTS = {
+    ("GET", "models"),
+    ("POST", "responses"),
+    ("POST", "responses/compact"),
+}
+OPENROUTER_FORBIDDEN_REQUEST_FIELDS = frozenset(
+    {"models", "route", "provider", "plugins", "preset"}
+)
 OPENAI_COMPATIBLE_ENDPOINTS_DESCRIPTION = (
     "OpenAI relay currently supports GET /v1/models and POST /v1/responses, "
     "/v1/responses/compact, /v1/chat/completions, /v1/completions, /v1/embeddings, "
@@ -136,6 +144,7 @@ class OpenAIAuthPathTokenMiddleware:
 @dataclass(frozen=True)
 class RelayRequestContext:
     session_id: str
+    model: str | None
     config: GatewayConfig
     web_search_enabled: bool
     image_generation_enabled: bool
@@ -279,6 +288,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
                     "provider_mode": relay.config.model_provider_mode,
                     "upstream": relay._resolved_upstream_base_url(relay.config),
                     "openai_upstream": relay.config.openai_api_base_url,
+                    "openrouter_upstream": relay.config.openrouter_api_base_url,
                     "local_openai_upstream": relay.config.local_openai_api_base_url,
                     "anthropic_upstream": relay.config.anthropic_api_base_url,
                     "api_key_env": api_key_env,
@@ -351,6 +361,14 @@ class OpenAIRelay(OpenAIUsageAccounting):
                     path=request.url.path,
                 )
                 return relay._image_generation_disabled_response()
+
+            if request_context.config.model_provider_mode == "openrouter":
+                return await relay._proxy_openrouter_http(
+                    request=request,
+                    request_context=request_context,
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                )
 
             if request_context.config.model_provider_mode == "anthropic":
                 return await relay._proxy_anthropic_http(
@@ -620,6 +638,16 @@ class OpenAIRelay(OpenAIUsageAccounting):
                 )
                 await websocket.close(code=1008, reason=reason)
                 return
+            if request_context.config.model_provider_mode == "openrouter":
+                reason = "OpenRouter relay does not support websocket/realtime requests"
+                logger.warning(
+                    "relay_rejected_openrouter_websocket session_id=%s path=%s reason=%s",
+                    request_context.session_id,
+                    websocket.url.path,
+                    reason,
+                )
+                await websocket.close(code=1008, reason=reason)
+                return
             if request_context.config.model_provider_mode == "anthropic":
                 reason = "Anthropic relay does not support websocket/realtime requests"
                 logger.warning(
@@ -708,6 +736,218 @@ class OpenAIRelay(OpenAIUsageAccounting):
             ],
         )
 
+    async def _proxy_openrouter_http(
+        self,
+        *,
+        request: Request,
+        request_context: RelayRequestContext,
+        upstream_path: str,
+        request_body: bytes,
+    ) -> Response:
+        try:
+            normalized_path = _canonical_relay_path(
+                upstream_path,
+                field_name="OpenRouter relay path",
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if (request.method.upper(), normalized_path) not in OPENROUTER_HTTP_ENDPOINTS:
+            return JSONResponse(
+                {
+                    "error": (
+                        "OpenRouter relay supports only GET /v1/models, "
+                        "POST /v1/responses, and POST /v1/responses/compact"
+                    )
+                },
+                status_code=501,
+            )
+
+        api_key_env = request_context.config.openrouter_api_key_env
+        api_key = os.environ.get(api_key_env)
+        if not api_key:
+            return JSONResponse(
+                {"error": f"Host environment variable {api_key_env} is not set."},
+                status_code=503,
+            )
+
+        if request.method.upper() == "POST":
+            try:
+                request_body = self._rewrite_openrouter_request_body(
+                    request_body,
+                    session_model=request_context.model,
+                    model_routes=request_context.config.openrouter_model_routes,
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+        upstream_url = self._upstream_http_url(
+            base_url=request_context.config.openrouter_api_base_url,
+            upstream_path=normalized_path,
+            query_items=[],
+        )
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in HOP_BY_HOP_HEADERS
+            and not key.lower().startswith("x-openrouter-")
+            and key.lower() not in {"api-key", "cookie"}
+        }
+        headers["accept-encoding"] = "identity"
+        headers["authorization"] = f"Bearer {api_key}"
+        headers["x-openrouter-metadata"] = "enabled"
+
+        steering_injection = await run_in_threadpool(
+            self._operator_steering_injection,
+            session_id=request_context.session_id,
+            method=request.method,
+            provider_name="openrouter",
+            upstream_path=normalized_path,
+            request_body=request_body,
+        )
+        request_body = steering_injection.request_body
+        if request.method.upper() == "POST" and self._should_stream_http_response(
+            request=request, request_body=request_body
+        ):
+            return await self._stream_response(
+                request=request,
+                session_id=request_context.session_id,
+                upstream_path=normalized_path,
+                upstream_url=upstream_url,
+                headers=headers,
+                request_body=request_body,
+                timeout_seconds=request_context.config.openai_relay_timeout_seconds,
+                provider_name="openrouter",
+                operator_steering_note=steering_injection.note,
+            )
+
+        async with httpx.AsyncClient(
+            timeout=request_context.config.openai_relay_timeout_seconds,
+            transport=self.transport,
+        ) as client:
+            started_at = time.perf_counter()
+            try:
+                upstream_response = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    headers=headers,
+                    content=request_body,
+                )
+            except Exception as exc:
+                await run_in_threadpool(
+                    self._release_operator_steering_note,
+                    steering_injection.note,
+                    error=f"upstream request failed before delivery: {exc}",
+                )
+                raise
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
+                steering_injection.note,
+                provider_name="openrouter",
+                provider_endpoint=normalized_path,
+            )
+            response_content = upstream_response.content
+            if request.method.upper() == "GET" and normalized_path == "models":
+                if upstream_response.is_success:
+                    try:
+                        response_content = self._filter_openrouter_models_response(
+                            response_content,
+                            allowed_models=request_context.config.openrouter_model_routes,
+                        )
+                    except ValueError as exc:
+                        return JSONResponse({"error": str(exc)}, status_code=502)
+            else:
+                try:
+                    await run_in_threadpool(
+                        self._record_model_usage_event,
+                        session_id=request_context.session_id,
+                        upstream_path=normalized_path,
+                        request_body=request_body,
+                        upstream_response=upstream_response,
+                        duration_ms=self._duration_ms_since(started_at),
+                        provider_name="openrouter",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                        request_context.session_id,
+                        request.url.path,
+                        exc.__class__.__name__,
+                        str(exc),
+                    )
+            return Response(
+                content=response_content,
+                status_code=upstream_response.status_code,
+                headers=self._response_headers(upstream_response),
+                media_type=upstream_response.headers.get("content-type"),
+            )
+
+    @staticmethod
+    def _rewrite_openrouter_request_body(
+        request_body: bytes,
+        *,
+        session_model: str | None,
+        model_routes: dict[str, str],
+    ) -> bytes:
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("OpenRouter request body must be a JSON object") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("OpenRouter request body must be a JSON object")
+
+        forbidden = sorted(OPENROUTER_FORBIDDEN_REQUEST_FIELDS.intersection(payload))
+        if forbidden:
+            raise ValueError(
+                "OpenRouter request must not set relay-controlled fields: "
+                + ", ".join(forbidden)
+            )
+        model = payload.get("model")
+        expected_model = session_model
+        if not isinstance(model, str) or not model:
+            raise ValueError("OpenRouter request requires an explicit model")
+        if model != expected_model:
+            raise ValueError(
+                f"OpenRouter request model {model!r} does not match session model "
+                f"{expected_model!r}"
+            )
+        provider = model_routes.get(model)
+        if not provider:
+            raise ValueError(f"OpenRouter model {model!r} is not approved for this session")
+        if _tools_declare_openrouter_server_tool(payload.get("tools")):
+            raise ValueError("OpenRouter server tools are not allowed")
+
+        rewritten = dict(payload)
+        rewritten["provider"] = {
+            "order": [provider],
+            "only": [provider],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+            "zdr": True,
+        }
+        return json.dumps(rewritten, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    @staticmethod
+    def _filter_openrouter_models_response(
+        response_content: bytes,
+        *,
+        allowed_models: dict[str, str],
+    ) -> bytes:
+        try:
+            payload = json.loads(response_content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("OpenRouter returned an invalid model listing") from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError("OpenRouter returned an invalid model listing")
+        filtered = dict(payload)
+        filtered["data"] = [
+            item
+            for item in payload["data"]
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and item["id"] in allowed_models
+        ]
+        return json.dumps(filtered, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
     async def _proxy_openai_image_http(
         self,
         *,
@@ -715,7 +955,11 @@ class OpenAIRelay(OpenAIUsageAccounting):
         request_context: RelayRequestContext,
         upstream_path: str,
     ) -> Response:
-        if request_context.config.model_provider_mode in {"anthropic", "azure_openai"}:
+        if request_context.config.model_provider_mode in {
+            "anthropic",
+            "azure_openai",
+            "openrouter",
+        }:
             return JSONResponse(
                 {
                     "error": (
@@ -1560,6 +1804,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
         )
         return RelayRequestContext(
             session_id=session_id,
+            model=getattr(session, "model", None),
             config=resolved_config,
             web_search_enabled=bool(session.web_search_enabled),
             image_generation_enabled=bool(session.image_generation_enabled),
@@ -1581,6 +1826,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
         )
         return RelayRequestContext(
             session_id=session_id,
+            model=getattr(session, "model", None),
             config=resolved_config,
             web_search_enabled=bool(session.web_search_enabled),
             image_generation_enabled=bool(session.image_generation_enabled),
@@ -1668,6 +1914,8 @@ class OpenAIRelay(OpenAIUsageAccounting):
             return config.anthropic_api_key_env
         if config.model_provider_mode == "local_openai":
             return "local_openai_api_key"
+        if config.model_provider_mode == "openrouter":
+            return config.openrouter_api_key_env
         return config.openai_api_key_env
 
     @classmethod
@@ -1684,6 +1932,8 @@ class OpenAIRelay(OpenAIUsageAccounting):
             return config.azure_openai_endpoint or ""
         if config.model_provider_mode == "local_openai":
             return config.local_openai_api_base_url
+        if config.model_provider_mode == "openrouter":
+            return config.openrouter_api_base_url
         return config.openai_api_base_url
 
     @staticmethod
@@ -2170,6 +2420,17 @@ def _tools_declare_image_generation(tools: Any) -> bool:
     if isinstance(tools, dict):
         return _tool_declares_image_generation(tools)
     return False
+
+
+def _tools_declare_openrouter_server_tool(tools: Any) -> bool:
+    if isinstance(tools, list):
+        return any(_tools_declare_openrouter_server_tool(tool) for tool in tools)
+    if not isinstance(tools, dict):
+        return False
+    raw_type = str(tools.get("type") or "").strip().casefold()
+    if raw_type.startswith("openrouter:"):
+        return True
+    return _tools_declare_openrouter_server_tool(tools.get("tools"))
 
 
 def _tool_declares_image_generation(tool: Any) -> bool:

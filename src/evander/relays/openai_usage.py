@@ -193,6 +193,18 @@ class OpenAIUsageAccounting:
         if not self._is_model_usage_endpoint(upstream_path):
             return
 
+        if provider_name == "openrouter":
+            if request_status == "success" and (
+                response_payload.get("type") in {"error", "response.failed"}
+                or response_payload.get("status") == "failed"
+                or response_payload.get("error") is not None
+            ):
+                request_status = "failed"
+            openrouter_metadata = self._sanitized_openrouter_metadata(response_payload)
+            if openrouter_metadata:
+                response_metadata = dict(response_metadata)
+                response_metadata["openrouter"] = openrouter_metadata
+
         correlation_context = self.model_usage_store.get_active_correlation_context(
             session_id=session_id,
             agent_harness=MODEL_USAGE_AGENT_HARNESS,
@@ -253,6 +265,7 @@ class OpenAIUsageAccounting:
         for header_name in (
             "request-id",
             "x-request-id",
+            "x-generation-id",
             "openai-request-id",
             "anthropic-request-id",
         ):
@@ -262,6 +275,71 @@ class OpenAIUsageAccounting:
                 if text:
                     return text
         return cls._provider_request_id_from_payload(response_payload)
+
+    @staticmethod
+    def _sanitized_openrouter_metadata(response_payload: dict[str, Any]) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        selected_provider = response_payload.get("provider")
+        if isinstance(selected_provider, str) and selected_provider.strip():
+            metadata["selected_provider"] = selected_provider.strip()
+
+        raw_metadata = response_payload.get("openrouter_metadata")
+        if not isinstance(raw_metadata, dict):
+            return metadata
+        scalar_fields = {
+            "requested",
+            "strategy",
+            "attempt",
+            "provider",
+            "provider_name",
+            "selected_provider",
+            "region",
+            "is_byok",
+            "byok",
+            "request_id",
+            "generation_id",
+        }
+        for key in scalar_fields:
+            value = raw_metadata.get(key)
+            if isinstance(value, (str, bool, int, float)) or value is None:
+                if value is not None:
+                    metadata[key] = value
+
+        attempts = raw_metadata.get("attempts")
+        if isinstance(attempts, list):
+            safe_attempts: list[dict[str, Any]] = []
+            allowed_attempt_fields = {
+                "provider",
+                "provider_name",
+                "model",
+                "status",
+                "status_code",
+                "is_byok",
+                "byok",
+                "region",
+                "latency_ms",
+            }
+            for attempt in attempts:
+                if not isinstance(attempt, dict):
+                    continue
+                safe_attempt = {
+                    key: value
+                    for key, value in attempt.items()
+                    if key in allowed_attempt_fields
+                    and isinstance(value, (str, bool, int, float))
+                }
+                if safe_attempt:
+                    safe_attempts.append(safe_attempt)
+            if safe_attempts:
+                metadata["attempts"] = safe_attempts
+        endpoints = raw_metadata.get("endpoints")
+        if isinstance(endpoints, dict) and isinstance(endpoints.get("available"), list):
+            for endpoint in endpoints["available"]:
+                if isinstance(endpoint, dict) and endpoint.get("selected") is True:
+                    for key in ("provider", "model"):
+                        if isinstance(endpoint.get(key), str):
+                            metadata[f"selected_{key}"] = endpoint[key]
+        return metadata
 
     @staticmethod
     def _response_metadata_with_provider_request_id(
@@ -350,6 +428,10 @@ class OpenAIUsageAccounting:
             if value is not None:
                 payload[key] = value
         event_type = candidate.get("type") or event_payload.get("type")
+        for source in (candidate, event_payload):
+            for key in ("provider", "openrouter_metadata"):
+                if key in source:
+                    payload[key] = source[key]
         if event_type is not None:
             payload["type"] = event_type
         for usage in (candidate.get("usage"), event_payload.get("usage")):

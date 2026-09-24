@@ -449,7 +449,7 @@ def create_issue_vm(
             "--model-provider-mode",
             help=(
                 "Session relay mode override: openai_public, local_openai, "
-                "azure_openai, or anthropic."
+                "azure_openai, anthropic, or openrouter."
             ),
         ),
     ] = None,

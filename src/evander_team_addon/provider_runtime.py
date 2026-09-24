@@ -109,8 +109,10 @@ def _cost_guard_blocked_teams(
             max_cost = _number_or_none(getattr(team, "max_cost_usd", None))
         if max_cost is None:
             continue
-        lifetime_estimated_cost = _number_or_zero(cost.get("estimated_cost"))
-        budget_window_estimated_cost = _number_or_none(cost.get("budget_window_estimated_cost"))
+        lifetime_estimated_cost = _number_or_zero(cost.get("total_cost", cost.get("estimated_cost")))
+        budget_window_estimated_cost = _number_or_none(
+            cost.get("budget_window_total_cost", cost.get("budget_window_estimated_cost"))
+        )
         estimated_cost = (
             budget_window_estimated_cost
             if budget_window_estimated_cost is not None

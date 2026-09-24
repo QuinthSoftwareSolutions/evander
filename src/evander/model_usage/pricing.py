@@ -23,6 +23,7 @@ TOKENS_PER_MILLION = Decimal("1000000")
 
 ModelCostStatus = Literal[
     "estimated",
+    "reported",
     "pricing_unavailable",
     "usage_unavailable",
     "unsupported_provider",
@@ -93,11 +94,25 @@ class ModelCostEstimate:
     explanation: str | None = None
     cached_input_tokens: int | None = None
     cache_write_input_tokens: int | None = None
+    reported_total: Decimal | None = None
+
+    @property
+    def total(self) -> Decimal | None:
+        return self.reported_total if self.reported_total is not None else self.estimated_total
 
     def model_dump(self) -> dict[str, Any]:
         return {
             "currency": self.currency,
             "estimated_total": _decimal_to_float(self.estimated_total),
+            "reported_total": _decimal_to_float(self.reported_total),
+            "total": _decimal_to_float(self.total),
+            "cost_source": (
+                "provider_reported"
+                if self.reported_total is not None
+                else "catalog_estimate"
+                if self.estimated_total is not None
+                else None
+            ),
             "input_cost": _decimal_to_float(self.input_cost),
             "cached_input_cost": _decimal_to_float(self.cached_input_cost),
             "cache_write_cost": _decimal_to_float(self.cache_write_cost),
@@ -269,14 +284,42 @@ def estimate_model_usage_cost(
     currency: str = "usd",
 ) -> ModelCostEstimate:
     requested_currency = str(currency or "").strip().lower() or "usd"
+    provider = str(event.provider or "").strip().lower()
+    if provider == "openrouter":
+        usage = event.raw_usage_metadata.get("usage")
+        if isinstance(usage, dict) and "cost" in usage:
+            reported_cost = _optional_non_negative_decimal(usage.get("cost"))
+            if reported_cost is None:
+                return _unavailable_estimate(
+                    "pricing_unavailable",
+                    "OpenRouter reported an invalid usage.cost value.",
+                    requested_currency,
+                )
+            if requested_currency != "usd":
+                return _unavailable_estimate(
+                    "pricing_unavailable",
+                    "OpenRouter usage.cost is reported in USD.",
+                    requested_currency,
+                )
+            return ModelCostEstimate(
+                currency="usd",
+                estimated_total=None,
+                input_cost=None,
+                cached_input_cost=None,
+                cache_write_cost=None,
+                output_cost=None,
+                status="reported",
+                explanation="Provider-reported OpenRouter usage.cost; no catalog estimate used.",
+                cached_input_tokens=extract_cached_input_tokens(event),
+                cache_write_input_tokens=extract_cache_write_input_tokens(event).total,
+                reported_total=reported_cost,
+            )
     if event.normalized_usage_status != "available":
         return _unavailable_estimate(
             "usage_unavailable",
             "Model usage was recorded without token usage.",
             requested_currency,
         )
-
-    provider = str(event.provider or "").strip().lower()
     if catalog is None or not catalog.rules:
         return _unavailable_estimate(
             "pricing_unavailable",
@@ -641,6 +684,18 @@ def _unavailable_estimate(
         status=status,
         explanation=explanation,
     )
+
+
+def _optional_non_negative_decimal(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite() or number < 0:
+        return None
+    return number
 
 
 def _as_utc(value: datetime) -> datetime:

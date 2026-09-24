@@ -6766,6 +6766,37 @@ test("team add-on Org chart context menu adds subordinate agents", async (t) => 
   assert.equal(request.payload.ephemeral_policy.max_concurrent, 1);
 });
 
+test("team add-on displays reported and estimated costs without double counting", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+    costsPayload: {
+      coverage_status: "complete",
+      coverage_reasons: [],
+      team_costs: {
+        team: {
+          team_id: "team",
+          estimated_cost: 0.8,
+          reported_cost: 3.25,
+          total_cost: 4.05,
+          coverage_status: "complete",
+          events_count: 2,
+          unpriced_events_count: 0,
+          max_cost_usd: null,
+          cost_limit_reached: false,
+        },
+      },
+      project_costs: {},
+      governance_group_costs: {},
+    },
+  });
+  const page = await openBrowserPage(t, port);
+  await waitForRevision(page, 8);
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  const counter = page.locator(".cost-counter:visible", { hasText: "$4.05" }).first();
+  await counter.waitFor({ state: "visible" });
+  assert.match(await counter.innerText(), /\$3\.25\d* provider reported, \$0\.80\d* estimated/);
+});
+
 test("team add-on cost refresh ignores avatar file input drafts", async (t) => {
   let releaseCosts = () => {};
   const costsGate = new Promise((resolve) => {

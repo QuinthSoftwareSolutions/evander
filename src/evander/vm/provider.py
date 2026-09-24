@@ -1072,6 +1072,12 @@ def _libvirt_create_vm(
             manifest.model = deps.resolve_agent_model_for_session(manifest)
         except ValueError:
             manifest.model = None
+    from evander.provider_config import validate_openrouter_session
+
+    validate_openrouter_session(
+        deps.runtime.provider_config.resolve_for_directory(normalized_directory_path),
+        manifest,
+    )
     manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
     session_repository.upsert_session(manifest)
     sync_added_discord_session_cursors = getattr(deps, "sync_added_discord_session_cursors", None)

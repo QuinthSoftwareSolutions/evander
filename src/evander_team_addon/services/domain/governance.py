@@ -46,7 +46,9 @@ def _budget_window_estimated_cost(
             return None
     if _ensure_utc(payload_started_at) != _ensure_utc(started_at):
         return None
-    return _decimal_or_none(cost.get("budget_window_estimated_cost"))
+    return _decimal_or_none(
+        cost.get("budget_window_total_cost", cost.get("budget_window_estimated_cost"))
+    )
 
 
 def _governance_goals_with_generated_ids(
@@ -280,7 +282,7 @@ def _governance_cost_signals(
             (window for window in team.cost_budget_windows if window.ended_at is None),
             None,
         )
-        lifetime_estimated = _decimal_or_zero(cost.get("estimated_cost"))
+        lifetime_estimated = _decimal_or_zero(cost.get("total_cost", cost.get("estimated_cost")))
         window_estimated = (
             _budget_window_estimated_cost(
                 cost,

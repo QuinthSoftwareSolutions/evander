@@ -6601,7 +6601,7 @@ function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
       const team = state.teams[text(teamId)];
       rows.push({
         title: `${team?.name || teamId} cost cap reached`,
-        meta: `${formatUsd(cost.estimated_cost)} estimated`,
+        meta: `${formatUsd(cost.total_cost ?? cost.estimated_cost)} cost`,
         severity: "warning",
         view: "operations",
         action: "Open operations",
@@ -6613,7 +6613,7 @@ function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
       const project = state.projects[text(projectId)];
       rows.push({
         title: `${project?.name || projectId} cost cap reached`,
-        meta: `${formatUsd(cost.estimated_cost)} estimated`,
+        meta: `${formatUsd(cost.total_cost ?? cost.estimated_cost)} cost`,
         severity: "warning",
         view: "projects",
         action: "Open projects",
@@ -6630,7 +6630,7 @@ function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
       rows.push({
         title: `${group.name || groupId} portfolio cost attention`,
         meta: cost?.cost_limit_reached
-          ? `${formatUsd(cost.estimated_cost)} governed roll-up across ${memberTeamCount} member team${memberTeamCount === 1 ? "" : "s"}`
+          ? `${formatUsd(cost.total_cost ?? cost.estimated_cost)} governed roll-up across ${memberTeamCount} member team${memberTeamCount === 1 ? "" : "s"}`
           : `${(cost.member_team_cap_reached_ids || []).length} member cap${(cost.member_team_cap_reached_ids || []).length === 1 ? "" : "s"} reached`,
         severity: "warning",
         view: "governance",
@@ -6819,8 +6819,8 @@ function renderTeamCostBlockedNotice(teamId) {
   const coverageNote = coverage && coverage !== "complete" ? " Cost coverage is partial." : "";
   return `
     <div class="team-cost-blocked-notice" role="status">
-      <strong>Blocked: estimated cost cap reached</strong>
-      <span>Team wakes are suspended until this budget is reset, renewed, raised, or cleared. ${escapeHtml(formatUsd(cost.budget_window_estimated_cost ?? cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} ${escapeHtml(text(cost.cost_limit_basis) === "budget_window" ? "budget window" : "lifetime cap")}.${escapeHtml(coverageNote)}</span>
+      <strong>Blocked: cost cap reached</strong>
+      <span>Team wakes are suspended until this budget is reset, renewed, raised, or cleared. ${escapeHtml(formatUsd(cost.budget_window_total_cost ?? cost.budget_window_estimated_cost ?? cost.total_cost ?? cost.estimated_cost))} used of ${escapeHtml(capLabel)} ${escapeHtml(text(cost.cost_limit_basis) === "budget_window" ? "budget window" : "lifetime cap")}.${escapeHtml(coverageNote)}</span>
     </div>
   `;
 }
@@ -6893,7 +6893,7 @@ function renderGovernanceMemberTeams(memberTeams, cost) {
         ${memberTeams
           .map((team) => {
             const teamCost = cost?.member_team_costs?.[team.id] || teamCostForTeam(team.id);
-            const costLabel = teamCost ? ` - ${formatUsd(teamCost.estimated_cost)}` : "";
+            const costLabel = teamCost ? ` - ${formatUsd(teamCost.total_cost ?? teamCost.estimated_cost)}` : "";
             const cap = teamCost?.cost_limit_reached ? " - cap reached" : "";
             return `<li><strong>${escapeHtml(team.name)}</strong> <span>${escapeHtml(`${costLabel}${cap}`.replace(/^ - /, ""))}</span></li>`;
           })
@@ -7038,12 +7038,12 @@ function renderCostCounter(
       : "cost-counter cost-counter--warning";
   const parts = [];
   const maxCost = numberOrNull(cost.max_cost_usd);
-  const budgetWindowCost = numberOrNull(cost.budget_window_estimated_cost);
-  const displayedCost = budgetWindowCost ?? numberOrNull(cost.estimated_cost) ?? 0;
+  const budgetWindowCost = numberOrNull(cost.budget_window_total_cost ?? cost.budget_window_estimated_cost);
+  const displayedCost = budgetWindowCost === null ? (numberOrNull(cost.total_cost ?? cost.estimated_cost) ?? 0) : budgetWindowCost;
   if (maxCost !== null) {
     parts.push(
       limitReached
-        ? `estimated limit reached ${formatUsd(maxCost)}`
+        ? `limit reached ${formatUsd(maxCost)}`
         : `${formatUsd(cost.remaining_cost_usd)} remaining`,
     );
   }
@@ -7051,7 +7051,10 @@ function renderCostCounter(
     parts.push(`${formatCount(events)} event${events === 1 ? "" : "s"}`);
   }
   if (budgetWindowCost !== null && numberOrNull(cost.estimated_cost) !== null) {
-    parts.push(`lifetime ${formatUsd(cost.estimated_cost)}`);
+    parts.push(`lifetime ${formatUsd(cost.total_cost ?? cost.estimated_cost)}`);
+  }
+  if ((numberOrNull(cost.reported_cost) ?? 0) > 0) {
+    parts.push(`${formatUsd(cost.reported_cost)} provider reported, ${formatUsd(cost.estimated_cost)} estimated (lifetime)`);
   }
   if (unpriced) {
     parts.push(`${formatCount(unpriced)} unpriced`);

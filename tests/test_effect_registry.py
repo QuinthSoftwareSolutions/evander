@@ -4176,16 +4176,21 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
     assert "--model gpt-5.4" not in command
 
 
-def test_agent_create_container_infers_claude_provider_for_anthropic_config(
+@pytest.mark.parametrize(
+    "provider_mode,agent_provider", [("anthropic", None), ("openrouter", "claude")]
+)
+def test_agent_create_container_uses_implicit_claude_routing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    provider_mode: str,
+    agent_provider: str | None,
 ) -> None:
     config = GatewayConfig(
         runtime_dir=tmp_path,
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
-        model_provider_mode="anthropic",
+        model_provider_mode=provider_mode,
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     admin_service = SimpleNamespace(
@@ -4211,6 +4216,7 @@ def test_agent_create_container_infers_claude_provider_for_anthropic_config(
             type="effect:agent:create",
             execution_backend="container_worker_vm",
             session_id="claude-session",
+            agent_provider=agent_provider,
         )
     ).execute()
 

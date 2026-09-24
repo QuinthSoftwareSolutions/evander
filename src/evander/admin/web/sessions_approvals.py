@@ -581,6 +581,7 @@ def _model_provider_mode_options() -> list[dict[str, str]]:
         {"value": "local_openai", "label": "Local OpenAI"},
         {"value": "azure_openai", "label": "Azure OpenAI"},
         {"value": "anthropic", "label": "Anthropic"},
+        {"value": "openrouter", "label": "OpenRouter"},
     ]
 
 
