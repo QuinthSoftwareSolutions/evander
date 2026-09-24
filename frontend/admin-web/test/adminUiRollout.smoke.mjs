@@ -122,8 +122,8 @@ test("UI switching preserves the route, warns before leaving drafts, remembers t
   assert.equal((await context.cookies()).find(cookie => cookie.name === "admin_ui_version").value, "new");
   page.off("dialog", veto);
   await page.evaluate(() => window.removeEventListener("beforeunload", window.testUnsavedGuard));
-  await page.getByRole("button", { name: "← Skills", exact: true }).click();
-  await page.getByRole("button", { name: "View skill", exact: true }).waitFor();
+  await page.evaluate(() => { location.hash = "#skills"; });
+  await page.getByRole("heading", { name: "Select a skill to view details", exact: true }).waitFor();
 
   const other = await context.newPage();
   await other.goto(`${url}/#skills`);

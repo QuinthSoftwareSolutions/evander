@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 import type { AdminAddonState, AdminAddonStatus } from "../admin/types";
 
@@ -52,6 +52,7 @@ export function AddonsPage() {
   const [state, setState] = useState<AdminAddonState | null>(null);
   const [draftEnabledIds, setDraftEnabledIds] = useState<string[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(() => readAdminHashQuery().get("addon"));
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [runtimePackRefreshing, setRuntimePackRefreshing] = useState(false);
@@ -66,7 +67,7 @@ export function AddonsPage() {
     }
     setSelectedKey((current) => {
       if (current && payload.addons.some((addon) => addon.candidate_key === current)) return current;
-      return payload.addons[0]?.candidate_key ?? null;
+      return null;
     });
   }
 
@@ -78,7 +79,7 @@ export function AddonsPage() {
         if (cancelled) return;
         setState(payload);
         setDraftEnabledIds(payload.explicit_enabled_addon_ids);
-        setSelectedKey((current) => payload.addons.some((addon) => addon.candidate_key === current) ? current : payload.addons[0]?.candidate_key ?? null);
+        setSelectedKey((current) => payload.addons.some((addon) => addon.candidate_key === current) ? current : null);
         setError(null);
       } catch (reason: unknown) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
@@ -95,7 +96,7 @@ export function AddonsPage() {
   const draftEnabledSet = useMemo(() => new Set(draftEnabledIds), [draftEnabledIds]);
   const dirty = Boolean(state && !sameIds(draftEnabledIds, state.explicit_enabled_addon_ids));
   const selectedAddon = useMemo(
-    () => state?.addons.find((addon) => addon.candidate_key === selectedKey) ?? state?.addons[0] ?? null,
+    () => state?.addons.find((addon) => addon.candidate_key === selectedKey) ?? null,
     [selectedKey, state],
   );
   const draftRestartServices = useMemo(() => {
@@ -182,66 +183,19 @@ export function AddonsPage() {
     }
   }
 
+  const visibleItems = (state?.addons ?? []).filter((item) =>
+    [item.display_name, item.addon_id, item.source].join(" ").toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
+
   return (
     <RecordWorkspace
-      recordLabel="add-on"
-      title="Add-ons"
-      description="Compare installed extensions, their capabilities, and runtime state. Manage add-ons on the add-on page."
-      columns={["Add-on", "State", "Capabilities"]}
       records={(state?.addons ?? []).map((addon) => ({
         id: addon.candidate_key,
-        title: addon.display_name,
-        description: addon.addon_id ?? addon.source,
         href: `#addons?${new URLSearchParams({ addon: addon.candidate_key })}`,
-        cells: [
-          {
-            value: statusLabel(addon, addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false),
-            content: (
-              <span className={`status-pill ${statusClass(addon, addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false)}`}>
-                {statusLabel(addon, addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false)}
-              </span>
-            ),
-          },
-          { value: capabilityLabels(addon).join(", ") },
-        ],
-        facts: [
-          ["ID", addon.addon_id],
-          ["Source", addon.source],
-          ["Source type", addon.source_type],
-          ["Loaded", addon.loaded ? "Yes" : "No"],
-          ["Capabilities", capabilityLabels(addon).join(", ")],
-        ],
       }))}
       selectedId={selectedKey}
       onSelect={setSelectedKey}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("addon"))}
       recordRouteKeys="addon"
-      actions={(openRecord) => (
-        <>
-          <button
-            type="button"
-            disabled={loading || saving}
-            onClick={() => void refreshAddons({ preserveDraft: dirty })}
-          >
-            Refresh
-          </button>
-          <button type="button" onClick={openRecord}>
-            Manage add-ons{dirty ? " · Unsaved" : ""}
-          </button>
-        </>
-      )}
-      inspectorContent={
-        <>
-          {selectedAddon?.load_error ? <p className="callout error-callout">{selectedAddon.load_error}</p> : null}
-          {dirty || state?.restart_required ? (
-            <p className="callout warning-callout">
-              {dirty ? "Enablement has unsaved changes." : "A service restart is required to apply enablement changes."}
-            </p>
-          ) : null}
-        </>
-      }
     >
       <div className="feature-page addons-page">
         <section className="feature-sidebar">
@@ -260,8 +214,12 @@ export function AddonsPage() {
               </button>
             </div>
           </div>
+          <label className="field-stack">
+            <span>Find add-ons</span>
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
+          </label>
           <div className="feature-list addon-list">
-            {state?.addons.map((addon) => {
+            {visibleItems.map((addon) => {
               const draftEnabled = addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false;
               return (
                 <button
@@ -280,7 +238,7 @@ export function AddonsPage() {
                 </button>
               );
             })}
-            {!loading && state?.addons.length === 0 ? (
+            {!loading && visibleItems.length === 0 ? (
               <div className="empty-state">No configured add-ons found.</div>
             ) : null}
           </div>
@@ -346,6 +304,7 @@ export function AddonsPage() {
             </div>
           ) : null}
 
+          {!selectedAddon ? <RecordPlaceholder>Select an add-on to view details</RecordPlaceholder> : null}
           <div className="detail-grid addons-detail-grid">
             <article className="panel">
               <div className="panel-header">

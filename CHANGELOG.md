@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-24 - Open Admin Web details directly (0.62.4)
+
+- Open Agents, Sessions, and the other record management pages directly in their
+  sidebar and detail layout, with a selection prompt until an item is chosen.
+- Open complete details with one sidebar click; preserve filters, shareable links,
+  creation actions, and unsaved-change confirmation without an intermediate preview.
+- Keep upload, registration, and directory configuration forms available in compact
+  disclosures. Existing inspector links open details directly in the New UI.
+
 ## 2026-09-24 - Stable Team copy previews (0.62.3)
 
 - Keep Team copy previews valid while tasks, inbox items, dispatches, runtime state, cost history,

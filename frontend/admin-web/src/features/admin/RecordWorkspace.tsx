@@ -1,81 +1,27 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { RecordInspector } from "./RecordInspector";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { readAdminHashQuery } from "./hash";
-import { SortableTableHeader, useTableSort } from "./SortableTableHeader";
-import type { TableSortValue } from "./tableSorting";
 
-export type WorkspaceRecord = {
-  id: string;
-  title: string;
-  description?: ReactNode;
-  cells: Array<{ value: TableSortValue; content?: ReactNode }>;
-  facts: Array<[string, ReactNode]>;
-  href?: string;
-};
+type WorkspaceRecord = { id: string; href: string };
 
-/** Shared collection/inspection/full-record navigation. Both work surfaces retain their state. */
-export function RecordWorkspace({
-  title,
-  recordLabel,
-  description,
-  columns,
-  records,
-  selectedId,
-  onSelect,
-  filters,
-  actions,
-  loading,
-  error,
-  initialRecordOpen = false,
-  recordRouteKeys = "",
-  inspectorContent,
-  children,
-}: {
-  title: string;
-  recordLabel: string;
-  description: string;
-  columns: string[];
+/** Keep the sidebar selection shareable without an intermediate inventory or inspector. */
+export function RecordWorkspace({ records, selectedId, onSelect, recordRouteKeys, allowUnlistedSelection = false, children }: {
   records: WorkspaceRecord[];
   selectedId?: string | null;
   onSelect: (id: string) => void | boolean;
-  filters?: ReactNode;
-  actions?: (openRecord: () => void) => ReactNode;
-  loading?: boolean;
-  error?: string | null;
-  initialRecordOpen?: boolean;
-  recordRouteKeys?: string;
-  inspectorContent?: ReactNode;
+  recordRouteKeys: string;
+  allowUnlistedSelection?: boolean;
   children: ReactNode;
 }) {
-  const [recordOpen, setRecordOpen] = useState(initialRecordOpen && readAdminHashQuery().get("inspect") !== "1");
-  const [inspectOpen, setInspectOpen] = useState(readAdminHashQuery().get("inspect") === "1");
   const [routeHash, setRouteHash] = useState(() => window.location.hash);
-  const backRef = useRef<HTMLButtonElement>(null);
-  const selectionTriggerRef = useRef<HTMLElement | null>(null);
-  const appliedRouteRef = useRef("");
+  const appliedRouteRef = useRef<string | null>(null);
   const previousSelectedIdRef = useRef(selectedId);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
-  const [search, setSearch] = useState("");
-  const selected = records.find((record) => record.id === selectedId);
-  const visibleRecords =
-    !filters && search.trim()
-      ? records.filter((record) =>
-          [record.title, record.id, ...record.facts.map(([, value]) => (typeof value === "string" ? value : ""))]
-            .join(" ")
-            .toLocaleLowerCase()
-            .includes(search.trim().toLocaleLowerCase()),
-        )
-      : records;
-  const { sortedRows, sort, toggleSort } = useTableSort(visibleRecords, (record, column) => {
-    const index = columns.indexOf(column);
-    return index === 0 ? record.title : record.cells[index - 1]?.value;
-  });
 
-  const replaceHash = useCallback((hash: string) => {
-    window.history.replaceState(null, "", hash);
-    appliedRouteRef.current = window.location.hash;
-    setRouteHash(window.location.hash);
+  useEffect(() => {
+    const followHash = () => setRouteHash(window.location.hash);
+    window.addEventListener("hashchange", followHash);
+    return () => window.removeEventListener("hashchange", followHash);
   }, []);
 
   useEffect(() => {
@@ -83,164 +29,59 @@ export function RecordWorkspace({
     previousSelectedIdRef.current = selectedId;
     const hash = window.location.hash;
     const query = readAdminHashQuery(hash);
-    const routeKeys = recordRouteKeys.split(",").filter((key) => key && query.has(key));
-    const record = records.find(
-      (candidate) =>
-        candidate.href && routeKeys.some((key) => readAdminHashQuery(candidate.href).get(key) === query.get(key)),
+    const keys = recordRouteKeys.split(",");
+    const routeKeys = keys.filter((key) => query.has(key));
+    const selected = records.find((record) => record.id === selectedId);
+    const routed = records.find((record) =>
+      routeKeys.some((key) => readAdminHashQuery(record.href).get(key) === query.get(key)),
     );
+    const selectionHash = () => {
+      for (const key of keys) query.delete(key);
+      query.delete("inspect");
+      if (selected) {
+        for (const [key, value] of readAdminHashQuery(selected.href)) query.set(key, value);
+      }
+      return `${hash.split("?")[0]}${query.size ? `?${query}` : ""}`;
+    };
+    const replaceHash = (nextHash: string) => {
+      window.history.replaceState(null, "", nextHash);
+      appliedRouteRef.current = window.location.hash;
+      setRouteHash(window.location.hash);
+    };
+
     if (appliedRouteRef.current !== hash) {
-      // Wait for routed records to load before allowing selection to update the URL.
-      if (routeKeys.length && !record) return;
+      // Single-key routes can load details even when a record is outside the current list.
+      // Composite selections (such as agent/session aliases) need the list to resolve an ID.
+      const routeId = routed?.id ?? (allowUnlistedSelection && keys.length === 1 ? query.get(keys[0]) : null);
+      if (routeKeys.length && !routeId && !records.length) return;
       appliedRouteRef.current = hash;
-      if (record && record.id !== selectedId) {
-        onSelectRef.current(record.id);
+      const nextId = routeId ?? (routeKeys.length ? selectedId : "");
+      if (nextId !== selectedId && (nextId || selectedId)) {
+        if (onSelectRef.current(nextId ?? "") === false) replaceHash(selectionHash());
         return;
       }
+    } else if (selectionChanged && (selected || !selectedId)) {
+      replaceHash(selectionHash());
     }
-    if (recordOpen && selectionChanged && selected?.href && record?.id !== selectedId) {
-      replaceHash(selected.href);
+    // Old inspector links now open the same detail view directly.
+    if (query.has("inspect")) {
+      query.delete("inspect");
+      replaceHash(`${hash.split("?")[0]}${query.size ? `?${query}` : ""}`);
     }
-  }, [records, recordRouteKeys, selectedId, selected?.href, recordOpen, routeHash, replaceHash]);
-
-  useEffect(() => {
-    const followHash = () => {
-      setRouteHash(window.location.hash);
-      const query = readAdminHashQuery();
-      if (recordRouteKeys.split(",").some((key) => key && query.has(key))) {
-        setRecordOpen(query.get("inspect") !== "1");
-        setInspectOpen(query.get("inspect") === "1");
-      }
-    };
-    window.addEventListener("hashchange", followHash);
-    return () => window.removeEventListener("hashchange", followHash);
-  }, [recordRouteKeys]);
-
-  function openRecord() {
-    setRecordOpen(true);
-    if (selected?.href) replaceHash(selected.href);
-    window.requestAnimationFrame(() => backRef.current?.focus());
-  }
-
-  function openWorkspace() {
-    const query = readAdminHashQuery();
-    for (const key of recordRouteKeys.split(",")) query.delete(key);
-    query.delete("inspect");
-    replaceHash(`${window.location.hash.split("?")[0]}${query.size ? `?${query}` : ""}`);
-    setRecordOpen(true);
-    window.requestAnimationFrame(() => backRef.current?.focus());
-  }
+  }, [records, recordRouteKeys, selectedId, routeHash, allowUnlistedSelection]);
 
   return (
     <div className="record-workspace">
-      <section className="collection-page" hidden={recordOpen} aria-label={`${title} list`}>
-        <header className="collection-heading">
-          <div>
-            <h1>{title}</h1>
-            <p>{description}</p>
-          </div>
-          <div className="inline-actions">{actions?.(openWorkspace)}</div>
-        </header>
-        <div className="collection-toolbar">
-          {filters ?? (
-            <label className="field-stack collection-search">
-              <span>Search {title.toLowerCase()}</span>
-              <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
-            </label>
-          )}
-          <span className="panel-meta" role="status">
-            {loading && !records.length ? "Loading…" : `${visibleRecords.length} ${visibleRecords.length === 1 ? recordLabel : title.toLocaleLowerCase()}`}
-          </span>
-        </div>
-        {error && !recordOpen ? (
-          <p className="callout error-callout" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <div className={`collection-workspace${inspectOpen && selected ? " has-inspector" : ""}`}>
-          <div className="collection-scroll">
-            <table className="collection-table">
-              <caption className="sr-only">{title}</caption>
-              <thead>
-                <tr>
-                  {columns.map((column) => (
-                    <SortableTableHeader key={column} column={column} sort={sort} onSort={toggleSort} />
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sortedRows.map((record) => (
-                  <tr key={record.id} data-selected={inspectOpen && record.id === selectedId}>
-                    <td>
-                      <button
-                        type="button"
-                        className="record-name"
-                        onClick={(event) => {
-                          if (onSelect(record.id) === false) return;
-                          selectionTriggerRef.current = event.currentTarget;
-                          setInspectOpen(true);
-                          if (record.href)
-                            replaceHash(`${record.href}${record.href.includes("?") ? "&" : "?"}inspect=1`);
-                        }}
-                      >
-                        {record.title}
-                      </button>
-                      {record.description ? <small>{record.description}</small> : null}
-                    </td>
-                    {record.cells.map((cell, index) => (
-                      <td key={index}>{cell.content === undefined ? cell.value : cell.content}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!visibleRecords.length && !loading ? <div className="empty-state">No {title.toLocaleLowerCase()} match these filters.</div> : null}
-          </div>
-          {inspectOpen && selected && !recordOpen ? (
-            <RecordInspector
-              key={selected.id}
-              title={selected.title}
-              subtitle={selected.description}
-              returnFocus={() => selectionTriggerRef.current}
-              onClose={() => {
-                setInspectOpen(false);
-                const query = readAdminHashQuery();
-                for (const key of recordRouteKeys.split(",")) query.delete(key);
-                query.delete("inspect");
-                replaceHash(`${window.location.hash.split("?")[0]}${query.size ? `?${query}` : ""}`);
-              }}
-              onOpenRecord={openRecord}
-              openRecordLabel={`View ${recordLabel}`}
-            >
-              <dl className="property-grid">
-                {selected.facts.map(([label, value]) => (
-                  <div key={label}>
-                    <dt>{label}</dt>
-                    <dd>{value ?? "Unavailable"}</dd>
-                  </div>
-                ))}
-              </dl>
-              {inspectorContent}
-            </RecordInspector>
-          ) : null}
-        </div>
-      </section>
-      <div hidden={!recordOpen} className="workspace-full-record">
-        <div className="workspace-record-navigation">
-          <button
-            ref={backRef}
-            type="button"
-            onClick={() => {
-              setRecordOpen(false);
-              setInspectOpen(true);
-              if (selected?.href)
-                replaceHash(`${selected.href}${selected.href.includes("?") ? "&" : "?"}inspect=1`);
-            }}
-          >
-            ← {title}
-          </button>
-        </div>
-        {children}
-      </div>
+      <div className="workspace-full-record">{children}</div>
     </div>
+  );
+}
+
+export function RecordPlaceholder({ children }: { children: ReactNode }) {
+  return (
+    <article className="record-placeholder">
+      <h2>{children}</h2>
+      <p>Choose an item from the list to get started.</p>
+    </article>
   );
 }

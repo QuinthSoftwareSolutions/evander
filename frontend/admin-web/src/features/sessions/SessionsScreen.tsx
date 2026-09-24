@@ -1,14 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { JsonObjectKeyValueEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
 import { CleanupIcon, DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
-import { readAdminHashQuery } from "../admin/hash";
-import { RecordInspector } from "../admin/RecordInspector";
-import { SortableTableHeader, useTableSort } from "../admin/SortableTableHeader";
-import { timestampSortValue } from "../admin/tableSorting";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import type {
   AgentCreateCommunicationTargetOption,
   AgentCreateEmailMailboxOption,
@@ -786,18 +783,6 @@ function formatWakeCompletionEvidence(evidence: Record<string, unknown> | undefi
     .join(" • ");
 }
 
-function pickSessionIdForTab(response: SessionListResponse, tab: TabKey, preferredSessionId?: string): string {
-  const tabItems = sessionItemsForTab(response, tab);
-  if (preferredSessionId && tabItems.some((item) => item.session_id === preferredSessionId)) {
-    return preferredSessionId;
-  }
-  return tabItems[0]?.session_id ?? "";
-}
-
-function sessionIdFromHash(): string {
-  return readAdminHashQuery().get("session_id")?.trim() ?? "";
-}
-
 function tabForSessionId(response: SessionListResponse | null, sessionId: string): TabKey | null {
   if (!response || !sessionId) return null;
   if (response.status_ids.active.includes(sessionId)) {
@@ -813,10 +798,6 @@ export function SessionsScreen() {
   const { privilegedUnlocked, selectedDirectoryPath, setSelectedDirectoryPath } = useAdminUi();
   const [response, setResponse] = useState<SessionListResponse | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState("");
-  const [deepLinkSessionId, setDeepLinkSessionId] = useState(() => sessionIdFromHash());
-  const [recordView, setRecordView] = useState(() => Boolean(sessionIdFromHash()) && readAdminHashQuery().get("inspect") !== "1");
-  const [inspectorOpen, setInspectorOpen] = useState(() => readAdminHashQuery().get("inspect") === "1");
-  const inspectorTriggerRef = useRef<HTMLElement | null>(null);
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [catalog, setCatalog] = useState<SessionCatalogResponse | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("active");
@@ -886,25 +867,6 @@ export function SessionsScreen() {
   const [gitGrantAccessMode, setGitGrantAccessMode] = useState<"read-only" | "write">("read-only");
   const [gitRepositories, setGitRepositories] = useState<ManagedGitRepository[]>([]);
 
-  useEffect(() => {
-    const syncDeepLink = () => {
-      const nextSessionId = sessionIdFromHash();
-      setDeepLinkSessionId(nextSessionId);
-      setRecordView(Boolean(nextSessionId) && readAdminHashQuery().get("inspect") !== "1");
-      setInspectorOpen(Boolean(nextSessionId) && readAdminHashQuery().get("inspect") === "1");
-      if (nextSessionId) {
-        setSelectedSessionId(nextSessionId);
-        setSessionFilter(nextSessionId);
-      }
-    };
-
-    syncDeepLink();
-    window.addEventListener("hashchange", syncDeepLink);
-    return () => {
-      window.removeEventListener("hashchange", syncDeepLink);
-    };
-  }, []);
-
   async function refreshSessions(): Promise<SessionListResponse> {
     const query = new URLSearchParams({
       include_expired: "true",
@@ -913,27 +875,6 @@ export function SessionsScreen() {
     });
     const payload = await fetchJson<SessionListResponse>(`/api/admin/sessions?${query.toString()}`);
     setResponse(payload);
-    const targetTab = tabForSessionId(payload, deepLinkSessionId);
-    if (targetTab) {
-      setActiveTab((current) => (current === targetTab ? current : targetTab));
-      setSelectedSessionId(deepLinkSessionId);
-      setSessionFilter(deepLinkSessionId);
-    }
-    setSelectedSessionId((current) => {
-      if (deepLinkSessionId) {
-        return payload.items.some((item) => item.session_id === deepLinkSessionId) ? deepLinkSessionId : current;
-      }
-      if (current && payload.items.some((item) => item.session_id === current)) {
-        return current;
-      }
-      const nextSelected = pickSessionIdForTab(payload, activeTab, current);
-      if (nextSelected) {
-        return nextSelected;
-      }
-      return sessionItemsForTab(payload, "active")[0]?.session_id
-        ?? sessionItemsForTab(payload, "expired")[0]?.session_id
-        ?? "";
-    });
     return payload;
   }
 
@@ -960,18 +901,7 @@ export function SessionsScreen() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeTab, deepLinkSessionId, selectedDirectoryPath]);
-
-  useEffect(() => {
-    if (deepLinkSessionId) {
-      return;
-    }
-    const nextItems = sessionItemsForTab(response, activeTab);
-    if (selectedSessionId && nextItems.some((item) => item.session_id === selectedSessionId)) {
-      return;
-    }
-    setSelectedSessionId(nextItems[0]?.session_id ?? "");
-  }, [activeTab, deepLinkSessionId, response, selectedSessionId]);
+  }, [selectedDirectoryPath]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setWakeVisibilityNowMs(Date.now()), 60_000);
@@ -1132,28 +1062,10 @@ export function SessionsScreen() {
       .sort((left, right) => sessionListCollator.compare(left.session_id, right.session_id));
   }, [activeTab, response, sessionFilter]);
 
-  const { sortedRows: sortedInventoryItems, sort: inventorySort, toggleSort: toggleInventorySort } = useTableSort(
-    visibleItems,
-    (item, column) => {
-      switch (column) {
-        case "Session": return item.session_id;
-        case "State": return lifecycleLabel(item);
-        case "Model": return item.model;
-        case "Expires": return timestampSortValue(item.expires_at);
-        default: return null;
-      }
-    },
-  );
-
+  const selectedSessionTab = tabForSessionId(response, selectedSessionId);
   useEffect(() => {
-    if (!response) {
-      return;
-    }
-    if (selectedSessionId && visibleItems.some((item) => item.session_id === selectedSessionId)) {
-      return;
-    }
-    setSelectedSessionId(visibleItems[0]?.session_id ?? "");
-  }, [response, selectedSessionId, visibleItems]);
+    if (selectedSessionTab) setActiveTab(selectedSessionTab);
+  }, [selectedSessionId, selectedSessionTab]);
 
   const selectedSession = useMemo(() => {
     const listItem = response?.items.find((item) => item.session_id === selectedSessionId) ?? null;
@@ -1393,10 +1305,11 @@ export function SessionsScreen() {
         setShowRenewModal(false);
       }
       const refreshedSessions = await refreshSessions();
-      const nextSelectedSessionId = action === "delete"
-        ? pickSessionIdForTab(refreshedSessions, activeTab)
-        : pickSessionIdForTab(refreshedSessions, activeTab, selectedSession.session_id);
+      const nextSelectedSessionId = action !== "delete" && refreshedSessions.items.some(
+        (item) => item.session_id === selectedSession.session_id,
+      ) ? selectedSession.session_id : "";
       if (action === "delete") {
+        setSelectedSessionId("");
         if (!nextSelectedSessionId) {
           setDetail(null);
           setDetailError(null);
@@ -1877,199 +1790,32 @@ export function SessionsScreen() {
     }
   }
 
-  function inspectSession(sessionId: string, trigger: HTMLElement) {
+  function selectSession(sessionId: string) {
     if (sessionId !== selectedSessionId && (modelDirty || toolsDirty || policyDirty)
-      && !window.confirm("Discard unsaved session changes and select another session?")) return;
-    setDeepLinkSessionId("");
-    inspectorTriggerRef.current = trigger;
+      && !window.confirm("Discard unsaved session changes and select another session?")) return false;
+    if (sessionId !== selectedSessionId) {
+      setModelDirty(false);
+      setToolsDirty(false);
+      setPolicyDirty(false);
+    }
     setSelectedSessionId(sessionId);
-    setInspectorOpen(true);
-    window.history.replaceState(null, "", `#sessions?${new URLSearchParams({ session_id: sessionId, inspect: "1" })}`);
-  }
-
-  function openFullRecord() {
-    setRecordView(true);
-    window.history.replaceState(null, "", `#sessions?${new URLSearchParams({ session_id: selectedSessionId })}`);
-    window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".session-record .record-back")?.focus());
-  }
-
-  function closeInspector() {
-    setInspectorOpen(false);
-    window.history.replaceState(null, "", "#sessions");
+    const tab = tabForSessionId(response, sessionId);
+    if (tab) setActiveTab(tab);
   }
 
   return (
-    <>
-      <section className="collection-page sessions-inventory" hidden={recordView} aria-label="Sessions list">
-        <header className="collection-heading">
-          <div>
-            <h1>Sessions</h1>
-            <p>Compare lifecycle, model, and expiry. Inspect a session to see its access and recent signals.</p>
-          </div>
-        </header>
-        <div className="collection-toolbar">
-          <label className="field-stack collection-search">
-            <span>Find session</span>
-            <input
-              value={sessionFilter}
-              onChange={(event) => setSessionFilter(event.target.value)}
-              placeholder="session, VM, issue, model"
-            />
-          </label>
-          <label className="field-stack">
-            <span>State</span>
-            <select value={activeTab} onChange={(event) => setActiveTab(event.target.value as TabKey)}>
-              <option value="active">Active ({response?.counts.active ?? 0})</option>
-              <option value="expired">Expired ({response?.counts.expired ?? 0})</option>
-            </select>
-          </label>
-          <span className="panel-meta" role="status">
-            {response ? `${visibleItems.length} ${visibleItems.length === 1 ? "session" : "sessions"}` : "Loading sessions…"}
-          </span>
-        </div>
-        {error && !recordView ? (
-          <div className="callout error-callout" role="alert">
-            {error}
-          </div>
-        ) : null}
-        <div className={`collection-workspace${inspectorOpen && selectedSession ? " has-inspector" : ""}`}>
-          <div className="collection-scroll">
-            <table className="collection-table">
-              <caption className="sr-only">Sessions</caption>
-              <thead>
-                <tr>
-                  {["Session", "State", "Model", "Expires"].map(column => (
-                    <SortableTableHeader key={column} column={column} sort={inventorySort} onSort={toggleInventorySort} />
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sortedInventoryItems.map((item) => (
-                  <tr key={item.session_id} data-selected={inspectorOpen && item.session_id === selectedSessionId}>
-                    <td>
-                      <button
-                        type="button"
-                        className="record-name"
-                        onClick={(event) => inspectSession(item.session_id, event.currentTarget)}
-                      >
-                        {item.session_id}
-                      </button>
-                      <small>
-                        {item.vm_id ?? "No VM"}
-                        {item.issue_number ? ` · Issue ${item.issue_number}` : ""}
-                      </small>
-                    </td>
-                    <td>
-                      <span className={`status-pill state-${lifecycleClass(item)}`}>{lifecycleLabel(item)}</span>
-                    </td>
-                    <td>{item.model ?? "Unset"}</td>
-                    <td className="record-time">{formatTimestamp(item.expires_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {response && !visibleItems.length ? (
-              <div className="empty-state">No sessions matched the current view.</div>
-            ) : null}
-          </div>
-          {inspectorOpen && selectedSession && !recordView ? (
-            <RecordInspector
-              key={selectedSessionId}
-              title={selectedSession.session_id}
-              subtitle={
-                <span className={`status-pill state-${lifecycleClass(selectedSession)}`}>
-                  {lifecycleLabel(selectedSession)}
-                </span>
-              }
-              returnFocus={() => inspectorTriggerRef.current}
-              onClose={closeInspector}
-              onOpenRecord={openFullRecord}
-              openRecordLabel="View session"
-            >
-              <h3>Overview</h3>
-              <dl className="property-grid">
-                <div>
-                  <dt>Directory</dt>
-                  <dd>{selectedSession.directory_path}</dd>
-                </div>
-                <div>
-                  <dt>Model</dt>
-                  <dd>{selectedSession.model ?? "Unset"}</dd>
-                </div>
-                <div>
-                  <dt>VM</dt>
-                  <dd>{selectedSession.vm_id ?? "None"}</dd>
-                </div>
-                <div>
-                  <dt>Issue</dt>
-                  <dd>{selectedSession.issue_number ?? "None"}</dd>
-                </div>
-                <div>
-                  <dt>Created</dt>
-                  <dd>{formatTimestamp(selectedSession.created_at)}</dd>
-                </div>
-                <div>
-                  <dt>Expires</dt>
-                  <dd>{formatTimestamp(selectedSession.expires_at)}</dd>
-                </div>
-                {selectedSession.container_lifecycle?.last_signal_at ? (
-                  <div>
-                    <dt>Last signal</dt>
-                    <dd>{formatTimestamp(selectedSession.container_lifecycle.last_signal_at)}</dd>
-                  </div>
-                ) : null}
-              </dl>
-              {detailLoading ? (
-                <p role="status">Loading access and schedules…</p>
-              ) : detailError ? (
-                <p className="callout error-callout" role="alert">
-                  {detailError}
-                </p>
-              ) : detail?.session.session_id === selectedSessionId ? (
-                <>
-                  <h3>Access and scheduling</h3>
-                  <dl className="property-grid">
-                    <div>
-                      <dt>Repositories</dt>
-                      <dd>{detail.git_grants?.length ?? 0} grants</dd>
-                    </div>
-                    <div>
-                      <dt>Wake schedules</dt>
-                      <dd>{detail.wake_schedules.length} configured</dd>
-                    </div>
-                  </dl>
-                </>
-              ) : null}
-              {modelDirty || toolsDirty || policyDirty ? (
-                <p className="callout warning-callout">
-                  This session has unsaved changes. View the session to continue editing.
-                </p>
-              ) : null}
-              <p className="muted-text">
-                View the session for access settings, lifecycle actions, and wake history.
-              </p>
-            </RecordInspector>
-          ) : null}
-        </div>
-      </section>
-      <div className="feature-page sessions-page session-record" hidden={!recordView}>
+    <RecordWorkspace
+      records={(response?.items ?? []).map((item) => ({
+        id: item.session_id,
+        href: `#sessions?${new URLSearchParams({ session_id: item.session_id })}`,
+      }))}
+      selectedId={selectedSessionId}
+      onSelect={selectSession}
+      recordRouteKeys="session_id"
+      allowUnlistedSelection
+    >
+      <div className="feature-page sessions-page session-record">
         <section className="feature-sidebar">
-          <button
-            className="record-back"
-            type="button"
-            onClick={() => {
-              setRecordView(false);
-              setDeepLinkSessionId("");
-              window.history.replaceState(
-                null,
-                "",
-                `#sessions?${new URLSearchParams({ session_id: selectedSessionId, inspect: "1" })}`,
-              );
-              setInspectorOpen(true);
-            }}
-          >
-            ← Sessions
-          </button>
           <div className="feature-sidebar-header">
             <div>
               <div className="eyebrow">Session control</div>
@@ -2104,10 +1850,7 @@ export function SessionsScreen() {
                 key={item.session_id}
                 type="button"
                 className={`feature-list-item session-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
-                onClick={() => {
-                  setDeepLinkSessionId("");
-                  setSelectedSessionId(item.session_id);
-                }}
+                onClick={() => selectSession(item.session_id)}
               >
                 <div className="feature-list-title-row session-list-item-row">
                   <Tooltip content={`Session id: ${item.session_id}`}>
@@ -2130,7 +1873,7 @@ export function SessionsScreen() {
           </div>
         </section>
         <section className="feature-content">
-          <div className="feature-toolbar">
+          <div className="feature-toolbar" hidden={!selectedSession}>
             <div>
               <h2>{selectedSession?.session_id ?? "Select a session"}</h2>
               <p className="muted-text">
@@ -3304,10 +3047,10 @@ export function SessionsScreen() {
               />
             </div>
           ) : (
-            <div className="empty-state">Select a session to inspect its details.</div>
+            <RecordPlaceholder>Select a session to view details</RecordPlaceholder>
           )}
         </section>
       </div>
-    </>
+    </RecordWorkspace>
   );
 }

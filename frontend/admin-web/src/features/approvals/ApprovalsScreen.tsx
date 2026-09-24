@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
-import { timestampSortValue } from "../admin/tableSorting";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { Tooltip } from "../admin/Tooltip";
 import { hashQueryParam } from "../../adminRouting";
 
@@ -458,7 +457,7 @@ export function ApprovalsScreen() {
       if (options.preserveSelectedId && current === options.preserveSelectedId) return current;
       if (current && next.items.some((item) => item.request_id === current)) return current;
       if (current && current === deepLinkedRequestId) return current;
-      return next.items[0]?.request_id ?? "";
+      return "";
     });
   }
 
@@ -649,120 +648,17 @@ export function ApprovalsScreen() {
 
   return (
     <RecordWorkspace
-      recordLabel="request"
-      title="Approvals"
-      description="Inspect the intended effect and evidence before deciding a request. Decisions are made on the request page."
-      columns={["Request", "Status", "Session", "Created"]}
       records={items.map((item) => ({
         id: item.request_id,
-        title: item.human_summary || item.request_id,
-        description: displayToolName(item),
         href: `#approvals?${new URLSearchParams({ request_id: item.request_id })}`,
-        cells: [
-          { value: item.status, content: <span className={`status-pill state-${item.status}`}>{item.status}</span> },
-          { value: item.session_id },
-          { value: timestampSortValue(item.created_at), content: formatTimestamp(item.created_at) },
-        ],
-        facts: [
-          ["Request", item.request_id],
-          ["Status", item.status],
-          ["Session", item.session_id],
-          ["Directory", item.directory_path],
-          ["Tool", displayToolName(item)],
-          ["Expires", formatTimestamp(item.expires_at)],
-        ],
       }))}
       selectedId={selectedId}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(initialRequestId)}
       recordRouteKeys="request_id,approval_id"
       onSelect={(id) => {
         setDeepLinkedRequestId("");
         setDeepLinkedDecision("");
         setSelectedId(id);
       }}
-      filters={
-        <>
-          <label className="field-stack">
-            <span>Status</span>
-            <select
-              value={filters.status}
-              onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
-            >
-              <option value="">All</option>
-              <option value="pending">Pending</option>
-              <option value="approved">Approved</option>
-              <option value="denied">Denied</option>
-              <option value="expired">Expired</option>
-            </select>
-          </label>
-          <label className="field-stack">
-            <Tooltip content="Filter approvals by session ID.">
-              <span>Session</span>
-            </Tooltip>
-            <input
-              value={filters.sessionId}
-              onChange={(event) => setFilters((current) => ({ ...current, sessionId: event.target.value }))}
-            />
-          </label>
-          <label className="field-stack">
-            <Tooltip content="Filter approvals by the requested tool name.">
-              <span>Tool</span>
-            </Tooltip>
-            <input
-              value={filters.toolName}
-              onChange={(event) => setFilters((current) => ({ ...current, toolName: event.target.value }))}
-            />
-          </label>
-          <details className="collection-extra-filters">
-            <summary>More filters</summary>
-            <label className="field-stack">
-              <Tooltip content="Filter approvals by VM ID.">
-                <span>VM</span>
-              </Tooltip>
-              <input
-                value={filters.vmId}
-                onChange={(event) => setFilters((current) => ({ ...current, vmId: event.target.value }))}
-              />
-            </label>
-            <label className="field-stack">
-              <Tooltip content="Show requests older than the entered number of minutes.">
-                <span>Older than (minutes)</span>
-              </Tooltip>
-              <input
-                value={filters.minAgeMinutes}
-                onChange={(event) => setFilters((current) => ({ ...current, minAgeMinutes: event.target.value }))}
-              />
-            </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={filters.directOnly}
-                onChange={(event) => setFilters((current) => ({ ...current, directOnly: event.target.checked }))}
-              />
-              <Tooltip content="Checked means only the selected directory is searched and child directories are excluded.">
-                <span>Exclude sub-directories</span>
-              </Tooltip>
-            </label>
-          </details>
-        </>
-      }
-      actions={() => (
-        <button type="button" onClick={() => void loadApprovals()}>
-          Refresh
-        </button>
-      )}
-      inspectorContent={
-        <>
-          <h3>Intended effect</h3>
-          <p>
-            {items.find((item) => item.request_id === selectedId)?.intended_effect ??
-              "Review the full request and payload before deciding."}
-          </p>
-          {mutationLocked ? <p className="muted-text">Privileged operations are locked.</p> : null}
-        </>
-      }
     >
       <div className="feature-page approvals-page">
         <section className="feature-sidebar">
@@ -1145,7 +1041,7 @@ export function ApprovalsScreen() {
                 </article>
               </div>
             ) : (
-              <div className="empty-state">Select an approval request to inspect it.</div>
+              <RecordPlaceholder>Select an approval to view details</RecordPlaceholder>
             )}
           </article>
         </section>

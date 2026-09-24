@@ -49,8 +49,12 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
       await route.fulfill({ json: data });
     });
     try {
-      await page.goto(`${url}/#skills?skill=alpha`);
+      await page.goto(`${url}/#skills`);
       const fullRecord = page.locator(".workspace-full-record");
+      await page.getByRole("heading", { name: "Select a skill to view details", exact: true }).waitFor();
+      assert.equal(await page.locator(".record-inspector, .collection-page").count(), 0);
+      await fullRecord.locator(".skill-list-item").filter({ hasText: "alpha" }).click();
+      await page.waitForURL("**/#skills?skill=alpha");
       await fullRecord.getByRole("heading", { name: "alpha", exact: true }).waitFor();
       await page.evaluate(() => { window.workspaceBeforeNavigation = document.querySelector(".record-workspace"); });
       await page.evaluate(() => { location.hash = "#skills?skill=beta"; });
@@ -62,13 +66,9 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
       await fullRecord.getByRole("heading", { name: "beta", exact: true }).waitFor();
 
       await page.evaluate(() => { location.hash = "#skills?skill=alpha&inspect=1"; });
-      await page.locator(".record-inspector").getByRole("heading", { name: "alpha", exact: true }).waitFor();
-      await page.evaluate(() => { location.hash = "#skills?skill=beta&inspect=1"; });
-      await page.locator(".record-inspector").getByRole("heading", { name: "beta", exact: true }).waitFor();
-      await page.getByRole("button", { name: "Close inspector", exact: true }).click();
-      const inventory = page.getByRole("region", { name: "Skills list", exact: true });
-      await inventory.getByRole("button", { name: "alpha", exact: true }).click();
-      await page.getByRole("button", { name: "View skill", exact: true }).click();
+      await fullRecord.getByRole("heading", { name: "alpha", exact: true }).waitFor();
+      await page.waitForURL("**/#skills?skill=alpha");
+      assert.equal(await page.locator(".record-inspector").count(), 0);
       await fullRecord.locator(".skill-list-item").filter({ hasText: "beta" }).click();
       await page.waitForURL("**/#skills?skill=beta");
       await fullRecord.getByRole("heading", { name: "beta", exact: true }).waitFor();
@@ -78,6 +78,8 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
       await page.waitForURL("**/#skills?skill=alpha");
       await page.evaluate(() => { location.hash = "#skills?skill=beta"; });
       await fullRecord.getByRole("heading", { name: "beta", exact: true }).waitFor();
+      await page.evaluate(() => { location.hash = "#skills"; });
+      await page.getByRole("heading", { name: "Select a skill to view details", exact: true }).waitFor();
       assert.deepEqual(errors, []);
     } finally {
       await page.close();

@@ -15,6 +15,21 @@ The original study and browser evidence are preserved outside the repository.
 
 ## Design and implementation
 
+### Navigation follow-up · 24 September 2026
+
+The New UI now opens record management pages directly in the sidebar/detail layout.
+Agents, Sessions, Issues, Approvals, Workers, VMs, Skills, Add-ons, Connectors,
+Host directories, Git repositories, and Users/groups start with a selection card.
+MCP Tools follows the same pattern. One sidebar click opens the complete details;
+links to specific items still open them directly, including older inspector URLs.
+Search and filters remain available beside the details. Upload, registration, and
+directory configuration use compact disclosures. Classic retains its frozen layout.
+
+The inventory/inspector descriptions and verification below document the original
+0.61.0 rollout; this follow-up replaces that intermediate step on these record pages.
+
+### Original rollout
+
 The [original direction](admin-web-direction.md) and [interactive concept](admin-web-concept.html)
 record the study. The implementation uses shared semantic colors, typography, spacing,
 controls, light/dark themes, and consistent compact spacing.

@@ -2,8 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { RepositoryIndexPanel } from "./RepositoryIndexPanel";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
-import { timestampSortValue } from "../admin/tableSorting";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 
 type ManagedGitBinding = {
@@ -159,7 +158,7 @@ export function ManagedGitRepositoriesPage({
       setSelectedRepositoryId((current) =>
         current && nextRepositories.some((repository) => repository.managed_repo_id === current)
           ? current
-          : nextRepositories[0]?.managed_repo_id ?? "",
+          : "",
       );
     } catch (reason: unknown) {
       if (
@@ -361,77 +360,13 @@ export function ManagedGitRepositoriesPage({
 
   return (
     <RecordWorkspace
-      recordLabel="repository"
-      title="Git repositories"
-      description="Compare repository sources, directory scope, and refresh state. Inspect bindings and maintenance on the repository page."
-      columns={["Repository", "Provider", "Directory", "Last refreshed"]}
-      records={visibleRepositories.map((repository) => ({
+      records={repositories.map((repository) => ({
         id: repository.managed_repo_id,
-        title: repositoryLabel(repository),
-        description: repository.canonical_repository_url,
         href: `#git-repositories?${new URLSearchParams({ repository_id: repository.managed_repo_id })}`,
-        cells: [
-          { value: providerLabel(repository.provider) },
-          { value: repository.directory_path },
-          { value: timestampSortValue(repository.refreshed_at), content: formatTimestamp(repository.refreshed_at) },
-        ],
-        facts: [
-          ["Repository", repository.managed_repo_id],
-          ["Provider", providerLabel(repository.provider)],
-          ["Directory", repository.directory_path],
-          ["Default branch", repository.default_branch],
-          ["Bindings", repository.bindings?.length ?? 0],
-          ["Refreshed", formatTimestamp(repository.refreshed_at)],
-        ],
       }))}
       selectedId={selectedRepositoryId}
       onSelect={setSelectedRepositoryId}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("repository_id"))}
       recordRouteKeys="repository_id"
-      filters={
-        <>
-          <label className="field-stack collection-search">
-            <span>Find repository</span>
-            <input
-              type="search"
-              value={searchQuery}
-              placeholder="Name, ID, URL, or provider"
-              onChange={(event) => setSearchQuery(event.target.value)}
-            />
-          </label>
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={includeDescendants}
-              onChange={(event) => setIncludeDescendants(event.target.checked)}
-            />
-            <span>Include descendant directories</span>
-          </label>
-        </>
-      }
-      actions={(openRecord) => (
-        <>
-          <button type="button" disabled={loading} onClick={() => setReloadVersion((current) => current + 1)}>
-            Reload
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={mutationsLocked}
-            title={mutationsLocked ? "Unlock privileged operations to register repositories" : undefined}
-            onClick={() => {
-              openRecord();
-              window.requestAnimationFrame(() =>
-                document.querySelector<HTMLInputElement>(".managed-git-source-field input")?.focus(),
-              );
-            }}
-          >
-            Register repository
-          </button>
-        </>
-      )}
     >
       <div className="feature-page managed-git-page">
         <section className="feature-sidebar">
@@ -528,7 +463,8 @@ export function ManagedGitRepositoriesPage({
             </div>
           ) : null}
 
-          <article className="panel managed-git-registration-panel">
+          <details className="panel managed-git-registration-panel">
+            <summary>Register repository</summary>
             <div className="panel-header">
               <div>
                 <h3>Register repository</h3>
@@ -576,7 +512,7 @@ export function ManagedGitRepositoriesPage({
                 {busyAction === "register" ? "Registering…" : "Register repository"}
               </button>
             </form>
-          </article>
+          </details>
 
           {selectedRepository ? (
             <>
@@ -770,9 +706,7 @@ export function ManagedGitRepositoriesPage({
               </article>
             </>
           ) : !loading && !error ? (
-            <div className="empty-state">
-              Register or select a repository to inspect its stable identity and bindings.
-            </div>
+            <RecordPlaceholder>Select a repository to view details</RecordPlaceholder>
           ) : null}
         </section>
       </div>

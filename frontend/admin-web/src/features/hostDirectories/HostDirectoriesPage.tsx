@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson } from "../admin/api";
-import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 
 type HostDirectoryCapability = "list" | "import" | "delete";
@@ -198,7 +198,7 @@ export function HostDirectoriesPage({
       if (current && payload.host_directories.some((item) => item.directory_id === current)) {
         return current;
       }
-      return payload.host_directories[0]?.directory_id ?? null;
+      return null;
     });
     return true;
   }
@@ -259,12 +259,11 @@ export function HostDirectoriesPage({
     () => Object.fromEntries((activeState?.host_directories ?? []).map((item) => [item.directory_id, item])),
     [activeState],
   );
-  const visibleRecords = useMemo(() => {
+  const directoryRecords = useMemo(() => {
     const ids = new Set([
       ...(activeState?.host_directories ?? []).map((item) => item.directory_id),
       ...Object.keys(rawDefinitions),
     ]);
-    const normalized = query.trim().toLowerCase();
     return [...ids]
       .sort()
       .map((directoryId) => {
@@ -278,15 +277,14 @@ export function HostDirectoriesPage({
           source_directory_path: effective?.source_directory_path ?? null,
           health: healthById[directoryId] ?? effective?.health ?? null,
         } satisfies HostDirectoryRecord;
-      })
-      .filter((item) =>
-        !normalized ||
-        [item.directory_id, item.display_name, item.description, item.root]
-          .join(" ")
-          .toLowerCase()
-          .includes(normalized),
-      );
-  }, [activeState, healthById, query, rawDefinitions, recordsById]);
+      });
+  }, [activeState, healthById, rawDefinitions, recordsById]);
+  const visibleRecords = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return directoryRecords.filter((item) => !normalized ||
+      [item.directory_id, item.display_name, item.description, item.root].join(" ").toLowerCase().includes(normalized),
+    );
+  }, [directoryRecords, query]);
   const selectedRecord = selectedId
     ? visibleRecords.find((item) => item.directory_id === selectedId) ??
       (recordsById[selectedId] ? { ...recordsById[selectedId], health: healthById[selectedId] } : null)
@@ -383,7 +381,7 @@ export function HostDirectoriesPage({
     const nextDefinitions = { ...rawDefinitions };
     delete nextDefinitions[selectedId];
     setDraft((current) => ({ ...current, host_directories: nextDefinitions }));
-    setSelectedId(Object.keys(nextDefinitions).sort()[0] ?? activeState?.host_directories[0]?.directory_id ?? null);
+    setSelectedId(null);
     setStatus(`Removed the local override for ${selectedId}. Save to apply the change.`);
   }
 
@@ -532,81 +530,13 @@ export function HostDirectoriesPage({
 
   return (
     <RecordWorkspace
-      recordLabel="directory"
-      title="Host directories"
-      description="Compare granted filesystem roots, capabilities, and inherited sources. Inspect recovery and policy on the directory page."
-      columns={["Directory", "Health", "Capabilities", "Source"]}
-      records={visibleRecords.map((record) => ({
+      records={directoryRecords.map((record) => ({
         id: record.directory_id,
-        title: record.display_name || record.directory_id,
-        description: record.root,
         href: `#host-directories?${new URLSearchParams({ directory_id: record.directory_id })}`,
-        cells: [
-          {
-            value: record.disabled ? "Disabled" : healthLabel(record.health),
-            content: (
-              <span className={`status-pill ${record.disabled ? "state-idle" : healthClass(record.health)}`}>
-                {record.disabled ? "Disabled" : healthLabel(record.health)}
-              </span>
-            ),
-          },
-          { value: record.capabilities.join(", ") || "None" },
-          { value: record.defined_here ? "Local override" : record.source_directory_path || "Inherited" },
-        ],
-        facts: [
-          ["ID", record.directory_id],
-          ["Root", record.root],
-          ["Health", healthLabel(record.health)],
-          ["Capabilities", record.capabilities.join(", ") || "None"],
-          ["Source", record.defined_here ? "Local override" : record.source_directory_path || "Inherited"],
-          ["Delete approval", record.delete_requires_approval ? "Required" : "Not required"],
-        ],
       }))}
       selectedId={selectedId}
       onSelect={setSelectedId}
-      loading={loading}
-      error={error}
-      initialRecordOpen={Boolean(readAdminHashQuery().get("directory_id"))}
       recordRouteKeys="directory_id"
-      filters={
-        <label className="field-stack collection-search">
-          <span>Search host directories</span>
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Name, ID, or host path"
-          />
-        </label>
-      }
-      actions={(openRecord) => (
-        <>
-          <button type="button" disabled={loading || saving} onClick={() => void refresh()}>
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={saving || !privilegedUnlocked}
-            title={!privilegedUnlocked ? "Unlock privileged operations to add directories" : undefined}
-            onClick={() => {
-              openRecord();
-              window.requestAnimationFrame(() =>
-                document.querySelector<HTMLInputElement>(".host-directory-add input")?.focus(),
-              );
-            }}
-          >
-            Add directory
-          </button>
-        </>
-      )}
-      inspectorContent={
-        dirty ? (
-          <p className="callout warning-callout">
-            Unsaved directory configuration is preserved. View the directory to continue editing.
-          </p>
-        ) : null
-      }
     >
       <div className="feature-page host-directories-page">
         <section className="feature-sidebar">
@@ -991,7 +921,7 @@ export function HostDirectoriesPage({
               </article>
             </>
           ) : (
-            <div className="empty-state">Add or select a host directory resource to configure it.</div>
+            <RecordPlaceholder>Select a host directory to view details</RecordPlaceholder>
           )}
         </section>
       </div>

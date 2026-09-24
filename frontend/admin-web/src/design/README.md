@@ -9,12 +9,13 @@ standalone add-ons. See `docs/design/admin-web-direction.md` and the rollout led
   component geometry and behavior; the focused files here own current visual rules.
 - `controls.css`, `layout.css`, and `collections.css` define controls, the shared shell,
   inventories, and inspectors. The other stylesheets cover workbenches and readers.
-- `RecordWorkspace` retains the inventory and full form while switching views.
-  `RecordInspector` is a companion pane on desktop and a native modal on narrow screens.
-  Record selection stays in the URL; close restores focus to the triggering record.
-  Inventory column headers toggle ascending/descending sorting. Give each cell its raw
-  `value` (numeric counts/bytes or parsed timestamps) and optional rendered `content`;
-  never sort formatted display strings or badges. Missing values stay last.
+- `RecordWorkspace` keeps sidebar selection synchronized with shareable URLs.
+  Record pages open directly in a sidebar/detail layout. `RecordPlaceholder` prompts
+  for selection before any detail is opened; selecting a row opens the complete form.
+  Keep filters independent of selection and creation actions available in this layout.
+- `RecordInspector` remains a companion pane or narrow-screen modal for views whose
+  details fit in the inspector itself, such as artifact and tool-call inspection.
+  Sortable tables use raw numeric/timestamp values, with missing values last.
 - `addon-context.js` consumes same-origin parent theme and privilege context, with
   standalone theme defaults. Host and add-ons always use compact spacing.
 - `workflow.css` keeps node types recognizable with amber triggers, green gates,

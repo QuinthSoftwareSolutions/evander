@@ -346,7 +346,7 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
   };
 }
 
-test("session inventory sorts columns without changing the inspected session or filters", { timeout: 30000 }, async t => {
+test("sessions open in a sidebar with an empty detail state and one-click selection", { timeout: 30000 }, async t => {
   const { address, page, sessionListResponse, pageErrors } = await createSessionsSmokeHarness(t, makeSessionRecord());
   page.setDefaultTimeout(5000);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -357,26 +357,62 @@ test("session inventory sorts columns without changing the inspected session or 
   sessionListResponse.counts = { total: 3, active: 3, expired: 0 };
   sessionListResponse.status_ids.active = sessionListResponse.items.map(item => item.session_id);
   await page.goto(`http://127.0.0.1:${address.port}/#sessions`, { waitUntil: "domcontentloaded" });
-  const inventory = page.getByRole("region", { name: "Sessions list", exact: true });
-  await inventory.getByRole("button", { name: "session-1", exact: true }).click();
-  await page.locator(".record-inspector h2").waitFor();
-  const rowNames = inventory.locator("tbody .record-name");
-  await inventory.getByRole("button", { name: "Sort by Session, ascending", exact: true }).click();
-  assert.deepEqual(await rowNames.allTextContents(), ["session-1", "session-2", "session-10"]);
-  await inventory.getByRole("button", { name: "Sort by Expires, ascending", exact: true }).click();
-  assert.deepEqual(await rowNames.allTextContents(), ["session-1", "session-10", "session-2"]);
-  await inventory.getByRole("button", { name: "Sort by Expires, descending", exact: true }).click();
-  assert.deepEqual(await rowNames.allTextContents(), ["session-2", "session-10", "session-1"]);
-  assert.equal(await inventory.getByRole("columnheader").filter({ hasText: "Expires" }).getAttribute("aria-sort"), "descending");
-  assert.equal(await inventory.locator('tr[data-selected="true"] .record-name').innerText(), "session-1");
-  assert.equal(await page.locator(".record-inspector h2").innerText(), "session-1");
-  await inventory.getByLabel("Find session", { exact: true }).fill("session-1");
-  assert.deepEqual(await rowNames.allTextContents(), ["session-10", "session-1"]);
-  await inventory.getByLabel("Find session", { exact: true }).fill("");
-  assert.deepEqual(await rowNames.allTextContents(), ["session-2", "session-10", "session-1"]);
-  await page.getByRole("button", { name: "View session", exact: true }).click();
-  await page.getByRole("button", { name: "← Sessions", exact: true }).click();
-  assert.deepEqual(await rowNames.allTextContents(), ["session-2", "session-10", "session-1"]);
+  await page.getByRole("heading", { name: "Select a session to view details", exact: true }).waitFor();
+  assert.equal(await page.locator(".session-list-item.selected").count(), 0);
+  assert.equal(await page.locator(".record-inspector, .sessions-inventory").count(), 0);
+  await page.locator(".session-list-item").filter({ hasText: /^session-1Active/ }).click();
+  await page.getByRole("heading", { name: "session-1", exact: true }).waitFor();
+  await page.waitForURL("**/#sessions?session_id=session-1");
+  await page.getByLabel("Find session", { exact: true }).fill("session-2");
+  assert.equal(await page.locator(".session-list-item").count(), 1);
+  await page.getByRole("heading", { name: "session-1", exact: true }).waitFor();
+  await page.getByLabel("Find session", { exact: true }).fill("");
+  await page.evaluate(() => { location.hash = "#sessions"; });
+  await page.getByRole("heading", { name: "Select a session to view details", exact: true }).waitFor();
+  assert.deepEqual(pageErrors, []);
+});
+
+test("session deep links open expired sessions and records outside the current list", { timeout: 30000 }, async t => {
+  const { address, page, sessionListResponse, pageErrors } = await createSessionsSmokeHarness(t, makeSessionRecord());
+  page.setDefaultTimeout(5000);
+  sessionListResponse.status_ids = { active: [], expired: ["session-1"] };
+  sessionListResponse.counts = { total: 1, active: 0, expired: 1 };
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`);
+  await page.locator(".session-list-item.selected").waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "State", exact: true }).inputValue(), "expired");
+  sessionListResponse.items = [];
+  sessionListResponse.status_ids = { active: [], expired: [] };
+  sessionListResponse.counts = { total: 0, active: 0, expired: 0 };
+  await page.reload();
+  await page.getByRole("heading", { name: "session-1", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).hash, "#sessions?session_id=session-1");
+  assert.equal(await page.locator(".session-list-item").count(), 0);
+  assert.deepEqual(pageErrors, []);
+});
+
+test("direct session selection protects unsaved settings and restores cancelled links", { timeout: 30000 }, async t => {
+  const { address, page, sessionListResponse, sessionDetailResponse, pageErrors } = await createSessionsSmokeHarness(t, makeSessionRecord());
+  page.setDefaultTimeout(5000);
+  const second = makeSessionRecord({ session_id: "session-2", model: "second-model" });
+  sessionListResponse.items.push(second);
+  sessionListResponse.status_ids.active.push(second.session_id);
+  await page.route("**/api/admin/sessions/session-2", route => route.fulfill(jsonResponse({ ...sessionDetailResponse, session: second })));
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`);
+  const model = page.locator('input[list="session-model-suggestions"]');
+  await model.fill("unsaved-model");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.locator(".session-list-item").filter({ hasText: "session-2" }).click();
+  assert.equal(await model.inputValue(), "unsaved-model");
+  assert.equal(new URL(page.url()).hash, "#sessions?session_id=session-1");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.evaluate(() => { location.hash = "#sessions?session_id=session-2"; });
+  await page.waitForURL("**/#sessions?session_id=session-1");
+  assert.equal(await model.inputValue(), "unsaved-model");
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator(".session-list-item").filter({ hasText: "session-2" }).click();
+  await page.getByRole("heading", { name: "session-2", exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('input[list="session-model-suggestions"]')?.value === "second-model");
+  await page.waitForURL("**/#sessions?session_id=session-2");
   assert.deepEqual(pageErrors, []);
 });
 
@@ -554,7 +590,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("textbox", { name: "Find session", exact: true }).waitFor({ state: "visible" }));
-  assert.equal(await page.getByRole("textbox", { name: "Find session", exact: true }).inputValue(), "session-1");
+  assert.equal(await page.getByRole("textbox", { name: "Find session", exact: true }).inputValue(), "");
   assert.equal(await page.getByRole("combobox", { name: "State" }).inputValue(), "active");
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").getByText("session-1").waitFor({ state: "visible" }));
