@@ -587,6 +587,17 @@ export function isAdoQueryModeNodeType(nodeType: string | undefined): boolean {
   return Boolean(nodeType && ADO_QUERY_MODE_NODE_TYPES.has(nodeType));
 }
 
+export function teamsDirectChatModeHidesField(
+  nodeType: string | undefined,
+  fieldKey: string,
+  values: Record<string, unknown>,
+): boolean {
+  if (nodeType !== "trigger:teams:direct-message") return false;
+  const mode = values.chat_target_mode === "direct" ? "direct" : "explicit";
+  if (mode === "direct") return fieldKey === "targets" || fieldKey === "sender_user_ids";
+  return fieldKey === "direct_chat_user_upns";
+}
+
 export function effectiveAdoQueryMode(values: Record<string, unknown>): string {
   const configuredMode = typeof values.query_mode === "string" ? values.query_mode.trim() : "";
   if (configuredMode === ADO_QUERY_MODE_STRUCTURED_FILTERS || configuredMode === ADO_QUERY_MODE_MANUAL_WIQL) {

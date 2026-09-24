@@ -1156,6 +1156,11 @@ class GraphTeamsService:
                 return user_id
         return None
 
+    def resolve_user_id_for_reference(self, user_ref: str) -> str | None:
+        normalized_target = self._require_allowed_user_target(user_ref)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            return self.resolve_user_id(client, normalized_target.removeprefix("user:"))
+
     def resolve_user_mention(
         self, client: httpx.Client, user_ref: str
     ) -> _TeamsMentionTarget | None:

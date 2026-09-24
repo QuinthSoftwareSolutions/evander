@@ -82,6 +82,9 @@ export function createDefaultNode(kind: WorkflowNodeKind, type: string, id: stri
   }
   if (kind === "trigger" && type === "trigger:teams:direct-message") {
     return workflowNode(id, "Teams direct message", type, {
+      chat_target_mode: "direct",
+      direct_chat_user_upns: [],
+      targets: [],
       sender_user_ids: [],
       message_filter: null,
     });
