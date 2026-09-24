@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-24 - Improve Team chat navigation and stability (0.62.2)
+
+- Preserve the new-chat agent picker position through Team state refreshes, so operators can
+  select agents far down the list without being returned to its start.
+- Add direct Chat actions in the Teams agent detail and Org chart agent menu.
+
 ## 2026-09-24 - Make workflow node types easier to distinguish (0.62.1)
 
 - Give triggers, gates, effects, and queries distinct amber, green, blue, and purple
