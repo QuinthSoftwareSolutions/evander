@@ -866,7 +866,10 @@ def _apply_command_deliverable_submission(
             update={
                 "verified_candidate_commit_sha": _optional_text(
                     deliverable.get(_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD)
-                )
+                ),
+                "source_bases_verified": bool(
+                    deliverable.get(_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD)
+                ),
             },
             deep=True,
         )

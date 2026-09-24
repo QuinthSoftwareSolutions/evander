@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from datetime import datetime
 import re
 from typing import Any
@@ -343,7 +343,7 @@ def authoritative_deliverable_git_base(
                 )
             context_manifest = context.dependency_composition_manifest
             expected_context_manifest = composition_manifest.model_copy(
-                update={"verified_candidate_commit_sha": None}
+                update={"verified_candidate_commit_sha": None, "source_bases_verified": False}
             )
             if (
                 context_manifest != composition_manifest
@@ -413,6 +413,69 @@ def authoritative_deliverable_git_base(
         else None
     )
     return task.git_base_branch or legacy_project_base, manifest_base
+
+
+def dependency_source_base_requirements(
+    state: TeamState,
+    *,
+    sources: Sequence[Mapping[str, str]],
+) -> list[dict[str, str]]:
+    """Resolve source bases from server records, including nested compositions."""
+
+    requirements: dict[str, dict[str, str]] = {}
+    visiting: set[str] = set()
+
+    def visit(source: Mapping[str, str]) -> None:
+        source_id = source["deliverable_id"]
+        if source_id in visiting:
+            raise ValueError(f"dependency composition cycle at deliverable {source_id}")
+        deliverable = state.deliverables.get(source_id)
+        if deliverable is None or deliverable.task_id != source["dependency_task_id"]:
+            raise ValueError(f"contribution {source_id} has no matching task provenance")
+        recorded_commits = {
+            value.casefold()
+            for value in (
+                deliverable.git_refs.submitted_commit_sha,
+                deliverable.git_refs.commit_sha,
+                deliverable.git_refs.reviewed_commit_sha,
+            )
+            if value is not None
+        }
+        if recorded_commits != {source["commit_sha"].casefold()}:
+            raise ValueError(f"contribution {source_id} does not match its recorded candidate")
+        recorded_commit = next(iter(recorded_commits))
+        if source_id in requirements:
+            return
+        visiting.add(source_id)
+        _branch, base_commit = authoritative_deliverable_git_base(state, deliverable=deliverable)
+        if base_commit is None or re.fullmatch(
+            r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", base_commit
+        ) is None:
+            raise ValueError(
+                f"contribution {source_id} has no authoritative full Git base commit; "
+                "recover its source provenance before integration"
+            )
+        requirements[source_id] = {
+            "deliverable_id": source_id,
+            "commit_sha": recorded_commit.casefold(),
+            "base_commit_sha": base_commit.casefold(),
+        }
+        context = state.git_work_contexts.get(deliverable.git_refs.branch_context_id or "")
+        manifest = deliverable.dependency_composition_manifest
+        nested_sources = (
+            manifest.dependency_git_sources
+            if manifest is not None
+            else context.dependency_git_sources
+            if context is not None
+            else []
+        )
+        for nested in nested_sources:
+            visit(nested.model_dump(mode="json", exclude_none=True))
+        visiting.remove(source_id)
+
+    for source in sources:
+        visit(source)
+    return [requirements[key] for key in sorted(requirements)]
 
 
 def mark_git_work_context_submitted(
@@ -947,6 +1010,11 @@ def _resolve_git_context_branch_commit(
             },
         )
     try:
+        if (
+            composition_manifest is not None
+            and composition_manifest.dependency_git_sources != context.dependency_git_sources
+        ):
+            raise ValueError("composition manifest does not match the prepared dependency sources")
         resolver_kwargs: dict[str, Any] = {
             "managed_repo_id": project.git.managed_repo_id,
             "directory_path": project.git.directory_path,
@@ -954,6 +1022,19 @@ def _resolve_git_context_branch_commit(
         }
         if required_ancestor_shas:
             resolver_kwargs["required_ancestor_shas"] = required_ancestor_shas
+        contribution_base = (
+            task.git_base_commit_sha
+            or (composition_manifest.base_commit_sha if composition_manifest is not None else None)
+        )
+        if contribution_base is not None and context.dependency_git_sources:
+            resolver_kwargs["contribution_base_commit_sha"] = contribution_base
+            resolver_kwargs["contribution_sources"] = dependency_source_base_requirements(
+                state,
+                sources=[
+                    source.model_dump(mode="json", exclude_none=True)
+                    for source in context.dependency_git_sources
+                ],
+            )
         authoritative_commit_sha = candidate_commit_resolver(
             **resolver_kwargs,
         )

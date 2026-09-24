@@ -39,6 +39,7 @@ from .services.domain.correction_git_source import (
 from .services.domain.task_assessment import (
     required_source_deliverable_ids_for_task,
 )
+from .services.domain.git_work_contexts import dependency_source_base_requirements
 
 
 def _verified_human_review_correction_git_source(
@@ -361,7 +362,7 @@ def _project_repo_task_dependency_git_sources(
         )
     except DependencyGitPreparationError:
         raise
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise DependencyGitPreparationError(
             task_id=task_id,
             message=str(exc),
@@ -589,6 +590,17 @@ def _project_repo_task_dependency_git_sources_unchecked(
                     **({"pinned_ref": pinned_ref} if pinned_ref is not None else {}),
                 }
             )
+    if rows and task.git_base_commit_sha is not None:
+        project_git = state.projects[task.project_id].git
+        verify_bases = getattr(managed_git, "verify_contribution_bases", None)
+        if not callable(verify_bases):
+            raise RuntimeError("managed Git contribution-base verification is unavailable")
+        verify_bases(
+            managed_repo_id,
+            directory_path=project_git.directory_path,
+            base_commit_sha=task.git_base_commit_sha,
+            sources=dependency_source_base_requirements(state, sources=rows),
+        )
     return rows
 
 

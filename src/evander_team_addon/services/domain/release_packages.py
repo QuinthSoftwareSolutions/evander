@@ -1426,8 +1426,12 @@ def _candidate_correction_composition_base(
         context is None
         or context.task_id != correction_task_id
         or context_manifest is None
-        or context_manifest
-        != manifest.model_copy(update={"verified_candidate_commit_sha": None})
+        or context_manifest.model_copy(
+            update={"verified_candidate_commit_sha": None, "source_bases_verified": False}
+        )
+        != manifest.model_copy(
+            update={"verified_candidate_commit_sha": None, "source_bases_verified": False}
+        )
     ):
         return None
 

@@ -4523,10 +4523,15 @@ def test_composed_submission_release_uses_server_verified_composition_root(
             summary="Accepted Git dependency.",
             state=TeamRecordState.ACCEPTED,
             git_refs=DeliverableGitRefs(
+                branch_context_id="ctx-dependency",
                 agent_branch=source.branch,
                 commit_sha=source_commit,
                 submitted_commit_sha=source_commit,
             ),
+        )
+        state.git_work_contexts["ctx-dependency"] = GitWorkContext(
+            id="ctx-dependency", agent_id="backend", task_id="dependency",
+            base_branch="main", base_commit="d" * 40, agent_branch=source.branch,
         )
         task = state.tasks["task"]
         task.integration_boundary = True
@@ -4592,12 +4597,19 @@ def test_composed_submission_release_uses_server_verified_composition_root(
     manifest = state.deliverables["composed-deliverable"].dependency_composition_manifest
     assert manifest is not None
     assert manifest.verified_candidate_commit_sha == candidate_commit
+    assert manifest.source_bases_verified is True
     assert resolver_calls == [
         {
             "managed_repo_id": MANAGED_REPO_ID,
             "directory_path": "root",
             "agent_branch": "agents/session-backend/task",
             "required_ancestor_shas": [composed_commit, source_commit],
+            "contribution_base_commit_sha": "d" * 40,
+            "contribution_sources": [{
+                "deliverable_id": "dependency-deliverable",
+                "commit_sha": source_commit,
+                "base_commit_sha": "d" * 40,
+            }],
         }
     ]
 

@@ -39,6 +39,7 @@ from .domain.case_task import (
     _task_integration_boundary_transition_error,
     _task_deliverable_contract_scope_error,
     inherited_task_case_id,
+    inherited_task_git_base_commit,
 )
 from .domain.outcome_catalog import (
     snapshot_task_outcome_contract,
@@ -637,14 +638,22 @@ class TeamTaskAdministration:
                 case_id=inherited_case_id,
                 git_default_branch_resolver=(self._resolve_managed_git_default_branch),
             )
-            effective_git_base_commit_sha = normalized_git_base_commit_sha
+            inherited_git_base_commit = inherited_task_git_base_commit(
+                state_model,
+                parent_task_id=normalized_parent_task_id,
+                git_base_branch=resolved_git_base_branch,
+            )
+            effective_git_base_commit_sha = (
+                normalized_git_base_commit_sha or inherited_git_base_commit
+            )
             project = _require_present(
                 state_model.projects,
                 normalized_project_id,
                 "project",
             )
             if project.git is not None and (
-                effective_integration_boundary or effective_git_base_commit_sha is not None
+                normalized_git_base_commit_sha is not None
+                or (effective_integration_boundary and inherited_git_base_commit is None)
             ):
                 if resolved_git_base_branch is None:
                     raise ValueError(

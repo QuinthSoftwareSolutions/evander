@@ -1294,8 +1294,17 @@ def _policy_v2_mixed_source_candidate() -> tuple[TeamState, AgentTask, Deliverab
         composed_commit_sha=candidate_commit,
         composed_tree_hash="f" * 40,
         verified_candidate_commit_sha=candidate_commit,
+        source_bases_verified=True,
     )
     state.git_work_contexts = {
+        "context-git-contribution": GitWorkContext(
+            id="context-git-contribution",
+            agent_id=git_contribution.owner_agent_id,
+            task_id=git_contribution.id,
+            agent_branch=git_source.git_refs.agent_branch,
+            base_branch="main",
+            base_commit="a" * 40,
+        ),
         "context-integration": GitWorkContext(
             id="context-integration",
             agent_id=integration.owner_agent_id,
@@ -1359,6 +1368,16 @@ def test_policy_v2_composition_requires_server_verified_candidate_ancestry() -> 
     ]
 
 
+def test_integration_acceptance_requires_server_verified_source_bases() -> None:
+    state, _integration, candidate = _policy_v2_mixed_source_candidate()
+    candidate.dependency_composition_manifest.source_bases_verified = False
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_deliverable_acceptance(state, candidate.id)
+
+    assert raised.value.code == "dependency_composition_source_bases_unverified"
+
+
 def test_git_submission_verifies_and_records_composition_candidate_ancestry() -> None:
     state, integration, candidate = _policy_v2_mixed_source_candidate()
     state.projects["project"] = Project(
@@ -1409,6 +1428,12 @@ def test_git_submission_verifies_and_records_composition_candidate_ancestry() ->
             "directory_path": "root",
             "agent_branch": "agents/integration/task",
             "required_ancestor_shas": ["c" * 40, "b" * 40],
+            "contribution_base_commit_sha": "a" * 40,
+            "contribution_sources": [{
+                "deliverable_id": "git-source",
+                "commit_sha": "b" * 40,
+                "base_commit_sha": "a" * 40,
+            }],
         }
     ]
     assert manifest.verified_candidate_commit_sha is None

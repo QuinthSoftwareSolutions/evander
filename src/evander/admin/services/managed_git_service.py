@@ -918,6 +918,54 @@ class ManagedGitAdminService:
             "reduced_source_deliverable_ids": reduced_ids,
         }
 
+    def verify_contribution_bases(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        base_commit_sha: str,
+        sources: Sequence[Mapping[str, str]],
+    ) -> None:
+        """Reject contributions whose starting history is outside the pinned base.
+
+        Only immutable object IDs are consulted. A newer live branch tip cannot
+        authorize additional source history for an already pinned integration.
+        """
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        base_commit = _normalize_object_id(base_commit_sha, field_name="base_commit_sha")
+        normalized_sources = [
+            (
+                str(source.get("deliverable_id") or "").strip(),
+                _normalize_object_id(source.get("commit_sha"), field_name="sources.commit_sha"),
+                _normalize_object_id(
+                    source.get("base_commit_sha"), field_name="sources.base_commit_sha"
+                ),
+            )
+            for source in sources
+        ]
+        if any(not source_id for source_id, _, _ in normalized_sources):
+            raise ValueError("sources.deliverable_id must be a non-empty string")
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            self._require_commit(bare_path, base_commit)
+            for source_id, commit, source_base in normalized_sources:
+                self._require_commit(bare_path, commit)
+                self._require_commit(bare_path, source_base)
+                if not self._is_ancestor(bare_path, source_base, commit):
+                    raise ValueError(
+                        f"contribution {source_id} commit {commit} does not contain "
+                        f"its recorded base {source_base}"
+                    )
+                if not self._is_ancestor(bare_path, source_base, base_commit):
+                    raise ValueError(
+                        f"contribution {source_id} was prepared from {source_base}, "
+                        f"which is outside pinned integration base {base_commit}; "
+                        "create a reviewed replacement on the pinned base or a new "
+                        "explicit integration boundary"
+                    )
+
     def verify_branch_commit_ancestry(
         self,
         managed_repo_id: str,
