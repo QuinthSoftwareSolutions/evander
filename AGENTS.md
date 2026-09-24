@@ -364,6 +364,23 @@ egress, no autoscaling/Kubernetes scheduler, and no replacement for the existing
 
 ## Tests
 
+Before adding a test, apply these principles. If it cannot identify a realistic regression and
+observable product behavior it protects, do not add it.
+
+- State the regression the test would catch and assert the resulting behavior through a stable
+  boundary. Inspect source text only when the source artifact itself is the contract.
+- Derive expected results independently of the fixture or input. Do not just read back values the
+  test supplied or assert that a hand-authored example matches itself.
+- Keep the strongest test for each behavior. Remove weaker duplicates when better coverage is
+  added, and do not retain tests for dead production paths.
+- Prioritize meaningful failure and boundary cases, including authorization, isolation,
+  persistence, retries, and recovery. Match the cost of the test harness to the risk it covers.
+- For user-facing schemas, assert fields, defaults, and validation rules. Avoid pinning incidental
+  wording, CSS selectors, implementation placement, or empty field lists without a real contract.
+- Check documentation links and publication integrity where useful. Keyword presence in prose
+  does not establish that an instruction is correct; test fixtures alone need no regression test.
+- Reassess a test when the product path changes or stronger coverage is added.
+
 Run the Python suite with:
 
 ```bash
