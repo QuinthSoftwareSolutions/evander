@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote, unquote, urlencode
 
 import httpx
+from anyio import CancelScope
 import uvicorn
 from python_multipart.multipart import (
     MultipartParseError,
@@ -23,6 +24,7 @@ from python_multipart.multipart import (
     parse_options_header,
 )
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -31,13 +33,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from evander.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from evander.config import GatewayConfig
-from evander.model_usage.adapters import (
-    MappingModelUsageExtractor,
-    ModelUsageExtractionRequest,
-)
-from evander.model_usage.models import ModelUsageCorrelationContext
 from evander.model_usage.runtime import (
-    MODEL_USAGE_AGENT_HARNESS,
     model_usage_store,
 )
 from evander.operator_steering import OperatorSteeringNote, operator_steering_note_store
@@ -46,6 +42,7 @@ from evander.relays.local_openai_tool_compatibility import (
     LocalOpenAIToolCompatibility,
     LocalOpenAIToolCompatibilityAdapter,
 )
+from evander.relays.openai_usage import OpenAIUsageAccounting
 from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
 from evander.session_auth import (
     MCP_SESSION_TOKEN_HEADER_NAMES,
@@ -261,7 +258,7 @@ class _MultipartModelCapture:
         self.model = text or None
 
 
-class OpenAIRelay:
+class OpenAIRelay(OpenAIUsageAccounting):
     def __init__(
         self,
         config: GatewayConfig,
@@ -301,7 +298,7 @@ class OpenAIRelay:
 
         async def proxy(request: Request) -> Response:
             try:
-                request_context = relay._resolve_request_context(request)
+                request_context = await run_in_threadpool(relay._resolve_request_context, request)
             except SessionExpiredError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=403)
             except PermissionError as exc:
@@ -407,7 +404,8 @@ class OpenAIRelay:
                     )
                 except ValueError as exc:
                     return JSONResponse({"error": str(exc)}, status_code=400)
-                steering_injection = relay._operator_steering_injection(
+                steering_injection = await run_in_threadpool(
+                    relay._operator_steering_injection,
                     session_id=request_context.session_id,
                     method=request.method,
                     provider_name="openai",
@@ -456,18 +454,21 @@ class OpenAIRelay:
                             content=request_body,
                         )
                     except Exception as exc:
-                        relay._release_operator_steering_note(
+                        await run_in_threadpool(
+                            relay._release_operator_steering_note,
                             steering_injection.note,
                             error=f"upstream request failed before delivery: {exc}",
                         )
                         raise
-                    relay._mark_operator_steering_delivered(
+                    await run_in_threadpool(
+                        relay._mark_operator_steering_delivered,
                         steering_injection.note,
                         provider_name="openai",
                         provider_endpoint=upstream_path,
                     )
                     try:
-                        relay._record_model_usage_event(
+                        await run_in_threadpool(
+                            relay._record_model_usage_event,
                             session_id=request_context.session_id,
                             upstream_path=upstream_path,
                             request_body=request_body,
@@ -522,7 +523,8 @@ class OpenAIRelay:
             }
             headers["accept-encoding"] = "identity"
             headers["authorization"] = f"Bearer {openai_compatible_upstream.api_key}"
-            steering_injection = relay._operator_steering_injection(
+            steering_injection = await run_in_threadpool(
+                relay._operator_steering_injection,
                 session_id=request_context.session_id,
                 method=request.method,
                 provider_name=openai_compatible_upstream.provider_name,
@@ -566,18 +568,21 @@ class OpenAIRelay:
                         content=request_body,
                     )
                 except Exception as exc:
-                    relay._release_operator_steering_note(
+                    await run_in_threadpool(
+                        relay._release_operator_steering_note,
                         steering_injection.note,
                         error=f"upstream request failed before delivery: {exc}",
                     )
                     raise
-                relay._mark_operator_steering_delivered(
+                await run_in_threadpool(
+                    relay._mark_operator_steering_delivered,
                     steering_injection.note,
                     provider_name=openai_compatible_upstream.provider_name,
                     provider_endpoint=upstream_path,
                 )
                 try:
-                    relay._record_model_usage_event(
+                    await run_in_threadpool(
+                        relay._record_model_usage_event,
                         session_id=request_context.session_id,
                         upstream_path=upstream_path,
                         request_body=request_body,
@@ -608,7 +613,9 @@ class OpenAIRelay:
 
         async def websocket_proxy(websocket: WebSocket) -> None:
             try:
-                request_context = relay._resolve_websocket_context(websocket)
+                request_context = await run_in_threadpool(
+                    relay._resolve_websocket_context, websocket
+                )
             except SessionExpiredError as exc:
                 await websocket.close(code=1008, reason=str(exc))
                 return
@@ -789,7 +796,8 @@ class OpenAIRelay:
         headers["authorization"] = f"Bearer {api_key}"
         headers["x-openrouter-metadata"] = "enabled"
 
-        steering_injection = self._operator_steering_injection(
+        steering_injection = await run_in_threadpool(
+            self._operator_steering_injection,
             session_id=request_context.session_id,
             method=request.method,
             provider_name="openrouter",
@@ -825,12 +833,14 @@ class OpenAIRelay:
                     content=request_body,
                 )
             except Exception as exc:
-                self._release_operator_steering_note(
+                await run_in_threadpool(
+                    self._release_operator_steering_note,
                     steering_injection.note,
                     error=f"upstream request failed before delivery: {exc}",
                 )
                 raise
-            self._mark_operator_steering_delivered(
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
                 steering_injection.note,
                 provider_name="openrouter",
                 provider_endpoint=normalized_path,
@@ -847,7 +857,8 @@ class OpenAIRelay:
                         return JSONResponse({"error": str(exc)}, status_code=502)
             else:
                 try:
-                    self._record_model_usage_event(
+                    await run_in_threadpool(
+                        self._record_model_usage_event,
                         session_id=request_context.session_id,
                         upstream_path=normalized_path,
                         request_body=request_body,
@@ -1031,12 +1042,7 @@ class OpenAIRelay:
             upstream = self._openai_compatible_upstream(request_context.config)
             if not upstream.api_key:
                 return JSONResponse(
-                    {
-                        "error": (
-                            "Host environment variable "
-                            f"{upstream.api_key_source} is not set."
-                        )
-                    },
+                    {"error": (f"Host environment variable {upstream.api_key_source} is not set.")},
                     status_code=503,
                 )
             upstream_url = self._upstream_http_url(
@@ -1081,14 +1087,13 @@ class OpenAIRelay:
                     content=self._spooled_file_chunks(spool),
                 )
                 try:
-                    self._record_model_usage_event(
+                    await run_in_threadpool(
+                        self._record_model_usage_event,
                         session_id=request_context.session_id,
                         upstream_path=upstream_path,
                         request_body=None,
                         request_body_bytes=request_size or None,
-                        request_body_sha256=(
-                            request_hasher.hexdigest() if request_size else None
-                        ),
+                        request_body_sha256=(request_hasher.hexdigest() if request_size else None),
                         request_model=request_model,
                         upstream_response=upstream_response,
                         duration_ms=self._duration_ms_since(started_at),
@@ -1200,7 +1205,8 @@ class OpenAIRelay:
         headers["x-api-key"] = api_key
         if not any(key.lower() == "anthropic-version" for key in headers):
             headers["anthropic-version"] = request_context.config.anthropic_api_version
-        steering_injection = self._operator_steering_injection(
+        steering_injection = await run_in_threadpool(
+            self._operator_steering_injection,
             session_id=request_context.session_id,
             method=request.method,
             provider_name="anthropic",
@@ -1235,18 +1241,21 @@ class OpenAIRelay:
                     content=request_body,
                 )
             except Exception as exc:
-                self._release_operator_steering_note(
+                await run_in_threadpool(
+                    self._release_operator_steering_note,
                     steering_injection.note,
                     error=f"upstream request failed before delivery: {exc}",
                 )
                 raise
-            self._mark_operator_steering_delivered(
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
                 steering_injection.note,
                 provider_name="anthropic",
                 provider_endpoint=normalized_path,
             )
             try:
-                self._record_model_usage_event(
+                await run_in_threadpool(
+                    self._record_model_usage_event,
                     session_id=request_context.session_id,
                     upstream_path=normalized_path,
                     request_body=request_body,
@@ -1312,18 +1321,36 @@ class OpenAIRelay:
         started_at = time.perf_counter()
         try:
             upstream_response = await upstream_stream.__aenter__()
-        except Exception as exc:
-            self._release_operator_steering_note(
-                operator_steering_note,
-                error=f"upstream stream failed before delivery: {exc}",
-            )
-            await client.aclose()
+        except BaseException as exc:
+            with CancelScope(shield=True):
+                try:
+                    await run_in_threadpool(
+                        self._release_operator_steering_note,
+                        operator_steering_note,
+                        error=f"upstream stream failed before delivery: {exc}",
+                    )
+                finally:
+                    await client.aclose()
             raise
-        self._mark_operator_steering_delivered(
-            operator_steering_note,
-            provider_name=provider_name,
-            provider_endpoint=upstream_path,
-        )
+
+        async def close_upstream() -> None:
+            with CancelScope(shield=True):
+                try:
+                    await upstream_stream.__aexit__(None, None, None)
+                finally:
+                    await client.aclose()
+
+        try:
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
+                operator_steering_note,
+                provider_name=provider_name,
+                provider_endpoint=upstream_path,
+            )
+        except BaseException:
+            # The response iterator does not own the upstream yet.
+            await close_upstream()
+            raise
         logger.info(
             "relay_stream_upstream_response stream_id=%s status_code=%s content_type=%s",
             stream_id,
@@ -1406,31 +1433,33 @@ class OpenAIRelay:
                     self.stream_transport_terminated_count,
                 )
             finally:
-                try:
-                    self._record_stream_model_usage_event(
-                        session_id=session_id,
-                        upstream_path=upstream_path,
-                        request_body=request_body,
-                        upstream_response=upstream_response,
-                        response_body_bytes=bytes_sent,
-                        response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
-                        response_payload=stream_payload,
-                        duration_ms=self._duration_ms_since(started_at),
-                        provider_name=provider_name,
-                        request_body_bytes=request_body_bytes,
-                        request_body_sha256=request_body_sha256,
-                        request_model=request_model,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "relay_stream_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
-                        session_id,
-                        request.url.path,
-                        exc.__class__.__name__,
-                        str(exc),
-                    )
-                await upstream_stream.__aexit__(None, None, None)
-                await client.aclose()
+                with CancelScope(shield=True):
+                    try:
+                        await run_in_threadpool(
+                            self._record_stream_model_usage_event,
+                            session_id=session_id,
+                            upstream_path=upstream_path,
+                            request_body=request_body,
+                            upstream_response=upstream_response,
+                            response_body_bytes=bytes_sent,
+                            response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
+                            response_payload=stream_payload,
+                            duration_ms=self._duration_ms_since(started_at),
+                            provider_name=provider_name,
+                            request_body_bytes=request_body_bytes,
+                            request_body_sha256=request_body_sha256,
+                            request_model=request_model,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "relay_stream_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                            session_id,
+                            request.url.path,
+                            exc.__class__.__name__,
+                            str(exc),
+                        )
+                    finally:
+                        await close_upstream()
 
         return StreamingResponse(
             iterator(),
@@ -1608,21 +1637,6 @@ class OpenAIRelay:
             return normalized_path == "messages"
         return normalized_path in {"responses", "chat/completions"}
 
-    def _active_model_usage_correlation_context(
-        self,
-        *,
-        session_id: str,
-    ) -> ModelUsageCorrelationContext | None:
-        correlation_context = self.model_usage_store.get_active_correlation_context(
-            session_id=session_id,
-            agent_harness=MODEL_USAGE_AGENT_HARNESS,
-        )
-        if correlation_context is None:
-            correlation_context = self.model_usage_store.get_active_correlation_context(
-                session_id=session_id,
-            )
-        return correlation_context
-
     def _mark_operator_steering_delivered(
         self,
         note: OperatorSteeringNote | None,
@@ -1667,428 +1681,6 @@ class OpenAIRelay:
                 exc.__class__.__name__,
                 str(exc),
             )
-
-    def _record_model_usage_event(
-        self,
-        *,
-        session_id: str,
-        upstream_path: str,
-        request_body: bytes | None,
-        upstream_response: httpx.Response,
-        duration_ms: int | None = None,
-        provider_name: str = "openai",
-        request_body_bytes: int | None = None,
-        request_body_sha256: str | None = None,
-        request_model: str | None = None,
-    ) -> None:
-        if not self._is_model_usage_endpoint(upstream_path):
-            return
-
-        response_payload = self._json_payload_from_response(upstream_response)
-        response_body = upstream_response.content
-        self._record_model_usage_payload(
-            session_id=session_id,
-            upstream_path=upstream_path,
-            request_status=self._request_status_for_response(upstream_response.status_code),
-            request_body=request_body,
-            response_body_bytes=len(response_body) if response_body else None,
-            response_body_sha256=sha256(response_body).hexdigest() if response_body else None,
-            response_payload=response_payload,
-            request_metadata={
-                "method": "POST",
-                "path": f"/v1/{upstream_path}",
-            },
-            response_metadata=self._response_metadata_with_provider_request_id(
-                {
-                    "status_code": upstream_response.status_code,
-                    "content_type": upstream_response.headers.get("content-type"),
-                },
-                provider_request_id=self._provider_request_id_from_response(
-                    upstream_response=upstream_response,
-                    response_payload=response_payload,
-                ),
-            ),
-            duration_ms=duration_ms,
-            provider_name=provider_name,
-            request_body_bytes=request_body_bytes,
-            request_body_sha256=request_body_sha256,
-            request_model=request_model,
-        )
-
-    def _record_stream_model_usage_event(
-        self,
-        *,
-        session_id: str,
-        upstream_path: str,
-        request_body: bytes | None,
-        upstream_response: httpx.Response,
-        response_body_bytes: int,
-        response_body_sha256: str | None,
-        response_payload: dict[str, Any],
-        duration_ms: int | None,
-        provider_name: str = "openai",
-        request_body_bytes: int | None = None,
-        request_body_sha256: str | None = None,
-        request_model: str | None = None,
-    ) -> None:
-        if not self._is_model_usage_endpoint(upstream_path):
-            return
-
-        self._record_model_usage_payload(
-            session_id=session_id,
-            upstream_path=upstream_path,
-            request_status=self._request_status_for_response(upstream_response.status_code),
-            request_body=request_body,
-            response_body_bytes=response_body_bytes or None,
-            response_body_sha256=response_body_sha256,
-            response_payload=response_payload,
-            request_metadata={
-                "method": "POST",
-                "path": f"/v1/{upstream_path}",
-                "stream": True,
-            },
-            response_metadata=self._response_metadata_with_provider_request_id(
-                {
-                    "status_code": upstream_response.status_code,
-                    "content_type": upstream_response.headers.get("content-type"),
-                    "stream": True,
-                },
-                provider_request_id=self._provider_request_id_from_response(
-                    upstream_response=upstream_response,
-                    response_payload=response_payload,
-                ),
-            ),
-            duration_ms=duration_ms,
-            provider_name=provider_name,
-            request_body_bytes=request_body_bytes,
-            request_body_sha256=request_body_sha256,
-            request_model=request_model,
-        )
-
-    def _record_websocket_model_usage_event(
-        self,
-        *,
-        session_id: str,
-        upstream_path: str,
-        message: str | bytes,
-        response_payload: dict[str, Any],
-        event_type: str | None,
-        duration_ms: int | None,
-        provider_name: str = "openai",
-    ) -> None:
-        if not self._is_model_usage_endpoint(upstream_path):
-            return
-
-        if isinstance(message, bytes):
-            message_body = message
-        else:
-            message_body = message.encode("utf-8")
-        self._record_model_usage_payload(
-            session_id=session_id,
-            upstream_path=upstream_path,
-            request_status="success",
-            request_body=None,
-            response_body_bytes=len(message_body) if message_body else None,
-            response_body_sha256=sha256(message_body).hexdigest() if message_body else None,
-            response_payload=response_payload,
-            request_metadata={
-                "method": "WEBSOCKET",
-                "path": f"/v1/{upstream_path}",
-                "websocket": True,
-            },
-            response_metadata=self._response_metadata_with_provider_request_id(
-                {
-                    "websocket": True,
-                    "event_type": event_type,
-                    "message_bytes": len(message_body),
-                },
-                provider_request_id=self._provider_request_id_from_payload(response_payload),
-            ),
-            duration_ms=duration_ms,
-            provider_name=provider_name,
-        )
-
-    def _record_model_usage_payload(
-        self,
-        *,
-        session_id: str,
-        upstream_path: str,
-        request_status: str,
-        request_body: bytes | None,
-        response_body_bytes: int | None,
-        response_body_sha256: str | None,
-        response_payload: dict[str, Any],
-        request_metadata: dict[str, Any],
-        response_metadata: dict[str, Any],
-        duration_ms: int | None,
-        provider_name: str = "openai",
-        request_body_bytes: int | None = None,
-        request_body_sha256: str | None = None,
-        request_model: str | None = None,
-    ) -> None:
-        if not self._is_model_usage_endpoint(upstream_path):
-            return
-
-        if provider_name == "openrouter":
-            if request_status == "success" and (
-                response_payload.get("type") in {"error", "response.failed"}
-                or response_payload.get("status") == "failed"
-                or response_payload.get("error") is not None
-            ):
-                request_status = "failed"
-            openrouter_metadata = self._sanitized_openrouter_metadata(response_payload)
-            if openrouter_metadata:
-                response_metadata = dict(response_metadata)
-                response_metadata["openrouter"] = openrouter_metadata
-
-        correlation_context = self.model_usage_store.get_active_correlation_context(
-            session_id=session_id,
-            agent_harness=MODEL_USAGE_AGENT_HARNESS,
-        )
-        if correlation_context is None:
-            correlation_context = self.model_usage_store.get_active_correlation_context(
-                session_id=session_id,
-            )
-        resolved_request_body_bytes = (
-            request_body_bytes
-            if request_body_bytes is not None
-            else len(request_body)
-            if request_body
-            else None
-        )
-        resolved_request_body_sha256 = (
-            request_body_sha256
-            if request_body_sha256 is not None
-            else sha256(request_body).hexdigest()
-            if request_body
-            else None
-        )
-        extractor = MappingModelUsageExtractor(provider_name=provider_name)
-        result = extractor.extract(
-            ModelUsageExtractionRequest(
-                provider=provider_name,
-                provider_endpoint_identifier=upstream_path,
-                request_status=request_status,
-                model=(
-                    response_payload.get("model")
-                    or request_model
-                    or self._model_from_request_body(request_body)
-                ),
-                duration_ms=duration_ms,
-                request_body_bytes=resolved_request_body_bytes,
-                request_body_sha256=resolved_request_body_sha256,
-                response_body_bytes=response_body_bytes,
-                response_body_sha256=response_body_sha256,
-                response_payload=response_payload,
-                request_metadata=request_metadata,
-                response_metadata=response_metadata,
-                correlation_context=correlation_context,
-                request_id=self._provider_request_id_from_metadata(
-                    response_metadata=response_metadata,
-                    response_payload=response_payload,
-                ),
-            )
-        )
-        self.model_usage_store.upsert_event(result.event)
-
-    @classmethod
-    def _provider_request_id_from_response(
-        cls,
-        *,
-        upstream_response: httpx.Response,
-        response_payload: dict[str, Any],
-    ) -> str | None:
-        for header_name in (
-            "request-id",
-            "x-request-id",
-            "x-generation-id",
-            "openai-request-id",
-            "anthropic-request-id",
-        ):
-            value = upstream_response.headers.get(header_name)
-            if value:
-                text = value.strip()
-                if text:
-                    return text
-        return cls._provider_request_id_from_payload(response_payload)
-
-    @staticmethod
-    def _sanitized_openrouter_metadata(response_payload: dict[str, Any]) -> dict[str, Any]:
-        metadata: dict[str, Any] = {}
-        selected_provider = response_payload.get("provider")
-        if isinstance(selected_provider, str) and selected_provider.strip():
-            metadata["selected_provider"] = selected_provider.strip()
-
-        raw_metadata = response_payload.get("openrouter_metadata")
-        if not isinstance(raw_metadata, dict):
-            return metadata
-        scalar_fields = {
-            "requested",
-            "strategy",
-            "attempt",
-            "provider",
-            "provider_name",
-            "selected_provider",
-            "region",
-            "is_byok",
-            "byok",
-            "request_id",
-            "generation_id",
-        }
-        for key in scalar_fields:
-            value = raw_metadata.get(key)
-            if isinstance(value, (str, bool, int, float)) or value is None:
-                if value is not None:
-                    metadata[key] = value
-
-        attempts = raw_metadata.get("attempts")
-        if isinstance(attempts, list):
-            safe_attempts: list[dict[str, Any]] = []
-            allowed_attempt_fields = {
-                "provider",
-                "provider_name",
-                "model",
-                "status",
-                "status_code",
-                "is_byok",
-                "byok",
-                "region",
-                "latency_ms",
-            }
-            for attempt in attempts:
-                if not isinstance(attempt, dict):
-                    continue
-                safe_attempt = {
-                    key: value
-                    for key, value in attempt.items()
-                    if key in allowed_attempt_fields
-                    and isinstance(value, (str, bool, int, float))
-                }
-                if safe_attempt:
-                    safe_attempts.append(safe_attempt)
-            if safe_attempts:
-                metadata["attempts"] = safe_attempts
-        endpoints = raw_metadata.get("endpoints")
-        if isinstance(endpoints, dict) and isinstance(endpoints.get("available"), list):
-            for endpoint in endpoints["available"]:
-                if isinstance(endpoint, dict) and endpoint.get("selected") is True:
-                    for key in ("provider", "model"):
-                        if isinstance(endpoint.get(key), str):
-                            metadata[f"selected_{key}"] = endpoint[key]
-        return metadata
-
-    @staticmethod
-    def _response_metadata_with_provider_request_id(
-        response_metadata: dict[str, Any], *, provider_request_id: str | None
-    ) -> dict[str, Any]:
-        if provider_request_id is not None:
-            response_metadata["provider_request_id"] = provider_request_id
-        return response_metadata
-
-    @staticmethod
-    def _provider_request_id_from_payload(response_payload: dict[str, Any]) -> str | None:
-        for key in (
-            "request_id",
-            "requestId",
-            "provider_request_id",
-            "providerRequestId",
-        ):
-            value = response_payload.get(key)
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                return text
-        return None
-
-    @classmethod
-    def _provider_request_id_from_metadata(
-        cls,
-        *,
-        response_metadata: dict[str, Any],
-        response_payload: dict[str, Any],
-    ) -> str | None:
-        value = response_metadata.get("provider_request_id")
-        if value is not None:
-            text = str(value).strip()
-            if text:
-                return text
-        return cls._provider_request_id_from_payload(response_payload)
-
-    @classmethod
-    def _capture_stream_usage_payload(
-        cls, *, buffer: str, chunk: bytes, payload: dict[str, Any]
-    ) -> str:
-        try:
-            buffer += chunk.decode("utf-8")
-        except UnicodeDecodeError:
-            buffer += chunk.decode("utf-8", errors="ignore")
-        while "\n\n" in buffer:
-            event_text, buffer = buffer.split("\n\n", 1)
-            cls._merge_sse_event_payload(event_text, payload)
-        return buffer
-
-    @classmethod
-    def _merge_sse_event_payload(cls, event_text: str, payload: dict[str, Any]) -> None:
-        for raw_line in event_text.splitlines():
-            line = raw_line.strip()
-            if not line.startswith("data:"):
-                continue
-            data = line.removeprefix("data:").strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                event_payload = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(event_payload, dict):
-                cls._merge_stream_event_dict(event_payload, payload)
-
-    @staticmethod
-    def _merge_stream_event_dict(event_payload: dict[str, Any], payload: dict[str, Any]) -> None:
-        candidate = event_payload.get("response")
-        if not isinstance(candidate, dict):
-            candidate = event_payload.get("message")
-        if not isinstance(candidate, dict):
-            candidate = event_payload
-        for key in (
-            "id",
-            "model",
-            "deployment",
-            "request_id",
-            "requestId",
-            "provider_request_id",
-            "providerRequestId",
-        ):
-            value = candidate.get(key)
-            if value is not None:
-                payload[key] = value
-        event_type = candidate.get("type") or event_payload.get("type")
-        for source in (candidate, event_payload):
-            for key in ("provider", "openrouter_metadata"):
-                if key in source:
-                    payload[key] = source[key]
-        if event_type is not None:
-            payload["type"] = event_type
-        for usage in (candidate.get("usage"), event_payload.get("usage")):
-            if isinstance(usage, dict):
-                existing_usage = payload.get("usage")
-                merged_usage = dict(existing_usage) if isinstance(existing_usage, dict) else {}
-                merged_usage.update(usage)
-                payload["usage"] = merged_usage
-
-    @staticmethod
-    def _is_model_usage_endpoint(upstream_path: str) -> bool:
-        normalized = upstream_path.lstrip("/")
-        return normalized in {
-            "responses",
-            "responses/compact",
-            "chat/completions",
-            "completions",
-            "messages",
-            "images/generations",
-            "images/edits",
-        }
 
     @staticmethod
     def _supported_openai_compatible_http_path(*, method: str, upstream_path: str) -> str:
@@ -2630,7 +2222,8 @@ class OpenAIRelay:
                 if usage_payload is not None and session_id:
                     response_payload, event_type = usage_payload
                     try:
-                        self._record_websocket_model_usage_event(
+                        await run_in_threadpool(
+                            self._record_websocket_model_usage_event,
                             session_id=session_id,
                             upstream_path=upstream_path,
                             message=message,

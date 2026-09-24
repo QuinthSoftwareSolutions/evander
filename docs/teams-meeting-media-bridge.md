@@ -22,7 +22,7 @@ Start a meeting session from the host:
 evander-cli teams-meeting start \
   --directory root \
   --join-url "https://teams.microsoft.com/l/meetup-join/..." \
-  --model gpt-5.4
+  --model gpt-6-sol
 ```
 
 To project an existing agent into the meeting instead of creating an unrelated meeting-only agent,

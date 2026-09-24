@@ -2,6 +2,8 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
+import { readAdminHashQuery } from "../admin/hash";
 import { CreateVmIcon, DeleteIcon, EditIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { type IssueCreateResponse, type IssueDetail, type IssueListResponse, type IssueRecord, type VmActionResponse } from "../admin/types";
@@ -64,7 +66,6 @@ const VM_OPTION_HELP = {
 } as const;
 
 const REFRESH_MS = 10000;
-const ISSUE_SELECTION_STORAGE_KEY = "admin-web:issues:selected-issue";
 
 type IssueMetadataEntry = {
   label: string;
@@ -313,9 +314,9 @@ function VmOptionsEditor({
 
 export function IssuesPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
-  const [stateFilter, setStateFilter] = useState("active");
+  const [stateFilter, setStateFilter] = useState(() => readAdminHashQuery().get("issue_id") ? "all" : "active");
   const [items, setItems] = useState<IssueRecord[]>([]);
-  const [selectedIssueId, setSelectedIssueId] = useState<string>("");
+  const [selectedIssueId, setSelectedIssueId] = useState<string>(() => readAdminHashQuery().get("issue_id") ?? "");
   const [selectedIssue, setSelectedIssue] = useState<IssueDetail | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -326,25 +327,6 @@ export function IssuesPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [validation, setValidation] = useState<string | null>(null);
-  const [selectionHydrated, setSelectionHydrated] = useState(false);
-
-  useEffect(() => {
-    const saved = window.localStorage.getItem(ISSUE_SELECTION_STORAGE_KEY);
-    if (saved) {
-      setSelectedIssueId(saved);
-    }
-    setSelectionHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (!selectionHydrated) return;
-    if (selectedIssueId) {
-      window.localStorage.setItem(ISSUE_SELECTION_STORAGE_KEY, selectedIssueId);
-      return;
-    }
-    window.localStorage.removeItem(ISSUE_SELECTION_STORAGE_KEY);
-  }, [selectedIssueId, selectionHydrated]);
-
   const selectedIssueRecord = useMemo(
     () => items.find((item) => item.issue_id === selectedIssueId) ?? null,
     [items, selectedIssueId],
@@ -373,7 +355,7 @@ export function IssuesPage() {
       if (current && payload.items.some((item) => item.issue_id === current)) {
         return current;
       }
-      return payload.items[0]?.issue_id ?? "";
+      return "";
     });
   }, [stateFilter, selectedDirectoryPath]);
 
@@ -540,343 +522,432 @@ export function IssuesPage() {
     }
   }
 
+  function selectIssue(id: string) {
+    if ((editing || creating) && !window.confirm("Discard the open issue form and select another issue?"))
+      return false;
+    setSelectedIssueId(id);
+    setCreating(false);
+    setEditing(false);
+    setCreatingVm(false);
+    setValidation(null);
+  }
+
   const showingForm = creating || editing;
   const activeIssueState = selectedIssue?.state ?? selectedIssueRecord?.state ?? "New";
   const selectedIssueBodyText = useMemo(() => (selectedIssue ? issueBodyText(selectedIssue) : ""), [selectedIssue]);
   const selectedIssueMetadata = useMemo(() => (selectedIssue ? issueMetadataDisplayEntries(selectedIssue) : []), [selectedIssue]);
 
   return (
-    <div className="feature-page issues-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Local issues</div>
-            <h1>Issues</h1>
-          </div>
-          <div className="inline-actions compact-actions">
-            <button
-              type="button"
-              className={creating ? "" : "primary"}
-              onClick={() => {
-                setCreating((current) => !current);
-                setEditing(false);
-                setCreatingVm(false);
-                setForm({ ...EMPTY_FORM, vmOptions: { ...EMPTY_VM_OPTIONS } });
-                setValidation(null);
-              }}
-              disabled={mutationLocked}
-            >
-              {creating ? "Cancel" : "New issue"}
-            </button>
-          </div>
-        </div>
-        {mutationLocked ? (
-          <div className="callout warning-callout">Unlock privileged operations to create, edit, delete, or launch work from issues.</div>
-        ) : null}
-        <div className="toolbar-grid issues-filter-grid">
-          <label className="field-stack">
-            <span>State</span>
-            <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
-              <option value="active">Active</option>
-              <option value="all">All</option>
-              {ISSUE_STATES.map((state) => (
-                <option key={state} value={state}>
-                  {state}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="feature-list issue-list">
-          {sortedItems.map((item) => (
-            <button
-              key={item.issue_id}
-              type="button"
-              className={`feature-list-item issue-list-item${item.issue_id === selectedIssueId ? " selected" : ""}`}
-              onClick={() => {
-                setSelectedIssueId(item.issue_id);
-                setCreating(false);
-                setEditing(false);
-                setCreatingVm(false);
-                setValidation(null);
-              }}
-            >
-              <div className="feature-list-title-row issue-list-item-row">
-                <strong>{item.issue_number}</strong>
-                <span className={`status-pill issue-state-pill state-${issueStateClass(item.state)}`}>
-                  {item.state ?? "New"}
-                </span>
-              </div>
-            </button>
-          ))}
-          {items.length === 0 ? <div className="empty-state">No issues found for {selectedDirectoryPath}.</div> : null}
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{creating ? "Create issue" : editing ? `Edit ${selectedIssue?.issue_number ?? "issue"}` : selectedIssue?.title ?? "Issues"}</h2>
-            <p className="muted-text">
-              Create local issues, import YAML-backed issues, and inspect issue records without leaving the admin surface.
-            </p>
-          </div>
-          {!showingForm && selectedIssue ? (
-            <div className="feature-toolbar-actions icon-actions">
-              {selectedIssue.can_create_vm ? (
-                <Tooltip content={creatingVm ? "Close the inline VM creation panel for this issue." : "Create a VM for the selected issue using the configured bootstrap options."}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCreatingVm((current) => !current);
-                      setVmOptions({ ...EMPTY_VM_OPTIONS });
-                      setValidation(null);
-                    }}
-                    disabled={mutationLocked}
-                    aria-label={creatingVm ? "Cancel VM creation" : "Create VM"}
-                  >
-                    <CreateVmIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              {selectedIssue.can_edit ? (
-                <Tooltip content="Edit the selected local issue record and save changes back to disk.">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditing(true);
-                      setCreating(false);
-                      setCreatingVm(false);
-                      setValidation(null);
-                    }}
-                    disabled={mutationLocked}
-                    aria-label="Edit issue"
-                  >
-                    <EditIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              {selectedIssue.can_delete ? (
-                <Tooltip content="Delete the selected local issue record from the host-side store.">
-                  <button className="danger" type="button" onClick={() => void handleDeleteIssue()} disabled={busy === "delete" || mutationLocked} aria-label="Delete issue">
-                    <DeleteIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
+    <RecordWorkspace
+      records={sortedItems.map((item) => ({
+        id: item.issue_id,
+        href: `#issues?${new URLSearchParams({ issue_id: item.issue_id })}`,
+      }))}
+      selectedId={selectedIssueId}
+      recordRouteKeys="issue_id"
+      onSelect={selectIssue}
+    >
+      <div className="feature-page issues-page">
+        <section className="feature-sidebar">
+          <div className="feature-sidebar-header">
+            <div>
+              <div className="eyebrow">Local issues</div>
+              <h1>Issues</h1>
             </div>
-          ) : null}
-        </div>
-        {error ? <div className="callout error-callout">{error}</div> : null}
-        {status ? <div className="callout success-callout">{status}</div> : null}
-        {validation ? <div className="callout error-callout">{validation}</div> : null}
-        {showingForm ? (
-          <article className="panel section-panel">
-            <div className="panel-header">
-              <div>
-                <h3>{creating ? "Issue draft" : `Editing ${selectedIssue?.issue_number ?? "issue"}`}</h3>
-                <p className="muted-text">
-                  {creating ? "Choose whether to create a new local issue or import an existing YAML file." : "Update the local issue record and save it back to disk."}
-                </p>
-              </div>
-              <span className="panel-meta">{creating ? form.mode : activeIssueState}</span>
-            </div>
-            <div className="config-field-grid">
-              {creating ? (
-                <div className="config-field-card">
-                  <div className="feature-list-title-row">
-                    <strong>Source</strong>
-                    <span className="panel-meta">Creation mode</span>
-                  </div>
-                  <label className="checkbox-row">
-                    <input
-                      type="radio"
-                      checked={form.mode === "manual"}
-                      onChange={() => setForm((current) => ({ ...current, mode: "manual" }))}
-                      disabled={mutationLocked}
-                    />
-                    <span>Create local issue from form</span>
-                  </label>
-                  <label className="checkbox-row">
-                    <input
-                      type="radio"
-                      checked={form.mode === "import"}
-                      onChange={() => setForm((current) => ({ ...current, mode: "import" }))}
-                      disabled={mutationLocked}
-                    />
-                    <span>Import existing YAML</span>
-                  </label>
-                </div>
-              ) : null}
-
-              <div className="config-field-card">
-                <div className="feature-list-title-row">
-                  <strong>Issue details</strong>
-                  <span className="panel-meta">{creating ? "Required fields" : "Editable metadata"}</span>
-                </div>
-                <label className="field-stack">
-                  <span>Title</span>
-                  <input
-                    value={form.title}
-                    onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
-                    disabled={mutationLocked || (form.mode === "import" && creating)}
-                  />
-                </label>
-                <label className="field-stack">
-                  <span>Repository source to register</span>
-                  <input
-                    value={form.repoSource}
-                    onChange={(event) => setForm((current) => ({ ...current, repoSource: event.target.value }))}
-                    placeholder="Git URL or local checkout (transient)"
-                    disabled={mutationLocked}
-                  />
-                </label>
-                <label className="field-stack">
-                  <span>Managed repository ID</span>
-                  <input
-                    value={form.managedRepoId}
-                    onChange={(event) => setForm((current) => ({ ...current, managedRepoId: event.target.value }))}
-                    placeholder="mr_..."
-                    disabled={mutationLocked || Boolean(form.repoSource)}
-                  />
-                </label>
-                {creating && form.mode === "import" ? (
-                  <label className="field-stack">
-                    <span>Import YAML</span>
-                    <input
-                      value={form.yamlPath}
-                      onChange={(event) => setForm((current) => ({ ...current, yamlPath: event.target.value }))}
-                      placeholder="/path/to/issue.yaml"
-                      disabled={mutationLocked}
-                    />
-                  </label>
-                ) : null}
-                {!creating ? (
-                  <label className="field-stack">
-                    <span>State</span>
-                    <select value={form.state} onChange={(event) => setForm((current) => ({ ...current, state: event.target.value }))} disabled={mutationLocked}>
-                      {ISSUE_STATES.map((state) => (
-                        <option key={state} value={state}>
-                          {state}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-                <label className="field-stack">
-                  <span>Body</span>
-                  <textarea
-                    rows={12}
-                    value={form.body}
-                    onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))}
-                    disabled={mutationLocked || (form.mode === "import" && creating)}
-                  />
-                </label>
-              </div>
-
-              {creating ? (
-                <div className="config-field-card">
-                  <div className="feature-list-title-row">
-                    <strong>VM bootstrap</strong>
-                    <span className="panel-meta">Optional</span>
-                  </div>
-                  <label className="checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={form.startVm}
-                      onChange={(event) => setForm((current) => ({ ...current, startVm: event.target.checked }))}
-                      disabled={mutationLocked}
-                    />
-                    <span>Create and start VM immediately</span>
-                  </label>
-                  {form.startVm ? (
-                    <VmOptionsEditor
-                      value={form.vmOptions}
-                      onChange={(next) => setForm((current) => ({ ...current, vmOptions: next }))}
-                      disabled={mutationLocked}
-                    />
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            <div className="feature-toolbar-actions">
-              <button className="primary" type="button" disabled={busy !== null || mutationLocked} onClick={() => void (creating ? handleCreateIssue() : handleSaveIssue())}>
-                {busy === "create" || busy === "save" ? "Saving..." : creating ? "Create issue" : "Save changes"}
-              </button>
+            <div className="inline-actions compact-actions">
               <button
                 type="button"
+                className={creating ? "" : "primary"}
                 onClick={() => {
-                  setCreating(false);
+                  setCreating((current) => !current);
                   setEditing(false);
+                  setCreatingVm(false);
+                  setForm({ ...EMPTY_FORM, vmOptions: { ...EMPTY_VM_OPTIONS } });
                   setValidation(null);
-                  if (selectedIssue) {
-                    setForm(issueFormFromDetail(selectedIssue));
-                  }
                 }}
+                disabled={mutationLocked}
               >
-                Cancel
+                {creating ? "Cancel" : "New issue"}
               </button>
             </div>
-          </article>
-        ) : selectedIssue ? (
-          <div className="feature-grid issues-detail-grid">
-            <div className="panel detail-panel">
-              <div className="panel-heading">
-                <div>
-                  <div className="section-label">{selectedIssueRecord ? `Selected: ${selectedIssueRecord.issue_number}` : "Issue"}</div>
-                  <h2>{selectedIssue.title}</h2>
+          </div>
+          {mutationLocked ? (
+            <div className="callout warning-callout">
+              Unlock privileged operations to create, edit, delete, or launch work from issues.
+            </div>
+          ) : null}
+          <div className="toolbar-grid issues-filter-grid">
+            <label className="field-stack">
+              <span>State</span>
+              <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
+                <option value="active">Active</option>
+                <option value="all">All</option>
+                {ISSUE_STATES.map((state) => (
+                  <option key={state} value={state}>
+                    {state}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="feature-list issue-list">
+            {sortedItems.map((item) => (
+              <button
+                key={item.issue_id}
+                type="button"
+                className={`feature-list-item issue-list-item${item.issue_id === selectedIssueId ? " selected" : ""}`}
+                onClick={() => selectIssue(item.issue_id)}
+              >
+                <div className="feature-list-title-row issue-list-item-row">
+                  <strong>{item.issue_number}</strong>
+                  <span className={`status-pill issue-state-pill state-${issueStateClass(item.state)}`}>
+                    {item.state ?? "New"}
+                  </span>
                 </div>
-                <span className="status-pill">{activeIssueState}</span>
+              </button>
+            ))}
+            {items.length === 0 ? (
+              <div className="empty-state">No issues found for {selectedDirectoryPath}.</div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="feature-content">
+          <div className="feature-toolbar">
+            <div>
+              <h2>
+                {creating
+                  ? "Create issue"
+                  : editing
+                    ? `Edit ${selectedIssue?.issue_number ?? "issue"}`
+                    : (selectedIssue?.title ?? "Issues")}
+              </h2>
+              <p className="muted-text">
+                Create local issues, import YAML-backed issues, and inspect issue records without leaving the admin
+                surface.
+              </p>
+            </div>
+            {!showingForm && selectedIssue ? (
+              <div className="feature-toolbar-actions icon-actions">
+                {selectedIssue.can_create_vm ? (
+                  <Tooltip
+                    content={
+                      creatingVm
+                        ? "Close the inline VM creation panel for this issue."
+                        : "Create a VM for the selected issue using the configured bootstrap options."
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreatingVm((current) => !current);
+                        setVmOptions({ ...EMPTY_VM_OPTIONS });
+                        setValidation(null);
+                      }}
+                      disabled={mutationLocked}
+                      aria-label={creatingVm ? "Cancel VM creation" : "Create VM"}
+                    >
+                      <CreateVmIcon />
+                    </button>
+                  </Tooltip>
+                ) : null}
+                {selectedIssue.can_edit ? (
+                  <Tooltip content="Edit the selected local issue record and save changes back to disk.">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditing(true);
+                        setCreating(false);
+                        setCreatingVm(false);
+                        setValidation(null);
+                      }}
+                      disabled={mutationLocked}
+                      aria-label="Edit issue"
+                    >
+                      <EditIcon />
+                    </button>
+                  </Tooltip>
+                ) : null}
+                {selectedIssue.can_delete ? (
+                  <Tooltip content="Delete the selected local issue record from the host-side store.">
+                    <button
+                      className="danger"
+                      type="button"
+                      onClick={() => void handleDeleteIssue()}
+                      disabled={busy === "delete" || mutationLocked}
+                      aria-label="Delete issue"
+                    >
+                      <DeleteIcon />
+                    </button>
+                  </Tooltip>
+                ) : null}
               </div>
-              <div className="detail-stack">
-                <div className="detail-grid">
-                  <div><span>Issue</span><strong>{selectedIssue.issue_number}</strong></div>
-                  <div><span>Source</span><strong>{issueSourceLabel(selectedIssue.source_type)}</strong></div>
-                  <div><span>Updated</span><strong>{formatTimestamp(selectedIssue.updated_at)}</strong></div>
-                  <div><span>Managed repository</span><Tooltip content={selectedIssue.managed_repo_id ?? "No managed repository is bound to this issue."}><strong className="issue-meta-value issue-path-value">{selectedIssue.managed_repo_id ?? "None"}</strong></Tooltip></div>
-                  <div><span>Directory</span><Tooltip content={`Directory scope: ${selectedIssue.directory_path ?? "root"}`}><strong className="issue-meta-value issue-path-value">{selectedIssue.directory_path ?? "root"}</strong></Tooltip></div>
-                  <div><span>YAML path</span><Tooltip content={selectedIssue.yaml_path ?? "This issue does not currently have a YAML file path."}><strong className="issue-meta-value issue-path-value">{selectedIssue.yaml_path ?? "No file"}</strong></Tooltip></div>
+            ) : null}
+          </div>
+          {error ? <div className="callout error-callout">{error}</div> : null}
+          {status ? <div className="callout success-callout">{status}</div> : null}
+          {validation ? <div className="callout error-callout">{validation}</div> : null}
+          {showingForm ? (
+            <article className="panel section-panel">
+              <div className="panel-header">
+                <div>
+                  <h3>{creating ? "Issue draft" : `Editing ${selectedIssue?.issue_number ?? "issue"}`}</h3>
+                  <p className="muted-text">
+                    {creating
+                      ? "Choose whether to create a new local issue or import an existing YAML file."
+                      : "Update the local issue record and save it back to disk."}
+                  </p>
+                </div>
+                <span className="panel-meta">{creating ? form.mode : activeIssueState}</span>
+              </div>
+              <div className="config-field-grid">
+                {creating ? (
+                  <div className="config-field-card">
+                    <div className="feature-list-title-row">
+                      <strong>Source</strong>
+                      <span className="panel-meta">Creation mode</span>
+                    </div>
+                    <label className="checkbox-row">
+                      <input
+                        type="radio"
+                        checked={form.mode === "manual"}
+                        onChange={() => setForm((current) => ({ ...current, mode: "manual" }))}
+                        disabled={mutationLocked}
+                      />
+                      <span>Create local issue from form</span>
+                    </label>
+                    <label className="checkbox-row">
+                      <input
+                        type="radio"
+                        checked={form.mode === "import"}
+                        onChange={() => setForm((current) => ({ ...current, mode: "import" }))}
+                        disabled={mutationLocked}
+                      />
+                      <span>Import existing YAML</span>
+                    </label>
+                  </div>
+                ) : null}
+
+                <div className="config-field-card">
+                  <div className="feature-list-title-row">
+                    <strong>Issue details</strong>
+                    <span className="panel-meta">{creating ? "Required fields" : "Editable metadata"}</span>
+                  </div>
+                  <label className="field-stack">
+                    <span>Title</span>
+                    <input
+                      value={form.title}
+                      onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+                      disabled={mutationLocked || (form.mode === "import" && creating)}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Repository source to register</span>
+                    <input
+                      value={form.repoSource}
+                      onChange={(event) => setForm((current) => ({ ...current, repoSource: event.target.value }))}
+                      placeholder="Git URL or local checkout (transient)"
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Managed repository ID</span>
+                    <input
+                      value={form.managedRepoId}
+                      onChange={(event) => setForm((current) => ({ ...current, managedRepoId: event.target.value }))}
+                      placeholder="mr_..."
+                      disabled={mutationLocked || Boolean(form.repoSource)}
+                    />
+                  </label>
+                  {creating && form.mode === "import" ? (
+                    <label className="field-stack">
+                      <span>Import YAML</span>
+                      <input
+                        value={form.yamlPath}
+                        onChange={(event) => setForm((current) => ({ ...current, yamlPath: event.target.value }))}
+                        placeholder="/path/to/issue.yaml"
+                        disabled={mutationLocked}
+                      />
+                    </label>
+                  ) : null}
+                  {!creating ? (
+                    <label className="field-stack">
+                      <span>State</span>
+                      <select
+                        value={form.state}
+                        onChange={(event) => setForm((current) => ({ ...current, state: event.target.value }))}
+                        disabled={mutationLocked}
+                      >
+                        {ISSUE_STATES.map((state) => (
+                          <option key={state} value={state}>
+                            {state}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <label className="field-stack">
+                    <span>Body</span>
+                    <textarea
+                      rows={12}
+                      value={form.body}
+                      onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))}
+                      disabled={mutationLocked || (form.mode === "import" && creating)}
+                    />
+                  </label>
                 </div>
 
-                {creatingVm ? (
-                  <div className="detail-block">
-                    <div className="section-label">Create VM</div>
-                    <VmOptionsEditor value={vmOptions} onChange={setVmOptions} disabled={mutationLocked} />
-                    <div className="inline-actions">
-                      <button className="primary" type="button" onClick={() => void handleCreateVm()} disabled={busy === "create-vm" || mutationLocked}>
-                        {busy === "create-vm" ? "Creating..." : "Create VM"}
-                      </button>
+                {creating ? (
+                  <div className="config-field-card">
+                    <div className="feature-list-title-row">
+                      <strong>VM bootstrap</strong>
+                      <span className="panel-meta">Optional</span>
                     </div>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={form.startVm}
+                        onChange={(event) => setForm((current) => ({ ...current, startVm: event.target.checked }))}
+                        disabled={mutationLocked}
+                      />
+                      <span>Create and start VM immediately</span>
+                    </label>
+                    {form.startVm ? (
+                      <VmOptionsEditor
+                        value={form.vmOptions}
+                        onChange={(next) => setForm((current) => ({ ...current, vmOptions: next }))}
+                        disabled={mutationLocked}
+                      />
+                    ) : null}
                   </div>
                 ) : null}
               </div>
-            </div>
+              <div className="feature-toolbar-actions">
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={busy !== null || mutationLocked}
+                  onClick={() => void (creating ? handleCreateIssue() : handleSaveIssue())}
+                >
+                  {busy === "create" || busy === "save" ? "Saving..." : creating ? "Create issue" : "Save changes"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreating(false);
+                    setEditing(false);
+                    setValidation(null);
+                    if (selectedIssue) {
+                      setForm(issueFormFromDetail(selectedIssue));
+                    }
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </article>
+          ) : selectedIssue ? (
+            <div className="feature-grid issues-detail-grid">
+              <div className="panel detail-panel">
+                <div className="panel-heading">
+                  <div>
+                    <div className="section-label">
+                      {selectedIssueRecord ? `Selected: ${selectedIssueRecord.issue_number}` : "Issue"}
+                    </div>
+                    <h2>{selectedIssue.title}</h2>
+                  </div>
+                  <span className="status-pill">{activeIssueState}</span>
+                </div>
+                <div className="detail-stack">
+                  <div className="detail-grid">
+                    <div>
+                      <span>Issue</span>
+                      <strong>{selectedIssue.issue_number}</strong>
+                    </div>
+                    <div>
+                      <span>Source</span>
+                      <strong>{issueSourceLabel(selectedIssue.source_type)}</strong>
+                    </div>
+                    <div>
+                      <span>Updated</span>
+                      <strong>{formatTimestamp(selectedIssue.updated_at)}</strong>
+                    </div>
+                    <div>
+                      <span>Managed repository</span>
+                      <Tooltip
+                        content={selectedIssue.managed_repo_id ?? "No managed repository is bound to this issue."}
+                      >
+                        <strong className="issue-meta-value issue-path-value">
+                          {selectedIssue.managed_repo_id ?? "None"}
+                        </strong>
+                      </Tooltip>
+                    </div>
+                    <div>
+                      <span>Directory</span>
+                      <Tooltip content={`Directory scope: ${selectedIssue.directory_path ?? "root"}`}>
+                        <strong className="issue-meta-value issue-path-value">
+                          {selectedIssue.directory_path ?? "root"}
+                        </strong>
+                      </Tooltip>
+                    </div>
+                    <div>
+                      <span>YAML path</span>
+                      <Tooltip
+                        content={selectedIssue.yaml_path ?? "This issue does not currently have a YAML file path."}
+                      >
+                        <strong className="issue-meta-value issue-path-value">
+                          {selectedIssue.yaml_path ?? "No file"}
+                        </strong>
+                      </Tooltip>
+                    </div>
+                  </div>
 
-            <div className="panel section-panel issue-summary-panel">
-              <div className="panel-heading">
-                <div>
-                  <div className="section-label">Summary</div>
-                  <h2>Issue summary</h2>
+                  {creatingVm ? (
+                    <div className="detail-block">
+                      <div className="section-label">Create VM</div>
+                      <VmOptionsEditor value={vmOptions} onChange={setVmOptions} disabled={mutationLocked} />
+                      <div className="inline-actions">
+                        <button
+                          className="primary"
+                          type="button"
+                          onClick={() => void handleCreateVm()}
+                          disabled={busy === "create-vm" || mutationLocked}
+                        >
+                          {busy === "create-vm" ? "Creating..." : "Create VM"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
-              <div className="issue-copy-block issue-body-block">{selectedIssueBodyText || issueSummaryText(selectedIssue) || "No summary available."}</div>
-              {selectedIssueMetadata.length > 0 ? (
-                <dl className="property-grid vm-label-grid issue-metadata-list">
-                  {selectedIssueMetadata.map((entry) => (
-                    <div key={entry.label}>
-                      <dt>{entry.label}</dt>
-                      <dd>
-                        {renderIssueMetadataValue(entry.value)}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
-              ) : null}
+
+              <div className="panel section-panel issue-summary-panel">
+                <div className="panel-heading">
+                  <div>
+                    <div className="section-label">Summary</div>
+                    <h2>Issue summary</h2>
+                  </div>
+                </div>
+                <div className="issue-copy-block issue-body-block">
+                  {selectedIssueBodyText || issueSummaryText(selectedIssue) || "No summary available."}
+                </div>
+                {selectedIssueMetadata.length > 0 ? (
+                  <dl className="property-grid vm-label-grid issue-metadata-list">
+                    {selectedIssueMetadata.map((entry) => (
+                      <div key={entry.label}>
+                        <dt>{entry.label}</dt>
+                        <dd>{renderIssueMetadataValue(entry.value)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : null}
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="empty-state">Select an issue or create a new one.</div>
-        )}
-      </section>
-    </div>
+          ) : (
+            <RecordPlaceholder>Select an issue to view details</RecordPlaceholder>
+          )}
+        </section>
+      </div>
+    </RecordWorkspace>
   );
 }

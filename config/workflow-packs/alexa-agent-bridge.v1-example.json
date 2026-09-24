@@ -25,9 +25,9 @@
         "display_name": "Alexa question received",
         "type": "trigger:http:webhook",
         "config": {
-          "slug": "alexa-truman",
-          "secret_env": "ALEXA_TRUMAN_WEBHOOK_SECRET",
-          "event_type": "alexa.truman.requested"
+          "slug": "alexa-evander",
+          "secret_env": "ALEXA_EVANDER_WEBHOOK_SECRET",
+          "event_type": "alexa.evander.requested"
         }
       },
       {

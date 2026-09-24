@@ -3,19 +3,38 @@ from __future__ import annotations
 from evander.admin.operations_helpers import (
     _journalctl_tail,
     _run_systemd_control,
-    _systemctl_show,
+    _systemctl_show_many,
 )
+from evander.admin.services.snapshot_cache import SnapshotCache
 from evander.admin.worker_config import _WORKER_DEFINITIONS, _worker_definition
 from evander.models import WorkerActionResult, WorkerSummary
 
 
 class WorkerControlAdminService:
+    def __init__(self) -> None:
+        self._snapshots: SnapshotCache[list[WorkerSummary]] = SnapshotCache(
+            ttl_seconds=1.0,
+            max_entries=1,
+        )
+        self._generation = 0
+
     def list_background_workers(self) -> list[WorkerSummary]:
+        return [
+            summary.model_copy(deep=True)
+            for summary in self._snapshots.read(self._generation, self._collect_background_workers)
+        ]
+
+    def _collect_background_workers(self) -> list[WorkerSummary]:
         summaries: list[WorkerSummary] = []
+        try:
+            payloads = _systemctl_show_many([unit for _, _, unit in _WORKER_DEFINITIONS])
+            error = None
+        except RuntimeError as exc:
+            payloads = {}
+            error = str(exc)
         for worker_id, name, unit in _WORKER_DEFINITIONS:
-            try:
-                payload = _systemctl_show(unit)
-            except RuntimeError as exc:
+            payload = payloads.get(unit)
+            if payload is None:
                 summaries.append(
                     WorkerSummary(
                         worker_id=worker_id,
@@ -24,7 +43,7 @@ class WorkerControlAdminService:
                         active_state="unavailable",
                         running=False,
                         failed=False,
-                        detail=str(exc),
+                        detail=error or f"No systemctl state returned for {unit}",
                     )
                 )
                 continue
@@ -85,6 +104,7 @@ class WorkerControlAdminService:
             )
         resolved_worker_id, name, unit = worker
         completed = _run_systemd_control("start", unit)
+        self._generation += 1
         message = (completed.stdout or completed.stderr or "").strip() or f"Started {name}"
         return WorkerActionResult(
             success=completed.returncode == 0,
@@ -106,6 +126,7 @@ class WorkerControlAdminService:
             )
         resolved_worker_id, name, unit = worker
         completed = _run_systemd_control("stop", unit)
+        self._generation += 1
         message = (completed.stdout or completed.stderr or "").strip() or f"Stopped {name}"
         return WorkerActionResult(
             success=completed.returncode == 0,

@@ -58,6 +58,7 @@ function createWorkflowDocument() {
           id: "trigger-old",
           display_name: "Incoming ticket",
           type: "trigger:manual",
+          config: {},
         },
       ],
       gates: [
@@ -65,7 +66,7 @@ function createWorkflowDocument() {
           id: "gate-old",
           display_name: "Route ticket",
           type: "gate:ticket-route",
-          condition: "${{trigger-old.ticket.title}}",
+          config: { condition: "${{trigger-old.ticket.title}}" },
         },
       ],
       effects: [
@@ -73,26 +74,28 @@ function createWorkflowDocument() {
           id: "effect-old",
           display_name: "Summarize ticket",
           type: "effect:ticket-summary",
-          payload: {
-            summary: "Ticket ${{trigger-old.ticket.title}}",
-            details: [
-              {
-                label: "Ticket id",
-                value: "${{trigger-old.ticket.id}}",
-              },
-              {
-                label: "System time",
-                value: "${{system.now}}",
-              },
-              {
-                label: "Malformed",
-                value: "Review ${{trigger-old.ticket ?? {bad}}}",
-              },
-              {
-                label: "External",
-                value: "Review ${{outside-node.ticket.title}}",
-              },
-            ],
+          config: {
+            payload: {
+              summary: "Ticket ${{trigger-old.ticket.title}}",
+              details: [
+                {
+                  label: "Ticket id",
+                  value: "${{trigger-old.ticket.id}}",
+                },
+                {
+                  label: "System time",
+                  value: "${{system.now}}",
+                },
+                {
+                  label: "Malformed",
+                  value: "Review ${{trigger-old.ticket ?? {bad}}}",
+                },
+                {
+                  label: "External",
+                  value: "Review ${{outside-node.ticket.title}}",
+                },
+              ],
+            },
           },
         },
       ],
@@ -101,7 +104,7 @@ function createWorkflowDocument() {
           id: "query-old",
           display_name: "Lookup ticket",
           type: "query:ticket-filter",
-          filter: "${{trigger-old.ticket.title ?? trigger-old.ticket.id}}",
+          config: { filter: "${{trigger-old.ticket.title ?? trigger-old.ticket.id}}" },
         },
       ],
       edges: [
@@ -225,8 +228,8 @@ function assertResetSavePayload(body) {
   assert.equal(body.config.queries.length, 1);
   assert.equal(body.config.triggers[0].id, "trigger-old");
   assert.equal(body.config.triggers[0].display_name, "Incoming ticket");
-  assert.equal(body.config.gates[0].condition, "${{trigger-old.ticket.title}}");
-  assert.deepEqual(body.config.effects[0].payload, {
+  assert.equal(body.config.gates[0].config.condition, "${{trigger-old.ticket.title}}");
+  assert.deepEqual(body.config.effects[0].config.payload, {
     summary: "Ticket ${{trigger-old.ticket.title}}",
     details: [
       {
@@ -247,7 +250,7 @@ function assertResetSavePayload(body) {
       },
     ],
   });
-  assert.equal(body.config.queries[0].filter, "${{trigger-old.ticket.title ?? trigger-old.ticket.id}}");
+  assert.equal(body.config.queries[0].config.filter, "${{trigger-old.ticket.title ?? trigger-old.ticket.id}}");
   assert.deepEqual(body.config.edges, [
     {
       source_id: "trigger-old",

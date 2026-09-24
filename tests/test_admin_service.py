@@ -2041,6 +2041,189 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     assert agents[0].host["image_alias"] == "dotnet-playwright"
 
 
+@pytest.mark.parametrize(
+    "image_metadata",
+    [
+        {},
+        {"image": "runner-base:latest", "image_alias": None},
+        {"image": "runner-dotnet-playwright:2026-06-05", "image_alias": "dotnet-playwright"},
+    ],
+    ids=["no-image-metadata", "default-image", "custom-image-alias"],
+)
+def test_copy_container_agent_preserves_policy_with_fresh_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, image_metadata: dict[str, str | None]
+) -> None:
+    from evander.session_auth import ensure_session_mcp_auth_token, session_mcp_auth_token
+
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    assert service.operations_admin.write_directory_domain_config(
+        "root", "providers", {
+            "container_worker_base_url": "http://worker.test:11888",
+            "container_worker_default_image": "runner-base:latest",
+            "container_worker_images": {
+                "dotnet-playwright": "runner-dotnet-playwright:2026-06-05",
+            },
+        }
+    ).ok
+    service.skill_admin.create_skill({"name": "copy.skill", "content": "# Copy skill\n"})
+    written_files: dict[str, str] = {}
+
+    def prepare_session(self, request):
+        assert request.metadata["container_worker"] == (
+            image_metadata or {"image": "runner-base:latest", "image_alias": None}
+        )
+        return WorkerSessionRecord(
+            session_id=request.session_id,
+            root_path=f"/worker/{request.session_id}",
+            agent_home_path=f"/worker/{request.session_id}/agent_home",
+            repo_root_path=f"/worker/{request.session_id}/agent_home/repos",
+            artifacts_path=f"/worker/{request.session_id}/artifacts",
+            logs_path=f"/worker/{request.session_id}/logs",
+            metadata_path=f"/worker/{request.session_id}/metadata.json",
+            metadata=dict(request.metadata),
+        )
+
+    def write_files(self, session_id, request):
+        written_files.update({file.destination_path: file.content or "" for file in request.files})
+        return WorkerFileWriteRecord(
+            session_id=session_id, copied_count=len(request.files),
+            copied_paths=[file.destination_path for file in request.files],
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", prepare_session)
+    monkeypatch.setattr(ContainerWorkerClient, "write_files", write_files)
+    source = SessionManifest(
+        session_id="source", vm_provider="container_worker_vm", vm_provider_id="source-target",
+        model="source-model", codex_auth_mode="metered_api",
+        allowed_tools=[ToolName.APPROVAL_CHECK],
+        approval_required_tools=[ToolName.APPROVAL_CHECK],
+        approval_tool_settings={"approval_check": {"ttl_seconds": 7200, "max_uses": None}},
+        tool_argument_policies={
+            "approval_check": [{"id": "copy-rule", "constraints": [
+                {"id": "request-id", "path": "request_id", "operator": "required"},
+            ]}],
+        },
+        allowed_script_names=["build"], quotas={"tool_calls": 42},
+        communication_file_receive_enabled=True, communication_file_send_enabled=True,
+        communication_file_max_bytes=12345,
+        communication_file_allowed_mime_types=["text/plain"],
+        communication_file_allowed_extensions=[".txt"],
+        communication_file_blocked_extensions=[".exe"],
+        communication_file_require_approval_for_send=True,
+        web_search_enabled=True, image_generation_enabled=True,
+        created_at=datetime.now(UTC) - timedelta(days=8),
+        expires_at=datetime.now(UTC) - timedelta(days=1),
+        metadata={
+            "execution_backend": "container_worker_vm", "target_name": "source-target",
+            "container_worker": image_metadata,
+            "model_provider_mode": "openai_public", "agent_provider": "codex",
+            "dotnet": True, "nuget": True, "playwright": True,
+            "codex_skills": ["copy.skill"], "labels": {"purpose": "development"},
+            "http_targets": {"targets": {"docs": {"base_url": "https://docs.example.test"}}},
+            "capability_profile": "source-profile", "assistant_read_only": True,
+            "git_access": {"key_path": "/source/private-key"},
+            "codex_thread_id": "source-thread", "container_session_lifecycle": {"state": "cleaned_up"},
+        },
+    )
+    source, source_token = ensure_session_mcp_auth_token(source)
+    service.runtime.session_repository.upsert_session(source)
+    operation = service.vm_agent_admin.submit_admin_agent_copy(source, session_id="copied")
+    operation = wait_for_agent_create_operation(
+        service, operation.operation_id, statuses={"succeeded", "failed"}
+    )
+    assert operation.status == "succeeded", operation.error
+    copied = service.runtime.session_repository.get_session("copied")
+    assert copied is not None
+    identity_fields = {
+        "session_id", "vm_id", "vm_provider", "vm_provider_id", "created_at", "expires_at",
+        "metadata",
+    }
+    assert copied.model_dump(exclude=identity_fields) == source.model_dump(exclude=identity_fields)
+    assert copied.vm_provider_id == "copied"
+    assert copied.expires_at > datetime.now(UTC) + timedelta(days=6)
+    assert session_mcp_auth_token(copied) != source_token
+    assert source_token not in "\n".join(written_files.values())
+    assert "git_access" not in copied.metadata
+    assert "codex_thread_id" not in copied.metadata
+    assert "container_session_lifecycle" not in copied.metadata
+    assert copied.metadata["codex_skills"] == ["copy.skill"]
+    assert copied.metadata["http_targets"] == source.metadata["http_targets"]
+    assert copied.metadata["capability_profile"] == "source-profile"
+    assert copied.metadata["assistant_read_only"] is True
+    assert copied.metadata["container_worker"] == (
+        image_metadata or {"image": "runner-base:latest", "image_alias": None}
+    )
+    assert "/home/agent/.config/evander/codex/skills/copy.skill/SKILL.md" in written_files
+    assert "/home/agent/.nuget/NuGet/NuGet.Config" in written_files
+    assert "DOTNET_ROOT" in written_files["/home/agent/.profile"]
+    assert service.runtime.session_repository.get_session("source") == source
+    with pytest.raises(ValueError, match="already exists"):
+        service.vm_agent_admin.submit_admin_agent_copy(source, session_id="copied")
+    with pytest.raises(ValueError, match="non-empty string"):
+        service.vm_agent_admin.submit_admin_agent_copy(source, session_id=" ")
+
+
+@pytest.mark.parametrize(
+    ("image_alias", "image_ref"),
+    [
+        ("default", "ubuntu-24.04-server-cloudimg-amd64.img"),
+        ("gpu", "ubuntu-24.04-gpu.img"),
+    ],
+)
+def test_copy_vm_agent_uses_fresh_vm_and_preserves_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, image_alias: str, image_ref: str
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    assert service.operations_admin.write_directory_domain_config(
+        "root", "vm", {
+            "libvirt_vm_default_template": "default",
+            "libvirt_vm_templates": {
+                "default": "ubuntu-24.04-server-cloudimg-amd64.img",
+                "gpu": "ubuntu-24.04-gpu.img",
+            },
+        }
+    ).ok
+    image_metadata = {"image_ref": image_ref, "template_alias": image_alias}
+    source = SessionManifest(
+        session_id="source", vm_id="source-vm", vm_provider="libvirt",
+        allowed_tools=[], model="source-model", image_generation_enabled=True,
+        quotas={"tool_calls": 17}, expires_at=datetime.now(UTC) + timedelta(days=7),
+        metadata={"dotnet": True, "libvirt_vm_template": image_metadata},
+    )
+    service.runtime.session_repository.upsert_session(source)
+    payloads = []
+
+    def create_vm(**payload):
+        payloads.append(payload)
+        service.runtime.session_repository.upsert_session(SessionManifest(
+            session_id=payload["session_id"], vm_id=payload["vm_name"],
+            allowed_tools=[ToolName.APPROVAL_CHECK], expires_at=datetime.now(UTC) + timedelta(days=7),
+            metadata=payload["metadata"],
+        ))
+        return VmActionResult(
+            success=True, vm_name=payload["vm_name"], action="create_vm",
+            message="created", provider="libvirt",
+        )
+
+    monkeypatch.setattr(service.vm_agent_admin, "create_vm", create_vm)
+    operation = service.vm_agent_admin.submit_admin_agent_copy(source)
+    operation = wait_for_agent_create_operation(
+        service, operation.operation_id, statuses={"succeeded", "failed"}
+    )
+    assert operation.status == "succeeded", operation.error
+    assert payloads[0]["vm_name"] != source.vm_id
+    assert payloads[0]["metadata"]["libvirt_vm_template"] == image_metadata
+    assert operation.result["vm_image"] == image_ref
+    assert operation.result["vm_image_alias"] == image_alias
+    assert payloads[0]["dotnet"] is True
+    copied = service.runtime.session_repository.get_session(operation.session_id)
+    assert copied.allowed_tools == []
+    assert copied.quotas == source.quotas
+    assert copied.image_generation_enabled is True
+    assert copied.model == source.model
+    assert copied.metadata["libvirt_vm_template"] == image_metadata
+
+
 def test_create_container_agent_fast_forwards_discord_cursor_for_new_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3176,7 +3359,7 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
         "lab-vm",
         "install-skills",
         backend="libvirt_vm",
-        payload={"codex_skills": ["demo.skill"], "vm_user": "agent"},
+        payload={"codex_skills": ["demo.skill"], "vm_user": "reviewer"},
     )
 
     assert result["success"] is True
@@ -3192,12 +3375,157 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
                     "overwrite": True,
                 }
             ],
-            "agent",
+            "reviewer",
         )
     ]
     updated = service.runtime.session_repository.get_session("lab-session")
     assert updated is not None
     assert updated.metadata["codex_skills"] == ["demo.skill"]
+    assert updated.metadata["codex_skill_installations"] == {
+        "demo.skill": {"backend": "libvirt_vm", "vm_user": "reviewer"}
+    }
+
+
+def test_replace_managed_skill_propagates_to_active_container_and_vm_sessions(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.skill_admin.create_skill({"name": "demo.skill", "content": "# Original\n"})
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda _vm_name, _field_name: None
+    )
+
+    def fake_create_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, stdout="created", stderr="")
+
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", fake_create_run)
+    create_result = service.vm_agent_admin.create_vm(
+        vm_name="lab-vm",
+        session_id="vm-session",
+        vm_user="reviewer",
+        codex_skills=["demo.skill"],
+    )
+    assert create_result.success is True
+    created_vm_session = service.runtime.session_repository.get_session("vm-session")
+    assert created_vm_session is not None
+    assert created_vm_session.metadata["codex_skills"] == ["demo.skill"]
+    assert created_vm_session.metadata["codex_skill_installations"] == {
+        "demo.skill": {"backend": "libvirt_vm", "vm_user": "reviewer"}
+    }
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=expires_at,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "codex_skills": ["demo.skill"],
+            },
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="expired-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="expired-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "expired-target",
+                "codex_skills": ["demo.skill"],
+            },
+        )
+    )
+    container_writes: list[tuple[str, list[dict[str, object]]]] = []
+    vm_writes: list[tuple[str, list[dict[str, object]], str]] = []
+
+    class FakeContainerBackend:
+        def write_files(
+            self,
+            *,
+            session_id: str,
+            files: list[dict[str, object]],
+        ) -> WorkerFileWriteRecord:
+            container_writes.append((session_id, files))
+            return WorkerFileWriteRecord(
+                session_id=session_id,
+                copied_count=len(files),
+                copied_paths=[str(file["destination_path"]) for file in files],
+            )
+
+    def fake_vm_exec(
+        self: AdminRuntimeComponents, target: str, **kwargs: object
+    ) -> dict[str, object]:
+        assert target == "vm-session"
+        assert kwargs["vm_user"] == "reviewer"
+        return {"success": True, "stdout": "/custom/codex\n"}
+
+    def fake_vm_copy_files(
+        self: AdminRuntimeComponents,
+        target: str,
+        *,
+        files: list[dict[str, object]],
+        vm_user: str = "agent",
+    ) -> dict[str, object]:
+        vm_writes.append((target, files, vm_user))
+        return {
+            "success": True,
+            "copied_paths": [str(file["destination_path"]) for file in files],
+        }
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        lambda **_kwargs: FakeContainerBackend(),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin, "vm_exec", MethodType(fake_vm_exec, service.vm_agent_admin)
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "vm_copy_files",
+        MethodType(fake_vm_copy_files, service.vm_agent_admin),
+    )
+
+    service.skill_admin.create_skill(
+        {"name": "demo.skill", "content": "# Updated\n", "replace": True}
+    )
+
+    assert container_writes == [
+        (
+            "container-session",
+            [
+                {
+                    "destination_path": (
+                        "/home/agent/.config/evander/codex/skills/demo.skill/SKILL.md"
+                    ),
+                    "mode": "0644",
+                    "content": "# Updated\n",
+                }
+            ],
+        )
+    ]
+    assert vm_writes == [
+        (
+            "vm-session",
+            [
+                {
+                    "destination_path": "/custom/codex/skills/demo.skill/SKILL.md",
+                    "mode": "0644",
+                    "content": "# Updated\n",
+                    "overwrite": True,
+                }
+            ],
+            "reviewer",
+        )
+    ]
 
 
 def test_run_admin_agent_action_prompt_agent_queues_running_vm_prompt(
@@ -3365,7 +3693,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
     assert len(resume_calls) == 1
     assert resume_calls[0]["target"] == "receptionist-session"
     assert resume_calls[0]["prompt"] == "Continue the investigation"
-    assert resume_calls[0]["model"] == "gpt-5.4"
+    assert resume_calls[0]["model"] == "gpt-6-sol"
     assert resume_calls[0]["vm_user"] == "agent"
     assert str(resume_calls[0]["dispatch_id"]).startswith(
         "dispatch-admin-agent-prompt:libvirt_vm:receptionist-session-"
@@ -4752,10 +5080,10 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
             requested_team_ids.append(team_id)
             return [
                 {
-                    "id": "19:truman@thread.skype",
-                    "displayName": "Truman",
+                    "id": "19:evander@thread.skype",
+                    "displayName": "Evander",
                     "membershipType": "standard",
-                    "webUrl": "https://teams.example/truman",
+                    "webUrl": "https://teams.example/evander",
                 },
                 {
                     "id": "19:other@thread.skype",
@@ -4774,7 +5102,7 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
     result = service.operations_admin.teams_auth_list_channels(
         directory=directory_path,
         team_id="c85e4de5-e0d7-4240-8302-8bc944f2360d",
-        channel_name="Truman",
+        channel_name="Evander",
     )
 
     assert result["directory_path"] == directory_path
@@ -4782,11 +5110,11 @@ def test_teams_auth_list_channels_resolves_exact_channel_matches(
     assert result["channels"] == [
         {
             "team_id": "c85e4de5-e0d7-4240-8302-8bc944f2360d",
-            "channel_id": "19:truman@thread.skype",
-            "display_name": "Truman",
+            "channel_id": "19:evander@thread.skype",
+            "display_name": "Evander",
             "membership_type": "standard",
-            "web_url": "https://teams.example/truman",
-            "allowlist_entry": "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:truman@thread.skype",
+            "web_url": "https://teams.example/evander",
+            "allowlist_entry": "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:evander@thread.skype",
         }
     ]
     assert requested_team_ids == ["c85e4de5-e0d7-4240-8302-8bc944f2360d"]
@@ -4819,7 +5147,7 @@ def test_teams_auth_list_channels_can_list_all_channels(
             assert team_id == "team-123"
             return [
                 {"id": "19:a@thread.skype", "displayName": "General"},
-                {"id": "19:b@thread.skype", "displayName": "Truman"},
+                {"id": "19:b@thread.skype", "displayName": "Evander"},
             ]
 
     monkeypatch.setattr(admin_teams_service, "TeamsGraphClient", FakeGraphClient)
@@ -4837,7 +5165,7 @@ def test_teams_auth_list_channels_can_list_all_channels(
 
     assert result["channel_name"] is None
     assert result["match_count"] == 2
-    assert [item["display_name"] for item in result["channels"]] == ["General", "Truman"]
+    assert [item["display_name"] for item in result["channels"]] == ["General", "Evander"]
 
 
 def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) -> None:
@@ -5721,7 +6049,7 @@ def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
-            stdout="Repo: ExampleIndustryAPP\nLog: /home/agent/.evander/agent-ExampleIndustryAPP.log\nlegacy line\n",
+            stdout="Repo: SampleApplication\nLog: /home/agent/.evander/agent-SampleApplication.log\nlegacy line\n",
             stderr="",
         )
 
@@ -5730,7 +6058,7 @@ def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(
     )
 
     output = service.vm_agent_admin.get_agent_log_snapshot(
-        "bug-finder-vm", repo_name="ExampleIndustryAPP"
+        "bug-finder-vm", repo_name="SampleApplication"
     )
 
     assert "legacy line" in output
@@ -12825,6 +13153,7 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(
     tmp_path: Path, monkeypatch
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.skill_admin.create_skill({"name": "issue.skill", "content": "# Issue skill\n"})
     create_result = service.directory_admin.create_child(parent="root", name="team")
     assert create_result.ok is True and create_result.data is not None
     team_path = create_result.data.details.directory.path
@@ -12852,9 +13181,17 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(
         session_id="issue-123-session",
         directory_path=team_path,
         model="gpt-5.2-codex",
+        vm_user="reviewer",
+        codex_skills=["issue.skill"],
     )
 
     assert result.success is True
+    manifest = service.runtime.session_repository.get_session("issue-123-session")
+    assert manifest is not None
+    assert manifest.metadata["codex_skills"] == ["issue.skill"]
+    assert manifest.metadata["codex_skill_installations"] == {
+        "issue.skill": {"backend": "libvirt_vm", "vm_user": "reviewer"}
+    }
     assert captured_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
     assert captured_env["LLM_BASE_URL"] == "http://10.20.30.40:12000/v1"
     assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.20.30.40:13000"
@@ -14420,7 +14757,7 @@ def test_update_session_policy_and_agent_validate_approval_notification_targets(
         )
 
 
-def test_update_container_agent_assigns_first_profile_and_preserves_write_once_binding(
+def test_update_container_agent_can_switch_auth_modes_and_subscription_profiles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -14491,18 +14828,86 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
     assert preserved is not None
     assert preserved.subscription_profile_id == "team-a"
 
-    with pytest.raises(ValueError, match="write-once"):
+    queue_store = AgentPromptQueueStore(
+        service.config.runtime_dir / "queued-agent-prompts.json"
+    )
+    queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-delayed",
+            target="metered-session",
+            vm_name="metered-target",
+            session_id="metered-session",
+            prompt="Continue after capacity returns",
+            effect_id="effect-subscription-delayed",
+            subscription_profile_id="team-a",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    original_reroute = AgentPromptQueueStore.reroute_session
+    reroute_attempts = 0
+
+    def fail_first_reroute(
+        store: AgentPromptQueueStore,
+        session_id: str,
+        *,
+        subscription_profile_id: str | None,
+    ) -> int:
+        nonlocal reroute_attempts
+        reroute_attempts += 1
+        if reroute_attempts == 1:
+            raise OSError("queue unavailable")
+        return original_reroute(
+            store,
+            session_id,
+            subscription_profile_id=subscription_profile_id,
+        )
+
+    monkeypatch.setattr(AgentPromptQueueStore, "reroute_session", fail_first_reroute)
+    with pytest.raises(OSError, match="queue unavailable"):
         service.vm_agent_admin.update_admin_agent(
             "metered-session",
             backend="container_worker_vm",
             payload={"subscription_profile_id": "team-b"},
         )
-    with pytest.raises(ValueError, match="cannot switch away"):
-        service.vm_agent_admin.update_admin_agent(
-            "metered-session",
-            backend="container_worker_vm",
-            payload={"codex_auth_mode": "metered_api"},
-        )
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={"subscription_profile_id": "team-b"},
+    )
+    reassigned = service.runtime.session_repository.get_session("metered-session")
+    reconciled = queue_store.get("subscription-delayed")
+    assert reroute_attempts == 2
+    assert reassigned is not None
+    assert reassigned.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert reassigned.subscription_profile_id == "team-b"
+    assert reconciled is not None
+    assert reconciled.subscription_profile_id == "team-b"
+    assert reconciled.queue_reason is None
+    assert reconciled.retry_not_before is None
+
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={"codex_auth_mode": "metered_api"},
+    )
+    returned_to_metered = service.runtime.session_repository.get_session("metered-session")
+    assert returned_to_metered is not None
+    assert returned_to_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert returned_to_metered.subscription_profile_id is None
+
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={
+            "codex_auth_mode": "chatgpt_subscription",
+            "subscription_profile_id": "team-a",
+        },
+    )
+    returned_to_subscription = service.runtime.session_repository.get_session("metered-session")
+    assert returned_to_subscription is not None
+    assert returned_to_subscription.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert returned_to_subscription.subscription_profile_id == "team-a"
 
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -14519,12 +14924,15 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
             },
         )
     )
-    with pytest.raises(ValueError, match="cannot switch away"):
-        service.vm_agent_admin.update_admin_agent(
-            "legacy-default",
-            backend="container_worker_vm",
-            payload={"codex_auth_mode": "metered_api"},
-        )
+    service.vm_agent_admin.update_admin_agent(
+        "legacy-default",
+        backend="container_worker_vm",
+        payload={"codex_auth_mode": "metered_api"},
+    )
+    legacy_metered = service.runtime.session_repository.get_session("legacy-default")
+    assert legacy_metered is not None
+    assert legacy_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert legacy_metered.subscription_profile_id is None
 
     backend.config.container_worker_codex_auth_mode = "metered_api"
     service.runtime.session_repository.upsert_session(
@@ -14574,6 +14982,90 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
     assert inherited is not None
     assert inherited.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
     assert inherited.subscription_profile_id is None
+
+
+def test_agent_create_options_uses_existing_sessions_assigned_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from evander.admin.services.container_worker_assignment_service import (
+        ContainerWorkerAssignmentService,
+    )
+
+    service = build_admin_runtime(
+        write_config(
+            tmp_path,
+            container_worker_base_url="http://default.test",
+            container_worker_default_image="default:latest",
+            container_workers={
+                "fast": {
+                    "display_name": "Fast worker",
+                    "base_url": "http://fast.test",
+                    "token_env": "FAST_TOKEN",
+                    "default_image": "fast:latest",
+                    "images": {"special": "fast:special"},
+                }
+            },
+        )
+    )
+    directory_config = service.runtime.provider_config.resolve_for_directory("root")
+    ContainerWorkerAssignmentService(directory_config).resolve(
+        "assigned-session",
+        directory_path="root",
+        worker_id="fast",
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assigned-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+    backend_calls: list[dict[str, object]] = []
+
+    def assigned_backend(self, **kwargs):
+        backend_calls.append(dict(kwargs))
+        return SimpleNamespace(
+            client=SimpleNamespace(
+                list_codex_auth_profiles=lambda: {
+                    "profiles": [
+                        {
+                            "profile_id": "fast-account",
+                            "display_name": "Fast account",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(assigned_backend, service.vm_agent_admin),
+    )
+
+    options = service.vm_agent_admin.agent_create_options(
+        "root",
+        session_id="assigned-session",
+    )
+
+    assert backend_calls == [
+        {"directory_path": "root", "session_id": "assigned-session"}
+    ]
+    assert options["container_worker"]["selected_worker_id"] == "fast"
+    assert options["container_worker"]["default_image"] == "fast:latest"
+    assert options["container_worker"]["images"] == [
+        {"alias": "special", "image_ref": "fast:special"}
+    ]
+    assert options["container_worker"]["subscription_profiles"] == [
+        {
+            "profile_id": "fast-account",
+            "display_name": "Fast account",
+            "enabled": True,
+        }
+    ]
 
 
 def test_effective_tool_policy_payload_combines_directory_and_session_rules(
@@ -14873,6 +15365,57 @@ def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
     assert updated.model == "gpt-5.5"
 
 
+def test_set_session_codex_auth_mode_returns_profile_bound_session_to_metered(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"agent_provider": "codex"},
+        ),
+    )
+    queue_store = AgentPromptQueueStore(
+        service.config.runtime_dir / "queued-agent-prompts.json"
+    )
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-delayed",
+            target="container-session",
+            vm_name="container-target",
+            session_id="container-session",
+            prompt="Continue after capacity returns",
+            effect_id="effect-subscription-delayed",
+            queue_reason="subscription_rate_limited",
+            subscription_profile_id="team-a",
+            retry_not_before=datetime.now(UTC) + timedelta(hours=1),
+            capacity_deferral_count=2,
+        )
+    )
+
+    result = service.operations_admin.set_session_codex_auth_mode(
+        "container-session", "metered_api"
+    )
+
+    updated = service.runtime.session_repository.get_session("container-session")
+    queued = queue_store.get("subscription-delayed")
+    assert result.success is True
+    assert updated is not None
+    assert updated.codex_auth_mode is CodexAuthMode.METERED_API
+    assert updated.subscription_profile_id is None
+    assert queued is not None
+    assert queued.subscription_profile_id is None
+    assert queued.queue_reason is None
+    assert queued.retry_not_before is None
+    assert queued.capacity_deferral_count == 0
+
+
 def test_set_session_model_rejects_empty_value(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -14992,7 +15535,10 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainStatus": "0",
         },
     }
-    monkeypatch.setattr(worker_control_service, "_systemctl_show", lambda unit: payloads[unit])
+    monkeypatch.setattr(
+        worker_control_service, "_systemctl_show_many",
+        lambda units: {unit: payloads[unit] for unit in units},
+    )
 
     summaries = service.operations_admin.list_background_workers()
 
@@ -15045,7 +15591,7 @@ def test_list_background_workers_marks_unavailable_when_systemctl_fails(
     def _raise(unit: str) -> dict[str, str]:
         raise RuntimeError(f"cannot inspect {unit}")
 
-    monkeypatch.setattr(worker_control_service, "_systemctl_show", _raise)
+    monkeypatch.setattr(worker_control_service, "_systemctl_show_many", _raise)
 
     summaries = service.operations_admin.list_background_workers()
 
@@ -16540,8 +17086,8 @@ def test_clone_repo_into_vm_configures_separate_author_and_committer(
         managed_repo_id=_MANAGED_REPO_ID,
         git_author_name="Ada Lovelace",
         git_author_email="ada@example.com",
-        git_committer_name="Truman Bot",
-        git_committer_email="truman@example.com",
+        git_committer_name="Evander Bot",
+        git_committer_email="evander@example.com",
     )
 
     assert result.success is True
@@ -16550,8 +17096,8 @@ def test_clone_repo_into_vm_configures_separate_author_and_committer(
     assert "GIT_USER_EMAIL=ada@example.com" in remote_script
     assert "GIT_AUTHOR_NAME='Ada Lovelace'" in remote_script
     assert "GIT_AUTHOR_EMAIL=ada@example.com" in remote_script
-    assert "GIT_COMMITTER_NAME='Truman Bot'" in remote_script
-    assert "GIT_COMMITTER_EMAIL=truman@example.com" in remote_script
+    assert "GIT_COMMITTER_NAME='Evander Bot'" in remote_script
+    assert "GIT_COMMITTER_EMAIL=evander@example.com" in remote_script
     assert 'git -C "${TARGET_DIR}" config user.name "${GIT_USER_NAME}"' in remote_script
     assert 'git -C "${TARGET_DIR}" config author.name "${GIT_AUTHOR_NAME}"' in remote_script
     assert 'git -C "${TARGET_DIR}" config author.email "${GIT_AUTHOR_EMAIL}"' in remote_script
@@ -18028,7 +18574,7 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
         expected_commit_sha="a" * 40,
         destination_branch="feature/issue-14724",
         directory_path="root",
-        title="14724: Test Issue: Truman",
+        title="14724: Test Issue: Evander",
         body="Inline PR body",
         draft=True,
     )

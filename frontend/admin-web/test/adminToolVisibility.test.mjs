@@ -356,7 +356,8 @@ test("admin tool visibility renders the effective policy inspector", async (t) =
   );
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Tool Visibility" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("session-1").first().waitFor({ state: "visible" }));
+  await page.getByRole("combobox", { name: "Session", exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("combobox", { name: "Session", exact: true }).inputValue(), "session-1");
   await assert.doesNotReject(() => page.getByText("Visible").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Hidden by policy").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Unavailable to session").first().waitFor({ state: "visible" }));

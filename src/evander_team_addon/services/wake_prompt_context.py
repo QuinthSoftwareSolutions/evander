@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from ..models import ACTIVE_TEAM_CASE_STATUS_VALUES
+from .case_context_prompt import compact_case_contexts
 
 
 TEXT_LIMIT = 240
@@ -112,6 +113,11 @@ def build_compact_wake_context(
         "subordinate_ids": sorted(set(_string_items(lease.get("subordinate_agent_ids")))),
         "retrieval": {},
     }
+    if lease.get("case_contexts"):
+        briefs = lease.get("case_contexts_delta") if not fresh_context else None
+        context["case_contexts"] = compact_case_contexts(
+            _json_value(briefs or lease["case_contexts"])
+        )
 
     def include(
         key: str,
@@ -130,9 +136,7 @@ def build_compact_wake_context(
             context["retrieval"][key] = {**RECORD_READS[key], "count": len(ordered)}
         if len(ordered) > limit:
             omitted[key] = len(ordered) - limit
-            context.setdefault("overflow", {})[key] = [
-                overflow(row) for row in ordered[limit:]
-            ]
+            context.setdefault("overflow", {})[key] = [overflow(row) for row in ordered[limit:]]
 
     include(
         "subordinates",
@@ -444,6 +448,8 @@ def build_dispatch_summary(full: Mapping[str, Any]) -> dict[str, Any]:
         "retrieval": {},
     }
     result["dispatch"].update(_compact_fields(full["dispatch"], ("agent_id", "session_id")))
+    if full.get("case_contexts"):
+        result["case_contexts"] = compact_case_contexts(_json_value(full["case_contexts"]))
     for key, compact in (
         ("tasks", _compact_task),
         ("blockers", _compact_blocker),

@@ -78,8 +78,8 @@ def test_ado_update_work_item_updates_state_and_fields(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         state="In Progress",
         fields={"Custom.Priority": 2},
@@ -96,8 +96,8 @@ def test_ado_update_work_item_updates_state_and_fields(
         {
             "provider": "azure_devops",
             "remote_issue_id": "123",
-            "directory_path": "root/example/truman",
-            "project": "Example Industry APP",
+            "directory_path": "root/example/evander",
+            "project": "Example Industry App",
             "state": "In Progress",
             "fields": {"Custom.Priority": 2},
             "expected_state": "New",
@@ -113,8 +113,8 @@ def test_ado_update_work_item_skips_when_current_state_is_not_expected(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         state="In Progress",
         expected_states=["New", "To Do"],
@@ -137,12 +137,12 @@ def test_ado_update_work_item_returns_proxy_ticket_without_duplicates(
     remote_payload = {
         "remote_issue_id": "123",
         "id": "123",
-        "project": "Example Industry APP",
+        "project": "Example Industry App",
         "organization_url": "https://dev.azure.com/exampleindustry",
         "title": "Claimed auto-dev item",
         "description": "Remote body",
         "state": "In Progress",
-        "url": "https://dev.azure.com/exampleindustry/Example%20Industry%20APP/_workitems/edit/123",
+        "url": "https://dev.azure.com/exampleindustry/Example%20Industry%20App/_workitems/edit/123",
         "updated_at": "2026-05-15T10:00:00Z",
         "comments": [{"id": "1", "text": "cached comment"}],
         "fields": {
@@ -167,8 +167,8 @@ def test_ado_update_work_item_returns_proxy_ticket_without_duplicates(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         state="In Progress",
         expected_states=["New", "To Do"],
@@ -216,8 +216,8 @@ def test_ado_update_work_item_skips_expected_state_patch_conflict(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         state="In Progress",
         expected_states=["New", "To Do"],
@@ -246,8 +246,8 @@ def test_ado_update_work_item_surfaces_patch_failure_when_state_is_still_expecte
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         state="In Progress",
         expected_states=["New", "To Do"],

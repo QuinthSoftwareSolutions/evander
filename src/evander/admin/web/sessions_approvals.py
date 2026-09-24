@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
@@ -145,6 +147,12 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT: (
         "Download an inbound attachment into the host communication artifact store."
     ),
+    ToolName.LIST_PR_FEEDBACK_ATTACHMENTS: (
+        "List Azure DevOps file attachments referenced by an authorized PR feedback item."
+    ),
+    ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT: (
+        "Download an authorized PR feedback attachment into the host artifact store."
+    ),
     ToolName.LIST_INLINE_MEDIA: (
         "List images in Azure DevOps work items, PR feedback, or inbound communications; "
         "requires file reception."
@@ -194,6 +202,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ),
     ToolName.SUBMIT_VOICE_QUERY_RESPONSE: (
         "Answer delegated live voice questions for phone calls projected from this session."
+    ),
+    ToolName.EMAIL_LIST_MAILBOXES: (
+        "Discover granted mailbox IDs, accounts, access levels and folders without reading email."
     ),
     ToolName.EMAIL_LIST_UNREAD: (
         "List unread email messages available through the host email provider."
@@ -306,7 +317,18 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Insert or update text points in an allowlisted semantic collection."
     ),
     ToolName.SEMANTIC_SEARCH: ("Search an allowlisted semantic collection for relevant points."),
+    ToolName.CLASSIFICATION_EVALUATE: "Evaluate named classification questions through an enabled host provider.",
+    ToolName.CLASSIFICATION_LIST_PROFILES: "List classification profiles available in the session directory.",
     ToolName.SEMANTIC_GET_POINTS: ("Read specific points from an allowlisted semantic collection."),
+    ToolName.CODE_INDEX_STATUS: (
+        "Read exact or reusable ancestor index coverage for a managed repository commit."
+    ),
+    ToolName.CODE_SEARCH: (
+        "Search existing indexed repository content without starting a new index build."
+    ),
+    ToolName.CODE_NAVIGATE: (
+        "Navigate definitions, references, and symbols in existing indexed compiler data."
+    ),
     ToolName.SEMANTIC_DELETE_POINTS: (
         "Delete specific points from an allowlisted semantic collection."
     ),
@@ -547,6 +569,12 @@ def _model_option(model: str) -> dict[str, str]:
     return {"value": model, "label": model}
 
 
+def _is_current_session_model_option(model: str) -> bool:
+    # Pricing retains older models for past usage, while this menu configures future sessions.
+    match = re.match(r"^gpt-(\d+)", model)
+    return match is None or int(match.group(1)) >= 6
+
+
 def _model_provider_mode_options() -> list[dict[str, str]]:
     return [
         {"value": "openai_public", "label": "Public OpenAI"},
@@ -578,7 +606,7 @@ def _model_options_from_pricing_catalog(service: AdminRuntimeComponents) -> list
             continue
         for raw_model in models:
             model = str(raw_model).strip()
-            if not model or model in seen_models:
+            if not model or model in seen_models or not _is_current_session_model_option(model):
                 continue
             seen_models.add(model)
             options.append(_model_option(model))
@@ -964,7 +992,7 @@ def session_approval_routes(
             }
         )
 
-    async def list_sessions(request: Request) -> JSONResponse:
+    def build_sessions_response(request: Request) -> JSONResponse:
         params = request.query_params
         requested_directory_path = params.get("directory_path")
         if requested_directory_path is not None:
@@ -1001,11 +1029,11 @@ def session_approval_routes(
             }
         )
 
+    async def list_sessions(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_sessions_response, request)
+
     def _get_session_summary(session_id: str) -> SessionSummary:
-        for item in service.vm_agent_admin.list_sessions(include_expired=True):
-            if item.session_id == session_id:
-                return item
-        raise ValueError(f"Unknown session: {session_id}")
+        return service.vm_agent_admin.get_session_summary(session_id)
 
     def _session_summary_or_error(
         session_id: str,
@@ -1070,7 +1098,7 @@ def session_approval_routes(
             return None, auth_error
         return wake_request, None
 
-    async def get_session_detail(request: Request) -> JSONResponse:
+    def build_session_detail_response(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
             summary = _get_session_summary(session_id)
@@ -1091,6 +1119,9 @@ def session_approval_routes(
                 "summary_json": _iso(summary.model_dump(mode="json")),
             }
         )
+
+    async def get_session_detail(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_session_detail_response, request)
 
     async def list_session_git_grants(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")

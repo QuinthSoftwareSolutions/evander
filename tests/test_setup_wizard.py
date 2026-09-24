@@ -35,6 +35,7 @@ def test_setup_checklist_requires_provider_secret_without_storing_value(tmp_path
     )
     state = manager.configure_execution(manager.load_state(), model="container_same_host")
     state = manager.configure_ai_providers(state, providers=["openai"], secrets_by_env={})
+    assert state.default_model == "gpt-6-sol"
 
     checklist = {item.id: item for item in manager.checklist(state)}
     assert checklist["ai_providers"].status == "needs input"
@@ -50,6 +51,32 @@ def test_setup_checklist_requires_provider_secret_without_storing_value(tmp_path
     assert checklist["ai_providers"].status == "completed"
     assert "sk-test-secret" not in manager.state_path.read_text(encoding="utf-8")
     assert "OPENAI_API_KEY" in (tmp_path / "local-secrets.env").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_model"),
+    [("openai", "gpt-6-sol"), ("anthropic", "claude-sonnet-4-6")],
+)
+def test_setup_tui_suggests_selected_provider_model(
+    tmp_path: Path, monkeypatch, provider: str, expected_model: str
+) -> None:
+    manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
+    state = manager.load_state()
+    state.ai_providers = ["openai", "anthropic"]
+    state.default_provider = "openai"
+    state.default_model = "gpt-6-sol"
+    prompted_defaults = []
+
+    def prompt(message: str, **kwargs):
+        prompted_defaults.append((message, kwargs.get("default")))
+        return provider if message.startswith("Default provider") else kwargs["default"]
+
+    monkeypatch.setattr(setup_tui.typer, "prompt", prompt)
+    result = setup_tui._configure_item(manager, state, "default_model", interactive=False)
+
+    assert result.default_provider == provider
+    assert result.default_model == expected_model
+    assert prompted_defaults[-1] == ("Default model", expected_model)
 
 
 def test_setup_secret_status_uses_sudo_aware_read_for_default_secret_file(

@@ -15,6 +15,10 @@ def validate_artifact(
     if artifact.commit_sha != build["sha"] or artifact.toolchain != TOOLCHAIN:
         raise ValueError("Index artifact commit or toolchain does not match the requested snapshot")
     settings = IndexSettings.model_validate(build["config"])
+    if not settings.scip and (
+        artifact.occurrences or artifact.relationships or artifact.projects or artifact.scip_files
+    ):
+        raise ValueError("SCIP data requires scip=true in the requested snapshot")
     documents = {}
     for document in artifact.documents:
         if document.path in documents:
@@ -74,6 +78,10 @@ def import_artifact(
         row = db.execute("SELECT status FROM snapshots WHERE id=?", (build["id"],)).fetchone()
         if row is None or row[0] == "cancelled":
             return {}
+        db.execute(
+            "INSERT OR IGNORE INTO content_gc_candidates SELECT hash FROM chunks WHERE snapshot=?",
+            (build["id"],),
+        )
         for table in ("chunks", "occurrences", "relationships", "scip_files"):
             db.execute(f"DELETE FROM {table} WHERE snapshot=?", (build["id"],))
         for document in documents:
@@ -97,9 +105,13 @@ def import_artifact(
                         "INSERT OR IGNORE INTO contents VALUES(?,?)", (content_hash, text)
                     ).rowcount
                     if inserted:
-                        db.execute(
+                        search_row = db.execute(
                             "INSERT INTO content_search(hash,terms) VALUES(?,?)",
                             (content_hash, search_terms(document.path + "\n" + text)),
+                        )
+                        db.execute(
+                            "INSERT OR REPLACE INTO content_search_rows VALUES(?,?)",
+                            (content_hash, search_row.lastrowid),
                         )
                     chunk_id = digest([build["id"], document.path, first, last])
                     db.execute(
@@ -139,16 +151,23 @@ def import_artifact(
             db.execute("INSERT INTO scip_files VALUES(?,?,?)", (build["id"], name, data))
         projects = artifact.projects
         navigation = bool(projects) and all(p.get("status") == "ready" for p in projects)
+        scip_enabled = IndexSettings.model_validate(build["config"]).scip
         coverage = {
             "lexical": "ready",
             "semantic": "pending" if build["config"]["semantic"] else "disabled",
-            "navigation": "ready" if navigation else "partial" if occurrences else "unavailable",
+            "navigation": "disabled"
+            if not scip_enabled
+            else "ready"
+            if navigation
+            else "partial"
+            if occurrences
+            else "unavailable",
             "projects": projects,
             "documents": len(documents),
             "occurrences": len(occurrences),
             "chunks": chunk_count,
             "navigation_documents": len({item.path for item in occurrences}),
-            "navigation_languages": ["cs", "ts", "tsx"],
+            "navigation_languages": ["cs", "ts", "tsx"] if scip_enabled else [],
             "templates": "lexical-only",
         }
         db.execute(

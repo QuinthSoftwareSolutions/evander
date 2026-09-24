@@ -1,0 +1,557 @@
+/* Persistent layout surfaces. Working canvases and reading areas retain their own geometry. */
+[data-admin-design] .admin-shell-header {
+  display: grid;
+  grid-template-columns: var(--ui-navigation-width) minmax(0, 1fr);
+  gap: 0;
+  min-height: 48px;
+  padding: 0;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+  backdrop-filter: none;
+}
+
+[data-admin-design] .admin-shell-brand {
+  max-width: none;
+  padding: 8px 16px;
+  border-right: 1px solid var(--ui-border);
+}
+
+[data-admin-design] .admin-shell-title-row {
+  gap: 8px;
+  min-height: 32px;
+}
+[data-admin-design] .admin-shell-logo {
+  width: 30px;
+  height: 30px;
+}
+[data-admin-design] .admin-shell-logo-wordmark {
+  width: 156px;
+  height: 30px;
+  object-fit: cover;
+}
+[data-admin-design] .admin-shell-logo {
+  filter: none;
+}
+[data-admin-design] .admin-shell-header h1 {
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+[data-admin-design] .admin-shell-active-description {
+  display: none;
+}
+[data-admin-design] .admin-shell-actions {
+  padding: 6px 16px;
+  gap: 12px;
+  min-width: 0;
+}
+[data-admin-design] :is(.admin-shell-action-group, .admin-shell-info-group) {
+  gap: 8px;
+}
+[data-admin-design] .admin-shell-info-group {
+  margin-left: auto;
+}
+[data-admin-design] .admin-shell-info-group::before,
+[data-admin-design] .admin-shell-info-group::after {
+  display: none;
+}
+[data-admin-design] .admin-shell-button {
+  border-radius: var(--ui-radius);
+  min-height: var(--ui-control-height);
+  padding: 5px 9px;
+  font-size: 12px;
+}
+[data-admin-design] .admin-identity {
+  padding: 0 8px;
+  border: 0;
+  font-size: 12px;
+}
+[data-admin-design] .admin-directory-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+[data-admin-design] .admin-directory-context .section-label {
+  margin: 0;
+}
+[data-admin-design] .admin-directory-context strong {
+  color: var(--ui-text);
+  max-width: 28ch;
+  overflow-wrap: anywhere;
+}
+[data-admin-design] .admin-notification-button {
+  min-width: 32px;
+  width: 32px;
+  height: var(--ui-control-height);
+  min-height: var(--ui-control-height);
+  padding: 6px;
+  border-radius: var(--ui-radius);
+}
+
+[data-admin-design] .admin-shell-layout,
+[data-admin-design] .admin-shell.workflow-focus .admin-shell-layout {
+  grid-template-columns: var(--ui-navigation-width) minmax(0, 1fr);
+}
+[data-admin-design] .admin-shell.workflow-sidebar-collapsed .admin-shell-layout,
+[data-admin-design] .admin-shell.workflow-focus.workflow-sidebar-collapsed .admin-shell-layout {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+[data-admin-design] .admin-shell-nav {
+  padding: 10px;
+  gap: 8px;
+  background: var(--ui-navigation);
+  border-color: var(--ui-border);
+  backdrop-filter: none;
+}
+[data-admin-design] .admin-shell-nav-header p {
+  display: none;
+}
+[data-admin-design] .admin-shell-nav-header {
+  margin: 0;
+}
+[data-admin-design] .admin-shell-nav-group {
+  margin: 0;
+}
+[data-admin-design] .admin-shell-nav-groups {
+  gap: 2px;
+}
+[data-admin-design] .admin-shell-nav-group-label {
+  color: var(--ui-muted);
+  font-size: 10px;
+  margin: 10px 8px 4px;
+}
+[data-admin-design] .admin-shell-nav-group-items {
+  gap: 0;
+}
+[data-admin-design] .admin-shell-tab {
+  min-height: var(--ui-control-height);
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ui-text);
+  font-size: 13px;
+}
+[data-admin-design] .admin-shell-tab.active {
+  background: var(--ui-selected);
+  color: var(--ui-accent);
+  box-shadow: inset 2px 0 var(--ui-accent);
+}
+[data-admin-design] .admin-shell-tab-icon,
+[data-admin-design] .admin-shell-tab.active .admin-shell-tab-icon {
+  color: inherit;
+  width: 16px;
+  height: 16px;
+}
+[data-admin-design] .admin-shell-nav-find {
+  font-size: 12px;
+  min-height: var(--ui-control-height);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+  color: var(--ui-muted);
+  padding: 5px 8px;
+}
+[data-admin-design] .admin-shell-nav-toggle {
+  min-height: 28px;
+  width: 28px;
+  padding: 3px;
+  border-radius: 4px;
+}
+[data-admin-design] .admin-shell-nav.collapsed .admin-shell-tab {
+  min-height: 42px;
+  padding: 5px 2px;
+}
+[data-admin-design] .admin-shell-nav.collapsed .admin-shell-tab-label {
+  font-size: 9px;
+}
+[data-admin-design] .admin-shell-main,
+[data-admin-design] .admin-shell.workflow-focus .admin-shell-main {
+  padding: 0;
+  background: var(--ui-canvas);
+}
+
+[data-admin-design] .feature-page {
+  min-height: 100%;
+  background: var(--ui-canvas);
+  grid-template-columns: 224px minmax(0, 1fr);
+}
+[data-admin-design] .feature-sidebar {
+  padding: 16px 12px;
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  min-width: 0;
+}
+[data-admin-design] .feature-content {
+  padding: var(--ui-section-padding) 24px;
+  gap: 16px;
+  min-width: 0;
+}
+[data-admin-design] .feature-sidebar-header {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[data-admin-design] .feature-sidebar-header > .inline-actions {
+  flex-basis: 100%;
+  justify-content: flex-start;
+  gap: 6px;
+}
+[data-admin-design] .feature-sidebar .config-field-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-admin-design] .feature-sidebar .config-field-grid > .field-stack {
+  margin-bottom: 0;
+}
+[data-admin-design] .feature-sidebar :is(.field-stack, input, select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+}
+[data-admin-design] :is(.feature-sidebar-header h1, .feature-toolbar h2, .admin-header h1) {
+  font-size: 22px;
+  margin: 0;
+}
+[data-admin-design] :is(.feature-toolbar p, .admin-header p) {
+  margin-top: 4px;
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+[data-admin-design] :is(.feature-grid, .toolbar-grid) {
+  gap: 16px;
+}
+[data-admin-design] :is(.panel, .sidebar-section) {
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+  padding: var(--ui-section-padding);
+  box-shadow: none;
+}
+[data-admin-design] .panel-body {
+  padding: 0;
+}
+[data-admin-design] .panel-header {
+  margin-bottom: 12px;
+}
+[data-admin-design] :is(.feature-content, .stack-layout) > .panel {
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 16px 0;
+  background: transparent;
+}
+[data-admin-design] .panel .panel {
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 12px 0;
+  background: transparent;
+}
+[data-admin-design] :is(.property-grid, .key-value-grid) {
+  gap: 12px 24px;
+}
+[data-admin-design] :is(.property-grid dt, .key-value-grid dt) {
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-weight: 550;
+  letter-spacing: 0;
+}
+[data-admin-design] :is(.property-grid dt, .key-value-grid dt, .detail-grid span) {
+  text-transform: none;
+}
+[data-admin-design] .detail-grid {
+  gap: 12px 24px;
+}
+[data-admin-design] .detail-grid span {
+  font-size: 12px;
+  color: var(--ui-muted);
+  letter-spacing: 0;
+}
+[data-admin-design] .detail-grid strong {
+  font-size: 13px;
+  color: var(--ui-text);
+  font-weight: 500;
+}
+[data-admin-design] .config-field-card {
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  background: transparent;
+  border-radius: 0;
+  gap: 8px;
+}
+[data-admin-design] :is(.config-field-grid, .stack-layout) {
+  gap: 16px;
+}
+[data-admin-design] :is(.detail-panel, .issue-summary-panel, .admin-toolbar) {
+  box-shadow: none;
+  background: transparent;
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+}
+[data-admin-design] .log-view {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-navigation);
+  color: var(--ui-text);
+  font: 12px/1.6 var(--ui-mono);
+  padding: 12px;
+}
+[data-admin-design] :is(.property-grid dd, .key-value-grid dd) {
+  color: var(--ui-text);
+  margin: 3px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+[data-admin-design] :is(.feature-list, .compact-list) {
+  gap: 0;
+}
+[data-admin-design] .feature-list-item {
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: var(--ui-row-padding) 8px;
+  min-height: var(--ui-row-height);
+}
+[data-admin-design] .feature-list-item.selected {
+  color: var(--ui-text);
+  background: var(--ui-selected);
+  box-shadow: inset 2px 0 var(--ui-accent);
+}
+[data-admin-design] :is(.feature-list-meta, .feature-list-description) {
+  font-size: 12px;
+  color: var(--ui-muted);
+}
+[data-admin-design] .feature-list-title-row strong {
+  font-weight: 600;
+}
+[data-admin-design] .empty-state {
+  background: transparent;
+  padding: 20px 12px;
+  color: var(--ui-muted);
+  min-height: 0;
+}
+[data-admin-design] .feature-sidebar .callout {
+  font-size: 12px;
+  padding: 8px;
+  margin-bottom: 12px;
+}
+
+[data-admin-design] :is(.modal-card, .admin-quick-nav, .admin-notification-menu, .chat-panel) {
+  border-radius: var(--ui-dialog-radius);
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow);
+}
+[data-admin-design] .modal-backdrop {
+  background: var(--ui-overlay);
+  backdrop-filter: none;
+}
+[data-admin-design] :is(.chat-pill, .chat-pill:hover) {
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow);
+  border-color: var(--ui-border);
+}
+[data-admin-design] :is(.admin-shell-alert, .admin-deployment-banner) {
+  margin: 12px 16px;
+  border-radius: var(--ui-radius);
+  box-shadow: none;
+}
+[data-admin-design] .admin-login-card {
+  border-radius: var(--ui-dialog-radius);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  padding: 24px;
+  box-shadow: var(--ui-shadow);
+}
+[data-admin-design] .admin-login-card h1 {
+  font-size: 26px;
+}
+[data-admin-design] .admin-login-stage {
+  background: var(--ui-canvas);
+}
+
+[data-admin-design] .configuration-page .feature-sidebar {
+  width: auto;
+  padding: 16px 12px;
+}
+[data-admin-design] .configuration-area {
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+}
+[data-admin-design] .configuration-area-button {
+  border-radius: 4px;
+  min-height: var(--ui-control-height);
+  padding: 6px 8px;
+}
+[data-admin-design] .configuration-area.active > .configuration-area-button {
+  background: var(--ui-selected);
+  color: var(--ui-accent);
+}
+[data-admin-design] .configuration-destination {
+  border-radius: 4px;
+  min-height: var(--ui-control-height);
+  padding: 5px 8px;
+}
+[data-admin-design] .configuration-section-workspace {
+  padding: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+}
+[data-admin-design] .configuration-section-header {
+  padding: 12px 0;
+  background: transparent;
+  border-color: var(--ui-border);
+}
+[data-admin-design] .configuration-section-workspace .config-field-card {
+  padding: 16px 0;
+  border-color: var(--ui-border);
+  gap: 8px 20px;
+}
+[data-admin-design] .record-collection-summary {
+  min-height: var(--ui-row-height);
+  padding: var(--ui-row-padding) 10px;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+[data-admin-design] .record-collection-list {
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+}
+[data-admin-design] .record-collection-editor {
+  padding: 16px;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+
+[data-admin-design] .admin-workflow-panel {
+  border: 0;
+  border-radius: 0;
+  background: var(--ui-canvas);
+}
+[data-admin-design] .admin-workflow-panel .app-shell {
+  grid-template-columns: var(--workflow-sidebar-width, 264px) 8px minmax(0, 1fr);
+}
+[data-admin-design] .admin-workflow-panel .sidebar {
+  padding: 12px;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+[data-admin-design] .sidebar-section {
+  padding: 12px 0;
+  margin: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+}
+[data-admin-design] .admin-workflow-panel .workflow-topbar {
+  padding: 12px 16px;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+[data-admin-design] .admin-workflow-panel .workflow-topbar h1 {
+  font-size: 22px;
+}
+
+@media (max-width: 1180px) {
+  [data-admin-design] .admin-shell-actions {
+    gap: 8px;
+    padding: 6px 12px;
+  }
+  [data-admin-design] .admin-identity {
+    max-width: 18ch;
+  }
+  [data-admin-design] .admin-directory-context strong {
+    max-width: 20ch;
+  }
+  [data-admin-design] .feature-content {
+    padding: 16px;
+  }
+  [data-admin-design] .feature-page {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 980px) {
+  [data-admin-design] .admin-shell-header {
+    grid-template-columns: 176px minmax(0, 1fr);
+    grid-template-rows: auto;
+  }
+  [data-admin-design] .admin-shell-layout,
+  [data-admin-design] .admin-shell.workflow-focus .admin-shell-layout,
+  [data-admin-design] .admin-shell.workflow-sidebar-collapsed .admin-shell-layout,
+  [data-admin-design] .admin-shell.workflow-focus.workflow-sidebar-collapsed .admin-shell-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: max-content minmax(0, 1fr);
+  }
+  [data-admin-design] .admin-shell-actions {
+    flex-wrap: wrap;
+  }
+  [data-admin-design] .admin-shell-info-group {
+    margin-left: 0;
+  }
+  [data-admin-design] .admin-directory-context .section-label {
+    display: none;
+  }
+  [data-admin-design] .feature-page {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-admin-design] .feature-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--ui-border);
+  }
+}
+
+@media (max-width: 720px) {
+  [data-admin-design] .admin-shell-header {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  [data-admin-design] .admin-shell-brand {
+    border: 0;
+    padding: 6px 12px;
+  }
+  [data-admin-design] .admin-shell-logo-wordmark {
+    width: 128px;
+    height: 24px;
+  }
+  [data-admin-design] .admin-shell-title-row {
+    min-height: 24px;
+  }
+  [data-admin-design] .admin-shell-actions {
+    gap: 6px;
+    padding: 4px 12px 8px;
+  }
+  [data-admin-design] .admin-shell-button {
+    min-height: 36px;
+  }
+  [data-admin-design] .admin-shell-layout,
+  [data-admin-design] .admin-shell.workflow-focus .admin-shell-layout,
+  [data-admin-design] .admin-shell.workflow-sidebar-collapsed .admin-shell-layout,
+  [data-admin-design] .admin-shell.workflow-focus.workflow-sidebar-collapsed .admin-shell-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-admin-design] .admin-shell-nav {
+    padding: 6px 12px;
+  }
+  [data-admin-design] .admin-shell-nav-header {
+    display: none;
+  }
+  [data-admin-design] .admin-shell-tab {
+    min-height: 40px;
+  }
+  [data-admin-design] .feature-content {
+    padding: 12px;
+  }
+  [data-admin-design] .modal-backdrop {
+    padding: 12px;
+  }
+}

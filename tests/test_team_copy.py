@@ -19,7 +19,10 @@ from evander_team_addon.models import (
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
-from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.admin_service import (
+    TeamAdminService,
+    team_copy_configuration_token,
+)
 
 
 def _seed_copyable_team(tmp_path: Path) -> tuple[TeamAdminService, TeamStateRepository]:
@@ -262,6 +265,90 @@ def test_copy_team_keeps_source_snapshot_revision_strict(tmp_path: Path) -> None
             },
             expected_revision=stale_revision,
         )
+
+
+def test_team_copy_configuration_token_ignores_live_state_but_tracks_configuration(
+    tmp_path: Path,
+) -> None:
+    _admin, repo = _seed_copyable_team(tmp_path)
+    before = team_copy_configuration_token(repo.read(), "source")
+
+    def _advance_live_state(state):
+        state.tasks["source-task"].state = TeamTaskState.IN_PROGRESS
+        state.agent_runtimes["reviewer"].no_progress_count += 1
+        state.projects["project"].status = ProjectStatus.ACTIVE
+        state.projects["project"].goals[0].state = TeamRecordState.PENDING
+        state.agents["reviewer"].status = AgentStatus.ACTIVE
+        state.teams["source"].escalate_to_governance = False
+        state.teams["source"].cost_budget_windows[0].reason = "Runtime renewal."
+        return state
+
+    live_state = repo.update(_advance_live_state)
+
+    assert team_copy_configuration_token(live_state, "source") == before
+
+    def _change_review_configuration(state):
+        state.review_profiles["product-review"].description = "Updated review rules."
+        return state
+
+    configured_state = repo.update(_change_review_configuration)
+
+    assert team_copy_configuration_token(configured_state, "source") != before
+
+
+def test_team_copy_configuration_token_tracks_each_copied_configuration_surface(
+    tmp_path: Path,
+) -> None:
+    _admin, repo = _seed_copyable_team(tmp_path)
+
+    def _assert_changes_token(label, mutate) -> None:
+        before = team_copy_configuration_token(repo.read(), "source")
+        state = repo.update(mutate)
+        assert team_copy_configuration_token(state, "source") != before, label
+
+    def _change_team(state):
+        state.teams["source"].name = "Renamed Source Team"
+        return state
+
+    def _change_project(state):
+        state.projects["project"].name = "Renamed Product"
+        return state
+
+    def _change_role(state):
+        state.roles["project__reviewer"].description = "Updated role instructions."
+        return state
+
+    def _change_agent(state):
+        state.agents["reviewer"].display_name = "Senior Reviewer"
+        return state
+
+    def _change_assignment(state):
+        assignment = next(
+            assignment
+            for assignment in state.project_assignments.values()
+            if assignment.agent_id == "reviewer"
+        )
+        assignment.role_id = None
+        return state
+
+    def _change_profile(state):
+        state.review_profiles["product-review"].description = "Updated review rules."
+        return state
+
+    def _change_outcome_kind(state):
+        state.outcome_kind_definitions["product-change"].description = "Updated evidence contract."
+        return state
+
+    for label, mutate in (
+        ("team", _change_team),
+        ("project", _change_project),
+        ("role", _change_role),
+        ("agent", _change_agent),
+        ("assignment", _change_assignment),
+        ("review profile", _change_profile),
+        ("outcome kind", _change_outcome_kind),
+    ):
+        _assert_changes_token(label, mutate)
 
 
 def test_copy_team_excludes_agents_and_assignments_for_completed_projects(

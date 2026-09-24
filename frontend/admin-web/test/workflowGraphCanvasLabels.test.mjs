@@ -1,8 +1,9 @@
+import { readWorkflowEditorSource } from "./workflowEditorSource.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
-const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const app = readWorkflowEditorSource();
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("workflow graph canvas labels stay single-line and scale with the canvas zoom", () => {

@@ -27,6 +27,7 @@ from starlette.requests import Request
 
 from evander.addons import (
     AddonContext,
+    addon_mcp_discovery_permissions,
     addon_runtime_dir,
     load_addons,
     register_addon_mcp_tools,
@@ -240,6 +241,7 @@ from evander.gateway.mssql_tools import register_mssql_tools
 from evander.gateway.pr_tools import register_pr_tools
 from evander.gateway.reference_repository_tools import register_reference_repository_tools
 from evander.gateway.semantic_tools import register_semantic_tools
+from evander.gateway.classification_tools import register_classification_tools
 from evander.gateway.code_index_tools import register_code_index_tools
 from evander.gateway.visibility_helpers import (
     VisibilityHelpers,
@@ -832,6 +834,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         artifact_audit_summaries=artifact_helpers.artifact_audit_summaries,
         ado_artifacts_for_ids=artifact_helpers.ado_artifacts_for_ids,
         ado_artifact_approval_payload=artifact_helpers.ado_artifact_approval_payload,
+        pr_feedback_attachment_helpers=inline_media_helpers,
     )
     register_reference_repository_tools(
         server,
@@ -846,6 +849,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
         context,
         deps,
         transport_session_map=transport_session_map,
+        audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
+        audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
+    )
+    register_classification_tools(
+        server, context, deps, transport_session_map=transport_session_map,
         audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
         audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
     )
@@ -940,7 +948,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         addon_mcp_tool_names.extend(registered_names)
     if addon_mcp_tool_names:
         existing_tool_names = set(context.policy.extra_mcp_tool_names)
-        context.policy.set_extra_mcp_tool_names(existing_tool_names.union(addon_mcp_tool_names))
+        context.policy.set_extra_mcp_tool_names(
+            existing_tool_names.union(addon_mcp_tool_names),
+            discovery_permissions=addon_mcp_discovery_permissions(addon_catalog),
+        )
 
     def _deprecate_session_id_parameter_schema() -> None:
         for tool in server._tool_manager.list_tools():

@@ -41,11 +41,15 @@ export function workflowConnectionRouteOptions(
   return includeImplicitDefault ? [defaultRoute, ...namedRoutes] : namedRoutes;
 }
 
+export function isSwitchGateType(type: string | null | undefined): boolean {
+  return type === "gate:switch" || type === "gate:classifier:switch";
+}
+
 export function workflowOutputPortsForNode(
   node: WorkflowNodeConfig,
   catalogEntryOutputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
 ): WorkflowEditorNodePortDefinition[] {
-  if (node.type !== "gate:switch") {
+  if (!isSwitchGateType(node.type)) {
     return catalogEntryOutputPorts.map((port) => ({ ...port }));
   }
 
@@ -61,6 +65,7 @@ export function workflowOutputPortsForNode(
     outputPorts.push({
       key: portKey,
       label: label || humanizeWorkflowRouteKey(portKey),
+      ...(typeof switchCase.description === "string" ? {description: switchCase.description} : {}),
     });
   }
 

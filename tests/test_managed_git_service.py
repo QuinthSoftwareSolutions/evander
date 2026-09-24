@@ -769,16 +769,16 @@ def test_host_commit_identity_update_is_repository_scoped(tmp_path: Path) -> Non
         repo_id,
         directory_path="root/team-a/project",
         name=" Jonathan Quinth ",
-        email=" operator@example.invalid ",
+        email=" jonathan.quinth@exampleindustry.com ",
     )
 
     assert updated["host_commit_identity"] == {
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
     assert _internal_record(service, repo_id)["host_commit_identity"] == {
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
     with pytest.raises(LookupError):
         service.set_host_commit_identity(
@@ -2043,6 +2043,9 @@ def test_pr_tracking_persists_map_and_session_feedback_binding(tmp_path: Path) -
         {"provider": "github", "repo": "example/repo", "pr_id": "42"}
     ]
     assert ToolName.LIST_UNREAD_FEEDBACK in session.allowed_tools
+    assert ToolName.LIST_PR_FEEDBACK_ATTACHMENTS in session.allowed_tools
+    assert ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT in session.allowed_tools
+    assert ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE in session.allowed_tools
     assert ToolName.POST_PR_FEEDBACK_REPLY in session.allowed_tools
 
 
@@ -3055,7 +3058,7 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         repo_id,
         directory_path="root",
         name="Jonathan Quinth",
-        email="operator@example.invalid",
+        email="jonathan.quinth@exampleindustry.com",
     )
     feature_a = tmp_path / "feature-a.txt"
     _run("git", "checkout", "-b", "agents/session-1/a", cwd=source)
@@ -3140,8 +3143,8 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         "--format=%an <%ae>|%cn <%ce>",
         result["commit_sha"],
     ) == (
-        "Jonathan Quinth <operator@example.invalid>"
-        "|Jonathan Quinth <operator@example.invalid>"
+        "Jonathan Quinth <jonathan.quinth@exampleindustry.com>"
+        "|Jonathan Quinth <jonathan.quinth@exampleindustry.com>"
     )
     assert (
         _run(

@@ -63,6 +63,7 @@ def _plan(
         parent_task_id=parent_task_id,
         originating_task_id=None,
         git_base_branch=None,
+        git_base_commit_sha=None,
         dependency_task_ids=[],
         priority=0,
         title=task_id,

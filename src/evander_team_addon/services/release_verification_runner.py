@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import hashlib
+from pathlib import PurePosixPath
 import time
 from typing import Any, Protocol
 
@@ -9,6 +11,7 @@ from evander.worker.models import WorkerResourceLimits
 from ..models import (
     ReleasePackage,
     ReleaseVerificationCommand,
+    ReleaseVerificationCommandResult,
     ReleaseVerificationRun,
     TeamState,
     utc_now,
@@ -16,6 +19,13 @@ from ..models import (
 from ..repository import TeamStateRepository
 from .domain.common import _optional_text
 from .release_gate_service import TeamReleaseGateService
+from .verification_evidence import read_verification_evidence
+from .verification_logs import (
+    bound_log_text,
+    redact_verifier_text,
+    retain_verification_log,
+    prune_verification_logs,
+)
 from .release_verification_singleflight import (
     TEAM_RELEASE_VERIFICATION_SINGLE_FLIGHT,
     TeamReleaseVerificationSingleFlight,
@@ -75,6 +85,8 @@ class ReleaseVerificationExecutor(Protocol):
     ) -> Mapping[str, Any]: ...
 
     def destroy_verifier(self, *, run_id: str, session_id: str) -> None: ...
+
+    def read_artifact(self, *, session_id: str, relative_path: str, max_bytes: int) -> str: ...
 
 
 class TeamReleaseVerificationRunner:
@@ -187,6 +199,18 @@ class TeamReleaseVerificationRunner:
         persisted_outcome = _persisted_terminal_outcome(command_results)
         if persisted_outcome is not None:
             terminal_state, failure_kind, terminal_error = persisted_outcome
+            # The process may have stopped between final command persistence and
+            # session cleanup. Reuse evidence, but still reconcile the session.
+            try:
+                self._executor.destroy_verifier(
+                    run_id=f"{run.id}-g{run.execution_generation}", session_id=run.session_id
+                )
+            except Exception as exc:
+                if terminal_state == "passed":
+                    terminal_state, failure_kind = "failed", "infrastructure"
+                    terminal_error = redact_verifier_text(
+                        f"failed to destroy release verifier: {exc}"
+                    )
             _state, result = self._release_gate_service.record_verification_result(
                 release_package_id=release_package_id,
                 verification_run_id=verification_run_id,
@@ -195,6 +219,7 @@ class TeamReleaseVerificationRunner:
                 command_results=command_results,
                 failure_kind=failure_kind,
                 error=terminal_error,
+                execution_generation=run.execution_generation,
             )
             return result
         terminal_state = "passed"
@@ -202,8 +227,34 @@ class TeamReleaseVerificationRunner:
         terminal_error: str | None = None
         created = False
         try:
+            prune_verification_logs(self._repo.runtime_dir)
+            # A passed command is only reusable with its original workspace. The
+            # executor always repins/cleans, so an interrupted run restarts fully.
+            interrupted = run.execution_generation > 0 or any(
+                item.get("state") != "pending" for item in command_results
+            )
+            if interrupted:
+                self._executor.destroy_verifier(
+                    run_id=f"{run.id}-g{run.execution_generation}", session_id=run.session_id
+                )
+            if run.execution_generation >= manifest.verification_max_generations:
+                raise RuntimeError("verifier workspace recovery limit exhausted")
+            state = self._repo.update(
+                lambda current: _begin_execution_generation(
+                    current,
+                    verification_run_id=run.id,
+                    expected_generation=run.execution_generation,
+                    interrupted=interrupted,
+                )
+            )
+            run = state.release_verification_runs[run.id]
+            execution_id = f"{run.id}-g{run.execution_generation}"
+            command_results = [
+                item.model_dump(mode="json", exclude_none=True) for item in run.command_results
+            ]
+            created = True  # Also reconcile a partially successful create.
             self._executor.create_verifier(
-                run_id=run.id,
+                run_id=execution_id,
                 session_id=run.session_id,
                 release_package_id=release.id,
                 candidate_commit_sha=candidate_commit_sha,
@@ -211,26 +262,28 @@ class TeamReleaseVerificationRunner:
                 container_image=run.container_image,
                 resource_limits=run.resource_limits,
             )
-            created = True
             target_dir = self._executor.clone_candidate(
-                run_id=run.id,
+                run_id=execution_id,
                 session_id=run.session_id,
                 managed_repo_id=git.managed_repo_id,
                 release_branch=release.release_branch,
             )
             self._executor.pin_candidate(
-                run_id=run.id,
+                run_id=execution_id,
                 session_id=run.session_id,
                 target_dir=target_dir,
                 candidate_commit_sha=candidate_commit_sha,
             )
 
             for index, command in enumerate(verification_commands):
+                if self._repo.read().release_verification_runs[run.id].state == "cancelled":
+                    break
                 existing_result = command_results[index]
                 if existing_result.get("state") == "passed":
                     continue
                 started_result = {
                     "name": command.name,
+                    "execution_generation": run.execution_generation,
                     "state": "running",
                     **(
                         {"job_id": existing_result["job_id"]}
@@ -255,6 +308,7 @@ class TeamReleaseVerificationRunner:
                 ) -> None:
                     running_result = {
                         "name": _command_name,
+                        "execution_generation": run.execution_generation,
                         "state": "running",
                         "job_id": job_id,
                     }
@@ -270,24 +324,32 @@ class TeamReleaseVerificationRunner:
                 started = time.monotonic()
                 try:
                     command_output = self._executor.execute_command(
-                        run_id=run.id,
+                        run_id=execution_id,
                         command_index=index,
                         session_id=run.session_id,
                         target_dir=target_dir,
-                        command=command,
+                        command=_command_with_context(command, release),
                         on_started=_record_started_job,
                     )
                 except ReleaseVerificationTimeoutError as exc:
                     duration = time.monotonic() - started
-                    error = str(exc) or f"release verification command {command.name!r} timed out"
+                    error = redact_verifier_text(
+                        str(exc) or f"release verification command {command.name!r} timed out"
+                    )
+                    job_id = command_results[index].get("job_id") or f"{execution_id}-{index}"
                     result = {
                         "name": command.name,
+                        "execution_generation": run.execution_generation,
                         "state": "timed_out",
                         "failure_kind": "timeout",
-                        **(
-                            {"job_id": command_results[index]["job_id"]}
-                            if command_results[index].get("job_id")
-                            else {}
+                        "execution_outcome": "timeout",
+                        "policy_outcome": "infrastructure",
+                        "job_id": job_id,
+                        "log_artifact": retain_verification_log(
+                            self._repo.runtime_dir,
+                            job_id=job_id,
+                            text=error,
+                            retention_days=manifest.verification_log_retention_days,
                         ),
                         "duration_seconds": duration,
                         "log_excerpt": _bounded_verification_log_excerpt(error),
@@ -328,9 +390,97 @@ class TeamReleaseVerificationRunner:
                     )
                     if part
                 )
+                execution_outcome = (
+                    "success"
+                    if success
+                    else "timeout"
+                    if command_timed_out
+                    else "command_failure"
+                    if command_output.get("failure_kind") == "command"
+                    else "infrastructure"
+                )
+                evidence = None
+                policy_outcome = (
+                    "passed"
+                    if success
+                    else "infrastructure"
+                    if execution_outcome in {"infrastructure", "timeout"}
+                    else "failed"
+                )
+                # Worker infrastructure/timeout evidence always takes precedence.
+                if command.result_protocol == "json-v1" and execution_outcome in {
+                    "success",
+                    "command_failure",
+                }:
+                    try:
+                        report = read_verification_evidence(
+                            str(command_output.get("stdout") or ""),
+                            command=command,
+                            candidate_commit_sha=candidate_commit_sha,
+                            base_commit_sha=manifest.base_commit_sha,
+                        )
+                        artifact_log = self._read_evidence_artifacts(
+                            report.artifact_refs, session_id=run.session_id
+                        )
+                        if artifact_log:
+                            # Reserve room for complete evidence attachments; a
+                            # long build log must not truncate the comparison.
+                            command_log = (
+                                bound_log_text(command_log, limit=4 * 1024 * 1024) + artifact_log
+                            )
+                        evidence = report.model_dump(mode="json")
+                        evidence["explanation"] = redact_verifier_text(evidence["explanation"])
+                        evidence["artifact_refs"] = [
+                            redact_verifier_text(ref) for ref in evidence["artifact_refs"]
+                        ]
+                        policy_outcome = report.outcome
+                        success = execution_outcome == "success" and report.outcome in {
+                            "passed",
+                            "baseline_exception",
+                        }
+                        if not success and report.outcome in {"passed", "baseline_exception"}:
+                            policy_outcome = "failed"
+                        command_failure_kind = (
+                            None
+                            if success
+                            else (
+                                "infrastructure"
+                                if report.outcome == "infrastructure"
+                                else "candidate"
+                            )
+                        )
+                    except (ValueError, TypeError) as exc:
+                        success = False
+                        policy_outcome = "infrastructure"
+                        command_failure_kind = "infrastructure"
+                        command_log += f"\nInvalid verifier evidence: {exc}"
+                if (
+                    not success
+                    and command_failure_kind == "candidate"
+                    and command.command_failure_action == "block"
+                ):
+                    command_failure_kind = "command"
+                command_log = redact_verifier_text(command_log)
+                job_id = (
+                    _optional_text(command_output.get("execution_id"))
+                    or command_results[index].get("job_id")
+                    or f"{execution_id}-{index}"
+                )
+                log_artifact = retain_verification_log(
+                    self._repo.runtime_dir,
+                    job_id=job_id,
+                    text=command_log,
+                    retention_days=manifest.verification_log_retention_days,
+                )
                 excerpt = _bounded_verification_log_excerpt(command_log)
                 result = {
                     "name": command.name,
+                    "execution_generation": run.execution_generation,
+                    "execution_outcome": execution_outcome,
+                    "policy_outcome": policy_outcome,
+                    "evidence": evidence,
+                    "log_artifact": log_artifact,
+                    "toolchain_mounts": command_output.get("toolchain_mounts", []),
                     "state": "passed"
                     if success
                     else "timed_out"
@@ -341,10 +491,7 @@ class TeamReleaseVerificationRunner:
                         if command_failure_kind is not None
                         else {}
                     ),
-                    "job_id": (
-                        _optional_text(command_output.get("execution_id"))
-                        or command_results[index].get("job_id")
-                    ),
+                    "job_id": job_id,
                     "exit_code": command_output.get("exit_code"),
                     "failure_cause": _optional_text(command_output.get("failure_cause")),
                     "duration_seconds": duration,
@@ -366,7 +513,7 @@ class TeamReleaseVerificationRunner:
                     else:
                         terminal_state = "failed"
                         failure_kind = command_failure_kind
-                        if command_failure_kind == "candidate":
+                        if command_failure_kind in {"candidate", "command"}:
                             terminal_error = f"release verification command {command.name!r} failed"
                         else:
                             terminal_error = (
@@ -386,7 +533,7 @@ class TeamReleaseVerificationRunner:
             if created:
                 try:
                     self._executor.destroy_verifier(
-                        run_id=run.id,
+                        run_id=f"{run.id}-g{run.execution_generation}",
                         session_id=run.session_id,
                     )
                 except Exception as exc:
@@ -402,9 +549,95 @@ class TeamReleaseVerificationRunner:
             verification_state=terminal_state,
             command_results=command_results,
             failure_kind=failure_kind,
-            error=terminal_error,
+            error=redact_verifier_text(terminal_error) if terminal_error else None,
+            execution_generation=run.execution_generation,
         )
         return result
+
+    def _read_evidence_artifacts(self, references: list[str], *, session_id: str) -> str:
+        """Retain bounded session-local text evidence before destroying its owner.
+
+        Other references are opaque identifiers for evaluator-owned durable
+        storage. The control plane never fetches arbitrary evaluator URLs.
+        """
+        sections = []
+        size = 0
+        for ref in dict.fromkeys(references):
+            if not ref.startswith("/artifacts/"):
+                continue
+            path = PurePosixPath(ref.removeprefix("/artifacts/"))
+            if path.is_absolute() or ".." in path.parts or str(path) == ".":
+                raise ValueError("invalid verifier artifact path")
+            remaining_bytes = 5 * 1024 * 1024 - size
+            if remaining_bytes <= 0:
+                raise ValueError("verifier evidence artifacts exceed the 5 MiB retention limit")
+            try:
+                content = self._executor.read_artifact(
+                    session_id=session_id, relative_path=str(path), max_bytes=remaining_bytes
+                )
+            except Exception as exc:
+                raise ValueError(f"could not retain verifier artifact {ref}: {exc}") from exc
+            size += len(content.encode("utf-8"))
+            if size > 5 * 1024 * 1024:
+                raise ValueError("verifier evidence artifacts exceed the 5 MiB retention limit")
+            sections.append(f"\n\nRetained evidence artifact: {ref}\n{content}")
+        return "".join(sections)
+
+
+def _begin_execution_generation(
+    state: TeamState,
+    *,
+    verification_run_id: str,
+    expected_generation: int,
+    interrupted: bool,
+) -> TeamState:
+    run = state.release_verification_runs[verification_run_id]
+    release = state.release_packages[run.release_package_id]
+    if (
+        run.execution_generation != expected_generation
+        or run.state != "running"
+        or release.state == "cancelled"
+    ):
+        raise ValueError("verification changed before workspace recovery")
+    if interrupted:
+        run.generation_history.append(
+            {
+                "generation": run.execution_generation,
+                "session_id": run.session_id,
+                "interrupted_at": utc_now().isoformat(),
+                "command_results": [item.model_dump(mode="json") for item in run.command_results],
+            }
+        )
+        digest = hashlib.sha256(f"{run.id}:{expected_generation + 1}".encode()).hexdigest()[:30]
+        run.session_id = f"team-release-verification-{digest}"
+    run.execution_generation += 1
+    run.command_results = [
+        ReleaseVerificationCommandResult(
+            name=item.name,
+            execution_generation=run.execution_generation,
+        )
+        for item in run.command_results
+    ]
+    run.current_command_index = 0
+    run.updated_at = utc_now()
+    return state
+
+
+def _command_with_context(
+    command: ReleaseVerificationCommand, release: ReleasePackage
+) -> ReleaseVerificationCommand:
+    if command.result_protocol != "json-v1":
+        return command
+    return command.model_copy(
+        update={
+            "argv": [
+                "env",
+                f"EVANDER_VERIFICATION_CANDIDATE_SHA={release.candidate_commit_sha}",
+                f"EVANDER_VERIFICATION_BASE_SHA={release.manifest.base_commit_sha or ''}",
+                *command.argv,
+            ]
+        }
+    )
 
 
 def _validate_verification_request_identity(
@@ -477,7 +710,7 @@ def _persisted_terminal_outcome(
             persisted_failure_kind = _optional_text(command_result.get("failure_kind"))
             failure_kind = (
                 persisted_failure_kind
-                if persisted_failure_kind in {"candidate", "infrastructure"}
+                if persisted_failure_kind in {"candidate", "command", "infrastructure"}
                 else "infrastructure"
                 if command_result.get("failure_cause")
                 else "candidate"

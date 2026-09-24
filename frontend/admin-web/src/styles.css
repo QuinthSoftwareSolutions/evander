@@ -94,7 +94,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 1.25rem;
-  padding: 1.5rem 1.75rem 1.2rem;
+  padding: 0.75rem 1.25rem;
   border-bottom: 1px solid rgba(42, 71, 66, 0.12);
   background: rgba(234, 241, 238, 0.9);
   backdrop-filter: blur(18px);
@@ -425,7 +425,7 @@ body {
 .admin-shell-layout {
   min-height: 0;
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 232px minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -1771,7 +1771,7 @@ body {
 }
 
 .admin-login-company-logo,
-.admin-login-truman-logo {
+.admin-login-evander-logo {
   display: block;
   object-fit: contain;
   filter: var(--admin-login-logo-filter);
@@ -1784,7 +1784,7 @@ body {
   height: clamp(8.5rem, 16vw, 12rem);
 }
 
-.admin-login-truman-logo {
+.admin-login-evander-logo {
   justify-self: end;
   width: clamp(21rem, 36vw, 28rem);
   height: clamp(8rem, 13vw, 11rem);
@@ -5354,7 +5354,7 @@ select {
 
 .feature-page {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) 1fr;
+  grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
   min-height: calc(100vh - 88px);
   background: rgba(243, 237, 228, 0.38);
 }
@@ -5416,7 +5416,7 @@ select {
 }
 
 .feature-content {
-  padding: 1.25rem;
+  padding: 1rem;
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -5431,6 +5431,23 @@ select {
 
 .feature-grid > * {
   min-width: 0;
+}
+
+.feature-sidebar-header h1,
+.feature-toolbar h2,
+.admin-header h1 {
+  margin: 0.25rem 0;
+  font-size: 1.4rem;
+  line-height: 1.3;
+}
+.feature-toolbar p,
+.admin-header p {
+  margin: 0.25rem 0 0;
+}
+.feature-sidebar-header .eyebrow,
+.feature-toolbar .eyebrow,
+.admin-header .eyebrow {
+  font-size: 0.68rem;
 }
 
 .feature-toolbar-actions {
@@ -5986,7 +6003,7 @@ select {
 
 .feature-list-item {
   text-align: left;
-  padding: 0.85rem 0.95rem;
+  padding: 0.6rem 0.75rem;
   border: 1px solid rgba(93, 75, 48, 0.12);
   border-radius: 14px;
   background: rgba(244, 239, 231, 0.94);
@@ -6766,6 +6783,51 @@ select {
   resize: vertical;
 }
 
+.managed-git-index-history-heading {
+  align-items: end;
+  margin: 0.35rem 0 0;
+}
+
+.managed-git-index-history-heading h4 {
+  margin: 0 0 0.2rem;
+}
+
+.managed-git-index-history-heading .field-stack {
+  min-width: 12rem;
+}
+
+.managed-git-index-build-heading {
+  align-items: flex-start;
+}
+
+.managed-git-index-build-meta {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(15rem, 1fr) minmax(15rem, 1.5fr);
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.managed-git-index-build-meta div {
+  min-width: 0;
+}
+
+.managed-git-index-build-meta dt {
+  color: #6d5c4c;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.managed-git-index-build-meta dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.managed-git-index-pagination {
+  padding-top: 0.25rem;
+}
+
 .managed-git-register-form,
 .managed-git-identity-form {
   display: grid;
@@ -7310,6 +7372,30 @@ select {
   font-size: 0.65rem;
 }
 
+.configuration-context {
+  border: 1px solid rgba(110, 151, 159, 0.2);
+  border-radius: 8px;
+}
+.configuration-context > summary {
+  cursor: pointer;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.configuration-context > summary > span {
+  margin-left: 0.75rem;
+}
+.configuration-context-hint {
+  opacity: 0.75;
+}
+.configuration-context[open] > summary {
+  border-bottom: 1px solid rgba(110, 151, 159, 0.2);
+}
+.configuration-context .configuration-context-strip {
+  border: 0;
+  background: transparent;
+}
+
 .configuration-context-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -7439,9 +7525,31 @@ select {
 }
 
 .configuration-section-workspace .config-field-card.complex-config-field {
-  display: flex;
-  flex-direction: column;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto;
   gap: 0.65rem;
+}
+
+.configuration-section-workspace .config-field-card > .feature-list-title-row {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+}
+
+.configuration-section-workspace .feature-list-title-row .panel-meta {
+  overflow-wrap: anywhere;
+}
+
+.configuration-section-workspace .complex-config-field > .config-toggle-row {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.configuration-section-workspace .complex-config-field > .config-field-control,
+.configuration-section-workspace .complex-config-field > .config-field-inheritance {
+  grid-column: 1 / -1;
+  grid-row: auto;
+  width: 100%;
 }
 
 .configuration-section-workspace .config-field-card.search-highlight {
@@ -7513,7 +7621,28 @@ select {
 
 @media (max-width: 640px) {
   .configuration-mobile-selectors {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .configuration-mobile-selectors .field-stack > span {
+    font-size: 0.75rem;
+  }
+
+  .configuration-mobile-selectors select {
+    min-height: 2.75rem;
+  }
+
+  .configuration-page .feature-sidebar-header {
+    margin-bottom: 0.5rem;
+  }
+
+  .configuration-page .feature-sidebar-header .eyebrow {
+    display: none;
+  }
+
+  .configuration-page .feature-toolbar {
+    flex-direction: row;
+    align-items: flex-start;
   }
 
   .configuration-context-strip {
@@ -7587,7 +7716,237 @@ select {
 .communication-targets-editor {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.65rem;
+}
+
+/* Compact configuration collections keep the inventory visible and editors on demand. */
+.record-collection {
+  min-width: 0;
+  width: 100%;
+}
+
+.record-collection-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.record-collection-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 14rem;
+  min-width: 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid rgba(93, 75, 48, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.record-collection-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  outline: none;
+}
+
+.record-collection-search:focus-within {
+  outline: 2px solid #2d5fa8;
+  outline-offset: 2px;
+}
+
+.record-collection-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.record-collection-filter select {
+  max-width: 12rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid rgba(93, 75, 48, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  color: inherit;
+}
+
+.record-collection-count {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+  font-size: 0.78rem;
+}
+
+.record-collection-count button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.record-collection-list {
+  border: 1px solid rgba(93, 75, 48, 0.16);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.record-collection-item + .record-collection-item {
+  border-top: 1px solid rgba(93, 75, 48, 0.14);
+}
+
+.record-collection-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  min-height: 3.4rem;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.record-collection-summary:hover,
+.record-collection-item.expanded > .record-collection-summary {
+  background: rgba(110, 151, 159, 0.1);
+  transform: none;
+  box-shadow: none;
+}
+
+.record-collection-summary:focus-visible {
+  outline: 2px solid #2d5fa8;
+  outline-offset: -2px;
+}
+
+.record-collection-summary > svg {
+  flex: 0 0 auto;
+}
+
+.record-collection-copy {
+  display: grid;
+  gap: 0.2rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.record-collection-copy strong {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.record-collection-copy > span {
+  font-size: 0.78rem;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.record-collection-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem 0.65rem;
+  max-width: 40%;
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.record-provider {
+  padding: 0.15rem 0.4rem;
+  border: 1px solid rgba(110, 151, 159, 0.3);
+  border-radius: 4px;
+}
+
+.record-collection-editor {
+  padding: 0.75rem;
+  border-top: 1px solid rgba(93, 75, 48, 0.14);
+}
+
+.record-collection-editor .contact-editor-item-header {
+  align-items: center;
+}
+
+.record-collection-editor .compact-actions {
+  padding-top: 0;
+}
+
+.record-collection-editor .communication-target-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+}
+
+.record-collection-editor .contact-editor-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+}
+
+.record-collection-editor .contact-description-field {
+  grid-column: 1 / -1;
+}
+
+.teams-channel-lookup > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.teams-channel-lookup[open] > summary {
+  margin-bottom: 0.65rem;
+}
+
+.configuration-summary-grid:empty {
+  display: none;
+}
+
+:root[data-theme="dark"] .record-collection-search,
+:root[data-theme="dark"] .record-collection-filter select {
+  background: #172630;
+  border-color: #3e5260;
+}
+
+:root[data-theme="dark"] .record-collection-list,
+:root[data-theme="dark"] .record-collection-item,
+:root[data-theme="dark"] .record-collection-editor {
+  border-color: #344854;
+}
+
+@media (max-width: 640px) {
+  .record-collection-search {
+    flex-basis: 100%;
+    min-height: 2.75rem;
+  }
+
+  .record-collection-summary {
+    display: grid;
+    grid-template-columns: 1rem minmax(0, 1fr);
+    gap: 0.35rem 0.5rem;
+  }
+
+  .record-collection-meta {
+    grid-column: 2;
+    max-width: 100%;
+    justify-content: flex-start;
+  }
+
+  .record-collection-filter {
+    flex: 1 1 8rem;
+    min-width: 0;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .record-collection-filter select {
+    min-height: 2.75rem;
+  }
 }
 
 .teams-auth-panel {
@@ -7660,11 +8019,9 @@ select {
   word-break: break-word;
 }
 
-.teams-channel-lookup {
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-  padding: 1rem;
+.contact-subsection.teams-channel-lookup {
+  display: block;
+  padding: 0.5rem 0.65rem;
   border: 1px solid rgba(93, 75, 48, 0.12);
   border-radius: 18px;
   background: rgba(247, 250, 248, 0.72);
@@ -7894,7 +8251,7 @@ select {
   margin: 0;
 }
 
-.contacts-editor-actions {
+.inline-actions.contacts-editor-actions {
   flex: 0 0 auto;
   padding-top: 0;
 }
@@ -8161,7 +8518,7 @@ select {
 }
 
 .admin-screen {
-  padding: 1.25rem;
+  padding: 1rem;
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -9056,17 +9413,18 @@ select {
 .agent-log-controls button,
 .action-cluster button,
 .website-logins-panel button,
+.classification-panel button,
 .inline-actions button,
 .admin-toolbar button {
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
 }
 
 .admin-toolbar {
-  padding: 1rem 1.1rem;
+  padding: 0.7rem 0.85rem;
   border: 1px solid rgba(32, 69, 78, 0.12);
-  border-radius: 22px;
+  border-radius: 10px;
   background: rgba(235, 241, 238, 0.92);
-  box-shadow: 0 18px 42px rgba(22, 45, 52, 0.06);
+  box-shadow: none;
 }
 
 .admin-toolbar .field-inline,
@@ -9088,9 +9446,9 @@ select {
 .admin-toolbar input,
 .admin-toolbar select {
   width: 100%;
-  padding: 0.78rem 0.88rem;
+  padding: 0.55rem 0.7rem;
   border: 1px solid rgba(42, 76, 90, 0.14);
-  border-radius: 14px;
+  border-radius: 8px;
   background: rgba(244, 248, 246, 0.96);
   color: #1f3340;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
@@ -9118,6 +9476,7 @@ select {
 .admin-icon-button,
 .admin-toolbar button,
 .website-logins-panel button,
+.classification-panel button,
 .inline-actions button,
 .action-cluster button,
 .feature-toolbar-actions button,
@@ -9850,7 +10209,7 @@ select {
   order: 1;
 }
 
-.dashboard-block-agent-inventory {
+.dashboard-block-agents {
   order: 2;
 }
 
@@ -10218,14 +10577,14 @@ select {
 
 .admin-panel {
   border: 1px solid rgba(32, 69, 78, 0.12);
-  border-radius: 28px;
+  border-radius: 12px;
   background: linear-gradient(180deg, rgba(242, 247, 245, 0.96) 0%, rgba(232, 239, 236, 0.95) 100%);
-  box-shadow: 0 22px 48px rgba(22, 45, 52, 0.07);
+  box-shadow: none;
   overflow: hidden;
 }
 
 .panel-heading {
-  padding: 1.15rem 1.25rem 0.95rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid rgba(32, 69, 78, 0.08);
 }
 
@@ -10237,7 +10596,7 @@ select {
 }
 
 .panel-body {
-  padding: 1.1rem 1.25rem 1.25rem;
+  padding: 0.85rem 1rem;
 }
 
 .dashboard-release-summary {
@@ -10485,7 +10844,7 @@ select {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 0.95rem 0.85rem;
+  padding: 0.65rem 0.75rem;
   border-bottom: 1px solid rgba(32, 69, 78, 0.1);
   color: #647780;
   font-size: 0.76rem;
@@ -10497,7 +10856,7 @@ select {
 }
 
 .admin-table tbody td {
-  padding: 0.95rem 0.85rem;
+  padding: 0.65rem 0.75rem;
   border-bottom: 1px solid rgba(32, 69, 78, 0.08);
   color: #183142;
   vertical-align: top;
@@ -10917,6 +11276,7 @@ button.mobile-record-card:focus-visible,
   .split-layout,
   .detail-grid,
   .managed-git-binding-groups,
+  .managed-git-index-build-meta,
   .checkbox-grid,
   .form-grid,
   .report-period-form,
@@ -11137,6 +11497,7 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .feature-list-meta,
 :root[data-theme="dark"] .managed-git-list-summary,
 :root[data-theme="dark"] .managed-git-binding-group li span,
+:root[data-theme="dark"] .managed-git-index-build-meta dt,
 :root[data-theme="dark"] .path-note,
 :root[data-theme="dark"] .inspector-summary,
 :root[data-theme="dark"] .runtime-summary,
@@ -11934,6 +12295,7 @@ button.mobile-record-card:focus-visible,
 :root[data-theme="dark"] .admin-icon-button,
 :root[data-theme="dark"] .admin-toolbar button,
 :root[data-theme="dark"] .website-logins-panel button,
+:root[data-theme="dark"] .classification-panel button,
 :root[data-theme="dark"] .inline-actions button,
 :root[data-theme="dark"] .action-cluster button,
 :root[data-theme="dark"] .feature-toolbar-actions button,
@@ -12988,7 +13350,7 @@ button.mobile-record-card:focus-visible,
     height: clamp(5rem, 16vw, 7rem);
   }
 
-  .admin-login-truman-logo {
+  .admin-login-evander-logo {
     width: clamp(11rem, 34vw, 18rem);
     height: clamp(4.5rem, 14vw, 7rem);
   }
@@ -13021,7 +13383,7 @@ button.mobile-record-card:focus-visible,
     height: clamp(4.25rem, 20vw, 6rem);
   }
 
-  .admin-login-truman-logo {
+  .admin-login-evander-logo {
     grid-area: product;
     width: clamp(10rem, 52vw, 14rem);
     height: clamp(4.5rem, 20vw, 6rem);

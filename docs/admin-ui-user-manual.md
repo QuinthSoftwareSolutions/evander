@@ -68,6 +68,39 @@ When no asset directory is configured, Admin Web serves the bundled defaults fro
 
 ## Shared Shell
 
+### Appearance and record navigation
+
+During the design rollout, the header's **UI** selector offers **Classic** and **New UI**.
+Classic is the default. Switching reloads the current page after a confirmation; save
+any edits first. The browser remembers your choice, and each open tab keeps its own
+version. Both versions operate on the same live data and share your signed-in session.
+Only the selected version and its matching built-in add-on assets are loaded.
+
+Use `/?admin_ui=classic` or `/?admin_ui=new` to open a particular version directly.
+The following appearance and list-navigation controls describe New UI.
+
+New UI uses a consistent compact layout. The browser remembers the light/dark theme,
+and embedded add-ons receive the same theme. Touch devices retain larger control targets.
+
+Most pages start with a searchable list. Select an item to open its
+inspector, then choose **View agent**, **View session**, or the corresponding
+page-specific action for forms, controls, logs, and history.
+Close the inspector or press Escape to return focus to the selected record. On narrow
+screens the inspector opens as a dialog. The inventory and full record retain their
+filters and local editing state while switching between them.
+
+Click an inventory column header to sort ascending; click again for descending.
+The arrow indicates direction. Names use natural ordering (Agent 2 before Agent 10),
+numbers and dates use their actual values, and unavailable values stay last. Sorting
+keeps the current filters and inspected record, including when returning from the full record.
+
+Release news remains visible on the Dashboard. **Read article** opens a larger reader;
+**Older** and **Newer** browse the archive. Version, build, and changelog details are
+available below the story. Team views keep their existing destinations; narrow screens
+use a view selector, and task-board filters can be expanded when needed.
+
+### Navigation and context
+
 ![Admin dashboard and navigation](assets/admin-ui/manual-dashboard.png)
 
 Every Admin UI section uses the same shell:
@@ -205,10 +238,10 @@ Common tasks:
    named HTTP(S) base URL through the host relay; it does not enable general internet access or
    supply target credentials. Container-worker Codex agents can also choose **Metered API** or
    **ChatGPT subscription** as their usage source. A new subscription agent must also select one
-   enabled worker profile; this binding cannot be changed after creation.
+   enabled worker profile.
 8. Use the policy edit action to adjust an existing agent's host-side policy. HTTP targets and Host
-   Directory capabilities can be added, changed, or removed here. A profile-bound agent cannot
-   switch profiles or return to metered mode; create a replacement agent instead.
+   Directory capabilities can be added, changed, or removed here. You can also switch Codex usage
+   between metered API and enabled subscription profiles without replacing the agent session.
 9. Use the skill install action to copy managed Codex skills into an existing session.
 10. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
    multiline prompt and an optional resume thread ID, prefilled from the session's latest known
@@ -389,6 +422,12 @@ Common tasks:
 Skill names should be stable and descriptive because they are selected during agent creation and
 skill installation.
 
+Replacing a skill automatically reinstalls the saved content into every active VM and container
+session that already declares that skill. The replacement remains saved if an agent cannot be
+reached; Admin Web reports the failed sessions, and using **Replace** again safely retries their
+reconciliation. An agent turn that is already running keeps its existing context until its next
+turn.
+
 ## VMs
 
 The VMs tab is visible when the selected execution backend is `libvirt_vm`.
@@ -492,7 +531,7 @@ Common tasks:
     preserve legacy behavior; an explicit empty list means no access.
 15. Configure **HTTP targets** as alias/base-URL pairs when the agent needs REST or browser access
     to an external application. The UI shows the relay URL template, preserves workflow-owned
-    target metadata, and converts legacy APP environment targets when edited. Removing every row
+    target metadata, and converts legacy App environment targets when edited. Removing every row
     stores an explicit empty target set.
 16. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.
@@ -646,8 +685,8 @@ Common tasks:
    **Utilities** destinations. Only the selected destination is shown in the workspace.
 4. Use **Find setting** to search friendly labels, descriptions, section names, config domains, or
    exact field keys. Selecting a field result opens, focuses, and briefly highlights that setting.
-5. Review directory, parent, scope, write mode, underlying domains, and override count in the
-   context strip.
+5. Review the directory, scope, and write mode in the context summary. Expand **Directory details**
+   to inspect the parent, underlying domains, and override count.
 6. Unlock privileges before saving.
 7. Edit fields in the selected section. Moving between sections or areas preserves drafts and marks
    every affected area as unsaved.
@@ -657,6 +696,15 @@ Common tasks:
     defaults** from Utilities when you need resolution and diagnostic detail.
 11. If the save fails because the config changed on the server, reload and reapply the intended
    changes.
+
+**Communication targets**, **Contacts**, and **Email mailboxes** use compact lists. Search matches
+names, addresses, and relevant record details; targets and mailboxes also offer a provider filter.
+Choose name order, provider order (where available), or configured order with **Sort**. These controls
+only change the view and never reorder the saved configuration. Expand a row to inspect or edit it;
+collapsing it preserves its draft. A successful save reloads the list and closes editors; a failed
+save keeps the open editor and draft. Adding a record clears filters and opens the new editor. Inherited
+targets have their own searchable list with **Override** and **Disable** actions. The optional Teams
+channel lookup is collapsed until needed. Searching and inspecting remain available in read-only mode.
 
 Configuration destinations are linkable through the page URL. Links may identify an area,
 section, and field so another operator can open the same setting directly; invalid or outdated

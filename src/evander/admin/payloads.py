@@ -350,6 +350,7 @@ class WorkflowNodeExecutionSearchRequestPayload(BaseModel):
     filters: list[WorkflowNodeExecutionFilterPayload] = Field(default_factory=list, max_length=8)
     limit: int = Field(default=50, ge=1, le=100)
     cursor: str | None = Field(default=None, max_length=4096)
+    include_total: bool = True
 
     @field_validator("node_id")
     @classmethod
@@ -404,7 +405,7 @@ class WorkflowNodeExecutionSearchPayload(BaseModel):
     node_id: str
     started_from: datetime
     started_to: datetime
-    matched: int
+    matched: int | None
     returned: int
     limit: int
     has_more: bool

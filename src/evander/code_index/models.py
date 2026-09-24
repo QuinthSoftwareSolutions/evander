@@ -102,6 +102,7 @@ class IndexSettings(BaseModel):
     excludes: list[str] = Field(default_factory=lambda: list(DEFAULT_EXCLUDES))
     dotnet_projects: list[str] = Field(default_factory=list)
     typescript_projects: list[str] = Field(default_factory=list)
+    scip: bool = False
     semantic: bool = True
     npm_restore: Literal["locked", "install"] = "locked"
     timeout_seconds: int = Field(default=1800, ge=60, le=14400)
@@ -140,6 +141,7 @@ class IndexSettings(BaseModel):
                 "dotnet_projects",
                 "typescript_projects",
                 "npm_restore",
+                "scip",
                 "semantic",
                 "max_file_bytes",
                 "image",

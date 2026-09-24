@@ -66,6 +66,7 @@ def make_context(tmp_path: Path):
         draft_store_path=tmp_path / "drafts.json",
         email_store_path=tmp_path / "emails.json",
         discord_command_store_path=tmp_path / "discord.json",
+        container_worker_base_url="http://worker.example:8080",
     )
     return build_runtime(config)
 

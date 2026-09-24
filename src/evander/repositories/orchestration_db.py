@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS = 1_000
 SQLITE_WAL_CHECKPOINT_MIN_BYTES = 64 * 1024 * 1024
@@ -77,6 +77,18 @@ def connect_orchestration_db(path: Path | str) -> Iterator[sqlite3.Connection]:
         )
         with connection:
             yield connection
+    finally:
+        connection.close()
+
+
+@contextmanager
+def connect_orchestration_db_read_only(path: Path | str) -> Iterator[sqlite3.Connection]:
+    """Read an initialized database without WAL negotiation or repository locks."""
+    connection = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.1)
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        yield connection
     finally:
         connection.close()
 
@@ -175,6 +187,10 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON effect_executions(status, finished_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_effect_executions_status_type
                 ON effect_executions(status, effect_type, finished_at, execution_id);
+            CREATE INDEX IF NOT EXISTS idx_effect_executions_prompt_dispatch
+                ON effect_executions(effect_type, json_extract(payload_json, '$.outputs.dispatch_id'), status);
+            CREATE INDEX IF NOT EXISTS idx_effect_executions_waiting_page
+                ON effect_executions(effect_type, execution_id) WHERE status = 'waiting';
             CREATE INDEX IF NOT EXISTS idx_effect_executions_effect
                 ON effect_executions(effect_id, effect_type, finished_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_effect_executions_node_failed_dismissed

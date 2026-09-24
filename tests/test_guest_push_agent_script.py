@@ -90,8 +90,8 @@ def _create_issue_repos(
 
     _run(["git", "clone", "--branch", ISSUE_BRANCH, str(origin), str(agent)])
     _git(agent, "switch", "-c", WORK_BRANCH)
-    _git(agent, "config", "user.name", "Truman Bot")
-    _git(agent, "config", "user.email", "truman@example.com")
+    _git(agent, "config", "user.name", "Evander Bot")
+    _git(agent, "config", "user.email", "evander@example.com")
     _git(agent, "config", "evander.sessionId", SESSION_ID)
     if configure_issue_number:
         _git(agent, "config", "evander.issueNumber", "1")

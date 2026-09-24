@@ -1,0 +1,280 @@
+[data-admin-design] [hidden] {
+  display: none !important;
+}
+[data-admin-design] .collection-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 20px 24px;
+}
+[data-admin-design] .collection-heading {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: center;
+}
+[data-admin-design] .collection-heading h1 {
+  margin: 0;
+}
+[data-admin-design] .collection-heading p {
+  margin: 4px 0 0;
+  color: var(--ui-muted);
+}
+[data-admin-design] .collection-toolbar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+[data-admin-design] .collection-toolbar .field-stack {
+  gap: 4px;
+  margin: 0;
+}
+[data-admin-design] .collection-toolbar .collection-search {
+  flex: 1;
+  max-width: 420px;
+  min-width: 160px;
+}
+[data-admin-design] .collection-toolbar .panel-meta {
+  margin-left: auto;
+  align-self: center;
+}
+[data-admin-design] .collection-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  align-items: start;
+}
+[data-admin-design] .collection-workspace.has-inspector {
+  grid-template-columns: minmax(0, 1fr) var(--ui-inspector-width);
+  gap: 20px;
+}
+[data-admin-design] .collection-scroll {
+  overflow: auto;
+  min-width: 0;
+  max-height: calc(100dvh - 230px);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+[data-admin-design] .collection-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13px;
+}
+[data-admin-design] .collection-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--ui-subtle);
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+[data-admin-design] .collection-table :is(th, td) {
+  padding: var(--ui-row-padding) 12px;
+  height: var(--ui-row-height);
+  border-bottom: 1px solid var(--ui-border);
+  vertical-align: middle;
+}
+[data-admin-design] .collection-table tr:last-child td {
+  border-bottom: 0;
+}
+[data-admin-design] .collection-table tr[data-selected="true"] {
+  background: var(--ui-selected);
+}
+[data-admin-design] .collection-table th.sortable-column {
+  padding: 0;
+}
+[data-admin-design] .table-sort-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: max(var(--ui-row-height), var(--ui-control-height));
+  padding: var(--ui-row-padding) 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+}
+[data-admin-design] .table-sort-button svg {
+  flex-shrink: 0;
+}
+[data-admin-design] .table-sort-button:hover,
+[data-admin-design] .sortable-column:is([aria-sort="ascending"], [aria-sort="descending"]) .table-sort-button {
+  background: var(--ui-selected);
+  color: var(--ui-accent);
+}
+[data-admin-design] .table-sort-button:focus-visible {
+  outline-offset: -3px;
+}
+[data-admin-design] .collection-table .record-name {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  color: var(--ui-accent);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+[data-admin-design] .collection-table .record-name:hover {
+  text-decoration: underline;
+}
+[data-admin-design] .collection-table td small {
+  display: block;
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+[data-admin-design] .collection-table .record-time {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+[data-admin-design] .record-inspector {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: calc(100dvh - 100px);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+[data-admin-design] .record-inspector-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px;
+  border-bottom: 1px solid var(--ui-border);
+}
+[data-admin-design] .record-inspector-header h2 {
+  font-size: 16px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+[data-admin-design] .record-inspector-header button {
+  flex: none;
+  width: var(--ui-control-height);
+  padding: 0;
+  font-size: 20px;
+}
+[data-admin-design] .record-inspector-subtitle {
+  color: var(--ui-muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
+[data-admin-design] .record-inspector-body {
+  padding: 16px;
+  overflow-y: auto;
+  min-height: 0;
+}
+[data-admin-design] .record-inspector-body h3 {
+  margin: 20px 0 10px;
+}
+[data-admin-design] .record-inspector-body h3:first-child {
+  margin-top: 0;
+}
+[data-admin-design] .record-inspector-body .property-grid {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+[data-admin-design] .record-inspector-body .property-grid > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 12px;
+}
+[data-admin-design] .record-inspector-body .property-grid dd {
+  margin: 0;
+}
+[data-admin-design] .record-inspector-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--ui-border);
+}
+[data-admin-design] :is(.record-inspector-header, .record-inspector-footer) {
+  flex: none;
+}
+[data-admin-design] dialog.record-inspector-sheet {
+  position: fixed;
+  inset: 12px;
+  margin: auto;
+  width: calc(100vw - 24px);
+  max-width: 620px;
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  grid-row: auto;
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow);
+  z-index: auto;
+}
+[data-admin-design] dialog.record-inspector-sheet::backdrop {
+  background: var(--ui-overlay);
+}
+[data-admin-design] .session-record {
+  min-height: 100%;
+}
+[data-admin-design] .workspace-full-record .feature-page {
+  min-height: 100%;
+}
+[data-admin-design] .record-placeholder {
+  padding: 24px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+[data-admin-design] .record-placeholder h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+[data-admin-design] .record-placeholder p {
+  margin: 0;
+  color: var(--ui-muted);
+}
+[data-admin-design] .session-record .property-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+@media (max-width: 1200px) {
+  [data-admin-design] .collection-workspace.has-inspector {
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 12px;
+  }
+  [data-admin-design] .collection-page {
+    padding: 16px;
+  }
+}
+@media (max-width: 900px) {
+  [data-admin-design] .collection-workspace.has-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-admin-design] .record-inspector {
+    position: static;
+    max-height: none;
+    grid-row: 1;
+    margin-bottom: 12px;
+  }
+  [data-admin-design] .collection-scroll {
+    max-height: 65dvh;
+  }
+}
+@media (max-width: 600px) {
+  [data-admin-design] .collection-page {
+    padding: 12px;
+  }
+  [data-admin-design] .collection-table :is(th, td) {
+    padding: 8px;
+  }
+  [data-admin-design] .collection-toolbar .panel-meta {
+    margin-left: 0;
+  }
+}

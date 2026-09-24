@@ -26,7 +26,7 @@ def _init_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "test@example.invalid")
-    _git(repo, "config", "user.name", "Truman Test")
+    _git(repo, "config", "user.name", "Evander Test")
     (repo / "base.txt").write_text("base\n")
     _git(repo, "add", "base.txt")
     _git(repo, "commit", "-q", "-m", "base")

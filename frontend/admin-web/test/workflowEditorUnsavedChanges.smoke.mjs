@@ -183,6 +183,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
           id: "trigger-1",
           display_name: "Incoming command",
           type: "trigger:manual",
+          config: {},
         },
       ],
       gates: [],
@@ -191,7 +192,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
           id: "effect-1",
           display_name: "Dispatch agent",
           type: "effect:agent",
-          prompt: "Handle ticket",
+          config: { prompt: "Handle ticket" },
           outputs: {
             dispatch_id: { type: "string" },
           },
@@ -351,10 +352,10 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
         assert.equal(body.expected_revision, workflowDocument.revision);
         if (saveRequests.length === 1) {
           assert.equal(body.config.effects[0].display_name, "Dispatch agent v2");
-          assert.equal(body.config.effects[0].prompt, "Handle escalations");
+          assert.equal(body.config.effects[0].config.prompt, "Handle escalations");
         } else {
           assert.equal(body.config.effects[0].display_name, "Dispatch agent v3");
-          assert.equal(body.config.effects[0].prompt, "Handle renewals");
+          assert.equal(body.config.effects[0].config.prompt, "Handle renewals");
         }
         workflowDocument = {
           ...workflowDocument,
@@ -471,7 +472,9 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
     waitUntil: "domcontentloaded",
   });
 
-  await page.waitForSelector(".canvas-shell .react-flow__pane");
+  await page.waitForSelector(".canvas-shell .react-flow__pane").catch((error) => {
+    throw new Error(`${error.message}\nPage errors: ${JSON.stringify(pageErrors.map((error) => String(error)))}\nConsole errors: ${JSON.stringify(consoleErrors)}`);
+  });
   await assert.equal(await page.getByRole("button", { name: "Apply node changes" }).count(), 0);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
   const saveStatus = page.locator(".save-status");

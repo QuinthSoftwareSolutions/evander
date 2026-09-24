@@ -20,7 +20,7 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-test("admin shell agents page deep-links to a selected agent", async (t) => {
+test("admin shell agents page supports deep links, direct sidebar selection, and compact details", { timeout: 60000 }, async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -633,7 +633,7 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
     summaryRefreshRequest,
     page.locator(".feature-sidebar-header").getByRole("button", { name: "Refresh", exact: true }).click(),
   ]);
-  assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1&session_id=session-1");
+  assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1");
   assert.match(await page.locator(".agent-list-item.selected").innerText(), /Dispatch agent/);
   assert.match(await page.locator(".feature-toolbar h2").innerText(), /Dispatch agent/);
   await steeringButton.click();
@@ -657,6 +657,36 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.match(manualSummaryRefreshRequest, /omit_vm_state=true/);
   assert.equal(new URL(`http://localhost${manualSummaryRefreshRequest}`).searchParams.get("_dashboard"), "1");
   assert.equal(new URL(`http://localhost${manualSummaryRefreshRequest}`).searchParams.get("_dashboard_refresh"), "1");
+
+  await reopenedSteeringDialog.getByRole("button", { name: "Close" }).click();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => { location.hash = "#agents"; });
+  await page.getByRole("heading", { name: "Select an agent to view details", exact: true }).waitFor();
+  assert.equal(await page.locator(".agent-list-item.selected").count(), 0);
+  assert.equal(await page.locator(".record-inspector, .collection-page").count(), 0);
+  await page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).click();
+  await page.getByRole("heading", { name: "Dispatch agent", exact: true }).waitFor();
+  await page.waitForURL("**/#agents?agent_id=agent-1");
+  await agentSearch.fill("Container");
+  assert.equal(await page.locator(".agent-list-item").count(), 1);
+  await page.getByRole("heading", { name: "Dispatch agent", exact: true }).waitFor();
+  await agentSearch.fill("");
+
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const sidebar = page.locator(".agents-page .feature-sidebar");
+    const overflow = await sidebar.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return [...element.querySelectorAll(".agents-filter-grid, input, select, .feature-sidebar-header button")]
+        .filter(control => {
+          const box = control.getBoundingClientRect();
+          return box.width > 0 && (box.left < bounds.left || box.right > bounds.right);
+        }).map(control => control.tagName);
+    });
+    assert.deepEqual(overflow, [], `Sidebar controls overflow at ${width}px`);
+    assert.equal(await page.getByRole("button", { name: "← Agents", exact: true }).count(), 0);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  }
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

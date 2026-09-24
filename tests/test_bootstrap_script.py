@@ -52,7 +52,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'cp ~/codex-models-cache.json "${CODEX_HOME}/models_cache.json"' in script
     assert 'cp ~/codex-models-cache.json "${HOME}/.codex/models_cache.json"' in script
     assert 'cat > "${CODEX_CONFIG_PATH}" <<CONFIG' in script
-    assert 'model = "gpt-5.4"' in script
+    assert 'model = "gpt-6-sol"' in script
     assert 'model_reasoning_effort = "high"' in script
     assert 'personality = "pragmatic"' in script
     assert 'web_search = "disabled"' in script
@@ -355,30 +355,3 @@ def test_setup_vm_supports_codex_skills() -> None:
     ]
     positions = [env_args_block.index(item) for item in expected_order]
     assert positions == sorted(positions)
-
-
-def test_repo_local_app_multi_env_skill_exists() -> None:
-    skill = (ROOT / "skills" / "exampleindustry-app-multi-env-demo" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert "name: exampleindustry-app-multi-env-demo" in skill
-    assert "run_script(...)" in skill
-    assert "HTTP_TARGET_RELAY_BASE_URL" in skill
-    assert "HTTP target relay" in skill
-    assert "environment alias" in skill
-    assert "Please create a APP demo" in skill
-    assert "Use this skill by default for sandboxed agents" in skill
-    assert "APP_API_TARGET_ALIAS" in skill
-    assert "EVANDER_HTTP_TARGET_BROWSER_PROXY_URL" in skill
-    assert "launchSeededChromium" in skill
-    assert "OPENAI_BASE_URL" in skill
-    assert "imagegen" in skill
-    assert "explicitly authorized" in skill
-    assert "Do not pause for separate confirmation" in skill
-    assert "never guess between multiple demo environments by recency alone" in skill
-    assert "elasticsearch_bulk_index_documents" in skill
-    assert "write_index_patterns" in skill
-    assert 'id_field="Uuid"' in skill
-    assert "previous three weeks" in skill
-    assert "oeeupdatedforstation" in skill

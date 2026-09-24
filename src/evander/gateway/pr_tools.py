@@ -11,9 +11,12 @@ from pydantic import Field as PydanticField
 
 from evander.models import (
     CancelScheduledWakeResponse,
+    DownloadPrFeedbackAttachmentRequest,
+    DownloadPrFeedbackAttachmentResponse,
     GetPullRequestRequest,
     HasPendingFeedbackRequest,
     ListPullRequestsRequest,
+    ListPrFeedbackAttachmentsRequest,
     ListUnreadFeedbackRequest,
     PostPrCommentRequest,
     PostPrFeedbackReplyRequest,
@@ -29,6 +32,10 @@ from evander.models import (
     WakeScheduleDefinition,
 )
 from evander.policy import PolicyError
+from evander.pr_feedback import (
+    FeedbackProviderAuthError,
+    FeedbackProviderConfigurationError,
+)
 from evander.services import normalize_pr_automation_provider, normalize_pr_feedback_provider
 from evander.gateway.session_context import _resolve_session_id_from_context
 
@@ -55,6 +62,7 @@ def register_pr_tools(
     artifact_audit_summaries: Any,
     ado_artifacts_for_ids: Any,
     ado_artifact_approval_payload: Any,
+    pr_feedback_attachment_helpers: Any,
 ) -> None:
     """Register pull request and feedback tools with the MCP gateway server."""
 
@@ -148,7 +156,12 @@ def register_pr_tools(
         except PolicyError as exc:
             audit_failure(request.session_id, ToolName.LIST_PULL_REQUESTS, args, str(exc))
             raise
-        except (httpx.HTTPError, ValueError) as exc:
+        except (
+            httpx.HTTPError,
+            FeedbackProviderAuthError,
+            FeedbackProviderConfigurationError,
+            ValueError,
+        ) as exc:
             audit_failure(
                 request.session_id,
                 ToolName.LIST_PULL_REQUESTS,
@@ -414,6 +427,211 @@ def register_pr_tools(
             audit_failure(
                 session_id,
                 ToolName.LIST_ALL_FEEDBACK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_pr_feedback_attachments(
+        session_id: str,
+        feedback_id: str,
+    ) -> dict[str, Any]:
+        """List Azure DevOps file attachments referenced by one PR feedback item.
+
+        Use the feedback_id returned by list_unread_feedback or list_all_feedback.
+        File reception must be enabled for the session. Download one returned
+        attachment_id with download_pr_feedback_attachment.
+        """
+
+        request = ListPrFeedbackAttachmentsRequest(
+            session_id=session_id,
+            feedback_id=feedback_id,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            response = pr_feedback_attachment_helpers.pr_feedback_attachments(request)
+            result = response.model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+                args,
+                {
+                    "provider": response.provider,
+                    "feedback_id": response.feedback_id,
+                    "repo": response.repo,
+                    "pr_id": response.pr_id,
+                    "thread_id": response.thread_id,
+                    "comment_id": response.comment_id,
+                    "count": len(response.attachments),
+                    "attachments": [
+                        {
+                            "attachment_id": item.attachment_id,
+                            "filename": item.filename,
+                            "mime_type": item.mime_type,
+                            "byte_count": item.byte_count,
+                        }
+                        for item in response.attachments
+                    ],
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+                args,
+                str(exc),
+            )
+            raise
+        except ToolError as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="invalid_pr_feedback_attachment",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def download_pr_feedback_attachment(
+        session_id: str,
+        feedback_id: str,
+        attachment_id: str,
+    ) -> dict[str, Any]:
+        """Download one Azure DevOps PR-feedback file into the host artifact store.
+
+        The attachment must first be returned by list_pr_feedback_attachments. The
+        URL is re-resolved from host-owned feedback state, authenticated on the host,
+        and checked against the session's inbound file policy. Copy the returned
+        artifact_id with communication_copy_artifact_to_workspace to inspect the file.
+        """
+
+        request = DownloadPrFeedbackAttachmentRequest(
+            session_id=session_id,
+            feedback_id=feedback_id,
+            attachment_id=attachment_id,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            list_request = ListPrFeedbackAttachmentsRequest(
+                session_id=request.session_id,
+                feedback_id=request.feedback_id,
+            )
+            listed = pr_feedback_attachment_helpers.pr_feedback_attachments(
+                list_request,
+                tool_name=ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+            )
+            selected = next(
+                (
+                    item
+                    for item in listed.attachments
+                    if item.attachment_id == request.attachment_id
+                ),
+                None,
+            )
+            if selected is None:
+                raise ToolError(
+                    f"Unknown attachment_id for PR feedback {request.feedback_id}: "
+                    f"{request.attachment_id}"
+                )
+            content, filename, mime_type = (
+                pr_feedback_attachment_helpers.download_pr_feedback_attachment_bytes(
+                    request,
+                    selected,
+                )
+            )
+            session = context.policy.get_session(request.session_id)
+            context.policy.require_communication_file_content(
+                session,
+                filename=filename,
+                mime_type=mime_type,
+                byte_count=len(content),
+            )
+            artifact = pr_feedback_attachment_helpers.stage_pr_feedback_attachment_artifact(
+                request,
+                selected,
+                content,
+                filename=filename,
+                mime_type=mime_type,
+            )
+            response = DownloadPrFeedbackAttachmentResponse(artifact=artifact)
+            result = response.model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+                {
+                    **args,
+                    "provider": listed.provider,
+                    "repo": listed.repo,
+                    "pr_id": listed.pr_id,
+                    "thread_id": listed.thread_id,
+                    "comment_id": listed.comment_id,
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "byte_count": len(content),
+                },
+                {
+                    "provider": listed.provider,
+                    "feedback_id": listed.feedback_id,
+                    "repo": listed.repo,
+                    "pr_id": listed.pr_id,
+                    "thread_id": listed.thread_id,
+                    "comment_id": listed.comment_id,
+                    "attachment_id": selected.attachment_id,
+                    "artifact_id": artifact.artifact_id,
+                    "filename": artifact.filename,
+                    "mime_type": artifact.mime_type,
+                    "byte_count": artifact.byte_count,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+                args,
+                str(exc),
+            )
+            raise
+        except ToolError as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="invalid_pr_feedback_attachment",
+            )
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
                 args,
                 str(exc),
                 decision="error",

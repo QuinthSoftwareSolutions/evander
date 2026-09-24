@@ -7,11 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, Generic, Protocol, TypeVar
+from uuid import uuid4
 
 from pydantic import BaseModel
 
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
+    connect_orchestration_db_read_only,
     datetime_to_storage,
     ensure_orchestration_schema,
     json_dumps,
@@ -374,6 +376,45 @@ class SqliteExecutionRepository(Generic[TRecord]):
             ).fetchall()
         return [self._record_from_row(row) for row in rows]
 
+    def list_prompt_records_for_dispatches(self, dispatch_ids: set[str]) -> list[TRecord]:
+        """Read all receipts for a bounded set of immutable dispatches.
+
+        Do not LIMIT receipts: a newer missing-thread receipt must supersede an
+        older success even when history/recovery is split across pages.
+        """
+        ids = sorted({str(value).strip() for value in dispatch_ids if str(value).strip()})
+        if not ids:
+            return []
+        if len(ids) > 50:
+            raise ValueError("prompt receipt lookup is limited to 50 dispatch IDs")
+        if self.table_name != "effect_executions":
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        # Maintenance runs concurrently with foreground dispatch. A separate
+        # SQLite snapshot must not hold the execution repository's writer lock.
+        with connect_orchestration_db_read_only(self.path) as connection:
+            rows = connection.execute(
+                f"""SELECT payload_json FROM effect_executions
+                    WHERE effect_type = 'effect:agent:enqueue-prompt'
+                      AND json_extract(payload_json, '$.outputs.dispatch_id') IN ({placeholders})
+                      AND status IN ('waiting', 'succeeded', 'failed')
+                    ORDER BY COALESCE(finished_at, started_at), execution_id""",
+                ids,
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
+    def list_waiting_records_page(
+        self, *, node_type: str, after: str = "", limit: int = 50
+    ) -> list[TRecord]:
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""SELECT payload_json FROM {self.table_name}
+                    WHERE status = 'waiting' AND {self.node_type_field} = ? AND execution_id > ?
+                    ORDER BY execution_id LIMIT ?""",
+                (node_type, after, max(1, min(50, limit))),
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
     def list_waiting_records(self, node_type: str | None = None) -> list[TRecord]:
         params: list[Any] = []
         where = ["status = 'waiting'"]
@@ -466,6 +507,51 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 """
             ).fetchall()
         return [self._record_from_row(row) for row in rows]
+
+    def list_active_summaries(self) -> list[dict[str, Any]]:
+        """Read display metadata without hydrating execution inputs and outputs."""
+        return self._list_run_summaries(
+            where="status IN ('running', 'waiting', 'failed', 'completion_pending', 'error_routed')"
+            " AND dismissed_at IS NULL",
+            parameters=(),
+            newest_first=True,
+        )
+
+    def list_activity_summaries_between(
+        self, *, start_at: datetime, end_at: datetime
+    ) -> list[dict[str, Any]]:
+        return self._list_run_summaries(
+            where="COALESCE(finished_at, started_at) BETWEEN ? AND ?",
+            parameters=(datetime_to_storage(start_at), datetime_to_storage(end_at)),
+            newest_first=False,
+        )
+
+    def _list_run_summaries(
+        self, *, where: str, parameters: tuple[Any, ...], newest_first: bool
+    ) -> list[dict[str, Any]]:
+        # These projections are only for display. Control operations must still
+        # read full records, including the actual input required to resume a run.
+        # Missing legacy input_payload fields default to {} in the record models.
+        # Keep extra activity timestamps too: the renderer considers all of them.
+        order = "DESC" if newest_first else "ASC"
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT execution_id, event_id, trace_id, source_node_id, source_trigger_type,
+                       {self.node_id_field}, status, started_at, finished_at, dismissed_at,
+                       json_extract(payload_json, '$.error') AS error,
+                       COALESCE(json_type(payload_json, '$.input_payload'), 'object') = 'object'
+                           AS has_input_payload,
+                       json_extract(payload_json, '$.occurred_at') AS occurred_at,
+                       json_extract(payload_json, '$.inflight_at') AS inflight_at,
+                       json_extract(payload_json, '$.delivered_at') AS delivered_at
+                FROM {self.table_name}
+                WHERE {where}
+                ORDER BY COALESCE(finished_at, started_at) {order}, execution_id {order}
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_records_for_event(
         self, event_id: str, *, statuses: set[str] | None = None
@@ -662,6 +748,122 @@ class SqliteExecutionRepository(Generic[TRecord]):
 
 
 class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
+    def record_completion_and_publish(
+        self,
+        *,
+        record: TRecord,
+        event_queue: Any,
+        event: Any,
+        idempotency_key: str,
+    ) -> str:
+        """Commit a terminal gate and its durable successor in one transaction."""
+
+        from evander.triggers.queue import TriggerQueueRecord
+
+        queue_path = Path(getattr(event_queue, "path", ""))
+        if queue_path != self.path:
+            raise ValueError("gate execution and trigger event stores must share one database")
+        queue_lock = getattr(event_queue, "_lock", None)
+        fetch_by_key = getattr(event_queue, "_fetch_record_by_idempotency_key", None)
+        fetch_by_id = getattr(event_queue, "_fetch_record", None)
+        insert_record = getattr(event_queue, "_insert_record", None)
+        if queue_lock is None or not all(
+            callable(item) for item in (fetch_by_key, fetch_by_id, insert_record)
+        ):
+            raise TypeError("trigger event queue does not support atomic gate publication")
+
+        normalized_key = str(idempotency_key or "").strip()
+        if not normalized_key:
+            raise ValueError("gate completion idempotency_key is required")
+        event_id = str(getattr(event, "event_id", "") or "").strip()
+        if not event_id:
+            raise ValueError("gate completion event_id is required")
+
+        created_event = False
+        with self._lock, queue_lock, connect_orchestration_db(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = fetch_by_key(connection, normalized_key)
+            if existing is None:
+                existing = fetch_by_id(connection, event_id)
+            if existing is None:
+                queued = TriggerQueueRecord(
+                    event_id=event_id,
+                    trigger_id=str(event.trigger_id),
+                    trigger_type=str(event.trigger_type),
+                    trace_id=str(event.trace_id),
+                    occurred_at=event.occurred_at,
+                    payload=dict(event.payload),
+                    delivery_state="pending",
+                    idempotency_key=normalized_key,
+                )
+                insert_record(connection, queued)
+                created_event = True
+            elif existing.event_id != event_id:
+                raise ValueError("gate completion idempotency key belongs to another event")
+
+            self._upsert_record(connection, record)
+            now = datetime.now(UTC)
+            if created_event and getattr(event_queue, "_journal", None) is not None:
+                self._append_journal_row(
+                    connection,
+                    event_id=str(uuid4()),
+                    event_type="workflow.trigger_event.published",
+                    source="trigger_queue",
+                    subject_id=event_id,
+                    occurred_at=now,
+                    payload={
+                        "trigger_id": str(event.trigger_id),
+                        "trigger_type": str(event.trigger_type),
+                    },
+                )
+            if self._journal is not None and self._journal_source is not None:
+                self._append_journal_row(
+                    connection,
+                    event_id=str(uuid4()),
+                    event_type="workflow.execution.updated",
+                    source=self._journal_source,
+                    subject_id=str(getattr(record, "execution_id")),
+                    occurred_at=now,
+                    payload={
+                        "event_id": str(getattr(record, "event_id", "")),
+                        "status": str(getattr(record, "status", "")),
+                    },
+                )
+        return event_id
+
+    @staticmethod
+    def _append_journal_row(
+        connection: Any,
+        *,
+        event_id: str,
+        event_type: str,
+        source: str,
+        subject_id: str | None,
+        occurred_at: datetime,
+        payload: dict[str, Any],
+    ) -> None:
+        journal_payload = {
+            "event_id": event_id,
+            "event_type": event_type,
+            "occurred_at": occurred_at.isoformat(),
+            "source": source,
+            "subject_id": subject_id,
+            "payload": payload,
+        }
+        connection.execute(
+            """INSERT INTO workflow_events(
+                   event_id, event_type, source, subject_id, occurred_at, payload_json
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                event_id,
+                event_type,
+                source,
+                subject_id,
+                datetime_to_storage(occurred_at),
+                json_dumps(journal_payload),
+            ),
+        )
+
     def find_latest_by_gate_id(self, gate_id: str) -> TRecord | None:
         return self.find_latest_execution_for_gate(gate_id)
 

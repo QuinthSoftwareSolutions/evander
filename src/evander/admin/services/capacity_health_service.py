@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,8 +23,10 @@ from evander.execution.container_worker_client import (
     ContainerWorkerClientError,
 )
 from evander.models import SessionManifest
+from evander.worker.models import WorkerTelemetryPayload
 
 from evander.admin.common import _coerce_optional_datetime, _utc_now
+from evander.admin.services.snapshot_cache import SnapshotCache
 from evander.admin.payloads import (
     CapacityControlPlanePayload,
     CapacityControlPlaneStoragePayload,
@@ -35,6 +38,11 @@ from evander.admin.payloads import (
     CapacityWorkerTelemetryEntryPayload,
     CapacityWorkerTelemetrySummaryPayload,
 )
+
+
+CAPACITY_SNAPSHOT_TTL_SECONDS = 30.0
+CAPACITY_WORKER_PROBE_TIMEOUT_SECONDS = 5.0
+CAPACITY_WORKER_PROBE_CONCURRENCY = 4
 
 
 @dataclass(frozen=True)
@@ -59,8 +67,18 @@ class CapacityHealthAdminService:
 
     def __init__(self, dependencies: CapacityHealthAdminDependencies) -> None:
         self._deps = dependencies
+        self._snapshots: SnapshotCache[CapacityHealthPayload] = SnapshotCache(
+            ttl_seconds=CAPACITY_SNAPSHOT_TTL_SECONDS, max_entries=1
+        )
 
-    def read_capacity_health(self) -> CapacityHealthPayload:
+    def read_capacity_health(self, *, refresh: bool = False) -> CapacityHealthPayload:
+        # Keep generated_at and worker timestamps from collection, so callers
+        # can see the age of the snapshot. Do not rescan storage per dashboard.
+        return self._snapshots.read(
+            "capacity", self._collect_capacity_health, refresh=refresh
+        ).model_copy(deep=True)
+
+    def _collect_capacity_health(self) -> CapacityHealthPayload:
         now = _utc_now()
         sessions = sorted(
             self._deps.runtime.session_repository.list_sessions(),
@@ -434,10 +452,13 @@ class CapacityHealthAdminService:
         sessions: list[SessionManifest],
     ) -> list[CapacityWorkerTelemetryEntryPayload]:
         descriptors = self._capacity_worker_descriptors(sessions)
-        entries: list[CapacityWorkerTelemetryEntryPayload] = []
-        for descriptor in descriptors:
-            entries.append(self._capacity_worker_telemetry_entry(descriptor))
-        return entries
+        if not descriptors:
+            return []
+        with ThreadPoolExecutor(
+            max_workers=min(CAPACITY_WORKER_PROBE_CONCURRENCY, len(descriptors)),
+            thread_name_prefix="capacity-worker",
+        ) as executor:
+            return list(executor.map(self._capacity_worker_telemetry_entry, descriptors))
 
     def _capacity_worker_descriptors(
         self,
@@ -555,7 +576,10 @@ class CapacityHealthAdminService:
     ) -> CapacityWorkerTelemetryEntryPayload:
         worker_url = str(descriptor.get("worker_url") or "").strip().rstrip("/")
         token_env = str(descriptor.get("token_env") or "").strip()
-        timeout_seconds = float(descriptor.get("timeout_seconds") or 30.0)
+        timeout_seconds = min(
+            float(descriptor.get("timeout_seconds") or 30.0),
+            CAPACITY_WORKER_PROBE_TIMEOUT_SECONDS,
+        )
         checked_at = _utc_now()
         entry = CapacityWorkerTelemetryEntryPayload(
             worker_url=worker_url,
@@ -575,9 +599,30 @@ class CapacityHealthAdminService:
             base_url=worker_url,
             token_env=token_env,
             timeout_seconds=timeout_seconds,
+            max_connect_attempts=1,
         )
+        # The execution timeout/retry policy is deliberately not reused for
+        # dashboard probes. Health and telemetry are independent HTTP reads.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="capacity-probe") as executor:
+            health_future = executor.submit(worker_client.health)
+            telemetry_future = executor.submit(worker_client.telemetry)
+            return self._capacity_worker_probe_result(
+                entry,
+                checked_at=checked_at,
+                health_future=health_future,
+                telemetry_future=telemetry_future,
+            )
+
+    def _capacity_worker_probe_result(
+        self,
+        entry: CapacityWorkerTelemetryEntryPayload,
+        *,
+        checked_at: datetime,
+        health_future: Future[dict[str, Any]],
+        telemetry_future: Future[WorkerTelemetryPayload],
+    ) -> CapacityWorkerTelemetryEntryPayload:
         try:
-            healthz = worker_client.health()
+            healthz = health_future.result()
             entry = entry.model_copy(
                 update={
                     "healthz_status": TelemetryStatus.AVAILABLE,
@@ -593,7 +638,7 @@ class CapacityHealthAdminService:
             entry = entry.model_copy(update={"healthz_status": status})
 
         try:
-            telemetry = worker_client.telemetry()
+            telemetry = telemetry_future.result()
             entry = entry.model_copy(
                 update={
                     "telemetry_status": TelemetryStatus.AVAILABLE,

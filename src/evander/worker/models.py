@@ -340,6 +340,7 @@ class WorkerReferenceRepoPrepareRequest(BaseModel):
     commit_sha: str | None = None
     configuration_version: str = "1"
     update_existing: bool = True
+    preparation_fingerprint: str | None = None
 
     @field_validator("repo_source", "source_ref", "configuration_version", mode="before")
     @classmethod
@@ -364,6 +365,16 @@ class WorkerReferenceRepoPrepareRequest(BaseModel):
             raise ValueError("commit_sha must be a full hexadecimal Git object ID")
         return text
 
+    @field_validator("preparation_fingerprint", mode="before")
+    @classmethod
+    def normalize_preparation_fingerprint(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", text):
+            raise ValueError("preparation_fingerprint must be a SHA-256 digest")
+        return text
+
     @model_validator(mode="after")
     def validate_commit_requirement(self) -> "WorkerReferenceRepoPrepareRequest":
         if self.update_existing and self.commit_sha is None:
@@ -383,6 +394,7 @@ class WorkerReferenceRepoPrepareRecord(BaseModel):
     cloned: bool
     checkout_updated: bool
     configuration_updated: bool
+    preparation_reused: bool = False
 
 
 class WorkerTaskDependencyGitSource(BaseModel):
@@ -816,6 +828,7 @@ class WorkerFileWriteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     files: list[WorkerFileWrite]
+    preparation_fingerprint: str | None = None
 
     @field_validator("files")
     @classmethod
@@ -823,6 +836,16 @@ class WorkerFileWriteRequest(BaseModel):
         if not value:
             raise ValueError("files must contain at least one entry")
         return value
+
+    @field_validator("preparation_fingerprint", mode="before")
+    @classmethod
+    def normalize_preparation_fingerprint(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", text):
+            raise ValueError("preparation_fingerprint must be a SHA-256 digest")
+        return text
 
 
 class WorkerFileWriteRecord(BaseModel):
@@ -832,6 +855,7 @@ class WorkerFileWriteRecord(BaseModel):
     copied_count: int
     copied_paths: list[str]
     roots: dict[str, str] = Field(default_factory=dict)
+    preparation_reused: bool = False
 
 
 class WorkerMssqlDatabaseRequest(BaseModel):

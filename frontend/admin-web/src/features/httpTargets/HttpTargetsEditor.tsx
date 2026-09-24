@@ -12,7 +12,6 @@ type HttpTargetsEditorProps = {
   onChange: (entries: HttpTargetDraftEntry[]) => void;
   onValidationChange?: (error: string | null) => void;
   disabled?: boolean;
-  legacyFallback?: boolean;
   sourceError?: string | null;
   sessionId?: string | null;
   directoryPath?: string;
@@ -23,7 +22,6 @@ export function HttpTargetsEditor({
   onChange,
   onValidationChange,
   disabled = false,
-  legacyFallback = false,
   sourceError = null,
   sessionId = null,
   directoryPath,
@@ -58,12 +56,6 @@ export function HttpTargetsEditor({
         separate from Web search. Select a managed login profile to let the host authenticate the browser.
         Existing workflow metadata is preserved while an alias remains unchanged.
       </p>
-      {legacyFallback ? (
-        <div className="callout">
-          These targets come from legacy APP environment metadata. Saving a change converts them
-          to canonical HTTP targets.
-        </div>
-      ) : null}
       {validationError ? <div className="callout error-callout">{validationError}</div> : null}
       {profileError ? <div className="callout">{profileError}</div> : null}
       <div className="inline-actions compact-actions">

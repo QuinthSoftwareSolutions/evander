@@ -28,6 +28,9 @@ documentation. The classifications below are part of the maintenance contract.
 
 ## Focused References
 
+- [`classification.md`](classification.md): core classification providers, reusable profiles,
+  workflow and agent evaluation, editor testing, and usage records
+
 - [`config-migrations.md`](config-migrations.md): configuration migration history and procedures
 - [`conformance-reports.md`](conformance-reports.md): conformance report schema and API
 - [`trigger-conformance.md`](trigger-conformance.md): trigger and workflow conformance procedures
@@ -72,7 +75,7 @@ or API references:
 
 ## Managed Upstream Documentation
 
-Documentation below `frontend/truman-landing/.agents/` is managed skill or upstream framework
+Documentation below `frontend/evander-landing/.agents/` is managed skill or upstream framework
 content. Refresh it from its owning upstream source when dependencies change; do not treat it as
 an Evander API reference.
 

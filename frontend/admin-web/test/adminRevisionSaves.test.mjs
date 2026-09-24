@@ -1,9 +1,10 @@
+import { readWorkflowEditorSource } from "./workflowEditorSource.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 test("admin save requests include expected revisions", () => {
-  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const app = readWorkflowEditorSource();
   const workers = readFileSync(
     new URL("../src/features/workers/WorkersScreen.tsx", import.meta.url),
     "utf8",

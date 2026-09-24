@@ -231,6 +231,7 @@ test("admin shell issues page exposes VM bootstrap labels and tooltips", async (
   await assert.doesNotReject(() =>
     page.getByRole("heading", { name: "Issues", level: 1 }).waitFor({ state: "visible" }),
   );
+  await page.locator(".issues-page .feature-list-item").first().click();
   await assert.doesNotReject(() => page.getByRole("button", { name: "Create VM" }).waitFor({ state: "visible" }));
   await page.getByRole("button", { name: "Create VM" }).hover();
   await assert.doesNotReject(() =>

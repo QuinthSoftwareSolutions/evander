@@ -15,6 +15,7 @@ from evander.admin.services.vm_agent.common import (
     session_helpers,
     vm_helpers,
 )
+from evander.repositories.skills_library import record_codex_skill_installations
 
 
 class VmAgentIssueCreateMixin:
@@ -91,6 +92,9 @@ class VmAgentIssueCreateMixin:
                 allowed_contact_ids=allowed_contact_ids,
             )
         )
+        normalized_codex_skills = [
+            item.strip() for item in (codex_skills or []) if item and item.strip()
+        ]
 
         manifest = session_helpers.build_issue_session_manifest(
             policy=policy,
@@ -108,6 +112,13 @@ class VmAgentIssueCreateMixin:
         if resolved_model_provider_mode is not None:
             manifest.metadata = dict(manifest.metadata)
             manifest.metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = resolved_model_provider_mode
+        if normalized_codex_skills:
+            manifest.metadata = record_codex_skill_installations(
+                manifest.metadata,
+                normalized_codex_skills,
+                backend="libvirt_vm",
+                vm_user=vm_user,
+            )
         normalized_model = (model or "").strip() or None
         if normalized_model is not None:
             manifest.model = normalized_model
@@ -153,9 +164,6 @@ class VmAgentIssueCreateMixin:
             run_env.update(vm_defaults.guest_environment())
             if manifest.model:
                 run_env["AGENT_MODEL"] = manifest.model
-            normalized_codex_skills = [
-                item.strip() for item in (codex_skills or []) if item and item.strip()
-            ]
             managed_skills_root = _managed_codex_skills_root(
                 self._deps.config.runtime_dir,
                 normalized_codex_skills,

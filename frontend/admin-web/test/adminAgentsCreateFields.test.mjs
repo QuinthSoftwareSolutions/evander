@@ -129,27 +129,32 @@ test("container Codex usage can switch per agent without transporting credential
     "function isActiveStatus(status: string): boolean {",
   );
   assert.match(editPayloadSource, /codex_auth_mode:/);
-  assert.match(editPayloadSource, /formTransitionsToSubscription\(form\)/);
+  assert.match(editPayloadSource, /formUsesSubscription\(form\)/);
   assert.match(editPayloadSource, /payload\.subscription_profile_id = form\.subscriptionProfileId\.trim\(\)/);
   assert.match(agentsPage, /subscriptionProfileId: policy\?\.subscription_profile_id \?\? ""/);
   assert.doesNotMatch(editPayloadSource, /allowed_tools|model:|ttl_hours|labels:|web_search_enabled|grants|http_targets/);
   assert.doesNotMatch(subscriptionsPage, /accessToken|refreshToken|OPENAI_API_KEY/);
   assert.match(subscriptionsPage, /\/api\/admin\/codex-subscriptions/);
-  assert.match(subscriptionsPage, /Worker-owned authentication/);
+  assert.match(subscriptionsPage, /workerUrl \?\? "No container worker configured"/);
   assert.match(subscriptionsPage, /Pinned account id/);
   assert.match(subscriptionsPage, /Rate limits/);
   assert.match(subscriptionsPage, /Queued prompts/);
   assert.match(subscriptionsPage, /login\.status === "pending"/);
 });
 
-test("worker auth is profile-aware and agent usage shows its immutable binding", () => {
+test("worker auth is profile-aware and agent usage allows route changes", () => {
   assert.doesNotMatch(agentsPage, /<CodexAuthPanel/);
   assert.match(agentCreateDialog, /showCreateSubscriptionProfile/);
   assert.match(agentCreateDialog, /Select a ChatGPT subscription profile/);
   assert.match(agentCreateDialog, /subscription_profiles/);
   assert.match(agentsPage, /Subscription profile/);
   assert.match(agentsPage, /effective_subscription_profile_id/);
-  assert.match(agentsPage, /Profile \$\{selectedAgentPolicy\.effective_subscription_profile_id\} is immutable/);
+  assert.match(agentsPage, /You can change the profile later without replacing the agent session/);
+  assert.match(
+    agentsPage,
+    /loadAgentCreateOptions\(selectedAgent\.directory_path, "", policy\.session_id\)/,
+  );
+  assert.doesNotMatch(agentsPage, /is immutable\. Create a new agent to change it/);
   assert.match(agentsPage, /function codexUsageForAgent\(/);
   assert.match(agentsPage, /hostRecord\(agent\.host, "codex_usage"\)/);
   assert.match(agentsPage, /effective_codex_auth_mode/);

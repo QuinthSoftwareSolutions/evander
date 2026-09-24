@@ -586,8 +586,8 @@ def test_role_queue_discards_assignment_when_dispatch_cannot_be_reserved(role_re
     assert not role_repo.list_outbox_records(intent_type="team.task.role_assigned")
 
 
-def test_role_queue_ownerless_parent_child_can_be_accepted(role_repo):
-    _, result = create_role_task(role_repo, "parent", task_kind="support")
+def test_role_queue_ownerless_coordination_parent_child_can_be_accepted(role_repo):
+    _, result = create_role_task(role_repo, "parent", task_kind="coordination")
     assert result["success"], result
     _, result = create_role_task(
         role_repo, "child", parent_task_id="parent", task_kind="support"

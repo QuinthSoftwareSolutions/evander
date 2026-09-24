@@ -34,6 +34,7 @@ from evander.azure_devops import (
     normalize_ado_organization,
 )
 from evander.addons import AddonLoaderConfig
+from evander.classification.models import ClassificationSettings
 from evander.models import (
     DirectoryPath,
     McpToolPolicyRule,
@@ -432,6 +433,7 @@ class GatewayConfig(BaseModel):
     anthropic_api_key_env: str = "ANTHROPIC_API_KEY"
     anthropic_api_version: str = "2023-06-01"
     anthropic_relay_timeout_seconds: float = 300.0
+    classification: ClassificationSettings = Field(default_factory=ClassificationSettings)
     semantic_store_provider: Literal["qdrant"] = "qdrant"
     qdrant_base_url: str = "http://127.0.0.1:6333"
     qdrant_api_key_env: str | None = "QDRANT_API_KEY"

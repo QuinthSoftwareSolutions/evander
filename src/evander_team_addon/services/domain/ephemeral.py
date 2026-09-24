@@ -224,12 +224,12 @@ def _apply_ephemeral_acceptance(
         deliverable_id_value = deliverable_id or f"deliverable-{uuid4().hex}"
         _require_absent(state.deliverables, deliverable_id_value, "deliverable")
         task = _require_present(state.tasks, assignment.task_id, "task")
+        require_deliverable_submission(
+            state,
+            task_id=task.id,
+            source_deliverable_ids=[],
+        )
         if task.integration_boundary:
-            require_deliverable_submission(
-                state,
-                task_id=task.id,
-                source_deliverable_ids=[],
-            )
             require_task_deliverable_contract_provenance(
                 state,
                 task_id=task.id,

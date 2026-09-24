@@ -331,7 +331,7 @@ def test_teams_get_messages_rejects_conflicting_session_id_from_ambient_context(
         call_tool_with_context(
             server,
             "teams_get_messages",
-            {"session_id": "claude-truman", "channel_target": "team-a/channel-1"},
+            {"session_id": "claude-evander", "channel_target": "team-a/channel-1"},
             make_request_context(session_id="claude-test-agent"),
         )
 

@@ -78,6 +78,7 @@ from .services.memory_service import (
 from .services.human_review_assignment_service import (
     human_review_eligibility_resolver,
 )
+from .case_context_mcp import CASE_CONTEXT_TOOLS, register_case_context_tools
 
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = "team_propose_human_finding_resolut
 TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL = "team_route_human_finding_correction"
 TEAM_CLOSE_POST_RELEASE_CASE_TOOL = "team_close_post_release_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
+TEAM_REINTEGRATE_RELEASE_TOOL = "team_reintegrate_release"
 TEAM_CREATE_TASK_FOR_ROLE_TOOL = "team_create_task_for_role"
 TEAM_CREATE_TASKS_TOOL = "team_create_tasks"
 TEAM_CREATE_OUTCOME_KIND_TOOL = "team_create_outcome_kind"
@@ -169,6 +171,7 @@ TEAM_SEARCH_MEMORY_TOOL = "team_search_memory"
 TEAM_LIST_CONVERSATION_MESSAGES_TOOL = "team_list_conversation_messages"
 
 ORDINARY_TEAM_MCP_TOOL_NAMES = (
+    TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
     TEAM_ARCHIVE_MEMORY_TOOL,
@@ -230,6 +233,7 @@ GOVERNANCE_TEAM_MCP_TOOL_NAMES = (
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
 )
 READ_TEAM_MCP_TOOL_NAMES = (
+    *CASE_CONTEXT_TOOLS,
     TEAM_GET_SOURCE_EVIDENCE_SNAPSHOT_TOOL,
     TEAM_LIST_TASKS_TOOL,
     TEAM_GET_TASK_TOOL,
@@ -259,6 +263,7 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
 )
 IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
+    TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
     TEAM_ARCHIVE_MEMORY_TOOL,
@@ -320,6 +325,7 @@ IMPLEMENTED_CHAT_TEAM_MCP_TOOL_NAMES = (
 IMPLEMENTED_EPHEMERAL_WORKER_MCP_TOOL_NAMES = (TEAM_REPORT_EPHEMERAL_RESULT_TOOL,)
 
 MCP_TOOL_NAMES = (
+    TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
@@ -430,7 +436,16 @@ MCP_TOOL_CATALOG = tuple(
 
 def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...]:
     repo = TeamStateRepository(context.runtime_dir)
+    register_case_context_tools(
+        server,
+        TeamMcpContextResolver(repo=repo, context=context),
+        repo,
+    )
     managed_git = _team_mcp_managed_git_admin(context)
+    from .services.admin_service import TeamAdminService
+    from .services.reintegration_service import TeamReintegrationService
+
+    reintegration = TeamReintegrationService(TeamAdminService(repo, managed_git_admin=managed_git))
     note_commands = TeamNoteCommandService(repo)
     memory_commands = TeamMemoryCommandService(repo)
     agent_message_commands = TeamAgentMessageCommandService(repo)
@@ -442,9 +457,14 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         context,
         managed_git=managed_git,
     )
+    git_base_commit_resolver = _team_mcp_git_base_commit_resolver(
+        context,
+        managed_git=managed_git,
+    )
     task_creation_commands = TeamTaskCreationCommandService(
         repo,
         git_default_branch_resolver=git_default_branch_resolver,
+        git_base_commit_resolver=git_base_commit_resolver,
     )
     outcome_catalog_commands = TeamOutcomeCatalogCommandService(repo)
     task_update_commands = TeamTaskUpdateCommandService(
@@ -607,7 +627,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
             context=context,
         )
 
-    _register_slice5_tools(
+    _register_collaboration_tools(
         server,
         note_commands,
         memory_commands,
@@ -619,7 +639,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         attachment_storage,
         attachment_policy_service,
     )
-    _register_slice6_tools(
+    _register_work_management_tools(
         server,
         case_commands,
         task_creation_commands,
@@ -627,18 +647,19 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         outcome_catalog_commands,
         blocker_commands,
         agent_control_commands,
+        reintegration,
         resolver,
         context,
     )
-    _register_slice7_tools(
+    _register_delivery_review_tools(
         server,
         deliverable_submission_commands,
         review_commands,
         resolver,
         context,
     )
-    _register_slice8_tools(server, git_release_commands, resolver, context)
-    _register_slice9_tools(server, ephemeral_commands, resolver, context)
+    _register_git_release_tools(server, git_release_commands, resolver, context)
+    _register_ephemeral_worker_tools(server, ephemeral_commands, resolver, context)
     _register_read_tools(server, resolver, context)
 
     for tool_name in ORDINARY_TEAM_MCP_TOOL_NAMES:
@@ -657,7 +678,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     return MCP_TOOL_NAMES
 
 
-def _register_slice5_tools(
+def _register_collaboration_tools(
     server: FastMCP,
     note_commands: TeamNoteCommandService,
     memory_commands: TeamMemoryCommandService,
@@ -676,6 +697,16 @@ def _register_slice5_tools(
         correlation_id: str | None = None,
         causation_id: str | None = None,
         session_id: str | None = None,
+        kind: str = "note",
+        summary: str = "",
+        rationale: str = "",
+        case_id: str | None = None,
+        task_ids: list[str] | None = None,
+        deliverable_ids: list[str] | None = None,
+        review_request_ids: list[str] | None = None,
+        source_evidence_snapshot_ids: list[str] | None = None,
+        source_refs: list[str] | None = None,
+        supersedes_note_id: str | None = None,
     ) -> dict[str, Any]:
         caller = resolver.require_persistent_action_context(
             session_id=session_id,
@@ -689,6 +720,16 @@ def _register_slice5_tools(
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
                 causation_id=causation_id,
+                kind=kind,
+                summary=summary,
+                rationale=rationale,
+                case_id=case_id,
+                task_ids=task_ids or [],
+                deliverable_ids=deliverable_ids or [],
+                review_request_ids=review_request_ids or [],
+                source_evidence_snapshot_ids=source_evidence_snapshot_ids or [],
+                source_refs=source_refs or [],
+                supersedes_note_id=supersedes_note_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -699,7 +740,9 @@ def _register_slice5_tools(
         name=TEAM_RECORD_NOTE_TOOL,
         description=(
             "Record a durable non-progress note for the current Team dispatch. "
-            "Requires body and request_id."
+            "Requires body and request_id. Link significant decisions to case/tasks; "
+            "use kind=decision and concise rationale. Supersede rather than overwrite. "
+            "Recording is guidance, not a completion requirement."
         ),
     )
 
@@ -1281,7 +1324,7 @@ def _register_slice5_tools(
     )
 
 
-def _register_slice6_tools(
+def _register_work_management_tools(
     server: FastMCP,
     case_commands: TeamCaseCommandService,
     task_creation_commands: TeamTaskCreationCommandService,
@@ -1289,6 +1332,7 @@ def _register_slice6_tools(
     outcome_catalog_commands: TeamOutcomeCatalogCommandService,
     blocker_commands: TeamBlockerCommandService,
     agent_control_commands: TeamAgentControlCommandService,
+    reintegration,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
 ) -> None:
@@ -1536,8 +1580,9 @@ def _register_slice6_tools(
         originating_task_id: str | None = None,
         authored_by: dict[str, str] | None = None,
         git_base_branch: str | None = None,
+        git_base_commit_sha: str | None = None,
         dependency_task_ids: list[str] | None = None,
-        task_kind: str = "support",
+        task_kind: Literal["support", "outcome", "coordination"] = "support",
         outcome_contract: dict[str, Any] | None = None,
         integration_boundary: bool = False,
         deliverable_contract: dict[str, Any] | None = None,
@@ -1565,6 +1610,7 @@ def _register_slice6_tools(
                 originating_task_id=originating_task_id,
                 authored_by=authored_by,
                 git_base_branch=git_base_branch,
+                git_base_commit_sha=git_base_commit_sha,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -1584,6 +1630,8 @@ def _register_slice6_tools(
         name=TEAM_CREATE_TASK_TOOL,
         description=(
             "Create one Team task after permission and graph validation. Set "
+            "task_kind=coordination for supervision-only work that must finish "
+            "directly and must never own a deliverable or Git integration context. Set "
             "integration_boundary=true with deliverable_contract to declare an "
             "explicit final-integration boundary. The contract may require Git "
             "provenance and explicitly name direct-child or dependency task "
@@ -1591,7 +1639,10 @@ def _register_slice6_tools(
             "with no contribution task IDs when it must resolve through an accepted "
             "deliverable. git_base_branch optionally selects this task's immutable "
             "starting workstream; otherwise a child inherits its parent and a root "
-            "snapshots the project default. authored_by optionally supplies {name, email}; "
+            "snapshots the project default. A Git-backed integration boundary snapshots "
+            "that branch's current commit automatically; git_base_commit_sha may supply "
+            "an already verified full commit instead. authored_by optionally supplies "
+            "{name, email}; "
             "otherwise the originating task or parent author is copied, with project fallback. "
             "originating_task_id does not "
             "seed Git content; when a correction must edit accepted predecessor "
@@ -1614,8 +1665,9 @@ def _register_slice6_tools(
         originating_task_id: str | None = None,
         authored_by: dict[str, str] | None = None,
         git_base_branch: str | None = None,
+        git_base_commit_sha: str | None = None,
         dependency_task_ids: list[str] | None = None,
-        task_kind: str = "support",
+        task_kind: Literal["support", "outcome", "coordination"] = "support",
         outcome_contract: dict[str, Any] | None = None,
         integration_boundary: bool = False,
         deliverable_contract: dict[str, Any] | None = None,
@@ -1644,6 +1696,7 @@ def _register_slice6_tools(
                 originating_task_id=originating_task_id,
                 authored_by=authored_by,
                 git_base_branch=git_base_branch,
+                git_base_commit_sha=git_base_commit_sha,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -1662,6 +1715,8 @@ def _register_slice6_tools(
         name=TEAM_CREATE_TASK_FOR_ROLE_TOOL,
         description=(
             "Queue one pending Team task for an exact team or project role. "
+            "task_kind=coordination creates supervision-only work with no deliverable "
+            "or Git integration context. "
             "The owner is null until dependencies are satisfied and an eligible "
             "agent has execution capacity. The platform atomically assigns an owner "
             "when reserving the dispatch and audits candidate scores. Existing "
@@ -1915,9 +1970,10 @@ def _register_slice6_tools(
         description=(
             "Update a Team task without accepting or rejecting review work. "
             "Before any deliverable submission, an authorized task-graph editor "
-            "can supply a deliverable_contract to require accepted work, and can "
-            "also designate a composite as an integration boundary with "
-            "integration_boundary=true. authored_by sets the author of future task commits; "
+            "can supply a deliverable_contract to require accepted work. A Git-backed "
+            "task cannot be converted into an integration boundary; create a fresh task "
+            "with integration_boundary=true so its base commit is snapshotted. "
+            "authored_by sets the author of future task commits; "
             "clear_authored_by restores the project fallback. "
             "git_base_branch may be changed only before "
             "Git preparation, deliverable submission, or promotion creation."
@@ -2217,6 +2273,36 @@ def _register_slice6_tools(
         ),
     )
 
+    def team_reintegrate_release(
+        release_package_id: str, action: Literal["preview", "submit"] = "preview",
+        preview: dict[str, Any] | None = None, request_id: str | None = None,
+        owner_agent_id: str | None = None, session_id: str | None = None,
+    ) -> dict[str, Any]:
+        from .models import project_lead_agent_id
+
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id, tool_name=TEAM_REINTEGRATE_RELEASE_TOOL,
+        )
+        release = caller.state.release_packages.get(release_package_id)
+        if release is None or project_lead_agent_id(caller.state, release.project_id) != caller.agent_id:
+            raise ToolError("reintegration requires the configured project lead")
+        dispatch = caller.state.dispatches[caller.active_dispatch_id]
+        if release.project_id not in dispatch.project_ids:
+            raise ToolError("reintegration project is outside the active dispatch scope")
+        try:
+            if action == "preview":
+                return {"preview": reintegration.preview(release_package_id, owner_agent_id=owner_agent_id)}
+            if not preview or preview.get("release_package_id") != release_package_id or not request_id:
+                raise ValueError("submission requires a matching preview and request_id")
+            _state, result = reintegration.submit_from_agent(preview=preview,
+                session_id=caller.session_id, request_id=request_id)
+            return _team_command_mcp_result(result, caller=caller, context=context)
+        except (ValueError, KeyError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    server.add_tool(team_reintegrate_release, name=TEAM_REINTEGRATE_RELEASE_TOOL,
+        description="Preview accepted release contributions on the refreshed configured base, then submit the exact preview as an integration task. Requires the project lead and an active project dispatch. Team policy controls owner and retirement; existing review and release workflows apply.")
+
     def team_start_dependency_composition_recovery(
         blocker_id: str,
         resolver_agent_id: str,
@@ -2359,7 +2445,7 @@ def _register_slice6_tools(
     )
 
 
-def _register_slice7_tools(
+def _register_delivery_review_tools(
     server: FastMCP,
     deliverable_commands: TeamDeliverableSubmissionCommandService,
     review_commands: TeamReviewCommandService,
@@ -2802,7 +2888,7 @@ def _register_slice7_tools(
     )
 
 
-def _register_slice8_tools(
+def _register_git_release_tools(
     server: FastMCP,
     command_service: TeamGitReleaseCommandService,
     resolver: TeamMcpContextResolver,
@@ -3210,6 +3296,45 @@ def _team_mcp_git_default_branch_resolver(
     return _resolve
 
 
+def _team_mcp_git_base_commit_resolver(
+    context: AddonContext,
+    *,
+    managed_git=None,
+):
+    if managed_git is None:
+        managed_git = _team_mcp_managed_git_admin(context)
+
+    def _resolve(
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+        branch: str,
+        required_ancestor_shas: Sequence[str] | None = None,
+    ) -> object:
+        resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
+        if not callable(resolve_branch_commit):
+            raise RuntimeError("managed Git branch-commit resolution is unavailable")
+        commit_sha = resolve_branch_commit(
+            managed_repo_id,
+            directory_path=directory_path,
+            branch=branch,
+        )
+        if required_ancestor_shas and commit_sha is not None:
+            verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
+            if not callable(verify_ancestry):
+                raise RuntimeError("managed Git ancestry verification is unavailable")
+            verify_ancestry(
+                managed_repo_id,
+                directory_path=directory_path,
+                branch=branch,
+                commit_sha=commit_sha,
+                required_ancestor_shas=required_ancestor_shas,
+            )
+        return commit_sha
+
+    return _resolve
+
+
 def _team_mcp_dependency_recovery_commit_verifier(
     context: AddonContext,
     *,
@@ -3270,7 +3395,7 @@ def _team_mcp_memory_artifact_publisher(context: AddonContext):
     return _publish
 
 
-def _register_slice9_tools(
+def _register_ephemeral_worker_tools(
     server: FastMCP,
     command_service: TeamEphemeralCommandService,
     resolver: TeamMcpContextResolver,
@@ -4431,9 +4556,7 @@ def _team_mcp_result_with_attention(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
         )
-        queued_message_ids = [
-            message.id for message in messages if message.status == "queued"
-        ]
+        queued_message_ids = [message.id for message in messages if message.status == "queued"]
         if queued_message_ids:
             state, _delivered_messages = TeamChatService(
                 repository
@@ -4467,9 +4590,7 @@ def _team_mcp_result_with_attention(
                 "conversation_id": message.conversation_id,
                 "body": message.body,
                 "created_at": message.created_at.isoformat(),
-                "operator_user_id": state.conversations[
-                    message.conversation_id
-                ].operator_user_id,
+                "operator_user_id": state.conversations[message.conversation_id].operator_user_id,
                 "operator_display_name": state.conversations[
                     message.conversation_id
                 ].operator_display_name,

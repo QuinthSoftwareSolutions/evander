@@ -6,23 +6,34 @@ package, Git, and HTTP relays.
 
 ## What This Scaffold Includes
 
+For Team task-board filtering, progress permalinks and ADO intake setup, see
+[Case progress boards](docs/case-progress-boards.md).
+For decision journals, bounded wake deltas and configurable workflow context, see
+[Case context](docs/case-context.md).
+
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
-- Directory-scoped named connectors for approved REST operations and host file retrieval, with
-  host-owned authentication, per-session operation grants, approvals, and artifact results
+- Optional [Figma collaboration](docs/figma.md) for native mockups, parallel design proposals,
+  shared editing, review, and immutable snapshots through agent tools and workflows, with
+  file discovery available through existing agent tool grants
+- Directory-scoped named connectors for approved REST and add-on operations, including
+  Freshservice, plus host file retrieval with host-owned authentication, per-session operation
+  grants, approvals, and artifact results
 - Directory-scoped Host Directories for relative listing, bounded artifact import, recoverable
   deletion, and settled new-file workflow triggers without exposing absolute host roots
 - A host-side OpenAI relay that keeps the API key on the host, exposes an OpenAI-compatible endpoint to guests, and session-gates hosted web search plus image generation/editing
 - A source- and destination-restricted Codex subscription egress proxy for container workers
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
+- Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
+  choice/score/boolean evaluations, Smart switch routing, a structured editor, and Jev as the first provider
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
-- A host-side Teams ingest worker that uses Microsoft Graph polling by default, with optional
-  change notifications and per-target polling fallback, and feeds `trigger:teams:new-message`
-  and `trigger:teams:direct-message` orchestration
+- Host-side Teams workers that consume optional Microsoft Graph change notifications independently
+  from per-target polling fallback, and feed `trigger:teams:new-message` and
+  `trigger:teams:direct-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - Optional host-local Qdrant semantic store primitives for workflow-visible health, collection setup, and explicit-ID text point upsert/search/get/delete
 - File-backed session, approval, audit, and draft storage for local development
@@ -34,6 +45,9 @@ package, Git, and HTTP relays.
 - Opt-in [repository indexing](docs/repository-indexing.md) with scoped source search,
   reusable baseline coverage, bounded compiler scheduling, C#/TypeScript navigation,
   Admin Web controls and portable SQLite/SCIP exports
+- An optional [Miro Add-on](docs/miro-addon.md) for editable diagrams, explanations, comment
+  collaboration, and workflow-owned board monitoring through host-managed OAuth connections
+  that agents can discover using their existing Miro tool grants
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`
@@ -185,7 +199,7 @@ Directory-scoped config is rooted at `root`:
 
    ### Codex provider bootstrap
 
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay through the `evander_openai_relay` provider with bootstrap defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), disables Codex websocket prewarm for that relay provider, registers the host MCP gateway as `evander`, copies the host Codex model cache when available so offline guests see the same model menu, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay through the `evander_openai_relay` provider with bootstrap defaults (currently `model = "gpt-6-sol"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), disables Codex websocket prewarm for that relay provider, registers the host MCP gateway as `evander`, copies the host Codex model cache when available so offline guests see the same model menu, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
    ### Claude Code provider bootstrap
 
@@ -308,6 +322,15 @@ service-manager secret source rather than `config/admin-web.env`. When you
 expose it beyond localhost, configure auth, set `EVANDER_ADMIN_WEB_COOKIE_SECURE=true`
 behind HTTPS, and put TLS plus ingress policy in front of the service.
 
+Admin Web writes a `admin_web_request_timing` journal record for requests taking at least
+`EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS` (default `500`) milliseconds and for every 5xx
+response. The record contains only method, route template, status, and duration; it deliberately
+excludes query strings, cookies, and request bodies. For example:
+
+```bash
+journalctl --no-pager -u evander-admin-web.service --since "1 hour ago" | rg admin_web_request_timing
+```
+
 ## Admin Web Operations Dashboard
 
 Admin Web opens to an operations dashboard by default after sign-in. The dashboard is an operator
@@ -328,6 +351,9 @@ panel surfaces explicit missing reasons instead of inferring or inventing releas
 
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
+
+For pinned release reintegration, restart-safe verification, structured evidence and
+worker SDK rollout, see [Release recovery and verifier policy](docs/release-recovery-and-verifier-policy.md).
 
 For the complete layered technical reference to core Evander and the Team Add-on, including
 architecture, runbooks, diagrams, glossary, and linked subject index, see the
@@ -844,7 +870,7 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   with its own `message_filter`.
 - The initial supported filter shape is content substring matching:
   - `{"target":"team-id/channel-id"}`
-  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Truman Bot"}}}`
+  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Evander Bot"}}}`
   - optional `case_sensitive: true|false` (default `false`)
 - `trigger:communication:new-message` provides the provider-neutral inbound message path for
   directory-scoped communication targets. It requires explicit `communication_target_ids`, defaults
@@ -853,8 +879,12 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   targets. The host-side Teams and Discord ingest workers feed their host-owned inbox stores; email
   targets are read through the configured mailbox provider during trigger polling. Trigger outputs
   do not expose communication target auth profile references.
-- Direct-message triggers require both chat targets and a sender allowlist:
-  - `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
+- Direct-message triggers support two Admin Web setup modes:
+  - `Direct chats by UPN` accepts `direct_chat_user_upns`; saving resolves each user through
+    Microsoft Graph, ensures the one-to-one chat, and persists the resulting `sender_user_ids`
+    and `chat:<chat-id>` targets alongside the readable UPNs.
+  - `Existing chat IDs` preserves the explicit target and sender form:
+    `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
 - Session manifests opt into Teams access explicitly:
 
@@ -1106,8 +1136,9 @@ Add-on dependency.
 
 Container-worker Codex agents whose effective `model_provider_mode` is `openai_public` can select
 metered API usage or an explicitly named, worker-owned ChatGPT subscription profile. A profile is
-fixed when the session is created; it may be assigned once while explicitly switching an unbound
-metered session to subscription mode, but a bound session must be replaced to use another profile.
+selected per session and can be changed later, including switching back to metered API usage,
+without replacing the session. A running turn keeps the route it started with; later turns use the
+updated selection.
 Directory configuration still selects the effective worker and inherited auth mode, but it does
 not choose, grant, or restrict profiles. The reserved `default` profile keeps legacy profile-less
 sessions and the existing `<worker-root>/codex-auth/auth.json` login compatible.
@@ -1187,6 +1218,12 @@ Use this when you want the guest to wake only for new review feedback and post t
 4. `evander-discord-wake.service` and `evander-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. Azure DevOps PR feedback ingestion runs in `evander-ado-worker`.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
+   When Azure DevOps feedback links an attached file, call
+   `list_pr_feedback_attachments(feedback_id)` and
+   `download_pr_feedback_attachment(feedback_id, attachment_id)`, then copy the returned opaque
+   artifact with `communication_copy_artifact_to_workspace`. These calls require inbound file
+   reception plus the configured MIME, extension, and size policy; Azure DevOps credentials remain
+   on the host.
    Use `list_pull_requests(provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
    when you need provider-backed PR discovery; `status` maps to provider status filtering (for Azure DevOps:
    `searchCriteria.status`), and pagination continues with `next_cursor`.
@@ -1402,6 +1439,8 @@ helper fails instead of silently falling back to the branch tip.
 ## Email Provider Configuration (Host-Side Secrets Only)
 
 - `email_mailboxes` supports multiple mailbox entries with explicit provider and auth env-var wiring.
+- Email-enabled agents can call `email_list_mailboxes` to discover their granted mailbox IDs,
+  account identities, access levels and folders. Use the returned `mailbox_id` in email tools.
 - Keep mailbox OAuth credentials in host-only environment variables. Gmail and legacy Graph
   configurations can reference a static access token; Graph should normally reference tenant ID,
   client ID, and client secret env vars so Evander can acquire and renew access tokens itself.
@@ -1492,6 +1531,10 @@ adapters perform provider API calls under the active session policy.
   type, extension, and byte size before it stages the blob. Use
   `communication_copy_artifact_to_workspace` only when the guest needs a local copy; provider
   filenames are normalized and copied under `/home/agent/communication-artifacts/`.
+  Azure DevOps PR-comment files use the PR-specific
+  `list_pr_feedback_attachments` and `download_pr_feedback_attachment` tools instead. They resolve
+  the selected attachment only from an authorized stored feedback item, authenticate on the host,
+  and produce the same opaque artifact for workspace copy.
 - **Outbound file send:** outbound sends reuse staged artifact IDs rather than arbitrary guest
   paths. Use `communication_stage_workspace_file` to stage an agent-created file from under
   `/home/agent`; the provider-specific tools are `discord_post_file`, `teams_post_file`,

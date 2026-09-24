@@ -186,6 +186,8 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert create_task_fields["owner_agent_id"]["required"] is True
     assert create_task_fields["priority"]["kind"] == "number"
     assert create_task_fields["description"]["multiline"] is True
+    assert create_task_fields["task_kind"]["kind"] == "string"
+    assert create_task_fields["task_kind"]["default_value"] == "support"
     assert create_task_fields["git_base_branch"]["kind"] == "string"
     assert create_task_fields["git_base_branch"]["required"] is False
     assert create_task_fields["dependency_task_ids"]["json_value_type"] == "array"

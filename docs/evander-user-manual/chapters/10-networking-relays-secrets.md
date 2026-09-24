@@ -186,7 +186,7 @@ $HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/path
 Operators can manage the same contract without editing raw metadata: use **HTTP targets** in the
 Agents create/edit forms or in **Sessions → Model and access**. Each row accepts an alias and
 HTTP(S) base URL. Existing per-target workflow metadata is preserved, and clearing all rows writes
-an explicit empty target set so legacy APP environment metadata cannot restore access implicitly.
+an explicit empty target set so legacy App environment metadata cannot restore access implicitly.
 
 The relay:
 

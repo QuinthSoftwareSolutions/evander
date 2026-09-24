@@ -9,6 +9,7 @@ from evander.events.models import (
     GateAwaitAgentDefinition,
     GateBufferDefinition,
     GateCounterDefinition,
+    GateClassifierSwitchDefinition,
     GateDebounceDefinition,
     GateDeserializeDefinition,
     GateDedupeDefinition,
@@ -40,6 +41,7 @@ _GATE_MODEL_BY_TYPE = {
     "gate:await-agent": GateAwaitAgentDefinition,
     "gate:for": GateForDefinition,
     "gate:switch": GateSwitchDefinition,
+    "gate:classifier:switch": GateClassifierSwitchDefinition,
     "gate:validate": GateValidateDefinition,
     "gate:while": GateWhileDefinition,
 }

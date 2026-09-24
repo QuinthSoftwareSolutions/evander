@@ -137,12 +137,28 @@ def register_addon():
     }
 ```
 
+An `mcp_tool_catalog` entry for read-only public metadata discovery can declare
+`discovery_for`, a list of other tool names in the same add-on catalog. A session with an explicit
+grant to one of those tools also receives the discovery tool, unless directory policy denies that
+source tool. Discovery keeps its own directory denial and approval rules. This implication is
+one-way: granting discovery alone does not grant those operations. The gateway and Admin Web
+policy views apply the same declarations. Use this only for local, scoped metadata discovery;
+never for provider reads, writes, or credentials.
+
 Connector-driver extensions implement the small async driver protocol documented in
 [Agent Connectors](connectors.md). Add-ons should use a driver only when the built-in declarative
 REST or filesystem drivers cannot express the integration. A custom driver never receives a
 session's unrestricted environment or arbitrary agent headers; the core resolves configured auth
 and validates the operation before invoking it. Adding or removing a connector driver requires a
 gateway restart.
+
+## Miro Add-on
+
+The bundled `miro-addon` exposes connection discovery, editable canvas and comment tools,
+corresponding workflow queries/effects, and opt-in board/comment polling triggers. Its Admin Web
+page manages named OAuth connections, directory and board grants, daily call budgets, and uncertain-write
+recovery. No polling or agent wake workflow is installed automatically. See
+[Miro Add-on](miro-addon.md) for setup, operation contracts, examples, and limitations.
 
 ## Storage
 
@@ -157,6 +173,26 @@ store = addon_json_object_store(runtime_dir, "example-addon", "state.json")
 
 The helper rejects malformed add-on ids, absolute paths, and traversal segments.
 Removing `runtime/addons/<addon_id>/` must not corrupt Evander core state.
+
+## Figma Add-on Guidance
+
+For native UI mockups, the optional `figma-addon` registers agent tools, workflow providers,
+and a Figma operator page. It supports workflow-defined authorship and review, immutable snapshots,
+host-held OAuth, and guarded unattended authoring. See [Figma collaboration](figma.md) for client
+approval prerequisites, file grants, connection testing, and the three example collaboration packs.
+
+## Freshservice Add-on Guidance
+
+The bundled `evander_freshservice_addon` is a headless connector add-on. It contributes the
+`freshservice` driver to the existing `list_connectors` and `call_connector` MCP surface; it does
+not register separate Freshservice MCP tools or workflow providers. The driver provides bounded,
+read-only ticket discovery, ticket and conversation reads, and policy-controlled attachment
+staging.
+
+Enable `freshservice-addon` through `/#addons` or the equivalent Admin API and restart the services
+shown there, including Admin Web and the gateway. Configure the logical connector and host-owned
+authentication in directory-scoped connector configuration using
+`config/connectors/freshservice-readonly.json.example` as the starting point.
 
 ## Azure DevOps Activity Add-on Guidance
 
@@ -615,19 +651,35 @@ deliverables, release packages, and Git promotion state are grouped inside
 grouped inside **Teams** rather than separate People or Roles tabs.
 
 Opening a Team in the **Teams** view exposes **Copy team**. The copy wizard
-previews the current configuration that will be cloned and requires a distinct,
-unregistered core session for every copied persistent agent. Operators can
-select existing sessions discovered in the Team's active project directories or
-create a new VM/container session inline before submitting the copy.
+previews the current configuration and defaults to creating a fresh core session
+for every copied persistent agent. Each new session copies the source session's
+model, capabilities, allowed tools, approval policy, access grants, communication
+settings, quotas, configured image, and recorded toolchain/skill settings. Session
+IDs, VM identities, authentication tokens, and lifetime windows are fresh. Execution
+history and run-scoped approval leases are excluded. Operators can instead select
+existing sessions or use **Configure manually** for a different configuration.
+The wizard displays provisioning progress and retains completed session selections
+if a later session fails, so retrying does not recreate completed sessions.
+
+Session provisioning uses `POST /api/admin/agents/copy-operations` with
+`source_session_id` and an optional new `session_id`; status is available through
+the normal agent create-operation endpoint. Source-directory ownership and
+unlocked privileged operations are required. Configuration is captured on the
+server and copied through the normal VM/container provisioning service. Optional
+toolchain settings can only be reproduced when recorded in the source session;
+guest filesystem contents and manually installed software are not cloned.
 
 The corresponding Admin API is
 `POST /api/addons/team-addon/teams/{team_id}/copy`. Its request contains
-`name`, `expected_revision`, an optional destination `id`, and an
-`agent_session_ids` object keyed by source agent ID. The operation creates new,
-collision-safe IDs for the Team graph and copies active or blocked projects,
-active or paused agents, non-archived roles, review profiles and outcome-kind
-definitions, project goals and assignments, release policy, Team settings, and
-managed Git bindings. Copied projects and agents start active, goals start
+`name`, `expected_revision`, the server-issued `source_configuration_token`, an
+optional destination `id`, and an `agent_session_ids` object keyed by source
+agent ID. The operation creates new, collision-safe IDs for the Team graph and
+copies active or blocked projects, active or paused agents, non-archived roles,
+review profiles and outcome-kind definitions, project goals and assignments,
+release policy, Team settings, and managed Git bindings. The configuration token
+allows unrelated tasks, inbox items, dispatches, runtime state, and cost history
+to advance while the wizard is open; a change to any copied configuration still
+invalidates the preview. Copied projects and agents start active, goals start
 pending, governance escalation starts disabled, and a configured cost cap
 receives a fresh budget window.
 
@@ -921,6 +973,12 @@ may set `case_id`, and a case may list `task_ids`; the repository validates that
 the link is bidirectional, same-team, and same-project when the case has a
 project scope.
 
+Cases also have a structured journal and configurable context views. See
+[Case context](case-context.md) for note attribution, automatic wake deltas,
+source capture, immutable snapshots, workflow queries and operator controls.
+Explicit source-capture effects can now preserve ADO item content and discussion;
+case creation alone does not fetch external content.
+
 Case status values are `open`, `triage`, `in_progress`, `waiting`, `resolved`,
 and `closed`. Case priority values use the existing Team inbox priority set:
 `low`, `normal`, and `high`.
@@ -1197,6 +1255,14 @@ is supplied by the delegating operator or workflow; it is not inferred from an a
 Host-side feature, release, and recovery consolidations remain
 governed separately by the managed repository's host commit identity.
 
+The same task-creation interfaces accept an optional full `git_base_commit_sha`.
+When a new integration boundary belongs to a Git-backed project and no commit is
+supplied, Team resolves its selected `git_base_branch` through the managed repository
+and stores that commit as an immutable baseline. Creation fails closed when the branch
+cannot be resolved. When a caller supplies a commit, Team first verifies that the object
+exists in the managed repository and is an ancestor of the selected branch tip. Ordinary
+coordination and leaf tasks retain branch-only behavior.
+
 For Azure DevOps intake, `effect:team:create-task` accepts `ado_work_item_id` and
 optional `ado_project`. The host fetches the work item in the Team project's directory
 and captures `System.AssignedTo` on initial creation. Its display name and email become
@@ -1351,13 +1417,15 @@ When enabled, the Team Add-on also registers an optional runtime-loop provider
 set:
 
 - `effect:team:wake-due-agents` leases due persistent agents, prompts their
-  Evander sessions, and mirrors a compact `metadata.team_addon` index into the
-  session manifest. When the agent's project has `project.git` configured, the
-  wake also prepares the project repo through `effect:agent:clone-repo` before
-  the resume prompt and includes the prepared guest checkout path in the Team
-  context. Repo preparation is reported in the wake node outputs as
-  `prepared_project_repos` or `failed_project_repo_preparations`; it is not a
-  separate workflow node because one wake tick can lease multiple agents.
+  Evander sessions, and seeds only stable Team identity and guidance metadata
+  into a new session manifest. Mutable work, permissions, and runtime context
+  remain authoritative in the Team store. When the agent's project has
+  `project.git` configured, the wake also prepares the project repo through
+  `effect:agent:clone-repo` before the resume prompt and includes the prepared
+  guest checkout path in the Team context. Repo preparation is reported in the
+  wake node outputs as `prepared_project_repos` or
+  `failed_project_repo_preparations`; it is not a separate workflow node
+  because one wake tick can lease multiple agents.
   Static Team operating rules are seeded as a managed Team Add-on section in
   `/home/agent/AGENTS.md`, so repeated same-context wakes only need to carry the
   dynamic dispatch context. Team state changes are made through Team-owned MCP
@@ -1557,6 +1625,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_request_release`
 - `team_decide_initial_release`
 - `team_recover_release`
+- `team_reintegrate_release`
 - `team_retry_release_gate`
 - `team_request_ephemeral_agent`
 - `team_request_ephemeral_agents`
@@ -1698,8 +1767,9 @@ policy review is needed, or `team_report_blocker` when evidence or a dependency
 prevents a decision. Once formal review is attached, `team_decide_deliverable`
 cannot bypass it; assigned reviewers must use `team_decide_review`. A top-level
 agent with no direct superior must use formal review for a deliverable, or use
-`team_update_task state=finished` for support/coordination work that produces no
-reviewable result.
+`team_update_task state=finished` for support work that produces no reviewable
+result or for an explicit `task_kind: coordination` task. Coordination tasks
+supervise children, never submit deliverables, and receive no Git work context.
 
 For an operator-owned workflow that must await a customer or another external
 system, use `effect:team:set-task-work-state` with `state: waiting_for_input`.
@@ -1924,6 +1994,17 @@ contracts may name required contribution tasks. The contract has two controls:
   child or a declared dependency of the integration task; incidental children,
   descendants, and lineage-only `originating_task_id` links do not count.
 
+For new Git-backed work, create the long-lived orchestration task with
+`task_kind: coordination`. After every required contribution has a current
+accepted deliverable, create a fresh top-level integration boundary with
+`parent_task_id` unset, `originating_task_id` set to the coordination task, and
+the exact accepted source-producing tasks listed as both dependencies and
+required contributions. The fresh task snapshots the current base commit,
+composes the accepted commits above that baseline, and carries the consolidated
+deliverable through review. Do not repurpose or submit from the coordination
+task; Team rejects deliverables, integration contracts, and Git preparation for
+that task kind.
+
 An integration boundary cannot resolve through
 `team_update_task state=finished`. It resolves only when a current deliverable
 whose `source_deliverable_ids` provide complete contract coverage is accepted,
@@ -1951,9 +2032,11 @@ reason code and explanation, source, accountable owner/delegate, route, and
 escalation context. The projection deduplicates shared blockers and scoped
 agent reads omit rows whose upstream task or blocker is not visible.
 
-Support tasks resolve as `finished`. Outcome tasks resolve only as `accepted`
+Support and coordination tasks resolve as `finished`. A coordination task may
+own children but cannot own a deliverable, outcome contract, deliverable
+contract, or integration boundary. Outcome tasks resolve only as `accepted`
 through a current contract-compatible delivered result or accepted
-`evidenced_noop`. Either kind may resolve as `cancelled` through an authorized,
+`evidenced_noop`. Any task kind may resolve as `cancelled` through an authorized,
 reason-coded disposition that records actor, time, and optional same-project
 successor. `team_cancel_task` and the Admin cancellation endpoint accept
 `rebind_dependents=true` only with that successor; this atomically replaces the
@@ -2127,7 +2210,7 @@ Unknown or archived kinds are rejected. Deliverables carry structured outcome
 kinds, durable reference IDs, evidence references, and the applicable definition
 snapshot. A report-only deliverable cannot satisfy an outcome task, and a review
 profile can require specific active catalog kinds before review is requested or
-accepted. Ordinary coordination tasks remain `task_kind: support` and finish
+accepted. Ordinary coordination tasks use `task_kind: coordination` and finish
 without inventing a deliverable. When several profiles apply to the same
 reviewer role, their required outcome kinds also select the implicit profile;
 callers still pass `review_profile_id` when more than one matching profile
@@ -2599,6 +2682,14 @@ cannot request this operator-only retry.
 The verification history displays the retry comment and requester.
 `team_recover_release` remains limited to failed Git feature/release promotions
 and is not a release-gate retry mechanism.
+
+`team_reintegrate_release` previews current accepted release contributions on
+the refreshed configured Git base, then submits that exact preview as an
+integration task. It requires the configured project lead and an active dispatch
+scoped to the release's project. Submission requires the matching `preview` and
+a `request_id`; a changed preview must be refreshed and reviewed again. Project
+reintegration policy controls ownership and source-release retirement, and the
+existing review and release workflows apply to the resulting work.
 
 Use an explicit policy with every `gate_sequence` entry disabled for an
 intentionally ungated project; a missing policy blocks a new Git release rather

@@ -128,6 +128,56 @@ def _write_store(path: Path) -> None:
     )
 
 
+def _write_ado_pr_map(path: Path, *repos: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    f"entry-{index}": {
+                        "provider": "azure_devops",
+                        "repo": repo,
+                        "pr_id": "9463",
+                        "session_id": f"session-{index}",
+                        "directory_path": "root",
+                    }
+                    for index, repo in enumerate(repos)
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_ado_feedback_store(
+    path: Path,
+    feedback: list[tuple[str, str, str]],
+    *,
+    session_reads: dict[str, dict[str, str]] | None = None,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "cursors": {},
+                "feedback": {
+                    feedback_id: {
+                        "feedback_id": feedback_id,
+                        "provider": "azure_devops",
+                        "repo": repo,
+                        "pr_id": "9463",
+                        "author": "reviewer",
+                        "body": feedback_id,
+                        "created_at": created_at,
+                    }
+                    for feedback_id, repo, created_at in feedback
+                },
+                "session_reads": session_reads or {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_has_pending_feedback_returns_minimal_heartbeat_shape(tmp_path: Path) -> None:
     store_path = tmp_path / "pr-feedback-store.json"
     _write_store(store_path)
@@ -351,6 +401,135 @@ def test_list_all_feedback_includes_items_regardless_of_read_cursor(tmp_path: Pa
         "github:review:2",
     ]
     assert response.next_cursor == "2026-01-02T00:00:00Z"
+
+
+def test_list_all_feedback_resolves_ado_short_repo_through_pr_map(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    pr_map_path = tmp_path / "pr-map.json"
+    canonical_repo = "exampleindustry/Example Industry App/SampleApplication"
+    _write_ado_feedback_store(
+        store_path,
+        [("azure_devops:comment:1", canonical_repo, "2099-01-01T00:00:00Z")],
+    )
+    _write_ado_pr_map(pr_map_path, canonical_repo)
+    service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
+
+    response = service.list_all_feedback(
+        streams=[{"provider": "azure_devops", "repo": "SampleApplication", "pr_id": "9463"}]
+    )
+
+    assert [item.feedback_id for item in response.feedback] == ["azure_devops:comment:1"]
+
+
+def test_list_unread_feedback_shares_cursor_across_ado_repo_aliases(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    pr_map_path = tmp_path / "pr-map.json"
+    canonical_repo = "exampleindustry/Example Industry App/SampleApplication"
+    short_repo = "SampleApplication"
+    _write_ado_feedback_store(
+        store_path,
+        [
+            ("azure_devops:comment:historical", canonical_repo, "2099-01-01T00:00:00Z"),
+            ("azure_devops:comment:read", short_repo, "2099-01-02T00:00:00Z"),
+            ("azure_devops:comment:new", canonical_repo, "2099-01-03T00:00:00Z"),
+        ],
+        session_reads={"session-1": {"azure_devops:SampleApplication:9463": "2099-01-02T00:00:00Z"}},
+    )
+    _write_ado_pr_map(pr_map_path, canonical_repo)
+    service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
+    stream = [{"provider": "azure_devops", "repo": short_repo, "pr_id": "9463"}]
+
+    first = service.list_unread_feedback(streams=stream, session_id="session-1")
+    second = service.list_unread_feedback(streams=stream, session_id="session-1")
+
+    assert [item.feedback_id for item in first.feedback] == ["azure_devops:comment:new"]
+    assert second.feedback == []
+    session_reads = service.store.read_raw()["session_reads"]["session-1"]
+    assert session_reads["azure_devops:SampleApplication:9463"] == "2099-01-03T00:00:00Z"
+    assert (
+        session_reads["azure_devops:exampleindustry/Example Industry App/SampleApplication:9463"]
+        == "2099-01-03T00:00:00Z"
+    )
+
+
+def test_ado_short_repo_alias_resolution_fails_closed_when_ambiguous(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    pr_map_path = tmp_path / "pr-map.json"
+    _write_ado_feedback_store(
+        store_path,
+        [
+            (
+                "azure_devops:comment:one",
+                "organization-one/project/SampleApplication",
+                "2099-01-01T00:00:00Z",
+            ),
+            (
+                "azure_devops:comment:two",
+                "organization-two/project/SampleApplication",
+                "2099-01-02T00:00:00Z",
+            ),
+        ],
+    )
+    _write_ado_pr_map(
+        pr_map_path,
+        "organization-one/project/SampleApplication",
+        "organization-two/project/SampleApplication",
+    )
+    service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
+
+    response = service.list_all_feedback(
+        streams=[{"provider": "azure_devops", "repo": "SampleApplication", "pr_id": "9463"}]
+    )
+
+    assert response.feedback == []
+
+
+def test_ado_ssh_repo_alias_resolves_only_within_its_scoped_repository(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    pr_map_path = tmp_path / "pr-map.json"
+    canonical_repo = "organization-one/project/SampleApplication"
+    _write_ado_feedback_store(
+        store_path,
+        [("azure_devops:comment:one", canonical_repo, "2099-01-01T00:00:00Z")],
+    )
+    _write_ado_pr_map(pr_map_path, canonical_repo)
+    service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
+
+    response = service.list_all_feedback(
+        streams=[
+            {
+                "provider": "azure_devops",
+                "repo": "ssh://git@ssh.dev.azure.com/v3/organization-one/project/SampleApplication",
+                "pr_id": "9463",
+            }
+        ]
+    )
+
+    assert [item.feedback_id for item in response.feedback] == ["azure_devops:comment:one"]
+
+
+def test_ado_unparsed_scoped_repo_does_not_use_short_name_fallback(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    pr_map_path = tmp_path / "pr-map.json"
+    mapped_repo = "organization-two/project/SampleApplication"
+    _write_ado_feedback_store(
+        store_path,
+        [("azure_devops:comment:two", mapped_repo, "2099-01-01T00:00:00Z")],
+    )
+    _write_ado_pr_map(pr_map_path, mapped_repo)
+    service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
+
+    response = service.list_all_feedback(
+        streams=[
+            {
+                "provider": "azure_devops",
+                "repo": "ssh://git@example.invalid/v3/organization-one/project/SampleApplication",
+                "pr_id": "9463",
+            }
+        ]
+    )
+
+    assert response.feedback == []
 
 
 def test_list_unread_feedback_can_use_repository_contract_without_file_reads(

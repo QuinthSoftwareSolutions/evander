@@ -32,7 +32,27 @@ class VmAgentContainerSessionActionMixin:
             directory_path=directory_path,
             direct_only=direct_only,
         )
-        return [self._session_summary_with_container_lifecycle(summary) for summary in summaries]
+        sessions = [summary for summary in summaries if self._is_container_session(summary)]
+        records_by_session = self._container_lifecycle_records_by_session(
+            [summary.session_id for summary in sessions]
+        )
+        return [
+            self._session_summary_with_container_lifecycle(
+                summary,
+                executions=records_by_session.get(summary.session_id, []),
+            )
+            for summary in summaries
+        ]
+
+    def get_session_summary(self, session_id: str) -> SessionSummary:
+        summary = self.operations_admin.get_session_summary(session_id)
+        if not self._is_container_session(summary):
+            return self._session_summary_with_container_lifecycle(summary)
+        records = self._container_lifecycle_records_by_session([session_id])
+        return self._session_summary_with_container_lifecycle(
+            summary,
+            executions=records.get(session_id, []),
+        )
 
     def delete_session(self, target: str) -> SessionActionResult:
         sessions = {

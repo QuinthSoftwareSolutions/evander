@@ -11,7 +11,10 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from evander.admin.composition import AdminRuntimeComponents
-from evander.admin.services.skill_admin_service import SkillDeletionBlockedByWorkflowReferences
+from evander.admin.services.skill_admin_service import (
+    SkillDeletionBlockedByWorkflowReferences,
+    SkillPropagationError,
+)
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
 from evander.admin.web.shared import AdminWebAuth, json_error, request_has_privileged_operations
 
@@ -56,6 +59,8 @@ def skill_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[Ba
             metadata = await run_in_threadpool(service.skill_admin.create_skill, payload)
         except FileExistsError as exc:
             return json_error(str(exc), status_code=409)
+        except SkillPropagationError as exc:
+            return json_error(str(exc), status_code=502, details=exc.details)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse({"skill": _jsonable(metadata)}, status_code=201)

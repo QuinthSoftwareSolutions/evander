@@ -160,7 +160,7 @@ test("workflow editor shows selected-node output contracts and copies binding ex
           id: "trigger-1",
           display_name: "Incoming ticket",
           type: "trigger:manual",
-          source: "support inbox",
+          config: { source: "support inbox" },
         },
       ],
       gates: [
@@ -168,6 +168,7 @@ test("workflow editor shows selected-node output contracts and copies binding ex
           id: "gate-filter-1",
           display_name: "Filter ticket",
           type: "gate:filter",
+          config: {},
         },
       ],
       effects: [
@@ -175,7 +176,7 @@ test("workflow editor shows selected-node output contracts and copies binding ex
           id: "effect-1",
           display_name: "Dispatch agent",
           type: "effect:agent",
-          prompt: "Handle ticket",
+          config: { prompt: "Handle ticket" },
         },
       ],
       queries: [],

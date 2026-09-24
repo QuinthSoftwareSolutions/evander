@@ -660,7 +660,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             if (string.IsNullOrWhiteSpace(prompt))
             {
                 builder.AppendLine(
-                    "You are a live Truman agent in a Microsoft Teams meeting. Listen to participants, respond concisely, and preserve meeting decisions for the originating text session.");
+                    "You are a live Evander agent in a Microsoft Teams meeting. Listen to participants, respond concisely, and preserve meeting decisions for the originating text session.");
             }
             else
             {

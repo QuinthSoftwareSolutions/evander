@@ -8,7 +8,7 @@ from starlette.routing import Route
 from starlette.concurrency import run_in_threadpool
 
 from evander.admin.composition import AdminRuntimeComponents
-from evander.admin.web.cache import AdminWebJsonResponseCache
+from evander.admin.web.cache import AdminWebJsonResponseCache, _request_bypasses_cache
 from evander.admin.web.rbac import WORKFLOW_RUNS_READ_PERMISSION
 from evander.admin.web.shared import AdminWebAuth
 from evander.admin.web.shared import json_error
@@ -84,6 +84,7 @@ def report_routes(
 ) -> list[Route]:
     async def workflow_graph_activity(request: Request) -> JSONResponse:
         try:
+            kwargs = {"refresh": True} if _request_bypasses_cache(request) else {}
             payload = await run_in_threadpool(
                 service.workflow_reports_admin.read_workflow_graph_activity_report,
                 period_start=_parse_optional_datetime(
@@ -95,6 +96,7 @@ def report_routes(
                     field_name="end",
                 ),
                 limit=_parse_optional_limit(request.query_params.get("limit")),
+                **kwargs,
             )
         except ValueError as exc:
             return json_error(str(exc))

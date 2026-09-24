@@ -22,14 +22,14 @@ def test_admin_service_session_update_metadata_merges_into_manifest(tmp_path: Pa
     )
 
     result = service.issue_git_admin.session_update_metadata(
-        target="session-1", metadata={"issue_title": "Fix APP"}
+        target="session-1", metadata={"issue_title": "Fix App"}
     )
 
     assert result["success"] is True
-    assert result["metadata"] == {"issue_number": "14084", "issue_title": "Fix APP"}
+    assert result["metadata"] == {"issue_number": "14084", "issue_title": "Fix App"}
     stored = service.runtime.session_repository.get_session("session-1")
     assert stored is not None
-    assert stored.metadata == {"issue_number": "14084", "issue_title": "Fix APP"}
+    assert stored.metadata == {"issue_number": "14084", "issue_title": "Fix App"}
 
 
 def test_admin_service_session_context_query_returns_generic_fields(tmp_path: Path) -> None:
@@ -45,7 +45,7 @@ def test_admin_service_session_context_query_returns_generic_fields(tmp_path: Pa
             allowed_tools=[ToolName.APPROVAL_CHECK, ToolName.RUN_SCRIPT],
             approval_required_tools=[ToolName.RUN_SCRIPT],
             expires_at="2099-01-01T00:00:00Z",
-            metadata={"issue_number": "14084", "issue_title": "Fix APP"},
+            metadata={"issue_number": "14084", "issue_title": "Fix App"},
         ),
     )
 

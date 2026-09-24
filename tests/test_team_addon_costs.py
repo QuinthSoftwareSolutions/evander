@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +16,7 @@ from evander.model_usage.models import (
 )
 from evander.model_usage.pricing import load_model_pricing_catalog_payload
 from evander.model_usage.store import ModelUsageStore
+from evander.model_usage.report_snapshot import CostReportSnapshot
 from evander.models import SessionManifest
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 import evander_team_addon.costs as costs_module
@@ -20,6 +24,402 @@ from evander_team_addon.costs import TeamCostService
 from evander_team_addon.models import EphemeralAssignment
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
+import evander_team_addon.cost_report as cost_report_module
+
+
+def _report_service(runtime_dir, repo, store, *, catalog=None):
+    return TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=catalog or _pricing_catalog(),
+    )
+
+
+def _without_generated_at(payload):
+    return {key: value for key, value in payload.items() if key != "generated_at"}
+
+
+def _assert_report_matches_cold_build(service):
+    actual = service.costs_payload()
+    with sqlite3.connect(service.runtime_dir / "team-cost-report.db") as connection:
+        connection.execute("DELETE FROM report_metadata")
+    assert _without_generated_at(actual) == _without_generated_at(service.costs_payload())
+    return actual
+
+
+def test_complete_cost_report_reuses_history_and_refreshes_only_changed_requests(
+    tmp_path, monkeypatch
+):
+    repo = _seed_team(tmp_path)
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    for number in range(12):
+        store.upsert_event(_usage_event(str(number), session_id="session-backend"))
+    service = _report_service(tmp_path, repo, store)
+    assert service.costs_payload()["events_count"] == 12
+
+    def no_history(self):
+        raise AssertionError("warm report must not scan historical usage")
+
+    monkeypatch.setattr(CostReportSnapshot, "events", no_history)
+    # New service/store instances model separate request and worker lifetimes.
+    service = _report_service(tmp_path, repo, ModelUsageStore(store.path))
+    assert service.costs_payload()["project_costs"]["project"]["estimated_cost"] == 12
+    store.upsert_event(_usage_event("12", session_id="session-manager"))
+    assert service.costs_payload()["team_costs"]["team"]["estimated_cost"] == 13
+    store.upsert_event(_usage_event("12", session_id="session-manager", input_tokens=2_000_000))
+    assert service.costs_payload()["team_costs"]["team"]["estimated_cost"] == 14
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DELETE FROM model_usage_events WHERE event_id = '12'")
+    report = service.costs_payload()
+    assert report["events_count"] == 12
+    assert report["team_costs"]["team"]["estimated_cost"] == 12
+
+
+def test_cost_report_incremental_transcript_replacement_and_request_moves_match_rebuild(tmp_path):
+    repo = _seed_team(tmp_path)
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    relay = _usage_event(
+        "relay",
+        session_id="session-backend",
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        request_id="shared",
+        raw_usage_metadata={"request_metadata": {"team_id": "team", "project_id": "project"}},
+    )
+    store.upsert_event(relay)
+    service = _report_service(tmp_path, repo, store)
+    service.costs_payload()
+    transcript = _usage_event(
+        "transcript",
+        session_id="session-backend",
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        request_id="shared",
+        input_tokens=1000,
+        raw_usage_metadata={
+            "request_metadata": {
+                "source": costs_module.TRANSCRIPT_SOURCE_NAME,
+                "team_id": "other",
+            }
+        },
+    )
+    store.upsert_event(transcript)
+    report = _assert_report_matches_cold_build(service)
+    assert report["events_count"] == 1
+    assert report["team_costs"]["team"]["estimated_cost"] == 0.003
+    # A correction can change request key and session, affecting both groups.
+    store.upsert_event(transcript.model_copy(update={"request_id": "moved", "session_id": "other"}))
+    report = _assert_report_matches_cold_build(service)
+    assert report["events_count"] == 2
+    assert report["team_costs"]["team"]["estimated_cost"] == 3
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DELETE FROM model_usage_events WHERE event_id = 'transcript'")
+    assert _assert_report_matches_cold_build(service)["events_count"] == 1
+
+
+def test_cost_report_context_and_session_attribution_changes_are_incremental(tmp_path, monkeypatch):
+    repo = _seed_team(tmp_path)
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    store.upsert_event(_usage_event("request", session_id="outside", dispatch_id="dispatch"))
+    assert (
+        _report_service(tmp_path, repo, store).costs_payload()["unattributed_costs"][
+            "estimated_cost"
+        ]
+        == 1
+    )
+    now = datetime.now(UTC)
+    context = ModelUsageCorrelationContext(
+        session_id="outside",
+        dispatch_id="dispatch",
+        agent_harness="codex",
+        team_id="team",
+        project_id="project",
+        started_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+
+    def no_history(self):
+        raise AssertionError("attribution updates must query only affected identities")
+
+    monkeypatch.setattr(CostReportSnapshot, "events", no_history)
+    store.upsert_correlation_context(context)
+    assert (
+        _report_service(tmp_path, repo, store).costs_payload()["project_costs"]["project"][
+            "estimated_cost"
+        ]
+        == 1
+    )
+    store.upsert_correlation_context(context.model_copy(update={"project_id": "other-project"}))
+    assert (
+        _report_service(tmp_path, repo, store).costs_payload()["project_costs"]["other-project"][
+            "estimated_cost"
+        ]
+        == 1
+    )
+    store.clear_correlation_context(dispatch_id="dispatch")
+    assert (
+        _report_service(tmp_path, repo, store).costs_payload()["unattributed_costs"][
+            "estimated_cost"
+        ]
+        == 1
+    )
+    # Session ownership changes without a usage write must invalidate its rows.
+    service = _report_service(tmp_path, repo, store)
+    service.state.agents["backend"].session_id = "outside"
+    assert service.costs_payload()["project_costs"]["project"]["estimated_cost"] == 1
+    service.state.agents["backend"].team_id = None
+    assert service.costs_payload()["unattributed_costs"]["estimated_cost"] == 1
+
+
+def test_cost_report_reprices_and_observes_new_budget_windows(tmp_path):
+    repo = _seed_team(tmp_path)
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    store.upsert_event(_usage_event("old", session_id="session-backend"))
+    service = _report_service(tmp_path, repo, store)
+    assert service.costs_payload()["team_costs"]["team"]["estimated_cost"] == 1
+    catalog = _pricing_catalog()
+    catalog = replace(catalog, rules=(replace(catalog.rules[0], input_per_1m_tokens=Decimal("2")),))
+    service = _report_service(tmp_path, repo, store, catalog=catalog)
+    assert service.costs_payload()["team_costs"]["team"]["estimated_cost"] == 2
+    _team_admin_service(repo).update_team(team_id="team", max_cost_usd="10", set_max_cost_usd=True)
+    service = _report_service(tmp_path, repo, store, catalog=catalog)
+    cost = service.costs_payload()["team_costs"]["team"]
+    assert cost["estimated_cost"] == 2
+    assert cost["budget_window_estimated_cost"] == 0
+    store.upsert_event(
+        _usage_event("new", session_id="session-backend", occurred_at=datetime.now(UTC))
+    )
+    cost = _assert_report_matches_cold_build(service)["team_costs"]["team"]
+    assert cost["estimated_cost"] == 4
+    assert cost["budget_window_estimated_cost"] == 2
+
+
+def test_cost_report_coalesces_builders_without_blocking_usage_writers(tmp_path, monkeypatch):
+    repo = _seed_team(tmp_path)
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    store.upsert_event(_usage_event("first", session_id="session-backend"))
+    entered = Event()
+    release = Event()
+    original = CostReportSnapshot.events
+    calls = []
+
+    def blocked_events(snapshot):
+        calls.append(snapshot.revision)
+        entered.set()
+        assert release.wait(5)
+        yield from original(snapshot)
+
+    monkeypatch.setattr(CostReportSnapshot, "events", blocked_events)
+    first_service = _report_service(tmp_path, repo, store)
+    second_service = _report_service(tmp_path, repo, ModelUsageStore(store.path))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(first_service.costs_payload)
+        try:
+            assert entered.wait(5)
+            second = executor.submit(second_service.costs_payload)
+            # The projection writer does not lock the source usage store.
+            store.upsert_event(_usage_event("second", session_id="session-backend"))
+        finally:
+            release.set()
+        assert first.result(timeout=5)["events_count"] == 1
+        assert second.result(timeout=5)["events_count"] == 2
+    assert len(calls) == 1
+
+
+def test_cost_report_failed_refresh_rolls_back_for_retry(tmp_path, monkeypatch):
+    import pytest
+
+    repo = _seed_team(tmp_path)
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    store.upsert_event(_usage_event("first", session_id="session-backend"))
+    service = _report_service(tmp_path, repo, store)
+    service.costs_payload()
+    store.upsert_event(_usage_event("first", session_id="session-backend", input_tokens=2_000_000))
+    original = cost_report_module._apply_deltas
+    with monkeypatch.context() as patch:
+
+        def fail(*args):
+            original(*args)
+            raise RuntimeError("interrupted report")
+
+        patch.setattr(cost_report_module, "_apply_deltas", fail)
+        with pytest.raises(RuntimeError, match="interrupted report"):
+            service.costs_payload()
+    assert _assert_report_matches_cold_build(service)["team_costs"]["team"]["estimated_cost"] == 2
+
+
+def _legacy_complete_cost_report(service, now):
+    """Independent reference: the original full-history report's event loop."""
+    from evander.model_usage.pricing import estimate_model_usage_cost
+
+    c = costs_module
+    raw_events = service.usage_store.list_events()
+    service._context_cache = {}
+    service._request_attribution_cache = service._request_attributions(raw_events)
+    windows = {
+        key: c._current_team_budget_window(team, now=now)
+        for key, team in service.state.teams.items()
+    }
+    teams, projects, budgets = {}, {}, {}
+    root, unattributed = c._new_bucket(), c._new_bucket()
+    for event in c._dedupe_cost_events(raw_events):
+        estimate = estimate_model_usage_cost(event, service._load_pricing_catalog(), currency="usd")
+        attribution = service._attribute_event(event)
+        source = c._usage_source(event)
+
+        def add(bucket):
+            c._add_event_to_bucket(bucket, event, estimate, source=source)
+
+        add(root)
+        if not attribution.team_id:
+            add(unattributed)
+            continue
+        team = teams.setdefault(attribution.team_id, c._new_bucket())
+        add(team)
+        window = windows.get(attribution.team_id)
+        if (
+            window
+            and event.occurred_at >= window["started_at"]
+            and (window["ends_at"] is None or event.occurred_at < window["ends_at"])
+        ):
+            add(budgets.setdefault(attribution.team_id, c._new_bucket()))
+        if attribution.project_id and attribution.project_confident:
+            add(
+                projects.setdefault(
+                    attribution.project_id,
+                    c._new_bucket(team_id=attribution.team_id, project_id=attribution.project_id),
+                )
+            )
+        else:
+            add(unattributed)
+            add(team.setdefault("unattributed_costs", c._new_bucket(team_id=attribution.team_id)))
+    for key, team in service.state.teams.items():
+        if team.max_cost_usd is not None:
+            teams.setdefault(key, c._new_bucket(team_id=key))
+    for key, bucket in teams.items():
+        bucket["team_id"] = key
+        bucket["project_costs"] = {
+            project: c._finalize_bucket(value)
+            for project, value in sorted(projects.items())
+            if value.get("team_id") == key
+        }
+        bucket["unattributed_costs"] = c._finalize_bucket(
+            bucket.get("unattributed_costs", c._new_bucket(team_id=key))
+        )
+    team_costs = {
+        key: c._finalize_team_bucket(
+            value,
+            team=service.state.teams.get(key),
+            budget_window=windows.get(key),
+            budget_window_bucket=budgets.get(key),
+        )
+        for key, value in sorted(teams.items())
+    }
+    reasons = sorted(root["_coverage_reasons"])
+    return {
+        "coverage_status": "partial" if reasons else "complete",
+        "coverage_reasons": reasons,
+        "team_costs": team_costs,
+        "governance_group_costs": c._governance_group_costs(
+            service.state, team_cost_payloads=team_costs
+        ),
+        "project_costs": {
+            key: c._finalize_bucket(value) for key, value in sorted(projects.items())
+        },
+        "unattributed_costs": c._finalize_bucket(unattributed),
+        "source_counts": dict(sorted(root["source_counts"].items())),
+        "events_count": root["events_count"],
+        "priced_events_count": root["priced_events_count"],
+        "unpriced_events_count": root["unpriced_events_count"],
+    }
+
+
+def test_complete_cost_report_all_fields_match_legacy_before_and_after_changes(tmp_path):
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(team_id="team", max_cost_usd="10", set_max_cost_usd=True)
+    admin.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        max_cost_usd="20",
+        expected_revision=repo.read().revision,
+    )
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    now = datetime.now(UTC)
+    for event_id, session_id, model in (
+        ("team", "session-manager", "test-model"),
+        ("project", "session-backend", "test-model"),
+        ("unknown-model", "session-backend", "unpriced"),
+        ("unattributed", "outside", "test-model"),
+    ):
+        store.upsert_event(
+            _usage_event(event_id, session_id=session_id, model=model, occurred_at=now)
+        )
+    service = _report_service(tmp_path, repo, store)
+    assert _without_generated_at(service.costs_payload(now=now)) == _legacy_complete_cost_report(
+        service, now
+    )
+    # The oldest retained project event determines its historical team label.
+    store.upsert_event(
+        _usage_event(
+            "earlier",
+            session_id="outside",
+            input_tokens=321,
+            raw_usage_metadata={
+                "request_metadata": {"team_id": "historic-team", "project_id": "project"}
+            },
+        )
+    )
+    store.upsert_event(
+        _usage_event(
+            "cached",
+            session_id="session-backend",
+            model="claude-sonnet-4-6",
+            provider="anthropic",
+            input_tokens=123,
+            output_tokens=456,
+            raw_usage_metadata={
+                "usage": {"cache_read_input_tokens": 700, "cache_creation_input_tokens": 500}
+            },
+        )
+    )
+    assert _without_generated_at(service.costs_payload(now=now)) == _legacy_complete_cost_report(
+        service, now
+    )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DELETE FROM model_usage_events WHERE event_id = 'earlier'")
+    assert _without_generated_at(service.costs_payload(now=now)) == _legacy_complete_cost_report(
+        service, now
+    )
+
+
+def test_cost_report_legacy_request_keys_do_not_reparse_unrelated_session_history(
+    tmp_path, monkeypatch
+):
+    repo = _seed_team(tmp_path)
+    store = ModelUsageStore(tmp_path / "model-usage.db")
+    for number in range(30):
+        store.upsert_event(
+            _usage_event(str(number), session_id="session-backend", request_id=str(number))
+        )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE model_usage_events SET cost_request_key = NULL")
+    service = _report_service(tmp_path, repo, store)
+    service.costs_payload()
+    seen = []
+    original = CostReportSnapshot.event
+
+    def event(snapshot, event_id):
+        seen.append(event_id)
+        return original(snapshot, event_id)
+
+    monkeypatch.setattr(CostReportSnapshot, "event", event)
+    store.upsert_event(_usage_event("new", session_id="session-backend", request_id="0"))
+    assert service.costs_payload()["events_count"] == 31
+    assert sorted(seen) == ["0", "new"]
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:

@@ -104,6 +104,11 @@ class VmAgentCreateRequestMixin:
                 templates=vm_defaults.libvirt_vm_templates,
             )
             create_metadata: dict[str, Any] = {
+                **{
+                    key: payload[key]
+                    for key in ("dotnet", "nuget", "playwright", "mssql", "mssql_init_root", "vm_user")
+                    if key in payload
+                },
                 "libvirt_vm_template": {
                     "image_ref": vm_image_selection["image_ref"],
                     "template_alias": vm_image_selection["template_alias"],
@@ -348,6 +353,9 @@ class VmAgentCreateRequestMixin:
             metadata["worker_url"] = worker_url
         metadata["container_worker"] = container_image_selection
         metadata["playwright"] = bool(payload.get("playwright", False))
+        metadata["dotnet"] = bool(payload.get("dotnet", False))
+        metadata["nuget"] = bool(payload.get("nuget", False))
+        metadata["codex_skills"] = self._agent_string_list(payload, "codex_skills") or []
         if "http_targets" in payload:
             metadata["http_targets"] = normalize_http_targets_metadata(payload.get("http_targets"))
         resolved_allowed_contact_ids = _validate_allowed_contact_ids_for_directory(
@@ -530,23 +538,54 @@ class VmAgentCreateRequestMixin:
         return self._resolve_vm_defaults(directory_path)
 
     def agent_create_options(
-        self, directory_path: str | None = None, *, worker_id: str | None = None
+        self,
+        directory_path: str | None = None,
+        *,
+        worker_id: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
+        worker_id = str(worker_id or "").strip() or None
+        session_id = str(session_id or "").strip() or None
+        if worker_id and session_id:
+            raise ValueError("worker_id and session_id cannot both be provided")
         normalized_directory = self._normalize_directory_path(directory_path)
+        assigned_session = None
+        if session_id:
+            assigned_session = self.runtime.session_repository.get_session(session_id)
+            if assigned_session is None:
+                raise ValueError(f"Unknown session: {session_id}")
+            if not self._is_container_session(assigned_session):
+                raise ValueError("session_id must identify a container worker session")
+            assigned_directory = self._normalize_directory_path(
+                assigned_session.directory_path
+            )
+            if directory_path is not None and normalized_directory != assigned_directory:
+                raise ValueError("session_id does not belong to directory_path")
+            normalized_directory = assigned_directory
         vm_defaults = self.resolve_vm_defaults(normalized_directory)
         provider_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
         workers = [
             {"worker_id": key, "display_name": profile.display_name or key}
             for key, profile in sorted(provider_config.container_workers.items())
         ]
-        if worker_id:
+        selected_worker_id = worker_id
+        if worker_id or session_id:
             from evander.admin.services.container_worker_assignment_service import (
                 ContainerWorkerAssignmentService,
             )
 
-            provider_config = ContainerWorkerAssignmentService(
-                provider_config
-            ).config_for_worker_id(worker_id)
+            assignments = ContainerWorkerAssignmentService(provider_config)
+            if session_id:
+                assignment = assignments.repository.get(session_id)
+                provider_config = assignments.resolve(
+                    session_id,
+                    session=assigned_session,
+                    directory_path=normalized_directory,
+                    persist=False,
+                )
+                selected_worker_id = assignment.worker_id if assignment is not None else None
+            else:
+                provider_config = assignments.config_for_worker_id(worker_id)
         policy_config = self.runtime.policy_config.resolve_for_directory(normalized_directory)
         libvirt_templates = [
             {"alias": alias, "image_ref": image_ref}
@@ -560,6 +599,7 @@ class VmAgentCreateRequestMixin:
         try:
             profile_payload = self.container_worker_backend(
                 directory_path=normalized_directory,
+                **({"session_id": session_id} if session_id else {}),
                 **({"worker_id": worker_id} if worker_id else {}),
             ).client.list_codex_auth_profiles()
             subscription_profiles = [
@@ -678,7 +718,7 @@ class VmAgentCreateRequestMixin:
             },
             "container_worker": {
                 "workers": workers,
-                "selected_worker_id": worker_id,
+                "selected_worker_id": selected_worker_id,
                 "default_image": provider_config.container_worker_default_image,
                 "images": container_images,
                 "codex_auth_mode": provider_config.container_worker_codex_auth_mode,

@@ -31,6 +31,17 @@ the base Ubuntu cloud image.
 - `group_vars/evander_worker_hosts.yml`: container-worker VM defaults
 - `roles/`: deployment steps grouped by responsibility
 
+Keep inventory and host-specific variables in operator-owned storage outside this checkout.
+For an existing host, set `evander_deploy_path` to its current installation path instead of
+relying on the default. When deploying workers, set or verify
+`evander_control_plane_deploy_path` against that same checkout. Copy any active Teams
+notification settings from the previous host override into external inventory when Ansible
+should manage them; [the host-vars example](host_vars/control-plane.yml.example) shows the
+fields. For an existing host where Teams ingest config is unmanaged, the playbook reads the
+live config before rendering Caddy, preserving the notification route during an update.
+Validate the resolved inventory variables with `ansible-inventory --host` before running
+the playbook.
+
 ## Managed Flow
 
 The playbook follows the repo-native bootstrap order:
@@ -314,18 +325,26 @@ the installed Codex package into `$(Pipeline.Workspace)/host-codex`. It exports 
 `$(Pipeline.Workspace)/ms-playwright`. It then runs
 `scripts/build_evander_runner_image.sh` and
 `scripts/build_evander_claude_runner_image.sh`. Set `HOST_CLAUDE_BIN` when `claude` is not on
-the build host PATH.
+the build host PATH. Both scripts reconcile `evander-runner-base:latest`, which owns their common
+Ubuntu and Playwright operating-system dependencies. Sequential builds install those packages once
+and reuse the local Docker layer for the second provider image. If `ubuntu:24.04` is absent, its
+pull uses three attempts with a 120-second timeout per attempt, and the shared-base build has a
+900-second timeout. Override those bounds with `RUNNER_BASE_PULL_ATTEMPTS`,
+`RUNNER_BASE_PULL_TIMEOUT_SECONDS`, and `RUNNER_BASE_BUILD_TIMEOUT_SECONDS`. Set
+`RUNNER_OS_BASE_IMAGE` to an authenticated registry mirror or cache when the build host should avoid
+direct Docker Hub pulls.
 Those scripts write `dist/evander-runner.tar.manifest` and
 `dist/evander-runner-claude.tar.manifest` beside their tarballs and reuse cached archives when
-the manifests still match. The manifest keys cover the Dockerfile text, the build script text,
-`RUNNER_IMAGE_NAME`, the resolved agent executable paths and SHA-256 values, provider package
-identity where applicable, and the base-image policy from the Dockerfile `FROM` line. Use
+the manifests still match. The manifest keys cover the provider and shared-base Dockerfile and
+build-script text, `RUNNER_IMAGE_NAME`, `RUNNER_BASE_IMAGE`, `RUNNER_OS_BASE_IMAGE`, the resolved
+agent executable paths and SHA-256 values, and provider package identity where applicable. Hosted
+agents only get this archive reuse when the operator pipeline restores `dist/` from a persistent
+cache. Use
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_runner_image.sh` or
 `./scripts/build_evander_runner_image.sh --force` for Codex, and
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_claude_runner_image.sh` or
-`./scripts/build_evander_claude_runner_image.sh --force` for Claude, to force a rebuild; that is the right path
-when you want a moving base tag such as `ubuntu:24.04` refreshed, because the tag text can stay the
-same while the remote image changes.
+`./scripts/build_evander_claude_runner_image.sh --force` for Claude, to force a rebuild and refresh
+the upstream operating-system image.
 Before `ansible/worker.yml`, the pipeline resolves `HOST_NODE_ROOT` from the installed Node runtime
 and exports `HOST_PLAYWRIGHT_NODE_MODULES` plus `HOST_PLAYWRIGHT_BROWSERS` so the worker toolchain
 roles do not depend on nvm-style or home-cache hosted-agent paths. The default package spec is
@@ -651,7 +670,7 @@ host NuGet relay and additively update worker caches. Docker `host` networking
 remains refused; choose a private Docker
 network/routing setup that can reach only the required control-plane relay and gateway endpoints
 plus the apt relay on `3142` and the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to Ubuntu mirrors, `pypi.org`, and `registry.npmjs.org`; the control plane is the only host that needs upstream package internet access for these formats.
-If the host Docker bridge cannot reach apt mirrors while building either tarball, build it with
+If the host Docker bridge cannot reach apt mirrors while building the shared base, build it with
 `RUNNER_BUILD_NETWORK=host ./scripts/build_evander_runner_image.sh` or
 `RUNNER_BUILD_NETWORK=host ./scripts/build_evander_claude_runner_image.sh`; this does not
 change the worker daemon's runtime networking policy. This first slice keeps Ansible's

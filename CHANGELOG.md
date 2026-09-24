@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-10 - Pinned OpenRouter Codex routing (0.38.0)
+## 2026-09-24 - Pinned OpenRouter Codex routing (0.63.0)
 
 - Add an opt-in OpenRouter provider for Codex HTTP Responses requests and
   compaction passthrough, with exact session model allowlists, one configured
@@ -14,6 +14,614 @@
   and include both in Team budgets and cost displays while preserving fractional dollars.
 - Leave OpenRouter routes empty and public OpenAI as the default; live provider
   compatibility and credentials require operator configuration.
+
+## 2026-09-24 - Open Admin Web details directly (0.62.5)
+
+- Open Agents, Sessions, and the other record management pages directly in their
+  sidebar and detail layout, with a selection prompt until an item is chosen.
+- Open complete details with one sidebar click; preserve filters, shareable links,
+  creation actions, and unsaved-change confirmation without an intermediate preview.
+- Keep upload, registration, and directory configuration forms available in compact
+  disclosures. Existing inspector links open details directly in the New UI.
+
+## 2026-09-24 - Reduce Admin Web read overhead (0.62.4)
+
+- Let execution-history clients omit exact match counts while retaining cursor pagination;
+  show loaded rows and whether more are available in the workflow editor.
+- Find execution-history availability bounds with index seeks and move history reads and
+  response serialization off the web event loop, preserving authorization checks.
+- Filter session inventories before sorting so narrow views only sort their matching rows.
+- Read workflow run and recent-activity display fields directly from SQLite instead of
+  hydrating and serializing full execution payloads; keep control operations on full records.
+- Resolve communication targets once per workflow catalog request, retaining directory and
+  capability filtering without introducing a shared configuration cache.
+- Keep cleanup audit tests independent of the current date by aligning the journal's
+  retention clock with their simulated cleanup timestamps.
+
+## 2026-09-24 - Stable Team copy previews (0.62.3)
+
+- Keep Team copy previews valid while tasks, inbox items, dispatches, runtime state, cost history,
+  and other excluded operational records continue changing.
+- Reject a stale copy only when the stable source configuration graph changed, including Team
+  settings, projects, roles, agents, assignments, review profiles, and outcome kinds.
+
+## 2026-09-24 - Improve Team chat navigation and stability (0.62.2)
+
+- Preserve the new-chat agent picker position through Team state refreshes, so operators can
+  select agents far down the list without being returned to its start.
+- Add direct Chat actions in the Teams agent detail and Org chart agent menu.
+
+## 2026-09-24 - Make workflow node types easier to distinguish (0.62.1)
+
+- Give triggers, gates, effects, and queries distinct amber, green, blue, and purple
+  type bands, tinted backgrounds, and clearer labels in both New UI themes.
+- Keep selection, error, disabled, unsaved, and execution indicators visible alongside
+  node type styling.
+
+## 2026-09-24 - Resolve Teams direct chats from UPNs (0.62.0)
+
+- Let workflow editors choose direct-chat setup by UPN or retain explicit Teams chat and sender
+  IDs. Resolve direct-chat UPNs through host-owned Microsoft Graph access during revision-gated
+  saves, ensure each one-to-one chat, and persist canonical user and chat IDs while keeping the
+  readable UPNs in the form.
+
+## 2026-09-24 - Separate oversized maintenance responsibilities (0.61.1)
+
+- Move Team agent leasing, action application, task administration, and task-update
+  execution into named domain modules while retaining service constructors, method
+  signatures, revision checks, clock behavior, and outbox transactions.
+- Give worker Git workspace preparation, dependency composition, and cleanup a dedicated
+  implementation boundary while preserving established exception and helper imports.
+- Replace numbered Team MCP registration slices with domain names without changing tool
+  registration order, names, descriptions, or handlers.
+- Separate Team UI state and routing, session approval policy and dialogs, DIDWW delegated
+  origin queries, and OpenAI usage accounting from their oversized entry points.
+- Document the compatibility contracts for the new boundaries and keep their implementation
+  bodies mechanically equivalent to the prior code.
+
+## 2026-09-23 - Unify the Admin Web design (0.61.0)
+
+- Offer a temporary Classic / New UI selector, defaulting to a frozen main UI until
+  testing is complete. Load only the chosen host and add-on assets, remember the
+  browser preference, and confirm before leaving unsaved work.
+- Use page-specific actions such as View agent, View session, and View repository,
+  with simpler list navigation and add-on labels.
+- Introduce shared light/dark colors, typography, controls, and consistent compact spacing
+  across Admin Web and all six standalone add-ons, with larger touch targets where needed.
+- Replace repeated record cards with comparable inventories and closable inspectors,
+  retaining full forms, deep links, filtering context, and narrow-screen dialogs.
+- Add sortable inventory headers with text, numeric, and chronological ordering;
+  fit full-record sidebar filters and actions within the compact layout, with space
+  between back navigation and record panels.
+- Refine workflow commands, configuration, reports, Team workspaces and boards,
+  integration settings, login, notifications, and the assistant with the same visual system.
+- Keep release news prominent, with readable articles, images, archive navigation,
+  and build/changelog details. Preserve configuration fields and revision-gated saves.
+- Apply the existing privilege-lock state consistently to skill, add-on, and integration
+  mutation controls, while preserving drafts and read access.
+- Keep record selection and deep links synchronized during hash navigation and sidebar changes;
+  preserve inherited Miro operation recovery and the requested row counts of select listboxes.
+- Preserve fractional Team cost totals, refresh the Chat revision indicator, and disable
+  transitions under reduced motion so Org chart nodes remain visible.
+
+## 2026-09-23 - Make private package routing directory scoped (0.60.0)
+
+- Read optional private NuGet package patterns from directory provider state when preparing
+  container sessions, with no customer-specific package mapping in the default configuration.
+- Read retired Team guidance section IDs from directory provider state when reseeding agents.
+- Preserve live Teams notification settings when deployments stop using checked-in host overrides.
+- Remove customer-specific demo examples and retired metadata handling after migrating live
+  workflow writes to generic HTTP targets.
+- Use Evander branding in guest guidance, assistant prompts, Admin Web, and the landing page.
+- Move deployment-specific host and website settings out of tracked defaults.
+
+## 2026-09-23 - Optimize control-plane hot paths (0.59.2)
+
+- Paginate Team task reads before enrichment, reuse task and project assessments, index
+  deliverable coverage, and skip assessment work for agents without assigned tasks.
+- Shorten Team write preparation and use revision-checked dispatch lease updates while
+  preserving command callbacks, outbox atomicity, lifecycle validation, and lease ownership.
+- Move relay persistence and steering off the event loop, preserving usage recording and
+  upstream cleanup when streams disconnect.
+- Batch and cache worker inventory, bound Admin response and chat transcript caches, and
+  use direct session lookups with compact batched lifecycle inputs.
+- Preserve partial worker inventory when the systemctl sudo fallback fails or returns
+  only a different subset of units.
+- Incrementally project worker transcripts, read log tails from the end, and merge overlapping
+  output in linear time with bounded retained projection state.
+- Poll only the VM being watched, query Discord trigger messages using indexed cursors, page
+  semantic indexing with durable continuation keys, and reclaim index content in bounded batches.
+- Add regression coverage for concurrency, cancellation, cache invalidation, transcript rotation,
+  cursor ties, legacy checkpoints, and repository index schema migration.
+
+## 2026-09-22 - Separate control-plane implementation responsibilities (0.59.1)
+
+- Split Team API routes, workflow providers, domain models, derived views, and SQLite
+  persistence into cohesive modules while retaining public imports and migration order.
+- Separate integration services, communication tool groups, and CLI commands with stable
+  tool registration, command help, request schemas, and operator behavior.
+- Give workflow run reporting and realtime voice playback explicit per-invocation state
+  and smaller processing stages, preserving correlation, cancellation, and cleanup behavior.
+- Extract workflow editor components, state hooks, and pure helpers with typed interfaces
+  while preserving editing, inspection, validation, and save interactions.
+- Align model and payload assertions and the Team tool inventory with the merged release.
+
+## 2026-09-22 - Recover releases with pinned integration and verifier evidence (0.59.0)
+
+- Add contextual, revision-gated release reintegration in Admin Web and MCP, preserving
+  accepted contributions and work lineage. Project policy controls ownership and retirement.
+- Restart interrupted verifier command sequences in bounded fresh workspace generations,
+  preserving history and rejecting stale progress/results.
+- Separate raw execution outcomes from optional structured verification policy, including
+  explicit baseline exceptions and configurable correction versus blocking decisions.
+- Retain redacted verifier output and local evidence before session cleanup, with historical
+  log lookup and visible toolchain identities. Immediately wake operator dependency recovery.
+- Stage and validate immutable worker .NET bundles, atomically switch selectors and pin
+  resolved mounts per session. Keep project-specific evaluators in operator-owned
+  configuration outside this repository.
+- Make repeated verifier cleanup safe, allow operator retries of command-blocked gates,
+  reset idle no-progress counters for new integration work, enforce evidence byte limits
+  at the worker read and transport, and omit disabled .NET toolchain mounts.
+
+## 2026-09-22 - Use GPT-6 for new agent defaults (0.58.3)
+
+- Use GPT-6 Sol for Codex agent fallbacks, new OpenAI setup, and guest bootstrap defaults.
+- Seed new installations with the verified GPT-6 Sol, Luna, and Astra pricing while retaining
+  historical rates for past usage.
+- Update inactive workflow examples to select GPT-6 Sol or Luna according to their prior tier.
+- Omit older GPT generations from the session model picker without removing their pricing history.
+
+## 2026-09-22 - Isolate Team lifecycle maintenance from message dispatch (0.58.2)
+
+- Run Team lease and completion reconciliation on a dedicated single-flight lane so
+  database contention cannot hold up unrelated assistant workflow events.
+- Reuse initialized Team repositories, discover lifecycle candidates through query-only
+  snapshots, and defer contended maintenance writes after a bounded lock wait.
+- Coalesce completion hints while retaining durable receipt recovery, serialize lifecycle
+  cursors, and drain maintenance before runtime rebinding or worker shutdown.
+- Keep receipt reads independent of foreground execution locks, drain maintenance on every
+  locked single-cycle exit, and preserve running maintenance during graph-only configuration edits.
+- Add phase timings and contention, recovery, and foreground-latency regression coverage.
+
+## 2026-09-22 - Reduce Admin Web read latency (0.58.1)
+
+- Maintain an incremental Team cost report with exact request deduplication, attribution,
+  pricing and budget-window invalidation; coalesce and throttle UI cost refreshes.
+- Read only the Team collections needed by each view, and move projection, workflow reads,
+  and JSON serialization off the web event loop while preserving permission filtering.
+- Bound and parallelize worker health probes, share short-lived capacity and rolling workflow
+  report snapshots, and aggregate workflow activity once per report.
+- Cover directory-scoped audit status counts without fetching large audit payload rows.
+- Separate SSE startup latency from subscription lifetime in slow-request logs, include response
+  timing phases, and record failures that occur after response headers have been sent.
+
+## 2026-09-22 - Review Miro layouts and iterate on repairs (0.58.0)
+
+- Add advisory layout reports to canvas snapshots and new completed writes, naming shared exits,
+  overlapping reconstructed routes, and possible node crossings by stable item IDs.
+- Let agents view a bounded reconstructed PNG through `miro_get_snapshot(include_preview=true)`
+  under the existing tool grant. Label it as a diagnostic, not a Miro screenshot, and disclose
+  unsupported geometry, unknown routing, and incomplete coverage.
+- Guide agents and workflows through read/view/repair iterations with distinct branch exits,
+  empty bypass lanes, fresh operation keys for changed repairs, and preservation of human edits.
+  Keep layout findings separate from write success and snapshot conflict detection.
+
+## 2026-09-22 - Restore projects after terminal blocker recovery (0.57.3)
+
+- Recalculate every directly affected project's status when an operator resolves a terminal
+  blocker, including terminal-release review blockers that the project-status display omits.
+- Resolve project targets from blocker, task, and source relationships without recomputing all
+  projects' task assessments while the state write is locked.
+- Preserve execution-stall quarantine for post-release reports while covering the operator path
+  that cancels unnecessary triage, closes its feedback case, and resolves the stale stall.
+
+## 2026-09-21 - Keep Miro diagrams individually editable (0.57.2)
+
+- Make separate native shapes, text and connectors the default for human-agent collaboration,
+  including flowcharts. Request free-form diagram guidance when no notation is supplied and
+  the provider supports it; retain explicit notation choices and older provider schemas.
+- Reserve Mermaid widgets for explicitly requested code-based diagrams. Update agent and workflow
+  guidance to verify individual item IDs after creation and preserve human edits during revisions,
+  while retaining the native connector checks for arrow directions and labels.
+
+## 2026-09-21 - Validate Miro diagram connectors (0.57.1)
+
+- Follow Miro's current canvas-composer workflow through its design, edit, and DSL steps, and
+  expose diagram notation and repository context to agents and workflows.
+- Direct flowcharts toward native Mermaid diagrams and free-form diagrams toward attached Miro
+  connectors whose direction and label remain bound to the connector.
+- Reject lines and paths without valid widget endpoints before contacting Miro, with corrective
+  guidance for native arrowheads and connector labels. Keep old snapshots readable and preserve
+  previously recorded write outcomes on retries.
+- Accept HTML slides, embeds, and prototype screens as connector endpoints while continuing to
+  reject frames, structural groups, and deleted widgets.
+
+## 2026-09-21 - Read scoped Miro canvases (0.57.0)
+
+- Add `miro_search_canvas` and `query:miro:search-canvas` for board overviews, areas, item
+  matches, and pagination under normal session and board permissions.
+- Support explicit canvas areas and frame/item selections across reads, snapshots, updates,
+  creation readback, recovery, and workflow polling. Verify new empty boards with search and
+  a retained initial area; populated boards require an explicit selection.
+- Use Miro's current frame URL and widget selection contract, and preserve durable retries
+  recorded before the new read parameters were introduced.
+- Let operators confirm an acknowledged board creation using its returned ID and explicit
+  evidence when a later deletion or sharing change makes readback unavailable. Other writes
+  still require readback before resolution.
+
+## 2026-09-21 - Recognize Miro board creation links (0.56.1)
+
+- Extract board IDs from Miro's `miro_url` response in the shared creation service used by
+  `miro_create_board` and `effect:miro:create-board`, retaining existing ID and URL formats.
+- Let successful creation register the new board with read/write access and read it back instead
+  of leaving the operation uncertain because its board reference was not recognized.
+- Preserve literal `=` padding in Miro board links so subsequent upstream calls address the
+  created board correctly instead of receiving a misleading permission error.
+- Cover both entry points with structured and JSON-text MCP responses, plus subsequent board
+  access, durable retries, and URL validation.
+
+## 2026-09-21 - Discover Miro connections and Figma files (0.56.0)
+
+- Add `miro_list_connections` so agents can discover enabled connection IDs, directory scope,
+  board counts, and board-creation settings without guessing an ID or contacting Miro.
+- Make Miro connection discovery and Figma's existing `figma_list_targets` available through
+  existing operation tool grants. Preserve directory denials, approval requirements, Miro
+  connection inheritance and overrides, and Figma's exact-directory file permissions.
+- Keep discovery limited to public local configuration without exposing credentials or granting
+  additional board/file operations. Document the discovery-first agent flow for both add-ons.
+
+## 2026-09-21 - Use normal session permissions for Figma (0.55.2)
+
+- Remove Figma's separate session access list. Configure capabilities and editable roots per
+  file, while agent tools and workflow operations use the normal session tool policy.
+- Migrate existing grants to shared file permissions, preserving allowed editable areas and
+  OAuth connections. Let the operator edit file permissions directly without entering session IDs.
+
+## 2026-09-21 - Follow Admin Web settings in Miro (0.55.1)
+
+- Make the Miro page follow Admin Web's light and dark theme on load and when toggled, preserving
+  unsaved connection settings and styling form controls, links, and activity details consistently.
+- Use normal per-session Miro tool permissions instead of a second connection session list.
+  Preserve directory, board, and workflow grants, and accept existing connections without
+  requiring reauthorization.
+
+## 2026-09-20 - Diagnose slow Admin Web requests (0.55.0)
+
+- Log Admin Web requests that cross an operator-configured duration threshold and every 5xx
+  response with canonical route, method, status, and duration. Exclude query strings, cookies,
+  and request bodies so journal review does not expose request contents.
+
+## 2026-09-20 - Manage multi-project Team assignments (0.54.0)
+
+- Let the Team agent editor manage the full set of project memberships, including clear
+  project-lead marking and a reminder that lead transfers remain project-scoped.
+- Accept revision-aware multi-project agent updates through the Team Admin API while retaining
+  existing project-lead assignments, and make lead transfers safe when the former lead is already
+  a member of that project.
+- Preserve multi-project choices during dynamic editor refreshes and keep project-scoped roles
+  limited to assignments for their own project.
+
+## 2026-09-20 - Discover granted email mailboxes (0.53.0)
+
+- Add `email_list_mailboxes` so agents can discover their authorized mailbox IDs, accounts,
+  access levels and folders before reading mail or creating unsent drafts.
+- Make discovery available to existing email-enabled sessions while preserving directory tool
+  restrictions, explicit empty grants and legacy mailbox policy. Return only session-scoped
+  public metadata without contacting providers or exposing credential references.
+
+## 2026-09-20 - Lay out declarative workflow patches (0.52.0)
+
+- Allow declarative workflow document patches to position every namespaced node while preserving
+  unrelated graph positions and replacing only patch-owned coordinates when reapplied.
+- Include layout changes in preview, validation, no-op detection, and revision-safe saves, and
+  provide a readable horizontal-lane layout for the App PR-testing workflow.
+
+## 2026-09-20 - Make Admin Web lists easier to scan (0.51.0)
+
+- Show communication targets, contacts, and email mailboxes as compact, searchable, sortable
+  summaries with expandable editors; add provider filtering and retain inherited target actions.
+- Reduce shared navigation, form, panel, and table spacing; remove repeated single-setting
+  headings and collapse optional Teams lookup and directory metadata.
+- Preserve configuration drafts and original record identity while filtering and sorting,
+  including failed-save recovery, keyboard access, and read-only inspection. Close editors when
+  a saved snapshot changes so sorted contact readback cannot silently select another record.
+
+## 2026-09-19 - Preserve subscription-capacity replay routing (0.50.1)
+
+- Preserve the selected ChatGPT subscription profile when an initially unprofiled queued replay
+  is deferred for capacity, while retaining stale-reroute protection.
+- Align workflow catalog, schema-migration, Team lifecycle, and gate-documentation coverage with
+  the current explicit contracts.
+
+## 2026-09-19 - Route workflows with Smart switch (0.50.0)
+
+- Add Smart switch (`gate:classifier:switch`) with described branches, an explicit default,
+  and an optional probability cutoff using the shared classification service.
+- Run classification asynchronously with durable recovery and preserve the original payload
+  on the selected branch. Resolve provider settings from the workflow's trusted directory.
+- Add structured workflow editing, sample evaluation, an assistant-level routing example,
+  and an explicit opt-in live smoke check.
+
+## 2026-09-19 - Collaborate on native Figma mockups (0.49.0)
+
+- Add an optional Figma add-on with shared agent tools, workflow providers, directory-scoped
+  file grants, and an operator page for host-held OAuth connections, previews, and operation history.
+- Support separate proposals, author/reviewer workflows, and coordinated edits to shared screens;
+  retain immutable design snapshots and compose only unchanged snapshot sources.
+- Serialize file writes across processes, reject stale revisions, and retain uncertain outcomes
+  for readback and explicit recovery instead of replaying writes. Poll external comments and named
+  versions with durable delivery acknowledgements and self-feedback suppression.
+- Keep authoring disabled until an approved Figma client passes a live unattended
+  create/edit/render/readback test. Figma client approval and credentials remain deployment prerequisites.
+- Prevent settings writes during directory changes, reject batches that would exceed the design
+  inspection limit before mutation, and verify comment content and account identity during recovery.
+- Keep large text nodes readable during inspection, snapshot capture, and uncertain-write recovery;
+  interrupted snapshots no longer block canvas authors after a process restart.
+- Suppress self-authored comment feedback across registrations of the same file, and preserve
+  unspecified font attributes while loading fonts introduced by existing text styles.
+
+## 2026-09-19 - Collaborate visually through Miro (0.48.0)
+
+- Add an opt-in Miro integration with editable canvas diagrams, scoped snapshots, comment
+  collaboration, agent tools, and matching workflow queries, effects, and polling triggers.
+- Manage named, directory-scoped OAuth connections, board/session grants, call budgets,
+  capability checks, and uncertain-write recovery through Admin Web. Credentials stay encrypted
+  on the host; overlapping writes are serialized and stale snapshots cannot overwrite observed edits.
+- Keep publishing, feedback routing, monitoring cadence, and agent coordination in operator-authored
+  workflows, with optional examples and durable polling checkpoints that survive restarts.
+- Use Miro's published tool parameters, offset comment pagination, and explicit SVG deletion
+  markers. Serialize operation keys across boards, preserve completed writes during readback,
+  and keep concurrent human edits visible to monitoring.
+- Enforce operation directory ownership during recovery, reset polling safely when connections
+  are overridden, and preserve idempotent board-creation retries at the connection's board limit.
+
+## 2026-09-19 - Core classification with Jev (0.47.0)
+
+- Add a provider-neutral classification service with Jev as its first implementation,
+  supporting Choice, Score, and Boolean probability questions on shared input.
+- Add directory-scoped provider settings and fixed reusable profiles, the built-in
+  `query:classification:evaluate` workflow node, and ordinary grantable agent tools
+  `classification_evaluate` and `classification_list_profiles`.
+- Add structured Admin Web profile/workflow editors, sample evaluations, revision-aware
+  saves, atomic profile inheritance, and known answer fields in workflow binding suggestions.
+- Persist resolved classification definitions before workflow execution and attribute
+  bounded provider attempts through the existing model usage store. Keep classification
+  disabled by default, with host-owned credentials and no automatic session grants.
+- Document setup, recovery, an example workflow, and an explicit opt-in live smoke command.
+
+## 2026-09-18 - Browse repository index history (0.46.0)
+
+- Show repository index creation times, build IDs, exact commits and a clear newest marker in
+  Admin Web; default to ready snapshots while retaining filters for partial and operational builds.
+- Page index history newest-first through the Admin API so retained snapshots beyond the previous
+  200-entry display ceiling remain reachable.
+
+## 2026-09-17 - Separate coordination from Git integration (0.45.1)
+
+- Add an explicit coordination task kind that supervises child work but cannot own a
+  deliverable, integration contract, or prepared Git context.
+- Require coordinated Git work to hand off into a fresh top-level, SHA-pinned integration task,
+  while retaining direct-child aggregation only for historical source-bearing deliverables.
+- Reject integration tasks parented to coordination even when the caller omits the provenance
+  link, expose that link in Task Board creation, and require coordinated contributions to name
+  their coordination origin.
+- Upgrade eligible pre-0.44.1 system-created human-review aggregation parents to coordination
+  tasks during reconciliation so existing correction workflows gain the same protections.
+
+## 2026-09-17 - Test App feature branches from PR comments (0.45.0)
+
+- Add an opt-in App `!TEST <environment>` workflow migration: acknowledge the pinned PR build,
+  wait for it, redeploy an existing named demo, and resume the same PR reviewer with managed demo
+  skills to prepare data and explain how to test. Missing, stale, failed and busy deployments
+  receive deterministic replies; duplicate comment delivery is suppressed.
+- Add directory-scoped ADO build lookup/wait providers and additive agent skill installation.
+- Keep command syntax, environment rules, routing, messages and prompts in declarative workflow
+  configuration. Provide generic text-regex and build-filter queries and a revision-safe patch
+  installer instead of a App-specific runtime provider or Python workflow builder.
+- Route terminal agent execution failures and timeouts through an explicitly connected prompt
+  `error` port, while preserving legacy behavior for workflows without one.
+
+## 2026-09-17 - Switch Codex usage without replacing sessions (0.44.0)
+
+- Let operators move a container Codex agent between metered API usage and enabled ChatGPT
+  subscription profiles while retaining the Evander session, and release prompts deferred by the
+  previous subscription route so they can run under the new selection. Profile choices come from
+  the session's assigned worker, and route reconciliation is safe to retry during concurrent queue
+  dispatch.
+
+## 2026-09-17 - Propagate managed skill replacements (0.43.3)
+
+- Reinstall a replaced managed Codex skill into every active VM and container session that already
+  declares it, including skills installed during VM creation; preserve each skill's VM user and
+  serialize replacements so subsequent agent turns use the latest centrally administered content.
+- Preserve the updated library copy while reporting partial propagation failures with exact failed
+  sessions, allowing operators to retry reconciliation safely with another replacement.
+
+## 2026-09-16 - Resolve PR attachment identities (0.43.2)
+
+- Resolve Azure DevOps project and repository GUIDs from the authorized pull request when
+  validating PR-feedback attachment URLs, including for PRs that are not present in
+  `pr-map.json`, while retaining canonical route and feedback-stream enforcement.
+
+## 2026-09-16 - Pin final integration provenance (0.43.1)
+
+- Snapshot the managed base-branch commit when a Git-backed integration boundary is created,
+  validate caller-supplied pins against managed branch ancestry, and keep the immutable review
+  baseline distinct from both the dependency-composed checkout receipt and prepared head.
+- Guide managers to coordinate long-running work separately and create the final integration task
+  only after its required contributions have current accepted deliverables; reject converting an
+  existing Git-backed coordination task into an unpinned integration boundary.
+
+## 2026-09-16 - Read PR feedback attachments (0.43.0)
+
+- Add policy-controlled tools that list and download files linked from authorized Azure DevOps PR
+  feedback, using host credentials, canonical feedback-scoped attachment routes, and opaque staged
+  artifacts for guest workspace copies.
+- Grant the attachment flow to PR-tracked sessions and document it in the built-in agent workflow
+  prompts without exposing provider URLs or credentials to agents.
+
+## 2026-09-16 - Readable Team case context (0.42.4)
+
+- Present case context as a scannable case file with plain-language warnings, named sections,
+  record titles, status and timestamps, narrative fields, safe source links, and responsive
+  styling while retaining exact fields, provenance and raw JSON in secondary disclosures.
+
+## 2026-09-16 - Accept large Freshservice attachment IDs (0.42.3)
+
+- Accept positive Freshservice ticket and attachment identifiers up to the signed 64-bit limit,
+  including attachment IDs larger than the previous 32-bit ceiling.
+
+## 2026-09-16 - Reuse retained reference repositories (0.42.2)
+
+- Keep the managed-mirror commit requested for reference preparation separate from the trusted
+  checkout commit retained by a persistent worker, allowing receipt reuse when the mirror has
+  advanced but `refresh_upstream` remains disabled.
+
+## 2026-09-15 - Prioritize live communication workflows (0.42.1)
+
+- Consume durable Teams notifications in the notification service independently of serial
+  fallback polling, with processor health and queue-lag visibility.
+- Pace recovery continuations behind foreground events while reserving bounded progress for both
+  urgent lease renewal and ordinary recovery every five seconds.
+- Commit terminal gate records and their successor events atomically, then continue short FIFO
+  gate chains within a bounded foreground burst.
+- Reuse worker-verified file and reference-repository preparation receipts while invalidating
+  them on guest changes, configuration changes, refreshes, or session deletion; verify requested
+  file content and modes before recording receipts, and inspect both cached worktrees and staged
+  state with a persistent host-owned Git index so guest-defined filters cannot run on the worker
+  host.
+- Stop copying dynamic Team state into core session metadata and remove its mirror-due recovery
+  projection; authoritative wake context and permissions continue to come from Team state, while
+  stable guidance and repository-preparation receipts remain session-local.
+
+## 2026-09-15 - General case context (0.42.0)
+
+- Evolve Team notes into an attributed, linked case journal with decision rationale,
+  append-only supersession, scoped retrieval and conservative legacy backfill.
+- Assemble case requirements, captured sources, plans, decisions, delivery, reviews,
+  corrections and verification through configurable, revisioned context views.
+- Add read-only workflow queries, immutable context snapshots and exact-session grants
+  for detached consumers, plus bounded host-side ADO discussion capture.
+- Supply bounded baseline briefs on fresh wakes and record-level changes on retained
+  wakes, using completed dispatches on the same native thread as the comparison baseline.
+- Add an operator context panel with recipe preview/version history and snapshot browsing.
+  Keep note-taking advisory, existing completion gates unchanged and Team Memory separate.
+- Preserve resolved/closed case evidence in review wakes and freeze the displayed saved
+  recipe version when browsing history.
+- Enforce release-directory scope before collecting associated review/verification evidence,
+  and include contributed child task history in contexts captured before a release exists.
+- Document the staged App integration; deployment and live workflow edits remain separate.
+
+## 2026-09-15 - Lower orchestration handoff latency (0.41.1)
+
+- Drain ready effect completions through the durable event queue between bounded event slices;
+  schedule recovery separately, with cooperative candidate budgets and lease priority.
+- Read revision-consistent Team lifecycle candidate pages and indexed prompt receipts instead of
+  reconstructing full Team state and terminal execution history on routine no-op passes.
+- Record provider, executor-queue, reaping and completion-publication timing separately, and log
+  per-hook recovery work, continuations and budget overruns without message contents.
+- Preserve transactional lifecycle checks, queue claims and receipt-before-finalization ordering;
+  add scheduler, history-load, migration and latency regression coverage.
+- Keep queue recovery moving past failed VM inventory pages and retry them on the next pass;
+  share one lazily loaded VM inventory per waiting-reconciliation slice.
+
+## 2026-09-14 - Scheduled Freshservice reporting (0.41.0)
+
+- Add a bundled, opt-in Freshservice add-on with a read-only connector driver for exact-subject
+  ticket discovery, ticket and conversation reads, and bounded attachment staging with exact-host
+  and file-type policy.
+- Evaluate workflow cron triggers in an optional IANA timezone, preserving local morning schedules
+  across daylight-saving changes while recording both UTC and local scheduled times.
+- Provide a complete Freshservice connector example and operator guidance for the scheduled report
+  workflow.
+- Restore full-suite coverage for current repository indexing, worker assignment, Team migration,
+  Admin catalog, and generated-manual contracts.
+
+## 2026-09-14 - Reliable Azure PR feedback history (0.40.5)
+
+- Resolve Azure DevOps short and scoped repository names through the authoritative PR map so an
+  allowlisted agent can read the complete comment history regardless of which form polling stored.
+- Share session read cursors across unambiguous repository aliases, preserving existing workflow
+  payloads without replaying older feedback after the compatibility fix.
+
+## 2026-09-12 - Index-worker cleanup and in-place Team task-board selection (0.40.4)
+
+- Keep Team task-board Team, project, and case selection in the existing embedded dashboard
+  while silently updating its deep link, avoiding a full dashboard reload for each change.
+- Retire disposable indexing sessions, containers, workspaces and session-scoped Git access
+  after artifact import or a terminal failure/cancellation, while retaining the imported index
+  and its Git snapshot pin.
+- Retry incomplete terminal cleanup during reconciliation and keep uncertain compiler jobs
+  reserved until their shutdown is confirmed.
+
+## 2026-09-11 - Azure runner package mirror (0.40.3)
+
+- Route the shared Ubuntu runner base image's release, update, backport, and security package
+  downloads through `azure.archive.ubuntu.com` to avoid the degraded public archive path from
+  Azure-hosted deployment agents.
+
+## 2026-09-11 - Reliable runner image builds (0.40.2)
+
+- Install the common Codex and Claude runner operating-system dependencies once in a shared base
+  image, avoiding a second full apt install in sequential archive builds.
+- Bound Ubuntu base-image pulls and shared-base builds, retry stalled pulls, and allow operators to
+  select a registry mirror or cache with `RUNNER_OS_BASE_IMAGE`.
+
+## 2026-09-11 - Faster repeat repository indexes (0.40.1)
+
+- Index the App .NET workspace through its tracked solution instead of starting a
+  separate restore and Roslyn process for every project.
+- Drain up to 16,384 cached semantic vectors per reconciliation pass while retaining
+  the existing 512-chunk bound for new embeddings and the 30-second time budget.
+
+## 2026-09-11 - Opt-in SCIP symbol navigation (0.40.0)
+
+- Make SCIP symbol navigation opt-in per repository with an Admin Web setting,
+  defaulting to off for new and existing configurations that omit `scip`.
+- Skip compiler tools and NuGet bootstrap when SCIP is disabled, and report
+  successful text/semantic-only snapshots as ready with navigation disabled.
+- Run SCIP's Roslyn semantic analysis directly after dependency restore, removing
+  the separate `dotnet build` step from C# repository indexing.
+- Preserve partial navigation for workspace failures and text retrieval when
+  dependency restore or SCIP execution fails.
+
+## 2026-09-11 - Session copy image selectors (0.39.1)
+
+- Use stored VM template and container image aliases when provisioning copied
+  sessions, allowing session and Team copies to use configured images.
+- Cover default and custom images through the session copy provisioning path.
+
+## 2026-09-11 - Copy Team session configurations (0.39.0)
+
+- Default Team copying to automatic provisioning of fresh sessions with the
+  source model, capabilities, tool approvals, access grants, and limits.
+- Preserve configured images and recorded toolchain/skill settings while creating
+  fresh session identities, authentication tokens, and lifetime windows.
+- Add source-directory-authorized session copy operations, progress reporting,
+  and reuse of completed session selections when retrying a Team copy.
+
+## 2026-09-11 - Case progress task boards (0.38.0)
+
+- Add case filters, source links and shareable task-board permalinks, including
+  completed work and follow-up/correction lineage while preserving normal access checks.
+- Inherit task case membership across operator, workflow and agent task creation,
+  including out-of-order batches; preserve explicitly selected correction cases.
+- Add atomic source-based reuse to the create-case workflow action.
+- Add an optional revision-checked App backfill helper for linking existing work
+  to intake cases without posting comments or dispatching work.
+- Preserve Team/project selection through embedded-board navigation; cache shared
+  case-less lineage and retain valid agent-action creations when other plans have
+  invalid task graphs. Cover case permalinks through local and Microsoft sign-in.
+- Load task boards from their selected Team/project/case scope and keep cost
+  aggregation off the task-board path, avoiding full-state transfers and rerenders.
+
+## 2026-09-10 - Reliable .NET repository navigation (0.37.2)
+
+- Disable SourceLink metadata generation inside isolated indexing subprocesses so
+  managed-Git transport URLs cannot break an otherwise valid project build.
+- Suppress the .NET 10 `NU1510` package-pruning advisory during SCIP analysis so
+  successful workspace loads are not conservatively reported as partial coverage.
+- Preserve partial navigation status for genuine compilation failures.
 
 ## 2026-09-10 - Repository indexing runtime wiring (0.37.1)
 
@@ -61,7 +669,7 @@
   when project authorization is lost and avoiding duplicates on repeated wakes.
 - Export versioned SQLite/SCIP bundles with a standalone Python query tool and optional
   embeddings for external coding workflows. Include a pinned worker image build,
-  APP profile, retrieval benchmark and operational documentation.
+  App profile, retrieval benchmark and operational documentation.
 - Allow release cancellation to retire its reviews while retaining the frozen
   reviewer membership and recorded decisions as history. Continue validating the
   required reviewer slots and excluding superseded review attempts.
@@ -226,7 +834,7 @@
 - Keep same-account OAuth-to-PAT fallback and duplicate-creation guards while preventing bot
   fallback under this policy. Record explicit reasons for missing context, creator mismatches,
   and bot reconciliation when fallback is allowed.
-- Let the APP attribution migration enable the policy on both PR paths after deployment.
+- Let the App attribution migration enable the policy on both PR paths after deployment.
   Use configured pack references, create valid intake tasks, and preserve existing validation
   warnings during repair.
 
@@ -471,7 +1079,7 @@
   with direct Images API and Responses tool enforcement across HTTP and WebSocket relay paths.
 - Added bounded JSON and multipart request handling, host-owned authentication, and usage auditing
   that records hashes and sizes without retaining prompts, uploads, or generated image data.
-- Enabled the capability only in the APP demo and demo-modification workflows while keeping all
+- Enabled the capability only in the App demo and demo-modification workflows while keeping all
   other sessions disabled by default, and documented the guest image-generation handoff.
 
 ## 2026-08-31 - On-Demand Managed Reference Repositories
@@ -491,9 +1099,9 @@
 - Kept failed or interrupted maintenance retryable by releasing the process lock automatically and
   recording the completed retention date only after all bounded batches finish.
 
-## 2026-08-31 - Resumable APP Demo Modifications
+## 2026-08-31 - Resumable App Demo Modifications
 
-- Added an operator workflow example for direct post-deployment APP demo changes that reuses the
+- Added an operator workflow example for direct post-deployment App demo changes that reuses the
   deterministic demo agent, refreshes its session for eight hours, and queues the request on the
   existing Codex thread without starting another Azure DevOps deployment.
 
@@ -518,14 +1126,14 @@
 
 - Added an allowlist-gated, size- and document-bounded Elasticsearch bulk-index tool and workflow
   effect with deterministic document IDs for idempotent synthetic demo-history seeding.
-- Extended the APP demo operating guidance to populate three weeks of production-metrics history
+- Extended the App demo operating guidance to populate three weeks of production-metrics history
   before creating and verifying Kibana dashboards.
 
 ## 2026-08-30 - Session-scoped Browser Target Access
 
 - Added an authenticated forward proxy that lets seeded browsers use the real origins of a
   session's configured HTTP targets without weakening VM or container default-deny egress.
-- Wired the browser proxy into both execution backends and updated APP demo workflows to browse
+- Wired the browser proxy into both execution backends and updated App demo workflows to browse
   the public UI origin while retaining the path-based relay for programmatic API traffic.
 
 ## 2026-08-30 - Team Preparation Generation Safety
@@ -636,7 +1244,7 @@
   resolved opaque-token tenants through concrete configuration or authenticated credential
   metadata, preserved existing refresh grants, and replaced subscriptions when callback URLs change.
 - Added secret-free Admin and health status, IPv4/IPv6 listener verification, callback-host-aware
-  Caddy routing, systemd and Ansible deployment wiring, and a CI/CD-owned Truman configuration while
+  Caddy routing, systemd and Ansible deployment wiring, and a CI/CD-owned Evander configuration while
   local deployments remain polling-only by default.
 
 ## 2026-08-26 - SQLite Events, Team Chat, And Release Reliability
@@ -714,7 +1322,7 @@
 
 - Added a read-only managed-Git merge-base query that refreshes and pins the PR target branch
   separately from canonical publication leases.
-- Based True APP release PR titles and descriptions on the complete candidate branch against the
+- Based True App release PR titles and descriptions on the complete candidate branch against the
   pinned `main` target, including correction successors, and moved Tricia's packaging runs to
   `gpt-5.6-terra`.
 
@@ -1416,7 +2024,7 @@
 
 - Kept an active Git work context alive while its owning dispatch has an unexpired preparation reservation, preventing delayed local-inference prompt delivery from abandoning the context before the agent can submit its work.
 
-## 2026-08-10 - APP Dev Team Discord Routing
+## 2026-08-10 - App Dev Team Discord Routing
 
 - Added a `content_starts_with` filter to provider-neutral communication-message triggers, enabling a shared Discord channel to route only explicit, leading agent-address messages into the durable Team Chat lifecycle.
 - Fixed session-scoped Discord replies so outbound Team Chat delivery checks the replying agent's `write` grant instead of an unrelated inbox-read allowlist.
@@ -3368,7 +3976,7 @@
 - Added structured HTTP target alias and base-URL editors to agent creation, agent policy editing,
   and Sessions policy editing so operators no longer need to modify raw session metadata.
 - Validated and narrowly merged canonical HTTP target updates, preserved workflow-owned target
-  metadata, supported legacy APP target conversion, and made an explicitly empty target set deny
+  metadata, supported legacy App target conversion, and made an explicitly empty target set deny
   the legacy fallback.
 
 ## 2026-07-23 - Team Outcome And Recovery Reliability
@@ -5335,7 +5943,7 @@
   `evander_openai_relay` provider with websocket support disabled, preventing
   startup websocket prewarm failures against the host OpenAI relay.
 - Bumped Team Add-on agent guidance seeding so active agents remove stale
-  `truman-team-addon` managed guidance sections when current
+  `evander-team-addon` managed guidance sections when current
   `evander-team-addon` MCP guidance is reseeded.
 
 ## 2026-06-26 - Team Add-on Debounced Wake Requests
@@ -6233,7 +6841,7 @@ material. Newer entries are added incrementally as changes land.
 - Added optional Team Add-on agent avatars with add-on-private WebP storage,
   upload normalization, generated-preview acceptance, and removal routes.
 - Added OpenAI-backed generated avatar previews for persistent Team agents
-  without exposing avatar metadata to agent runtime prompts or core Truman
+  without exposing avatar metadata to agent runtime prompts or core Evander
   session identity.
 - Rendered avatars with initials fallbacks in Team agent lists, People details,
   org-chart nodes, and agent edit dialogs.
@@ -7272,7 +7880,7 @@ material. Newer entries are added incrementally as changes land.
   update the gateway-owned voice-session store and schedule the originating
   agent's reconciliation wake.
 - Collapsed fixed inbound route configuration to one `session_id` field for the
-  active Truman session that owns projection and reconciliation.
+  active Evander session that owns projection and reconciliation.
 - Extended the bridge store and call record payloads to keep inbound route
   metadata redacted, including DID/caller hashes and route identifiers, while
   preserving outbound call behavior.
@@ -7474,9 +8082,9 @@ material. Newer entries are added incrementally as changes land.
   applying action artifacts, and a packaged runtime workflow definition.
 - Added event-mediated ephemeral worker assignments to the Team Add-on, including
   per-parent concurrency limits, add-on-owned lifecycle state, completion
-  routing, and cleanup through existing Truman agent create/prompt/destroy nodes.
+  routing, and cleanup through existing Evander agent create/prompt/destroy nodes.
 - Kept team runtime state canonical under the add-on while mirroring only a
-  compact `metadata.team_addon` index into Truman session metadata.
+  compact `metadata.team_addon` index into Evander session metadata.
 - Added an optional package-owned Team Add-on Admin Web UI mounted under
   `/addons/team-addon/`, with state overview and setup forms backed by the
   add-on API.
@@ -7494,7 +8102,7 @@ material. Newer entries are added incrementally as changes land.
   deliverables, review requests, and release packages.
 - Exposed initial Team Add-on Admin API routes under `/api/addons/team-addon`
   while keeping canonical state under `runtime/addons/team-addon/state.json`
-  and leaving Truman core session/workflow schemas team-agnostic.
+  and leaving Evander core session/workflow schemas team-agnostic.
 
 ## 2026-06-09 - Optional Add-on Boundary
 
@@ -7502,7 +8110,7 @@ material. Newer entries are added incrementally as changes land.
   runtime storage namespacing, Admin Web API/UI mount hooks, and workflow
   provider bridging for optional opinionated modules.
 - Kept add-ons disabled by default and documented that domain-specific concepts
-  such as hierarchical agent teams belong outside Truman core.
+  such as hierarchical agent teams belong outside Evander core.
 - Required Admin Web authentication for add-on UI routes mounted under
   `/addons/<addon_id>/` when Admin Web auth is enabled.
 - Made workflow validation preserve `effect:agent:create` execution-backend
@@ -7883,10 +8491,10 @@ material. Newer entries are added incrementally as changes land.
 - Fixed the Admin Web model pricing source URL row styling so its grid layout
   is not overridden by shared inline action styles.
 
-## 2026-06-04 - Truman Auto-dev Issue Owner Attribution
+## 2026-06-04 - Evander Auto-dev Issue Owner Attribution
 
 - Added auto-dev workflow owner gating with `gate:filter`, requiring a valid
-  Azure DevOps `System.AssignedTo` identity before Truman claims a work item.
+  Azure DevOps `System.AssignedTo` identity before Evander claims a work item.
 - Frozen the resolved `issue_owner` into created issue-session metadata and
   configured agent repo Git identity from that frozen owner for commit/blame
   attribution.
@@ -8526,7 +9134,7 @@ material. Newer entries are added incrementally as changes land.
   workflows without invoking host-side Bash.
 - Preserved ADO pipeline run outputs such as `run_id` and `run_url` when checked
   failed, canceled, or timed-out runs are recorded as failed effects.
-- Updated checked-in APP demo workflow examples to queue the provisioning
+- Updated checked-in App demo workflow examples to queue the provisioning
   pipeline, derive relay metadata with `gate:map`, and store it through
   `effect:session:update-metadata`.
 - Replaced the checked-in synthetic workflow's host Bash example with a safe
@@ -8579,12 +9187,12 @@ material. Newer entries are added incrementally as changes land.
 ## 2026-05-25 - Admin Sign-In Branding
 
 - Moved sign-in branding into a top bar with the company logo on the left,
-  the theme toggle centered, and a smaller evander logo on the right.
+  the theme toggle centered, and a smaller Evander logo on the right.
 
 ## 2026-05-25 - Hybrid Voice Delegation
 
 - Added durable live voice query records so Realtime phone sessions can delegate
-  file/tool/context questions back to the originating Truman agent without
+  file/tool/context questions back to the originating Evander agent without
   blocking the call.
 - Added the explicit `submit_voice_query_response` tool, voice media controller
   endpoints, Realtime `query_origin_agent` function-call handling, and
@@ -8734,7 +9342,7 @@ material. Newer entries are added incrementally as changes land.
 - Added `trigger:teams:direct-message` for allowlisted one-on-one Microsoft
   Teams direct messages to the delegated Teams identity, backed by host-side
   Teams ingest polling.
-- Documented the Teams direct-message trigger and updated example Truman packs
+- Documented the Teams direct-message trigger and updated example Evander packs
   with a separate direct-message prompt path.
 - Fixed Teams direct-message ingest so enabled triggers poll on cold start
   without active sessions, disabled triggers are ignored, and one-on-one chats

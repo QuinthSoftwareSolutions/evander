@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ApiError, fetchJson } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
+import { readAdminHashQuery } from "../admin/hash";
 import { Tooltip } from "../admin/Tooltip";
 import { RefreshIcon, SaveIcon, StartIcon, StopIcon } from "../admin/PageActionIcons";
 import { JsonTextEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
@@ -221,7 +223,7 @@ function draftToPayload(detail: WorkerDetail | null, draft: WorkerDraft): Record
 export function WorkersScreen() {
   const { privilegedUnlocked } = useAdminUi();
   const [workers, setWorkers] = useState<WorkerSummary[]>([]);
-  const [selectedWorkerId, setSelectedWorkerId] = useState<string>("");
+  const [selectedWorkerId, setSelectedWorkerId] = useState<string>(() => readAdminHashQuery().get("worker_id") ?? "");
   const [detail, setDetail] = useState<WorkerDetail | null>(null);
   const [draft, setDraft] = useState<WorkerDraft>({});
   const [isDirty, setIsDirty] = useState(false);
@@ -242,7 +244,7 @@ export function WorkersScreen() {
         ? preferredWorkerId
         : currentWorkerId && payload.workers.some((worker) => worker.worker_id === currentWorkerId)
           ? currentWorkerId
-          : payload.workers[0]?.worker_id ?? "";
+          : "";
     if (nextWorkerId !== currentWorkerId) {
       setSelectedWorkerId(nextWorkerId);
     }
@@ -268,6 +270,7 @@ export function WorkersScreen() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer: number | null = null;
 
     async function refresh(showLoading: boolean) {
       try {
@@ -295,22 +298,21 @@ export function WorkersScreen() {
       } finally {
         if (!cancelled) {
           setLoading(false);
+          timer = window.setTimeout(() => void refresh(false), POLL_INTERVAL_MS);
         }
       }
     }
 
     void refresh(true);
-    const timer = window.setInterval(() => {
-      void refresh(false);
-    }, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [isDirty, selectedWorkerId]);
 
   const selectedSummary = useMemo(
-    () => workers.find((worker) => worker.worker_id === selectedWorkerId) ?? detail?.summary ?? null,
+    () => workers.find((worker) => worker.worker_id === selectedWorkerId)
+      ?? (detail?.summary.worker_id === selectedWorkerId ? detail.summary : null),
     [detail?.summary, selectedWorkerId, workers],
   );
   const visibleWorkers = useMemo(() => {
@@ -328,11 +330,10 @@ export function WorkersScreen() {
   const mutationLocked = !privilegedUnlocked;
 
   async function reloadSelectedWorker(options?: { preserveDraft?: boolean }) {
-    if (!selectedWorkerId) return;
     try {
       setLoading(true);
       await loadWorkers(selectedWorkerId, selectedWorkerId);
-      await loadWorkerDetail(selectedWorkerId, options);
+      if (selectedWorkerId) await loadWorkerDetail(selectedWorkerId, options);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -375,7 +376,7 @@ export function WorkersScreen() {
       return;
     }
     if (isDirty && !window.confirm("Discard unsaved worker settings and switch workers?")) {
-      return;
+      return false;
     }
     setStatusMessage(null);
     setError(null);
@@ -500,229 +501,21 @@ export function WorkersScreen() {
   }
 
   return (
-    <div className="feature-page workers-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Host workers</div>
-            <h1>Workers</h1>
-          </div>
-          <button
-            className="admin-action-button compact"
-            type="button"
-            onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
-            disabled={!selectedWorkerId || loading || acting !== null || saving}
-          >
-            {loading ? "Refreshing..." : "Refresh"}
-          </button>
-        </div>
-        {mutationLocked ? <div className="callout warning-callout">Unlock privileged operations to start, stop, or save worker settings.</div> : null}
-        <div className="config-field-grid workers-filter-grid">
-          <label className="field-stack">
-            <span>Find worker</span>
-            <input
-              type="search"
-              value={searchQuery}
-              placeholder="Name, unit, or status"
-              onChange={(event) => setSearchQuery(event.target.value)}
-            />
-          </label>
-          <label className="field-stack">
-            <span>Status</span>
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value as WorkerStatusFilter)}
-            >
-              <option value="all">All states</option>
-              <option value="running">Running</option>
-              <option value="stopped">Stopped</option>
-              <option value="failed">Failed</option>
-            </select>
-          </label>
-        </div>
-        <div className="workers-list-summary" aria-live="polite">
-          <span>{workerCountLabel}</span>
-          {filtersActive ? (
-            <button
-              type="button"
-              className="text-button compact"
-              onClick={() => {
-                setSearchQuery("");
-                setStatusFilter("all");
-              }}
-            >
-              Clear filters
-            </button>
-          ) : null}
-        </div>
-        <div className="feature-list worker-list" aria-label="Host workers">
-          {visibleWorkers.map((worker) => {
-            const status = workerStatus(worker);
-            return (
-              <Tooltip
-                key={worker.worker_id}
-                content={workerHoverSummary(worker)}
-                className="worker-list-item-tooltip"
-                triggerClassName="worker-list-item-tooltip-trigger"
-                bubbleClassName="worker-list-item-tooltip-bubble"
-                inline={false}
-              >
-                <button
-                  type="button"
-                  className={`feature-list-item worker-list-item${worker.worker_id === selectedWorkerId ? " selected" : ""}`}
-                  aria-label={`${worker.name}, ${status.label}`}
-                  onClick={() => handleSelectWorker(worker.worker_id)}
-                  disabled={loading && worker.worker_id === selectedWorkerId}
-                >
-                  <div className="feature-list-title-row worker-list-item-row">
-                    <strong>{worker.name}</strong>
-                    <span className={`status-pill state-${status.className}`}>
-                      {status.label}
-                    </span>
-                  </div>
-                </button>
-              </Tooltip>
-            );
-          })}
-          {loading && workers.length === 0 ? <div className="empty-state">Loading workers…</div> : null}
-          {!loading && workers.length === 0 ? (
-            <div className="empty-state">No workers are available yet. Check host services or refresh after startup.</div>
-          ) : null}
-          {!loading && workers.length > 0 && visibleWorkers.length === 0 ? (
-            <div className="empty-state">No workers match the current search and status filters.</div>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selectedSummary?.name ?? "Select a worker"}</h2>
-            <p className="muted-text">
-              {selectedSummary?.description ?? "Inspect status, tail logs, and edit worker-global settings."}
-            </p>
-          </div>
-          <div className="feature-toolbar-actions icon-actions">
-            {selectedSummary?.running ? (
-              <Tooltip content="Stop the selected background worker service.">
-                <button
-                  className="admin-icon-button"
-                  type="button"
-                  onClick={() => void handleWorkerAction("stop")}
-                  disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
-                  aria-label={acting === "stop" ? "Stopping worker" : "Stop worker"}
-                >
-                  {acting === "stop" ? "…" : <StopIcon />}
-                </button>
-              </Tooltip>
-            ) : (
-              <Tooltip content="Start the selected background worker service.">
-                <button
-                  className="admin-icon-button"
-                  type="button"
-                  onClick={() => void handleWorkerAction("start")}
-                  disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
-                  aria-label={acting === "start" ? "Starting worker" : "Start worker"}
-                >
-                  {acting === "start" ? "…" : <StartIcon />}
-                </button>
-              </Tooltip>
-            )}
-            <Tooltip content="Reload the selected worker summary, config, and recent log.">
-              <button
-                className="admin-icon-button"
-                type="button"
-                onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
-                disabled={!selectedWorkerId || loading || acting !== null || saving}
-                aria-label={loading ? "Reloading worker" : "Reload worker"}
-              >
-                {loading ? "…" : <RefreshIcon />}
-              </button>
-            </Tooltip>
-            <Tooltip content="Save the current worker-global settings back to the host config file.">
-              <button
-                type="button"
-                className="admin-icon-button primary"
-                onClick={() => void handleSaveConfig()}
-                disabled={!selectedWorkerId || saving || acting !== null || loading || !detail?.config_schema || !isDirty || mutationLocked}
-                aria-label={saving ? "Saving worker settings" : "Save worker settings"}
-              >
-                {saving ? "…" : <SaveIcon />}
-              </button>
-            </Tooltip>
-          </div>
-        </div>
-
-        {statusMessage ? <div className="callout success-callout">{statusMessage}</div> : null}
-        {error ? <div className="callout error-callout">{error}</div> : null}
-        {isDirty ? <div className="callout warning-callout">Unsaved worker settings are being preserved across refreshes. Switching workers will discard them.</div> : null}
-
-        <article className="panel detail-panel worker-overview-panel">
-          <div className="panel-header">
+    <RecordWorkspace
+      selectedId={selectedWorkerId}
+      recordRouteKeys="worker_id"
+      records={workers.map((worker) => ({
+        id: worker.worker_id,
+        href: `#workers?${new URLSearchParams({ worker_id: worker.worker_id })}`,
+      }))}
+      onSelect={handleSelectWorker}
+    >
+      <div className="feature-page workers-page">
+        <section className="feature-sidebar">
+          <div className="feature-sidebar-header">
             <div>
-              <h3>Overview</h3>
-              <p className="muted-text">
-                Current unit state and service health for the selected worker.
-              </p>
-            </div>
-            {selectedSummary ? (
-              <span className={`status-pill state-${workerStatus(selectedSummary).className}`}>
-                {workerStatus(selectedSummary).label}
-              </span>
-            ) : null}
-          </div>
-          {selectedSummary ? (
-            <div className="detail-grid">
-              <div><span>Name</span><strong>{selectedSummary.name}</strong></div>
-              <div><span>Unit</span><strong>{selectedSummary.unit}</strong></div>
-              <div><span>Main PID</span><strong>{selectedSummary.main_pid ?? "n/a"}</strong></div>
-              <div><span>Active state</span><strong>{selectedSummary.active_state}</strong></div>
-              <div><span>Sub state</span><strong>{selectedSummary.sub_state ?? "n/a"}</strong></div>
-              <div><span>Result</span><strong>{selectedSummary.result ?? "n/a"}</strong></div>
-              <div><span>Unit file</span><strong>{selectedSummary.unit_file_state ?? "n/a"}</strong></div>
-              <div><span>Detail</span><strong>{selectedSummary.detail ?? "n/a"}</strong></div>
-            </div>
-          ) : (
-            <div className="empty-state">Select a worker to inspect it.</div>
-          )}
-        </article>
-
-        <article className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>Global settings</h3>
-              <p className="muted-text">
-                Edit the worker-global configuration file that backs this service.
-              </p>
-            </div>
-            <span className="panel-meta">
-              {detail?.config.path ?? ""}
-              {detail?.config.exists ? " · file exists" : " · using current defaults"}
-            </span>
-          </div>
-          {detail?.config_schema ? (
-            <div className="config-field-grid">
-              {detail.config_schema.fields.map((field) => (
-                <div key={field.field_name} className="config-field-card">
-                  <div className="feature-list-title-row">
-                    <strong>{field.label}</strong>
-                    <span className="panel-meta">{field.kind}</span>
-                  </div>
-                  {renderField(field)}
-                  {field.tooltip ? <div className="panel-meta">{field.tooltip}</div> : null}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state">Global settings are unavailable for this worker. It may not expose an editable schema.</div>
-          )}
-        </article>
-
-        <article className="panel">
-          <div className="panel-header">
-            <div>
-              <h3>Recent log</h3>
-              <p className="muted-text">Latest journal output for the selected worker unit.</p>
+              <div className="eyebrow">Host workers</div>
+              <h1>Workers</h1>
             </div>
             <button
               className="admin-action-button compact"
@@ -730,16 +523,271 @@ export function WorkersScreen() {
               onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
               disabled={!selectedWorkerId || loading || acting !== null || saving}
             >
-              {loading ? "Reloading..." : "Reload log"}
+              {loading ? "Refreshing..." : "Refresh"}
             </button>
           </div>
-          <pre className="log-view worker-log-view">
-            {selectedWorkerId
-              ? logText || "No recent log lines were returned for this worker."
-              : "Select a worker to load the current journal tail."}
-          </pre>
-        </article>
-      </section>
-    </div>
+          {mutationLocked ? (
+            <div className="callout warning-callout">
+              Unlock privileged operations to start, stop, or save worker settings.
+            </div>
+          ) : null}
+          <div className="config-field-grid workers-filter-grid">
+            <label className="field-stack">
+              <span>Find worker</span>
+              <input
+                type="search"
+                value={searchQuery}
+                placeholder="Name, unit, or status"
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+            </label>
+            <label className="field-stack">
+              <span>Status</span>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as WorkerStatusFilter)}
+              >
+                <option value="all">All states</option>
+                <option value="running">Running</option>
+                <option value="stopped">Stopped</option>
+                <option value="failed">Failed</option>
+              </select>
+            </label>
+          </div>
+          <div className="workers-list-summary" aria-live="polite">
+            <span>{workerCountLabel}</span>
+            {filtersActive ? (
+              <button
+                type="button"
+                className="text-button compact"
+                onClick={() => {
+                  setSearchQuery("");
+                  setStatusFilter("all");
+                }}
+              >
+                Clear filters
+              </button>
+            ) : null}
+          </div>
+          <div className="feature-list worker-list" aria-label="Host workers">
+            {visibleWorkers.map((worker) => {
+              const status = workerStatus(worker);
+              return (
+                <Tooltip
+                  key={worker.worker_id}
+                  content={workerHoverSummary(worker)}
+                  className="worker-list-item-tooltip"
+                  triggerClassName="worker-list-item-tooltip-trigger"
+                  bubbleClassName="worker-list-item-tooltip-bubble"
+                  inline={false}
+                >
+                  <button
+                    type="button"
+                    className={`feature-list-item worker-list-item${worker.worker_id === selectedWorkerId ? " selected" : ""}`}
+                    aria-label={`${worker.name}, ${status.label}`}
+                    onClick={() => handleSelectWorker(worker.worker_id)}
+                    disabled={loading && worker.worker_id === selectedWorkerId}
+                  >
+                    <div className="feature-list-title-row worker-list-item-row">
+                      <strong>{worker.name}</strong>
+                      <span className={`status-pill state-${status.className}`}>{status.label}</span>
+                    </div>
+                  </button>
+                </Tooltip>
+              );
+            })}
+            {loading && workers.length === 0 ? <div className="empty-state">Loading workers…</div> : null}
+            {!loading && workers.length === 0 ? (
+              <div className="empty-state">
+                No workers are available yet. Check host services or refresh after startup.
+              </div>
+            ) : null}
+            {!loading && workers.length > 0 && visibleWorkers.length === 0 ? (
+              <div className="empty-state">No workers match the current search and status filters.</div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="feature-content">
+          <div className="feature-toolbar" hidden={!selectedSummary}>
+            <div>
+              <h2>{selectedSummary?.name ?? "Select a worker"}</h2>
+              <p className="muted-text">
+                {selectedSummary?.description ?? "Inspect status, tail logs, and edit worker-global settings."}
+              </p>
+            </div>
+            <div className="feature-toolbar-actions icon-actions">
+              {selectedSummary?.running ? (
+                <Tooltip content="Stop the selected background worker service.">
+                  <button
+                    className="admin-icon-button"
+                    type="button"
+                    onClick={() => void handleWorkerAction("stop")}
+                    disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
+                    aria-label={acting === "stop" ? "Stopping worker" : "Stop worker"}
+                  >
+                    {acting === "stop" ? "…" : <StopIcon />}
+                  </button>
+                </Tooltip>
+              ) : (
+                <Tooltip content="Start the selected background worker service.">
+                  <button
+                    className="admin-icon-button"
+                    type="button"
+                    onClick={() => void handleWorkerAction("start")}
+                    disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
+                    aria-label={acting === "start" ? "Starting worker" : "Start worker"}
+                  >
+                    {acting === "start" ? "…" : <StartIcon />}
+                  </button>
+                </Tooltip>
+              )}
+              <Tooltip content="Reload the selected worker summary, config, and recent log.">
+                <button
+                  className="admin-icon-button"
+                  type="button"
+                  onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
+                  disabled={!selectedWorkerId || loading || acting !== null || saving}
+                  aria-label={loading ? "Reloading worker" : "Reload worker"}
+                >
+                  {loading ? "…" : <RefreshIcon />}
+                </button>
+              </Tooltip>
+              <Tooltip content="Save the current worker-global settings back to the host config file.">
+                <button
+                  type="button"
+                  className="admin-icon-button primary"
+                  onClick={() => void handleSaveConfig()}
+                  disabled={
+                    !selectedWorkerId ||
+                    saving ||
+                    acting !== null ||
+                    loading ||
+                    !detail?.config_schema ||
+                    !isDirty ||
+                    mutationLocked
+                  }
+                  aria-label={saving ? "Saving worker settings" : "Save worker settings"}
+                >
+                  {saving ? "…" : <SaveIcon />}
+                </button>
+              </Tooltip>
+            </div>
+          </div>
+
+          {statusMessage ? <div className="callout success-callout">{statusMessage}</div> : null}
+          {error ? <div className="callout error-callout">{error}</div> : null}
+          {isDirty ? (
+            <div className="callout warning-callout">
+              Unsaved worker settings are being preserved across refreshes. Switching workers will discard them.
+            </div>
+          ) : null}
+
+          {!selectedSummary ? <RecordPlaceholder>Select a worker to view details</RecordPlaceholder> : null}
+          <article className="panel detail-panel worker-overview-panel" hidden={!selectedSummary}>
+            <div className="panel-header">
+              <div>
+                <h3>Overview</h3>
+                <p className="muted-text">Current unit state and service health for the selected worker.</p>
+              </div>
+              {selectedSummary ? (
+                <span className={`status-pill state-${workerStatus(selectedSummary).className}`}>
+                  {workerStatus(selectedSummary).label}
+                </span>
+              ) : null}
+            </div>
+            {selectedSummary ? (
+              <div className="detail-grid">
+                <div>
+                  <span>Name</span>
+                  <strong>{selectedSummary.name}</strong>
+                </div>
+                <div>
+                  <span>Unit</span>
+                  <strong>{selectedSummary.unit}</strong>
+                </div>
+                <div>
+                  <span>Main PID</span>
+                  <strong>{selectedSummary.main_pid ?? "n/a"}</strong>
+                </div>
+                <div>
+                  <span>Active state</span>
+                  <strong>{selectedSummary.active_state}</strong>
+                </div>
+                <div>
+                  <span>Sub state</span>
+                  <strong>{selectedSummary.sub_state ?? "n/a"}</strong>
+                </div>
+                <div>
+                  <span>Result</span>
+                  <strong>{selectedSummary.result ?? "n/a"}</strong>
+                </div>
+                <div>
+                  <span>Unit file</span>
+                  <strong>{selectedSummary.unit_file_state ?? "n/a"}</strong>
+                </div>
+                <div>
+                  <span>Detail</span>
+                  <strong>{selectedSummary.detail ?? "n/a"}</strong>
+                </div>
+              </div>
+            ) : null}
+          </article>
+
+          <article className="panel" hidden={!selectedSummary}>
+            <div className="panel-header">
+              <div>
+                <h3>Global settings</h3>
+                <p className="muted-text">Edit the worker-global configuration file that backs this service.</p>
+              </div>
+              <span className="panel-meta">
+                {detail?.config.path ?? ""}
+                {detail?.config.exists ? " · file exists" : " · using current defaults"}
+              </span>
+            </div>
+            {detail?.config_schema ? (
+              <div className="config-field-grid">
+                {detail.config_schema.fields.map((field) => (
+                  <div key={field.field_name} className="config-field-card">
+                    <div className="feature-list-title-row">
+                      <strong>{field.label}</strong>
+                      <span className="panel-meta">{field.kind}</span>
+                    </div>
+                    {renderField(field)}
+                    {field.tooltip ? <div className="panel-meta">{field.tooltip}</div> : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">
+                Global settings are unavailable for this worker. It may not expose an editable schema.
+              </div>
+            )}
+          </article>
+
+          <article className="panel" hidden={!selectedSummary}>
+            <div className="panel-header">
+              <div>
+                <h3>Recent log</h3>
+                <p className="muted-text">Latest journal output for the selected worker unit.</p>
+              </div>
+              <button
+                className="admin-action-button compact"
+                type="button"
+                onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
+                disabled={!selectedWorkerId || loading || acting !== null || saving}
+              >
+                {loading ? "Reloading..." : "Reload log"}
+              </button>
+            </div>
+            <pre className="log-view worker-log-view">
+              {selectedWorkerId
+                ? logText || "No recent log lines were returned for this worker."
+                : "Select a worker to load the current journal tail."}
+            </pre>
+          </article>
+        </section>
+      </div>
+    </RecordWorkspace>
   );
 }

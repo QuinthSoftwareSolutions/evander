@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import subprocess
 import tarfile
 import time
@@ -19,6 +20,7 @@ import httpx
 import pytest
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 from starlette.testclient import TestClient
 
 import evander.admin.services.workflow_reports_service as workflow_reports_service
@@ -579,6 +581,85 @@ def test_admin_web_shutdown_cleans_active_managed_worktrees(
     assert cleanup_calls == [{"cleaned": 1, "failed": 0}]
 
 
+def test_admin_web_request_timing_logs_canonical_route_without_request_contents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", "1")
+    caplog.set_level(logging.WARNING, logger=admin_web_app.__name__)
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
+
+    async def timed_endpoint(request: Request) -> JSONResponse:
+        await asyncio.sleep(0.01)
+        return JSONResponse({"item_id": request.path_params["item_id"]})
+
+    app.router.routes.insert(
+        0,
+        Mount(
+            "/timing",
+            routes=[
+                Route("/first/{item_id}", timed_endpoint, methods=["GET"]),
+                Route("/second/{item_id}", timed_endpoint, methods=["GET"]),
+            ],
+        ),
+    )
+    with TestClient(app) as client:
+        response = client.get("/timing/second/opaque-item-id?access_token=not-for-logs")
+
+    assert response.status_code == 200
+    records = [
+        record
+        for record in caplog.records
+        if record.name == admin_web_app.__name__
+        and record.getMessage().startswith("admin_web_request_timing ")
+    ]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "method=GET" in message
+    assert "route=/timing/second/{item_id}" in message
+    assert "route=/timing/first/{item_id}" not in message
+    assert "status=200" in message
+    assert "duration_ms=" in message
+    assert "slow=True" in message
+    assert "opaque-item-id" not in message
+    assert "access_token" not in message
+    assert "not-for-logs" not in message
+
+
+def test_admin_web_request_timing_logs_fast_5xx_responses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", "999999")
+    caplog.set_level(logging.WARNING, logger=admin_web_app.__name__)
+    app = create_app(build_admin_runtime(write_config(tmp_path)))
+
+    async def unavailable(_: Request) -> JSONResponse:
+        return JSONResponse({"error": "unavailable"}, status_code=503)
+
+    app.router.routes.insert(0, Route("/timing-unavailable", unavailable, methods=["GET"]))
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+        response = client.get("/timing-unavailable?credential=not-for-logs")
+
+    assert response.status_code == 503
+    records = [
+        record
+        for record in caplog.records
+        if record.name == admin_web_app.__name__
+        and record.getMessage().startswith("admin_web_request_timing ")
+    ]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "route=/timing-unavailable" in message
+    assert "status=503" in message
+    assert "slow=False" in message
+    assert "credential" not in message
+    assert "not-for-logs" not in message
+
+
 def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
@@ -986,7 +1067,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {
             "key": "error",
             "label": "Error",
-            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
+            "description": (
+                "Emits on dispatch or terminal execution failure, including container timeout, "
+                "when an error route is connected."
+            ),
         },
     ]
     agent_enqueue_prompt = next(
@@ -1021,7 +1105,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {
             "key": "error",
             "label": "Error",
-            "description": "Emits when prompt dispatch fails and the node is handled by an error route.",
+            "description": (
+                "Emits on dispatch or terminal execution failure, including container timeout, "
+                "when an error route is connected."
+            ),
         },
     ]
     tool_approval = next(
@@ -1061,6 +1148,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "poll_interval_seconds",
         "check",
+        "reject_running_parameters",
     ]
     http_request = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:http:request"
@@ -1343,10 +1431,21 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:direct-message"
     )
     assert [field["key"] for field in teams_direct_message["fields"]] == [
+        "chat_target_mode",
+        "direct_chat_user_upns",
         "targets",
         "sender_user_ids",
         "message_filter",
     ]
+    mode_field = next(
+        field for field in teams_direct_message["fields"] if field["key"] == "chat_target_mode"
+    )
+    assert mode_field["default_value"] == "explicit"
+    assert [option["value"] for option in mode_field["options"]] == ["direct", "explicit"]
+    direct_chat_user_upns_field = next(
+        field for field in teams_direct_message["fields"] if field["key"] == "direct_chat_user_upns"
+    )
+    assert direct_chat_user_upns_field["kind"] == "string_list"
     targets_field = next(
         field for field in teams_direct_message["fields"] if field["key"] == "targets"
     )
@@ -1356,7 +1455,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     sender_user_ids_field = next(
         field for field in teams_direct_message["fields"] if field["key"] == "sender_user_ids"
     )
-    assert sender_user_ids_field["label"] == "Sender user IDs or emails"
+    assert sender_user_ids_field["label"] == "Allowed sender references"
     assert "UPNs, or mail addresses" in sender_user_ids_field["description"]
     deserialize_gate = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:deserialize"
@@ -1869,6 +1968,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "container_image",
+        "worker_id",
         "npm_registry_url",
         "directory_path",
         "metadata",
@@ -2558,7 +2658,13 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
 
 def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> None:
     app_source = (
-        Path(__file__).resolve().parents[1] / "frontend" / "admin-web" / "src" / "App.tsx"
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "admin-web"
+        / "src"
+        / "features"
+        / "workflow-editor"
+        / "nodeDefaults.ts"
     ).read_text(encoding="utf-8")
 
     assert "dedupe:${{system.execution.event_id}}" in app_source
@@ -2637,11 +2743,11 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     )
     news_asset_dir = service.project_dir / "docs" / "assets" / "news"
     news_asset_dir.mkdir(parents=True)
-    (news_asset_dir / "truman-signature.svg").write_text(
+    (news_asset_dir / "evander-signature.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
         encoding="utf-8",
     )
-    (news_asset_dir / "truman-signature-inverse.svg").write_text(
+    (news_asset_dir / "evander-signature-inverse.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
         encoding="utf-8",
     )
@@ -2652,7 +2758,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         "### Practical tips\n\n"
         "- Open the dashboard first.\n\n"
         "- Download the changelog when you need the full record.\n\n"
-        '![Truman signature](docs/assets/news/truman-signature.svg "Signed by Truman")\n\n'
+        '![Evander signature](docs/assets/news/evander-signature.svg "Signed by Evander")\n\n'
         "The dashboard news feed explains what changed and how to use it.\n"
         "\n"
         "## 2026-05-20 - Earlier Update\n\n"
@@ -2664,7 +2770,7 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
     response = client.get("/api/admin/release-info")
     older_response = client.get("/api/admin/release-info?news_index=1")
     invalid_response = client.get("/api/admin/release-info?news_index=-1")
-    asset_response = client.get("/api/admin/news/assets/truman-signature.svg")
+    asset_response = client.get("/api/admin/news/assets/evander-signature.svg")
     blocked_asset_response = client.get("/api/admin/news/assets/%2e%2e/NEWS.md")
 
     assert response.status_code == 200
@@ -2726,10 +2832,10 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
                     "text": None,
                     "level": None,
                     "items": [],
-                    "src": "/api/admin/news/assets/truman-signature.svg",
-                    "dark_src": "/api/admin/news/assets/truman-signature-inverse.svg",
-                    "alt": "Truman signature",
-                    "title": "Signed by Truman",
+                    "src": "/api/admin/news/assets/evander-signature.svg",
+                    "dark_src": "/api/admin/news/assets/evander-signature-inverse.svg",
+                    "alt": "Evander signature",
+                    "title": "Signed by Evander",
                 },
                 {
                     "kind": "paragraph",
@@ -2796,7 +2902,7 @@ def test_admin_web_release_info_is_protected_when_auth_required(
 
     protected_response = client.get("/api/admin/release-info")
     protected_download_response = client.get("/api/admin/release-info/changelog")
-    protected_asset_response = client.get("/api/admin/news/assets/truman-signature.svg")
+    protected_asset_response = client.get("/api/admin/news/assets/evander-signature.svg")
     state_response = client.get("/api/admin/state")
 
     assert protected_response.status_code == 401
@@ -3182,6 +3288,63 @@ def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     delete_response = client.delete("/api/admin/skills/demo.skill")
     assert delete_response.status_code == 200
     assert client.get("/api/admin/skills/demo.skill").status_code == 404
+
+
+def test_admin_web_replace_skill_reports_propagation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.skill_admin.create_skill({"name": "demo.skill", "content": "# Original\n"})
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "codex_skills": ["demo.skill"],
+            },
+        )
+    )
+
+    def fail_install(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("worker unavailable")
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "install_admin_agent_skills",
+        fail_install,
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    response = client.post(
+        "/api/admin/skills",
+        json={"name": "demo.skill", "content": "# Updated\n", "replace": True},
+    )
+
+    assert response.status_code == 502
+    payload = response.json()
+    assert payload["details"] == {
+        "skill_name": "demo.skill",
+        "replacement_saved": True,
+        "target_count": 1,
+        "updated_session_ids": [],
+        "failures": [
+            {
+                "stage": "install_skill",
+                "session_id": "container-session",
+                "backend": "container_worker_vm",
+                "error_class": "RuntimeError",
+                "error": "worker unavailable",
+            }
+        ],
+    }
+    assert "Failed sessions: container-session." in payload["error"]
+    assert client.get("/api/admin/skills/demo.skill").json()["skill"]["content"] == ("# Updated\n")
 
 
 def test_admin_web_delete_skill_blocks_inline_workflow_references(
@@ -4175,6 +4338,102 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
     assert generate_denied.json()["error"] == "Permission required: workflows.write"
     assert save_denied.status_code == 403
     assert save_denied.json()["error"] == "Permission required: workflows.write"
+
+
+def test_admin_web_workflow_save_authorizes_synthesized_graph_directories_before_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com")
+    store.upsert_user(login="scoped-writer@example.com")
+    store.remove_user_group_assignment(
+        login="scoped-writer@example.com", group_id="operator", directory_path="root"
+    )
+    store.grant_user_workflow_permission(
+        login="scoped-writer@example.com",
+        permission=WORKFLOWS_WRITE_PERMISSION,
+        directory_path="root/ops",
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+    _complete_azure_login(
+        app,
+        client,
+        login="scoped-writer@example.com",
+        display_name="Scoped Writer",
+    )
+    _unlock_privileged_operations(client)
+    resolution_calls: list[dict[str, object]] = []
+
+    def resolve_direct_chat_targets(**kwargs: object) -> list[dict[str, str]]:
+        resolution_calls.append(kwargs)
+        return [
+            {
+                "user_principal_name": "alias@example.com",
+                "user_id": "resolved-user-id",
+                "chat_target": "chat:resolved-chat-id",
+            }
+        ]
+
+    monkeypatch.setattr(
+        service.teams_admin,
+        "resolve_direct_chat_targets",
+        resolve_direct_chat_targets,
+    )
+    response = client.put(
+        "/api/workflow-editor/document",
+        json={
+            "config": canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "ops-start",
+                            "display_name": "Ops start",
+                            "type": "trigger:cron",
+                            "expression": "15 * * * *",
+                        },
+                        {
+                            "id": "direct-chat",
+                            "display_name": "Direct chat",
+                            "type": "trigger:teams:direct-message",
+                            "chat_target_mode": "direct",
+                            "direct_chat_user_upns": ["alias@example.com"],
+                            "targets": [],
+                            "sender_user_ids": [],
+                        },
+                    ],
+                    "gates": [],
+                    "effects": [],
+                    "queries": [],
+                    "edges": [],
+                }
+            ),
+            "layout": {
+                "nodes": {
+                    "ops-start": {"x": 100, "y": 100},
+                    "direct-chat": {"x": 100, "y": 300},
+                }
+            },
+            "graphs": [
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "directory_path": "root/ops",
+                    "user_ids": ["scoped-writer@example.com"],
+                    "node_ids": ["ops-start"],
+                }
+            ],
+            "expected_revision": "authorization-must-run-first",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "Permission required: workflows.write"
+    assert resolution_calls == []
 
 
 def test_admin_web_workflow_target_catalog_uses_workflow_permission(
@@ -7306,7 +7565,7 @@ def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> 
 
     response = client.post(
         "/api/admin/artifacts/uploads",
-        data={"key": "manuals/true-app/reviewed/run-1", "artifact_path": "input/reviewed.docx"},
+        data={"key": "manuals/sample-app/reviewed/run-1", "artifact_path": "input/reviewed.docx"},
         files={
             "file": (
                 "reviewed.docx",
@@ -7317,14 +7576,14 @@ def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> 
     )
     duplicate = client.post(
         "/api/admin/artifacts/uploads",
-        data={"key": "manuals/true-app/reviewed/run-1"},
+        data={"key": "manuals/sample-app/reviewed/run-1"},
         files={"file": ("reviewed.docx", b"again")},
     )
-    download = client.get("/api/admin/artifact-downloads/manuals%2Ftrue-app%2Freviewed%2Frun-1")
+    download = client.get("/api/admin/artifact-downloads/manuals%2Fsample-app%2Freviewed%2Frun-1")
 
     assert response.status_code == 201
     payload = response.json()
-    assert payload["key"] == "manuals/true-app/reviewed/run-1"
+    assert payload["key"] == "manuals/sample-app/reviewed/run-1"
     assert payload["session_id"] == "manual-upload"
     assert payload["source_file_count"] == 1
     assert payload["metadata"]["source"] == "manual_upload"
@@ -9874,11 +10133,41 @@ def test_workflow_webhook_ingress_rejects_duplicate_active_slug(
 def test_admin_web_config_defaults_to_none_without_password(monkeypatch) -> None:
     monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
     monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", raising=False)
 
     config = AdminWebConfig.from_env()
 
     assert config.auth_mode == "none"
     assert config.auth_required is False
+    assert config.slow_request_threshold_ms == 500
+
+
+@pytest.mark.parametrize(
+    ("configured_threshold", "expected_threshold"),
+    [("0", 0), ("250", 250)],
+)
+def test_admin_web_config_reads_slow_request_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_threshold: str,
+    expected_threshold: int,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", configured_threshold)
+
+    config = AdminWebConfig.from_env()
+
+    assert config.slow_request_threshold_ms == expected_threshold
+
+
+@pytest.mark.parametrize("configured_threshold", ["-1", "invalid", "1.5"])
+def test_admin_web_config_rejects_invalid_slow_request_threshold(
+    monkeypatch: pytest.MonkeyPatch, configured_threshold: str
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS", configured_threshold)
+
+    with pytest.raises(
+        ValueError, match="SLOW_REQUEST_THRESHOLD_MS must be a non-negative integer"
+    ):
+        AdminWebConfig.from_env()
 
 
 def test_admin_web_config_maps_password_only_deployments_to_local_password(monkeypatch) -> None:
@@ -10314,8 +10603,12 @@ def test_admin_web_azure_callback_rejects_non_allowlisted_user(tmp_path: Path, m
     assert response.json()["error"] == "Azure sign-in user is not allowed"
 
 
+@pytest.mark.parametrize(
+    "next_path",
+    [None, "/#addon:team-addon?view=task-board&case_id=case+A%2642"],
+)
 def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_session(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, next_path: str | None
 ) -> None:
     monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "azure_sso")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
@@ -10347,7 +10640,11 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     app.state.auth._exchange_azure_code_for_token = fake_exchange  # type: ignore[method-assign]
     app.state.auth._validate_azure_id_token = fake_validate  # type: ignore[method-assign]
 
-    start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
+    start = client.get(
+        "/api/auth/azure-sso/start",
+        params={"next": next_path} if next_path is not None else {},
+        follow_redirects=False,
+    )
     state = start.headers["location"].split("state=")[1].split("&", 1)[0]
     callback = client.get(
         f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False
@@ -10355,7 +10652,7 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     session = client.get("/api/auth/session")
 
     assert callback.status_code == 303
-    assert callback.headers["location"] == "/#workflow"
+    assert callback.headers["location"] == (next_path or "/#workflow")
     assert "evander_admin_session=" in callback.headers.get("set-cookie", "")
     assert session.status_code == 200
     assert session.json()["authenticated"] is True
@@ -11572,6 +11869,7 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     service = build_admin_runtime(write_config(tmp_path))
     calls = 0
     capacity_calls = 0
+    capacity_refreshes = []
 
     def list_background_workers() -> list[WorkerSummary]:
         nonlocal calls
@@ -11587,9 +11885,10 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
             )
         ]
 
-    def read_capacity_health() -> dict[str, object]:
+    def read_capacity_health(*, refresh: bool = False) -> dict[str, object]:
         nonlocal capacity_calls
         capacity_calls += 1
+        capacity_refreshes.append(refresh)
         return {
             "generated_at": "2026-05-21T12:00:00+00:00",
             "workers": {"total_workers": capacity_calls},
@@ -11626,6 +11925,7 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     assert capacity_second.status_code == 200
     assert capacity_live.status_code == 200
     assert capacity_refreshed.status_code == 200
+    assert capacity_refreshes == [False, False, True]
     assert first.headers["x-admin-web-cache"] == "miss"
     assert not_modified.headers["x-admin-web-cache"] == "hit"
     assert not_modified.headers["etag"] == first.headers["etag"]
@@ -12112,7 +12412,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert agent_prompt_fields["agent_context_retry_enabled"]["kind"] == "bool"
     assert agent_prompt_fields["agent_context_retry_max_attempts"]["kind"] == "int"
     assert agent_prompt_fields["agent_context_retry_target_chars"]["kind"] == "int"
-    assert "container worker service" in all_fields["container_worker_base_url"]["tooltip"]
+    assert "saved worker assignment" in all_fields["container_worker_base_url"]["tooltip"]
     assert (
         "Fallback runner container image" in all_fields["container_worker_default_image"]["tooltip"]
     )
@@ -13520,6 +13820,13 @@ def test_admin_web_unlock_endpoint_does_not_start_privileged_helper(
 
 _ADMIN_AGENT_MUTATION_CASES = (
     (
+        "submit-copy-operation",
+        "POST",
+        "/api/admin/agents/copy-operations",
+        {"source_session_id": "session-1"},
+        202,
+    ),
+    (
         "create",
         "POST",
         "/api/admin/agents",
@@ -13662,7 +13969,7 @@ def _install_admin_agent_mutation_stub(
     *,
     directory_path: str = "root",
 ) -> None:
-    if case in {"patch", "delete", "action", "prompt"}:
+    if case in {"patch", "delete", "action", "prompt", "submit-copy-operation"}:
         service.runtime.session_repository.upsert_session(
             SessionManifest(
                 session_id="session-1",
@@ -13675,6 +13982,19 @@ def _install_admin_agent_mutation_stub(
             )
         )
 
+    if case == "submit-copy-operation":
+        def submit_admin_agent_copy(source, *, session_id=None):
+            assert source.session_id == "session-1"
+            assert source.directory_path == directory_path
+            calls.append("submit_admin_agent_copy")
+            return AgentCreateOperation(
+                operation_id="copy-1", status="queued", backend="libvirt_vm",
+                target_name="new-vm", session_id=session_id or "new-session",
+                directory_path=source.directory_path,
+            )
+
+        monkeypatch.setattr(service.vm_agent_admin, "submit_admin_agent_copy", submit_admin_agent_copy)
+        return
     if case == "create":
 
         def create_admin_agent(self, payload):
@@ -14154,6 +14474,13 @@ def test_admin_web_vm_action_requires_owner_for_every_linked_directory(
     ("case", "method", "path", "payload", "expected_status"),
     (
         (
+            "submit-copy-operation",
+            "POST",
+            "/api/admin/agents/copy-operations",
+            {"source_session_id": "session-1"},
+            202,
+        ),
+        (
             "create",
             "POST",
             "/api/admin/agents",
@@ -14212,6 +14539,23 @@ def test_admin_web_agent_mutations_authorize_scoped_owner_at_target_directory(
 
     assert response.status_code == expected_status
     assert calls
+
+
+def test_admin_web_session_copy_rejects_foreign_source_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.directory_admin.create_child(parent="root", name="ops")
+    calls = []
+    _install_admin_agent_mutation_stub(
+        service, monkeypatch, "submit-copy-operation", calls, directory_path="root"
+    )
+    client = _scoped_owner_admin_web_client(monkeypatch, service, directory_path="root/ops")
+    response = client.post(
+        "/api/admin/agents/copy-operations", json={"source_session_id": "session-1"}
+    )
+    _assert_admin_mutation_forbidden(response)
+    assert calls == []
 
 
 def test_admin_web_rejects_start_when_vm_session_model_is_missing(
@@ -15295,6 +15639,12 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "directory_path": "root/team-a",
         "metadata": {
             "agent_provider": "claude",
+            "dotnet": True,
+            "nuget": True,
+            "mssql": True,
+            "mssql_init_root": "/tmp/init",
+            "playwright": True,
+            "vm_user": "agent",
             "model_provider_mode": "local_openai",
             "libvirt_vm_template": {
                 "image_ref": "ubuntu-24.04-server-cloudimg-amd64.img",
@@ -16031,6 +16381,16 @@ def test_admin_web_agent_creation_selects_configured_worker(tmp_path, monkeypatc
             "container_worker_token_env": "REPLACEMENT_TOKEN",
         },
     ).ok
+    assigned_options = client.get(
+        "/api/admin/agents/create-options",
+        params={"directory_path": "root", "session_id": "chosen"},
+    )
+    assert assigned_options.status_code == 200, assigned_options.text
+    assigned_worker = assigned_options.json()["container_worker"]
+    assert assigned_worker["selected_worker_id"] == "fast"
+    assert assigned_worker["subscription_profiles"] == [
+        {"profile_id": "fast-account", "display_name": "fast-account", "enabled": True}
+    ]
     retried = client.post("/api/admin/agents", json=retry_payload)
     assert retried.status_code == 201, retried.text
     assert calls[-1] == ("files", "http://fast.test", "FAST_TOKEN")

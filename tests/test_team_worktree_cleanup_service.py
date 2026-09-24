@@ -1386,6 +1386,7 @@ def test_cleanup_retains_bounded_deterministic_inventory_evidence(tmp_path) -> N
 
 def test_automatic_cleanup_audits_then_removes_on_later_eligible_pass(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = _seed_cleanup_state(tmp_path)
     backend = FakeCleanupBackend(
@@ -1395,6 +1396,8 @@ def test_automatic_cleanup_audits_then_removes_on_later_eligible_pass(
         ]
     )
     now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    # Keep journal retention on the same clock as the simulated cleanup passes.
+    monkeypatch.setattr("evander_team_addon.sqlite_journal.utc_now", lambda: now)
     service = TeamWorktreeCleanupService(repository, backend)
 
     first = service.reconcile(
@@ -1594,6 +1597,7 @@ def test_rejected_task_remains_unresolved_and_is_not_enqueued_for_worktree_clean
 
 def test_deterministic_backend_refusal_halts_until_operator_requeues(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = _seed_cleanup_state(tmp_path)
     backend = FakeCleanupBackend(
@@ -1615,6 +1619,8 @@ def test_deterministic_backend_refusal_halts_until_operator_requeues(
         ]
     )
     now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    # Keep journal retention on the same clock as the simulated cleanup passes.
+    monkeypatch.setattr("evander_team_addon.sqlite_journal.utc_now", lambda: now)
     service = TeamWorktreeCleanupService(repository, backend)
 
     first = service.reconcile(
@@ -2693,11 +2699,11 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
 
@@ -2787,11 +2793,11 @@ def test_container_preparation_recovers_legacy_base_from_prior_team_context(
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
 
@@ -2828,11 +2834,11 @@ def test_container_preparation_records_legacy_worker_receipt(monkeypatch) -> Non
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
     receipt: dict[str, Any] = {}
@@ -2873,11 +2879,11 @@ def test_container_preparation_refuses_to_guess_legacy_base_from_task_head(
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
 
@@ -2913,11 +2919,11 @@ def test_container_preparation_refuses_guest_reported_base_without_server_author
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
 

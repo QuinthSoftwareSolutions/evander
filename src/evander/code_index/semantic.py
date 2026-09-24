@@ -14,6 +14,12 @@ from evander.semantic.settings import (
 from .models import digest
 
 
+EMBEDDING_BATCH_SIZE = 32
+NEW_EMBEDDING_LIMIT = 512
+CACHED_EMBEDDING_LIMIT = 16_384
+INDEX_PASS_SECONDS = 30
+
+
 class IndexSemantic:
     def __init__(self, runtime):
         self.runtime = runtime
@@ -46,23 +52,38 @@ class IndexSemantic:
 
         return embed_text(self.runtime, self.settings(directory), text)
 
-    def index_batch(self, store, build: dict, *, limit: int = 512) -> bool:
-        """Bound each reconciliation pass; cached embeddings survive retries and snapshots."""
+    def index_batch(
+        self,
+        store,
+        build: dict,
+        *,
+        limit: int = NEW_EMBEDDING_LIMIT,
+        cached_limit: int = CACHED_EMBEDDING_LIMIT,
+    ) -> bool:
+        """Bound new embedding work while draining reusable vectors much faster."""
+        if limit < 1 or cached_limit < 1:
+            raise ValueError("Semantic indexing limits must be positive")
+        deadline = time.monotonic() + INDEX_PASS_SECONDS
         if self.fingerprint(build["directory"]) != build["embedding"]:
             raise ValueError("Embedding settings changed during indexing; request a new build")
         settings, client = self._clients(build["directory"])
         fingerprint = digest(build["embedding"])
         collection = "code_" + digest([build["repo"], fingerprint])[:32]
-        with store.connect() as db:
-            rows = db.execute(
-                """SELECT DISTINCT c.hash,c.path,t.text,e.vector FROM chunks c JOIN contents t ON c.hash=t.hash
-                LEFT JOIN embeddings e ON e.repo=? AND e.fingerprint=? AND e.hash=c.hash WHERE c.snapshot=? ORDER BY c.hash""",
-                (build["repo"], fingerprint, build["id"]),
-            ).fetchall()
         metrics = dict(build["metrics"])
         completed = int(metrics.get("embedded_chunks", 0))
-        deadline = time.monotonic() + 30
-        end = min(completed + limit, len(rows))
+        raw_cursor = metrics.get("embedding_cursor")
+        cursor = (
+            tuple(raw_cursor)
+            if isinstance(raw_cursor, (list, tuple))
+            and len(raw_cursor) == 2
+            and all(isinstance(value, str) for value in raw_cursor)
+            else None
+        )
+        from_hash = None
+        if cursor is None and completed:
+            from_hash, completed = store.legacy_semantic_checkpoint(build["id"], completed)
+        new_embeddings = 0
+        cached_embeddings = 0
         with (
             client,
             OpenAIEmbeddingClient(
@@ -80,10 +101,34 @@ class IndexSemantic:
             )
             # Persist the collection before any writes so cleanup can reclaim partial batches.
             store.update(build["id"], semantic_collection=collection)
-            while completed < end:
+            while time.monotonic() < deadline:
                 if store.get(build["id"])["status"] == "cancelled":
                     return False
-                batch = rows[completed : min(completed + 32, end)]
+                rows = store.semantic_page(
+                    build["id"],
+                    build["repo"],
+                    fingerprint,
+                    after=cursor,
+                    from_hash=from_hash,
+                    limit=EMBEDDING_BATCH_SIZE,
+                )
+                if not rows:
+                    return True
+                batch = []
+                batch_new = 0
+                batch_cached = 0
+                for row in rows:
+                    if row["vector"] is None:
+                        if new_embeddings + batch_new >= limit:
+                            break
+                        batch_new += 1
+                    else:
+                        if cached_embeddings + batch_cached >= cached_limit:
+                            break
+                        batch_cached += 1
+                    batch.append(row)
+                if not batch:
+                    break
                 missing = [row for row in batch if row["vector"] is None]
                 # Bound worst-case request size and per-input token exposure.
                 texts = [(row["path"] + "\n" + row["text"])[:2000] for row in missing]
@@ -111,6 +156,8 @@ class IndexSemantic:
                 metrics["embedding_cache_hits"] = (
                     metrics.get("embedding_cache_hits", 0) + len(batch) - len(missing)
                 )
+                new_embeddings += len(missing)
+                cached_embeddings += len(batch) - len(missing)
                 # A separate point per snapshot makes deletion and query filtering exact.
                 points = [
                     {
@@ -126,10 +173,20 @@ class IndexSemantic:
                 client.upsert_points(collection, points=points, wait=True)
                 completed += len(batch)
                 metrics["embedded_chunks"] = completed
+                cursor = (batch[-1]["hash"], batch[-1]["path"])
+                from_hash = None
+                metrics["embedding_cursor"] = list(cursor)
                 store.update(build["id"], metrics=metrics)
-                if time.monotonic() >= deadline:
+                if len(batch) < len(rows):
                     break
-        return completed >= len(rows)
+        return not store.semantic_page(
+            build["id"],
+            build["repo"],
+            fingerprint,
+            after=cursor,
+            from_hash=from_hash,
+            limit=1,
+        )
 
     def search(self, build: dict, query: str, *, limit: int = 200) -> list[str]:
         if self.fingerprint(build["directory"]) != build["embedding"]:

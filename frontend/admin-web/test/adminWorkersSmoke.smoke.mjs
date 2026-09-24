@@ -34,7 +34,7 @@ function workerRecord(overrides = {}) {
   };
 }
 
-test("workers page supports compact searchable independently scrollable worker navigation", async (t) => {
+test("workers page supports compact navigation, non-overlapping polling, and action refresh", { timeout: 30000 }, async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -53,6 +53,22 @@ test("workers page supports compact searchable independently scrollable worker n
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
+  await page.clock.install();
+  const requests = { list: 0, detail: 0, log: 0, action: 0 };
+  let nextLogGate = null;
+
+  function blockNextLog() {
+    let release;
+    let entered;
+    const gate = {
+      waiting: new Promise((resolve) => { release = resolve; }),
+      entered: new Promise((resolve) => { entered = resolve; }),
+      release: () => release(),
+      markEntered: () => entered(),
+    };
+    nextLogGate = gate;
+    return gate;
+  }
 
   const workers = [
     workerRecord(),
@@ -191,12 +207,32 @@ test("workers page supports compact searchable independently scrollable worker n
       await route.fulfill(jsonResponse(configurationStateResponse));
       return;
     }
+    if (pathname === "/api/admin/skills") {
+      await route.fulfill(jsonResponse({ items: [] }));
+      return;
+    }
     if (pathname === "/api/workers") {
+      requests.list += 1;
       await route.fulfill(jsonResponse({ workers }));
+      return;
+    }
+    const workerActionMatch = pathname.match(/^\/api\/workers\/([^/]+)\/actions\/start$/);
+    if (workerActionMatch && route.request().method() === "POST") {
+      requests.action += 1;
+      const worker = workers.find((candidate) => candidate.worker_id === decodeURIComponent(workerActionMatch[1]));
+      Object.assign(worker, { active_state: "active", sub_state: "running", running: true, detail: "Started successfully." });
+      await route.fulfill(jsonResponse({ result: { message: "Worker started successfully." } }));
       return;
     }
     const workerLogMatch = pathname.match(/^\/api\/workers\/([^/]+)\/log$/);
     if (workerLogMatch) {
+      const logRequest = ++requests.log;
+      const gate = nextLogGate;
+      nextLogGate = null;
+      if (gate) {
+        gate.markEntered();
+        await gate.waiting;
+      }
       const workerId = decodeURIComponent(workerLogMatch[1]);
       const worker = workers.find((candidate) => candidate.worker_id === workerId) ?? workers[0];
       await route.fulfill(jsonResponse({
@@ -204,12 +240,13 @@ test("workers page supports compact searchable independently scrollable worker n
         worker_name: worker.name,
         unit: worker.unit,
         lines: 200,
-        text: `${worker.name} log is healthy.\n`,
+        text: `${worker.name} log is healthy. Request ${logRequest}.\n`,
       }));
       return;
     }
     const workerMatch = pathname.match(/^\/api\/workers\/([^/]+)$/);
     if (workerMatch) {
+      requests.detail += 1;
       const workerId = decodeURIComponent(workerMatch[1]);
       const worker = workers.find((candidate) => candidate.worker_id === workerId) ?? workers[0];
       await route.fulfill(jsonResponse({
@@ -238,6 +275,10 @@ test("workers page supports compact searchable independently scrollable worker n
   await page.goto(`http://127.0.0.1:${address.port}/#workers`, { waitUntil: "domcontentloaded" });
   await ensureSectionsExpanded(page);
   await page.getByRole("heading", { name: "Workers", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("heading", { name: "Select a worker to view details", exact: true }).waitFor();
+  assert.equal(await page.getByRole("heading", { name: "Global settings", exact: true }).isVisible(), false);
+  assert.equal(requests.detail, 0);
+  await page.locator(".worker-list-item").filter({ hasText: "Trigger Orchestrator" }).click();
   await page.locator(".worker-list-item.selected").waitFor({ state: "visible" });
 
   const selectedListText = await page.locator(".worker-list-item.selected").innerText();
@@ -282,6 +323,52 @@ test("workers page supports compact searchable independently scrollable worker n
   const overview = page.locator(".worker-overview-panel");
   assert.match(await overview.innerText(), /Unit file\s+disabled/i);
   assert.match(await overview.innerText(), /Detail\s+Disabled by operator policy\./i);
+
+  // A slow poll must finish before the next polling delay begins.
+  await page.getByRole("button", { name: "Reload worker", exact: true }).waitFor({ state: "visible" });
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  const slowPoll = blockNextLog();
+  await page.clock.runFor(5000);
+  await slowPoll.entered;
+  const pendingRequests = { ...requests };
+  await page.clock.runFor(15000);
+  assert.deepEqual(requests, pendingRequests, "a pending poll must not overlap later polls");
+  slowPoll.release();
+  await page.locator(".worker-log-view").filter({ hasText: `Request ${pendingRequests.log}.` }).waitFor({ state: "visible" });
+
+  // Starting a worker refreshes its data immediately, while polling time is paused.
+  const beforeAction = { ...requests };
+  await page.getByRole("button", { name: "Start worker", exact: true }).click();
+  await page.getByText("Worker started successfully.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(requests.action, beforeAction.action + 1);
+  assert.ok(requests.list > beforeAction.list);
+  assert.ok(requests.detail > beforeAction.detail);
+  assert.ok(requests.log > beforeAction.log);
+  assert.match(await overview.innerText(), /Started successfully\./);
+  await page.getByRole("button", { name: "Stop worker", exact: true }).waitFor({ state: "visible" });
+
+  // Unmounting clears a scheduled timer.
+  await page.evaluate(() => { window.location.hash = "#skills"; });
+  await page.getByRole("heading", { name: "Skills", exact: true }).waitFor({ state: "visible" });
+  const afterUnmount = { ...requests };
+  await page.clock.runFor(15000);
+  assert.deepEqual(requests, afterUnmount, "leaving Workers must clear its polling timer");
+
+  // Completing an in-flight request after unmount must not recreate a timer.
+  await page.evaluate(() => { window.location.hash = "#workers"; });
+  await page.locator(".worker-list-item").filter({ hasText: "Trigger Orchestrator" }).click();
+  await page.getByRole("button", { name: "Reload worker", exact: true }).waitFor({ state: "visible" });
+  const unmountedPoll = blockNextLog();
+  await page.clock.runFor(5000);
+  await unmountedPoll.entered;
+  await page.evaluate(() => { window.location.hash = "#skills"; });
+  await page.getByRole("heading", { name: "Skills", exact: true }).waitFor({ state: "visible" });
+  const duringUnmount = { ...requests };
+  const responseFinished = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/log"));
+  unmountedPoll.release();
+  await (await responseFinished).finished();
+  await page.clock.runFor(15000);
+  assert.deepEqual(requests, duringUnmount, "a completed request must not restart polling after unmount");
 
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);

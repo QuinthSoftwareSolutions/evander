@@ -243,7 +243,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 43
+    assert TEAM_AGENT_GUIDANCE_VERSION == 45
     assert "Every test command must have an explicit timeout" in content
     assert "timeout --preserve-status -k 20s <seconds> <test command>" in content
     assert "Do not retry the unchanged command indefinitely" in content
@@ -266,7 +266,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "do not choose or merge a different source ad hoc" in content
     assert "model that work as a self-owned child" in content
     assert "the parent stays quiet" in content
-    assert "accepted child deliverables through source_deliverable_ids" in content
+    assert "must appear in source_deliverable_ids" in content
     assert "team_cancel_task" in content
     assert "stable reason code and reason" in content
     assert "submits an assessable delivered/evidenced-noop contribution" in content
@@ -628,6 +628,11 @@ def test_release_progress_only_flags_git_packages_without_candidate_inputs() -> 
             "function renderReleaseProgress("
         )
     ]
+    gate_sequence_source = source[
+        source.index("function normalizedReleaseGateSequence(") : source.index(
+            "function renderReleaseGateSequenceEditor("
+        )
+    ]
 
     assert "function releaseRequiresGitCandidate(release)" in source
     assert "const candidateInputsMissing = releaseCandidateInputsMissing(release);" in source
@@ -653,6 +658,7 @@ def test_release_progress_only_flags_git_packages_without_candidate_inputs() -> 
       const humanizeToken = (value) => text(value);
       const formatTimelineTimestamp = (value) => text(value);
       {helper_source}
+      {gate_sequence_source}
       {progress_source}
 
       const artifactRelease = {{

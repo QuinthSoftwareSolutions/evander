@@ -1,5 +1,10 @@
 # Container Worker Backend
 
+Read-only toolchain mount sources are pinned per session. The .NET provisioner validates
+immutable bundles before atomically selecting one for future sessions. See
+[release recovery and toolchain rollout](release-recovery-and-verifier-policy.md#immutable-worker-sdk-rollout)
+for migration, drain, retention and rollback precautions.
+
 `evander-worker-daemon` is the worker-VM side of the container execution backend. It exposes a small HTTP API for starting, inspecting, stopping, deleting, and reading logs for jobs that run inside disposable Docker containers.
 
 The daemon is intentionally primarily an execution envelope. It does not receive control-plane
@@ -120,6 +125,15 @@ ${EDITOR:-vi} ansible/inventory/prod.yml
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
+Both build scripts first reconcile `evander-runner-base:latest`, which owns their common Ubuntu and
+Playwright operating-system dependencies. Sequential Codex and Claude archive builds therefore run
+the expensive apt install once and reuse the resulting local Docker layer for the second image. If
+`ubuntu:24.04` is absent, its pull uses three attempts with a 120-second timeout per attempt, and the
+shared-base build has a 900-second timeout. Override those bounds with
+`RUNNER_BASE_PULL_ATTEMPTS`, `RUNNER_BASE_PULL_TIMEOUT_SECONDS`, and
+`RUNNER_BASE_BUILD_TIMEOUT_SECONDS`. Set `RUNNER_OS_BASE_IMAGE` to an authenticated registry mirror
+or cache when the build host should avoid direct Docker Hub pulls.
+
 The Codex build copies both `codex` and its matching `codex-code-mode-host` executable from the
 resolved platform package. The build fails when either executable is missing so a code-mode-only
 model cannot deploy without its MCP tool host. The worker playbook repeats that check inside the
@@ -129,16 +143,15 @@ loaded image before restarting the daemon. The script writes a sidecar manifest 
 `dist/evander-runner-claude.tar.manifest` next to
 `dist/evander-runner-claude.tar`. If those manifests still match the tarball inputs, rerunning
 the scripts reuse the cached archives, print that the cached archive was reused, and skip Docker
-build/save entirely. The cache keys include the Dockerfile text, the build script text,
-`RUNNER_IMAGE_NAME`, the resolved agent executable paths and SHA-256 values, provider package
-identity where applicable, and the Dockerfile base-image policy from the `FROM` line. Use
+build/save entirely. The cache keys include the provider and shared-base Dockerfile and build-script
+text, `RUNNER_IMAGE_NAME`, `RUNNER_BASE_IMAGE`, `RUNNER_OS_BASE_IMAGE`, the resolved agent executable
+paths and SHA-256 values, and provider package identity where applicable. Hosted agents only get
+this archive reuse when the operator pipeline restores `dist/` from a persistent cache. Use
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_runner_image.sh` or
 `./scripts/build_evander_runner_image.sh --force` for Codex, and
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_claude_runner_image.sh` or
-`./scripts/build_evander_claude_runner_image.sh --force` for Claude, to force a rebuild.
-Moving tags such as
-`ubuntu:24.04` require a force rebuild when you want a base-image refresh, because the Dockerfile
-text can stay the same while the upstream image changes.
+`./scripts/build_evander_claude_runner_image.sh --force` for Claude, to force a rebuild and refresh
+the upstream operating-system image.
 
 Container session bootstrap marks the Evander MCP server as required, and prompt commands repeat
 that requirement alongside their session-scoped gateway URL. Codex therefore waits for tool
@@ -366,9 +379,10 @@ worker-specific `refs/evander/deploy/` ref. The checkout explicitly fetches that
 checking out the requested commit SHA. The playbook never recreates the retired
 `git-remotes/evander-deploy.git` mirror.
 
-If the host Docker bridge cannot reach Ubuntu apt mirrors during the image build, run the same build
-with `RUNNER_BUILD_NETWORK=host`. That option only affects the host-side artifact build; worker
-runtime containers still use the daemon sandbox profile and must not use Docker `host` networking.
+If the host Docker bridge cannot reach Ubuntu apt mirrors during the shared-base build, run the same
+build with `RUNNER_BUILD_NETWORK=host`. That option only affects the host-side artifact build;
+worker runtime containers still use the daemon sandbox profile and must not use Docker `host`
+networking.
 
 The runner image intentionally contains only stable base tools, the vendored Codex binary and
 matching code-mode host, and Playwright operating-system libraries. .NET, Node, Playwright
@@ -420,7 +434,8 @@ are not baked into the image. Populate them from the control plane with
 so restores use the control-plane NuGet relay and workers receive an additive global-packages
 archive. If the restore target and .NET toolchain are on the worker itself, run the script there
 with `--local --dotnet <worker-dotnet-path>` and point `NUGET_RELAY_BASE_URL` at the control-plane
-relay. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
+relay. For private packages, pass the same patterns configured in the target directory with
+repeatable `--private-package-pattern` options. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
 `/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
 without the runner image hard-coding a host-specific user id.
 
@@ -605,10 +620,12 @@ Creation, rename, enable/disable, login, cancellation, and logout are privileged
 ownership of a child directory is insufficient. Mutations are audited without recording tokens.
 
 Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent. New UI
-subscription agents must select one enabled profile. The binding is written to the session and
-cannot change: create a replacement session for another profile. An existing unbound metered
-session may receive its first profile only when explicitly switched to subscription mode. An
-existing-agent upsert that omits the profile preserves its current binding.
+subscription agents must select one enabled profile. An existing session can switch between
+metered API usage and subscription usage, or select another enabled subscription profile, without
+being replaced. The new selection applies to the next turn; a turn already running keeps the route
+with which it started. An existing-agent upsert that omits the profile preserves its current
+subscription selection. Changing the route also releases that session's prompts from any delay
+caused by the previous subscription profile so they can be reconsidered immediately.
 
 `chatgpt_subscription` is effective only for a container Codex turn on the public OpenAI route.
 If the effective `model_provider_mode` is `local_openai` or `azure_openai`, Evander runs the turn

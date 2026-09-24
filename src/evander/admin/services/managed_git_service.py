@@ -3397,6 +3397,9 @@ class ManagedGitAdminService:
             ToolName.GET_PULL_REQUEST,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
+            ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+            ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
+            ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
             ToolName.POST_PR_FEEDBACK_REPLY,
         ):
             if tool not in allowed_tools:

@@ -67,8 +67,7 @@ class TeamPublishOutboxEventsEffectDefinition(EffectDefinition):
         if value is None or isinstance(value, (list, str)):
             return value
         raise ValueError(
-            "effect:team:publish-outbox-events "
-            f"{info.field_name} must be a JSON array"
+            f"effect:team:publish-outbox-events {info.field_name} must be a JSON array"
         )
 
 
@@ -170,12 +169,14 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
     task_id: ConfigValue | None = None
     case_id: ConfigValue | None = None
     state: ConfigValue | None = None
+    task_kind: ConfigValue | None = None
     parent_task_id: ConfigValue | None = None
     originating_task_id: ConfigValue | None = None
     authored_by: ConfigValue | None = None
     ado_work_item_id: ConfigValue | None = None
     ado_project: ConfigValue | None = None
     git_base_branch: ConfigValue | None = None
+    git_base_commit_sha: ConfigValue | None = None
     dependency_task_ids: ConfigValue | None = None
     integration_boundary: ConfigValue | None = None
     deliverable_contract: ConfigValue | None = None
@@ -200,6 +201,7 @@ class TeamSetTaskWorkStateEffectDefinition(EffectDefinition):
 class TeamCreateCaseEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-case"]
     case_id: ConfigValue | None = None
+    reuse_existing: ConfigValue | None = None
     team_id: ConfigValue
     title: ConfigValue
     description: ConfigValue | None = None
@@ -709,6 +711,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "error": {"type": ["string", "null"]},
     },
     "effect:team:create-case": {
+        "task_board_path": {"type": "string"},
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
         "case_id": {"type": ["string", "null"]},
@@ -719,6 +722,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "error": {"type": ["string", "null"]},
     },
     "effect:team:update-case": {
+        "task_board_path": {"type": "string"},
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
         "case_id": {"type": ["string", "null"]},

@@ -656,6 +656,7 @@ _TRIGGER_OUTPUT_SCHEMAS = {
 }
 
 _GATE_OUTPUT_SCHEMAS = {
+    "gate:classifier:switch": {},
     "gate:aggregate": {
         "count": {"type": "integer"},
     },
@@ -1102,9 +1103,28 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "ticket": {"type": "object"},
         "errors": {"type": "array"},
     },
+    "effect:ado:build-wait": {
+        "success": {"type": "boolean"},
+        "completed": {"type": "boolean"},
+        "run_id": {"type": "string"},
+        "build_number": {"type": "string"},
+        "run_url": {"type": "string"},
+        "status": {"type": "string"},
+        "result": {"type": ["string", "null"]},
+        "source_branch": {"type": "string"},
+        "source_version": {"type": "string"},
+        "queue_time": {"type": "string"},
+        "finish_time": {"type": ["string", "null"]},
+    },
+    "effect:agent:install-skills": {
+        "success": {"type": "boolean"},
+        "session_id": {"type": "string"},
+        "codex_skills": {"type": "array", "items": {"type": "string"}},
+    },
     "effect:ado:pipeline-run": {
         "success": {"type": "boolean"},
         "queued": {"type": "boolean"},
+        "busy": {"type": "boolean"},
         "completed": {"type": "boolean"},
         "run_id": {"type": "string"},
         "run_url": {"type": ["string", "null"]},
@@ -1450,6 +1470,16 @@ _EFFECT_OUTPUT_SCHEMAS = {
 }
 
 _QUERY_OUTPUT_SCHEMAS = {
+    "query:classification:evaluate": {
+        "success": {"type": "boolean"},
+        "answers": {"type": "object", "additionalProperties": {"type": "object"}},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "usage": {"type": "object"},
+        "duration_ms": {"type": "integer"},
+        "profile_id": {"type": ["string", "null"]},
+        "profile_revision": {"type": ["string", "null"]},
+    },
     "query:code-index:status": {
         "status": {"type": "string"},
         "builds": {"type": "array"},
@@ -1504,6 +1534,15 @@ _QUERY_OUTPUT_SCHEMAS = {
         "target_commit_sha": {"type": "string"},
         "candidate_commit_sha": {"type": "string"},
         "merge_base_commit_sha": {"type": "string"},
+    },
+    "query:ado:builds": {
+        "builds": {"type": "array", "items": {"type": "object"}},
+        "count": {"type": "integer"},
+    },
+    "query:text:regex": {
+        "value": {"type": "string"},
+        "matched": {"type": "boolean"},
+        "groups": {"type": "object"},
     },
     "query:session-context": {
         "session_id": {"type": "string"},

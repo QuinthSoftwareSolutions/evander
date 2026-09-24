@@ -76,18 +76,33 @@ class QueryProviderFactory:
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
 
+    def prepare(
+        self, query_definition: QueryDefinitionDiscriminated, *,
+        resolved_config: Mapping[str, Any], directory_path: str | None = None,
+        graph_id: str | None = None, execution_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        provider_class = self.registry.resolve(query_definition.type)
+        if getattr(provider_class, "prepare", QueryProviderBase.prepare) is QueryProviderBase.prepare:
+            return dict(resolved_config)
+        return self.build(
+            query_definition, directory_path=directory_path, graph_id=graph_id,
+            execution_context=execution_context,
+        ).prepare(resolved_config=resolved_config)
+
     def build(
         self,
         query_definition: QueryDefinitionDiscriminated,
         *,
         directory_path: str | None = None,
         graph_id: str | None = None,
+        execution_context: Mapping[str, Any] | None = None,
     ) -> QueryProviderBase:
         provider_class = self.registry.resolve(query_definition.type)
         resolved_config = _resolve_query_provider_config(
             self.provider_config_resolver, directory_path
         )
-        metadata: dict[str, Any] = {"directory_path": directory_path or "root"}
+        metadata: dict[str, Any] = dict(execution_context or {})
+        metadata["directory_path"] = directory_path or "root"
         if graph_id is not None:
             metadata["graph_id"] = graph_id
         runtime_context = QueryRuntimeContext(

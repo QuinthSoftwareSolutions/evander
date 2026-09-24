@@ -47,14 +47,14 @@ def service(tmp_path):
     result.save_settings(
         REPO,
         "root/app",
-        IndexSettings(enabled=True, semantic=False, refresh_on_git_change=False).model_dump(),
+        IndexSettings(enabled=True, scip=True, semantic=False, refresh_on_git_change=False).model_dump(),
         expected_revision=0,
     )
     return result
 
 
-def artifact(sha=SHA):
-    return IndexArtifact(
+def artifact(sha=SHA, *, scip=True):
+    result = IndexArtifact(
         commit_sha=sha,
         documents=[SourceDocument(path="Domain/Retry.cs", text=TEXT)],
         projects=[{"path": "Retry.csproj", "status": "ready"}],
@@ -90,12 +90,13 @@ def artifact(sha=SHA):
             Relationship(symbol="DurableRetry#", target="IRetry#", kind="implementation")
         ],
     )
+    return result if scip else IndexArtifact(commit_sha=sha, documents=result.documents)
 
 
-def publish(service, sha=SHA):
+def publish(service, sha=SHA, *, scip=True):
     build = service.ensure(REPO, "root/app", sha)
     build = service.store.get(build["id"])
-    coverage = import_artifact(service.store, build, artifact(sha))
+    coverage = import_artifact(service.store, build, artifact(sha, scip=scip))
     service.store.update(build["id"], status="ready", coverage=coverage)
     return service.store.get(build["id"])
 
@@ -112,6 +113,47 @@ def test_revision_scope_and_deduplication(service):
     assert service.ensure(REPO, "root/app", OTHER_SHA)["id"] != first["id"]
     with pytest.raises(PermissionError):
         service.status(REPO, "root/sibling")
+
+
+def test_status_pages_newest_first_and_filters_ready_builds(service):
+    oldest_ready = publish(service, SHA)
+    newest_ready = publish(service, OTHER_SHA)
+    newest_failed = service.ensure(REPO, "root/app", "c" * 40)
+    service.store.update(newest_failed["id"], status="failed")
+    with service.store.connect(write=True) as db:
+        for created, build in (
+            ("2026-09-17T08:00:00+00:00", oldest_ready),
+            ("2026-09-17T09:00:00+00:00", newest_ready),
+            ("2026-09-17T10:00:00+00:00", newest_failed),
+        ):
+            db.execute("UPDATE snapshots SET created=? WHERE id=?", (created, build["id"]))
+
+    first_page = service.status(REPO, "root/app", builds_limit=2)
+    assert [build["id"] for build in first_page["builds"]] == [
+        newest_failed["id"],
+        newest_ready["id"],
+    ]
+    assert first_page["builds_total"] == 3
+    assert first_page["builds_offset"] == 0
+    assert first_page["status"] == "failed"
+
+    ready_page = service.status(
+        REPO,
+        "root/app",
+        build_statuses=("ready",),
+        builds_limit=1,
+        builds_offset=1,
+    )
+    assert [build["id"] for build in ready_page["builds"]] == [oldest_ready["id"]]
+    assert ready_page["builds_total"] == 2
+    assert ready_page["builds_limit"] == 1
+    assert ready_page["builds_offset"] == 1
+    assert ready_page["status"] == "failed"
+
+    with pytest.raises(ValueError, match="builds_limit"):
+        service.status(REPO, "root/app", builds_limit=0)
+    with pytest.raises(ValueError, match="builds_offset"):
+        service.status(REPO, "root/app", builds_offset=-1)
 
 
 def test_search_navigation_and_exact_commit(service):
@@ -268,8 +310,17 @@ def test_cancel_and_failed_rebuild_preserve_published_snapshot(service):
     assert service.snapshot(REPO, "root/app", SHA)["id"] == old["id"]
 
 
-def test_worker_reconciliation_and_restart(service):
+@pytest.mark.parametrize("scip", [False, True])
+def test_worker_reconciliation_and_restart(service, scip):
+    saved = service.settings(REPO, "root/app")
+    service.save_settings(
+        REPO, "root/app", {**saved["settings"], "scip": scip}, expected_revision=saved["revision"]
+    )
+
     class Worker:
+        def __init__(self):
+            self.retired = []
+
         def start(self, build, *, before_submit):
             before_submit()
             return build["id"]
@@ -278,7 +329,10 @@ def test_worker_reconciliation_and_restart(service):
             return "completed"
 
         def artifact(self, build):
-            return artifact().model_dump_json()
+            return artifact(scip=scip).model_dump_json()
+
+        def retire_session(self, build):
+            self.retired.append(build["id"])
 
     service.worker = Worker()
     service._tracked_blobs = lambda build: {
@@ -289,6 +343,26 @@ def test_worker_reconciliation_and_restart(service):
     assert service.store.get(build["id"])["status"] == "running"
     assert service.reconcile("root/app")["processed"] == 1
     assert service.store.get(build["id"])["status"] == "ready"
+    assert service.store.get(build["id"])["coverage"]["navigation"] == (
+        "ready" if scip else "disabled"
+    )
+    assert service.worker.retired == [build["id"]]
+    assert service.store.get(build["id"])["metrics"]["worker_session_cleanup_completed_at"]
+    assert service.store.get(build["id"])["status"] == "ready"
+    assert service.search(REPO, "root/app", SHA, "retry", mode="lexical")["hits"]
+    result = service.navigate(REPO, "root/app", SHA, "IRetry#")
+    assert result["status"] == ("ready" if scip else "disabled")
+    assert bool(result["hits"]) is scip
+
+
+def test_import_rejects_scip_data_without_opt_in(service):
+    saved = service.settings(REPO, "root/app")
+    service.save_settings(
+        REPO, "root/app", {**saved["settings"], "scip": False}, expected_revision=saved["revision"]
+    )
+    build = service.store.get(service.ensure(REPO, "root/app", SHA)["id"])
+    with pytest.raises(ValueError, match="SCIP data requires scip=true"):
+        import_artifact(service.store, build, artifact())
 
 
 def test_scip_wire_format_and_malformed_input():

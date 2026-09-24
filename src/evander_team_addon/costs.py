@@ -29,15 +29,16 @@ from evander.model_usage.pricing import (
     ModelCostEstimate,
     ModelPricingCatalog,
     default_model_pricing_catalog,
-    estimate_model_usage_cost,
     extract_cache_write_input_tokens,
     extract_cached_input_tokens,
     model_pricing_catalog_fingerprint,
 )
 from evander.model_usage.store import ModelUsageStore
+from evander.model_usage.report_snapshot import CostReportSnapshot
 from evander.models import utc_now
 
 from .models import EphemeralAssignment, PersistentAgent, TeamState, agent_project_ids
+from .cost_report import add_cell_to_bucket, cost_report_cells
 
 CLAUDE_TRANSCRIPT_ROOTS_ENV = "EVANDER_CLAUDE_TRANSCRIPT_ROOTS"
 WORKER_ROOT_ENV = "EVANDER_WORKER_ROOT"
@@ -330,6 +331,7 @@ class TeamCostService:
         self._pricing_catalog = pricing_catalog
         self._context_cache: dict[str, ModelUsageCorrelationContext | None] = {}
         self._request_attribution_cache: dict[tuple[str, str], TeamCostAttribution] = {}
+        self._cost_report_snapshot: CostReportSnapshot | None = None
 
     def costs_payload(
         self,
@@ -338,9 +340,6 @@ class TeamCostService:
         now: datetime | None = None,
     ) -> dict[str, Any]:
         backfill_result = self.backfill_claude_transcripts() if backfill_transcripts else None
-        raw_events = self.usage_store.list_events()
-        self._request_attribution_cache = self._request_attributions(raw_events)
-        events = _dedupe_cost_events(raw_events)
         catalog = self._load_pricing_catalog()
         effective_now = _ensure_utc(now or utc_now())
         team_budget_windows = {
@@ -354,45 +353,34 @@ class TeamCostService:
         unattributed_bucket = _new_bucket()
         root_bucket = _new_bucket()
 
-        for event in events:
-            estimate = estimate_model_usage_cost(event, catalog, currency="usd")
-            attribution = self._attribute_event(event)
-            source = _usage_source(event)
-
-            _add_event_to_bucket(root_bucket, event, estimate, source=source)
-            if attribution.team_id:
-                team_bucket = team_buckets.setdefault(attribution.team_id, _new_bucket())
-                _add_event_to_bucket(team_bucket, event, estimate, source=source)
-                budget_window = team_budget_windows.get(attribution.team_id)
-                if (
-                    budget_window is not None
-                    and _ensure_utc(event.occurred_at) >= budget_window["started_at"]
-                    and (
-                        budget_window.get("ends_at") is None
-                        or _ensure_utc(event.occurred_at) < budget_window["ends_at"]
-                    )
-                ):
+        for cell, amounts in cost_report_cells(self, catalog, team_budget_windows):
+            team_id, project_id, _, _, _, _, in_window = cell
+            add_cell_to_bucket(root_bucket, cell, amounts)
+            if team_id:
+                team_bucket = team_buckets.setdefault(team_id, _new_bucket())
+                add_cell_to_bucket(team_bucket, cell, amounts)
+                if in_window:
                     budget_bucket = team_budget_window_buckets.setdefault(
-                        attribution.team_id,
+                        team_id,
                         _new_bucket(),
                     )
-                    _add_event_to_bucket(budget_bucket, event, estimate, source=source)
-                if attribution.project_id and attribution.project_confident:
+                    add_cell_to_bucket(budget_bucket, cell, amounts)
+                if project_id:
                     project_bucket = project_buckets.setdefault(
-                        attribution.project_id,
-                        _new_bucket(team_id=attribution.team_id, project_id=attribution.project_id),
+                        project_id,
+                        _new_bucket(team_id=team_id, project_id=project_id),
                     )
-                    _add_event_to_bucket(project_bucket, event, estimate, source=source)
+                    add_cell_to_bucket(project_bucket, cell, amounts)
                 else:
-                    _add_event_to_bucket(unattributed_bucket, event, estimate, source=source)
+                    add_cell_to_bucket(unattributed_bucket, cell, amounts)
                     team_unattributed = team_bucket.setdefault(
                         "unattributed_costs",
-                        _new_bucket(team_id=attribution.team_id),
+                        _new_bucket(team_id=team_id),
                     )
-                    _add_event_to_bucket(team_unattributed, event, estimate, source=source)
+                    add_cell_to_bucket(team_unattributed, cell, amounts)
                 continue
 
-            _add_event_to_bucket(unattributed_bucket, event, estimate, source=source)
+            add_cell_to_bucket(unattributed_bucket, cell, amounts)
 
         for team_id, team in self.state.teams.items():
             if team_id not in team_buckets and team.max_cost_usd is not None:
@@ -1014,6 +1002,9 @@ class TeamCostService:
 
     def _dispatch_context(self, dispatch_id: str) -> ModelUsageCorrelationContext | None:
         if dispatch_id not in self._context_cache:
+            if self._cost_report_snapshot is not None:
+                self._context_cache[dispatch_id] = self._cost_report_snapshot.context(dispatch_id)
+                return self._context_cache[dispatch_id]
             try:
                 self._context_cache[dispatch_id] = self.usage_store.get_correlation_context(
                     dispatch_id

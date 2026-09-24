@@ -1,5 +1,25 @@
 import { createTeamMailController } from "./team-mail.js";
 import { createTeamActivityController } from "./team-activity.js";
+import { createCaseContextController } from "./team-case-context.js";
+import {
+  caseTaskIds,
+  caseBoardPermalink,
+  replaceCaseBoardLocation,
+  taskBoardViewSearchParams,
+} from "./team-case-board.js";
+import {
+  defaultTeamView,
+  emptyChatState,
+  emptyCostState,
+  emptyState,
+  emptyTimelineState,
+  normalizedTeamView,
+  readAddonDeepLinkParams,
+  readChatDeepLink,
+  readHumanReviewDeepLink,
+  readStoredTeamView,
+  storeTeamView,
+} from "./team-ui-state.js";
 
 const API_BASE = "/api/addons/team-addon";
 
@@ -63,6 +83,7 @@ const taskAssessmentResolutionReasonMessages = Object.freeze({
   active_formal_review: "A formal review is still in progress.",
   cancelled_by_authorized_disposition:
     "The task was cancelled by an authorized decision.",
+  coordination_task_finished: "The coordination task has finished.",
   intrinsic_blocker_open: "An active blocker is preventing this task from progressing.",
   awaiting_external_input: "The task is paused until its workflow receives external input.",
   outcome_deliverable_accepted: "The outcome deliverable was accepted.",
@@ -129,29 +150,10 @@ const defaultPlanningTaskStates = new Set([
   "blocked",
   "waiting_for_review",
 ]);
-const defaultTeamView = "people";
-const teamViewStorageKey = "team-addon:active-view";
 const chatReadStorageKey = "team-addon:chat:read-markers";
 const chatNotificationSoundStorageKey = "team-addon:chat:notification-sound-muted";
 const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
-const teamViewIds = new Set([
-  "workspace",
-  "operations",
-  "delivery",
-  "memory",
-  "projects",
-  "task-board",
-  "cases",
-  "people",
-  "chat",
-  "mail",
-  "activity",
-  "governance",
-  "planning",
-  "timeline",
-  "org",
-]);
 const teamStateCollectionKeys = [
   "teams",
   "governance_groups",
@@ -217,12 +219,20 @@ let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
+let costsInFlight = null;
+let costsForcedRefresh = null;
+let costsLastLoadedAt = 0;
+let costsRefreshTimer = null;
+let costsRefreshPending = false;
+const COSTS_REFRESH_INTERVAL_MS = 15000;
 let costBackfillRequestId = 0;
 let costBackfillLoading = false;
+let costBackfillFinished = null;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
 const initialHumanReviewDeepLink = readHumanReviewDeepLink();
 const initialChatDeepLink = readChatDeepLink();
+const initialTaskBoardDeepLink = readAddonDeepLinkParams();
 let selectedChatConversationId = initialChatDeepLink.conversationId || null;
 let chatMobileConversationListOpen = !selectedChatConversationId;
 let activeTeamView =
@@ -230,7 +240,9 @@ let activeTeamView =
     ? "delivery"
     : initialChatDeepLink.enabled
       ? "chat"
-      : readStoredTeamView();
+      : initialTaskBoardDeepLink.get("view") === "task-board"
+        ? "task-board"
+        : readStoredTeamView();
 let teamPrivilegeUnlocked = readTeamPrivilegedUnlockedFromLocation();
 const lockedMutationControlStates = new WeakMap();
 let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
@@ -238,6 +250,7 @@ let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 // separately whenever a view renderer replaces that DOM. Rendered keys include
 // their Team view so shared renderers cannot couple hidden view copies.
 const openTeamDisclosures = new Set();
+const defaultedTeamDisclosures = new Set();
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
 let projectCreateFormOpen = false;
@@ -246,16 +259,21 @@ const projectRecordSectionPages = {};
 const projectRecordShowRejected = new Set();
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
+let teamRecordReturnFocus = null;
 const expandedTeamRecordGroupIds = new Set();
 const teamRecordGroupTabs = {};
 const teamRecordGroupPages = {};
 const openTeamInlineCreateForms = new Set();
 const teamRecordPageSize = 6;
-let selectedTaskBoardTeamId = "";
-let selectedTaskBoardProjectId = "";
+let selectedTaskBoardTeamId = initialTaskBoardDeepLink.get("view") === "task-board"
+  ? text(initialTaskBoardDeepLink.get("team_id")) : "";
+let selectedTaskBoardProjectId = initialTaskBoardDeepLink.get("view") === "task-board"
+  ? text(initialTaskBoardDeepLink.get("project_id")) : "";
 let taskBoardViewMode = "board";
 let selectedTaskBoardTaskId = "";
-let taskBoardShowCompleted = false;
+let taskBoardCaseId = initialTaskBoardDeepLink.get("view") === "task-board"
+  ? text(initialTaskBoardDeepLink.get("case_id")) : "";
+let taskBoardShowCompleted = Boolean(taskBoardCaseId);
 let taskBoardQuery = "";
 let taskBoardAssigneeId = "";
 let taskBoardStateFilter = "";
@@ -560,9 +578,11 @@ const fieldTooltips = {
   "create-task-form:priority": "Lower numbers sort earlier in each agent's task queue.",
   "create-task-form:title": "Short task title shown in project and agent task lists.",
   "create-task-form:description": "Work instructions for the owning agent.",
+  "create-task-form:task_kind": "Support work may produce a deliverable. Coordination supervises children, finishes directly, and never receives a Git integration context.",
   "create-task-form:created_by_agent_id": "Agent credited as the task creator in task history and timeline attribution.",
   "create-task-form:state": "Optional initial task state. Blank creates a pending task.",
   "create-task-form:parent_task_id": "Optional parent task in the same project.",
+  "create-task-form:originating_task_id": "Optional provenance link. Final integration for coordinated work must use the coordination task as its origin while leaving Parent task empty.",
   "create-task-form:git_base_branch": "Optional Git starting branch. Blank inherits the parent task snapshot or the project default when the root task is created.",
   "create-task-form:dependency_task_ids": "Optional dependency task IDs, one per line or comma-separated. Dependencies must be in the same project.",
   "create-task-form:integration_boundary": "Designate this task as the explicit point that integrates and accepts a final deliverable.",
@@ -640,7 +660,7 @@ const fieldTooltips = {
   "edit:project:human_review_checklist": "Add, remove, and order the checks a human must complete before approving a release.",
   "edit:project:human_review_test_instructions": "Stable manual test instructions snapshotted onto each release request.",
   "edit:project:human_review_preparation_mode": "Manual uses these instructions directly; workflow requires a prepared preview target before review.",
-  "edit:agent:project_id": "Move the agent within its team. Project leads must remain assigned to their project.",
+  "edit:agent:project_ids": "Assign the agent to one or more projects. Project leads remain assigned until the lead is transferred from that project's editor.",
   "edit:agent:role_id": "First-class role assigned to this persistent agent.",
   "edit:agent:session_id": "Session ID used when this agent is woken or resumed.",
   "edit:agent:display_name": "Optional display name. Clear it to fall back to the agent ID.",
@@ -731,102 +751,6 @@ document.addEventListener("DOMContentLoaded", () => {
   void bootTeamAddon();
 });
 
-function emptyState() {
-  return {
-    revision: 0,
-    teams: {},
-    governance_groups: {},
-    governance_agenda: {},
-    governance_runtimes: {},
-    projects: {},
-    roles: {},
-    agents: {},
-    project_assignments: {},
-    agent_runtimes: {},
-    cases: {},
-    tasks: {},
-    deliverables: {},
-    review_requests: {},
-    outcome_kind_definitions: {},
-    review_profiles: {},
-    inbox: {},
-    blockers: {},
-    blocker_events: {},
-    dependency_composition_recoveries: {},
-    action_records: {},
-    release_packages: {},
-    dispatches: {},
-    worktree_cleanup_candidates: {},
-    git_work_contexts: {},
-    ephemeral_assignments: {},
-    git_promotions: {},
-    stand_downs: {},
-    runtime_operations: {
-      generated_at: null,
-      agents: [],
-      attention: [],
-    },
-    resource_tokens: {},
-    available_role_permissions: [],
-  };
-}
-
-function emptyTimelineState() {
-  return {
-    revision: 0,
-    derived: true,
-    audit_log: false,
-    source: "derived_from_current_team_state",
-    description:
-      "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
-    filters: {},
-    timestampless_count: 0,
-    total_count: 0,
-    limit: 10,
-    offset: 0,
-    has_more: false,
-    facets: {
-      types: [],
-      statuses: [],
-    },
-    entries: [],
-  };
-}
-
-function emptyCostState() {
-  return {
-    generated_at: null,
-    coverage_status: "partial",
-    coverage_reasons: ["costs_not_loaded"],
-    team_costs: {},
-    governance_group_costs: {},
-    project_costs: {},
-    unattributed_costs: null,
-    source_counts: {},
-    events_count: 0,
-    priced_events_count: 0,
-    unpriced_events_count: 0,
-    backfill: null,
-    error: null,
-  };
-}
-
-function emptyChatState() {
-  return {
-    revision: 0,
-    selected_conversation_id: null,
-    current_operator: null,
-    selected_operator: null,
-    can_view_all_operators: false,
-    read_only: false,
-    operator_options: [],
-    eligible_agents: [],
-    conversations: [],
-    loading: false,
-    error: null,
-  };
-}
-
 const decisionStates = ["accepted", "rejected", "blocked"];
 const inboxItemLabels = {
   operator_directive: "Operator directive",
@@ -885,6 +809,8 @@ const activityController = createTeamActivityController({
   escapeAttr,
   humanizeToken,
 });
+createCaseContextController({ documentRoot: document, teamFetch, apiBase: API_BASE,
+  getState: () => state, canMutate: guardTeamMutation });
 
 const timelineTypeOrder = [
   "task",
@@ -898,6 +824,30 @@ const timelineTypeOrder = [
 ];
 
 function bindTopLevelTabs() {
+  const tabs = Array.from(document.querySelectorAll(".team-view-tabs [data-team-view]"));
+  const viewSelect = document.getElementById("team-view-select");
+  if (viewSelect) {
+    tabs.forEach((tab) => viewSelect.add(new Option(tab.textContent.trim(), tab.dataset.teamView)));
+    viewSelect.addEventListener("change", () => setTeamView(viewSelect.value));
+  }
+  document.querySelector(".team-view-tabs")?.addEventListener("keydown", (event) => {
+    const index = tabs.indexOf(event.target);
+    if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    const next = tabs[nextIndex];
+    setTeamView(next.dataset.teamView);
+    next.focus({ preventScroll: true });
+    next.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+  document.querySelector("[data-team-detail-close]")?.addEventListener("click", closeTeamRecordInspector);
+  document.querySelector(".people-agent-detail-panel")?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeTeamRecordInspector();
+    }
+  });
   document.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-team-view], [data-team-link-view]");
     if (!button) {
@@ -923,68 +873,6 @@ function bindWorkspaceAttentionPagination() {
       behavior: "auto",
     });
   });
-}
-
-function normalizedTeamView(view) {
-  return teamViewIds.has(view) ? view : defaultTeamView;
-}
-
-function readStoredTeamView() {
-  try {
-    const storedView = window.localStorage.getItem(teamViewStorageKey);
-    const normalizedView = normalizedTeamView(storedView);
-    if (storedView && storedView !== normalizedView) {
-      window.localStorage.setItem(teamViewStorageKey, normalizedView);
-    }
-    return normalizedView;
-  } catch {
-    return defaultTeamView;
-  }
-}
-
-function readAddonDeepLinkParams() {
-  const params = new URLSearchParams(window.location.search);
-  const hash = String(window.location.hash || "");
-  const hashQueryIndex = hash.indexOf("?");
-  if (hashQueryIndex >= 0) {
-    const hashParams = new URLSearchParams(hash.slice(hashQueryIndex + 1));
-    hashParams.forEach((value, key) => {
-      if (!params.has(key)) {
-        params.set(key, value);
-      }
-    });
-  }
-  return params;
-}
-
-function readHumanReviewDeepLink() {
-  const params = readAddonDeepLinkParams();
-  const enabled = params.get("view") === "my-human-reviews";
-  return {
-    enabled,
-    requestId: enabled
-      ? String(params.get("human_review_request_id") || "").trim()
-      : "",
-  };
-}
-
-function readChatDeepLink() {
-  const params = readAddonDeepLinkParams();
-  const enabled = params.get("view") === "chat";
-  return {
-    enabled,
-    conversationId: enabled
-      ? String(params.get("conversation_id") || "").trim()
-      : "",
-  };
-}
-
-function storeTeamView(view) {
-  try {
-    window.localStorage.setItem(teamViewStorageKey, normalizedTeamView(view));
-  } catch {
-    // Storage can be unavailable in hardened browser contexts.
-  }
 }
 
 function bindPageLifecycle() {
@@ -1042,6 +930,12 @@ function setTeamView(view) {
 
 function updateTeamViewTabs() {
   const unreadChatCount = unreadChatConversationCount();
+  const viewSelect = document.getElementById("team-view-select");
+  if (viewSelect) {
+    viewSelect.value = activeTeamView;
+    const chatOption = viewSelect.querySelector('option[value="chat"]');
+    if (chatOption) chatOption.textContent = unreadChatCount ? `Chat (${unreadChatCount} unread)` : "Chat";
+  }
   document.querySelectorAll("[data-team-view]").forEach((button) => {
     const active = (button.dataset.teamView || defaultTeamView) === activeTeamView;
     if (!button.dataset.teamViewBaseLabel) {
@@ -1254,6 +1148,14 @@ function openOrgAgentContextMenu(detail) {
     agentId,
     items: [
       {
+        action: "open-chat",
+        label: "Open chat",
+        disabled: chatState.read_only || !agent,
+        disabledReason: chatState.read_only
+          ? "This chat history is read-only."
+          : "Agent is no longer available.",
+      },
+      {
         action: "open-session",
         label: "Open session",
         disabled: !text(agent?.session_id),
@@ -1377,6 +1279,10 @@ function closeOrgContextMenu() {
 }
 
 function handleOrgContextAction(action, context) {
+  if (action === "open-chat") {
+    void openChatForAgent(context.agentId);
+    return;
+  }
   if (action === "open-session") {
     navigateToAgentSession(state.agents?.[context.agentId]?.session_id);
     return;
@@ -1569,11 +1475,16 @@ function renderTeamCopySessionOptions(selectedValue = "") {
   }
   return renderSelectOptions(options, {
     selectedValue: selected,
-    placeholder: options.length ? "Select a session" : "No unregistered sessions found",
+    placeholder: "Copy source session configuration (new ID)",
   });
 }
 
-function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
+function renderTeamCopyDialogBody(
+  team,
+  configuration,
+  sourceRevision,
+  sourceConfigurationToken,
+) {
   const excludedProjects = values(state.projects).filter((project) =>
     text(project.team_id) === text(team.id)
     && !["active", "blocked"].includes(text(project.status)),
@@ -1596,6 +1507,7 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
       data-form-id="team-copy-form"
       data-source-team-id="${escapeAttr(team.id)}"
       data-source-revision="${escapeAttr(sourceRevision)}"
+      data-source-configuration-token="${escapeAttr(sourceConfigurationToken)}"
     >
       <label>New team name <input name="name" required value="${escapeAttr(`${team.name || team.id} Copy`)}" /></label>
       <div class="team-copy-summary" role="note">
@@ -1607,7 +1519,7 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
       <div class="team-copy-session-header">
         <div>
           <strong>Agent sessions</strong>
-          <p>Assign a different unregistered core session to every copied agent.</p>
+          <p>New sessions automatically inherit each source session's model, capabilities, approved tools, access grants, and limits. You can also select an existing session.</p>
         </div>
         <button type="button" class="record-action" data-team-copy-sessions-refresh>Refresh sessions</button>
       </div>
@@ -1622,7 +1534,7 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
               </div>
               <label>
                 Destination session
-                <select required data-team-copy-session-select data-source-agent-id="${escapeAttr(agent.id)}">
+                <select data-team-copy-session-select data-source-agent-id="${escapeAttr(agent.id)}" data-source-session-id="${escapeAttr(agent.session_id)}">
                   ${renderTeamCopySessionOptions()}
                 </select>
               </label>
@@ -1631,11 +1543,12 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
                 class="record-action"
                 data-team-copy-session-create="${escapeAttr(agent.id)}"
                 data-directory-path="${escapeAttr(directoryPath)}"
-              >Create session</button>
+              >Configure manually</button>
             </div>
           `;
         }).join("")}
       </div>
+      <p data-team-copy-progress role="status" aria-live="polite"></p>
       <div class="org-action-form-actions">
         <button type="submit">Copy team</button>
         <button type="button" class="secondary" data-org-action-close>Cancel</button>
@@ -1659,9 +1572,19 @@ async function openTeamCopyDialog(teamId) {
   }
   configuration = teamCopyConfiguration(team.id);
   const sourceRevision = state.revision;
+  const sourceConfigurationToken = text(team.copy_configuration_token);
+  if (!sourceConfigurationToken) {
+    setStatus("The Team copy preview is unavailable. Reload the page and try again.", "error");
+    return;
+  }
   showOrgActionDialog({
     title: `Copy ${team.name || team.id}`,
-    bodyHtml: renderTeamCopyDialogBody(team, configuration, sourceRevision),
+    bodyHtml: renderTeamCopyDialogBody(
+      team,
+      configuration,
+      sourceRevision,
+      sourceConfigurationToken,
+    ),
   });
   syncTeamCopySessionSelections(document.querySelector("#team-copy-form"));
 }
@@ -1722,12 +1645,87 @@ function openTeamCopyAgentSessionDialog(button) {
   window.dispatchEvent(new CustomEvent("team-agent-create:open", { detail }));
 }
 
+async function copyTeamAgentSessions(form, selects) {
+  for (const select of selects) {
+    if (text(select.value)) continue;
+    if (!form.isConnected) throw new Error("Team copy was closed. Prepared sessions remain available in the session list.");
+    const sourceSessionId = text(select.dataset.sourceSessionId);
+    const agentName = text(select.closest("[data-team-copy-agent-row]")?.querySelector("strong")?.textContent)
+      || select.dataset.sourceAgentId;
+    const progressMessage = `Copying session configuration for ${agentName}.`;
+    form.querySelector("[data-team-copy-progress]").textContent = progressMessage;
+    setStatus(progressMessage, "loading");
+    const operationUrl = select.dataset.copyOperationId
+      ? `/api/admin/agents/create-operations/${encodeURIComponent(select.dataset.copyOperationId)}`
+      : "/api/admin/agents/copy-operations";
+    let response = await teamFetch(operationUrl, select.dataset.copyOperationId ? {} : {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_session_id: sourceSessionId }),
+    });
+    if (!response.ok) throw new Error(await responseText(response));
+    let { operation } = await response.json();
+    select.dataset.copyOperationId = operation.operation_id;
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (["queued", "running"].includes(operation.status)) {
+      if (Date.now() >= deadline) throw new Error("Session creation is still running. Retry to check its progress.");
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      response = await teamFetch(`/api/admin/agents/create-operations/${encodeURIComponent(operation.operation_id)}`);
+      if (!response.ok) throw new Error(await responseText(response));
+      ({ operation } = await response.json());
+    }
+    if (operation.status !== "succeeded") {
+      delete select.dataset.copyOperationId;
+      throw new Error(operation.error || `Could not copy session ${sourceSessionId}.`);
+    }
+    const sessionId = text(operation.session_id || operation.result?.session_id);
+    if (!sessionId) throw new Error("Session copy did not return a session ID.");
+    coreAgentSessions.push(normalizeCoreAgentSession({
+      session_id: sessionId,
+      target_name: operation.target_name,
+      backend: operation.backend,
+      directory_path: operation.directory_path,
+    }));
+    select.innerHTML = renderTeamCopySessionOptions(sessionId);
+    select.value = sessionId;
+    refreshTeamCopySessionSelects(form);
+  }
+}
+
 async function submitTeamCopyForm(form) {
   if (!guardTeamMutation("copy teams")) {
     return false;
   }
+  if (form.dataset.copyingSessions === "true") return false;
   const sourceTeamId = text(form.dataset.sourceTeamId);
   const sessionSelects = Array.from(form.querySelectorAll("[data-team-copy-session-select]"));
+  if (sessionSelects.some((select) => !text(select.value))) {
+    const currentConfigurationToken = text(
+      state.teams?.[sourceTeamId]?.copy_configuration_token,
+    );
+    if (
+      currentConfigurationToken
+      && currentConfigurationToken !== text(form.dataset.sourceConfigurationToken)
+    ) {
+      setStatus("The source Team configuration changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.", "warning");
+      return false;
+    }
+    form.dataset.copyingSessions = "true";
+    setFormBusy(form, true);
+    try {
+      await copyTeamAgentSessions(form, sessionSelects);
+      if (!form.isConnected) return false;
+      form.querySelector("[data-team-copy-progress]").textContent = "Sessions copied. Saving team.";
+    } catch (error) {
+      const message = `${error.message} Sessions already copied are kept selected; retry to continue.`;
+      form.querySelector("[data-team-copy-progress]").textContent = message;
+      setStatus(message, "error");
+      return false;
+    } finally {
+      delete form.dataset.copyingSessions;
+      setFormBusy(form, false);
+    }
+  }
   const agentSessionIds = Object.fromEntries(
     sessionSelects.map((select) => [text(select.dataset.sourceAgentId), text(select.value)]),
   );
@@ -1750,6 +1748,7 @@ async function submitTeamCopyForm(form) {
       name: text(form.elements.name?.value),
       agent_session_ids: agentSessionIds,
       expected_revision: Number(form.dataset.sourceRevision),
+      source_configuration_token: text(form.dataset.sourceConfigurationToken),
     },
     { resetOnSuccess: false, detailedResult: true },
   );
@@ -1757,7 +1756,7 @@ async function submitTeamCopyForm(form) {
     if (result.failureReason === "conflict") {
       pendingConflictRetry = null;
       setStatus(
-        "The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
+        "The source Team configuration changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
         "warning",
       );
     }
@@ -2596,6 +2595,13 @@ function bindRecordEditing() {
       return;
     }
 
+    const openChatButton = event.target.closest("[data-open-chat-agent-id]");
+    if (openChatButton) {
+      event.preventDefault();
+      void openChatForAgent(openChatButton.dataset.openChatAgentId);
+      return;
+    }
+
     const selectProjectButton = event.target.closest("[data-select-project-id]");
     if (selectProjectButton) {
       event.preventDefault();
@@ -2700,6 +2706,24 @@ function bindRecordEditing() {
       return;
     }
 
+    const reintegrationButton = event.target.closest("[data-reintegrate-release-id]");
+    if (reintegrationButton) {
+      event.preventDefault();
+      void previewReleaseReintegration(reintegrationButton.dataset.reintegrateReleaseId);
+      return;
+    }
+    const caseReintegrationButton = event.target.closest("[data-reintegrate-case-id]");
+    if (caseReintegrationButton) {
+      event.preventDefault();
+      void previewCaseReintegration(caseReintegrationButton.dataset.reintegrateCaseId);
+      return;
+    }
+    const retainedLogButton = event.target.closest("[data-retained-verifier-job]");
+    if (retainedLogButton) {
+      event.preventDefault();
+      void showRetainedVerificationLog(retainedLogButton);
+      return;
+    }
     const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
     if (contextRotationButton) {
       event.preventDefault();
@@ -4143,11 +4167,15 @@ function bindTaskBoardSelectors() {
     selectedTaskBoardProjectId = nextProjectId;
     resetTaskBoardProjectState();
     renderTaskBoard();
+    void loadView("task-board", { force: true, preserveForms: true });
   };
   teamSelect?.addEventListener("input", updateTeam);
   teamSelect?.addEventListener("change", updateTeam);
   projectSelect?.addEventListener("input", updateProject);
   projectSelect?.addEventListener("change", updateProject);
+  document.querySelectorAll("[data-task-board-create-form]").forEach((form) => {
+    syncTaskBoardTaskKindControls(form);
+  });
 
   document.addEventListener("submit", (event) => {
     const createForm = event.target?.closest?.("[data-task-board-create-form]");
@@ -4167,6 +4195,13 @@ function bindTaskBoardSelectors() {
   });
 
   document.addEventListener("change", (event) => {
+    const taskKindSelect = event.target?.closest?.(
+      '[data-task-board-create-form] [name="task_kind"]',
+    );
+    if (taskKindSelect) {
+      syncTaskBoardTaskKindControls(taskKindSelect.form);
+      return;
+    }
     const completedToggle = event.target?.closest?.("[data-task-board-show-completed]");
     if (completedToggle instanceof HTMLInputElement) {
       taskBoardShowCompleted = completedToggle.checked;
@@ -4180,6 +4215,9 @@ function bindTaskBoardSelectors() {
     }
     const value = text(filter.value);
     switch (filter.dataset.taskBoardFilter) {
+      case "case":
+        selectTaskBoardCase(value);
+        return;
       case "assignee":
         taskBoardAssigneeId = value;
         break;
@@ -4209,6 +4247,23 @@ function bindTaskBoardSelectors() {
   });
 
   document.addEventListener("click", (event) => {
+    const caseButton = event.target?.closest?.("[data-open-case-board]");
+    if (caseButton) {
+      event.preventDefault();
+      selectTaskBoardCase(text(caseButton.dataset.openCaseBoard));
+      setTeamView("task-board");
+      return;
+    }
+    if (event.target?.closest?.("[data-copy-case-board]")) {
+      event.preventDefault();
+      void copyCaseBoardLink();
+      return;
+    }
+    if (event.target?.closest?.("[data-clear-case-board]")) {
+      event.preventDefault();
+      selectTaskBoardCase("");
+      return;
+    }
     const modeButton = event.target?.closest?.("[data-task-board-mode]");
     if (modeButton) {
       event.preventDefault();
@@ -4283,6 +4338,27 @@ function bindTaskBoardSelectors() {
   });
 }
 
+function syncTaskBoardTaskKindControls(form) {
+  if (!form) return;
+  const coordination = text(form.elements.task_kind?.value) === "coordination";
+  for (const fieldName of [
+    "integration_boundary",
+    "require_git_provenance",
+    "required_contribution_task_ids",
+  ]) {
+    const control = form.elements[fieldName];
+    if (!control) continue;
+    control.disabled = coordination;
+    if (coordination) {
+      if (control instanceof HTMLInputElement && control.type === "checkbox") {
+        control.checked = false;
+      } else {
+        control.value = "";
+      }
+    }
+  }
+}
+
 async function submitTaskBoardCreateForm(form) {
   const result = await submitCreateForm(form);
   if (mutationResultSaved(result)) {
@@ -4291,6 +4367,8 @@ async function submitTaskBoardCreateForm(form) {
 }
 
 function resetTaskBoardProjectState() {
+  taskBoardCaseId = "";
+  persistCaseBoardLocation();
   resetTaskBoardFilters();
   selectedTaskBoardTaskId = "";
   expandedTaskBoardTaskIds.clear();
@@ -4299,7 +4377,7 @@ function resetTaskBoardProjectState() {
 }
 
 function resetTaskBoardFilters() {
-  taskBoardShowCompleted = false;
+  taskBoardShowCompleted = Boolean(taskBoardCaseId);
   taskBoardQuery = "";
   taskBoardAssigneeId = "";
   taskBoardStateFilter = "";
@@ -4481,7 +4559,15 @@ async function loadView(view, { force = false, preserveForms = false } = {}) {
   }
   const loadGeneration = teamViewCacheGeneration;
   const promise = (async () => {
-    const query = normalizedView === "timeline" ? timelineSearchParams() : new URLSearchParams();
+    const query = normalizedView === "timeline"
+      ? timelineSearchParams()
+      : normalizedView === "task-board"
+        ? taskBoardViewSearchParams({
+            caseId: taskBoardCaseId,
+            teamId: selectedTaskBoardTeamId,
+            projectId: selectedTaskBoardProjectId,
+          })
+        : new URLSearchParams();
     const response = await teamFetch(`${API_BASE}/views/${encodeURIComponent(normalizedView)}${query.toString() ? `?${query.toString()}` : ""}`, {
       headers: { Accept: "application/json" },
     });
@@ -4634,9 +4720,13 @@ function scheduleAuxiliaryLoadsForView(view) {
   if (view === "activity") {
     void activityController.load();
   }
-  if (view !== "chat") {
+  if (teamViewUsesCostState(view)) {
     void loadCosts();
   }
+}
+
+function teamViewUsesCostState(view) {
+  return view !== "chat" && view !== "task-board";
 }
 
 function scheduleIdleViewPrefetch() {
@@ -4681,7 +4771,9 @@ async function loadState({ preserveForms = false } = {}) {
       renderTemplatePreview();
     }
     setStatus("", "");
-    void loadCosts();
+    if (teamViewUsesCostState(activeTeamView)) {
+      void loadCosts();
+    }
     void loadConversations({ preserveSelection: true });
     void loadTimeline();
     ensureStateStream();
@@ -4712,7 +4804,9 @@ function applyStateSnapshot(payload) {
   state = normalizeState(payload);
   render();
   restoreFormDrafts(drafts);
-  void loadCosts();
+  if (teamViewUsesCostState(activeTeamView)) {
+    void loadCosts();
+  }
   void loadConversations({ preserveSelection: true });
   void loadTimeline();
 }
@@ -4773,7 +4867,63 @@ function closeStateStream() {
   stateStreamErrorRefreshPending = false;
 }
 
-async function loadCosts() {
+function scheduleCostsRefresh(delay) {
+  if (costsRefreshTimer !== null) {
+    return;
+  }
+  costsRefreshTimer = window.setTimeout(() => {
+    costsRefreshTimer = null;
+    if (teamViewUsesCostState(activeTeamView)) {
+      void loadCosts({ force: true });
+    }
+  }, delay);
+}
+
+function queueForcedCostsRefresh(completion) {
+  if (!costsForcedRefresh) {
+    costsForcedRefresh = completion.then(() => {
+      costsForcedRefresh = null;
+      return loadCosts({ force: true });
+    });
+  }
+  return costsForcedRefresh;
+}
+
+function loadCosts({ force = false } = {}) {
+  if (costBackfillLoading) {
+    return force ? queueForcedCostsRefresh(costBackfillFinished) : Promise.resolve();
+  }
+  if (costsInFlight) {
+    if (force) {
+      // A successful budget reset must observe a read started after the reset,
+      // including when an older transcript backfill is also running.
+      return queueForcedCostsRefresh(costsInFlight);
+    }
+    costsRefreshPending = true;
+    return costsInFlight;
+  }
+  const remaining = costsLastLoadedAt + COSTS_REFRESH_INTERVAL_MS - Date.now();
+  if (!force && remaining > 0) {
+    // Keep the last state event during the interval; it must not be lost just
+    // because no further events arrive after this refresh is deferred.
+    scheduleCostsRefresh(remaining);
+    return Promise.resolve();
+  }
+  if (costsRefreshTimer !== null) {
+    window.clearTimeout(costsRefreshTimer);
+    costsRefreshTimer = null;
+  }
+  costsRefreshPending = false;
+  costsInFlight = fetchCosts().finally(() => {
+    costsInFlight = null;
+    if (costsRefreshPending) {
+      scheduleCostsRefresh(COSTS_REFRESH_INTERVAL_MS);
+    }
+  });
+  return costsInFlight;
+}
+
+async function fetchCosts() {
   const requestId = ++costsRequestId;
   try {
     const response = await teamFetch(`${API_BASE}/costs?backfill=false`, {
@@ -4786,21 +4936,26 @@ async function loadCosts() {
     if (requestId !== costsRequestId) {
       return;
     }
-    const drafts = captureFormDrafts();
     costState = normalizeCosts(payload);
-    render();
-    restoreFormDrafts(drafts);
+    costsLastLoadedAt = Date.now();
+    if (teamViewUsesCostState(activeTeamView)) {
+      const drafts = captureFormDrafts();
+      render();
+      restoreFormDrafts(drafts);
+    }
   } catch (error) {
     if (requestId !== costsRequestId) {
       return;
     }
-    const drafts = captureFormDrafts();
     costState = normalizeCosts({
       ...emptyCostState(),
       error: error instanceof Error ? error.message : "Cost data failed to load.",
     });
-    render();
-    restoreFormDrafts(drafts);
+    if (teamViewUsesCostState(activeTeamView)) {
+      const drafts = captureFormDrafts();
+      render();
+      restoreFormDrafts(drafts);
+    }
   }
 }
 
@@ -4809,8 +4964,17 @@ async function refreshCostBackfill() {
     return;
   }
   const requestId = ++costBackfillRequestId;
+  // Ignore a GET already in flight if it completes after the newer backfill.
+  costsRequestId += 1;
+  costsRefreshPending = false;
+  if (costsRefreshTimer !== null) {
+    window.clearTimeout(costsRefreshTimer);
+    costsRefreshTimer = null;
+  }
   let drafts = captureFormDrafts();
   costBackfillLoading = true;
+  let finishBackfill;
+  costBackfillFinished = new Promise((resolve) => { finishBackfill = resolve; });
   setStatus("Refreshing transcript costs.", "loading");
   render();
   restoreFormDrafts(drafts);
@@ -4829,6 +4993,7 @@ async function refreshCostBackfill() {
     drafts = captureFormDrafts();
     costBackfillLoading = false;
     costState = normalizeCosts(payload);
+    costsLastLoadedAt = Date.now();
     render();
     restoreFormDrafts(drafts);
     setStatus("", "");
@@ -4845,6 +5010,10 @@ async function refreshCostBackfill() {
     render();
     restoreFormDrafts(drafts);
     setStatus(error instanceof Error ? error.message : "Cost transcript refresh failed.", "error");
+  } finally {
+    costBackfillLoading = false;
+    costBackfillFinished = null;
+    finishBackfill();
   }
 }
 
@@ -5048,6 +5217,7 @@ function applyChatCollectionPayload(
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   if (activeTeamView === "chat") {
+    renderShell();
     renderChat();
   }
   if (selectedChatConversationId) {
@@ -5360,6 +5530,29 @@ async function createOrFocusChat(agentId) {
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Chat could not be opened.", "error");
   }
+}
+
+async function openChatForAgent(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return;
+  }
+  if (chatState.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
+  setTeamView("chat");
+  try {
+    await loadView("chat");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Chat view failed to load.", "error");
+    return;
+  }
+  if (chatState.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
+  await createOrFocusChat(normalizedAgentId);
 }
 
 async function submitChatMessage(form) {
@@ -8862,6 +9055,7 @@ function renderAgents() {
                     <div class="record-actions">
                       ${renderAgentRosterStatusPill(details)}
                       ${renderAgentStandDownControls(details.id, details)}
+                      ${renderOpenAgentChatButton(details.id)}
                       ${renderOpenAgentSessionButton(details.sessionId)}
                       ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
                       ${editButton("agent", details.id)}
@@ -8900,13 +9094,6 @@ function renderPeopleAgents(allAgents, agents) {
     return;
   }
 
-  if (!selectedTeamRecordId) {
-    const firstTeam = visibleTeams.find((team) => text(team.id) !== noTeamRecordId);
-    if (firstTeam) {
-      selectTeamRecord("team", firstTeam.id, { rerender: false });
-    }
-  }
-
   const scopedTeams = visibleTeams;
   const scopedTeamIds = visibleTeamIds;
   const scopedRecords = {
@@ -8915,24 +9102,15 @@ function renderPeopleAgents(allAgents, agents) {
     roles: roles.filter((role) => scopedTeamIds.has(text(role.team_id))).sort(compareTeamRoles),
   };
   const selectedRecord = selectedTeamRecordFrom(scopedRecords);
-  const hasRecords = scopedRecords.agents.length || scopedRecords.projects.length || scopedRecords.roles.length;
-
-  if (!hasRecords && selectedRecord?.kind !== "team") {
-    clearSelectedTeamRecord();
-    renderIntoActiveTargets(
-      "[data-teams-records-view]",
-      "<p class=\"empty-state\">No visible records.</p>",
-    );
-    renderIntoActiveTargets("[data-agent-detail-view]", renderTeamRecordDetail(null));
-    return;
-  }
-
   renderIntoActiveTargets("[data-teams-records-view]", `
     <div class="team-record-groups">
       ${scopedTeams.map((team) => renderTeamRecordGroup(team, scopedRecords)).join("")}
     </div>
   `);
   renderIntoActiveTargets("[data-agent-detail-view]", renderTeamRecordDetail(selectedRecord));
+  const detailPanel = document.querySelector(".people-agent-detail-panel");
+  if (detailPanel) detailPanel.hidden = !selectedRecord;
+  document.querySelector(".people-layout")?.classList.toggle("has-inspector", Boolean(selectedRecord));
 }
 
 function renderTeamRecordGroup(team, scopedRecords) {
@@ -9513,6 +9691,15 @@ function teamRecordCollection(records, kind) {
 function clearSelectedTeamRecord() {
   selectedTeamRecordKind = "agent";
   selectedTeamRecordId = null;
+  const panel = document.querySelector(".people-agent-detail-panel");
+  if (panel) panel.hidden = true;
+  document.querySelector(".people-layout")?.classList.remove("has-inspector");
+}
+
+function closeTeamRecordInspector() {
+  clearSelectedTeamRecord();
+  renderAgents();
+  if (teamRecordReturnFocus) document.querySelector(teamRecordReturnFocus)?.focus({ preventScroll: true });
 }
 
 function comparePeopleTeams(left, right) {
@@ -9578,8 +9765,11 @@ function selectTeamRecord(kind, recordId, { rerender = true } = {}) {
   }
   selectedTeamRecordKind = kind;
   selectedTeamRecordId = normalizedRecordId;
+  const attribute = kind === "team" ? "data-team-record-toggle" : `data-select-${kind}-id`;
+  teamRecordReturnFocus = `[${attribute}="${CSS.escape(normalizedRecordId)}"]`;
   if (rerender) {
     renderAgents();
+    document.querySelector("[data-team-detail-close]")?.focus({ preventScroll: true });
   }
 }
 
@@ -10115,6 +10305,7 @@ function renderChatNewPicker() {
   if (!elements.chatNewPicker) {
     return;
   }
+  const previousScrollTop = chatAgentPickerScrollTop();
   if (chatState.read_only) {
     elements.chatNewPicker.hidden = true;
     elements.chatNewPicker.innerHTML = "";
@@ -10135,6 +10326,22 @@ function renderChatNewPicker() {
       </div>
     `
     : `<p class="empty-state">No available agents.</p>`;
+  restoreChatAgentPickerScrollTop(previousScrollTop);
+}
+
+function chatAgentPickerScrollTop() {
+  const picker = elements.chatNewPicker?.querySelector(".chat-agent-picker");
+  return picker instanceof HTMLElement ? picker.scrollTop : null;
+}
+
+function restoreChatAgentPickerScrollTop(scrollTop) {
+  if (scrollTop === null) {
+    return;
+  }
+  const picker = elements.chatNewPicker?.querySelector(".chat-agent-picker");
+  if (picker instanceof HTMLElement) {
+    picker.scrollTop = scrollTop;
+  }
 }
 
 function renderChatConversationRow(conversation) {
@@ -10936,6 +11143,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       </div>
       <div class="record-actions agent-detail-actions">
         ${renderAgentStandDownControls(details.id, details)}
+        ${renderOpenAgentChatButton(details.id)}
         ${renderOpenAgentSessionButton(details.sessionId)}
         ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
         ${editButton("agent", details.id)}
@@ -11081,6 +11289,14 @@ function renderOpenAgentSessionButton(sessionId) {
     return "";
   }
   return `<button class="record-action" type="button" data-open-session-id="${escapeAttr(normalizedSessionId)}">Open session</button>`;
+}
+
+function renderOpenAgentChatButton(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return "";
+  }
+  return `<button class="record-action" type="button" data-open-chat-agent-id="${escapeAttr(normalizedAgentId)}" ${chatState.read_only ? 'disabled title="This chat history is read-only."' : ""}>Chat</button>`;
 }
 
 function navigateToAgentSession(sessionId) {
@@ -11253,17 +11469,18 @@ function agentProjectIds(agent) {
   return legacyProjectId ? [legacyProjectId] : [];
 }
 
-function agentEditProjectId(agent) {
-  const memberAssignmentIds = Array.isArray(agent?.project_assignments)
+function agentLeadProjectIds(agent) {
+  const directIds = uniqueTextList(agent?.lead_project_ids);
+  if (directIds.length) {
+    return directIds;
+  }
+  const assignmentIds = Array.isArray(agent?.project_assignments)
     ? agent.project_assignments
-        .filter((assignment) => text(assignment?.kind || "project_member") === "project_member")
+        .filter((assignment) => text(assignment?.kind) === "project_lead")
         .map((assignment) => text(assignment?.project_id))
         .filter(Boolean)
     : [];
-  if (memberAssignmentIds.length) {
-    return uniqueTextList(memberAssignmentIds)[0];
-  }
-  return agentProjectIds(agent)[0] || "";
+  return uniqueTextList(assignmentIds);
 }
 
 function agentProjectSummary(agent) {
@@ -12506,6 +12723,8 @@ function renderProjectOutcomeKinds(definitions) {
 
 function renderProjectOutcomeKindCreateForm(project) {
   return `
+    <details class="project-outcome-create" ${teamDisclosureAttributes(teamDisclosureKey("projects", project.id, "create-outcome-kind"))}>
+    <summary>Add outcome kind</summary>
     <form
       class="project-review-profile-form"
       data-form-id="create-outcome-kind-form"
@@ -12526,6 +12745,7 @@ function renderProjectOutcomeKindCreateForm(project) {
       </div>
       <button type="submit">Add outcome kind</button>
     </form>
+    </details>
   `;
 }
 
@@ -12993,6 +13213,9 @@ function renderCaseItem(item) {
         <div class="record-actions">
           <span class="state-pill ${escapeHtml(item.status || "open")}">${escapeHtml(humanizeToken(item.status || "open"))}</span>
           ${editButton("case", item.id)}
+          <button type="button" class="record-action secondary" data-open-case-context="${escapeAttr(item.id)}">Context</button>
+          ${item.project_id ? `<button type="button" class="record-action secondary" data-open-case-board="${escapeAttr(item.id)}">View task board</button>` : ""}
+          ${project?.git && project.release_policy?.reintegration?.enabled !== false ? `<button type="button" class="record-action secondary" data-reintegrate-case-id="${escapeAttr(item.id)}">Reintegrate accepted work</button>` : ""}
         </div>
       </div>
       <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
@@ -13149,7 +13372,49 @@ function teamWideReviewProfilesForProject(project) {
     .sort(compareReviewProfiles);
 }
 
+function caseBoardUrl() {
+  const base = window.parent !== window ? window.parent.location.href : `${window.location.origin}/`;
+  return caseBoardPermalink(base, taskBoardCaseId);
+}
+
+function persistCaseBoardLocation() {
+  replaceCaseBoardLocation(window, taskBoardCaseId, {
+    teamId: selectedTaskBoardTeamId,
+    projectId: selectedTaskBoardProjectId,
+  });
+}
+
+function selectTaskBoardCase(caseId) {
+  taskBoardCaseId = caseId;
+  selectedTaskBoardTaskId = "";
+  resetTaskBoardFilters();
+  persistCaseBoardLocation();
+  renderTaskBoard();
+  if (activeTeamView === "task-board") {
+    void loadView("task-board", { force: true, preserveForms: true });
+  }
+}
+
+async function copyCaseBoardLink() {
+  try {
+    await navigator.clipboard.writeText(caseBoardUrl());
+    setStatus("Case task board link copied.", "success");
+  } catch {
+    setStatus(`Copy this case task board link: ${caseBoardUrl()}`, "warning");
+  }
+}
+
 function renderTaskBoard() {
+  const selectedCase = taskBoardCaseId ? state.cases[taskBoardCaseId] : null;
+  if (taskBoardCaseId) {
+    const caseProject = selectedCase && state.projects[selectedCase.project_id];
+    if (!selectedCase || !isVisibleCase(selectedCase) || !caseProject || !isVisibleProject(caseProject)) {
+      renderIntoActiveTargets("[data-task-board-view]", `<p class="empty-state">This case is unavailable in your current scope. <button type="button" data-clear-case-board>Clear case filter</button></p>`);
+      return;
+    }
+    selectedTaskBoardTeamId = selectedCase.team_id;
+    selectedTaskBoardProjectId = selectedCase.project_id;
+  }
   const visibleTeams = values(state.teams).filter(isVisibleTeam).sort(comparePeopleTeams);
   const selectedTeam = visibleTeams.find((team) => text(team.id) === text(selectedTaskBoardTeamId)) || null;
   if (selectedTaskBoardTeamId && !selectedTeam) {
@@ -13195,9 +13460,7 @@ function renderTaskBoard() {
     return;
   }
 
-  const projectTasks = values(state.tasks)
-    .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId))
-    .filter((task) => taskBoardLaneForTask(task) !== null);
+  const projectTasks = selectedTaskBoardProjectTasks();
   const hierarchy = buildTaskBoardHierarchyIndex(projectTasks);
   if (taskBoardRootTaskId && !hierarchy.roots.some((task) => text(task.id) === taskBoardRootTaskId)) {
     taskBoardRootTaskId = "";
@@ -13224,8 +13487,9 @@ function renderTaskBoard() {
     "[data-task-board-view]",
     `
       <div class="task-board-context">
-        <strong>${escapeHtml(selectedProject.name || selectedProject.id)}</strong>
+        <strong>${escapeHtml(selectedCase?.title || selectedProject.name || selectedProject.id)}</strong>
         <span>${escapeHtml(selectedTeam.name || selectedTeam.id)} - ${escapeHtml(boardMeta.join(" - "))}</span>
+        ${selectedCase ? `<span>Includes linked tasks and follow-up work.</span><div class="record-actions"><button type="button" class="secondary" data-copy-case-board>Copy link</button><button type="button" class="secondary" data-clear-case-board>Clear case filter</button>${renderCaseSourceLink(selectedCase)}</div>` : ""}
       </div>
       ${renderTaskBoardCreateForm(selectedProject, projectTasks)}
       ${renderTaskBoardControls(projectTasks, hierarchy, terminalCount)}
@@ -13281,11 +13545,17 @@ function renderTaskBoardCreateForm(project, projectTasks) {
             <select name="owner_agent_id" required>${renderSelectOptions(ownerOptions, { placeholder: "Select project agent" })}</select>
           </label>
           <label>Case
-            <select name="case_id">${renderSelectOptions(caseOptions, { placeholder: "No case" })}</select>
+            <select name="case_id">${renderSelectOptions(caseOptions, { selectedValue: taskBoardCaseId, placeholder: "Inherit from parent or origin" })}</select>
           </label>
           <label>Priority <input name="priority" type="number" min="0" value="0" required /></label>
           <label>Title <input name="title" required /></label>
           <label>Description <textarea name="description" rows="3" required></textarea></label>
+          <label>Task kind
+            <select name="task_kind">
+              <option value="support">Support work</option>
+              <option value="coordination">Coordination only</option>
+            </select>
+          </label>
           <label>Commit author name <input name="task_author_name" placeholder="Inherit task or project author" /></label>
           <label>Commit author email <input name="task_author_email" type="email" placeholder="Inherit task or project author" /></label>
           <label>Git base branch
@@ -13293,6 +13563,9 @@ function renderTaskBoardCreateForm(project, projectTasks) {
           </label>
           <label>Parent task
             <select name="parent_task_id">${renderSelectOptions(taskOptions, { placeholder: "No parent" })}</select>
+          </label>
+          <label>Originating task
+            <select name="originating_task_id">${renderSelectOptions(taskOptions, { placeholder: "No provenance origin" })}</select>
           </label>
           <label>Dependency task IDs
             <textarea name="dependency_task_ids" rows="2" placeholder="One per line or comma-separated"></textarea>
@@ -13337,6 +13610,9 @@ function renderRoleTaskQueueStatus(task) {
 }
 
 function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
+  const caseOptions = values(state.cases)
+    .filter((item) => item.project_id === selectedTaskBoardProjectId && isVisibleCase(item))
+    .sort(compareCases).map((item) => [item.id, item.title]);
   const assignees = [...new Map(projectTasks
     .filter((task) => taskAssignmentKey(task))
     .map((task) => [taskAssignmentKey(task), taskAssignmentLabel(task)])).entries()]
@@ -13370,7 +13646,10 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
           : `<span class="task-board-history-note">${terminalCount} completed task${terminalCount === 1 ? "" : "s"} included in hierarchy</span>`
       }
     </div>
+    <details class="task-board-filter-disclosure" ${teamDisclosureAttributes("task-board-filters", { defaultOpen: window.matchMedia("(min-width: 801px)").matches })}>
+    <summary>Filters${[taskBoardCaseId, taskBoardQuery, taskBoardAssigneeId, taskBoardStateFilter, taskBoardReadinessFilter, taskBoardRootTaskId, taskBoardCompletedSince, taskBoardCompletedThrough].filter(Boolean).length ? " · active" : ""}</summary>
     <form class="task-board-filters" data-task-board-search-form data-form-id="task-board-search-form" data-form-draft-scope="${escapeAttr(`${selectedTaskBoardTeamId}:${selectedTaskBoardProjectId}`)}" role="search">
+      <label>Case<select data-task-board-filter="case">${renderSelectOptions(caseOptions, { selectedValue: taskBoardCaseId, placeholder: "All cases" })}</select></label>
       <label class="task-board-search-filter">
         Search
         <span class="task-board-search-controls">
@@ -13441,6 +13720,7 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
         Clear filters
       </button>
     </form>
+    </details>
   `;
 }
 
@@ -13909,9 +14189,19 @@ function taskBoardBlockerCount(task) {
 }
 
 function selectedTaskBoardProjectTasks() {
-  return values(state.tasks)
-    .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId))
-    .filter((task) => taskBoardLaneForTask(task) !== null);
+  const tasks = values(state.tasks)
+    .filter((task) => text(task.project_id) === text(selectedTaskBoardProjectId));
+  const members = taskBoardCaseId ? caseTaskIds(tasks, taskBoardCaseId) : null;
+  return tasks.filter((task) => taskBoardLaneForTask(task) !== null && (!members || members.has(task.id)));
+}
+
+function renderCaseSourceLink(item) {
+  const candidate = item.metadata?.work_item_url || item.source_ref;
+  try {
+    const url = new URL(candidate);
+    if (!["https:", "http:"].includes(url.protocol)) return "";
+    return `<a class="record-action secondary" href="${escapeAttr(url.href)}" target="_blank" rel="noopener noreferrer">Source work item</a>`;
+  } catch { return ""; }
 }
 
 function selectTaskBoardTask(taskId, { reveal = false } = {}) {
@@ -14924,10 +15214,14 @@ function teamDisclosureStateKey(key, view = activeTeamView) {
   return teamDisclosureKey(normalizedTeamView(view), normalizedKey);
 }
 
-function teamDisclosureAttributes(key) {
+function teamDisclosureAttributes(key, { defaultOpen = false } = {}) {
   const normalizedKey = teamDisclosureStateKey(key);
   if (!normalizedKey) {
     return "";
+  }
+  if (defaultOpen && !defaultedTeamDisclosures.has(normalizedKey)) {
+    defaultedTeamDisclosures.add(normalizedKey);
+    openTeamDisclosures.add(normalizedKey);
   }
   return `data-team-disclosure-key="${escapeAttr(normalizedKey)}"${openTeamDisclosures.has(normalizedKey) ? " open" : ""}`;
 }
@@ -15234,8 +15528,9 @@ function planningTaskLifecycleStages(task) {
   const resolution = text(task.resolution_status || assessment.resolution_status || "unresolved");
   const executionComplete = ["finished", "waiting_for_review", "accepted", "rejected"].includes(stateValue);
   const reviewComplete = ["accepted", "rejected"].includes(stateValue);
-  const reviewNotRequired =
-    text(assessment.resolution_reason) === "support_task_finished";
+  const reviewNotRequired = ["support_task_finished", "coordination_task_finished"].includes(
+    text(assessment.resolution_reason),
+  );
   return [
     {
       label: "Created",
@@ -18298,6 +18593,7 @@ function renderReleaseDetail(release) {
         <div><div class="delivery-detail-label">Policy</div><div class="delivery-detail-value">Version ${Number(release.policy_version || 1)}</div></div>
       </div>
       ${renderReleaseCandidateCheckout(release)}
+      ${project.git && ["active", "blocked"].includes(project.status) && project.release_policy?.reintegration?.enabled !== false ? `<button type="button" data-reintegrate-release-id="${escapeAttr(release.id)}">Reintegrate onto updated base</button>` : ""}
       ${renderReleaseDeliverableEvidence(deliverableRows, release)}
       ${renderReleaseContributionGraph(contributionGraph, release.id)}
       ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [], release.id)}
@@ -18428,9 +18724,12 @@ function renderReleaseVerificationCommandResult(
     <li class="release-verification-command-result${failed ? " release-verification-command-failed" : ""}">
       <div class="release-verification-command-heading">
         <strong>${failed ? "Failed command" : "Command"}: ${escapeHtml(result.name || "Unnamed command")}</strong>
-        <span class="state-pill ${escapeAttr(result.state)}">${escapeHtml(humanizeToken(result.state))}</span>
+        <span class="state-pill ${escapeAttr(result.state)}">${escapeHtml(result.policy_outcome === "baseline_exception" ? "Accepted with baseline exceptions" : humanizeToken(result.state))}</span>
       </div>
       ${metadata.length ? `<div class="meta-line">${escapeHtml(metadata.join(" · "))}</div>` : ""}
+      ${result.evidence?.explanation ? `<p>${escapeHtml(result.evidence.explanation)}</p>` : ""}
+      ${result.toolchain_mounts?.length ? `<details ${teamDisclosureAttributes(teamDisclosureKey(disclosureKey, "toolchain"))}><summary>Verifier toolchain identity</summary><ul>${result.toolchain_mounts.map(mount => `<li>${escapeHtml(mount.target)} ← ${escapeHtml(mount.source)}</li>`).join("")}</ul></details>` : ""}
+      ${result.log_artifact && result.job_id ? `<button type="button" data-retained-verifier-job="${escapeAttr(result.job_id)}" data-release-id="${escapeAttr(run.release_package_id)}">Read retained log</button>` : ""}
       ${decisiveError ? `<div class="release-verification-decisive-error"><strong>Decisive error:</strong> ${escapeHtml(decisiveError)}</div>` : ""}
       ${
         logExcerpt
@@ -18463,7 +18762,7 @@ function renderReleaseVerificationLiveOutput(run, result, index, releaseId) {
   const logText = text(log?.text);
   return `
     <li class="release-verification-live-output">
-      <details class="release-verification-log" open>
+      <details class="release-verification-log" ${teamDisclosureAttributes(teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "live", String(index)), { defaultOpen: true })}>
         <summary>Live verifier output · updates every 2 seconds</summary>
         ${log?.has_more_before ? `<p class="meta-line">Earlier log lines are omitted from this bounded tail.</p>` : ""}
         ${logText ? `<pre
@@ -18505,10 +18804,12 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
         runs.length
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
+              <div class="meta-line">Workspace generation ${Number(run.execution_generation || 0)} · Last recorded progress: ${escapeHtml(run.updated_at || "Unavailable")}${run.state === "running" ? " · Running status does not confirm continuing progress." : ""}</div>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
               ${run.retry_reason ? `<div class="meta-line"><strong>Retry comment:</strong> ${escapeHtml(run.retry_reason)}</div>` : ""}
               ${run.retry_requested_by ? `<div class="meta-line">Requested by ${escapeHtml(run.retry_requested_by)}</div>` : ""}
               ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
+              ${(run.generation_history || []).map(generation => `<details ${teamDisclosureAttributes(teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "generation", String(generation.generation)))}><summary>Interrupted workspace generation ${Number(generation.generation)}</summary>${renderReleaseVerificationCommandResults({ ...run, state: "interrupted", command_results: generation.command_results }, `release-detail:${releaseId}:verification:g${generation.generation}`, releaseId)}</details>`).join("")}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
               })}
@@ -19411,7 +19712,7 @@ function renderReleaseGateAction(release) {
   const retryableVerification =
     release.state === "blocked" &&
     failure?.stage === "verification" &&
-    ["infrastructure", "timeout"].includes(failure?.kind);
+    ["infrastructure", "timeout", "blocked"].includes(failure?.kind);
   const retryableReview =
     release.state === "blocked" &&
     failure?.stage === "review" &&
@@ -21446,7 +21747,15 @@ function agentEditTeamId(select) {
 
 function agentEditProjectOptions(select) {
   const teamId = agentEditTeamId(select);
-  return teamId ? teamProjectOptions(teamId) : [];
+  if (!teamId) {
+    return [];
+  }
+  const agent = state.agents?.[text(select.form?.dataset?.editId)] || null;
+  const leadProjectIds = new Set(agentLeadProjectIds(agent));
+  return teamProjectOptions(teamId).map(([projectId, label]) => [
+    projectId,
+    leadProjectIds.has(text(projectId)) ? `${label} — Project lead` : label,
+  ]);
 }
 
 function agentEditRoleOptions(select) {
@@ -21502,6 +21811,13 @@ function projectReviewRoleOptionsForProject(projectId) {
 
 function fillSelect(select, options) {
   const currentValue = select.dataset.currentValue ?? select.value;
+  const currentValues = select.multiple
+    ? new Set(
+        select.dataset.currentValue !== undefined
+          ? splitList(select.dataset.currentValue)
+          : Array.from(select.selectedOptions).map((option) => option.value),
+      )
+    : null;
   const includePlaceholder = !select.multiple;
   const placeholder = select.dataset.placeholder || (select.required ? "Select" : "Default");
   select.innerHTML = `${includePlaceholder ? `<option value="">${placeholder}</option>` : ""}${options
@@ -21511,7 +21827,6 @@ function fillSelect(select, options) {
     })
     .join("")}`;
   if (select.multiple) {
-    const currentValues = new Set(splitList(currentValue));
     Array.from(select.options).forEach((option) => {
       option.selected = currentValues.has(option.value);
     });
@@ -21824,7 +22139,7 @@ async function resetTeamCostBudget(button, teamId, reason) {
       throw new Error(await responseText(response));
     }
     await applyMutationResultPayload(await response.json());
-    await loadCosts();
+    await loadCosts({ force: true });
     setStatus("Started a new team cost budget window.", "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Budget reset failed.", "error");
@@ -23218,6 +23533,116 @@ async function resolveTerminalBlocker(button, blockerId, note) {
   }
 }
 
+async function showRetainedVerificationLog(button) {
+  button.disabled = true;
+  try {
+    const response = await teamFetch(`${API_BASE}/release-packages/${encodeURIComponent(button.dataset.releaseId)}/verification-live?job_id=${encodeURIComponent(button.dataset.retainedVerifierJob)}`);
+    if (!response.ok) throw new Error(await responseText(response));
+    const body = await response.json();
+    const pre = document.createElement("pre");
+    pre.textContent = body.log.text;
+    button.replaceWith(pre);
+  } catch (error) {
+    setStatus(error.message, "error");
+    button.disabled = false;
+  }
+}
+
+async function previewCaseReintegration(caseId) {
+  if (!guardTeamMutation("reintegrate accepted work")) return;
+  try {
+    const response = await teamFetch(`${API_BASE}/cases/${encodeURIComponent(caseId)}/reintegration-candidates`);
+    if (!response.ok) throw new Error(await responseText(response));
+    const { candidates } = await response.json();
+    if (!candidates.length) throw new Error("This case has no current accepted release contributions to reintegrate.");
+    if (candidates.length === 1) return previewReleaseReintegration(candidates[0].release_package_id);
+    const dialog = document.createElement("dialog");
+    dialog.className = "team-reintegration-dialog";
+    dialog.innerHTML = `<h3>Choose accepted work from this case</h3><p>Each option shows the full release scope, including any contributions from other cases.</p><ul>${candidates.map((row, index) => `<li><button type="button" data-choose-reintegration-release="${index}">${escapeHtml(row.contribution_titles.join(", "))} — ${escapeHtml(humanizeToken(row.state))}, ${escapeHtml(row.created_at)}</button></li>`).join("")}</ul><button type="button" data-close-preview>Close</button>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    dialog.querySelector("[data-close-preview]").onclick = () => dialog.close();
+    dialog.querySelectorAll("[data-choose-reintegration-release]").forEach(button => {
+      button.onclick = () => {
+        dialog.close();
+        void previewReleaseReintegration(candidates[Number(button.dataset.chooseReintegrationRelease)].release_package_id);
+      };
+    });
+    dialog.showModal();
+  } catch (error) { setStatus(error.message, "error"); }
+}
+
+async function previewReleaseReintegration(releaseId) {
+  if (!guardTeamMutation("reintegrate accepted work")) return;
+  const endpoint = `${API_BASE}/release-packages/${encodeURIComponent(releaseId)}/reintegration`;
+  const dialog = document.createElement("dialog");
+  dialog.className = "team-reintegration-dialog";
+  dialog.innerHTML = `<h3>Reintegrate accepted work</h3><div data-preview-content>Refreshing the configured base…</div><p role="status" data-preview-status></p><div class="actions"><button type="button" data-submit-preview disabled>Create integration task</button><button type="button" data-refresh-preview>Refresh preview</button><button type="button" data-close-preview>Close</button></div>`;
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.querySelector("[data-close-preview]").onclick = () => dialog.close();
+  dialog.showModal();
+  let preview = null;
+  let previewSequence = 0;
+  let submitting = false;
+  let requestId = crypto.randomUUID();
+  const submit = dialog.querySelector("[data-submit-preview]");
+  const status = dialog.querySelector("[data-preview-status]");
+  const refresh = dialog.querySelector("[data-refresh-preview]");
+  refresh.onclick = () => void load(preview?.owner_agent_id || null);
+  async function load(ownerId = null) {
+    if (submitting) return;
+    const sequence = ++previewSequence;
+    submit.disabled = true;
+    status.textContent = "Refreshing preview…";
+    try {
+      const response = await teamFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "preview", owner_agent_id: ownerId }) });
+      if (!response.ok) throw new Error(await responseText(response));
+      const nextPreview = (await response.json()).preview;
+      if (sequence !== previewSequence || !dialog.open) return;
+      preview = nextPreview;
+      requestId = crypto.randomUUID();
+      dialog.querySelector("[data-preview-content]").innerHTML = `
+        <p>Base: <strong>${escapeHtml(preview.base_branch)}</strong> at ${escapeHtml(preview.base_commit_sha.slice(0, 12))}</p>
+        <ul>${preview.contributions.map(row => `<li>${escapeHtml(row.title)}</li>`).join("")}</ul>
+        <label>Integration owner <select data-preview-owner><option value="">Select an owner</option>${preview.eligible_owners.map(owner => `<option value="${escapeAttr(owner.id)}" ${owner.id === preview.owner_agent_id ? "selected" : ""}>${escapeHtml(owner.name)}</option>`).join("")}</select></label>
+        <p>${escapeHtml(preview.instructions)}</p>
+        <p>${preview.retire_source_release ? "The source release will be retired with its exclusively owned pending correction work." : "The source release and existing work will be retained."}</p>
+        ${preview.retiring_task_ids.length ? `<ul>${preview.retiring_task_ids.map(id => `<li>${escapeHtml(state.tasks?.[id]?.title || "Source release correction")}</li>`).join("")}</ul>` : ""}
+        <p>Existing review and release policies apply to the new integration.</p>`;
+      dialog.querySelector("[data-preview-owner]").onchange = event => void load(event.target.value || null);
+      submit.disabled = !preview.owner_agent_id;
+      status.textContent = "Ready to create the integration task.";
+    } catch (error) {
+      if (sequence === previewSequence && dialog.open) status.textContent = error.message;
+    }
+  }
+  submit.onclick = async () => {
+    if (submitting || !preview?.owner_agent_id) return;
+    submitting = true;
+    submit.disabled = true;
+    refresh.disabled = true;
+    dialog.querySelector("[data-preview-owner]").disabled = true;
+    status.textContent = "Creating integration task…";
+    try {
+      const response = await teamFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "X-Team-Addon-Response-Scope": "view" }, body: JSON.stringify({ action: "submit", preview, request_id: requestId }) });
+      if (!response.ok) throw new Error(await responseText(response));
+      await applyMutationResultPayload(await response.json());
+      dialog.close();
+      setStatus("Integration task created. Progress appears with the project's work.", "ok");
+    } catch (error) {
+      status.textContent = `${error.message} Retry this request, or refresh to review a new preview.`;
+      submit.disabled = false;
+    } finally {
+      submitting = false;
+      refresh.disabled = false;
+      const owner = dialog.querySelector("[data-preview-owner]");
+      if (owner) owner.disabled = false;
+    }
+  };
+  await load();
+}
+
 async function startDependencyCompositionRecovery(button, blockerId, resolverAgentId) {
   if (!guardTeamMutation("start dependency composition recoveries")) {
     return;
@@ -23706,12 +24131,14 @@ function payloadForForm(form, data = formData(form)) {
     return payload;
   }
   if (formId === "create-task-form") {
+    const taskKind = text(data.task_kind) || "support";
     const payload = {
       owner_agent_id: text(data.owner_agent_id),
       project_id: text(data.project_id),
       priority: numberOrZero(data.priority),
       title: text(data.title),
       description: text(data.description),
+      task_kind: taskKind,
       created_by_agent_id: text(data.created_by_agent_id),
     };
     const authoredBy = taskAuthoredByForForm(data);
@@ -23730,6 +24157,10 @@ function payloadForForm(form, data = formData(form)) {
     if (parentTaskId) {
       payload.parent_task_id = parentTaskId;
     }
+    const originatingTaskId = text(data.originating_task_id);
+    if (originatingTaskId) {
+      payload.originating_task_id = originatingTaskId;
+    }
     payload.dependency_task_ids = splitList(data.dependency_task_ids);
     const integrationBoundary = Boolean(
       form.elements.integration_boundary?.checked,
@@ -23741,9 +24172,12 @@ function payloadForForm(form, data = formData(form)) {
       data.required_contribution_task_ids,
     );
     if (
+      taskKind !== "coordination"
+      && (
       integrationBoundary
       || requireGitProvenance
       || requiredContributionTaskIds.length > 0
+      )
     ) {
       payload.integration_boundary = integrationBoundary;
       payload.deliverable_contract = {
@@ -24645,7 +25079,7 @@ function renderEditFields(type, record) {
       <fieldset>
         <legend>Project lead handoff</legend>
         ${selectField("Project lead", "lead_agent_id", "project-lead-agents", record.lead_agent_id || "", { required: true, placeholder: "Select team agent" })}
-        <p class="field-help">Transfer authority separately from other project edits. The former lead remains a project member.</p>
+        <p class="field-help">Transfer authority separately from other project edits. One agent may lead several projects; the former lead remains a project member.</p>
         <div class="record-actions">
           <button type="button" data-transfer-project-lead>Transfer project lead</button>
         </div>
@@ -24685,7 +25119,8 @@ function renderEditFields(type, record) {
     return `
       ${readonlyField("Agent ID", record.id)}
       ${selectField("Team", "team_id", "teams", record.team_id || "", { placeholder: "No team" })}
-      ${selectField("Project", "project_id", "agent-edit-projects", agentEditProjectId(record), { placeholder: "No project" })}
+      ${multiSelectField("Projects", "project_ids", "agent-edit-projects", agentProjectIds(record), { size: 5 })}
+      <p class="field-help">Use this list for project memberships. Projects marked “Project lead” stay assigned until you transfer the lead from that project's editor.</p>
       ${selectField("Role", "role_id", "agent-edit-roles", record.role_id || "", { placeholder: "No role" })}
       ${textField("Session ID", "session_id", record.session_id, { required: true })}
       ${textField("Display name", "display_name", record.display_name || "")}
@@ -24900,9 +25335,9 @@ function editPayloadForForm(type, form) {
     };
   }
   if (type === "agent") {
-    const selectedProjectId = text(data.project_id);
+    const selectedProjectIds = uniqueTextList(data.project_ids);
     const currentRecord = recordForEdit("agent", text(form.dataset.editId));
-    const currentProjectId = currentRecord ? agentEditProjectId(currentRecord) : "";
+    const currentProjectIds = currentRecord ? agentProjectIds(currentRecord) : [];
     const requestedTeamId = text(data.team_id);
     const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
     const contextClearingPolicy = text(data.context_clearing_policy) || "off";
@@ -24925,8 +25360,11 @@ function editPayloadForForm(type, form) {
         numberOrZero(data.context_clearing_idle_grace_minutes) * 60,
       );
     }
-    if (selectedProjectId !== currentProjectId) {
-      payload.project_id = selectedProjectId || null;
+    if (
+      selectedProjectIds.length !== currentProjectIds.length
+      || selectedProjectIds.some((projectId) => !currentProjectIds.includes(projectId))
+    ) {
+      payload.project_ids = selectedProjectIds;
     }
     return payload;
   }

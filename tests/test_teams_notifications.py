@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -134,6 +135,80 @@ def test_teams_notifications_wakes_ingest_after_durable_enqueue(tmp_path) -> Non
     assert response.status_code == 202
     assert response.json()["accepted"] == 1
     assert observed_queue_depths == [1]
+
+
+def test_teams_notifications_background_processor_is_independent_of_ingest_poll(
+    tmp_path,
+) -> None:
+    processed = threading.Event()
+    runtime_dir = tmp_path / "runtime"
+    config_dir = tmp_path / "config" / "teams-ingest"
+    config_dir.mkdir(parents=True)
+    config_dir.joinpath("config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "change_notifications_enabled": True,
+                "change_notification_public_base_url": "https://notifications.example.test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = GatewayConfig.model_validate({"runtime_dir": runtime_dir})
+    store = TeamsInboxStore(runtime_dir / "teams-inbox-store.db")
+    client_state = "constant-client-state"
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="subscription-1",
+            owner_id=store.notification_owner_id(),
+            target="team-a/channel-a",
+            resource="/teams/team-a/channels/channel-a/messages",
+            directory_path="root",
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256=hashlib.sha256(client_state.encode()).hexdigest(),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    def process_queue() -> int:
+        entries = store.lease_notifications(now=datetime.now(UTC))
+        for entry in entries:
+            store.complete_notification(entry, completed_at=datetime.now(UTC))
+        if entries:
+            processed.set()
+        return len(entries)
+
+    app = create_app(
+        config,
+        project_dir=tmp_path,
+        store=store,
+        ingest_wake_notifier=lambda: False,
+        notification_processor=process_queue,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/msgraph/teams/notifications",
+            json={
+                "value": [
+                    {
+                        "subscriptionId": "subscription-1",
+                        "tenantId": "tenant-a",
+                        "clientState": client_state,
+                        "changeType": "created",
+                        "resource": "teams('team-a')/channels('channel-a')/messages('message-1')",
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 202
+        assert processed.wait(1)
+        health = client.get("/healthz").json()
+        assert health["processor"]["enabled"] is True
+        assert health["processor"]["running"] is True
+        assert health["notifications"]["queue_depth"] == 0
 
 
 def test_teams_notifications_acknowledges_when_ingest_wake_fails(

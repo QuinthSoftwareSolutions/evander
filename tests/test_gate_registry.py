@@ -81,6 +81,7 @@ def test_default_registry_includes_all_known_gate_types() -> None:
         "gate:merge",
         "gate:serialize",
         "gate:switch",
+        "gate:classifier:switch",
         "gate:throttle",
         "gate:validate",
         "gate:while",

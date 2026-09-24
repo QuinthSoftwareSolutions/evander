@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson } from "../admin/api";
+import { useAdminUi } from "../admin/AdminContext";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
+import { readAdminHashQuery } from "../admin/hash";
 import type { AdminAddonState, AdminAddonStatus } from "../admin/types";
 
 async function loadAddonState(): Promise<AdminAddonState> {
@@ -44,9 +47,12 @@ function capabilityLabels(addon: AdminAddonStatus): string[] {
 }
 
 export function AddonsPage() {
+  const { privilegedUnlocked } = useAdminUi();
+  const mutationLocked = !privilegedUnlocked;
   const [state, setState] = useState<AdminAddonState | null>(null);
   const [draftEnabledIds, setDraftEnabledIds] = useState<string[]>([]);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(() => readAdminHashQuery().get("addon"));
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [runtimePackRefreshing, setRuntimePackRefreshing] = useState(false);
@@ -61,7 +67,7 @@ export function AddonsPage() {
     }
     setSelectedKey((current) => {
       if (current && payload.addons.some((addon) => addon.candidate_key === current)) return current;
-      return payload.addons[0]?.candidate_key ?? null;
+      return null;
     });
   }
 
@@ -73,7 +79,7 @@ export function AddonsPage() {
         if (cancelled) return;
         setState(payload);
         setDraftEnabledIds(payload.explicit_enabled_addon_ids);
-        setSelectedKey(payload.addons[0]?.candidate_key ?? null);
+        setSelectedKey((current) => payload.addons.some((addon) => addon.candidate_key === current) ? current : null);
         setError(null);
       } catch (reason: unknown) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
@@ -90,7 +96,7 @@ export function AddonsPage() {
   const draftEnabledSet = useMemo(() => new Set(draftEnabledIds), [draftEnabledIds]);
   const dirty = Boolean(state && !sameIds(draftEnabledIds, state.explicit_enabled_addon_ids));
   const selectedAddon = useMemo(
-    () => state?.addons.find((addon) => addon.candidate_key === selectedKey) ?? state?.addons[0] ?? null,
+    () => state?.addons.find((addon) => addon.candidate_key === selectedKey) ?? null,
     [selectedKey, state],
   );
   const draftRestartServices = useMemo(() => {
@@ -115,7 +121,7 @@ export function AddonsPage() {
   }, [draftEnabledSet, state]);
 
   function toggleAddon(addon: AdminAddonStatus) {
-    if (!addon.addon_id || !addon.configurable) return;
+    if (mutationLocked || !addon.addon_id || !addon.configurable) return;
     setDraftEnabledIds((current) => {
       if (current.includes(addon.addon_id as string)) {
         return current.filter((item) => item !== addon.addon_id);
@@ -126,6 +132,7 @@ export function AddonsPage() {
   }
 
   async function saveAddons() {
+    if (mutationLocked) return;
     if (!state || !dirty) return;
     setSaving(true);
     setError(null);
@@ -149,7 +156,7 @@ export function AddonsPage() {
   }
 
   async function refreshRuntimeWorkflowPack(addon: AdminAddonStatus) {
-    if (!state || !addon.addon_id || !addon.runtime_workflow_pack?.refresh_available) return;
+    if (mutationLocked || !state || !addon.addon_id || !addon.runtime_workflow_pack?.refresh_available) return;
     const packReference = addon.runtime_workflow_pack.reference ?? "runtime workflow pack";
     const confirmed = window.confirm(`Refresh ${packReference}? This overwrites the existing runtime workflow pack file.`);
     if (!confirmed) return;
@@ -176,193 +183,297 @@ export function AddonsPage() {
     }
   }
 
+  const visibleItems = (state?.addons ?? []).filter((item) =>
+    [item.display_name, item.addon_id, item.source].join(" ").toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
+
   return (
-    <div className="feature-page addons-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Runtime extensions</div>
-            <h1>Add-ons</h1>
-          </div>
-          <div className="inline-actions compact-actions">
-            <button type="button" onClick={() => void refreshAddons({ preserveDraft: dirty })} disabled={loading || saving}>
-              Refresh
-            </button>
-          </div>
-        </div>
-        <div className="feature-list addon-list">
-          {state?.addons.map((addon) => {
-            const draftEnabled = addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false;
-            return (
+    <RecordWorkspace
+      records={(state?.addons ?? []).map((addon) => ({
+        id: addon.candidate_key,
+        href: `#addons?${new URLSearchParams({ addon: addon.candidate_key })}`,
+      }))}
+      selectedId={selectedKey}
+      onSelect={setSelectedKey}
+      recordRouteKeys="addon"
+    >
+      <div className="feature-page addons-page">
+        <section className="feature-sidebar">
+          <div className="feature-sidebar-header">
+            <div>
+              <div className="eyebrow">Runtime extensions</div>
+              <h1>Add-ons</h1>
+            </div>
+            <div className="inline-actions compact-actions">
               <button
-                key={addon.candidate_key}
                 type="button"
-                className={`feature-list-item addon-list-item${selectedAddon?.candidate_key === addon.candidate_key ? " selected" : ""}`}
-                onClick={() => setSelectedKey(addon.candidate_key)}
+                onClick={() => void refreshAddons({ preserveDraft: dirty })}
+                disabled={loading || saving}
               >
-                <div className="feature-list-title-row">
-                  <strong>{addon.display_name}</strong>
-                  <span className={`status-pill ${statusClass(addon, draftEnabled)}`}>{statusLabel(addon, draftEnabled)}</span>
-                </div>
-                <div className="feature-list-meta">{addon.addon_id ?? addon.source}</div>
+                Refresh
               </button>
-            );
-          })}
-          {!loading && state?.addons.length === 0 ? <div className="empty-state">No configured add-ons found.</div> : null}
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selectedAddon?.display_name ?? "Add-on management"}</h2>
-            <p className="muted-text">Enable or disable configured add-ons. Changes are applied after service restart.</p>
-          </div>
-          <div className="feature-toolbar-actions">
-            <button type="button" onClick={() => setDraftEnabledIds(state?.explicit_enabled_addon_ids ?? [])} disabled={!dirty || saving}>
-              Reset
-            </button>
-            <button type="button" className="primary" onClick={() => void saveAddons()} disabled={!dirty || saving || !state}>
-              {saving ? "Saving..." : "Save enablement"}
-            </button>
-          </div>
-        </div>
-
-        {error ? <div className="callout warning-callout">{error}</div> : null}
-        {status ? <div className="callout">{status}</div> : null}
-        {state?.catalog_error ? <div className="callout warning-callout">Loaded add-on catalog error: {state.catalog_error}</div> : null}
-        {state?.workflow_reference_error ? <div className="callout warning-callout">Workflow reference check failed: {state.workflow_reference_error}</div> : null}
-        {state?.config_mismatch ? <div className="callout warning-callout">Host and trigger-orchestrator add-on loader settings differ. Saving from this page will align them.</div> : null}
-        {dirty ? (
-          <div className="callout warning-callout">
-            Add-on route, workflow, and MCP availability is restart-gated. Save writes config only; restart services to apply changes.
-          </div>
-        ) : null}
-        {draftWarnings.length > 0 ? (
-          <div className="callout warning-callout">
-            Disabling {draftWarnings.map((addon) => addon.display_name).join(", ")} may break configured workflow packs that reference add-on node types.
-          </div>
-        ) : null}
-
-        <div className="detail-grid addons-detail-grid">
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Enablement</h3>
-              {dirty ? <span className="status-pill state-pending">Unsaved changes</span> : <span className="status-pill state-idle">Current</span>}
             </div>
-            <div className="form-grid">
-              {state?.addons.map((addon) => {
-                const draftEnabled = addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false;
-                return (
-                  <label key={addon.candidate_key} className="checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={draftEnabled}
-                      disabled={!addon.configurable || saving}
-                      onChange={() => toggleAddon(addon)}
-                    />
-                    <span>
-                      <strong>{addon.display_name}</strong>
-                      <span className="muted-text"> {addon.addon_id ?? addon.source}</span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </article>
-
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Restart impact</h3>
-              <span className={`status-pill ${dirty || state?.restart_required ? "state-waiting" : "state-running"}`}>
-                {dirty || state?.restart_required ? "Restart required" : "In sync"}
-              </span>
-            </div>
-            <p className="muted-text">Affected services:</p>
-            <div className="status-pills">
-              {(dirty ? draftRestartServices : state?.required_restart_services ?? []).map((service) => (
-                <span key={service} className="status-pill state-waiting">{service}</span>
-              ))}
-              {!(dirty ? draftRestartServices : state?.required_restart_services ?? []).length ? (
-                <span className="status-pill state-running">None</span>
-              ) : null}
-            </div>
-          </article>
-
-          {selectedAddon ? (
-            <article className="panel">
-              <div className="panel-header">
-                <h3>Selected add-on</h3>
-                <span className={`status-pill ${statusClass(selectedAddon, selectedAddon.addon_id ? draftEnabledSet.has(selectedAddon.addon_id) : false)}`}>
-                  {statusLabel(selectedAddon, selectedAddon.addon_id ? draftEnabledSet.has(selectedAddon.addon_id) : false)}
-                </span>
-              </div>
-              <dl className="metadata-grid">
-                <div><dt>ID</dt><dd>{selectedAddon.addon_id ?? "Unavailable"}</dd></div>
-                <div><dt>Source</dt><dd>{selectedAddon.source}</dd></div>
-                <div><dt>Source type</dt><dd>{selectedAddon.source_type}</dd></div>
-                <div><dt>Entry point</dt><dd>{selectedAddon.entry_point_name ?? "n/a"}</dd></div>
-              </dl>
-              {selectedAddon.load_error ? <div className="callout warning-callout">{selectedAddon.load_error}</div> : null}
-            </article>
-          ) : null}
-
-          {selectedAddon ? (
-            <article className="panel">
-              <div className="panel-header">
-                <h3>Capabilities</h3>
-                <span className="status-pill">{capabilityLabels(selectedAddon).length}</span>
-              </div>
-              <div className="status-pills">
-                {capabilityLabels(selectedAddon).map((label) => (
-                  <span key={label} className="status-pill state-idle">{label}</span>
-                ))}
-              </div>
-              {selectedAddon.workflow_node_types.length > 0 ? (
-                <>
-                  <p className="muted-text">Workflow node types:</p>
-                  <div className="status-pills">
-                    {selectedAddon.workflow_node_types.map((nodeType) => (
-                      <span key={nodeType} className={`status-pill ${selectedAddon.referenced_workflow_node_types.includes(nodeType) ? "state-waiting" : "state-idle"}`}>
-                        {nodeType}
-                      </span>
-                    ))}
-                  </div>
-                </>
-              ) : null}
-            </article>
-          ) : null}
-
-          {selectedAddon?.runtime_workflow_pack ? (
-            <article className="panel">
-              <div className="panel-header">
-                <h3>Runtime workflow pack</h3>
-                <span className={`status-pill ${selectedAddon.runtime_workflow_pack.configured ? "state-running" : "state-waiting"}`}>
-                  {selectedAddon.runtime_workflow_pack.configured ? "Configured" : "Not listed"}
-                </span>
-              </div>
-              <dl className="metadata-grid">
-                <div><dt>Reference</dt><dd>{selectedAddon.runtime_workflow_pack.reference ?? "Unavailable"}</dd></div>
-                <div><dt>File</dt><dd>{selectedAddon.runtime_workflow_pack.exists ? "Present" : "Missing"}</dd></div>
-                <div><dt>Source</dt><dd>{selectedAddon.runtime_workflow_pack.source}</dd></div>
-                <div><dt>Path</dt><dd>{selectedAddon.runtime_workflow_pack.path ?? "Unavailable"}</dd></div>
-              </dl>
-              {selectedAddon.runtime_workflow_pack.error ? (
-                <div className="callout warning-callout">{selectedAddon.runtime_workflow_pack.error}</div>
-              ) : null}
-              <div className="feature-toolbar-actions">
+          </div>
+          <label className="field-stack">
+            <span>Find add-ons</span>
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
+          </label>
+          <div className="feature-list addon-list">
+            {visibleItems.map((addon) => {
+              const draftEnabled = addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false;
+              return (
                 <button
+                  key={addon.candidate_key}
                   type="button"
-                  onClick={() => void refreshRuntimeWorkflowPack(selectedAddon)}
-                  disabled={runtimePackRefreshing || saving || !selectedAddon.runtime_workflow_pack.refresh_available}
+                  className={`feature-list-item addon-list-item${selectedAddon?.candidate_key === addon.candidate_key ? " selected" : ""}`}
+                  onClick={() => setSelectedKey(addon.candidate_key)}
                 >
-                  {runtimePackRefreshing ? "Refreshing..." : "Refresh runtime pack"}
+                  <div className="feature-list-title-row">
+                    <strong>{addon.display_name}</strong>
+                    <span className={`status-pill ${statusClass(addon, draftEnabled)}`}>
+                      {statusLabel(addon, draftEnabled)}
+                    </span>
+                  </div>
+                  <div className="feature-list-meta">{addon.addon_id ?? addon.source}</div>
                 </button>
+              );
+            })}
+            {!loading && visibleItems.length === 0 ? (
+              <div className="empty-state">No configured add-ons found.</div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="feature-content">
+          <div className="feature-toolbar">
+            <div>
+              <h2>{selectedAddon?.display_name ?? "Add-on management"}</h2>
+              <p className="muted-text">
+                Enable or disable configured add-ons. Changes are applied after service restart.
+              </p>
+            </div>
+            <div className="feature-toolbar-actions">
+              <button
+                type="button"
+                onClick={() => setDraftEnabledIds(state?.explicit_enabled_addon_ids ?? [])}
+                disabled={!dirty || saving}
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void saveAddons()}
+                disabled={mutationLocked || !dirty || saving || !state}
+              >
+                {saving ? "Saving..." : "Save enablement"}
+              </button>
+            </div>
+          </div>
+
+          {error ? <div className="callout warning-callout">{error}</div> : null}
+          {status ? <div className="callout">{status}</div> : null}
+          {state?.catalog_error ? (
+            <div className="callout warning-callout">Loaded add-on catalog error: {state.catalog_error}</div>
+          ) : null}
+          {state?.workflow_reference_error ? (
+            <div className="callout warning-callout">
+              Workflow reference check failed: {state.workflow_reference_error}
+            </div>
+          ) : null}
+          {mutationLocked ? (
+            <div className="callout warning-callout">
+              Unlock privileged operations to change add-on enablement or refresh runtime packs.
+            </div>
+          ) : null}
+          {state?.config_mismatch ? (
+            <div className="callout warning-callout">
+              Host and trigger-orchestrator add-on loader settings differ. Saving from this page will align them.
+            </div>
+          ) : null}
+          {dirty ? (
+            <div className="callout warning-callout">
+              Add-on route, workflow, and MCP availability is restart-gated. Save writes config only; restart services
+              to apply changes.
+            </div>
+          ) : null}
+          {draftWarnings.length > 0 ? (
+            <div className="callout warning-callout">
+              Disabling {draftWarnings.map((addon) => addon.display_name).join(", ")} may break configured workflow
+              packs that reference add-on node types.
+            </div>
+          ) : null}
+
+          {!selectedAddon ? <RecordPlaceholder>Select an add-on to view details</RecordPlaceholder> : null}
+          <div className="detail-grid addons-detail-grid">
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Enablement</h3>
+                {dirty ? (
+                  <span className="status-pill state-pending">Unsaved changes</span>
+                ) : (
+                  <span className="status-pill state-idle">Current</span>
+                )}
+              </div>
+              <div className="form-grid">
+                {state?.addons.map((addon) => {
+                  const draftEnabled = addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false;
+                  return (
+                    <label key={addon.candidate_key} className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={draftEnabled}
+                        disabled={mutationLocked || !addon.configurable || saving}
+                        onChange={() => toggleAddon(addon)}
+                      />
+                      <span>
+                        <strong>{addon.display_name}</strong>
+                        <span className="muted-text"> {addon.addon_id ?? addon.source}</span>
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
             </article>
-          ) : null}
-        </div>
-      </section>
-    </div>
+
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Restart impact</h3>
+                <span className={`status-pill ${dirty || state?.restart_required ? "state-waiting" : "state-running"}`}>
+                  {dirty || state?.restart_required ? "Restart required" : "In sync"}
+                </span>
+              </div>
+              <p className="muted-text">Affected services:</p>
+              <div className="status-pills">
+                {(dirty ? draftRestartServices : (state?.required_restart_services ?? [])).map((service) => (
+                  <span key={service} className="status-pill state-waiting">
+                    {service}
+                  </span>
+                ))}
+                {!(dirty ? draftRestartServices : (state?.required_restart_services ?? [])).length ? (
+                  <span className="status-pill state-running">None</span>
+                ) : null}
+              </div>
+            </article>
+
+            {selectedAddon ? (
+              <article className="panel">
+                <div className="panel-header">
+                  <h3>Selected add-on</h3>
+                  <span
+                    className={`status-pill ${statusClass(selectedAddon, selectedAddon.addon_id ? draftEnabledSet.has(selectedAddon.addon_id) : false)}`}
+                  >
+                    {statusLabel(
+                      selectedAddon,
+                      selectedAddon.addon_id ? draftEnabledSet.has(selectedAddon.addon_id) : false,
+                    )}
+                  </span>
+                </div>
+                <dl className="metadata-grid">
+                  <div>
+                    <dt>ID</dt>
+                    <dd>{selectedAddon.addon_id ?? "Unavailable"}</dd>
+                  </div>
+                  <div>
+                    <dt>Source</dt>
+                    <dd>{selectedAddon.source}</dd>
+                  </div>
+                  <div>
+                    <dt>Source type</dt>
+                    <dd>{selectedAddon.source_type}</dd>
+                  </div>
+                  <div>
+                    <dt>Entry point</dt>
+                    <dd>{selectedAddon.entry_point_name ?? "n/a"}</dd>
+                  </div>
+                </dl>
+                {selectedAddon.load_error ? (
+                  <div className="callout warning-callout">{selectedAddon.load_error}</div>
+                ) : null}
+              </article>
+            ) : null}
+
+            {selectedAddon ? (
+              <article className="panel">
+                <div className="panel-header">
+                  <h3>Capabilities</h3>
+                  <span className="status-pill">{capabilityLabels(selectedAddon).length}</span>
+                </div>
+                <div className="status-pills">
+                  {capabilityLabels(selectedAddon).map((label) => (
+                    <span key={label} className="status-pill state-idle">
+                      {label}
+                    </span>
+                  ))}
+                </div>
+                {selectedAddon.workflow_node_types.length > 0 ? (
+                  <>
+                    <p className="muted-text">Workflow node types:</p>
+                    <div className="status-pills">
+                      {selectedAddon.workflow_node_types.map((nodeType) => (
+                        <span
+                          key={nodeType}
+                          className={`status-pill ${selectedAddon.referenced_workflow_node_types.includes(nodeType) ? "state-waiting" : "state-idle"}`}
+                        >
+                          {nodeType}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </article>
+            ) : null}
+
+            {selectedAddon?.runtime_workflow_pack ? (
+              <article className="panel">
+                <div className="panel-header">
+                  <h3>Runtime workflow pack</h3>
+                  <span
+                    className={`status-pill ${selectedAddon.runtime_workflow_pack.configured ? "state-running" : "state-waiting"}`}
+                  >
+                    {selectedAddon.runtime_workflow_pack.configured ? "Configured" : "Not listed"}
+                  </span>
+                </div>
+                <dl className="metadata-grid">
+                  <div>
+                    <dt>Reference</dt>
+                    <dd>{selectedAddon.runtime_workflow_pack.reference ?? "Unavailable"}</dd>
+                  </div>
+                  <div>
+                    <dt>File</dt>
+                    <dd>{selectedAddon.runtime_workflow_pack.exists ? "Present" : "Missing"}</dd>
+                  </div>
+                  <div>
+                    <dt>Source</dt>
+                    <dd>{selectedAddon.runtime_workflow_pack.source}</dd>
+                  </div>
+                  <div>
+                    <dt>Path</dt>
+                    <dd>{selectedAddon.runtime_workflow_pack.path ?? "Unavailable"}</dd>
+                  </div>
+                </dl>
+                {selectedAddon.runtime_workflow_pack.error ? (
+                  <div className="callout warning-callout">{selectedAddon.runtime_workflow_pack.error}</div>
+                ) : null}
+                <div className="feature-toolbar-actions">
+                  <button
+                    type="button"
+                    onClick={() => void refreshRuntimeWorkflowPack(selectedAddon)}
+                    disabled={
+                      mutationLocked ||
+                      runtimePackRefreshing ||
+                      saving ||
+                      !selectedAddon.runtime_workflow_pack.refresh_available
+                    }
+                  >
+                    {runtimePackRefreshing ? "Refreshing..." : "Refresh runtime pack"}
+                  </button>
+                </div>
+              </article>
+            ) : null}
+          </div>
+        </section>
+      </div>
+    </RecordWorkspace>
   );
 }

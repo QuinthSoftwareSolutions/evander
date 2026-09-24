@@ -24,7 +24,7 @@ def test_build_agent_run_completed_event_uses_dispatch_scope() -> None:
         libvirt_state="running",
         ip_address="192.0.2.10",
         agent_state="idle",
-        agent_repo_names=["ExampleIndustryAPP"],
+        agent_repo_names=["SampleApplication"],
         last_state_update_at=datetime(2026, 4, 7, 14, 0, 50, tzinfo=UTC),
         dispatch_id="dispatch-123",
     )
@@ -90,7 +90,7 @@ def test_mark_wake_completed_from_event_prefers_wake_dispatch_id(
         libvirt_state="running",
         ip_address="192.0.2.10",
         agent_state="idle",
-        agent_repo_names=["ExampleIndustryAPP"],
+        agent_repo_names=["SampleApplication"],
         last_state_update_at=completed_at,
         dispatch_id="effect-dispatch-123",
     )
@@ -128,7 +128,7 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
                 libvirt_state="running",
                 ip_address="192.0.2.10",
                 agent_state="running",
-                agent_repo_names=["ExampleIndustryAPP"],
+                agent_repo_names=["SampleApplication"],
                 last_state_update_at=datetime(2026, 4, 7, 14, 0, 0, tzinfo=UTC),
                 dispatch_id="dispatch-123",
             )
@@ -156,6 +156,7 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
             self.vm_agent_admin = self
 
         def list_vms(self, **kwargs):
+            assert kwargs["target_vm_name"] == "vm-issue-14724"
             return responses.pop(0)
 
     class _QueueStub:

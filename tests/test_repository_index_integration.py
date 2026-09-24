@@ -15,7 +15,8 @@ from starlette.applications import Starlette
 
 from evander.admin.web.repository_index import repository_index_routes
 from evander.code_index.access import authorize_session
-from evander.code_index.models import IndexSettings
+from evander.code_index.importer import import_artifact
+from evander.code_index.models import IndexArtifact, IndexSettings, SourceDocument, digest
 from evander.code_index.semantic import IndexSemantic
 from evander.code_index.worker import IndexWorker
 from evander.effects.registry import EffectProviderFactory
@@ -41,17 +42,25 @@ def service(tmp_path):
     result.save_settings(
         REPO,
         "root/app",
-        IndexSettings(enabled=True, semantic=False, refresh_on_git_change=False).model_dump(),
+        IndexSettings(
+            enabled=True, scip=True, semantic=False, refresh_on_git_change=False
+        ).model_dump(),
         expected_revision=0,
     )
     return result
 
 
-def test_current_policy_applies_to_queries_exports_and_pending_builds(service, tmp_path):
+@pytest.mark.parametrize("disable_scip", [False, True])
+def test_current_policy_applies_to_queries_exports_and_pending_builds(
+    service, tmp_path, disable_scip
+):
     published = publish(service)
     pending = service.ensure(REPO, "root/app", OTHER_SHA)
     settings = service.settings(REPO, "root/app")
-    settings["settings"]["excludes"].append("Domain/**")
+    if disable_scip:
+        settings["settings"]["scip"] = False
+    else:
+        settings["settings"]["excludes"].append("Domain/**")
     service.save_settings(
         REPO, "root/app", settings["settings"], expected_revision=settings["revision"]
     )
@@ -126,7 +135,12 @@ def test_provider_factories_materialize_index_nodes_and_enforce_directory_scope(
     )
 
 
-def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, monkeypatch):
+@pytest.mark.parametrize("scip", [False, True])
+def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, monkeypatch, scip):
+    saved = service.settings(REPO, "root/app")
+    service.save_settings(
+        REPO, "root/app", {**saved["settings"], "scip": scip}, expected_revision=saved["revision"]
+    )
     build = service.store.get(service.ensure(REPO, "root/app", SHA)["id"])
     effects, jobs, writes = [], [], []
     resolved_image = "registry.test/code-index@sha256:" + "1" * 64
@@ -139,7 +153,7 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
             effects.append(definition)
             return SimpleNamespace(
                 execute=lambda: {
-                    "target_dir": "/home/agent/repos/APP",
+                    "target_dir": "/home/agent/repos/App",
                     "container_image": resolved_image,
                 }
             )
@@ -168,10 +182,11 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
     )
     assert effects[-1].pinned_commit_sha == SHA
     assert effects[-1].git_access_mode == "read-only"
-    assert jobs[0].working_directory == "/home/agent/repos/APP"
-    assert "/home/agent/repos/APP" in jobs[0].command[-1]
+    assert jobs[0].working_directory == "/home/agent/repos/App"
+    assert "/home/agent/repos/App" in jobs[0].command[-1]
     assert not effects[0].allowed_tools
-    assert effects[0].nuget is True
+    assert effects[0].nuget is scip
+    assert ("export DOTNET_ROOT=" in jobs[0].command[-1]) is scip
     assert effects[0].container_image == "code-index"
     assert jobs[0].image == resolved_image
     assert reservations == [build["id"]]
@@ -187,6 +202,7 @@ def test_worker_uses_clone_path_pinned_commit_and_terminal_metadata(service, mon
     assert len(jobs) == 1  # Restart adopts the original job.
     assert jobs[0].resource_limits.cpus == 1
     runner_settings = json.loads(writes[0].files[0].content)
+    assert runner_settings["scip"] is scip
     assert "worker_cpus" not in runner_settings
     assert "refresh_interval_seconds" not in runner_settings
     assert runner_settings["timeout_seconds"] == build["config"]["timeout_seconds"]
@@ -220,7 +236,7 @@ def test_worker_provisions_approved_alias_and_submits_resolved_image(
 
     def clone_info(**kwargs):
         clone_calls.append(kwargs)
-        return {"clone_url": "/managed/APP.git", "repo_name": "APP"}
+        return {"clone_url": "/managed/App.git", "repo_name": "App"}
 
     service.managed_git.clone_info = clone_info
     service.managed_git.bind = lambda **kwargs: bindings.append(kwargs)
@@ -259,12 +275,12 @@ def test_worker_provisions_approved_alias_and_submits_resolved_image(
     assert clone_calls == [
         {"managed_repo_id": REPO, "directory_path": "root/app", "session_id": build["session_id"]}
     ]
-    assert backend.cloned_repos[0]["repo_source"] == "/managed/APP.git"
+    assert backend.cloned_repos[0]["repo_source"] == "/managed/App.git"
     assert backend.cloned_repos[0]["clone_branch"] == "main"
     assert bindings == [
         {"managed_repo_id": REPO, "kind": "sessions", "binding_id": build["session_id"]}
     ]
-    assert jobs[0].working_directory == "/home/agent/repos/APP"
+    assert jobs[0].working_directory == "/home/agent/repos/App"
     assert jobs[0].image == resolved_image
     assert sessions.get_session(build["session_id"]).metadata["container_worker"] == {
         "image": resolved_image,
@@ -336,7 +352,10 @@ def test_qdrant_batch_keeps_snapshot_filters():
     assert [p["payload"]["snapshot"] for p in requests[0]["points"]] == ["build-1", "build-2"]
 
 
-def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monkeypatch, tmp_path):
+@pytest.mark.parametrize("scip", [False, True])
+def test_semantic_cache_reused_across_commits_and_portable_vectors(
+    service, monkeypatch, tmp_path, scip
+):
     service.semantic = IndexSemantic(
         QueryRuntimeContext(
             provider_config={"semantic_embedding_dimensions": 2, "semantic_embedding_model": "test"}
@@ -344,6 +363,7 @@ def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monk
     )
     saved = service.settings(REPO, "root/app")
     saved["settings"]["semantic"] = True
+    saved["settings"]["scip"] = scip
     service.save_settings(REPO, "root/app", saved["settings"], expected_revision=saved["revision"])
     requests, points = [], []
 
@@ -381,10 +401,10 @@ def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monk
 
     monkeypatch.setattr("evander.code_index.semantic.OpenAIEmbeddingClient", Embeddings)
     monkeypatch.setattr("evander.code_index.semantic.QdrantClient", Vectors)
-    first = publish(service)
+    first = publish(service, scip=scip)
     assert service.semantic.index_batch(service.store, first)
     count = len(requests)
-    second = publish(service, OTHER_SHA)
+    second = publish(service, OTHER_SHA, scip=scip)
     assert service.semantic.index_batch(service.store, second)
     assert len(requests) == count
     assert service.store.get(second["id"])["metrics"]["embedding_cache_hits"] == count
@@ -392,7 +412,9 @@ def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monk
     destination = tmp_path / "vectors.zip"
     service.export(REPO, "root/app", second["id"], destination, include_embeddings=True)
     with zipfile.ZipFile(destination) as bundle:
-        assert json.loads(bundle.read("manifest.json"))["embedding"]["dimensions"] == 2
+        manifest = json.loads(bundle.read("manifest.json"))
+        assert manifest["embedding"]["dimensions"] == 2
+        assert manifest["coverage"]["navigation"] == ("ready" if scip else "disabled")
         assert b"http://" not in bundle.read("manifest.json")
         bundle.extractall(tmp_path / "external-vectors")
     folder = tmp_path / "external-vectors"
@@ -414,6 +436,83 @@ def test_semantic_cache_reused_across_commits_and_portable_vectors(service, monk
     result = json.loads(output)
     assert result["commit_sha"] == OTHER_SHA
     assert result["hits"][0]["path"] == "Domain/Retry.cs"
+
+
+def test_cached_semantic_vectors_drain_beyond_new_embedding_limit(service, monkeypatch):
+    service.semantic = IndexSemantic(
+        QueryRuntimeContext(
+            provider_config={"semantic_embedding_dimensions": 2, "semantic_embedding_model": "test"}
+        )
+    )
+    saved = service.settings(REPO, "root/app")
+    service.save_settings(
+        REPO,
+        "root/app",
+        {**saved["settings"], "semantic": True, "scip": False},
+        expected_revision=saved["revision"],
+    )
+    build = service.ensure(REPO, "root/app", SHA)
+    build = service.store.get(build["id"])
+    documents = [
+        SourceDocument(path=f"Domain/Cached{i}.cs", text=f"class Cached{i} {{}}\n")
+        for i in range(513)
+    ]
+    import_artifact(service.store, build, IndexArtifact(commit_sha=SHA, documents=documents))
+    fingerprint = digest(build["embedding"])
+    with service.store.connect(write=True) as db:
+        hashes = [
+            row[0]
+            for row in db.execute(
+                "SELECT DISTINCT hash FROM chunks WHERE snapshot=?", (build["id"],)
+            )
+        ]
+        db.executemany(
+            "INSERT INTO embeddings VALUES(?,?,?,?)",
+            ((REPO, fingerprint, value, "[1.0, 0.0]") for value in hashes),
+        )
+
+    class Embeddings:
+        last_usage = {}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def embed_texts(self, texts):
+            pytest.fail("Cached vectors must not call the embedding provider")
+
+    upserted = []
+
+    class Vectors:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ensure_collection(self, *args, **kwargs):
+            pass
+
+        def upsert_points(self, collection, **kwargs):
+            upserted.extend(kwargs["points"])
+
+    monkeypatch.setattr("evander.code_index.semantic.OpenAIEmbeddingClient", Embeddings)
+    monkeypatch.setattr("evander.code_index.semantic.QdrantClient", Vectors)
+
+    assert service.semantic.index_batch(service.store, build, limit=1, cached_limit=1024)
+    metrics = service.store.get(build["id"])["metrics"]
+    assert metrics["embedded_chunks"] == 513
+    assert metrics["embedding_cache_hits"] == 513
+    assert "embedding_requests" not in metrics
+    assert len(upserted) == 513
 
 
 def test_admin_controls_authorization_revision_cancel_and_export(service, monkeypatch, tmp_path):
@@ -442,6 +541,19 @@ def test_admin_controls_authorization_revision_cancel_and_export(service, monkey
             transport=httpx.ASGITransport(app), base_url="http://test"
         ) as client:
             assert (await client.get(base)).status_code == 200
+            ready_page = (
+                await client.get(base + "?build_filter=ready&limit=1&offset=0")
+            ).json()
+            assert ready_page["build_filter"] == "ready"
+            assert ready_page["builds_total"] == 1
+            assert ready_page["builds"][0]["id"] == published["id"]
+            assert ready_page["status"] == "queued"
+            assert (
+                await client.get(base + "?build_filter=unknown&limit=20&offset=0")
+            ).status_code == 400
+            assert (
+                await client.get(base + "?build_filter=all&limit=none&offset=0")
+            ).status_code == 400
             assert (await client.post(base + "/builds", json={})).status_code == 403
             assert (await client.get(base + f"/builds/{queued['id']}/cancel")).status_code == 405
             assert service.store.get(queued["id"])["status"] == "queued"
@@ -458,6 +570,19 @@ def test_admin_controls_authorization_revision_cancel_and_export(service, monkey
             assert (
                 await client.post(base + f"/builds/{queued['id']}/cancel", json={})
             ).status_code == 200
+            current = (await client.get(base)).json()
+            assert current["settings"]["scip"] is True
+            current["settings"]["scip"] = False
+            assert (
+                await client.patch(
+                    base,
+                    json={
+                        "expected_revision": current["revision"],
+                        "settings": current["settings"],
+                    },
+                )
+            ).status_code == 200
+            assert (await client.get(base)).json()["settings"]["scip"] is False
 
     asyncio.run(exercise())
 
