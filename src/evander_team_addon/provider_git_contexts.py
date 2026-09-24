@@ -28,6 +28,7 @@ from .git_naming import (
     validate_branch_name,
 )
 from .models import (
+    DependencyCompositionManifest,
     TeamGitPreparationAttemptState,
     TeamTaskKind,
 )
@@ -857,7 +858,7 @@ def _validate_project_repo_git_work_context(
         "dependency_composition_recovery_id": dependency_composition_recovery_id,
         "manual_dependency_git_sources": [dict(row) for row in manual_dependency_git_sources],
         "dependency_composition_manifest": (
-            dict(dependency_composition_manifest)
+            DependencyCompositionManifest.model_validate(dependency_composition_manifest)
             if dependency_composition_manifest is not None
             else None
         ),

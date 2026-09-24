@@ -568,6 +568,7 @@ class DependencyCompositionManifest(TeamModel):
     composed_commit_sha: str
     composed_tree_hash: str
     verified_candidate_commit_sha: str | None = None
+    source_bases_verified: bool = False
 
     @field_validator(
         "target_task_id",

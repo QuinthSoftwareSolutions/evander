@@ -1260,8 +1260,11 @@ When a new integration boundary belongs to a Git-backed project and no commit is
 supplied, Team resolves its selected `git_base_branch` through the managed repository
 and stores that commit as an immutable baseline. Creation fails closed when the branch
 cannot be resolved. When a caller supplies a commit, Team first verifies that the object
-exists in the managed repository and is an ancestor of the selected branch tip. Ordinary
-coordination and leaf tasks retain branch-only behavior.
+exists in the managed repository and is an ancestor of the selected branch tip. Children
+that use the same base branch inherit the nearest parent's commit pin when no explicit
+commit is supplied, including nested children and parents created in the same batch.
+They do not resolve a newer branch tip when their worktree starts. Tasks without a pinned
+parent retain branch-only behavior; originating-task links alone do not inherit Git pins.
 
 For Azure DevOps intake, `effect:team:create-task` accepts `ado_work_item_id` and
 optional `ado_project`. The host fetches the work item in the Team project's directory
@@ -2413,6 +2416,14 @@ source fingerprint, and the composed commit/tree. Required contribution tasks
 come from the deliverable contract even when no duplicate dependency edge was
 recorded. Accepted review refs are resolved instead of mutable agent branch tips;
 legacy accepted rows retain the older branch/context validation.
+Before composing accepted work into a pinned task, the host verifies that each source's
+recorded starting commit is already contained in the target's pinned base. It also checks
+nested compositions. Older source bases are allowed; newer, unrelated, or unknown bases
+block preparation with the source deliverable and base commits in the diagnostic.
+Submission repeats this verification for already prepared worktrees and records server
+proof in the deliverable's composition manifest. Acceptance of an integration candidate
+requires that proof. Existing records remain readable, but unverified candidates need a
+fresh submission; recovery never rewrites their accepted commits or silently changes a pin.
 Artifact-only deliverables,
 administrative work, customer-service work, operations work, and tasks with no
 deliverable do not need Git contexts. Once a deliverable includes Git metadata,

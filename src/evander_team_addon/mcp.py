@@ -3212,7 +3212,19 @@ def _team_mcp_git_candidate_commit_resolver(
         directory_path: str,
         agent_branch: str,
         required_ancestor_shas: Sequence[str] | None = None,
+        contribution_base_commit_sha: str | None = None,
+        contribution_sources: Sequence[Mapping[str, str]] = (),
     ) -> str | None:
+        if contribution_base_commit_sha is not None:
+            verify_bases = getattr(managed_git, "verify_contribution_bases", None)
+            if not callable(verify_bases):
+                raise RuntimeError("managed Git contribution-base verification is unavailable")
+            verify_bases(
+                managed_repo_id,
+                directory_path=directory_path,
+                base_commit_sha=contribution_base_commit_sha,
+                sources=contribution_sources,
+            )
         resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
         if not callable(resolve_branch_commit):
             raise RuntimeError("managed Git branch resolution is unavailable")

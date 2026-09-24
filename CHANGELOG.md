@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-24 - Guard pinned Team integration bases (0.63.3)
+
+- Inherit parent commit pins when creating children in the same Git workstream,
+  including nested and batch-created tasks, so later branch advances cannot change their base.
+- Reject accepted contributions whose recorded starting history is outside the pinned
+  integration base, including nested compositions and missing source provenance.
+- Recheck contribution bases at submission and require server verification before integration
+  acceptance, preserving existing accepted history and requiring explicit recovery for mismatches.
+
 ## 2026-09-24 - Make New UI the default (0.63.2)
 
 - Make New UI the default while retaining the Classic UI picker and saved preference.

@@ -1082,7 +1082,9 @@ def require_deliverable_acceptance(
         task.integration_boundary
         and (dependency_git_source_ids or submitted_git_source_ids)
     )
-    if deliverable.acceptance_policy_version >= 2 and requires_composition_manifest:
+    if requires_composition_manifest and (
+        deliverable.acceptance_policy_version >= 2 or task.git_base_commit_sha is not None
+    ):
         manifest = deliverable.dependency_composition_manifest
         if manifest is None:
             raise TaskAssessmentBoundaryError(
@@ -1174,6 +1176,20 @@ def require_deliverable_acceptance(
                             ]
                         )
                     ),
+                },
+            )
+        if not manifest.source_bases_verified:
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_source_bases_unverified",
+                message=(
+                    f"deliverable {deliverable.id} has no server verification that "
+                    "its contribution bases are contained in the pinned integration base; "
+                    "prepare and submit a freshly verified replacement"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": task.id,
+                    "base_commit_sha": manifest.base_commit_sha,
                 },
             )
     return assessment
