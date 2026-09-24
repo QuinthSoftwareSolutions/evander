@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+from team_repository_support import (
+    _command_service,
+    _lease_agent_dispatch,
+    _register_backend_peer,
+    _root_session_lookup,
+    _seed_hierarchy,
+    _seed_task,
+    _team_admin_service,
+    _team_agent_action_service,
+)
+
 import json
 import shutil
 import sqlite3
@@ -132,7 +143,6 @@ from evander_team_addon.services.domain.preparation_failures import (
 )
 from evander_team_addon.services.domain.work_due import _mark_agent_work_due
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
-from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import (
     TeamChatService,
@@ -152,24 +162,12 @@ from evander_team_addon.services.runtime_service import (
     _dispatch_staleness_errors,
 )
 from evander_team_addon.services.commands import (
-    TeamAgentControlCommandService,
-    TeamAgentMessageCommandService,
-    TeamBlockerCommandService,
-    TeamCaseCommandService,
-    TeamChatCommandService,
     TeamCommandApplyResult,
     TeamCommandContext,
     TeamDeliverableSubmissionCommandService,
     TeamEphemeralCommandService,
-    TeamGitReleaseCommandService,
-    TeamGovernanceCommandService,
-    TeamMemoryCommandService,
-    TeamNoteCommandService,
-    TeamOperatorEscalationCommandService,
-    TeamOutcomeCatalogCommandService,
     TeamReviewCommandService,
     TeamTaskCreationCommandService,
-    TeamTaskUpdateCommandService,
 )
 from evander_team_addon.sqlite_store import (
     SQLITE_SCHEMA_VERSION,
@@ -188,37 +186,6 @@ from evander_team_addon.services.domain.dependency_composition_recovery import (
 
 
 MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
-
-
-class _TeamCommandTestHarness(
-    TeamNoteCommandService,
-    TeamAgentMessageCommandService,
-    TeamChatCommandService,
-    TeamOperatorEscalationCommandService,
-    TeamCaseCommandService,
-    TeamTaskCreationCommandService,
-    TeamTaskUpdateCommandService,
-    TeamAgentControlCommandService,
-    TeamBlockerCommandService,
-    TeamGovernanceCommandService,
-    TeamMemoryCommandService,
-    TeamDeliverableSubmissionCommandService,
-    TeamReviewCommandService,
-    TeamGitReleaseCommandService,
-    TeamEphemeralCommandService,
-    TeamOutcomeCatalogCommandService,
-):
-    """Local test harness for cases that intentionally span command families."""
-
-
-def _command_service(repo: TeamStateRepository) -> _TeamCommandTestHarness:
-    service = _TeamCommandTestHarness(repo)
-    service._session_lookup = _root_session_lookup
-    return service
-
-
-def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
-    return TeamAdminService(repo)
 
 
 def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
@@ -241,16 +208,8 @@ def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
     return TeamRuntimeService(repo)
 
 
-def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:
-    return TeamAgentActionService(repo, session_lookup=_root_session_lookup)
-
-
 def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
     return TeamEphemeralService(repo, session_lookup=_root_session_lookup)
-
-
-def _root_session_lookup(_session_id: str) -> dict[str, str]:
-    return {"directory_path": "root"}
 
 
 def _team_git_release_service(repo: TeamStateRepository) -> TeamGitReleaseService:
@@ -293,65 +252,6 @@ def _seed_git_work_context(
         )
 
     repo.update(_mutate)
-
-
-def _seed_hierarchy(tmp_path: Path) -> TeamStateRepository:
-    """manager -> lead (project) -> backend -> worker, all in one team/project."""
-
-    repo = TeamStateRepository(tmp_path)
-    _team_admin_service(repo).create_team(
-        team_id="team",
-        name="Team",
-        manager_agent_id="manager",
-        manager_session_id="session-manager",
-        manager_display_name="  Team Manager  ",
-        expected_revision=0,
-    )
-    _team_admin_service(repo).create_project(
-        project_id="project",
-        team_id="team",
-        name="Project",
-        lead_agent_id="lead",
-        lead_session_id="session-lead",
-        lead_display_name="Project Lead",
-        goals=[ProjectGoal(id="goal", description="Ship work")],
-        expected_revision=repo.read().revision,
-    )
-    _team_admin_service(repo).create_role(
-        role_id="project__backend",
-        team_id="team",
-        project_id="project",
-        name="Backend",
-        expected_revision=repo.read().revision,
-    )
-    _team_admin_service(repo).create_role(
-        role_id="project__worker",
-        team_id="team",
-        project_id="project",
-        name="Worker",
-        expected_revision=repo.read().revision,
-    )
-    _team_admin_service(repo).register_agent(
-        agent_id="backend",
-        team_id="team",
-        project_id="project",
-        role_id="project__backend",
-        session_id="session-backend",
-        reports_to_agent_id="lead",
-        display_name="Backend Agent",
-        expected_revision=repo.read().revision,
-    )
-    _team_admin_service(repo).register_agent(
-        agent_id="worker",
-        team_id="team",
-        project_id="project",
-        role_id="project__worker",
-        session_id="session-worker",
-        reports_to_agent_id="backend",
-        display_name="  Worker Agent  ",
-        expected_revision=repo.read().revision,
-    )
-    return repo
 
 
 def _seed_hidden_memory_targets(repo: TeamStateRepository) -> None:
@@ -413,82 +313,6 @@ def _lease_backend(
         return state
 
     repo.update(_set_no_progress)
-
-
-def _lease_agent_dispatch(
-    repo: TeamStateRepository,
-    *,
-    agent_id: str,
-    dispatch_id: str = "dispatch-command",
-    wake_reason: str = "inbox",
-) -> None:
-    def _lease(state):
-        agent = state.agents[agent_id]
-        assessments = TaskAssessmentService(state)
-        project_ids = sorted(
-            project.id for project in state.projects.values() if project.team_id == agent.team_id
-        )
-        task_ids = sorted(
-            task.id
-            for task in state.tasks.values()
-            if task.project_id in project_ids
-            and task.owner_agent_id == agent_id
-            and assessments.assess(task.id).readiness.value == "actionable"
-        )
-        blocker_ids: list[str] = []
-        for blocker in state.blockers.values():
-            assigned = (
-                blocker.route == TeamBlockerRoute.DELEGATED
-                and blocker.delegate_agent_id == agent_id
-            ) or (
-                blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
-                and blocker.owner_agent_id == agent_id
-            )
-            if blocker.state == TeamBlockerState.OPEN and assigned:
-                blocker.active_dispatch_id = dispatch_id
-                blocker_ids.append(blocker.id)
-        state.dispatches[dispatch_id] = TeamDispatch(
-            id=dispatch_id,
-            agent_id=agent_id,
-            session_id=agent.session_id,
-            cause_kind=wake_reason,
-            task_ids=task_ids,
-            blocker_ids=sorted(blocker_ids),
-            review_request_ids=sorted(
-                review.id
-                for review in state.review_requests.values()
-                if review.reviewer_agent_id == agent_id
-                and review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
-                and review.superseded_by_review_request_id is None
-                and review.retired_at is None
-            ),
-            inbox_item_ids=sorted(
-                item.id
-                for item in state.inbox.values()
-                if item.recipient_agent_id == agent_id and item.state == TeamInboxItemState.PENDING
-            ),
-            project_ids=project_ids,
-            managed_repo_ids=sorted(
-                {
-                    project.git.managed_repo_id
-                    for project in state.projects.values()
-                    if project.id in project_ids and project.git is not None
-                }
-            ),
-            status=TeamDispatchStatus.LEASED,
-            prepared_at=datetime(2098, 12, 31, 23, 59, tzinfo=UTC),
-            leased_at=datetime(2098, 12, 31, 23, 59, tzinfo=UTC),
-            lease_expires_at=datetime(2099, 1, 1, 0, 15, tzinfo=UTC),
-        )
-        state.agent_runtimes[agent_id] = AgentRuntime(
-            agent_id=agent_id,
-            active_dispatch_id=dispatch_id,
-            wake_leased_until=datetime(2099, 1, 1, 0, 15, tzinfo=UTC),
-            wake_reason=wake_reason,
-        )
-        return state
-
-    repo.update(_lease)
 
 
 def _report_explicit_blocker(
@@ -9047,8 +8871,12 @@ def test_decide_review_stale_dispatch_cannot_absorb_late_high_priority_inbox(
     ]
 
 
-def test_repository_update_task_command_supervisor_finishes_subordinate_task(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "owner_update",
+    [pytest.param({}, id="keep-owner"), pytest.param({"owner_agent_id": "backend"}, id="claim-owner")],
+)
+def test_repository_update_task_command_rejects_supervisor_finishing_subordinate_task(
+    tmp_path: Path, owner_update: dict[str, str],
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="worker-task", owner_agent_id="worker")
@@ -9058,26 +8886,7 @@ def test_repository_update_task_command_supervisor_finishes_subordinate_task(
         session_id="session-backend",
         task_id="worker-task",
         state="finished",
-    )
-
-    assert result["success"] is False
-    assert result["errors"][0]["code"] == "dispatch_scope_forbidden"
-    assert state.tasks["worker-task"].state == TeamTaskState.PENDING
-    assert state.tasks["worker-task"].owner_agent_id == "worker"
-
-
-def test_repository_update_task_command_supervisor_claims_and_finishes_subordinate_task(
-    tmp_path: Path,
-) -> None:
-    repo = _seed_hierarchy(tmp_path)
-    _seed_task(repo, task_id="worker-task", owner_agent_id="worker")
-    _lease_agent_dispatch(repo, agent_id="backend")
-
-    state, result = _command_service(repo).update_task_command(
-        session_id="session-backend",
-        task_id="worker-task",
-        state="finished",
-        owner_agent_id="backend",
+        **owner_update,
     )
 
     assert result["success"] is False
@@ -17617,40 +17426,6 @@ def test_supervisor_starts_dependency_composition_recovery_and_cannot_bypass_it(
     assert (
         restarted_state.dependency_composition_recoveries[recovery.id].recovery_task_id
         == replacement.id
-    )
-
-
-def _seed_task(
-    repo: TeamStateRepository,
-    *,
-    task_id: str,
-    owner_agent_id: str = "backend",
-) -> None:
-    _team_admin_service(repo).create_or_reprioritize_task(
-        task_id=task_id,
-        owner_agent_id=owner_agent_id,
-        project_id="project",
-        priority=1,
-        title=f"Task {task_id}",
-        description="Work to deliver.",
-        created_by_agent_id="lead",
-    )
-
-
-def _register_backend_peer(
-    repo: TeamStateRepository,
-    *,
-    reports_to_agent_id: str,
-) -> None:
-    _team_admin_service(repo).register_agent(
-        agent_id="backend-peer",
-        team_id="team",
-        project_id="project",
-        role_id="project__backend",
-        session_id="session-backend-peer",
-        reports_to_agent_id=reports_to_agent_id,
-        display_name="Backend Peer",
-        expected_revision=repo.read().revision,
     )
 
 

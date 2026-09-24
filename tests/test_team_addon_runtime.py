@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+from team_runtime_support import (
+    FakeFileCopier,
+    FakeRepoCloner,
+    FakeResumer,
+    FakeSessionStore,
+    FakeVmExecutor,
+    _add_luke_reviewer,
+    _root_session_lookup,
+    _seed_team,
+    _team_admin_service,
+    _team_agent_action_service,
+    _team_runtime_service,
+)
+
 from evander_team_addon import provider_events
 
 import hashlib
@@ -73,7 +87,6 @@ from evander_team_addon.models import (
     DeliverableInitialReleaseDisposition,
     DependencyCompositionRecovery,
     DependencyCompositionRecoveryState,
-    EphemeralAgentPolicy,
     EphemeralAssignment,
     GitWorkContext,
     GitWorkContextState,
@@ -197,7 +210,6 @@ from evander_team_addon.services.domain.preparation_failures import (
     task_git_work_context_generation,
 )
 from evander_team_addon.services.domain.work_lineage import ensure_release_work_lineage
-from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.commands.outbox import (
     TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
@@ -287,10 +299,6 @@ def _command_service(repo: TeamStateRepository) -> TeamEphemeralCommandService:
     return TeamEphemeralCommandService(repo, session_lookup=_root_session_lookup)
 
 
-def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
-    return TeamAdminService(repo)
-
-
 def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
     return TeamChatService(repo)
 
@@ -307,20 +315,8 @@ def _authorized_chat_mutation(repo: TeamStateRepository, agent_id: str):
     )
 
 
-def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
-    return TeamRuntimeService(repo)
-
-
-def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:
-    return TeamAgentActionService(repo, session_lookup=_root_session_lookup)
-
-
 def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
     return TeamEphemeralService(repo, session_lookup=_root_session_lookup)
-
-
-def _root_session_lookup(_session_id: str) -> dict[str, str]:
-    return {"directory_path": "root"}
 
 
 def test_team_project_managed_repository_bindings_follow_state_and_rollback(
@@ -602,64 +598,6 @@ def _node_ids(nodes: object) -> list[str]:
     ]
 
 
-class FakeResumer:
-    def __init__(
-        self,
-        result: dict[str, object] | None = None,
-        on_resume: object | None = None,
-    ) -> None:
-        self.calls: list[dict[str, object]] = []
-        self.result = result or {"thread_id": "thread-1"}
-        self.on_resume = on_resume
-
-    def resume_agent(self, **kwargs: object) -> dict[str, object]:
-        if callable(self.on_resume):
-            self.on_resume(dict(kwargs))
-        self.calls.append(dict(kwargs))
-        return dict(self.result)
-
-
-class FakeMetadataUpdater:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
-        self.calls.append(dict(kwargs))
-        return {"success": True}
-
-
-class FakeSessionStore(FakeMetadataUpdater):
-    def __init__(self) -> None:
-        super().__init__()
-        self.sessions = {
-            "session-backend": SimpleNamespace(
-                session_id="session-backend",
-                vm_id="vm-backend",
-                vm_provider="libvirt",
-                directory_path="root",
-                metadata={},
-            )
-        }
-
-    def read_all_sessions(self) -> dict[str, object]:
-        return self.sessions
-
-    def get_session(self, session_id: str) -> object | None:
-        return self.sessions.get(session_id)
-
-    def upsert_session(self, session: object) -> object:
-        self.sessions[str(getattr(session, "session_id"))] = session
-        return session
-
-    def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
-        super().session_update_metadata(**kwargs)
-        target = str(kwargs["target"])
-        metadata = kwargs["metadata"]
-        session = self.sessions[target]
-        session.metadata = _deep_merge(dict(session.metadata), metadata)
-        return {"success": True, "metadata": session.metadata}
-
-
 class FakeExecutionStore:
     def __init__(self, records: list[object]) -> None:
         self.records = records
@@ -720,80 +658,12 @@ class FakeAgentPromptQueueStore:
         return True
 
 
-class FakeFileCopier:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def vm_copy_files(self, **kwargs: object) -> dict[str, object]:
-        self.calls.append(dict(kwargs))
-        files = list(kwargs.get("files") or [])
-        return {
-            "success": True,
-            "vm_name": kwargs.get("target"),
-            "copied_count": len(files),
-            "copied_paths": [file["destination_path"] for file in files],
-        }
-
-
-class FakeRepoCloner:
-    def __init__(
-        self,
-        *,
-        success: bool = True,
-        message: str = "repo prepared",
-        on_clone: object | None = None,
-    ) -> None:
-        self.calls: list[dict[str, object]] = []
-        self.success = success
-        self.message = message
-        self.on_clone = on_clone
-
-    def clone_repo_into_vm(self, **kwargs: object) -> SimpleNamespace:
-        self.calls.append(dict(kwargs))
-        if callable(self.on_clone):
-            self.on_clone()
-        return SimpleNamespace(
-            success=self.success,
-            vm_name=str(kwargs.get("vm_name") or "vm-backend"),
-            message=self.message,
-            target_dir="/home/agent/Evander",
-            guest_repo_name="Evander",
-        )
-
-
-class FakeVmExecutor:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def vm_exec(self, **kwargs: object) -> dict[str, object]:
-        self.calls.append(dict(kwargs))
-        return {
-            "success": True,
-            "stdout": f"EVANDER_BASE_COMMIT={'a' * 40}\n",
-            "stderr": "",
-            "exit_code": 0,
-            "message": "task worktree prepared",
-        }
-
-
 class FakeArtifactReader:
     def __init__(self, content: str) -> None:
         self.content = content
 
     def read_session_artifact_text(self, **_: object) -> dict[str, object]:
         return {"content": self.content}
-
-
-def _deep_merge(base: dict[str, object], update: object) -> dict[str, object]:
-    if not isinstance(update, dict):
-        return base
-    merged = dict(base)
-    for key, value in update.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(dict(merged[key]), value)
-        else:
-            merged[key] = value
-    return merged
 
 
 def _team_context_from_prompt(prompt: str) -> dict[str, object]:
@@ -803,54 +673,6 @@ def _team_context_from_prompt(prompt: str) -> dict[str, object]:
             1,
         )[0]
     )
-
-
-def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateRepository:
-    repo = TeamStateRepository(runtime_dir)
-    _team_admin_service(repo).create_team(
-        team_id="team",
-        name="Team",
-        manager_agent_id="manager",
-        manager_session_id="session-manager",
-        expected_revision=0,
-    )
-    _team_admin_service(repo).create_project(
-        project_id="project",
-        team_id="team",
-        name="Project",
-        lead_agent_id="lead",
-        lead_session_id="session-lead",
-        goals=[ProjectGoal(id="goal", description="Ship work")],
-        expected_revision=1,
-    )
-    _team_admin_service(repo).create_role(
-        role_id="project__backend",
-        team_id="team",
-        project_id="project",
-        name="Backend",
-        expected_revision=2,
-    )
-    _team_admin_service(repo).register_agent(
-        agent_id="backend",
-        team_id="team",
-        project_id="project",
-        role_id="project__backend",
-        session_id="session-backend",
-        reports_to_agent_id="lead",
-        ephemeral_policy=EphemeralAgentPolicy(max_concurrent=max_ephemeral),
-        expected_revision=3,
-    )
-    _team_admin_service(repo).create_or_reprioritize_task(
-        task_id="task",
-        owner_agent_id="backend",
-        project_id="project",
-        priority=1,
-        title="Build backend",
-        description="Implement backend work.",
-        created_by_agent_id="lead",
-        expected_revision=4,
-    )
-    return repo
 
 
 def test_work_lineage_policy_assigns_related_tasks_and_dispatches_one_lineage(
@@ -1950,41 +1772,6 @@ def test_admin_task_upsert_allows_unchanged_contract_echo_after_submission(
     assert task.title == "Build backend safely"
     assert task.integration_boundary is False
     assert task.deliverable_contract is None
-
-
-def _add_luke_reviewer(
-    repo: TeamStateRepository,
-    *,
-    with_review_profile: bool = True,
-) -> None:
-    _team_admin_service(repo).create_role(
-        role_id="project__reviewer",
-        team_id="team",
-        project_id="project",
-        name="Reviewer",
-        description="Review deliverables; do not own implementation work.",
-        expected_revision=repo.read().revision,
-    )
-    _team_admin_service(repo).register_agent(
-        agent_id="luke",
-        team_id="team",
-        project_id="project",
-        role_id="project__reviewer",
-        session_id="session-luke",
-        display_name="Luke",
-        reports_to_agent_id="lead",
-        expected_revision=repo.read().revision,
-    )
-    if with_review_profile:
-        _team_admin_service(repo).create_review_profile(
-            profile_id="project-review-profile",
-            team_id="team",
-            project_id="project",
-            name="Project review",
-            description="Default review checks for project deliverables.",
-            applicable_role_ids=["project__reviewer"],
-            expected_revision=repo.read().revision,
-        )
 
 
 def _add_backend_task(

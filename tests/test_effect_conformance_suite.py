@@ -3,7 +3,6 @@ from __future__ import annotations
 from config_helpers import canonical_worker_config, effect_execution_payload
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,16 +20,11 @@ from evander.provider_config import ProviderConfigResolver
 from evander.triggers.queue import SqliteTriggerEventQueue
 from config_helpers import canonical_workflow_node, canonical_workflow_payload
 
-REPORT_ENV_VAR = "EVANDER_EFFECT_CONFORMANCE_REPORT"
+from conformance_support import MATRICES, build_report, write_report
 
 
 def _worker_config(payload: dict[str, object]) -> TriggerOrchestratorWorkerGlobalConfig:
     return canonical_worker_config(canonical_workflow_payload(payload))
-
-
-@pytest.fixture(scope="module")
-def report_collector() -> dict[str, Any]:
-    return {"requirements": []}
 
 
 def _record_result(
@@ -820,49 +814,25 @@ def test_effect_regression_cycle_detection_skips_execution(
     )
 
 
-def test_effect_conformance_traceability_matrix_and_report(
-    report_collector: dict[str, Any], tmp_path: Path
-) -> None:
-    matrix = {
-        "task_schema_validation": ["schema:supported-effect-types", "schema:required-fields"],
-        "task_provider_registration": ["provider:registration-and-factory"],
-        "task_binding_and_chain": ["binding:resolution-and-chaining"],
-        "task_queue_idempotency": ["queue:idempotency"],
-        "task_failure_regressions": [
-            "regression:missing-upstream-output",
-            "regression:provider-failure",
-            "regression:cycle-detection",
-        ],
-    }
+def test_effect_conformance_traceability_matrix_and_report(tmp_path: Path) -> None:
+    # Report formatting is independent of execution order. The pytest reporter checks
+    # this same matrix against actual passed cases at the end of a complete suite.
+    matrix = MATRICES["effect"]
+    requirements = [
+        {
+            "requirement_id": requirement_id,
+            "status": "pass",
+            "coverage": [task],
+            "details": "Formatter input",
+        }
+        for task, required in matrix.items()
+        for requirement_id in required
+    ]
+    summary = build_report(requirements, matrix)
+    report_path = tmp_path / "effect-conformance-report.json"
+    write_report(report_path, summary)
 
-    seen = {entry["requirement_id"] for entry in report_collector["requirements"]}
-    missing: dict[str, list[str]] = {}
-    for task_name, required_requirements in matrix.items():
-        uncovered = [
-            requirement_id for requirement_id in required_requirements if requirement_id not in seen
-        ]
-        if uncovered:
-            missing[task_name] = uncovered
-
-    summary = {
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "status": "pass" if not missing else "fail",
-        "requirements": sorted(
-            report_collector["requirements"], key=lambda item: item["requirement_id"]
-        ),
-        "traceability_matrix": matrix,
-        "missing_coverage": missing,
-    }
-
-    report_path = Path(os.environ.get(REPORT_ENV_VAR, "runtime/effect-conformance-report.json"))
-    if not report_path.is_absolute():
-        report_path = Path.cwd() / report_path
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-
-    local_copy = tmp_path / "effect-conformance-report.json"
-    local_copy.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-
-    assert not missing, f"Traceability matrix has missing coverage: {missing}"
+    assert not summary["missing_coverage"]
     assert summary["status"] == "pass"
     assert report_path.exists()
+    assert json.loads(report_path.read_text(encoding="utf-8")) == summary

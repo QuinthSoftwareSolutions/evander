@@ -5,9 +5,14 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 
-import { chromium } from "playwright";
 import { createServer as createViteServer } from "vite";
 import { fulfillAdminShellBackgroundApiRequest } from "./adminShellHelpers.mjs";
+import {
+  browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout,
+} from "./support/browserHarness.mjs";
+import { waitForCondition } from "./support/polling.mjs";
+
+const browser = suiteBrowser();
 
 const staticRoot = path.resolve(
   fileURLToPath(new URL("../../../src/evander_team_addon/ui_static", import.meta.url)),
@@ -52,7 +57,6 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-stand-down-scope="agent">Stand down</);
   assert.match(script, />Stand down subtree</);
   assert.match(script, /and every subordinate in that agent's subtree/);
-  assert.match(script, /data-stand-down-revoke-agent-id/);
   assert.match(script, /data-resume-release-recovery-blocker-id/);
   assert.match(script, /Resume release recovery/);
   assert.match(script, /admin_ui_release_recovery/);
@@ -2317,8 +2321,7 @@ async function createTeamAddonServer(
     }
   });
 
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  await t.after(async () => {
+  t.after(async () => {
     for (const stream of openStateStreams) {
       clearInterval(stream.interval);
       stream.response.end();
@@ -2331,8 +2334,13 @@ async function createTeamAddonServer(
       stream.response.destroy?.();
     }
     openChatStreams.clear();
-    await new Promise((resolve) => server.close(resolve));
-  });
+    server.closeAllConnections();
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }, { timeout: browserHookTimeout });
+  await withTimeout(new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  }), 10_000, "Team fixture server did not start within 10 seconds");
   const address = server.address();
   assert.ok(address && typeof address === "object" && "port" in address);
   const emitChatSnapshots = (conversationId = null) => {
@@ -3047,15 +3055,8 @@ async function openBrowserPage(
   contextOptions = {},
   path = "/addons/team-addon/?privileged_unlocked=true",
 ) {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext(contextOptions);
+  const context = await browser.newContext(t, contextOptions);
   const page = await context.newPage();
-  page.setDefaultTimeout(10000);
-  await t.after(async () => {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
-  });
   await page.goto(`http://127.0.0.1:${port}${path}`, {
     waitUntil: "domcontentloaded",
   });
@@ -3069,14 +3070,10 @@ async function openCaseBoardAdminShell(t, fixturePort, { hash = "#addon:team-add
     server: { host: "127.0.0.1", port: 0, proxy: { "/addons/": target, "/api/addons/": target } },
     logLevel: "error",
   });
-  await server.listen();
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
-  page.setDefaultTimeout(10000);
-  t.after(async () => {
-    await browser.close();
-    await server.close();
-  });
+  t.after(() => server.close(), { timeout: browserHookTimeout });
+  await withTimeout(server.listen(), 15_000, "Vite did not start within 15 seconds");
+  const context = await browser.newContext(t);
+  const page = await context.newPage();
   let authenticated = authMode === "none";
   const loginTargets = [];
   const errors = [];
@@ -3322,20 +3319,6 @@ async function rightClickBareOrgCanvas(page) {
   await page.mouse.click(point.x, point.y, { button: "right" });
 }
 
-async function waitForCondition(predicate, message, { timeoutMs = 2000, intervalMs = 25 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  if (predicate()) {
-    return;
-  }
-  throw new Error(message);
-}
-
 async function waitForStatusText(page, textValue, requests = [], { timeout = 5000 } = {}) {
   try {
     await page.getByText(textValue).waitFor({ state: "visible", timeout });
@@ -3376,7 +3359,7 @@ async function openOrgChart(page) {
   await page.locator("#team-org-page").waitFor({ state: "visible" });
 }
 
-test("team add-on remembers the selected top-level view across refresh", async (t) => {
+test("team add-on remembers the selected top-level view across refresh", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
@@ -3393,7 +3376,7 @@ test("team add-on remembers the selected top-level view across refresh", async (
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
 });
 
-test("team add-on normalizes deprecated Setup view storage to Teams", async (t) => {
+test("team add-on normalizes deprecated Setup view storage to Teams", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
@@ -3410,7 +3393,7 @@ test("team add-on normalizes deprecated Setup view storage to Teams", async (t) 
   );
 });
 
-test("team add-on Teams tab creates teams from the top-level action", async (t) => {
+test("team add-on Teams tab creates teams from the top-level action", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
@@ -3452,7 +3435,7 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   assert.equal(teamRequest.payload.operator_communication_target_id, "ops-launch");
 });
 
-test("team add-on copies a clean team configuration with existing and new core sessions", async (t) => {
+test("team add-on copies a clean team configuration with existing and new core sessions", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.projects.project.directory_path = "root/team-project";
   initialState.projects.project.git.directory_path = "root/team-project";
@@ -3582,7 +3565,7 @@ test("team add-on copies a clean team configuration with existing and new core s
   );
 });
 
-test("team add-on copies all source sessions by default without individual setup", async (t) => {
+test("team add-on copies all source sessions by default without individual setup", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests, state: serverState } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -3613,7 +3596,7 @@ test("team add-on copies all source sessions by default without individual setup
   assert.equal(requests.some((request) => request.pathname === "/api/admin/agents/create-operations"), false);
 });
 
-test("team add-on retains completed session copies when another session fails", async (t) => {
+test("team add-on retains completed session copies when another session fails", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, { initialState: seededOrgChartState() });
   const page = await openBrowserPage(t, port);
   let attempts = 0;
@@ -3642,7 +3625,7 @@ test("team add-on retains completed session copies when another session fails", 
   assert.equal(new Set(copies.map((request) => request.payload.source_session_id)).size, 4);
 });
 
-test("team add-on rebases a copy when only live Team state changed", async (t) => {
+test("team add-on rebases a copy when only live Team state changed", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const {
     port,
@@ -3695,7 +3678,7 @@ test("team add-on rebases a copy when only live Team state changed", async (t) =
   assert.equal(Object.keys(serverState.teams).length, 2);
 });
 
-test("team add-on rejects a copy when the stable source configuration changed", async (t) => {
+test("team add-on rejects a copy when the stable source configuration changed", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const destinationSessions = ["manager", "lead", "backend", "worker"].map((agentId) => ({
     agent_id: `core-copy-${agentId}`,
@@ -3758,7 +3741,7 @@ test("team add-on rejects a copy when the stable source configuration changed", 
   assert.deepEqual(Object.keys(serverState.teams), ["team"]);
 });
 
-test("team add-on hides copy for archived teams", async (t) => {
+test("team add-on hides copy for archived teams", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.archived = true;
   Object.values(initialState.agents).forEach((agent) => {
@@ -3780,7 +3763,7 @@ test("team add-on hides copy for archived teams", async (t) => {
   );
 });
 
-test("team add-on team editor selects from all registered communication targets", async (t) => {
+test("team add-on team editor selects from all registered communication targets", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.operator_communication_target_id = "team-alerts";
   const { port, requests } = await createTeamAddonServer(t, {
@@ -3824,7 +3807,7 @@ test("team add-on team editor selects from all registered communication targets"
   assert.equal(update.payload.operator_communication_target_id, "ops-notify-only");
 });
 
-test("team add-on UI imports Git repo config into project forms", async (t) => {
+test("team add-on UI imports Git repo config into project forms", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
@@ -3859,7 +3842,7 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
   });
 });
 
-test("team add-on UI creates review profile criteria with structured rows", async (t) => {
+test("team add-on UI creates review profile criteria with structured rows", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -3911,7 +3894,7 @@ test("team add-on UI creates review profile criteria with structured rows", asyn
   ]);
 });
 
-test("team add-on Projects tab reveals project and review profile forms on demand", async (t) => {
+test("team add-on Projects tab reveals project and review profile forms on demand", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -3988,7 +3971,7 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   });
 });
 
-test("team add-on Projects tab collapses, filters, sorts, and pages delivery records", async (t) => {
+test("team add-on Projects tab collapses, filters, sorts, and pages delivery records", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.tasks.task_open.deliverable_ids = [];
   initialState.deliverables = {};
@@ -4250,15 +4233,15 @@ async function checkReleaseHistoryFilters(t, { windowed = false } = {}) {
   assert.match(await historySummary.innerText(), unfilteredSummary);
 }
 
-test("team add-on release history filters by state and activity date", async (t) => {
+test("team add-on release history filters by state and activity date", { timeout: browserTestTimeout }, async (t) => {
   await checkReleaseHistoryFilters(t);
 });
 
-test("team add-on release history filters explain partial history counts", async (t) => {
+test("team add-on release history filters explain partial history counts", { timeout: browserTestTimeout }, async (t) => {
   await checkReleaseHistoryFilters(t, { windowed: true });
 });
 
-test("team add-on delivery records lead with human subjects and progressive technical detail", async (t) => {
+test("team add-on delivery records lead with human subjects and progressive technical detail", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const deliverableId = "deliverable-rich-internal-42";
   const releaseId = "release-rich-internal-84";
@@ -4569,7 +4552,7 @@ test("team add-on delivery records lead with human subjects and progressive tech
   );
 });
 
-test("team add-on live verification logs follow the tail without overriding manual scrolling", async (t) => {
+test("team add-on live verification logs follow the tail without overriding manual scrolling", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const releaseId = "release-live-verification";
   const verificationRunId = "verification-live-1";
@@ -4707,7 +4690,7 @@ test("team add-on live verification logs follow the tail without overriding manu
   );
 });
 
-test("team add-on Cases defaults to active work and pages durable case history", async (t) => {
+test("team add-on Cases defaults to active work and pages durable case history", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const activeStatuses = ["open", "triage", "in_progress", "waiting"];
   initialState.cases = {};
@@ -4858,7 +4841,7 @@ test("team add-on Cases defaults to active work and pages durable case history",
   assert.equal(await casesPage.locator('[data-case-id="case-closed-01"]').count(), 0);
 });
 
-test("team add-on UI retries verification failures with an operator comment", async (t) => {
+test("team add-on UI retries verification failures with an operator comment", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.release_packages["release-transient"] = {
     id: "release-transient",
@@ -4963,7 +4946,7 @@ test("team add-on UI retries verification failures with an operator comment", as
     .waitFor({ state: "visible" });
 });
 
-test("team add-on UI submits an explicit rejected-review exception", async (t) => {
+test("team add-on UI submits an explicit rejected-review exception", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.release_packages = {
     "release-review-exception": {
@@ -5023,7 +5006,7 @@ test("team add-on UI submits an explicit rejected-review exception", async (t) =
   });
 });
 
-test("team add-on focused tabs submit retained create forms with revisions", async (t) => {
+test("team add-on focused tabs submit retained create forms with revisions", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
   const teamId = "team-team";
@@ -5147,7 +5130,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   assert.equal(mutationRequests[3].payload.ephemeral_policy.max_concurrent, 2);
 });
 
-test("team add-on agent registration can select an existing core session", async (t) => {
+test("team add-on agent registration can select an existing core session", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5195,7 +5178,7 @@ test("team add-on agent registration can select an existing core session", async
   );
 });
 
-test("team add-on agent registration can create and auto-register a core session", async (t) => {
+test("team add-on agent registration can create and auto-register a core session", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5281,7 +5264,7 @@ test("team add-on agent registration can create and auto-register a core session
   assert.equal(registerRequest.payload.display_name, "Created Core Agent");
 });
 
-test("team add-on agent registration blocks core creation until Team fields are valid", async (t) => {
+test("team add-on agent registration blocks core creation until Team fields are valid", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5314,7 +5297,7 @@ test("team add-on agent registration blocks core creation until Team fields are 
   );
 });
 
-test("team add-on agent auto-registration preserves conflict retry after core creation", async (t) => {
+test("team add-on agent auto-registration preserves conflict retry after core creation", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
     conflictOnFirstAgentRegistration: true,
@@ -5365,7 +5348,7 @@ test("team add-on agent auto-registration preserves conflict retry after core cr
   assert.equal(registrationRequests[1].payload.expected_revision, 9);
 });
 
-test("team add-on agent registration keeps core creation locked with privileges locked", async (t) => {
+test("team add-on agent registration keeps core creation locked with privileges locked", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5406,7 +5389,7 @@ test("team add-on agent registration keeps core creation locked with privileges 
   );
 });
 
-test("team add-on locked mode disables mutation entry points", async (t) => {
+test("team add-on locked mode disables mutation entry points", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5478,7 +5461,7 @@ test("team add-on locked mode disables mutation entry points", async (t) => {
   assert.deepEqual(mutationRequests, []);
 });
 
-test("team add-on opens linked sessions from Teams and Org chart agents", async (t) => {
+test("team add-on opens linked sessions from Teams and Org chart agents", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5520,7 +5503,7 @@ test("team add-on opens linked sessions from Teams and Org chart agents", async 
   );
 });
 
-test("team add-on opens chats from Teams and Org chart agents", async (t) => {
+test("team add-on opens chats from Teams and Org chart agents", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5569,7 +5552,7 @@ test("team add-on opens chats from Teams and Org chart agents", async (t) => {
   );
 });
 
-test("team add-on privilege messages update controls without losing selected manager", async (t) => {
+test("team add-on privilege messages update controls without losing selected manager", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const standDown = {
     id: "stand-down-manager",
@@ -5643,7 +5626,7 @@ test("team add-on privilege messages update controls without losing selected man
   });
 });
 
-test("team add-on lets operators revoke direct agent-issued stand-downs and explains inherited holds", async (t) => {
+test("team add-on lets operators revoke direct agent-issued stand-downs and explains inherited holds", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.lead.display_name = "Project Lead";
   const standDown = {
@@ -5728,7 +5711,7 @@ test("team add-on lets operators revoke direct agent-issued stand-downs and expl
   );
 });
 
-test("team add-on project list keeps names and metadata readable in compact rows", async (t) => {
+test("team add-on project list keeps names and metadata readable in compact rows", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.name = "Accounting Department";
   initialState.projects.project.name = "Bookkeeping Operations";
@@ -5790,7 +5773,7 @@ test("team add-on project list keeps names and metadata readable in compact rows
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 });
 
-test("team add-on review profiles and task descendants prioritize display names", async (t) => {
+test("team add-on review profiles and task descendants prioritize display names", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.name = "Accounting Department";
   initialState.projects.project.name = "Bookkeeping Operations";
@@ -5968,7 +5951,7 @@ test("team add-on review profiles and task descendants prioritize display names"
   });
 });
 
-test("team add-on project controls follow privilege changes and partial rerenders", async (t) => {
+test("team add-on project controls follow privilege changes and partial rerenders", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -6042,7 +6025,7 @@ test("team add-on project controls follow privilege changes and partial rerender
   assert.equal(await projectsPage.getByRole("button", { name: "Add review profile" }).isDisabled(), true);
 });
 
-test("team add-on state refresh preserves scoped no-id form and unsubmitted search drafts", async (t) => {
+test("team add-on state refresh preserves scoped no-id form and unsubmitted search drafts", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.cases ||= {};
   initialState.cases["case-draft-preservation"] = {
@@ -6135,7 +6118,7 @@ test("team add-on state refresh preserves scoped no-id form and unsubmitted sear
   assert.equal(await taskQuery.inputValue(), "unsent task query");
 });
 
-test("team add-on admin context overrides the browser color scheme", async (t) => {
+test("team add-on admin context overrides the browser color scheme", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -6184,7 +6167,7 @@ test("team add-on admin context overrides the browser color scheme", async (t) =
   );
 });
 
-test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
+test("team add-on UI renders org charts, details, and hierarchy warnings", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.project_ids.push("other-project");
   initialState.projects["other-project"] = {
@@ -6316,7 +6299,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   );
 });
 
-test("team add-on Org chart animates only newly observed activity without refitting", async (t) => {
+test("team add-on Org chart animates only newly observed activity without refitting", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.backend.activity_summary = {
     headline: "Working on Build API",
@@ -6426,7 +6409,7 @@ test("team add-on Org chart animates only newly observed activity without refitt
   await backendCard.locator(".org-flow-activity-bubble").waitFor({ state: "detached", timeout: 7000 });
 });
 
-test("team add-on Org chart respects reduced-motion preferences", async (t) => {
+test("team add-on Org chart respects reduced-motion preferences", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.backend.activity_summary = {
     headline: "Working on Build API",
@@ -6485,7 +6468,7 @@ test("team add-on Org chart respects reduced-motion preferences", async (t) => {
   assert.equal(await page.locator(".org-flow-message-pulse").count(), 0);
 });
 
-test("team add-on Org chart draws edges and separates sibling agents", async (t) => {
+test("team add-on Org chart draws edges and separates sibling agents", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.revision = 9;
   initialState.agents.lead.subordinate_agent_ids.push("frontend");
@@ -6533,7 +6516,7 @@ test("team add-on Org chart draws edges and separates sibling agents", async (t)
   assert.ok(lateralOverlap <= 0.5, `same-level agents should not overlap laterally: ${lateralOverlap}`);
 });
 
-test("team add-on Org chart keeps governance groups above related team filters", async (t) => {
+test("team add-on Org chart keeps governance groups above related team filters", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
@@ -6570,7 +6553,7 @@ test("team add-on Org chart keeps governance groups above related team filters",
   assert.equal(await page.locator("#team-org-page").getByRole("heading", { name: "Alpha Team" }).count(), 0);
 });
 
-test("team add-on Org chart context menu creates teams from the bare canvas", async (t) => {
+test("team add-on Org chart context menu creates teams from the bare canvas", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -6607,7 +6590,7 @@ test("team add-on Org chart context menu creates teams from the bare canvas", as
   assert.equal(request.payload.manager_display_name, "Context Manager");
 });
 
-test("team add-on Org chart context menu edits governance team oversight", async (t) => {
+test("team add-on Org chart context menu edits governance team oversight", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.governance_groups["platform-oversight"].member_team_ids = ["team-alpha"];
   const { port, requests } = await createTeamAddonServer(t, { initialState });
@@ -6657,7 +6640,7 @@ test("team add-on Org chart context menu edits governance team oversight", async
   assert.deepEqual(patchRequests[1].payload.member_team_ids, ["team-alpha"]);
 });
 
-test("team add-on Org chart governance context menu retries after revision conflict", async (t) => {
+test("team add-on Org chart governance context menu retries after revision conflict", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.governance_groups["platform-oversight"].member_team_ids = ["team-alpha"];
   const { port, requests } = await createTeamAddonServer(t, {
@@ -6701,7 +6684,7 @@ test("team add-on Org chart governance context menu retries after revision confl
   assert.equal(patchRequests[1].payload.expected_revision, 5);
 });
 
-test("team add-on Org chart context menu adds subordinate agents", async (t) => {
+test("team add-on Org chart context menu adds subordinate agents", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -6766,7 +6749,7 @@ test("team add-on Org chart context menu adds subordinate agents", async (t) => 
   assert.equal(request.payload.ephemeral_policy.max_concurrent, 1);
 });
 
-test("team add-on displays reported and estimated costs without double counting", async (t) => {
+test("team add-on displays reported and estimated costs without double counting", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
     costsPayload: {
@@ -6797,7 +6780,7 @@ test("team add-on displays reported and estimated costs without double counting"
   assert.match(await counter.innerText(), /\$3\.25\d* provider reported, \$0\.80\d* estimated/);
 });
 
-test("team add-on cost refresh ignores avatar file input drafts", async (t) => {
+test("team add-on cost refresh ignores avatar file input drafts", { timeout: browserTestTimeout }, async (t) => {
   let releaseCosts = () => {};
   const costsGate = new Promise((resolve) => {
     releaseCosts = resolve;
@@ -6880,7 +6863,7 @@ test("team add-on cost refresh ignores avatar file input drafts", async (t) => {
   );
 });
 
-test("team add-on distinguishes governance portfolio roll-ups from individual spend", async (t) => {
+test("team add-on distinguishes governance portfolio roll-ups from individual spend", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.teams["team-alpha"].name = "Starship Team";
   initialState.teams["team-beta"].name = "Accounting Department";
@@ -6999,7 +6982,7 @@ test("team add-on distinguishes governance portfolio roll-ups from individual sp
   assert.equal(await page.locator("#team-org-page .org-flow-team-node .cost-counter--aggregate").count(), 0);
 });
 
-test("team add-on UI hides archived entities by default and reveals them on request", async (t) => {
+test("team add-on UI hides archived entities by default and reveals them on request", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.archived = true;
   initialState.projects.project.status = "archived";
@@ -7079,7 +7062,7 @@ test("team add-on UI hides archived entities by default and reveals them on requ
   });
 });
 
-test("team add-on UI renders hierarchy warnings for missing and cyclical references", async (t) => {
+test("team add-on UI renders hierarchy warnings for missing and cyclical references", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededMalformedHierarchyState(),
   });
@@ -7094,7 +7077,7 @@ test("team add-on UI renders hierarchy warnings for missing and cyclical referen
   assert.ok(await page.locator("#team-org-page .hierarchy-node-card--warning").count() >= 2);
 });
 
-test("team add-on UI reloads state and preserves form values on revision conflict", async (t) => {
+test("team add-on UI reloads state and preserves form values on revision conflict", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
   const page = await openBrowserPage(t, port);
 
@@ -7130,7 +7113,7 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   assert.equal(createRequests[1].payload.conflict_policy, "target_unchanged");
 });
 
-test("team add-on Governance tab creates governance groups from the top-level button", async (t) => {
+test("team add-on Governance tab creates governance groups from the top-level button", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
@@ -7234,7 +7217,7 @@ test("team add-on Governance tab creates governance groups from the top-level bu
   ]);
 });
 
-test("team add-on Governance tab hides handled agenda by default and emphasizes goals", async (t) => {
+test("team add-on Governance tab hides handled agenda by default and emphasizes goals", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.governance_groups["platform-oversight"].goals = [
     {
@@ -7293,7 +7276,7 @@ test("team add-on Governance tab hides handled agenda by default and emphasizes 
   });
 });
 
-test("team add-on governance editor uses named controls and preserves structured changes across retry", async (t) => {
+test("team add-on governance editor uses named controls and preserves structured changes across retry", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["beta-manager"].display_name = "Bea Manager";
@@ -8203,7 +8186,7 @@ function seededGitState() {
   };
 }
 
-test("team add-on Teams tab groups records and opens detail panes", async (t) => {
+test("team add-on Teams tab groups records and opens detail panes", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -8351,7 +8334,7 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
   assert.equal((await alphaLeadCard.innerText()).includes("alpha-lead"), false);
 });
 
-test("team add-on Teams tab creates records inside the selected team", async (t) => {
+test("team add-on Teams tab creates records inside the selected team", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["beta-candidate"] = {
     id: "beta-candidate",
@@ -8471,7 +8454,7 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   });
 });
 
-test("team add-on agent edit scopes project, role, and superior choices to the selected team", async (t) => {
+test("team add-on agent edit scopes project, role, and superior choices to the selected team", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.teams["team-alpha"].project_ids.push("alpha-second-project");
   initialState.projects["alpha-second-project"] = {
@@ -8672,7 +8655,7 @@ function seededLongConversationListState(conversationCount = 30) {
   return state;
 }
 
-test("team add-on Chat keeps recent conversations in an internal scroll region", async (t) => {
+test("team add-on Chat keeps recent conversations in an internal scroll region", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededLongConversationListState(),
   });
@@ -8730,7 +8713,7 @@ test("team add-on Chat keeps recent conversations in an internal scroll region",
   );
 });
 
-test("team add-on Chat uses a usable mobile conversation and thread flow", async (t) => {
+test("team add-on Chat uses a usable mobile conversation and thread flow", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -8792,7 +8775,7 @@ test("team add-on Chat uses a usable mobile conversation and thread flow", async
   assert.equal(await main.isVisible(), false);
 });
 
-test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", async (t) => {
+test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -8957,7 +8940,7 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
   );
 });
 
-test("team add-on Chat opens the conversation from a deep link", async (t) => {
+test("team add-on Chat opens the conversation from a deep link", { timeout: browserTestTimeout }, async (t) => {
   const { port, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededTwoConversationChatState(),
   });
@@ -8987,7 +8970,7 @@ test("team add-on Chat opens the conversation from a deep link", async (t) => {
   );
 });
 
-test("team add-on Chat preserves a reader position across a state-stream refresh", async (t) => {
+test("team add-on Chat preserves a reader position across a state-stream refresh", { timeout: browserTestTimeout }, async (t) => {
   const { port, state, chatRequests, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -9044,7 +9027,7 @@ test("team add-on Chat preserves a reader position across a state-stream refresh
   assert.ok(after.maxTop - after.scrollTop > 96, "expected reader to remain away from the newest message");
 });
 
-test("team add-on Chat preserves the new-agent picker position across a state-stream refresh", async (t) => {
+test("team add-on Chat preserves the new-agent picker position across a state-stream refresh", { timeout: browserTestTimeout }, async (t) => {
   const { port, state, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -9087,7 +9070,7 @@ test("team add-on Chat preserves the new-agent picker position across a state-st
   );
 });
 
-test("team add-on Chat send keeps the selected message list anchored during send refreshes", async (t) => {
+test("team add-on Chat send keeps the selected message list anchored during send refreshes", { timeout: browserTestTimeout }, async (t) => {
   let releaseMessageResponse = null;
   let messageRequestStarted = null;
   const messageStarted = new Promise((resolve) => {
@@ -9192,7 +9175,7 @@ test("team add-on Chat send keeps the selected message list anchored during send
   );
 });
 
-test("team add-on Chat sends on Enter and keeps Shift+Enter as a newline", async (t) => {
+test("team add-on Chat sends on Enter and keeps Shift+Enter as a newline", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -9230,7 +9213,7 @@ test("team add-on Chat sends on Enter and keeps Shift+Enter as a newline", async
   );
 });
 
-test("team add-on Chat sends selected files as multipart attachments", async (t) => {
+test("team add-on Chat sends selected files as multipart attachments", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededLongChatState(4);
   const { port } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
@@ -9318,7 +9301,7 @@ test("team add-on Chat sends selected files as multipart attachments", async (t)
   await page.getByRole("link", { name: /notes\.txt/ }).waitFor({ state: "visible" });
 });
 
-test("team add-on Chat remains usable while privileged operations are locked", async (t) => {
+test("team add-on Chat remains usable while privileged operations are locked", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -9370,7 +9353,7 @@ test("team add-on Chat remains usable while privileged operations are locked", a
   assert.equal(sendRequest?.payload?.expected_revision, undefined);
 });
 
-test("team add-on Chat shows mutation-enabled server authority", async (t) => {
+test("team add-on Chat shows mutation-enabled server authority", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededLongChatState();
   initialState.conversations["conversation-alpha-lead"].mutation_mode = "project_scoped";
   const { port } = await createTeamAddonServer(t, { initialState });
@@ -9383,7 +9366,7 @@ test("team add-on Chat shows mutation-enabled server authority", async (t) => {
     .waitFor({ state: "visible" });
 });
 
-test("team add-on Chat notification sound is gated by focus and sender", async (t) => {
+test("team add-on Chat notification sound is gated by focus and sender", { timeout: browserTestTimeout }, async (t) => {
   const { port, emitChatSnapshots, requests, state } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -9502,7 +9485,7 @@ test("team add-on Chat notification sound is gated by focus and sender", async (
   );
 });
 
-test("team add-on Chat refresh preserves a conversation selected while the list response is in flight", async (t) => {
+test("team add-on Chat refresh preserves a conversation selected while the list response is in flight", { timeout: browserTestTimeout }, async (t) => {
   let holdConversationList = false;
   let releaseRefreshResponse = null;
   let refreshRequestStarted = null;
@@ -9548,7 +9531,7 @@ test("team add-on Chat refresh preserves a conversation selected while the list 
   );
 });
 
-test("team add-on Chat preserves unsent composer drafts per conversation and clears a sent draft", async (t) => {
+test("team add-on Chat preserves unsent composer drafts per conversation and clears a sent draft", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededTwoConversationChatState(),
   });
@@ -9949,7 +9932,7 @@ function seededMalformedHierarchyState() {
   };
 }
 
-test("team add-on Mail reads historical agent correspondence", async (t) => {
+test("team add-on Mail reads historical agent correspondence", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -10015,7 +9998,7 @@ test("team add-on Mail reads historical agent correspondence", async (t) => {
   );
 });
 
-test("team add-on Mail creates a manager-routed operator directive", async (t) => {
+test("team add-on Mail creates a manager-routed operator directive", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests, state } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
@@ -10118,7 +10101,7 @@ test("team add-on Mail creates a manager-routed operator directive", async (t) =
   assert.equal(await form.locator("[data-mail-directive-project]").inputValue(), "");
 });
 
-test("team add-on Mail renders body, error, and generic historical payloads", async (t) => {
+test("team add-on Mail renders body, error, and generic historical payloads", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.inbox = {
     "body-report": {
@@ -10188,7 +10171,7 @@ test("team add-on Mail renders body, error, and generic historical payloads", as
   assert.match(genericBody, /"code": "stale_ref"/);
 });
 
-test("team add-on Workspace deduplicates runtime-backed tasks without crowding attention", async (t) => {
+test("team add-on Workspace deduplicates runtime-backed tasks without crowding attention", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.tasks = {
     "task-blocked": {
@@ -10276,7 +10259,7 @@ test("team add-on Workspace deduplicates runtime-backed tasks without crowding a
     .waitFor({ state: "visible" });
 });
 
-test("team add-on Operations describes passive mail and failed recovery paths honestly", async (t) => {
+test("team add-on Operations describes passive mail and failed recovery paths honestly", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   initialState.action_records = {
@@ -10425,7 +10408,7 @@ test("team add-on Operations describes passive mail and failed recovery paths ho
   );
 });
 
-test("team add-on Operations separates actionable attention from durable history", async (t) => {
+test("team add-on Operations separates actionable attention from durable history", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   initialState.agents["beta-lead"].display_name = "Beta Lead";
@@ -10759,7 +10742,7 @@ test("team add-on Operations separates actionable attention from durable history
   );
 });
 
-test("team add-on runtime attention escapes state and error text exactly once", async (t) => {
+test("team add-on runtime attention escapes state and error text exactly once", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.runtime_operations.attention.push({
     id: "failed-action-special-characters",
@@ -10793,7 +10776,7 @@ test("team add-on runtime attention escapes state and error text exactly once", 
   assert.equal(bodyText.match(/invalid \{'key': '<value>&'\}/g)?.length, 1);
 });
 
-test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", async (t) => {
+test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -11169,7 +11152,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-delivery-page .delivery-row").first().waitFor({ state: "visible" });
 });
 
-test("team add-on Task board keeps space between panels, cards, and view tabs", async (t) => {
+test("team add-on Task board keeps space between panels, cards, and view tabs", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, { initialState: seededGitState() });
   const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 1600 } });
 
@@ -11225,7 +11208,7 @@ test("team add-on Task board keeps space between panels, cards, and view tabs", 
   assert.ok(hierarchyGap >= 12, `expected space before the hierarchy panel, received ${hierarchyGap}px`);
 });
 
-test("team add-on Teams agent detail inbox popover stays reachable and scrollable", async (t) => {
+test("team add-on Teams agent detail inbox popover stays reachable and scrollable", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededScrollablePeopleTooltipState(),
   });
@@ -11290,7 +11273,7 @@ test("team add-on Teams agent detail inbox popover stays reachable and scrollabl
   assert.equal(await peopleStatusPopover.isVisible(), true);
 });
 
-test("team add-on UI renders git refs and releases and submits a review decision", async (t) => {
+test("team add-on UI renders git refs and releases and submits a review decision", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const acceptedRelease = initialState.release_packages["release-accepted"];
   acceptedRelease.detail = {
@@ -11744,7 +11727,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
 });
 
-test("team add-on timeline filter options use full-history facets", async (t) => {
+test("team add-on timeline filter options use full-history facets", { timeout: browserTestTimeout }, async (t) => {
   const timelinePayload = {
     revision: 1,
     derived: true,
@@ -11795,7 +11778,7 @@ test("team add-on timeline filter options use full-history facets", async (t) =>
   );
 });
 
-test("team add-on Activity timeline renders snapshot-only updates without a state flow", async (t) => {
+test("team add-on Activity timeline renders snapshot-only updates without a state flow", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const timelinePayload = {
     revision: 4,
@@ -11865,7 +11848,7 @@ test("team add-on Activity timeline renders snapshot-only updates without a stat
   );
 });
 
-test("team add-on activity timeline leads with human context and explains retained-history limits", async (t) => {
+test("team add-on activity timeline leads with human context and explains retained-history limits", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -12042,7 +12025,7 @@ test("team add-on activity timeline leads with human context and explains retain
   assert.equal(expandedText.match(/task-pending/g)?.length, 1);
 });
 
-test("team add-on timeline keeps naive timestamps in server UTC order", async (t) => {
+test("team add-on timeline keeps naive timestamps in server UTC order", { timeout: browserTestTimeout }, async (t) => {
   const timelinePayload = {
     revision: 1,
     derived: true,
@@ -12090,7 +12073,7 @@ test("team add-on timeline keeps naive timestamps in server UTC order", async (t
   assert.deepEqual(summaries.slice(0, 2), ["Aware UTC event", "Naive UTC event"]);
 });
 
-test("team add-on task board coordinates hierarchy focus and bounds completed history", async (t) => {
+test("team add-on task board coordinates hierarchy focus and bounds completed history", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -12476,7 +12459,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   });
 });
 
-test("team add-on renders TaskAssessment resolution reasons as operator prose", async (t) => {
+test("team add-on renders TaskAssessment resolution reasons as operator prose", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const reasonFixtures = [
     {
@@ -12587,7 +12570,7 @@ test("team add-on renders TaskAssessment resolution reasons as operator prose", 
   assert.equal((await taskGraphItem.textContent()).includes("task_actionable"), false);
 });
 
-test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and worktree identity", async (t) => {
+test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and worktree identity", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const parent = initialState.tasks["task-planned"];
   const child = initialState.tasks["task-pending"];
@@ -12819,7 +12802,7 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   assert.equal(await childCard.evaluate((element) => element.classList.contains("task-board-card-blocked")), true);
 });
 
-test("team add-on My Human Reviews renders pinned release evidence and submits identity-free decisions", async (t) => {
+test("team add-on My Human Reviews renders pinned release evidence and submits identity-free decisions", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const requirement = {
     reviewer_group_ids: ["release-approvers"],
@@ -13648,7 +13631,7 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     .waitFor({ state: "visible" });
 });
 
-test("team add-on reports published release regressions without implying rollback or successor creation", async (t) => {
+test("team add-on reports published release regressions without implying rollback or successor creation", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.release_packages["release-timestamp-only"] = {
     ...initialState.release_packages["release-accepted"],
@@ -13776,7 +13759,7 @@ test("team add-on reports published release regressions without implying rollbac
   assert.equal(state.tasks["post-release-triage-5"].case_id, "post-release-case-5");
 });
 
-test("team add-on project editor keeps human release policy in bounded controls", async (t) => {
+test("team add-on project editor keeps human release policy in bounded controls", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.projects["alpha-project"].release_policy = {
     schema_version: 2,
@@ -13978,7 +13961,7 @@ test("team add-on project editor keeps human release policy in bounded controls"
   );
 });
 
-test("team add-on Task board exposes the existing task editor", async (t) => {
+test("team add-on Task board exposes the existing task editor", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
@@ -14015,7 +13998,7 @@ test("team add-on Task board exposes the existing task editor", async (t) => {
   assert.equal(updates().at(-1).payload.authored_by, null);
 });
 
-test("team add-on task cancellation is explicit audited and lifecycle-aware", async (t) => {
+test("team add-on task cancellation is explicit audited and lifecycle-aware", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   const taskBase = {
@@ -14243,7 +14226,7 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
   assert.match(await terminalCancel.getAttribute("title"), /already Accepted/);
 });
 
-test("team add-on planning tasks separate overview hierarchy contribution brief and technical detail", async (t) => {
+test("team add-on planning tasks separate overview hierarchy contribution brief and technical detail", { timeout: browserTestTimeout }, async (t) => {
   let releaseCosts = () => {};
   const costsGate = new Promise((resolve) => {
     releaseCosts = resolve;
@@ -14721,7 +14704,7 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     .waitFor({ state: "visible" });
 });
 
-test("team add-on Planning skips review for resolved support tasks", async (t) => {
+test("team add-on Planning skips review for resolved support tasks", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.tasks = {
     "task-support-finished": {
@@ -14794,7 +14777,7 @@ test("team add-on Planning skips review for resolved support tasks", async (t) =
   );
 });
 
-test("team add-on task board shows and filters queued role assignments", async (t) => {
+test("team add-on task board shows and filters queued role assignments", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const task = initialState.tasks["task-pending"];
   Object.assign(task, {

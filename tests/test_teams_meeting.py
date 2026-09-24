@@ -1,4 +1,5 @@
-import asyncio
+
+from gateway_tool_support import call_tool
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -94,16 +95,6 @@ def make_context(tmp_path: Path, **kwargs: object):
         **kwargs,
     )
     return build_runtime(config)
-
-
-def call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
 
 
 def read_audit_events(path: Path) -> list[dict[str, object]]:

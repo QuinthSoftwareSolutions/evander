@@ -3,8 +3,12 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 
-import { chromium } from "playwright";
 import { createServer } from "vite";
+import {
+  browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout,
+} from "./support/browserHarness.mjs";
+
+const browser = suiteBrowser();
 
 function jsonResponse(payload, status = 200) {
   return {
@@ -23,7 +27,7 @@ const fieldDefaults = {
   item_fields: [],
 };
 
-test("workflow editor inspects a stored workflow run detail", async (t) => {
+test("workflow editor inspects a stored workflow run detail", { timeout: browserTestTimeout }, async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -33,22 +37,15 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     },
     logLevel: "error",
   });
-  await server.listen();
+  t.after(() => server.close(), { timeout: browserHookTimeout });
+  await withTimeout(server.listen(), 15_000, "Vite did not start within 15 seconds");
 
   const address = server.httpServer?.address();
   assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
 
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext(t);
   const page = await context.newPage();
   const detailRequests = [];
-
-  await t.after(async () => {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
-    await server.close().catch(() => {});
-  });
 
   const config = {
     triggers: [

@@ -1565,6 +1565,23 @@ A conservative policy example is available at
 and image files, leaves outbound send disabled, and preconfigures approval as mandatory before any
 future outbound-send enablement.
 
+## Running Tests
+
+Install development dependencies with `uv sync --extra dev`, then run the complete Python suite:
+
+```bash
+./.venv/bin/python scripts/run_tests.py
+```
+
+The runner uses up to four workers for independent cases, then runs elapsed-time contracts
+without competing test workers. It checks that every collected case ran exactly once and
+keeps execution evidence under `.pytest_cache/test-runs/`. Use `--workers 0` for a serial
+comparison. Both modes include documentation and conformance checks.
+
+For Admin Web, `npm test` runs the unit and browser lanes, and `npm run test:all` also includes
+all smoke journeys. See [testing.md](docs/testing.md) for focused commands, deadlines, isolation,
+and the coverage-preservation rules.
+
 ## Project Layout
 
 - `src/evander/`: gateway, relay, policy, storage, and CLI code

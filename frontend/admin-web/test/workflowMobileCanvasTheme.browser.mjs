@@ -3,15 +3,19 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 
-import { chromium } from "playwright";
 import { createServer } from "vite";
+import {
+  browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout,
+} from "./support/browserHarness.mjs";
+
+const browser = suiteBrowser();
 
 function maxRgbChannel(backgroundColor) {
   const channels = backgroundColor.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
   return Math.max(...channels.slice(0, 3));
 }
 
-test("compact workflow canvas keeps dark theme background", async (t) => {
+test("compact workflow canvas keeps dark theme background", { timeout: browserTestTimeout }, async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const harnessHtml = `
     <!doctype html>
@@ -62,26 +66,19 @@ test("compact workflow canvas keeps dark theme background", async (t) => {
       },
     ],
   });
-  await server.listen();
+  t.after(() => server.close(), { timeout: browserHookTimeout });
+  await withTimeout(server.listen(), 15_000, "Vite did not start within 15 seconds");
 
   const address = server.httpServer?.address();
   assert.ok(address && typeof address === "object" && "port" in address);
 
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({
+  const context = await browser.newContext(t, {
     viewport: { width: 390, height: 740 },
     isMobile: true,
     hasTouch: true,
     deviceScaleFactor: 2,
   });
   const page = await context.newPage();
-
-  await t.after(async () => {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
-    await server.close().catch(() => {});
-  });
 
   await page.goto(`http://127.0.0.1:${address.port}/workflow-mobile-canvas-theme.html`, {
     waitUntil: "domcontentloaded",

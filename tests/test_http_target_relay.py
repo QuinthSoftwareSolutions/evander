@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from starlette.testclient import TestClient
 
 from evander.config import GatewayConfig
@@ -304,36 +305,52 @@ def test_http_target_relay_rejects_cross_origin_redirects(tmp_path: Path) -> Non
     }
 
 
-def test_http_target_relay_rewrites_same_origin_absolute_redirects(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("target", "base_url", "location", "rewritten_location"),
+    [
+        pytest.param(
+            "demo-a",
+            "https://demo-a.example",
+            "https://demo-a.example/login?next=%2Forders#start",
+            "/session/session-1/target/demo-a/login?next=%2Forders#start",
+            id="absolute",
+        ),
+        pytest.param(
+            "demo-a",
+            "https://demo-a.example",
+            "/login?next=%2Forders",
+            "/session/session-1/target/demo-a/login?next=%2Forders",
+            id="root-relative",
+        ),
+        pytest.param(
+            "demo-b",
+            "https://demo-b.example/root",
+            "https://demo-b.example/root/login?next=%2Forders",
+            "/session/session-1/target/demo-b/login?next=%2Forders",
+            id="absolute-base-path",
+        ),
+    ],
+)
+def test_http_target_relay_rewrites_allowlisted_redirects(
+    tmp_path: Path, target: str, base_url: str, location: str, rewritten_location: str
+) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            302,
-            headers={"location": "https://demo-a.example/login?next=%2Forders#start"},
-        )
+        return httpx.Response(302, headers={"location": location})
 
     config = make_config(tmp_path)
     write_session(
         config,
         session_id="session-1",
-        metadata={
-            "http_targets": {
-                "targets": {
-                    "demo-a": {"base_url": "https://demo-a.example"},
-                }
-            }
-        },
+        metadata={"http_targets": {"targets": {target: {"base_url": base_url}}}},
     )
     client = TestClient(create_app(config, transport=httpx.MockTransport(handler)))
 
     response = client.get(
-        "/session/session-1/target/demo-a/api/work-orders", follow_redirects=False
+        f"/session/session-1/target/{target}/api/work-orders", follow_redirects=False
     )
 
     assert response.status_code == 302
-    assert (
-        response.headers["location"]
-        == "/session/session-1/target/demo-a/login?next=%2Forders#start"
-    )
+    assert response.headers["location"] == rewritten_location
 
 
 def test_http_target_relay_preserves_path_token_on_same_origin_redirect(
@@ -370,62 +387,6 @@ def test_http_target_relay_preserves_path_token_on_same_origin_redirect(
         response.headers["location"]
         == "/auth/correct-token/session/session-1/target/demo-a/login?next=%2Forders#start"
     )
-
-
-def test_http_target_relay_rewrites_root_relative_redirects(tmp_path: Path) -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(302, headers={"location": "/login?next=%2Forders"})
-
-    config = make_config(tmp_path)
-    write_session(
-        config,
-        session_id="session-1",
-        metadata={
-            "http_targets": {
-                "targets": {
-                    "demo-a": {"base_url": "https://demo-a.example"},
-                }
-            }
-        },
-    )
-    client = TestClient(create_app(config, transport=httpx.MockTransport(handler)))
-
-    response = client.get(
-        "/session/session-1/target/demo-a/api/work-orders", follow_redirects=False
-    )
-
-    assert response.status_code == 302
-    assert response.headers["location"] == "/session/session-1/target/demo-a/login?next=%2Forders"
-
-
-def test_http_target_relay_rewrites_absolute_redirects_for_targets_with_base_path(
-    tmp_path: Path,
-) -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            302, headers={"location": "https://demo-b.example/root/login?next=%2Forders"}
-        )
-
-    config = make_config(tmp_path)
-    write_session(
-        config,
-        session_id="session-1",
-        metadata={
-            "http_targets": {
-                "targets": {
-                    "demo-b": {"base_url": "https://demo-b.example/root"},
-                }
-            }
-        },
-    )
-    client = TestClient(create_app(config, transport=httpx.MockTransport(handler)))
-
-    response = client.get(
-        "/session/session-1/target/demo-b/api/work-orders", follow_redirects=False
-    )
-
-    assert response.status_code == 302
-    assert response.headers["location"] == "/session/session-1/target/demo-b/login?next=%2Forders"
 
 
 def test_http_target_relay_accepts_target_alias_root_path(tmp_path: Path) -> None:

@@ -13,34 +13,44 @@ error.
 
 ## Regenerate The Reports
 
-Trigger suite:
-
-```bash
-PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py
-```
-
-Optional custom output path for the trigger report:
+Publish the trigger report for Admin Web:
 
 ```bash
 EVANDER_TRIGGER_CONFORMANCE_REPORT=runtime/trigger-conformance-report.json \
 PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py
 ```
 
-Effect suite:
+Use a custom path when preparing a report elsewhere:
 
 ```bash
-PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
+EVANDER_TRIGGER_CONFORMANCE_REPORT=/tmp/trigger-conformance-report.json \
+PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py
 ```
 
-Optional custom output path for the effect report:
+Publish the effect report for Admin Web:
 
 ```bash
 EVANDER_EFFECT_CONFORMANCE_REPORT=runtime/effect-conformance-report.json \
 PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
 ```
 
-The optional environment variables only change where the suites write their JSON output. Admin Web
-still reads the fixed runtime-directory paths listed above.
+Optional custom output path for the effect report:
+
+```bash
+EVANDER_EFFECT_CONFORMANCE_REPORT=/tmp/effect-conformance-report.json \
+PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py
+```
+
+Without an explicit environment variable, ordinary pytest runs use a unique directory under
+`.pytest_cache/d/conformance/`; the complete test runner uses its own run directory. The path is
+printed in the test summary. Admin Web still reads the fixed runtime-directory paths listed above,
+and its Run action already supplies the configured runtime path explicitly.
+
+Reports are written atomically by the controlling pytest process after all selected tests finish.
+Each case records its own evidence, so test order and parallel workers do not change aggregation.
+A complete module run fails if the traceability matrix lacks successful evidence. A partial
+selection may pass its selected tests but its report remains incomplete; use
+`--require-conformance=trigger` or `--require-conformance=effect` to enforce the complete matrix.
 
 ## Report States
 

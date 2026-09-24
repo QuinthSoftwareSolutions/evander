@@ -56,7 +56,8 @@ def _configure_managed_repo(
         )
 
 
-def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path) -> None:
+def test_handle_git_push_trigger_enqueues_matching_branch_updates(socket_tmp_path: Path) -> None:
+    tmp_path = socket_tmp_path
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 

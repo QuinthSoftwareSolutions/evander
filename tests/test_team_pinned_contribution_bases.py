@@ -26,7 +26,7 @@ from evander_team_addon.services.domain.git_work_contexts import (
 )
 from evander_team_addon.services.domain.preparation_failures import task_git_work_context_generation
 from test_managed_git_service import _bare_path, _commit, _run, _service, _source_repository
-from test_team_addon_repository import _lease_agent_dispatch, _seed_hierarchy
+from team_repository_support import _lease_agent_dispatch, _seed_hierarchy
 
 
 def _history(tmp_path: Path, *, clean_source: bool = False):

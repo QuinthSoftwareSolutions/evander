@@ -3,8 +3,12 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 
-import { chromium } from "playwright";
 import { createServer } from "vite";
+import {
+  browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout,
+} from "./support/browserHarness.mjs";
+
+const browser = suiteBrowser();
 
 function jsonResponse(payload, status = 200) {
   return {
@@ -62,7 +66,7 @@ async function waitForCondition(predicate, message) {
   assert.fail(message);
 }
 
-test("workflow editor tutorial chooser starts, skips, and exits tutorials", async (t) => {
+test("workflow editor tutorial chooser starts, skips, and exits tutorials", { timeout: browserTestTimeout }, async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -72,40 +76,12 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
     },
     logLevel: "error",
   });
-  let browser;
-  let context;
-  let page;
-
-  await t.after(async () => {
-    await page?.close().catch(() => {});
-    await context?.close().catch(() => {});
-    await browser?.close().catch(() => {});
-    await server.close().catch(() => {});
-  });
-
-  try {
-    await Promise.race([
-      server.listen(),
-      new Promise((_, reject) => {
-        setTimeout(() => reject(new Error("Vite server did not start within 15 seconds.")), 15_000);
-      }),
-    ]);
-  } catch (error) {
-    t.skip(`Vite is unavailable in this environment: ${error instanceof Error ? error.message : String(error)}`);
-    return;
-  }
-
+  t.after(() => server.close(), { timeout: browserHookTimeout });
+  await withTimeout(server.listen(), 15_000, "Vite did not start within 15 seconds");
   const address = server.httpServer?.address();
   assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
-
-  try {
-    browser = await chromium.launch({ headless: true, timeout: 15_000 });
-  } catch (error) {
-    t.skip(`Chromium is unavailable in this environment: ${error instanceof Error ? error.message : String(error)}`);
-    return;
-  }
-  context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
-  page = await context.newPage();
+  const context = await browser.newContext(t, { viewport: { width: 1440, height: 1200 } });
+  const page = await context.newPage();
 
   const requestedEndpoints = [];
   const documentPutRequests = [];

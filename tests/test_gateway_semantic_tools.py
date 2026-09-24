@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import asyncio
+from gateway_tool_support import call_tool
+
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,16 +30,6 @@ from evander.semantic.qdrant import (
 
 POINT_ID_1 = 123
 POINT_ID_2 = "550e8400-e29b-41d4-a716-446655440000"
-
-
-def call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
 
 
 class FakeEmbeddingClient:

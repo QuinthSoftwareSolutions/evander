@@ -20,7 +20,7 @@ from evander_team_addon.services.ado_attribution import release_publication_cont
 from evander_team_addon.services.domain.task_authorship import combined_deliverable_attributions
 from evander_team_addon.sqlite_store import TeamStateSqliteStore
 from test_team_task_authorship import _create, ALICE, BOB
-from test_team_addon_repository import (
+from team_repository_support import (
     _seed_hierarchy,
     _team_admin_service,
     _lease_agent_dispatch,

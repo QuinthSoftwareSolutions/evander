@@ -3,8 +3,12 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 
-import { chromium } from "playwright";
 import { createServer } from "vite";
+import {
+  browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout,
+} from "./support/browserHarness.mjs";
+
+const browser = suiteBrowser();
 
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
 const THEME_STORAGE_KEY = "admin-web:theme";
@@ -27,21 +31,14 @@ async function createAdminPage(t) {
     },
     logLevel: "error",
   });
-  await server.listen();
+  t.after(() => server.close(), { timeout: browserHookTimeout });
+  await withTimeout(server.listen(), 15_000, "Vite did not start within 15 seconds");
 
   const address = server.httpServer?.address();
   assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
 
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext(t);
   const page = await context.newPage();
-
-  await t.after(async () => {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
-    await server.close().catch(() => {});
-  });
 
   const requestedEndpoints = [];
   await page.route("**/api/**", async (route) => {
@@ -345,7 +342,7 @@ async function createAdminPage(t) {
   return { address, page, requestedEndpoints };
 }
 
-test("admin tool visibility renders the effective policy inspector", async (t) => {
+test("admin tool visibility renders the effective policy inspector", { timeout: browserTestTimeout }, async (t) => {
   const { address, page, requestedEndpoints } = await createAdminPage(t);
   await page.addInitScript((storageKey) => window.localStorage.removeItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY);
   await page.addInitScript((storageKey) => window.localStorage.removeItem(storageKey), THEME_STORAGE_KEY);

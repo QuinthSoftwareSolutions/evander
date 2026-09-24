@@ -4,7 +4,6 @@ from config_helpers import canonical_worker_config
 
 import json
 import logging
-import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,16 +47,11 @@ from evander.triggers.queue import SqliteTriggerEventQueue
 from config_helpers import canonical_workflow_node, canonical_workflow_payload
 
 
-REPORT_ENV_VAR = "EVANDER_TRIGGER_CONFORMANCE_REPORT"
+from conformance_support import MATRICES, build_report, write_report
 
 
 def _worker_config(payload: dict[str, object]) -> TriggerOrchestratorWorkerGlobalConfig:
     return canonical_worker_config(canonical_workflow_payload(payload))
-
-
-@pytest.fixture(scope="module")
-def report_collector() -> dict[str, Any]:
-    return {"requirements": []}
 
 
 def _record_result(
@@ -2462,72 +2456,25 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
     )
 
 
-def test_conformance_traceability_matrix_and_report(
-    report_collector: dict[str, Any],
-    tmp_path: Path,
-) -> None:
-    matrix = {
-        "task_trigger_schema": [
-            "schema:trigger:cron",
-            "schema:trigger:ticket:created",
-            "schema:trigger:ticket:changed",
-            "schema:trigger:communication:new-message",
-            "schema:trigger:discord:new-message",
-            "schema:trigger:teams:new-message",
-            "schema:trigger:teams:direct-message",
-            "schema:trigger:email:new-message",
-            "schema:trigger:pull-request:new-feedback",
-            "schema:trigger:pull-request:completed",
-            "schema:trigger:ci:run:completed",
-            "schema:trigger:review:new-request",
-            "schema:trigger:approval:pending-created",
-            "schema:trigger:git:push",
-            "schema:duplicate-ids",
-        ],
-        "task_trigger_schema_invalid": [
-            "schema:invalid:trigger:ci:run:completed",
-        ],
-        "task_trigger_event_contract": [
-            "event-contract:provider-payload-shape",
-            "provider:pr-modes-and-git-push",
-        ],
-        "task_provider_behavior": [
-            "provider:cron:cursor",
-            "provider:cron:no-retroactive-catch-up",
-            "provider:directory-and-filter-scoping",
-            "provider:pr-modes-and-git-push",
-        ],
-        "task_orchestrator_integration": ["orchestrator:integration-idempotency-loop"],
-    }
+def test_conformance_traceability_matrix_and_report(tmp_path: Path) -> None:
+    # Report formatting is independent of execution order. The pytest reporter checks
+    # this same matrix against actual passed cases at the end of a complete suite.
+    matrix = MATRICES["trigger"]
+    requirements = [
+        {
+            "requirement_id": requirement_id,
+            "status": "pass",
+            "coverage": [task],
+            "details": "Formatter input",
+        }
+        for task, required in matrix.items()
+        for requirement_id in required
+    ]
+    summary = build_report(requirements, matrix)
+    report_path = tmp_path / "trigger-conformance-report.json"
+    write_report(report_path, summary)
 
-    seen = {entry["requirement_id"] for entry in report_collector["requirements"]}
-    missing: dict[str, list[str]] = {}
-    for task_name, required_requirements in matrix.items():
-        uncovered = [
-            requirement_id for requirement_id in required_requirements if requirement_id not in seen
-        ]
-        if uncovered:
-            missing[task_name] = uncovered
-
-    summary = {
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "status": "pass" if not missing else "fail",
-        "requirements": sorted(
-            report_collector["requirements"], key=lambda item: item["requirement_id"]
-        ),
-        "traceability_matrix": matrix,
-        "missing_coverage": missing,
-    }
-
-    report_path = Path(os.environ.get(REPORT_ENV_VAR, "runtime/trigger-conformance-report.json"))
-    if not report_path.is_absolute():
-        report_path = Path.cwd() / report_path
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-
-    local_copy = tmp_path / "trigger-conformance-report.json"
-    local_copy.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-
-    assert not missing, f"Traceability matrix has missing coverage: {missing}"
+    assert not summary["missing_coverage"]
     assert summary["status"] == "pass"
     assert report_path.exists()
+    assert json.loads(report_path.read_text(encoding="utf-8")) == summary

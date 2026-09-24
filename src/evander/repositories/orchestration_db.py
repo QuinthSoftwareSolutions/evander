@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -66,11 +67,32 @@ class OrchestrationWalCheckpointResult:
 def connect_orchestration_db(path: Path | str) -> Iterator[sqlite3.Connection]:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(db_path, timeout=30.0)
+    timeout_seconds = SQLITE_BUSY_TIMEOUT_MS / 1000
+    deadline = time.monotonic() + timeout_seconds
+    connection = sqlite3.connect(db_path, timeout=timeout_seconds)
     try:
         connection.row_factory = sqlite3.Row
+        while True:
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
+            try:
+                connection.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                # Concurrent first opens can return SQLITE_BUSY during the WAL
+                # transition without invoking SQLite's busy handler. Retry only
+                # that family and include every attempt in the original budget.
+                code = getattr(exc, "sqlite_errorcode", None)
+                if code is None or code & 0xFF != sqlite3.SQLITE_BUSY:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(0.01, remaining))
+                if time.monotonic() >= deadline:
+                    raise
+        # Subsequent transactions retain their normal independent busy timeout.
         connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
         connection.create_function(
             "execution_history_numeric_compare", 2, _compare_execution_history_numbers

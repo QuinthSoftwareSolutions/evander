@@ -7,7 +7,7 @@ import pytest
 from evander_team_addon.models import AgentTask, ProjectGitIdentity
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.domain.task_authorship import common_task_author
-from test_team_addon_repository import (
+from team_repository_support import (
     _command_service,
     _lease_agent_dispatch,
     _seed_hierarchy,

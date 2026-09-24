@@ -23,7 +23,7 @@ from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.sqlite_store import TeamStateSqliteStore
 from test_orchestration_handoff_latency import _publish, _worker, _seed_latency_history
 from test_effect_orchestrator import _ImmediateExecutor, _StaticReloader
-from test_team_addon_runtime import (
+from team_runtime_support import (
     FakeSessionStore,
     _seed_team,
     _team_admin_service,
@@ -108,6 +108,7 @@ def test_ownership_read_failure_cannot_authorize_queue_replay(tmp_path, monkeypa
         )
 
 
+@pytest.mark.performance
 def test_blocked_maintenance_does_not_hold_foreground_fifo(tmp_path):
     worker = _worker(tmp_path, chain_length=6)
     worker._executor = _ImmediateExecutor()
@@ -518,6 +519,7 @@ def test_lifecycle_reader_does_not_wait_for_team_write_lock(tmp_path):
         writer.rollback()
 
 
+@pytest.mark.performance
 def test_contended_renewal_preserves_cursor_then_succeeds(tmp_path, monkeypatch):
     repo = _seed_team(tmp_path)
     now = datetime.now(UTC)
@@ -591,6 +593,7 @@ def test_read_only_connection_cannot_write(tmp_path):
             connection.execute("DELETE FROM team_dispatches")
 
 
+@pytest.mark.performance
 def test_two_extra_teams_with_history_and_lock_contention_keep_message_p95_under_five_seconds(
     tmp_path,
     monkeypatch,

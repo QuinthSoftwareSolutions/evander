@@ -32,7 +32,7 @@ from evander_team_addon.services.domain.preparation_failures import (
 from evander_team_addon.services.domain.review import retry_blocked_review
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 
-from test_team_addon_runtime import (
+from team_runtime_support import (
     FakeFileCopier,
     FakeRepoCloner,
     FakeResumer,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from http_client_support import patch_httpx_client
+
 import base64
 import json
 import time
@@ -14,17 +16,6 @@ from evander.admin.services.teams_service import TeamsAdminDependencies, TeamsAd
 from evander.models import TeamsMessageEnvelope
 from evander.services import GraphTeamsService, StubTeamsService, TeamsAuthenticationError
 from evander.storage import JsonStore
-
-
-def patch_httpx_client(
-    monkeypatch: pytest.MonkeyPatch,
-    transport: httpx.BaseTransport,
-) -> None:
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        "evander.services.httpx.Client",
-        lambda timeout: real_client(timeout=timeout, transport=transport),
-    )
 
 
 class RecordingTeamsMessageStore:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import asyncio
+from gateway_tool_support import call_tool as _call_tool
+
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -22,16 +23,6 @@ from evander.gateway import create_server
 from evander.models import SessionManifest, ToolName
 from evander.runtime import build_runtime
 from internal_event_test_support import default_orchestration_database_path
-
-
-def _call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
 
 
 class _ManagedGit:
