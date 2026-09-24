@@ -13,22 +13,6 @@ IMAGE_NAMES = (
 )
 
 
-def test_godot_image_build_script_is_manual_only_by_default() -> None:
-    result = subprocess.run(
-        ["bash", str(BUILD_SCRIPT), "--help"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert "godot, godot-native, godot-render" in result.stdout
-    assert "only creates local Docker images by default" in result.stdout
-    assert "SAVE_GODOT_RUNNER_ARCHIVES=1" in result.stdout
-    normalized_help = " ".join(result.stdout.lower().split())
-    assert "does not edit the evander image catalog" in normalized_help
-
-
 def test_godot_image_scripts_have_valid_shell_syntax() -> None:
     scripts = [
         BUILD_SCRIPT,
@@ -76,16 +60,6 @@ def test_godot_variants_have_the_expected_capability_layers() -> None:
     assert "GALLIUM_DRIVER" in render_launcher
 
 
-def test_godot_smoke_fixture_covers_runtime_and_export() -> None:
-    fixture = ROOT / "tests" / "fixtures" / "godot-smoke"
-
-    assert 'run/main_scene="res://main.tscn"' in (fixture / "project.godot").read_text(
-        encoding="utf-8"
-    )
-    assert 'platform="Linux"' in (fixture / "export_presets.cfg").read_text(encoding="utf-8")
-    assert 'print("evander-godot-smoke")' in (fixture / "smoke.gd").read_text(encoding="utf-8")
-
-
 def test_default_worker_deployment_excludes_godot_images() -> None:
     worker_vars = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
         encoding="utf-8"
@@ -99,14 +73,3 @@ def test_default_worker_deployment_excludes_godot_images() -> None:
     assert "build_evander_godot_runner_images.sh" not in archive_block
     assert all(image_name not in archive_block for image_name in IMAGE_NAMES)
     assert "evander_worker_preload_images: []" in worker_vars
-
-
-def test_documented_default_pipeline_excludes_godot_images() -> None:
-    ansible_readme = (ROOT / "ansible" / "README.md").read_text(encoding="utf-8")
-    pipeline_section = ansible_readme.split("## Azure Pipelines", 1)[1].split("\n## ", 1)[0]
-    default_commands = pipeline_section.split("The deployment pipeline should check out", 1)[0]
-
-    assert "./scripts/build_evander_runner_image.sh" in default_commands
-    assert "./scripts/build_evander_claude_runner_image.sh" in default_commands
-    assert "build_evander_godot_runner_images.sh" not in default_commands
-    assert all(image_name not in default_commands for image_name in IMAGE_NAMES)

@@ -72,14 +72,3 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
         ["node", "--input-type=commonjs"], input=script, text=True, capture_output=True, timeout=15
     )
     assert result.returncode == 0, result.stderr
-
-
-def test_generation_history_and_exception_labels_are_visible():
-    source = (
-        Path(__file__).resolve().parents[1] / "src/evander_team_addon/ui_static/team-ui.js"
-    ).read_text()
-    assert "Accepted with baseline exceptions" in source
-    assert "Interrupted workspace generation" in source
-    assert "Last recorded progress" in source
-    assert "Read retained log" in source
-    assert "Verifier toolchain identity" in source

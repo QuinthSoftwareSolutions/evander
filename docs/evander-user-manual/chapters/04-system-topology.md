@@ -283,4 +283,4 @@ Do not start every optional worker merely to make `systemctl --failed` empty. Co
 - `src/evander/host_config.py`, `src/evander/admin/web/app.py`, `src/evander/worker/cli.py`, and `src/evander/didww_sip_bridge.py` — listener defaults.
 - `src/evander/daemons/trigger_orchestrator.py` and `src/evander/daemons/effect_orchestrator.py` — orchestration worker topology.
 - `docs/operations.md`, `docs/architecture.md`, and `docs/container-worker-backend.md` — supported deployment and worker layout.
-- `tests/test_install_systemd_units_script.py`, `tests/test_systemd_docs.py`, and `tests/test_firewall_defaults.py` — executable service and port documentation checks.
+- `tests/test_install_systemd_units_script.py` and `tests/test_firewall_defaults.py` — executable service and port checks.

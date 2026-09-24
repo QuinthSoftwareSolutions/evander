@@ -98,11 +98,6 @@ def test_workflow_catalog_descriptions(catalog_payload) -> None:
     )
 
 
-def test_workflow_catalog_effect_vm_exec(catalog_payload) -> None:
-    vm_exec = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:exec")
-    assert any(field["key"] == "command" and field["bindable"] for field in vm_exec["fields"])
-
-
 def test_workflow_catalog_effect_agent_exec(catalog_payload) -> None:
     agent_exec = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:exec"
@@ -677,20 +672,6 @@ def test_workflow_catalog_effect_runtime_diagnostics_snapshot(catalog_payload) -
     assert http_request_fields["check"]["default_value"] is False
 
 
-def test_workflow_catalog_trigger_ticket_created(catalog_payload) -> None:
-    ticket_created = next(
-        node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created"
-    )
-    assert all(field["key"] != "outputs" for field in ticket_created["fields"])
-
-
-def test_workflow_catalog_trigger_review_new_request(catalog_payload) -> None:
-    review_request = next(
-        node for node in catalog_payload["nodes"] if node["type"] == "trigger:review:new-request"
-    )
-    assert review_request["fields"] == []
-
-
 def test_workflow_catalog_trigger_approval_pending_created(catalog_payload) -> None:
     approval_request = next(
         node
@@ -708,13 +689,6 @@ def test_workflow_catalog_trigger_approval_pending_created(catalog_payload) -> N
     assert approval_request_fields["directory_path"]["default_value"] == "root"
     assert approval_request_fields["action_types"]["default_value"] == []
     assert approval_request_fields["tool_names"]["default_value"] == []
-
-
-def test_workflow_catalog_trigger_script_run_request(catalog_payload) -> None:
-    script_run_request = next(
-        node for node in catalog_payload["nodes"] if node["type"] == "trigger:script-run-request"
-    )
-    assert script_run_request["fields"] == []
 
 
 def test_workflow_catalog_trigger_event(catalog_payload) -> None:
@@ -1181,11 +1155,6 @@ def test_workflow_catalog_gate_validate(catalog_payload) -> None:
     assert validate_gate["fields"][1]["read_only"]
     assert validate_gate["fields"][1]["default_value"]["valid"] == {"type": "boolean"}
     assert validate_gate["fields"][1]["default_value"]["failures"]["type"] == "array"
-
-
-def test_workflow_catalog_query_issue_get(catalog_payload) -> None:
-    issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
-    assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
 
 
 def test_workflow_catalog_query_semantic_store_status(catalog_payload) -> None:

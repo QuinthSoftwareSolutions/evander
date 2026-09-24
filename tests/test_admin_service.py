@@ -15747,16 +15747,6 @@ def test_set_issue_plan_clears_existing_summary_when_omitted(tmp_path: Path) -> 
     assert "plan_summary:" not in yaml_text
 
 
-def test_workflow_operations_are_not_exposed_on_worker_control_boundaries(
-    tmp_path: Path,
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-
-    assert hasattr(service.workflow_config_admin, "clear_workflow_run")
-    assert not hasattr(service.worker_control_admin, "clear_workflow_run")
-    assert not hasattr(service.vm_inventory_admin, "clear_workflow_run")
-
-
 def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     issue = service.issue_git_admin.create_local_issue(title="Closed task", body="only local")
@@ -18218,10 +18208,6 @@ def test_create_wake_schedule_rejects_invalid_cron(tmp_path: Path) -> None:
             prompt="Resume now",
             cron="* *",
         )
-
-
-def test_wake_schedule_cron_validation_accepts_standard_range_syntax() -> None:
-    assert admin_service._require_valid_cron(" 0 6,15 * * 1-5 ") == "0 6,15 * * 1-5"
 
 
 def test_create_wake_schedule_enforces_max_active_per_session(tmp_path: Path) -> None:

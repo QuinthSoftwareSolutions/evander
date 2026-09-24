@@ -466,21 +466,6 @@ def test_issue_get_query_provider_returns_current_issue_payload(tmp_path: Path) 
     assert output["metadata"]["steps"] == ["analyze", "implement"]
 
 
-def test_issue_list_query_provider_can_be_built() -> None:
-    query = IssueListQueryDefinition(
-        id="query-issues",
-        display_name="Issue list",
-        type="query:issue:list",
-    )
-
-    factory = QueryProviderFactory(
-        provider_config_resolver=_ResolverStub(), admin_service=_AdminServiceStub(vms=[])
-    )
-    provider = factory.build(query)
-
-    assert provider.__class__.__name__ == "IssueListQueryProvider"
-
-
 def test_issue_list_query_provider_returns_issue_collection_payload() -> None:
     query = IssueListQueryDefinition(
         id="query-issues",

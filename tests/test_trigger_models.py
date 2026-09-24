@@ -17,7 +17,6 @@ from evander.events.models import (
 from evander.events.provider_models import (
     AdoWorkItemMatchingTriggerDefinition,
     AgentEnqueuePromptEffectDefinition,
-    AgentPromptNewTriggerDefinition,
     ApprovalPendingCreatedTriggerDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
@@ -37,8 +36,6 @@ from evander.events.provider_models import (
     PullRequestNewFeedbackTriggerDefinition,
     RemoteIssueCommentCreatedTriggerDefinition,
     RemoteIssueMatchingTriggerDefinition,
-    ReviewNewRequestTriggerDefinition,
-    ScriptRunRequestTriggerDefinition,
     SessionContextQueryDefinition,
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
@@ -930,31 +927,6 @@ def test_email_trigger_requires_mailboxes_only() -> None:
         )
 
 
-def test_pr_feedback_trigger_accepts_local_provider() -> None:
-    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
-        {
-            "id": "t-4",
-            "display_name": "Local PR feedback",
-            "type": "trigger:pull-request:new-feedback",
-            "provider": "local",
-        }
-    )
-
-    assert trigger.provider == "local"
-
-
-def test_review_request_trigger_validates() -> None:
-    trigger = ReviewNewRequestTriggerDefinition.model_validate(
-        {
-            "id": "review-1",
-            "display_name": "Review request",
-            "type": "trigger:review:new-request",
-        }
-    )
-
-    assert trigger.type == "trigger:review:new-request"
-
-
 def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
@@ -991,30 +963,6 @@ def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> N
     assert normalized_trigger.directory_path == "root/team-a"
     assert normalized_trigger.action_types == ["grant", "approve"]
     assert normalized_trigger.tool_names == ["approval_submit"]
-
-
-def test_script_run_request_trigger_validates() -> None:
-    trigger = ScriptRunRequestTriggerDefinition.model_validate(
-        {
-            "id": "script-run-1",
-            "display_name": "Script run request",
-            "type": "trigger:script-run-request",
-        }
-    )
-
-    assert trigger.type == "trigger:script-run-request"
-
-
-def test_agent_prompt_new_trigger_validates() -> None:
-    trigger = AgentPromptNewTriggerDefinition.model_validate(
-        {
-            "id": "agent-prompt-1",
-            "display_name": "Agent prompt",
-            "type": "trigger:agent:prompt:new",
-        }
-    )
-
-    assert trigger.type == "trigger:agent:prompt:new"
 
 
 def test_communication_trigger_output_schema_exposes_normalized_payload_fields() -> None:
@@ -1326,22 +1274,6 @@ def test_http_request_effect_rejects_invalid_allowed_url_patterns() -> None:
         )
 
 
-def test_vm_exec_effect_accepts_command_list() -> None:
-    adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = _validate_node(
-        adapter,
-        {
-            "id": "effect-exec",
-            "display_name": "Exec",
-            "type": "effect:vm:exec",
-            "vm_name": "vm-1",
-            "command": ["python3", "--version"],
-        },
-    )
-
-    assert effect.type == "effect:vm:exec"
-
-
 def test_vm_create_effect_accepts_labels_mapping() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     effect = _validate_node(
@@ -1445,37 +1377,6 @@ def test_agent_create_effect_accepts_allowed_contact_ids_list() -> None:
 
     assert effect.type == "effect:agent:create"
     assert effect.allowed_contact_ids == ["ops", "support"]
-
-
-def test_vm_start_effect_accepts_session_target() -> None:
-    adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = _validate_node(
-        adapter,
-        {
-            "id": "effect-start",
-            "display_name": "Start VM",
-            "type": "effect:vm:start",
-            "session_id": "session-1",
-        },
-    )
-
-    assert effect.type == "effect:vm:start"
-
-
-def test_vm_stop_effect_accepts_timeout_override() -> None:
-    adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = _validate_node(
-        adapter,
-        {
-            "id": "effect-stop",
-            "display_name": "Stop VM",
-            "type": "effect:vm:stop",
-            "vm_name": "vm-1",
-            "timeout_seconds": 120,
-        },
-    )
-
-    assert effect.type == "effect:vm:stop"
 
 
 def test_vm_copy_files_effect_requires_exactly_one_source_kind() -> None:

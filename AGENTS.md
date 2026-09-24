@@ -372,11 +372,11 @@ Run the Python suite with:
 
 Focused suites that often matter for control-plane changes:
 
-- systemd/install docs: `tests/test_install_systemd_units_script.py`, `tests/test_systemd_docs.py`
+- systemd installer: `tests/test_install_systemd_units_script.py`
 - firewall defaults: `tests/test_firewall_defaults.py`
 - relay behavior: `tests/test_openai_relay.py`, `tests/test_nuget_relay.py`, `tests/test_app_relay.py`
-- VM/bootstrap docs: `tests/test_bootstrap_script_docs.py`, `tests/test_playwright_bootstrap_docs.py`,
-  `tests/test_nuget_bootstrap_docs.py`
+- VM/bootstrap behavior: `tests/test_bootstrap_script.py`, `tests/test_playwright_bootstrap_docs.py`,
+  `tests/test_nuget_shared_cache_docs.py`
 - workflow runtime: `tests/test_trigger_orchestrator.py`, `tests/test_effect_orchestrator.py`,
   `tests/test_workflow_packs.py`
 - container worker: `tests/test_container_worker_docs.py`,

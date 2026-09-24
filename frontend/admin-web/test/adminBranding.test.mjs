@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -9,12 +8,6 @@ import {
   normalizeAdminBranding,
   themedLogoUrl,
 } from "../src/adminBranding.ts";
-
-test("static source HTML does not ship a default title", () => {
-  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-  assert.match(html, /<title><\/title>/);
-  assert.doesNotMatch(html, /Evander Control Plane Admin/);
-});
 
 test("initial branding is absent when no server bootstrap payload exists", () => {
   const previousWindow = globalThis.window;

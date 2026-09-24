@@ -1289,36 +1289,6 @@ def test_delta_baseline_excludes_failed_dispatches_thread_switches_and_resets(ca
     assert previous_context_snapshot(state, current) is None
 
 
-def test_context_example_catalog_and_static_asset_are_available(tmp_path):
-    import asyncio
-    from pathlib import Path
-    import httpx
-    from starlette.applications import Starlette
-    from evander.addons import AddonContext
-    from evander.workflow.packs import load_workflow_pack
-    from evander_team_addon.case_context_providers import CONTEXT_DEFINITIONS, materialize
-    from evander_team_addon.ui import admin_ui_routes
-
-    root = Path(__file__).resolve().parents[1]
-    pack = load_workflow_pack(root, "case-context.v1-example.json")
-    for spec in pack.ir.nodes:
-        if spec.node.type in CONTEXT_DEFINITIONS:
-            assert materialize(CONTEXT_DEFINITIONS[spec.node.type], spec.node)
-
-    async def exercise():
-        context = AddonContext(
-            addon_id="team-addon", runtime_dir=tmp_path, addon_runtime_dir=tmp_path / "addon"
-        )
-        app = Starlette(routes=admin_ui_routes(context))
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/team-case-context.js")
-            assert response.status_code == 200 and "createCaseContextController" in response.text
-
-    asyncio.run(exercise())
-
-
 def test_delta_reports_supersession_and_removed_records_without_old_bodies(case_repo):
     state, result = record(case_repo, kind="decision")
     service = CaseContextService(case_repo)

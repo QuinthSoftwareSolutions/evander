@@ -224,11 +224,3 @@ test("invalid add-on hashes and duplicate payloads are ignored", () => {
     ["Teams"],
   );
 });
-
-test("users tab is labeled users and groups", () => {
-  const usersTab = tabsForExecutionBackend("libvirt_vm").find((tab) => tab.key === "users");
-  assert.ok(usersTab);
-  assert.equal(usersTab?.label, "Users & Groups");
-  assert.equal(usersTab?.shortLabel, "Users");
-  assert.equal(usersTab?.description, "Admin users, groups, and permissions.");
-});

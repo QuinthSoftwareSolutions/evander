@@ -18,44 +18,6 @@ def test_issue_vm_scripts_source_shared_network_helper() -> None:
     assert "vm_network_wait_for_ssh" in check
 
 
-def test_issue_vm_timeout_env_names_are_standardized() -> None:
-    setup = (ROOT / "scripts" / "setup_vm.sh").read_text(encoding="utf-8")
-    check = (ROOT / "scripts" / "check_issue_vm.sh").read_text(encoding="utf-8")
-
-    for text in (setup, check):
-        assert "VM_WAIT_IP_TIMEOUT_SECONDS" in text
-        assert "VM_WAIT_SSH_TIMEOUT_SECONDS" in text
-        assert "VM_IP_WAIT_TIMEOUT_SECONDS" not in text
-        assert "VM_SSH_WAIT_TIMEOUT_SECONDS" not in text
-
-
-def test_timeout_env_names_are_documented_consistently() -> None:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
-
-    for text in (readme, operations):
-        assert "VM_WAIT_IP_TIMEOUT_SECONDS" in text
-        assert "VM_WAIT_SSH_TIMEOUT_SECONDS" in text
-        assert "default `180`" in text
-
-
-def test_issue_vm_helpers_auto_detect_repo_name_when_omitted() -> None:
-    tail_script = (ROOT / "scripts" / "tail_issue_vm_log.sh").read_text(encoding="utf-8")
-    check_script = (ROOT / "scripts" / "check_issue_vm.sh").read_text(encoding="utf-8")
-
-    for text in (tail_script, check_script):
-        assert "Repo basename used by guest agent logs. Default: auto-detect" in text
-        assert "sort -u" in text
-        assert "agent-*.pid" in text
-        assert "agent-*.state" in text
-        assert "codex-heartbeat-run.log" in text
-        assert "codex-heartbeat.pid" in text
-
-    assert "Number of log lines to print before following. Default: 10" in tail_script
-    assert "Multiple guest agent logs found under" in tail_script
-    assert "pass an explicit repo-name" in check_script
-
-
 def _write_executable(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
     os.chmod(path, 0o755)

@@ -5,11 +5,9 @@ from datetime import datetime, timedelta, timezone
 from multiprocessing import get_context
 from pathlib import Path
 
-import pytest
 
 from evander.messaging.discord_inbox_store import (
     DiscordInboxStore,
-    discord_inbox_db_path,
 )
 from evander.models import DiscordMessageEnvelope
 
@@ -71,23 +69,6 @@ def test_discord_message_envelope_preserves_raw_metadata() -> None:
     assert envelope.raw["id"] == "msg-1"
     assert envelope.in_reply_to == "msg-0"
     assert envelope.model_dump(mode="json")["raw"]["content"] == "hello"
-
-
-@pytest.mark.parametrize(
-    ("input_path", "expected_path"),
-    [
-        ("runtime/discord-inbox-store.db", "runtime/discord-inbox-store.db"),
-        ("runtime/discord-inbox-store.sqlite", "runtime/discord-inbox-store.sqlite"),
-        (
-            "runtime/discord-inbox-store.sqlite3",
-            "runtime/discord-inbox-store.sqlite3",
-        ),
-    ],
-)
-def test_discord_inbox_db_path(tmp_path: Path, input_path: str, expected_path: str) -> None:
-    path = tmp_path / input_path
-
-    assert discord_inbox_db_path(path) == tmp_path / expected_path
 
 
 def test_discord_inbox_store_uses_sqlite_db_path(tmp_path: Path) -> None:

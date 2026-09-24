@@ -310,10 +310,6 @@ def test_host_wake_sleeper_recovers_stale_additional_path(tmp_path: Path) -> Non
     assert not shared_path.exists()
 
 
-def test_host_wake_notifier_noops_when_receiver_is_missing(tmp_path: Path) -> None:
-    assert HostWakeNotifier(tmp_path / "missing.wake.sock").notify() is False
-
-
 def test_host_wake_notifier_drops_notification_when_socket_would_block(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

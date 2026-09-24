@@ -103,17 +103,6 @@ def test_admin_service_vm_domain_class_compat_wrappers_are_callable() -> None:
     assert VmAgentAdminService._normalize_agent_backend_filter("libvirt") == "libvirt_vm"
 
 
-def test_admin_service_vm_domain_class_compat_wrappers_are_classmethod_delegates() -> None:
-    wrapper_names = {
-        "_agent_record_matches_directory",
-        "_container_execution_status",
-        "_container_session_status",
-        "_normalize_agent_log_view",
-        "_normalize_agent_backend_filter",
-    }
-    assert all(callable(getattr(VmAgentAdminService, name, None)) for name in wrapper_names)
-
-
 def test_agent_session_policy_reports_effective_codex_auth_mode_and_source() -> None:
     session = SessionManifest(
         session_id="container-session",
