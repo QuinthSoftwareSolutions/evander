@@ -1386,6 +1386,7 @@ def test_cleanup_retains_bounded_deterministic_inventory_evidence(tmp_path) -> N
 
 def test_automatic_cleanup_audits_then_removes_on_later_eligible_pass(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = _seed_cleanup_state(tmp_path)
     backend = FakeCleanupBackend(
@@ -1395,6 +1396,8 @@ def test_automatic_cleanup_audits_then_removes_on_later_eligible_pass(
         ]
     )
     now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    # Keep journal retention on the same clock as the simulated cleanup passes.
+    monkeypatch.setattr("evander_team_addon.sqlite_journal.utc_now", lambda: now)
     service = TeamWorktreeCleanupService(repository, backend)
 
     first = service.reconcile(
@@ -1594,6 +1597,7 @@ def test_rejected_task_remains_unresolved_and_is_not_enqueued_for_worktree_clean
 
 def test_deterministic_backend_refusal_halts_until_operator_requeues(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = _seed_cleanup_state(tmp_path)
     backend = FakeCleanupBackend(
@@ -1615,6 +1619,8 @@ def test_deterministic_backend_refusal_halts_until_operator_requeues(
         ]
     )
     now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    # Keep journal retention on the same clock as the simulated cleanup passes.
+    monkeypatch.setattr("evander_team_addon.sqlite_journal.utc_now", lambda: now)
     service = TeamWorktreeCleanupService(repository, backend)
 
     first = service.reconcile(

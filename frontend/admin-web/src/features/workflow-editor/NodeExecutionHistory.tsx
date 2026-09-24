@@ -213,7 +213,9 @@ export function NodeExecutionHistory({
       ) : null}
       {nodeExecutionSearch ? (
         <div className="runtime-run-meta">
-          {nodeExecutionSearch.matched} matched; showing {nodeExecutionSearch.executions.length}.
+          {nodeExecutionSearch.matched == null
+            ? `Showing ${nodeExecutionSearch.executions.length}${nodeExecutionSearch.has_more ? "; more available" : ""}.`
+            : `${nodeExecutionSearch.matched} matched; showing ${nodeExecutionSearch.executions.length}.`}
         </div>
       ) : null}
       <div className="runtime-runs node-execution-results">
