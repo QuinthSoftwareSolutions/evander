@@ -18,8 +18,8 @@ from evander.admin.services.vm_agent.common import (
     _sync_added_discord_session_cursors,
     timedelta,
 )
+from evander.admin.services.vm_agent.errors import ContainerWorkerAgentNotFoundError
 from evander.codex_auth import (
-    DEFAULT_SUBSCRIPTION_PROFILE_ID,
     CodexAuthMode,
     effective_codex_auth_mode,
     normalize_codex_auth_mode,
@@ -276,39 +276,27 @@ class VmAgentMutationMixin:
                     "subscription_profile_id is supported only for container worker agents"
                 )
             profile_id = normalize_subscription_profile_id(
-                body.get("subscription_profile_id"), allow_none=False
+                body.get("subscription_profile_id")
             )
-            existing_profile_id = session.subscription_profile_id
-            existing_binding = existing_profile_id
-            if (
-                existing_binding is None
-                and session.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
-            ):
-                existing_binding = DEFAULT_SUBSCRIPTION_PROFILE_ID
-            if existing_binding is not None and profile_id != existing_binding:
-                raise ValueError(
-                    "subscription_profile_id is write-once for an agent session; create a "
-                    "new agent to use a different profile"
-                )
             effective_mode = update.get("codex_auth_mode", session.codex_auth_mode)
             if effective_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION:
                 raise ValueError(
-                    "the first subscription_profile_id assignment must explicitly switch "
-                    "codex_auth_mode to chatgpt_subscription"
+                    "subscription_profile_id requires "
+                    "codex_auth_mode='chatgpt_subscription'"
                 )
-            backend_client = self.container_worker_backend(
-                directory_path=session.directory_path,
-                session_id=session.session_id,
-            ).client
-            profile_status = backend_client.codex_auth_profile_status(str(profile_id))
-            if not bool(profile_status.get("enabled")):
-                raise ValueError(f"Codex subscription profile {profile_id!r} is disabled")
+            if profile_id is None:
+                raise ValueError("subscription_profile_id is required")
+            if profile_id != session.subscription_profile_id:
+                backend_client = self.container_worker_backend(
+                    directory_path=session.directory_path,
+                    session_id=session.session_id,
+                ).client
+                profile_status = backend_client.codex_auth_profile_status(str(profile_id))
+                if not bool(profile_status.get("enabled")):
+                    raise ValueError(f"Codex subscription profile {profile_id!r} is disabled")
             update["subscription_profile_id"] = profile_id
 
         effective_auth_mode = update.get("codex_auth_mode", session.codex_auth_mode)
-        effective_profile_id = update.get(
-            "subscription_profile_id", session.subscription_profile_id
-        )
         if (
             "codex_auth_mode" in body
             and effective_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
@@ -319,20 +307,20 @@ class VmAgentMutationMixin:
                 "subscription_profile_id is required when switching codex_auth_mode to "
                 "chatgpt_subscription"
             )
-        effective_binding = effective_profile_id
-        if (
-            effective_binding is None
-            and session.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
-        ):
-            effective_binding = DEFAULT_SUBSCRIPTION_PROFILE_ID
-        if (
-            effective_binding is not None
-            and effective_auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION
-        ):
-            raise ValueError("A profile-bound agent cannot switch away from subscription mode")
+        if effective_auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION:
+            update["subscription_profile_id"] = None
 
         updated = session.model_copy(update=update)
         self.runtime.session_repository.upsert_session(updated)
+        if "codex_auth_mode" in body or "subscription_profile_id" in body:
+            from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+            AgentPromptQueueStore(
+                self.config.runtime_dir / "queued-agent-prompts.json"
+            ).reroute_session(
+                updated.session_id,
+                subscription_profile_id=updated.subscription_profile_id,
+            )
         _sync_added_discord_session_cursors(
             self.runtime,
             previous_session=session,
@@ -407,7 +395,7 @@ class VmAgentMutationMixin:
             else str(getattr(record, "session_id", "") or "").strip()
         )
         if not session_id:
-            raise ValueError(f"Unknown container worker agent target: {agent_id}")
+            raise ContainerWorkerAgentNotFoundError(agent_id)
         git_write_access_revoked = _revoke_container_git_write_access_for_session(session)
         target_name = (
             self._container_session_target_name(session)

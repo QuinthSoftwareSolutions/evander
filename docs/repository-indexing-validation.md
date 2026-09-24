@@ -1,8 +1,8 @@
-# APP repository index validation
+# App repository index validation
 
-Validated on 2026-09-10 against APP commit
+Validated on 2026-09-10 against App commit
 `967d8971734a57c77c4379742415c805b45bb6ef`, using a disposable local compiler run,
-control-plane import and portable export. No live deployment or APP source changes
+control-plane import and portable export. No live deployment or App source changes
 were made.
 
 ## Measured results
@@ -33,7 +33,7 @@ smoke check, not a complete assessment of navigation accuracy.
 The index returned five bounded snippets; `rg` returned all matching lines from the
 same permitted files. The index was slower in this local latency sample. Response
 byte differences do not establish agent token or cost savings. Semantic relevance
-and provider costs were not evaluated on the full APP corpus.
+and provider costs were not evaluated on the full App corpus.
 
 ## Compiler coverage limits
 
@@ -45,7 +45,7 @@ Git commit alone. Configured package relays may resolve more dependencies, but
 that was not tested here.
 
 These compiler timings predate the one-CPU default and do not measure performance on
-Truman. Team/review preparation now reuses existing exact or ancestor coverage without
+Evander. Team/review preparation now reuses existing exact or ancestor coverage without
 requesting compiler work. Regression fixtures exercise unchanged-file reuse, filtering
 of modified/deleted/renamed files, semantic baseline reuse, commit scope, refresh
 intervals and runtime-wide compiler capacity including uncertain worker submissions.
@@ -81,7 +81,7 @@ Admin Web screenshot. These generated artifacts are ignored by Git.
 
 All 49 manifest file checksums were verified. The extracted tool ran with `python3
 -I` from `/tmp`, without importing Evander, and searched for
-`DurableEventDeliveryService` and resolved its class definition. This APP bundle
+`DurableEventDeliveryService` and resolved its class definition. This App bundle
 contains text and symbol data without embedding vectors. A separate regression
 exports cached vectors and queries them in isolated Python using a supplied vector,
 without an embedding service or Qdrant.

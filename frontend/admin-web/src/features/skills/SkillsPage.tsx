@@ -1,6 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { ApiError, fetchJson, formatTimestamp } from "../admin/api";
+import { useAdminUi } from "../admin/AdminContext";
+import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { timestampSortValue } from "../admin/tableSorting";
+import { readAdminHashQuery } from "../admin/hash";
 import type {
   SkillLibraryDetail,
   SkillLibraryItem,
@@ -108,8 +112,10 @@ function workflowReferenceLocation(reference: SkillWorkflowReference): string {
 }
 
 export function SkillsPage() {
+  const { privilegedUnlocked } = useAdminUi();
+  const mutationLocked = !privilegedUnlocked;
   const [items, setItems] = useState<SkillLibraryItem[]>([]);
-  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [selectedName, setSelectedName] = useState<string | null>(() => readAdminHashQuery().get("skill"));
   const [selectedSkill, setSelectedSkill] = useState<SkillLibraryDetail | null>(null);
   const [uploadName, setUploadName] = useState("");
   const [uploadContent, setUploadContent] = useState("");
@@ -212,6 +218,7 @@ export function SkillsPage() {
 
   async function handleUpload(event: FormEvent) {
     event.preventDefault();
+    if (mutationLocked) return;
     setBusy("upload");
     try {
       const payload = await fetchJson<SkillMutationResponse>("/api/admin/skills", {
@@ -239,6 +246,7 @@ export function SkillsPage() {
   }
 
   async function handleReplace() {
+    if (mutationLocked) return;
     if (!selectedSkill) return;
     setBusy("replace");
     try {
@@ -264,6 +272,7 @@ export function SkillsPage() {
   }
 
   async function handleDelete() {
+    if (mutationLocked) return;
     if (!selectedSkill) return;
     if (!window.confirm(`Delete ${selectedSkill.name}?`)) return;
     setBusy("delete");
@@ -287,159 +296,202 @@ export function SkillsPage() {
   }
 
   return (
-    <div className="feature-page skills-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Managed library</div>
-            <h1>Skills</h1>
-          </div>
-          <div className="inline-actions compact-actions">
-            <button type="button" onClick={() => void refreshSkills()} disabled={loading || busy !== null}>
-              Refresh
-            </button>
-          </div>
-        </div>
-        <div className="feature-list skill-list">
-          {items.map((item) => (
-            <button
-              key={item.name}
-              type="button"
-              className={`feature-list-item skill-list-item${selectedName === item.name ? " selected" : ""}`}
-              onClick={() => setSelectedName(item.name)}
-            >
-              <div className="feature-list-title-row">
-                <strong>{item.name}</strong>
-                <span className="status-pill">{formatBytes(item.size_bytes)}</span>
-              </div>
-              <div className="feature-list-meta">{formatTimestamp(item.updated_at)}</div>
-            </button>
-          ))}
-          {!loading && items.length === 0 ? <div className="empty-state">No skills found.</div> : null}
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selectedSkill?.name ?? "Managed skills"}</h2>
-            <p className="muted-text">
-              {selectedSummary
-                ? `${formatBytes(selectedSummary.size_bytes)} / ${formatTimestamp(selectedSummary.updated_at)}`
-                : "Global Codex skills available to agent creation flows."}
-            </p>
-          </div>
-        </div>
-
-        {error ? (
-          <div className="callout warning-callout">
-            <div>{error}</div>
-            {deleteConflict ? (
-              <div className="skill-delete-conflict">
-                <div className="skill-delete-conflict-heading">Workflow references</div>
-                <ul className="skill-delete-reference-list" aria-label="Workflow references">
-                  {deleteConflict.references.map((reference, index) => (
-                    <li key={`${reference.workflow_pack ?? "inline"}:${reference.node_id ?? index}:${index}`}>
-                      <strong>{workflowReferenceTitle(reference)}</strong>
-                      <span>{workflowReferenceLocation(reference)}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        {status ? <div className="callout">{status}</div> : null}
-
-        <div className="detail-grid skills-detail-grid">
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Upload</h3>
-              <span className="panel-meta">{uploadFileName || "Markdown"}</span>
+    <RecordWorkspace
+      recordLabel="skill"
+      title="Skills"
+      description="Search the managed skill library. Open a skill to read its content, update it, or inspect workflow references."
+      columns={["Skill", "Size", "Updated"]}
+      records={items.map((item) => ({
+        id: item.name,
+        title: item.name,
+        href: `#skills?${new URLSearchParams({ skill: item.name })}`,
+        cells: [
+          { value: item.size_bytes, content: formatBytes(item.size_bytes) },
+          { value: timestampSortValue(item.updated_at), content: formatTimestamp(item.updated_at) },
+        ],
+        facts: [
+          ["Name", item.name],
+          ["Size", formatBytes(item.size_bytes)],
+          ["Updated", formatTimestamp(item.updated_at)],
+        ],
+      }))}
+      selectedId={selectedName}
+      onSelect={setSelectedName}
+      loading={loading}
+      error={error}
+      initialRecordOpen={Boolean(readAdminHashQuery().get("skill"))}
+      recordRouteKeys="skill"
+      actions={(openRecord) => (
+        <>
+          <button type="button" disabled={loading || busy !== null} onClick={() => void refreshSkills()}>
+            Refresh
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={mutationLocked}
+            title={mutationLocked ? "Unlock privileged operations to upload skills." : undefined}
+            onClick={openRecord}
+          >
+            Upload skill
+          </button>
+        </>
+      )}
+    >
+      <div className="feature-page skills-page">
+        <section className="feature-sidebar">
+          <div className="feature-sidebar-header">
+            <div>
+              <div className="eyebrow">Managed library</div>
+              <h1>Skills</h1>
             </div>
-            <form className="form-grid" onSubmit={(event) => void handleUpload(event)}>
-              <label className="field-stack">
-                <span>Name</span>
-                <input
-                  value={uploadName}
-                  onChange={(event) => setUploadName(event.target.value)}
-                  placeholder="skill-name"
-                />
-              </label>
-              <label className="field-stack">
-                <span>File</span>
-                <input
-                  type="file"
-                  accept=".md,text/markdown"
-                  onChange={(event) => void handleFileChange(event.target.files?.[0] ?? null)}
-                />
-              </label>
-              <label className="checkbox-row field-span-2">
-                <input
-                  type="checkbox"
-                  checked={replaceExisting}
-                  onChange={(event) => setReplaceExisting(event.target.checked)}
-                />
-                <span>Replace existing</span>
-              </label>
-              <label className="field-stack field-span-2">
-                <span>Content</span>
-                <textarea
-                  rows={10}
-                  value={uploadContent}
-                  onChange={(event) => setUploadContent(event.target.value)}
-                />
-              </label>
-              <div className="inline-actions compact-actions field-span-2">
-                <button
-                  className="primary"
-                  type="submit"
-                  disabled={busy !== null || !uploadName.trim() || !uploadContent.trim()}
-                >
-                  {busy === "upload" ? "Saving..." : "Save"}
-                </button>
-              </div>
-            </form>
-          </article>
-
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Edit</h3>
-              <span className="panel-meta">{selectedSkill?.name ?? "None selected"}</span>
+            <div className="inline-actions compact-actions">
+              <button type="button" onClick={() => void refreshSkills()} disabled={loading || busy !== null}>
+                Refresh
+              </button>
             </div>
-            {selectedSkill ? (
-              <div className="field-stack">
-                <textarea
-                  className="skill-editor"
-                  rows={18}
-                  value={editContent}
-                  onChange={(event) => setEditContent(event.target.value)}
-                />
-                <div className="inline-actions compact-actions">
+          </div>
+          <div className="feature-list skill-list">
+            {items.map((item) => (
+              <button
+                key={item.name}
+                type="button"
+                className={`feature-list-item skill-list-item${selectedName === item.name ? " selected" : ""}`}
+                onClick={() => setSelectedName(item.name)}
+              >
+                <div className="feature-list-title-row">
+                  <strong>{item.name}</strong>
+                  <span className="status-pill">{formatBytes(item.size_bytes)}</span>
+                </div>
+                <div className="feature-list-meta">{formatTimestamp(item.updated_at)}</div>
+              </button>
+            ))}
+            {!loading && items.length === 0 ? <div className="empty-state">No skills found.</div> : null}
+          </div>
+        </section>
+
+        <section className="feature-content">
+          <div className="feature-toolbar">
+            <div>
+              <h2>{selectedSkill?.name ?? "Managed skills"}</h2>
+              <p className="muted-text">
+                {selectedSummary
+                  ? `${formatBytes(selectedSummary.size_bytes)} / ${formatTimestamp(selectedSummary.updated_at)}`
+                  : "Global Codex skills available to agent creation flows."}
+              </p>
+            </div>
+          </div>
+
+          {error ? (
+            <div className="callout warning-callout">
+              <div>{error}</div>
+              {deleteConflict ? (
+                <div className="skill-delete-conflict">
+                  <div className="skill-delete-conflict-heading">Workflow references</div>
+                  <ul className="skill-delete-reference-list" aria-label="Workflow references">
+                    {deleteConflict.references.map((reference, index) => (
+                      <li key={`${reference.workflow_pack ?? "inline"}:${reference.node_id ?? index}:${index}`}>
+                        <strong>{workflowReferenceTitle(reference)}</strong>
+                        <span>{workflowReferenceLocation(reference)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {status ? <div className="callout">{status}</div> : null}
+
+          <div className="detail-grid skills-detail-grid">
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Upload</h3>
+                <span className="panel-meta">{uploadFileName || "Markdown"}</span>
+              </div>
+              <form className="form-grid" onSubmit={(event) => void handleUpload(event)}>
+                <label className="field-stack">
+                  <span>Name</span>
+                  <input
+                    value={uploadName}
+                    onChange={(event) => setUploadName(event.target.value)}
+                    placeholder="skill-name"
+                  />
+                </label>
+                <label className="field-stack">
+                  <span>File</span>
+                  <input
+                    type="file"
+                    accept=".md,text/markdown"
+                    onChange={(event) => void handleFileChange(event.target.files?.[0] ?? null)}
+                  />
+                </label>
+                <label className="checkbox-row field-span-2">
+                  <input
+                    type="checkbox"
+                    checked={replaceExisting}
+                    onChange={(event) => setReplaceExisting(event.target.checked)}
+                  />
+                  <span>Replace existing</span>
+                </label>
+                <label className="field-stack field-span-2">
+                  <span>Content</span>
+                  <textarea
+                    rows={10}
+                    value={uploadContent}
+                    onChange={(event) => setUploadContent(event.target.value)}
+                  />
+                </label>
+                <div className="inline-actions compact-actions field-span-2">
                   <button
-                    type="button"
                     className="primary"
-                    onClick={() => void handleReplace()}
-                    disabled={busy !== null || !editContent.trim()}
+                    type="submit"
+                    disabled={mutationLocked || busy !== null || !uploadName.trim() || !uploadContent.trim()}
                   >
-                    {busy === "replace" ? "Saving..." : "Replace"}
-                  </button>
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => void handleDelete()}
-                    disabled={busy !== null}
-                  >
-                    {busy === "delete" ? "Deleting..." : "Delete"}
+                    {busy === "upload" ? "Saving..." : "Save"}
                   </button>
                 </div>
+              </form>
+            </article>
+
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Edit</h3>
+                <span className="panel-meta">{selectedSkill?.name ?? "None selected"}</span>
               </div>
-            ) : (
-              <div className="empty-state">Select a skill to preview or edit.</div>
-            )}
-          </article>
-        </div>
-      </section>
-    </div>
+              {selectedSkill ? (
+                <div className="field-stack">
+                  <textarea
+                    className="skill-editor"
+                    rows={18}
+                    value={editContent}
+                    onChange={(event) => setEditContent(event.target.value)}
+                  />
+                  <div className="inline-actions compact-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => void handleReplace()}
+                      disabled={mutationLocked || busy !== null || !editContent.trim()}
+                    >
+                      {busy === "replace" ? "Saving..." : "Replace"}
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => void handleDelete()}
+                      disabled={mutationLocked || busy !== null}
+                    >
+                      {busy === "delete" ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty-state">Select a skill to preview or edit.</div>
+              )}
+            </article>
+          </div>
+        </section>
+      </div>
+    </RecordWorkspace>
   );
 }

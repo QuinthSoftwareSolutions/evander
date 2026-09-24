@@ -732,6 +732,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
     "gate:filter": "Allow only matching events to continue downstream.",
     "gate:switch": "Route each activation to the first matching branch or a default route.",
+    "gate:classifier:switch": "Use classification to select a described branch and pass the input through.",
     "gate:validate": ("Evaluate named predicates and route with structured validation failures."),
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
     "gate:buffer": "Collect activations by key and release them as a batch by count or timeout.",
@@ -792,6 +793,8 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:ado:pipeline-run": (
         "Queue an Azure DevOps pipeline run and wait for its terminal result."
     ),
+    "effect:ado:build-wait": "Wait for a pinned Azure DevOps build and fail if it does not succeed.",
+    "effect:agent:install-skills": "Install managed skills additively in an existing VM or container agent session.",
     "effect:ado:update-work-item": (
         "Update an Azure DevOps work item with an optional expected-state guard."
     ),
@@ -872,7 +875,10 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:issue:get": "Read a local issue record by id.",
     "query:issue:list": "List tracked local and proxy issues from the local issue store.",
     "query:ado:work-items": "Query Azure DevOps work items.",
+    "query:ado:builds": "List Azure DevOps builds using explicit branch and version filters, newest first.",
+    "query:text:regex": "Match or replace text with a configured regular expression and expose named captures.",
     "query:remote-issues": "Query Azure DevOps work items or GitHub issues.",
+    "query:classification:evaluate": "Evaluate named Choice, Score, or Boolean questions against shared state.",
     "query:semantic:store-status": "Read Qdrant health and semantic collection status.",
     "query:semantic:search": "Search a semantic collection with an embedded text query.",
     "query:semantic:get": "Retrieve semantic points by explicit point IDs.",
@@ -886,6 +892,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="effect",
         type="effect:code-index:ensure",
         label="Ensure repository index",
+        description=(
+            "Ensure exact or reusable ancestor index coverage for a managed repository commit, "
+            "scheduling a bounded build when needed."
+        ),
         fields=[
             _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
             _field("commit_sha", "Exact commit", "string", bindable=True),
@@ -896,6 +906,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="effect",
         type="effect:code-index:reconcile",
         label="Advance repository indexing",
+        description=(
+            "Advance pending repository index builds and import completed portable index artifacts."
+        ),
         fields=[
             _field("directory_path", "Directory", "string", bindable=True),
             _field("limit", "Builds per pass", "number", bindable=True),
@@ -905,6 +918,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="query",
         type="query:code-index:status",
         label="Repository index status",
+        description=(
+            "Read exact or reusable ancestor index coverage for a managed repository commit."
+        ),
         fields=[
             _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
             _field("commit_sha", "Exact commit", "string", bindable=True),
@@ -915,6 +931,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="query",
         type="query:code-index:search",
         label="Search repository index",
+        description=(
+            "Search indexed repository content for an exact commit or an allowed ancestor."
+        ),
         fields=[
             _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
             _field("commit_sha", "Exact commit", "string", required=True, bindable=True),
@@ -930,6 +949,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="query",
         type="query:code-index:navigate",
         label="Navigate repository symbols",
+        description=(
+            "Navigate definitions, references, and symbols in indexed compiler data for a "
+            "managed repository."
+        ),
         fields=[
             _field("managed_repo_id", "Managed repository", "string", required=True, bindable=True),
             _field("commit_sha", "Exact commit", "string", required=True, bindable=True),
@@ -948,6 +971,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field(
                 "expression", "Cron expression", "string", required=True, placeholder="*/15 * * * *"
+            ),
+            _field(
+                "timezone",
+                "Timezone",
+                "string",
+                default_value="UTC",
+                placeholder="Europe/Stockholm",
+                description="IANA timezone used to evaluate the cron expression.",
             ),
         ],
     ),
@@ -1349,6 +1380,32 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Teams direct message",
         fields=[
             _field(
+                "chat_target_mode",
+                "Chat setup",
+                "enum",
+                required=True,
+                default_value="explicit",
+                description=(
+                    "Choose direct chats by user UPN, or retain manually configured chat and "
+                    "sender IDs. Saving direct-chat mode resolves and stores both Graph user IDs "
+                    "and one-to-one chat IDs."
+                ),
+                options=[
+                    _field_option("direct", "Direct chats by UPN"),
+                    _field_option("explicit", "Existing chat IDs"),
+                ],
+            ),
+            _field(
+                "direct_chat_user_upns",
+                "Direct chat users",
+                "string_list",
+                description=(
+                    "One Microsoft Entra UPN or mail address per line. Saving resolves each user "
+                    "and ensures its one-to-one Teams chat."
+                ),
+                placeholder="person@example.com",
+            ),
+            _field(
                 "targets",
                 "Chat targets",
                 "object_list",
@@ -1378,7 +1435,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
             _field(
                 "sender_user_ids",
-                "Sender user IDs or emails",
+                "Allowed sender references",
                 "string_list",
                 required=True,
                 description=(
@@ -1633,6 +1690,30 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 read_only=True,
                 description="Derived from the single upstream node and passed through unchanged on the selected route.",
             ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:classifier:switch",
+        label="Smart switch",
+        fields=[
+            _field("state", "Input and context", "json", required=True, bindable=True,
+                   description="Text or JSON to classify. Supports upstream bindings."),
+            _field("instructions", "Routing instructions", "string", required=True),
+            _field("cases", "Branches", "object_list", required=True, item_fields=[
+                _field("port", "Port", "string", required=True),
+                _field("label", "Label", "string"),
+                _field("description", "Description", "string", required=True),
+            ]),
+            _field("default_port", "Default port", "string", required=True),
+            _field("default_description", "Default description", "string",
+                   default_value="None of the described routes clearly applies."),
+            _field("provider", "Provider", "string"),
+            _field("model", "Model", "string"),
+            _field("min_probability", "Minimum option probability", "number",
+                   description="Optional cutoff; lower probability routes to the default."),
+            _field("outputs", "Outputs", "json", read_only=True,
+                   description="Derived from the upstream node and passed through unchanged."),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3182,7 +3263,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 required=True,
                 bindable=True,
                 description="Immutable key of the published tar.gz archive to import.",
-                placeholder="manuals/true-app/reviewed/latest",
+                placeholder="manuals/sample-app/reviewed/latest",
             ),
             _field(
                 "destination_path",
@@ -3255,7 +3336,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 AGENT_PROMPT_ERROR_PORT,
                 "Error",
                 description=(
-                    "Emits when prompt dispatch fails and the node is handled by an error route."
+                    "Emits on dispatch or terminal execution failure, including container timeout, when an error route is connected."
                 ),
             ),
         ],
@@ -3320,7 +3401,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 AGENT_PROMPT_ERROR_PORT,
                 "Error",
                 description=(
-                    "Emits when prompt dispatch fails and the node is handled by an error route."
+                    "Emits on dispatch or terminal execution failure, including container timeout, when an error route is connected."
                 ),
             ),
         ],
@@ -3874,6 +3955,42 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
             _field("poll_interval_seconds", "Poll interval seconds", "number", bindable=True),
             _field("check", "Check result", "boolean", bindable=True),
+            _field(
+                "reject_running_parameters",
+                "Reject matching active runs",
+                "json",
+                bindable=True,
+                json_value_type="object",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:ado:build-wait",
+        label="Wait for ADO build",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("run_id", "Build run ID", "string", required=True, bindable=True),
+            _field(
+                "timeout_seconds", "Timeout seconds", "number", bindable=True, default_value=3600
+            ),
+            _field(
+                "poll_interval_seconds", "Poll interval seconds", "number", bindable=True, default_value=10
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:install-skills",
+        label="Install managed agent skills",
+        fields=[
+            _field("target", "Session", "string", required=True, bindable=True),
+            _field(
+                "codex_skills", "Managed skills", "json",
+                required=True, bindable=True, json_value_type="array",
+            ),
+            _field("vm_user", "VM user", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -4902,6 +5019,32 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="query",
+        type="query:ado:builds",
+        label="List ADO builds",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("pipeline_id", "Build definition ID", "number", required=True, bindable=True),
+            _field("repository_id", "Repository ID", "string", required=True, bindable=True),
+            _field("filters", "Branch/version filters", "json", required=True, bindable=True, json_value_type="array"),
+            _field("repository_type", "Repository type", "string", bindable=True, default_value="TfsGit"),
+            _field("limit", "Result limit", "number", bindable=True, default_value=100),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:text:regex",
+        label="Match or replace text",
+        fields=[
+            _field("text", "Text", "string", required=True, bindable=True),
+            _field("pattern", "Pattern", "string", required=True, bindable=True),
+            _field("operation", "Operation", "string", bindable=True, default_value="fullmatch"),
+            _field("replacement", "Replacement", "string", bindable=True, default_value=""),
+            _field("require_match", "Require a match", "boolean", bindable=True, default_value=False),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
         type="query:ado:work-items",
         label="ADO work items",
         fields=[
@@ -4949,6 +5092,22 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             *_remote_issue_base_fields(bindable=True),
             _field("skip", "Skip", "number", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:classification:evaluate",
+        label="Classification evaluate",
+        fields=[
+            _field("state", "State", "json", required=True, bindable=True,
+                   description="Text or structured context shared by all questions."),
+            _field("profile_id", "Profile", "string", bindable=True,
+                   description="Use a fixed directory profile, or define questions inline."),
+            _field("questions", "Questions", "json", bindable=True),
+            _field("provider", "Provider", "string", bindable=True,
+                   description="Inline evaluations only; defaults to directory configuration."),
+            _field("model", "Model", "string", bindable=True,
+                   description="Inline evaluations only; profiles fix the provider and model."),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

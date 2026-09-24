@@ -1,5 +1,16 @@
 # Live Smoke Tests
 
+## Core classification (opt-in)
+
+After provisioning the host credential and enabling the target directory's classification
+settings, run `./.venv/bin/python scripts/smoke_classification.py --live --runtime-dir runtime
+--directory-path root` on the control plane. This makes a billable request with synthetic input
+and prints normalized answers and usage. It does not enable classification or alter workflows.
+The assistant-level routing corpus has a separate opt-in check: `./.venv/bin/python
+scripts/smoke_classifier_switch.py --live --runtime-dir runtime --directory-path root`. It makes
+one billable call per labeled sample and does not edit workflows or assistant settings.
+See [Classification](classification.md) for profile setup and verification details.
+
 This runbook verifies live `Discord + read-only email` behavior in two stages:
 
 1. Host gateway only

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
@@ -24,6 +26,7 @@ from evander.messaging.teams_inbox_store import (
     TeamsOwnedSubscription,
 )
 from evander.messaging.teams_ingest import (
+    build_teams_ingest_worker,
     _load_teams_ingest_worker_global_config,
     _resolve_teams_ingest_lock_path,
 )
@@ -49,6 +52,7 @@ class TeamsNotificationsService:
         store: TeamsInboxStore | None = None,
         max_request_bytes: int = _MAX_NOTIFICATION_REQUEST_BYTES,
         ingest_wake_notifier: Callable[[], bool] | None = None,
+        notification_processor: Callable[[], int] | None = None,
     ) -> None:
         self.config = config
         self.project_dir = Path(project_dir)
@@ -61,6 +65,11 @@ class TeamsNotificationsService:
         self.owner_id = self.store.notification_owner_id()
         self.max_request_bytes = max(1, int(max_request_bytes))
         self._ingest_wake_notifier = ingest_wake_notifier
+        self._notification_processor = notification_processor
+        self._processor_signal: asyncio.Event | None = None
+        self._processor_running = False
+        self._processor_last_completed_at: datetime | None = None
+        self._processor_last_error: str | None = None
 
     def worker_config(self) -> TeamsIngestWorkerGlobalConfig:
         return _load_teams_ingest_worker_global_config(
@@ -70,6 +79,23 @@ class TeamsNotificationsService:
 
     def create_app(self) -> Starlette:
         service = self
+
+        @asynccontextmanager
+        async def lifespan(_: Starlette):
+            task: asyncio.Task[None] | None = None
+            if service._notification_processor is not None:
+                service._processor_signal = asyncio.Event()
+                task = asyncio.create_task(service._run_processor_loop())
+            try:
+                yield
+            finally:
+                if task is not None:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                service._processor_signal = None
 
         async def health(_: Request) -> JSONResponse:
             worker_config = service.worker_config()
@@ -83,6 +109,16 @@ class TeamsNotificationsService:
                             hours=worker_config.change_notification_renewal_margin_hours
                         ),
                     ),
+                    "processor": {
+                        "enabled": service._notification_processor is not None,
+                        "running": service._processor_running,
+                        "last_completed_at": (
+                            service._processor_last_completed_at.isoformat()
+                            if service._processor_last_completed_at is not None
+                            else None
+                        ),
+                        "last_error": service._processor_last_error,
+                    },
                 }
             )
 
@@ -94,6 +130,7 @@ class TeamsNotificationsService:
 
         return Starlette(
             debug=False,
+            lifespan=lifespan,
             routes=[
                 Route("/healthz", health, methods=["GET"]),
                 Route("/msgraph/teams/notifications", messages, methods=["POST"]),
@@ -158,6 +195,7 @@ class TeamsNotificationsService:
                 elif entry is None:
                     rejected += 1
         if accepted > 0:
+            self._signal_processor()
             self._notify_ingest_worker(worker_config)
         if rejected:
             logger.warning(
@@ -166,6 +204,42 @@ class TeamsNotificationsService:
                 rejected,
             )
         return JSONResponse({"status": "accepted", "accepted": accepted}, status_code=202)
+
+    def _signal_processor(self) -> None:
+        signal = self._processor_signal
+        if signal is not None:
+            signal.set()
+
+    async def _run_processor_loop(self) -> None:
+        processor = self._notification_processor
+        signal = self._processor_signal
+        if processor is None or signal is None:
+            return
+        self._processor_running = True
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(signal.wait(), timeout=1.0)
+                except TimeoutError:
+                    pass
+                signal.clear()
+                try:
+                    processed = await asyncio.to_thread(processor)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    self._processor_last_error = " ".join(str(exc).split())[:500]
+                    logger.exception("Teams notification background processor failed")
+                else:
+                    self._processor_last_completed_at = datetime.now(UTC)
+                    self._processor_last_error = None
+                    if processed:
+                        logger.info(
+                            "Teams notification background processor completed count=%d",
+                            processed,
+                        )
+        finally:
+            self._processor_running = False
 
     def _notify_ingest_worker(self, worker_config: TeamsIngestWorkerGlobalConfig) -> bool:
         notifier = self._ingest_wake_notifier
@@ -287,6 +361,7 @@ def create_app(
     store: TeamsInboxStore | None = None,
     max_request_bytes: int = _MAX_NOTIFICATION_REQUEST_BYTES,
     ingest_wake_notifier: Callable[[], bool] | None = None,
+    notification_processor: Callable[[], int] | None = None,
 ) -> Starlette:
     return TeamsNotificationsService(
         config,
@@ -294,6 +369,7 @@ def create_app(
         store=store,
         max_request_bytes=max_request_bytes,
         ingest_wake_notifier=ingest_wake_notifier,
+        notification_processor=notification_processor,
     ).create_app()
 
 
@@ -327,8 +403,19 @@ def main() -> None:
     project_dir = runtime_dir.parent
     worker_config = _load_teams_ingest_worker_global_config(project_dir, base_config=config)
     _validate_loopback_listener(worker_config.change_notification_listener_host)
+    notification_worker = build_teams_ingest_worker(config, project_dir=project_dir)
+    notification_store = (
+        notification_worker.store
+        if isinstance(notification_worker.store, TeamsInboxStore)
+        else None
+    )
     uvicorn.run(
-        create_app(config, project_dir=project_dir),
+        create_app(
+            config,
+            project_dir=project_dir,
+            store=notification_store,
+            notification_processor=notification_worker.process_notification_queue_once,
+        ),
         host=worker_config.change_notification_listener_host,
         port=worker_config.change_notification_listener_port,
     )

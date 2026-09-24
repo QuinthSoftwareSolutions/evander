@@ -736,10 +736,10 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
           text: null,
           level: null,
           items: [],
-          src: "/api/admin/news/assets/truman-signature.svg",
-          dark_src: "/api/admin/news/assets/truman-signature-inverse.svg",
-          alt: "Truman signature",
-          title: "Signed by Truman",
+          src: "/api/admin/news/assets/evander-signature.svg",
+          dark_src: "/api/admin/news/assets/evander-signature-inverse.svg",
+          alt: "Evander signature",
+          title: "Signed by Evander",
         },
         {
           kind: "paragraph",
@@ -1024,6 +1024,18 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (/^\/api\/admin\/agents\/agent-\d+$/.test(pathname)) {
+      const agent = agentsResponse.items.find((item) => item.agent_id === pathname.split("/")[4]);
+      assert.ok(agent, `expected fixture agent for ${pathname}`);
+      await route.fulfill(jsonResponse(agent));
+      return;
+    }
+
+    if (/^\/api\/admin\/agents\/[^/]+\/executions$/.test(pathname)) {
+      await route.fulfill(jsonResponse({ agent_id: pathname.split("/")[4], items: [], has_more: false, next_cursor: null }));
+      return;
+    }
+
     if (/^\/api\/admin\/agents\/[^/]+\/log$/.test(pathname)) {
       const agentId = pathname.split("/")[4] ?? "agent";
       const isChildAgent = agentId === "agent-3";
@@ -1283,6 +1295,10 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname === "/api/managed-website-sessions") {
+      await route.fulfill(jsonResponse({directory_path: "root", revision: "fixture", profiles: []}));
+      return;
+    }
     assert.fail(`unexpected API request: ${pathname}${url.search}`);
   });
 
@@ -1357,7 +1373,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.equal(await systemHealthPanel.getByText("Admin state", { exact: true }).count(), 0);
   assert.equal(await systemHealthPanel.getByText("Deployment", { exact: true }).count(), 0);
   const capacityBlock = systemHealthPanel.locator(".dashboard-block-capacity");
-  const agentInventoryBlock = systemHealthPanel.locator(".dashboard-block-agent-inventory");
+  const agentInventoryBlock = systemHealthPanel.locator(".dashboard-block-agents");
   const workersBlock = systemHealthPanel.locator(".dashboard-block-workers");
   const capacityBox = await capacityBlock.boundingBox();
   const agentInventoryBox = await agentInventoryBlock.boundingBox();
@@ -1404,7 +1420,8 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   await assert.doesNotReject(() => systemHealthPanel.getByText("3 unread", { exact: true }).waitFor({ state: "visible" }));
   const pendingApprovalPill = approvalsPanel.locator(".status-pill").filter({ hasText: "1 pending" }).first();
   await assert.doesNotReject(() => pendingApprovalPill.waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Release news", exact: true }).waitFor({ state: "visible" }));
+  await releasePanel.locator(".dashboard-release-secondary > summary").click();
   await assert.doesNotReject(() => releasePanel.locator(".dashboard-release-summary").waitFor({ state: "visible" }));
   const erroredRun = workflowPanel.locator(".dashboard-row-item").filter({ hasText: "evt-2" });
   const erroredRunStateClass = await erroredRun.locator(".status-pill").last().getAttribute("class");
@@ -1423,11 +1440,11 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
   assert.equal(await releasePanel.getByText("News: Safer workflows, clearer operations", { exact: true }).count(), 0);
   await assert.doesNotReject(() => releasePanel.locator(".release-news-title").filter({ hasText: "Safer workflows, clearer operations" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.locator(".release-news-subheading").filter({ hasText: "Practical tips" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.locator(".release-news-list").filter({ hasText: "Open the dashboard first." }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.getByAltText("Truman signature").first().waitFor({ state: "attached" }));
-  assert.equal(await releasePanel.locator(".release-news-image img").count(), 2);
-  assert.equal((await releasePanel.locator(".release-news-image figcaption").textContent())?.trim(), "Signed by Truman");
+  await assert.doesNotReject(() => releasePanel.locator(".release-news-entry .release-news-subheading").filter({ hasText: "Practical tips" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.locator(".release-news-entry .release-news-list").filter({ hasText: "Open the dashboard first." }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.getByAltText("Evander signature").first().waitFor({ state: "attached" }));
+  assert.equal(await releasePanel.locator(".release-news-entry .release-news-image img").count(), 2);
+  assert.equal((await releasePanel.locator(".release-news-entry .release-news-image figcaption").textContent())?.trim(), "Signed by Evander");
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Older" }).waitFor({ state: "visible" }));
   assert.equal(await releasePanel.getByText("Entry 1 · Latest", { exact: true }).count(), 1);
   assert.equal(await releasePanel.getByText("Recent entries", { exact: true }).count(), 0);
@@ -1459,7 +1476,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   });
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions", level: 1 }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.locator(".session-tools-panel").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".collection-table tbody tr").first().waitFor({ state: "visible" }));
   assert.equal(await page.getByRole("heading", { name: "Capacity and execution" }).count(), 0);
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions");
 

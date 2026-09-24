@@ -220,6 +220,8 @@ _SQL_SERVER_TOOLS = {
 _FILES_TOOLS = {
     ToolName.COMMUNICATION_LIST_ATTACHMENTS,
     ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
+    ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+    ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
     ToolName.LIST_INLINE_MEDIA,
     ToolName.DOWNLOAD_INLINE_MEDIA,
     ToolName.STAGE_ARTIFACT,
@@ -243,6 +245,7 @@ _TEAMS_TOOLS = {
 }
 
 _EMAIL_TOOLS = {
+    ToolName.EMAIL_LIST_MAILBOXES,
     ToolName.EMAIL_LIST_UNREAD,
     ToolName.EMAIL_LIST_MESSAGES,
     ToolName.EMAIL_GET_MESSAGE,
@@ -263,6 +266,7 @@ _HIDDEN_BY_POLICY_SOURCES = {
     "directory.mcp_tool_policies",
     "session.allowed_tools",
     "session.allowed_tools.respond_to_agent",
+    "session.allowed_tools.email",
     "session.metadata.capability_profile",
     "session.metadata.assistant_mutation_policy",
 }
@@ -308,6 +312,8 @@ def _tool_category(tool_name: McpToolName) -> str:
         return "Feedback"
     if tool_name in _CONNECTOR_TOOLS:
         return "Connectors"
+    if tool_name in {ToolName.CLASSIFICATION_EVALUATE, ToolName.CLASSIFICATION_LIST_PROFILES}:
+        return "Classification"
     return "Other"
 
 

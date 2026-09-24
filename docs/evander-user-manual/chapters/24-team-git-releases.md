@@ -157,7 +157,10 @@ Git inputs must also share one authoritative task base branch and exact base
 commit. Team returns <code>mixed_git_base_branches</code> before creating a
 package when they do not. To merge workstreams deliberately, create an explicit
 integration task on the chosen base and release only its accepted integrated
-deliverable. A task based on <code>feature/foo</code> does not publish there by
+deliverable. For coordinated work, that integration task is a fresh top-level
+task: leave <code>parent_task_id</code> unset, link the coordination task through
+<code>originating_task_id</code>, and declare the exact accepted source tasks as
+dependencies and required contributions. A task based on <code>feature/foo</code> does not publish there by
 implication. Agent release requests cannot override <code>canonical_branch</code>;
 Team derives it from the project's canonical release branch policy. An
 authenticated operator may explicitly select a different destination for an
@@ -562,7 +565,7 @@ agent-requested attempt also fails for infrastructure reasons, Riley must
 escalate it rather than retry again. If a command exits nonzero, Imani must
 change and re-review the content; no one can retry it into approval.
 
-## Complete APP walkthrough: guarded line-speed control
+## Complete App walkthrough: guarded line-speed control
 
 The following representative manufacturing flow combines task hierarchy,
 composition, durable dispatch, human testing, correction lineage, exact-SHA
@@ -571,8 +574,8 @@ to the supported records described in Chapters 18–24.
 
 1. A plant engineer reports that Packaging Line 4 can accept a line-speed
    setpoint above the commissioned limit. Team creates case
-   <code>APP-482</code> and an outcome root
-   <code>guard-line-speed</code>, owned by the APP project lead. The contract
+   <code>App-482</code> and an outcome root
+   <code>guard-line-speed</code>, owned by the App project lead. The contract
    requires a reviewed software change and operator-verification evidence.
 2. The lead decomposes three levels: PLC/domain validation, API enforcement,
    operator UI, automated tests, operating instructions, and a self-owned
@@ -627,7 +630,7 @@ to the supported records described in Chapters 18–24.
     calibration note remains <code>recovery_required</code> with its exact
     path and failed safety check; no broad delete discards it.
 14. A later operator report that the warning should be localized creates a
-    post-release case and triage root only. The published APP release stays
+    post-release case and triage root only. The published App release stays
     immutable, and rollback or a further successor requires a separate
     controlled decision.
 

@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from evander.ado_query_mode import AdoQueryMode, normalize_ado_query_mode, validate_ado_query_mode
+from evander.cron import normalize_cron_timezone
 from evander.events.models import ConfigValue, TriggerDefinition
 from evander.events.internal import validate_internal_event_type
 from evander.models import DirectoryPath
@@ -129,10 +130,20 @@ class WebhookTriggerDefinition(TriggerDefinition):
 class CronTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:cron"]
     expression: str = Field(min_length=1)
+    timezone: str = "UTC"
+
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def normalize_timezone(cls, value: object) -> str:
+        return normalize_cron_timezone(value)
 
     @model_validator(mode="after")
     def sync_expression_config(self) -> "CronTriggerDefinition":
-        self.config = {**self.config, "expression": self.expression}
+        self.config = {
+            **self.config,
+            "expression": self.expression,
+            "timezone": self.timezone,
+        }
         return self
 
 
@@ -594,13 +605,15 @@ class TeamsNewMessageTriggerDefinition(TriggerDefinition):
 
 class TeamsDirectMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:teams:direct-message"]
+    chat_target_mode: Literal["explicit", "direct"] | None = None
+    direct_chat_user_upns: list[str] | None = None
     targets: list[TeamsTargetDefinition] = Field(min_length=1)
     sender_user_ids: list[str] = Field(min_length=1)
     message_filter: TeamsMessageFilterDefinition | None = None
 
-    @field_validator("sender_user_ids", mode="before")
+    @field_validator("direct_chat_user_upns", "sender_user_ids", mode="before")
     @classmethod
-    def normalize_sender_user_ids(cls, value: object) -> object:
+    def normalize_sender_user_refs(cls, value: object) -> object:
         return normalize_string_list(value)
 
 

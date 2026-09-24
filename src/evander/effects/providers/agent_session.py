@@ -65,7 +65,7 @@ _CODEX_OPTIONAL_FEATURE_ARGS_MARKER = "__EVANDER_CODEX_OPTIONAL_FEATURE_ARGS__"
 NEXUS_PACKAGE_CACHE_PORT = 8081
 NEXUS_PYPI_GROUP_REPOSITORY = "pypi-all"
 NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
-DEFAULT_CODEX_AGENT_MODEL = "gpt-5.4"
+DEFAULT_CODEX_AGENT_MODEL = "gpt-6-sol"
 DEFAULT_CLAUDE_AGENT_MODEL = "claude-sonnet-4-6"
 PLAYWRIGHT_CONTAINER_JOB_PIDS_LIMIT = 1024
 TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_PIDS_LIMIT = 2048
@@ -584,6 +584,7 @@ def build_container_session_manifest(
     )
     if email_requested:
         for tool in (
+            ToolName.EMAIL_LIST_MAILBOXES,
             ToolName.EMAIL_LIST_UNREAD,
             ToolName.EMAIL_GET_MESSAGE,
         ):
@@ -1019,7 +1020,10 @@ def build_container_session_files(
                 {
                     "destination_path": "/home/agent/.nuget/NuGet/NuGet.Config",
                     "mode": "0644",
-                    "content": _nuget_config_content(nuget_relay_base_url),
+                    "content": _nuget_config_content(
+                        nuget_relay_base_url,
+                        private_package_patterns=_private_nuget_package_patterns(config),
+                    ),
                 },
                 {
                     "destination_path": "/home/agent/.nuget/packages-local/.keep",
@@ -2026,8 +2030,40 @@ def _claude_mcp_config_content(*, gateway_url: str) -> str:
     )
 
 
-def _nuget_config_content(nuget_relay_base_url: str) -> str:
+def _private_nuget_package_patterns(config: GatewayConfig) -> list[str]:
+    nuget_state = config.provider_state.get("nuget", {})
+    if not isinstance(nuget_state, dict):
+        raise ValueError("provider_state.nuget must be a JSON object")
+    raw_patterns = nuget_state.get("private_package_patterns", [])
+    if not isinstance(raw_patterns, list):
+        raise ValueError("provider_state.nuget.private_package_patterns must be a JSON array")
+    patterns: list[str] = []
+    for raw_pattern in raw_patterns:
+        if not isinstance(raw_pattern, str):
+            raise ValueError("private NuGet package patterns must be strings")
+        pattern = raw_pattern.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._*-]*", pattern):
+            raise ValueError("private NuGet package patterns contain invalid characters")
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return patterns
+
+
+def _nuget_config_content(
+    nuget_relay_base_url: str, *, private_package_patterns: list[str]
+) -> str:
     escaped_base = html.escape(nuget_relay_base_url.rstrip("/"), quote=True)
+    private_mapping = "".join(
+        f'      <package pattern="{html.escape(pattern, quote=True)}" />\n'
+        for pattern in private_package_patterns
+    )
+    private_source = (
+        '    <packageSource key="sandbox-azure">\n'
+        + private_mapping
+        + "    </packageSource>\n"
+        if private_mapping
+        else ""
+    )
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         "<configuration>\n"
@@ -2044,9 +2080,7 @@ def _nuget_config_content(nuget_relay_base_url: str) -> str:
         '    <packageSource key="sandbox-nuget">\n'
         '      <package pattern="*" />\n'
         "    </packageSource>\n"
-        '    <packageSource key="sandbox-azure">\n'
-        '      <package pattern="ExampleIndustry.*" />\n'
-        "    </packageSource>\n"
+        f"{private_source}"
         "  </packageSourceMapping>\n"
         "  <fallbackPackageFolders>\n"
         '    <add key="shared-readonly" value="/opt/evander/nuget-cache-ro" />\n'

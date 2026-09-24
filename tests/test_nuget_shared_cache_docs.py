@@ -38,6 +38,7 @@ def test_container_worker_nuget_cache_prewarm_script_updates_worker_fallback_cac
     assert "--local" in script
     assert "--target PATH" in script
     assert "--dotnet PATH" in script
+    assert "--private-package-pattern PATTERN" in script
     assert (
         'CACHE_PATH="${CONTAINER_WORKER_NUGET_CACHE_PATH:-/var/lib/agent-worker/toolchain-cache/nuget-cache-ro}"'
         in script

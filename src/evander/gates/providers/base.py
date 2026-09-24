@@ -14,6 +14,7 @@ class GateRuntimeContext(ProviderRuntimeBase):
 
 
 class GateProviderBase:
+    asynchronous = False
     capability = NodeCapability()
 
     def __init__(self) -> None:

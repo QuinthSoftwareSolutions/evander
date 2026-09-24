@@ -53,6 +53,7 @@ DEFAULT_ADMIN_WEB_PRODUCT_LOGO_ALT = "Evander Logo"
 DEFAULT_ADMIN_WEB_COMPANY_LOGO_LIGHT_URL = "qss-light.png"
 DEFAULT_ADMIN_WEB_COMPANY_LOGO_DARK_URL = "qss-dark.png"
 DEFAULT_ADMIN_WEB_COMPANY_LOGO_ALT = "Quinth Software Solutions"
+DEFAULT_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS = 500
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -81,6 +82,19 @@ def _env_optional_text(name: str) -> str | None:
         return None
     normalized = raw.strip()
     return normalized or None
+
+
+def _env_non_negative_int(name: str, default: int) -> int:
+    raw = _env_optional_text(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
 
 
 def _branding_asset_reference(value: str | None) -> str | None:
@@ -292,6 +306,7 @@ class AdminWebConfig:
     azure_sso: AzureSsoConfig | None
     branding: AdminWebBrandingConfig
     branding_asset_dir: Path | None
+    slow_request_threshold_ms: int = DEFAULT_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS
 
     @property
     def auth_required(self) -> bool:
@@ -337,6 +352,10 @@ class AdminWebConfig:
             azure_sso=azure_sso,
             branding=AdminWebBrandingConfig.from_env(),
             branding_asset_dir=resolved_branding_asset_dir,
+            slow_request_threshold_ms=_env_non_negative_int(
+                "EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS",
+                DEFAULT_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS,
+            ),
         )
 
     @classmethod

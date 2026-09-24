@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander_team_addon import provider_events
+
 import hashlib
 import json
 import shlex
@@ -38,7 +40,6 @@ from evander.workflow.packs import WorkflowPack
 from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 import evander_team_addon.outbox_publication as team_outbox_publication
-import evander_team_addon.providers as team_providers
 from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
 from evander_team_addon.costs import TeamCostService
@@ -111,6 +112,7 @@ from evander_team_addon.models import (
     TeamRecordState,
     TeamRole,
     TeamState,
+    TeamTaskKind,
     TeamTaskState,
     TaskCancellation,
     TaskDeliverableContract,
@@ -754,8 +756,8 @@ class FakeRepoCloner:
             success=self.success,
             vm_name=str(kwargs.get("vm_name") or "vm-backend"),
             message=self.message,
-            target_dir="/home/agent/Truman",
-            guest_repo_name="Truman",
+            target_dir="/home/agent/Evander",
+            guest_repo_name="Evander",
         )
 
 
@@ -3314,7 +3316,7 @@ def test_systemd_team_wake_fails_before_leasing_when_runtime_generation_is_stale
 ) -> None:
     monkeypatch.setenv("INVOCATION_ID", "systemd-invocation")
     monkeypatch.setattr(
-        "evander_team_addon.providers.require_current_runtime_generation",
+        "evander_team_addon.provider_wake.require_current_runtime_generation",
         lambda _runtime_dir: (_ for _ in ()).throw(
             RuntimeError("Team runtime generation is not current")
         ),
@@ -3347,7 +3349,7 @@ def test_systemd_governance_wake_fails_before_state_access_when_generation_is_st
 ) -> None:
     monkeypatch.setenv("INVOCATION_ID", "systemd-invocation")
     monkeypatch.setattr(
-        "evander_team_addon.providers.require_current_runtime_generation",
+        "evander_team_addon.provider_wake_chat.require_current_runtime_generation",
         lambda _runtime_dir: (_ for _ in ()).throw(
             RuntimeError("Team runtime generation is not current")
         ),
@@ -3435,7 +3437,7 @@ def test_immediate_wake_can_skip_global_maintenance(
         _unexpected_maintenance,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.reconcile_current_human_review_assignments",
+        "evander_team_addon.provider_wake.reconcile_current_human_review_assignments",
         _unexpected_maintenance,
     )
     monkeypatch.setattr(
@@ -3467,7 +3469,9 @@ def test_immediate_wake_can_skip_global_maintenance(
     assert result["worktree_cleanup"] == {}
 
 
-def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -> None:
+def test_wake_due_agents_provider_prompts_and_seeds_stable_session_metadata(
+    tmp_path: Path,
+) -> None:
     repo = _seed_team(tmp_path)
     _team_admin_service(repo).set_agent_avatar(
         agent_id="backend",
@@ -3513,7 +3517,12 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
             type="effect:team:wake-due-agents",
         ),
         EffectRuntimeContext(
-            resolved_config={"runtime_dir": str(tmp_path)},
+            resolved_config={
+                "runtime_dir": str(tmp_path),
+                "provider_state": {
+                    "team_addon": {"legacy_guidance_section_ids": ["previous-team-addon"]}
+                },
+            },
             agent_resumer=resumer,
             vm_file_copier=file_copier,
             session_lookup=session_store,
@@ -3538,7 +3547,7 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
             "overwrite": True,
             "merge_strategy": "managed_section",
             "section_id": TEAM_AGENT_GUIDANCE_SECTION_ID,
-            "remove_section_ids": list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS),
+            "remove_section_ids": ["previous-team-addon"],
         }
     ]
     guidance = str(guidance_files[0]["content"])
@@ -3668,7 +3677,9 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
         "inactive_reason": None,
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH],
     }
-    assert session_store.calls[1]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls[0]["metadata"]["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls[0]["metadata"]["team_addon"]["team_id"] == "team"
+    assert len(session_store.calls) == 1
 
 
 def test_wake_due_agents_provider_preserves_active_governance_tools(
@@ -4853,11 +4864,11 @@ def test_mutation_chat_does_not_prepare_git_or_review_artifacts(
         raise AssertionError("chat must not prepare repositories or review artifacts")
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repos",
+        "evander_team_addon.provider_wake._prepare_project_repos",
         _unexpected,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_review_artifacts_for_lease",
+        "evander_team_addon.provider_wake._prepare_review_artifacts_for_lease",
         _unexpected,
     )
     resumer = FakeResumer()
@@ -5589,7 +5600,7 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         TEAM_AGENT_GUIDANCE_SECTION_ID,
         TEAM_GOVERNANCE_GUIDANCE_SECTION_ID,
     ]
-    assert guidance_files[0]["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
+    assert guidance_files[0].get("remove_section_ids", []) == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     inactive_guidance = str(guidance_files[0]["content"])
     assert "not currently assigned to a Team" in inactive_guidance
     assert "Normal Team-agent task" in inactive_guidance
@@ -5847,7 +5858,11 @@ def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec
     assert "Leaf review path:" in prompt
     assert "Composite review path:" in prompt
     assert "deliverable_contract.required_contribution_task_ids" in prompt
-    assert "for a legacy non-integration parent, use its direct child_task_ids" in prompt
+    assert (
+        "for a legacy non-integration parent that already has a persisted "
+        "source-bearing aggregate deliverable, use its direct child_task_ids"
+    ) in prompt
+    assert "A task_kind=coordination parent is never a composite review target" in prompt
     assert ("assessment.contribution_coverage.required_source_deliverable_ids") in prompt
     assert "repeat this procedure recursively" in prompt
     assert "coverage alone is not proof of correct integration" in prompt
@@ -5862,6 +5877,8 @@ def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec
     assert "Do not use dotted access such as tools.team_decide_review(...)" in prompt
     assert "repeat the exact-name lookup" in prompt
     assert "Do not declare the Team interface unavailable" in prompt
+    assert "coordinate first and integrate last" in prompt
+    assert "do not submit the aggregate from the long-lived coordination task" in prompt
 
     non_review_prompt = _build_prompt(
         {
@@ -7597,9 +7614,10 @@ def test_wake_due_agents_provider_rotates_context_when_pending(
     assert runtime.context_handoff_preparation_status == "recorded"
     assert runtime.last_context_rotated_at is not None
     assert runtime.last_thread_id == "thread-rotated"
-    assert session_store.sessions["session-backend"].metadata["team_addon"][
+    assert (
         "last_context_rotated_at"
-    ]
+        not in session_store.sessions["session-backend"].metadata["team_addon"]
+    )
 
 
 def test_wake_due_agents_provider_rotates_every_wake_policy(
@@ -7644,8 +7662,8 @@ def test_wake_due_agents_provider_rotates_every_wake_policy(
     assert runtime.last_agent_handoff_summary is None
     assert runtime.last_thread_id == "thread-every-wake"
     assert (
-        session_store.sessions["session-backend"].metadata["team_addon"]["context_clearing_policy"]
-        == "every_wake"
+        "context_clearing_policy"
+        not in session_store.sessions["session-backend"].metadata["team_addon"]
     )
 
 
@@ -8586,7 +8604,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             base_branch="main",
             agent_author_identity=ProjectGitIdentity(
                 name="Jonathan Quinth",
-                email="operator@example.invalid",
+                email="jonathan.quinth@exampleindustry.com",
             ),
             agent_committer_identity=ProjectGitIdentity(
                 name="Evander Bot",
@@ -8622,7 +8640,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     result = provider.execute()
 
     assert result["success"] is True
-    author = task_authored_by or {"name": "Jonathan Quinth", "email": "operator@example.invalid"}
+    author = task_authored_by or {"name": "Jonathan Quinth", "email": "jonathan.quinth@exampleindustry.com"}
     worktree_commands = [str(call["command"]) for call in executor.calls]
     assert any("config --worktree author.name" in command and author["name"] in command for command in worktree_commands)
     assert any("config --worktree author.email" in command and author["email"] in command for command in worktree_commands)
@@ -8635,7 +8653,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             "vm_user": "agent",
             "directory_path": "root",
             "git_author_name": "Jonathan Quinth",
-            "git_author_email": "operator@example.invalid",
+            "git_author_email": "jonathan.quinth@exampleindustry.com",
             "git_committer_name": "Evander Bot",
             "git_committer_email": "evander@quinth.se",
             "git_access_mode": "write",
@@ -8643,7 +8661,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         }
     ]
     project_repo = result["dispatches"][0]["project_repo"]
-    assert project_repo["target_dir"] == "/home/agent/Truman"
+    assert project_repo["target_dir"] == "/home/agent/Evander"
     assert project_repo["base_branch"] == "main"
     assert project_repo["branch_context_id"]
     preparation_generation = task_git_work_context_generation(repo.read(), "task")
@@ -8651,7 +8669,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         f"agents/session-backend/tasks/task-0ebb429f-prep-{preparation_generation[:12]}"
     )
     expected_worktree_path = (
-        f"/home/agent/worktrees/Truman/task-0ebb429f-prep-{preparation_generation[:12]}"
+        f"/home/agent/worktrees/Evander/task-0ebb429f-prep-{preparation_generation[:12]}"
     )
     assert project_repo["agent_branch"] == expected_agent_branch
     git_context = project_repo["git_work_contexts"][0]
@@ -8677,7 +8695,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             "project_ids": ["project"],
             "dispatch_id": result["dispatches"][0]["dispatch_id"],
             "project_repo": project_repo,
-            "target_dir": "/home/agent/Truman",
+            "target_dir": "/home/agent/Evander",
         }
     ]
     assert result["failed_project_repo_preparations"] == []
@@ -8844,7 +8862,7 @@ def test_successor_context_records_verified_direct_dependency_git(
         agent_branch="agents/session-backend/tasks/task",
         base_branch="main",
         base_commit="c" * 40,
-        worktree_path="/home/agent/worktrees/Truman/task-0ebb429f",
+        worktree_path="/home/agent/worktrees/Evander/task-0ebb429f",
         dependency_git_sources=dependency_sources,
         expected_revision=repo.read().revision,
     )
@@ -9135,8 +9153,8 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     _prepare_project_repo_task_worktree(
         context,
         project_repo={
-            "guest_repo_name": "Truman",
-            "target_dir": "/home/agent/Truman",
+            "guest_repo_name": "Evander",
+            "target_dir": "/home/agent/Evander",
             "execution_backend": "libvirt_vm",
         },
         session_id="session-backend",
@@ -9161,7 +9179,7 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
         task_author_identity=ProjectGitIdentity(name="Task O'Connor", email="task@example.test"),
         dependency_merge_author_identity=ProjectGitIdentity(
             name="Jonathan Quinth",
-            email="operator@example.invalid",
+            email="jonathan.quinth@exampleindustry.com",
         ),
     )
 
@@ -9177,7 +9195,7 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert "config --worktree author.name" in command
     assert "config --worktree author.email task@example.test" in command
     assert "export GIT_AUTHOR_NAME='Jonathan Quinth'" in command
-    assert "export GIT_AUTHOR_EMAIL=operator@example.invalid" in command
+    assert "export GIT_AUTHOR_EMAIL=jonathan.quinth@exampleindustry.com" in command
     assert 'ls-remote --exit-code --heads origin "refs/heads/$branch"' in command
     assert 'push origin "HEAD:refs/heads/$branch"' in command
     assert "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'" in command
@@ -9270,7 +9288,7 @@ def test_libvirt_reused_worktree_without_server_base_authority_fails_closed(
             session_lookup=FakeSessionStore(),
         ),
         project_repo={
-            "guest_repo_name": "Truman",
+            "guest_repo_name": "Evander",
             "target_dir": str(control),
             "execution_backend": "libvirt_vm",
         },
@@ -9366,7 +9384,7 @@ def test_libvirt_task_pin_remains_authoritative_after_base_branch_advances(
             session_lookup=FakeSessionStore(),
         ),
         project_repo={
-            "guest_repo_name": "Truman",
+            "guest_repo_name": "Evander",
             "target_dir": str(control),
             "execution_backend": "libvirt_vm",
         },
@@ -9437,8 +9455,8 @@ def test_libvirt_worktree_preparation_preserves_reported_prepared_base() -> None
     _worktree_path, base_commit = _prepare_project_repo_task_worktree(
         context,
         project_repo={
-            "guest_repo_name": "Truman",
-            "target_dir": "/home/agent/Truman",
+            "guest_repo_name": "Evander",
+            "target_dir": "/home/agent/Evander",
             "execution_backend": "libvirt_vm",
         },
         session_id="session-backend",
@@ -9470,8 +9488,8 @@ def test_libvirt_worktree_preparation_rejects_missing_prepared_base_marker() -> 
         _prepare_project_repo_task_worktree(
             context,
             project_repo={
-                "guest_repo_name": "Truman",
-                "target_dir": "/home/agent/Truman",
+                "guest_repo_name": "Evander",
+                "target_dir": "/home/agent/Evander",
                 "execution_backend": "libvirt_vm",
             },
             session_id="session-backend",
@@ -9562,11 +9580,11 @@ def test_dependency_recovery_worktree_uses_pinned_commit_not_live_base_branch(
         return "/home/agent/worktrees/repo/recovery-task", base_commit
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: dependency_sources,
     )
 
@@ -9632,11 +9650,11 @@ def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
         return "/home/agent/worktrees/repo/task", pinned_commit
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: [],
     )
 
@@ -9673,6 +9691,201 @@ def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
     assert prepared["pinned_base_tree"] is None
     assert len(rows) == 1
     assert next(iter(result_state.git_work_contexts.values())).base_commit == pinned_commit
+
+
+def test_coordination_task_is_excluded_from_git_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _mark_coordination(state: TeamState) -> TeamState:
+        state.tasks["task"].task_kind = TeamTaskKind.COORDINATION
+        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-coordination"
+        return state
+
+    state = repo.update(_mark_coordination)
+
+    def _unexpected_prepare(*_args: object, **_kwargs: object) -> tuple[str, str]:
+        raise AssertionError("coordination tasks must not prepare Git worktrees")
+
+    monkeypatch.setattr(
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
+        _unexpected_prepare,
+    )
+
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=None),
+        ),
+        repo,
+        state=state,
+        agent_id="backend",
+        session_id="session-backend",
+        project_id="project",
+        project_repo={
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        dispatch_id="dispatch-coordination",
+        # Deliberately omit task_kind to prove the authoritative state guard is used.
+        tasks=[
+            {
+                "id": "task",
+                "project_id": "project",
+                "owner_agent_id": "backend",
+            }
+        ],
+        base_branch="main",
+    )
+
+    assert rows == []
+    assert result_state.git_work_contexts == {}
+
+
+def test_pinned_dependency_composition_receipt_retries_from_prepared_checkout_base(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    pinned_commit = "a" * 40
+    composed_commit = "b" * 40
+    dependency_commit = "c" * 40
+    dependency_sources = [
+        {
+            "dependency_task_id": "source-task",
+            "deliverable_id": "source-deliverable",
+            "relationship_kind": "required_contribution",
+            "branch": "agents/source/tasks/source-task",
+            "commit_sha": dependency_commit,
+        }
+    ]
+
+    def _seed_pin(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            base_branch="main",
+        )
+        task = state.tasks["task"]
+        task.git_base_branch = "main"
+        task.git_base_commit_sha = pinned_commit
+        task.dependency_task_ids = ["source-task"]
+        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-pinned-composition"
+        return state
+
+    state = repo.update(_seed_pin)
+
+    prior_base_commits: list[object] = []
+    preparation_attempt_ids: list[str] = []
+
+    def _prepare(_context: object, **kwargs: object) -> tuple[str, str]:
+        prior_base_commits.append(kwargs["prior_base_commit"])
+        preparation_attempt_ids.append(str(kwargs["preparation_attempt_id"]))
+        kwargs["composition_result"].update(
+            {
+                "root_commit_sha": pinned_commit,
+                "composed_commit_sha": composed_commit,
+                "composed_tree_hash": "d" * 40,
+            }
+        )
+        kwargs["preparation_receipt_result"].update(
+            {
+                "request_fingerprint": "f" * 64,
+                "head_commit_sha": composed_commit,
+                "receipt_reused": len(preparation_attempt_ids) > 1,
+                "verified_clean": True,
+            }
+        )
+        # Reproduce the container-worker response that exposed the original bug:
+        # its returned commit identifies the prepared composed checkout, not the
+        # immutable task baseline.
+        return (
+            f"/home/agent/worktrees/repo/{kwargs['worktree_name']}",
+            composed_commit,
+        )
+
+    monkeypatch.setattr(
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
+        lambda *_args, **_kwargs: dependency_sources,
+    )
+    original_create = TeamAdminService.create_git_work_context_with_id
+    conflict_calls = 0
+
+    def _conflict_then_create(self: TeamAdminService, **kwargs: object):
+        nonlocal conflict_calls
+        if conflict_calls < 3:
+            conflict_calls += 1
+            raise TeamStateConflictError(expected_revision=1, current_revision=2)
+        return original_create(self, **kwargs)
+
+    monkeypatch.setattr(
+        TeamAdminService,
+        "create_git_work_context_with_id",
+        _conflict_then_create,
+    )
+
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": str(tmp_path)},
+        admin_service=SimpleNamespace(managed_git_admin=None),
+    )
+    arguments = {
+        "state": state,
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "project_id": "project",
+        "project_repo": {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        "dispatch_id": "dispatch-pinned-composition",
+        "tasks": [
+            {
+                "id": "task",
+                "project_id": "project",
+                "owner_agent_id": "backend",
+                "git_base_branch": "main",
+                "git_base_commit_sha": pinned_commit,
+            }
+        ],
+        "base_branch": "main",
+    }
+
+    with pytest.raises(TeamStateConflictError):
+        _create_project_repo_git_work_contexts(context, repo, **arguments)
+
+    after_failure = repo.read()
+    attempt = next(iter(after_failure.git_preparation_attempts.values()))
+    assert attempt.state == TeamGitPreparationAttemptState.PREPARED
+    assert attempt.base_commit_sha == composed_commit
+    assert attempt.head_commit_sha == composed_commit
+    assert after_failure.git_work_contexts == {}
+
+    arguments["state"] = after_failure
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        context,
+        repo,
+        **arguments,
+    )
+
+    assert len(rows) == 1
+    git_context = next(iter(result_state.git_work_contexts.values()))
+    assert git_context.base_commit == pinned_commit
+    committed_attempt = result_state.git_preparation_attempts[attempt.id]
+    assert committed_attempt.base_commit_sha == composed_commit
+    assert committed_attempt.head_commit_sha == composed_commit
+    assert committed_attempt.state == TeamGitPreparationAttemptState.COMMITTED
+    assert preparation_attempt_ids == [attempt.id, attempt.id]
+    assert prior_base_commits == [None, composed_commit]
 
 
 def test_git_preparation_receipt_survives_context_commit_conflict_and_retries(
@@ -9714,11 +9927,11 @@ def test_git_preparation_receipt_survives_context_commit_conflict_and_retries(
         )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: [],
     )
     original_create = TeamAdminService.create_git_work_context_with_id
@@ -9952,8 +10165,8 @@ def test_libvirt_dependency_git_failure_classification_uses_structured_conflict_
         _prepare_project_repo_task_worktree(
             context,
             project_repo={
-                "guest_repo_name": "Truman",
-                "target_dir": "/home/agent/Truman",
+                "guest_repo_name": "Evander",
+                "target_dir": "/home/agent/Evander",
                 "execution_backend": "libvirt_vm",
             },
             session_id="session-backend",
@@ -10495,11 +10708,11 @@ def test_git_context_transaction_revalidates_exact_dependency_generation(
         return "/home/agent/worktrees/repo/task", "c" * 40
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         _dependency_sources,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     original_create = TeamAdminService.create_git_work_context_with_id
@@ -10584,7 +10797,7 @@ def test_git_context_transaction_rejects_project_generation_change_during_prepar
         return "/home/agent/worktrees/repo/task", "c" * 40
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
 
@@ -10817,15 +11030,15 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
                 "success": True,
                 "message": "repo prepared",
                 "session_id": "session-backend",
-                "target_dir": "/home/agent/Truman",
-                "guest_repo_name": "Truman",
+                "target_dir": "/home/agent/Evander",
+                "guest_repo_name": "Evander",
                 "pr_notes_ref": "refs/notes/agent-pr/test",
                 "execution_backend": "libvirt_vm",
                 "vm_name": None,
             }
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        "evander_team_addon.provider_git_repositories.AgentCloneRepoEffectProvider",
         CapturingCloneProvider,
     )
     provider = TeamWakeDueAgentsEffectProvider()
@@ -10905,8 +11118,8 @@ def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
         def execute(self) -> dict[str, object]:
             return {
                 "success": True,
-                "target_dir": "/home/agent/Truman",
-                "guest_repo_name": "Truman",
+                "target_dir": "/home/agent/Evander",
+                "guest_repo_name": "Evander",
                 "pinned_ref": pinned_ref,
                 "pinned_commit_sha": commit_sha,
                 "commit_sha": commit_sha,
@@ -10925,7 +11138,7 @@ def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
 
     managed_git = _ManagedGit()
     monkeypatch.setattr(
-        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        "evander_team_addon.provider_git_repositories.AgentCloneRepoEffectProvider",
         _CapturingCloneProvider,
     )
     resumer = FakeResumer()
@@ -10958,7 +11171,7 @@ def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
     prompt_context = _team_context_from_prompt(str(resumer.calls[0]["prompt"]))
     snapshot_ref = prompt_context["reviews"][0]["repository_snapshot_ref"]
     assert prompt_context["review_repository_snapshots"][snapshot_ref]["commit_sha"] == commit_sha
-    assert prompt_context["project_repos"][0]["target_dir"] == "/home/agent/Truman"
+    assert prompt_context["project_repos"][0]["target_dir"] == "/home/agent/Evander"
     assert prompt_context["project_repos"][0]["pinned_ref"] == pinned_ref
 
 
@@ -11110,7 +11323,7 @@ def test_wake_due_agents_provider_reseeds_stale_agent_guidance(
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
-    assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
+    assert copied_file.get("remove_section_ids", []) == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     assert "a superior may set state: finished on a subordinate non-terminal task" in str(
         copied_file["content"]
     )
@@ -11222,7 +11435,7 @@ def test_wake_due_agents_provider_reseeds_agent_guidance_after_display_name_chan
     assert copied_file["destination_path"] == TEAM_AGENT_GUIDANCE_PATH
     assert copied_file["merge_strategy"] == "managed_section"
     assert copied_file["section_id"] == TEAM_AGENT_GUIDANCE_SECTION_ID
-    assert copied_file["remove_section_ids"] == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
+    assert copied_file.get("remove_section_ids", []) == list(LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS)
     assert 'Current display name: "Beatrice"' in str(copied_file["content"])
     prompt = str(resumer.calls[0]["prompt"])
     assert "Beatrice" not in prompt
@@ -11804,7 +12017,7 @@ def test_agent_prompt_hook_leases_preparing_dispatch_after_queued_prompt_is_deli
     runtime = leased.agent_runtimes["backend"]
     assert dispatch.status == TeamDispatchStatus.LEASED
     assert dispatch.activation_completed_at is not None
-    assert dispatch.session_metadata_mirrored_at is not None
+    assert dispatch.session_metadata_mirrored_at is None
     assert dispatch.leased_at is not None
     assert dispatch.lease_expires_at is not None
     assert dispatch.lease_expires_at - dispatch.leased_at == timedelta(seconds=37)
@@ -11817,7 +12030,7 @@ def test_agent_prompt_hook_leases_preparing_dispatch_after_queued_prompt_is_deli
     action_record = leased.action_records["queued-action-feedback"]
     assert action_record.feedback_delivered_by_dispatch_id == dispatch_id
     assert action_record.feedback_delivered_at is not None
-    assert session_store.calls[-1]["target"] == "session-backend"
+    assert session_store.calls == []
 
 
 def test_delivered_team_activation_is_atomic_and_retryable_after_injected_failure(
@@ -11958,7 +12171,7 @@ def test_reconciliation_repairs_legacy_leased_dispatch_missing_activation_bookke
     feedback = repaired.action_records["legacy-partial-feedback"]
     assert dispatch.status == TeamDispatchStatus.LEASED
     assert dispatch.activation_completed_at is not None
-    assert dispatch.session_metadata_mirrored_at is not None
+    assert dispatch.session_metadata_mirrored_at is None
     assert agent_runtime.last_delivered_role_description_fingerprint == (
         dispatch.role_description_fingerprint
     )
@@ -11968,7 +12181,7 @@ def test_reconciliation_repairs_legacy_leased_dispatch_missing_activation_bookke
     assert feedback.feedback_delivered_at is not None
 
 
-def test_session_metadata_mirror_retries_after_activation_survives_worker_restart(
+def test_activation_does_not_copy_dynamic_team_state_into_session_metadata(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
@@ -11996,20 +12209,18 @@ def test_session_metadata_mirror_retries_after_activation_survives_worker_restar
         },
     )
 
-    class _FailingMetadataStore(FakeSessionStore):
+    class _RejectingMetadataStore(FakeSessionStore):
         def session_update_metadata(self, **kwargs: object) -> dict[str, object]:
-            raise RuntimeError("injected metadata mirror outage")
+            raise AssertionError("dispatch activation must not update session metadata")
 
-    failed_worker = SimpleNamespace(
+    worker = SimpleNamespace(
         config=GatewayConfig(runtime_dir=tmp_path),
         execution_store=FakeExecutionStore([record]),
-        provider_factory=SimpleNamespace(admin_service=_FailingMetadataStore()),
+        provider_factory=SimpleNamespace(admin_service=_RejectingMetadataStore()),
     )
 
-    assert (
-        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=failed_worker)
-        == 1
-    )
+    hook = TeamAgentPromptCompletionFinalizeHook()
+    assert hook.on_post_completion_dispatch(worker=worker) == 1
 
     activated = repo.read()
     dispatch = activated.dispatches[dispatch_id]
@@ -12023,22 +12234,8 @@ def test_session_metadata_mirror_retries_after_activation_survives_worker_restar
         dispatch.role_description_fingerprint
     )
 
-    recovered_session_store = FakeSessionStore()
-    restarted_worker = SimpleNamespace(
-        config=GatewayConfig(runtime_dir=tmp_path),
-        execution_store=FakeExecutionStore([record]),
-        provider_factory=SimpleNamespace(admin_service=recovered_session_store),
-    )
-
-    assert (
-        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=restarted_worker)
-        == 0
-    )
-
-    mirrored = repo.read().dispatches[dispatch_id]
-    assert mirrored.activation_completed_at is not None
-    assert mirrored.session_metadata_mirrored_at is not None
-    assert recovered_session_store.calls[-1]["target"] == "session-backend"
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    assert repo.read().dispatches[dispatch_id].session_metadata_mirrored_at is None
 
 
 def test_terminal_queued_prompt_is_activated_before_team_finalization(
@@ -12178,7 +12375,7 @@ def test_queued_chat_replay_applies_full_activation_bookkeeping(
     runtime = activated.agent_runtimes["backend"]
     assert dispatch.status == TeamDispatchStatus.LEASED
     assert dispatch.activation_completed_at is not None
-    assert dispatch.session_metadata_mirrored_at is not None
+    assert dispatch.session_metadata_mirrored_at is None
     assert dispatch.lease_expires_at is not None
     assert dispatch.leased_at is not None
     assert dispatch.lease_expires_at - dispatch.leased_at == timedelta(seconds=71)
@@ -12189,7 +12386,7 @@ def test_queued_chat_replay_applies_full_activation_bookkeeping(
     assert runtime.last_delivered_role_description_fingerprint == (
         dispatch.role_description_fingerprint
     )
-    assert session_store.calls[-1]["target"] == "session-backend"
+    assert session_store.calls == []
 
 
 def test_wake_due_agents_provider_releases_lease_when_project_repo_prepare_fails(
@@ -12318,8 +12515,7 @@ def test_finalize_agent_dispatch_provider_closes_from_activity_and_publishes_cha
     assert result["finalized"] is True
     assert result["progress_made"] is True
     assert result["published_event_ids"]
-    assert session_store.calls[-1]["target"] == "session-backend"
-    assert session_store.sessions["session-backend"].metadata["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls == []
     reread = TeamStateRepository(tmp_path).read()
     assert reread.agent_runtimes["backend"].active_dispatch_id is None
     assert reread.agent_runtimes["backend"].no_progress_count == 0
@@ -12405,8 +12601,7 @@ def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
     assert runtime.active_dispatch_id is None
     assert runtime.wake_leased_until is None
     assert runtime.no_progress_count == 0
-    assert session_store.calls
-    assert session_store.sessions["session-backend"].metadata["team_addon"]["agent_id"] == "backend"
+    assert session_store.calls == []
     events = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
     chat_events = [event for event in events if event.event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE]
     assert len(chat_events) == 1
@@ -13167,6 +13362,15 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
 
 def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
+    ancestry_checks: list[dict[str, object]] = []
+
+    class _ManagedGit:
+        def resolve_branch_commit(self, *_args, **_kwargs):
+            return "b" * 40
+
+        def verify_branch_commit_ancestry(self, *args, **kwargs):
+            ancestry_checks.append({"args": args, **kwargs})
+            return {}
 
     def _configure_git(state):
         state.projects["project"].git = ProjectGitConfig(
@@ -13207,6 +13411,7 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
             parent_task_id="task",
             authored_by={"name": "Workflow User", "email": "workflow@example.test"},
             git_base_branch="feature/workflow",
+            git_base_commit_sha="a" * 40,
             dependency_task_ids=["workflow-dependency"],
             integration_boundary=True,
             deliverable_contract={
@@ -13216,7 +13421,10 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
             created_by="workflow:intake",
             expected_revision=repo.read().revision,
         ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=_ManagedGit()),
+        ),
     )
 
     result = provider.execute()
@@ -13236,12 +13444,156 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
     assert task.parent_task_id == "task"
     assert task.authored_by == ProjectGitIdentity(name="Workflow User", email="workflow@example.test")
     assert task.git_base_branch == "feature/workflow"
+    assert task.git_base_commit_sha == "a" * 40
     assert task.dependency_task_ids == ["workflow-dependency"]
     assert task.integration_boundary is True
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
     assert task.deliverable_contract.required_contribution_task_ids == ["workflow-dependency"]
     assert reread.cases["case"].task_ids == ["workflow-task"]
+    assert ancestry_checks == [
+        {
+            "args": ("mr_0123456789abcdefabcd",),
+            "directory_path": "root",
+            "branch": "feature/workflow",
+            "commit_sha": "b" * 40,
+            "required_ancestor_shas": ["a" * 40],
+        }
+    ]
+
+
+def test_create_task_effect_persists_coordination_kind_and_rejects_reclassification(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _provider(
+        *,
+        task_kind: str,
+        title: str,
+        git_base_commit_sha: str | None = None,
+    ) -> TeamCreateTaskEffectProvider:
+        provider = TeamCreateTaskEffectProvider()
+        provider.initialize(
+            TeamCreateTaskEffectDefinition(
+                id="create-coordination",
+                display_name="Create coordination",
+                type="effect:team:create-task",
+                team_id="team",
+                project_id="project",
+                owner_agent_id="lead",
+                priority=1,
+                title=title,
+                description="Supervise implementation children.",
+                task_id="workflow-coordination",
+                task_kind=task_kind,
+                git_base_branch="main" if git_base_commit_sha is not None else None,
+                git_base_commit_sha=git_base_commit_sha,
+                created_by="workflow:plan-handoff",
+                expected_revision=repo.read().revision,
+            ),
+            EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        )
+        return provider
+
+    created = _provider(task_kind="coordination", title="Coordinate work").execute()
+    replayed = _provider(task_kind="coordination", title="Coordinate accepted work").execute()
+    rejected = _provider(task_kind="support", title="Reclassify work").execute()
+    pinned = _provider(
+        task_kind="coordination",
+        title="Misleading pinned coordination",
+        git_base_commit_sha="a" * 40,
+    ).execute()
+
+    assert created["success"] is True
+    assert replayed["success"] is True
+    assert replayed["created"] is False
+    assert rejected["success"] is False
+    assert "cannot change to or from coordination" in rejected["error"]
+    assert pinned["success"] is False
+    assert "cannot pin a Git base commit" in pinned["error"]
+    task = repo.read().tasks["workflow-coordination"]
+    assert task.task_kind == TeamTaskKind.COORDINATION
+    assert task.title == "Coordinate accepted work"
+
+    _add_task(
+        repo,
+        task_id="coordination-contribution",
+        owner_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
+    _set_task_graph(
+        repo,
+        task_id="coordination-contribution",
+        parent_task_id="workflow-coordination",
+    )
+
+    def _boundary(
+        *,
+        task_id: str,
+        parent_task_id: str | None,
+        originating_task_id: str | None,
+    ) -> dict[str, object]:
+        provider = TeamCreateTaskEffectProvider()
+        provider.initialize(
+            TeamCreateTaskEffectDefinition(
+                id=f"create-{task_id}",
+                display_name="Create final integration",
+                type="effect:team:create-task",
+                team_id="team",
+                project_id="project",
+                owner_agent_id="lead",
+                priority=1,
+                title="Integrate accepted work",
+                description="Create the consolidated reviewed candidate.",
+                task_id=task_id,
+                parent_task_id=parent_task_id,
+                originating_task_id=originating_task_id,
+                dependency_task_ids=["coordination-contribution"],
+                integration_boundary=True,
+                deliverable_contract={
+                    "required_contribution_task_ids": ["coordination-contribution"],
+                },
+                expected_revision=repo.read().revision,
+            ),
+            EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+        )
+        return provider.execute()
+
+    converted_child = _boundary(
+        task_id="coordination-contribution",
+        parent_task_id="workflow-coordination",
+        originating_task_id=None,
+    )
+    nested = _boundary(
+        task_id="nested-integration",
+        parent_task_id="workflow-coordination",
+        originating_task_id=None,
+    )
+    missing_origin = _boundary(
+        task_id="root-integration-without-origin",
+        parent_task_id=None,
+        originating_task_id=None,
+    )
+    root = _boundary(
+        task_id="root-integration",
+        parent_task_id=None,
+        originating_task_id="workflow-coordination",
+    )
+
+    assert converted_child["success"] is False
+    assert "cannot be a child of coordination task" in str(converted_child["error"])
+    assert nested["success"] is False
+    assert "cannot be a child of coordination task" in str(nested["error"])
+    assert "set originating_task_id" in str(nested["error"])
+    assert missing_origin["success"] is False
+    assert "must set originating_task_id to workflow-coordination" in str(
+        missing_origin["error"]
+    )
+    assert root["success"] is True
+    root_task = repo.read().tasks["root-integration"]
+    assert root_task.parent_task_id is None
+    assert root_task.originating_task_id == "workflow-coordination"
 
 
 def test_create_task_effect_reports_generated_id_from_atomic_mutation(
@@ -13268,7 +13620,7 @@ def test_create_task_effect_reports_generated_id_from_atomic_mutation(
             return super().create_or_reprioritize_task_with_result(**kwargs)
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.TeamAdminService",
+        "evander_team_addon.provider_tasks.TeamAdminService",
         RacingTaskAdminService,
     )
     provider = TeamCreateTaskEffectProvider()
@@ -13586,7 +13938,7 @@ def test_create_case_effect_returns_generated_id_when_other_case_is_created(
             return super().create_case_with_id(**kwargs)
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.TeamAdminService",
+        "evander_team_addon.provider_tasks.TeamAdminService",
         RacingCaseAdminService,
     )
     provider = TeamCreateCaseEffectProvider()
@@ -14580,7 +14932,7 @@ def test_team_event_publisher_enriches_release_approval_handoff(
         return "publication-context"
 
     monkeypatch.setattr(
-        team_providers,
+        provider_events,
         "release_publication_context",
         _publication_context,
     )

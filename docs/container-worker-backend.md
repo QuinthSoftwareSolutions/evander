@@ -1,5 +1,10 @@
 # Container Worker Backend
 
+Read-only toolchain mount sources are pinned per session. The .NET provisioner validates
+immutable bundles before atomically selecting one for future sessions. See
+[release recovery and toolchain rollout](release-recovery-and-verifier-policy.md#immutable-worker-sdk-rollout)
+for migration, drain, retention and rollback precautions.
+
 `evander-worker-daemon` is the worker-VM side of the container execution backend. It exposes a small HTTP API for starting, inspecting, stopping, deleting, and reading logs for jobs that run inside disposable Docker containers.
 
 The daemon is intentionally primarily an execution envelope. It does not receive control-plane
@@ -423,7 +428,8 @@ are not baked into the image. Populate them from the control plane with
 so restores use the control-plane NuGet relay and workers receive an additive global-packages
 archive. If the restore target and .NET toolchain are on the worker itself, run the script there
 with `--local --dotnet <worker-dotnet-path>` and point `NUGET_RELAY_BASE_URL` at the control-plane
-relay. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
+relay. For private packages, pass the same patterns configured in the target directory with
+repeatable `--private-package-pattern` options. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
 `/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
 without the runner image hard-coding a host-specific user id.
 
@@ -608,10 +614,12 @@ Creation, rename, enable/disable, login, cancellation, and logout are privileged
 ownership of a child directory is insufficient. Mutations are audited without recording tokens.
 
 Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent. New UI
-subscription agents must select one enabled profile. The binding is written to the session and
-cannot change: create a replacement session for another profile. An existing unbound metered
-session may receive its first profile only when explicitly switched to subscription mode. An
-existing-agent upsert that omits the profile preserves its current binding.
+subscription agents must select one enabled profile. An existing session can switch between
+metered API usage and subscription usage, or select another enabled subscription profile, without
+being replaced. The new selection applies to the next turn; a turn already running keeps the route
+with which it started. An existing-agent upsert that omits the profile preserves its current
+subscription selection. Changing the route also releases that session's prompts from any delay
+caused by the previous subscription profile so they can be reconsidered immediately.
 
 `chatgpt_subscription` is effective only for a container Codex turn on the public OpenAI route.
 If the effective `model_provider_mode` is `local_openai` or `azure_openai`, Evander runs the turn

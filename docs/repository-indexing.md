@@ -74,6 +74,9 @@ Open **Managed Git → repository → Repository indexing** in Admin Web. Direct
 owners can view coverage and export published snapshots. Unlock privileged operations
 to change settings, build, rebuild or cancel. Settings saves require the revision
 shown by the last load; concurrent edits return HTTP 409.
+Snapshot history is ordered newest first and defaults to ready, downloadable indexes.
+Each entry shows its creation time, build ID and exact commit. Use the filter to include
+partial or non-downloadable builds and the pager to browse retained history in groups of 20.
 
 **SCIP symbol navigation** is off by default (`scip=false`). Enable it to index
 definitions, references and implementations using the language tools and project
@@ -86,16 +89,13 @@ a new snapshot before querying or exporting under the new policy. Pre-upgrade sn
 also need rebuilding because their policy fingerprint predates this setting. Rebuild
 and deploy the indexing worker image together with this product update.
 
-`config/repository-indexing/app.json.example` is an opt-in APP profile. Set its worker
-ID if the directory has no appropriate default. The profile explicitly enables SCIP,
-indexes the tracked `Src/App.slnx` workspace in one Roslyn invocation and lists the APP
-frontend configurations explicitly. Its timeout is one hour. APP's frontend lockfiles
-are currently untracked, so the profile explicitly
-allows npm to resolve dependencies when a lock is missing. Resulting lock hashes are
-recorded per project. Retain those worker lockfiles to reproduce that resolution.
-The general default requires a package lock. A repository containing only an unrelated
-root lockfile does not satisfy a nested package's dependencies. npm workspace members
-share their owning root's restore and lockfile; membership is resolved by npm.
+`config/repository-indexing/app.json.example` is an opt-in sample profile. Set its worker
+ID if the directory has no appropriate default. The profile enables SCIP and shows how to
+index a solution as one Roslyn workspace alongside a frontend TypeScript project. Its timeout
+is one hour. Adapt the sample paths to the repository being indexed. The default requires
+package locks. A repository containing only an unrelated root lockfile does not satisfy a
+nested package's dependencies. npm workspace members share their owning root's restore and
+lockfile; membership is resolved by npm.
 
 Semantic indexing uses the owning directory's existing semantic provider settings:
 `semantic_embedding_provider`, `semantic_embedding_model`,
@@ -264,11 +264,18 @@ Reconciliation records embedding requests, input characters, cache hits and prov
 token usage when reported. These counters are not a complete billing ledger or a
 measurement of agent savings. Failed requests can incur unreported provider usage.
 
-Retention defaults to 30 days. Active builds, active Team task/review/ephemeral bindings
-and the newest published snapshot per repository are retained. Old vectors, worker
-sessions, retained refs and unreferenced SQLite content are reclaimed in that order.
-Cleanup retries on failure, preserving the snapshot and Git pin until worker deletion,
-host Git authorization revocation and session binding removal are confirmed.
+Disposable compiler sessions are retired as soon as their artifact has been imported, while
+semantic ingestion continues from control-plane state. Failed and cancelled builds retire their
+sessions once shutdown is confirmed. Retirement deletes the worker job and workspace and revokes
+session-scoped Git authorization and bindings. Reconciliation records completion and retries an
+interrupted retirement without treating an uncertain compiler shutdown as safe to delete. The
+imported index and its `code_indexes` Git pin remain available independently.
+
+Snapshot retention defaults to 30 days. Active builds, active Team task/review/ephemeral
+bindings and the newest published snapshot per repository are retained. Old vectors,
+retained refs and unreferenced SQLite content are reclaimed in that order. Snapshot cleanup
+retries on failure and preserves the snapshot and Git pin until any outstanding worker
+retirement is confirmed.
 Builds cancelled before provisioning can release their pin without a
 worker session. If an old vector store's configuration has changed, cleanup
 is deferred until that store can be addressed again; it does not silently orphan vectors.
@@ -278,5 +285,5 @@ No live deployment is required for tests. Run the focused indexing tests and use
 commit. Report query relevance, navigation coverage, index size and measured latency
 separately from future token/cost savings.
 
-See [the APP validation report](repository-indexing-validation.md) for measured
+See [the App validation report](repository-indexing-validation.md) for measured
 coverage, retrieval results, portability checks and remaining validation limits.

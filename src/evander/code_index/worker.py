@@ -170,7 +170,8 @@ class IndexWorker:
             if getattr(exc, "status_code", None) != 404:
                 raise
 
-    def cleanup(self, build: dict) -> None:
+    def retire_session(self, build: dict) -> None:
+        """Delete disposable worker state while retaining the indexed Git snapshot."""
         session = self._session(build)
         if session is not None:
             lifecycle = session.metadata.get("container_lifecycle", {})
@@ -204,6 +205,14 @@ class IndexWorker:
         # Clear both kinds even if no grants (or no session manifest) remain.
         for kind in ("authorized_sessions", "sessions"):
             self.components.managed_git_admin.unbind_all(kind, build["session_id"])
+
+    def cleanup(self, build: dict) -> None:
+        """Retire worker state and release the retained snapshot during pruning."""
+        self.retire_session(build)
+        self.release_snapshot(build)
+
+    def release_snapshot(self, build: dict) -> None:
+        """Release only the Git pin after terminal worker retirement is confirmed."""
         self.components.managed_git_admin.release_retained_snapshot(
             build["repo"],
             build["directory"],

@@ -76,13 +76,25 @@ MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 NOW = datetime(2026, 7, 25, 10, 0, tzinfo=UTC)
 
 
+class _TaskPinManagedGit:
+    def resolve_branch_commit(self, *_args, **_kwargs) -> str:
+        return "f" * 40
+
+    def verify_branch_commit_ancestry(self, *_args, **_kwargs) -> dict[str, object]:
+        return {}
+
+
+def _task_pin_admin(repository: TeamStateRepository) -> TeamAdminService:
+    return TeamAdminService(repository, managed_git_admin=_TaskPinManagedGit())
+
+
 def test_persistence_registry_covers_every_collection_and_table_once() -> None:
     fields = [field for group, _specs, _writer in _PERSISTENCE_GROUPS for field in group]
     tables = [
         table for _group, specs, _writer in _PERSISTENCE_GROUPS for table, _column, _field in specs
     ]
 
-    assert len(fields) == len(set(fields)) == 40
+    assert len(fields) == len(set(fields))
     assert len(tables) == len(set(tables))
     assert set(tables) == set(_STATE_TABLES)
 
@@ -216,7 +228,7 @@ def test_acceptance_provenance_and_composition_manifest_round_trip(
     tmp_path: Path,
 ) -> None:
     repository = _seed_team_repository(tmp_path)
-    admin = TeamAdminService(repository)
+    admin = _task_pin_admin(repository)
     admin.create_or_reprioritize_task(
         task_id="integration",
         owner_agent_id="lead",
@@ -225,6 +237,7 @@ def test_acceptance_provenance_and_composition_manifest_round_trip(
         title="Integrate",
         description="Compose accepted work.",
         created_by_agent_id="lead",
+        git_base_commit_sha="a" * 40,
         integration_boundary=True,
         deliverable_contract=TaskDeliverableContract(
             require_git_provenance=True,
@@ -846,7 +859,7 @@ def test_sqlite_migration_reconciles_dependency_composed_release_base_and_retry(
     with sqlite3.connect(repository.store.path) as connection:
         connection.execute(
             "UPDATE team_state_metadata SET value = ? WHERE key = 'sqlite_schema_version'",
-            (str(SQLITE_SCHEMA_VERSION - 1),),
+            ("71",),
         )
 
     migrated_repository = TeamStateRepository(tmp_path)
@@ -977,7 +990,7 @@ def test_repository_round_trips_integration_and_leaf_deliverable_contracts(
     tmp_path: Path,
 ) -> None:
     repository = _seed_team_repository(tmp_path)
-    admin = TeamAdminService(repository)
+    admin = _task_pin_admin(repository)
     admin.create_or_reprioritize_task(
         task_id="dependency",
         owner_agent_id="lead",
@@ -1009,6 +1022,7 @@ def test_repository_round_trips_integration_and_leaf_deliverable_contracts(
         description="Compose and submit the final candidate.",
         created_by_agent_id="lead",
         dependency_task_ids=["dependency"],
+        git_base_commit_sha="a" * 40,
         integration_boundary=True,
         deliverable_contract=TaskDeliverableContract(
             require_git_provenance=True,

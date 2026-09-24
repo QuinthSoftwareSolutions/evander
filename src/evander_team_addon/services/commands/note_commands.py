@@ -22,6 +22,7 @@ from ..domain.common import (
 )
 
 from .executor import TeamCommandExecutor
+from ..case_context_service import make_note
 
 
 class TeamNoteCommandService(TeamCommandExecutor):
@@ -34,6 +35,16 @@ class TeamNoteCommandService(TeamCommandExecutor):
         correlation_id: str | None = None,
         causation_id: str | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
+        kind: str = "note",
+        summary: str = "",
+        rationale: str = "",
+        case_id: str | None = None,
+        task_ids: Sequence[str] = (),
+        deliverable_ids: Sequence[str] = (),
+        review_request_ids: Sequence[str] = (),
+        source_evidence_snapshot_ids: Sequence[str] = (),
+        source_refs: Sequence[str] = (),
+        supersedes_note_id: str | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_request_id = _required_text(request_id, "request_id")
@@ -55,6 +66,27 @@ class TeamNoteCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             correlation_id=context.correlation_id,
             causation_id=context.causation_id,
+        )
+        note_fields = {
+            "kind": kind,
+            "summary": summary,
+            "rationale": rationale,
+            "case_id": _optional_text(case_id),
+            "supersedes_note_id": supersedes_note_id,
+            **{
+                key: sorted(_unique_text_list(value, key))
+                for key, value in {
+                    "task_ids": task_ids,
+                    "deliverable_ids": deliverable_ids,
+                    "review_request_ids": review_request_ids,
+                    "source_evidence_snapshot_ids": source_evidence_snapshot_ids,
+                    "source_refs": source_refs,
+                }.items()
+            },
+        }
+        # Preserve legacy request digests when no structured fields are supplied.
+        normalized_payload.update(
+            {k: v for k, v in note_fields.items() if v and not (k == "kind" and v == "note")}
         )
 
         def _apply(
@@ -84,13 +116,30 @@ class TeamNoteCommandService(TeamCommandExecutor):
                 action_payload["correlation_id"] = context.correlation_id
             if context.causation_id is not None:
                 action_payload["causation_id"] = context.causation_id
-            state.action_records[action_record_id] = AgentActionRecord(
+            action_record = AgentActionRecord(
                 id=action_record_id,
                 agent_id=agent.id,
                 dispatch_id=resolved.dispatch_id,
                 action=action_payload,
                 success=True,
             )
+            try:
+                note = make_note(
+                    state,
+                    note_id=action_record_id,
+                    agent_id=agent.id,
+                    dispatch_id=resolved.dispatch_id,
+                    body=body_text,
+                    created_at=action_record.created_at,
+                    **note_fields,
+                )
+            except ValueError as exc:
+                raise TeamCommandValidationError(
+                    code="invalid_note_context",
+                    message=str(exc),
+                ) from exc
+            state.notes[note.id] = note
+            state.action_records[action_record_id] = action_record
             return TeamCommandApplyResult(
                 response_payload={
                     "note_id": action_record_id,

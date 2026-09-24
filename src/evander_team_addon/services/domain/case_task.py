@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Protocol
@@ -75,6 +75,7 @@ class _TaskCreationPlan:
     parent_task_id: str | None
     originating_task_id: str | None
     git_base_branch: str | None
+    git_base_commit_sha: str | None
     dependency_task_ids: list[str]
     priority: int
     title: str
@@ -103,9 +104,32 @@ class TaskGitDefaultBranchResolver(Protocol):
     ) -> object: ...
 
 
+class TaskGitBaseCommitResolver(Protocol):
+    def __call__(
+        self,
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+        branch: str,
+        required_ancestor_shas: Sequence[str] | None = None,
+    ) -> object: ...
+
+
 def _normalized_task_git_base_branch(value: object) -> str | None:
     normalized = _optional_text(value)
     return validate_branch_name(normalized) if normalized is not None else None
+
+
+def _normalized_task_git_base_commit(value: object) -> str | None:
+    normalized = _optional_text(value)
+    if normalized is None:
+        return None
+    normalized = normalized.casefold()
+    if len(normalized) not in {40, 64} or any(
+        char not in "0123456789abcdef" for char in normalized
+    ):
+        raise ValueError("git_base_commit_sha must be a full Git object ID")
+    return normalized
 
 
 def _project_default_task_git_base_branch(
@@ -341,6 +365,7 @@ def _resolve_task_creation_plan_git_bases(
     plans: list[_TaskCreationPlan],
     *,
     git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
+    git_base_commit_resolver: TaskGitBaseCommitResolver | None = None,
 ) -> list[_TaskCreationPlan]:
     """Resolve cases, Git bases and task authors across a creation batch atomically."""
 
@@ -455,11 +480,169 @@ def _resolve_task_creation_plan_git_bases(
         return inherited_work_item_attributions(state, project_id=plan.project_id,
             originating_task_id=plan.originating_task_id, parent_task_id=plan.parent_task_id)
 
-    return [
+    resolved_plans = [
         replace(plan, git_base_branch=_resolve(plan), authored_by=_resolve_author(plan),
                 work_item_attributions=_resolve_attribution(plan))
         for plan in plans
     ]
+    pinned_plans: list[_TaskCreationPlan] = []
+    for plan in resolved_plans:
+        project = _require_present(state.projects, plan.project_id, "project")
+        supplied_commit = _normalized_task_git_base_commit(plan.git_base_commit_sha)
+        requires_automatic_pin = plan.integration_boundary and project.git is not None
+        if not requires_automatic_pin and supplied_commit is None:
+            pinned_plans.append(plan)
+            continue
+        if project.git is None:
+            raise TaskGitBaseValidationError(
+                code="git_base_commit_invalid",
+                message=(
+                    f"task {plan.task_id} cannot pin a Git base commit because project "
+                    f"{project.id} has no managed Git repository"
+                ),
+            )
+        if plan.git_base_branch is None:
+            raise TaskGitBaseValidationError(
+                code="git_base_commit_unavailable",
+                message=(
+                    f"integration boundary task {plan.task_id} has no concrete Git "
+                    "base branch to pin"
+                ),
+            )
+        if git_base_commit_resolver is None:
+            raise TaskGitBaseValidationError(
+                code="git_base_commit_unavailable",
+                message=(
+                    f"integration boundary task {plan.task_id} requires an immutable "
+                    "Git base commit, but managed branch resolution is unavailable"
+                ),
+            )
+        try:
+            resolved_branch_commit = _normalized_task_git_base_commit(
+                git_base_commit_resolver(
+                    managed_repo_id=project.git.managed_repo_id,
+                    directory_path=project.git.directory_path,
+                    branch=plan.git_base_branch,
+                    **(
+                        {"required_ancestor_shas": [supplied_commit]}
+                        if supplied_commit is not None
+                        else {}
+                    ),
+                )
+            )
+        except Exception as exc:
+            raise TaskGitBaseValidationError(
+                code=(
+                    "git_base_commit_invalid"
+                    if supplied_commit is not None
+                    else "git_base_commit_unavailable"
+                ),
+                message=(
+                    f"could not validate supplied Git base commit {supplied_commit} "
+                    f"against managed branch {plan.git_base_branch} for task "
+                    f"{plan.task_id}: {exc}"
+                    if supplied_commit is not None
+                    else f"could not resolve immutable Git base commit for integration "
+                    f"boundary task {plan.task_id}: {exc}"
+                ),
+            ) from exc
+        if resolved_branch_commit is None:
+            raise TaskGitBaseValidationError(
+                code=(
+                    "git_base_commit_invalid"
+                    if supplied_commit is not None
+                    else "git_base_commit_unavailable"
+                ),
+                message=(
+                    f"managed branch {plan.git_base_branch} has no commit against which "
+                    f"to validate supplied Git base commit {supplied_commit} for task "
+                    f"{plan.task_id}"
+                    if supplied_commit is not None
+                    else f"managed branch {plan.git_base_branch} has no commit to pin for "
+                    f"integration boundary task {plan.task_id}"
+                ),
+            )
+        pinned_plans.append(
+            replace(
+                plan,
+                git_base_commit_sha=supplied_commit or resolved_branch_commit,
+            )
+        )
+    return pinned_plans
+
+
+def _task_integration_boundary_transition_error(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    proposed_integration_boundary: bool,
+) -> str | None:
+    """Require a fresh, server-pinned task for a new Git integration boundary."""
+
+    if task.integration_boundary or not proposed_integration_boundary:
+        return None
+    project = state.projects.get(task.project_id)
+    if project is None or project.git is None:
+        return None
+    return (
+        f"Git-backed task {task.id} cannot be converted into an integration boundary; "
+        "create a fresh integration-boundary task so the server can snapshot its "
+        "immutable base commit"
+    )
+
+
+def _task_coordination_handoff_error(
+    state: TeamState,
+    *,
+    integration_boundary: bool,
+    parent_task_id: str | None,
+    originating_task_id: str | None,
+    deliverable_contract: TaskDeliverableContract | None,
+) -> str | None:
+    """Keep coordination supervision separate from the final integration root."""
+
+    if not integration_boundary:
+        return None
+    parent = state.tasks.get(parent_task_id or "")
+    if parent is not None and parent.task_kind == TeamTaskKind.COORDINATION:
+        return (
+            f"integration boundary cannot be a child of coordination task {parent.id}; "
+            "leave parent_task_id unset and set originating_task_id to that coordination task"
+        )
+
+    coordination_source_ids: set[str] = set()
+    if deliverable_contract is not None:
+        for contribution_task_id in deliverable_contract.required_contribution_task_ids:
+            contribution = state.tasks.get(contribution_task_id)
+            if contribution is None:
+                continue
+            if contribution.task_kind == TeamTaskKind.COORDINATION:
+                coordination_source_ids.add(contribution.id)
+            contribution_parent = state.tasks.get(contribution.parent_task_id or "")
+            if (
+                contribution_parent is not None
+                and contribution_parent.task_kind == TeamTaskKind.COORDINATION
+            ):
+                coordination_source_ids.add(contribution_parent.id)
+    if len(coordination_source_ids) == 1:
+        coordination_task_id = next(iter(coordination_source_ids))
+        if originating_task_id != coordination_task_id:
+            return (
+                f"integration boundary for coordination task {coordination_task_id} must set "
+                f"originating_task_id to {coordination_task_id}"
+            )
+
+    origin = state.tasks.get(originating_task_id or "")
+    if (
+        origin is not None
+        and origin.task_kind == TeamTaskKind.COORDINATION
+        and parent_task_id is not None
+    ):
+        return (
+            "an integration boundary originating from coordination must be top-level; "
+            "leave parent_task_id unset"
+        )
+    return None
 
 
 def _validate_case_status_transition(
@@ -980,10 +1163,14 @@ def _plan_task_creation(
         return None
     try:
         git_base_branch = _normalized_task_git_base_branch(creation.get("git_base_branch"))
+        git_base_commit_sha = _normalized_task_git_base_commit(
+            creation.get("git_base_commit_sha")
+        )
     except ValueError as exc:
-        result["errors"].append(f"task creation has invalid git_base_branch: {exc}")
+        result["errors"].append(f"task creation has invalid Git base: {exc}")
         return None
     originating_task_id = _optional_text(creation.get("originating_task_id"))
+    origin: AgentTask | None = None
     if originating_task_id is not None:
         origin = state.tasks.get(originating_task_id)
         if origin is None:
@@ -1051,8 +1238,8 @@ def _plan_task_creation(
         )
         if task_kind == TeamTaskKind.OUTCOME and outcome_contract is None:
             raise ValueError("outcome task requires outcome_contract")
-        if task_kind == TeamTaskKind.SUPPORT and outcome_contract is not None:
-            raise ValueError("support task cannot define outcome_contract")
+        if task_kind != TeamTaskKind.OUTCOME and outcome_contract is not None:
+            raise ValueError(f"{task_kind.value} task cannot define outcome_contract")
         integration_boundary = creation.get("integration_boundary", False)
         if not isinstance(integration_boundary, bool):
             raise ValueError("integration_boundary must be a boolean")
@@ -1062,6 +1249,22 @@ def _plan_task_creation(
             if raw_deliverable_contract is not None
             else None
         )
+        if task_kind == TeamTaskKind.COORDINATION:
+            if integration_boundary:
+                raise ValueError("coordination task cannot be an integration boundary")
+            if deliverable_contract is not None:
+                raise ValueError("coordination task cannot define deliverable_contract")
+            if git_base_commit_sha is not None:
+                raise ValueError("coordination task cannot pin a Git base commit")
+        coordination_handoff_error = _task_coordination_handoff_error(
+            state,
+            integration_boundary=integration_boundary,
+            parent_task_id=parent_task_id,
+            originating_task_id=originating_task_id,
+            deliverable_contract=deliverable_contract,
+        )
+        if coordination_handoff_error is not None:
+            raise ValueError(coordination_handoff_error)
         if integration_boundary and deliverable_contract is None:
             raise ValueError("integration boundary task requires deliverable_contract")
         if (
@@ -1087,6 +1290,7 @@ def _plan_task_creation(
         parent_task_id=parent_task_id,
         originating_task_id=originating_task_id,
         git_base_branch=git_base_branch,
+        git_base_commit_sha=git_base_commit_sha,
         dependency_task_ids=dependency_task_ids,
         priority=int(priority) if priority is not None else 0,
         title=_required_text(creation.get("title"), "title"),
@@ -1167,6 +1371,7 @@ def _apply_task_creation_plan(
         authored_by=plan.authored_by,
         work_item_attributions=plan.work_item_attributions,
         git_base_branch=plan.git_base_branch,
+        git_base_commit_sha=plan.git_base_commit_sha,
         dependency_task_ids=plan.dependency_task_ids,
         created_at=now,
         updated_at=now,
@@ -1672,6 +1877,12 @@ def _task_deliverable_contract_scope_error(
             )
     if deliverable_contract is None:
         return None
+    for source_id in deliverable_contract.pinned_source_deliverable_ids:
+        source = state.deliverables.get(source_id)
+        if (not integration_boundary or source is None
+                or source.task_id not in deliverable_contract.required_contribution_task_ids
+                or source.state != TeamRecordState.ACCEPTED):
+            return "pinned source must be an accepted deliverable of a required contribution"
     if task_id in deliverable_contract.required_contribution_task_ids:
         return "task cannot require itself as a deliverable contribution"
     direct_child_ids = {
@@ -1768,6 +1979,7 @@ __all__ = [
     "_dependency_path_exists",
     "_has_dependency_cycle",
     "_task_graph_edit_error",
+    "_task_coordination_handoff_error",
     "_task_deliverable_contract_scope_error",
     "_apply_goal_update",
 ]

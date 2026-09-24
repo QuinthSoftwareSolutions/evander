@@ -6,7 +6,6 @@ from typing import Any
 from evander.admin.services import git_helpers, session_helpers
 from evander.codex_auth import (
     CodexAuthMode,
-    effective_subscription_profile_id,
     normalize_codex_auth_mode,
 )
 from evander.admin.services.ports import DirectoryOwnershipPort
@@ -101,6 +100,17 @@ class SessionAdminService:
                 )
             )
         return summaries
+
+    def get_session_summary(self, session_id: str) -> SessionSummary:
+        manifest = self._session_repository().get_session(session_id)
+        if manifest is None:
+            raise ValueError(f"Unknown session: {session_id}")
+        return SessionSummary(
+            **manifest.model_dump(),
+            issue_number=session_helpers.extract_issue_number(manifest.vm_id)
+            or session_helpers.extract_issue_number(session_id),
+            is_expired=manifest.expires_at <= session_helpers.utc_now(),
+        )
 
     def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
         session_id, manifest = session_helpers.resolve_session_target(
@@ -363,13 +373,25 @@ class SessionAdminService:
         agent_provider = str(metadata.get("agent_provider") or "codex").strip().casefold()
         if normalized is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
             raise ValueError("chatgpt_subscription is supported only for Codex agents")
-        if (
-            effective_subscription_profile_id(session=manifest) is not None
-            and normalized is not CodexAuthMode.CHATGPT_SUBSCRIPTION
-        ):
-            raise ValueError("A profile-bound session cannot switch away from subscription mode")
-        manifest.codex_auth_mode = normalized
-        self._session_repository().upsert_session(manifest)
+        updated = manifest.model_copy(
+            update={
+                "codex_auth_mode": normalized,
+                "subscription_profile_id": (
+                    manifest.subscription_profile_id
+                    if normalized is CodexAuthMode.CHATGPT_SUBSCRIPTION
+                    else None
+                ),
+            }
+        )
+        self._session_repository().upsert_session(updated)
+        from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+        AgentPromptQueueStore(
+            self._deps.config.runtime_dir / "queued-agent-prompts.json"
+        ).reroute_session(
+            updated.session_id,
+            subscription_profile_id=updated.subscription_profile_id,
+        )
         effective = normalized.value if normalized is not None else "directory default"
         return SessionActionResult(
             success=True,

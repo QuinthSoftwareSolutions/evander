@@ -894,24 +894,48 @@ class AzureDevOpsIssueAdapter:
         project: str,
         auth_header: str,
         remote_issue_id: str,
+        page_limit: int = 1,
+        paging: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         comments_url = (
             f"{organization_url}/{project}/_apis/wit/workItems/{remote_issue_id}/comments"
         )
-        response = client.get(
-            comments_url,
-            params={
+        entries = []
+        continuation = None
+        seen_tokens = set()
+        if not 1 <= page_limit <= 10:
+            raise ValueError("comment page limit must be between 1 and 10")
+        for page_index in range(page_limit):
+            params = {
                 "api-version": "7.1-preview.4",
                 "$top": str(self.comments_max_count),
                 "order": "desc",
-            },
-            headers={"Authorization": auth_header},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        entries = payload.get("comments")
-        if not isinstance(entries, list):
-            return []
+            }
+            if continuation:
+                params["continuationToken"] = continuation
+            response = client.get(
+                comments_url, params=params, headers={"Authorization": auth_header}
+            )
+            response.raise_for_status()
+            payload = response.json()
+            page_entries = payload.get("comments")
+            if not isinstance(page_entries, list):
+                raise ValueError("invalid ADO comments response")
+            entries.extend(page_entries)
+            continuation = payload.get("continuationToken") or response.headers.get(
+                "x-ms-continuationtoken"
+            )
+            if not continuation or continuation in seen_tokens:
+                break
+            seen_tokens.add(continuation)
+        if paging is not None:
+            paging.update(
+                complete=not bool(continuation),
+                has_more=bool(continuation),
+                pages=page_index + 1,
+                page_limit=page_limit,
+                returned_count=len(entries),
+            )
         normalized: list[dict[str, Any]] = []
         for raw in entries:
             if not isinstance(raw, dict):
@@ -933,6 +957,10 @@ class AzureDevOpsIssueAdapter:
                     "created_date": self._normalize_datetime(
                         str(raw.get("createdDate", "")).strip()
                     ),
+                    "modified_at": self._normalize_datetime(
+                        str(raw.get("modifiedDate", "")).strip()
+                    ),
+                    "version": raw.get("version"),
                     "url": str((raw.get("_links") or {}).get("web", {}).get("href", "")).strip(),
                     "inline_media": extract_ado_html_image_refs(
                         html_content,
@@ -974,7 +1002,9 @@ class AzureDevOpsIssueAdapter:
             "rev": payload.get("rev"),
             "title": str(fields.get("System.Title") or ""),
             "description": str(fields.get("System.Description") or ""),
-            "acceptance_criteria": str(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""),
+            "acceptance_criteria": str(
+                fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""
+            ),
             "state": str(fields.get("System.State") or ""),
             "url": web_url or api_url,
             "web_url": web_url or None,
@@ -2389,6 +2419,7 @@ class AzureDevOpsIssueAdapter:
         include_comments: bool = True,
         include_relations: bool = True,
         include_updates: bool = False,
+        comment_page_limit: int = 1,
     ) -> dict[str, Any]:
         organization_url, configured_project, pat = self._resolve_connection(directory_path)
         normalized_project = str(project or configured_project).strip()
@@ -2411,6 +2442,7 @@ class AzureDevOpsIssueAdapter:
             )
             item: dict[str, Any] = {
                 "provider": self.provider_name,
+                "organization_url": organization_url,
                 "id": str(payload.get("id") or backlog_item_id).strip(),
                 "project": project_name,
                 "rev": payload.get("rev"),
@@ -2444,6 +2476,7 @@ class AzureDevOpsIssueAdapter:
                 if include_relations
                 else []
             )
+            item["comments_paging"] = {"complete": False, "reason": "not_requested"}
             item["comments"] = (
                 self._fetch_comments(
                     client,
@@ -2451,6 +2484,8 @@ class AzureDevOpsIssueAdapter:
                     project=project_name or normalized_project,
                     auth_header=auth_header,
                     remote_issue_id=item["id"],
+                    page_limit=comment_page_limit,
+                    paging=item["comments_paging"],
                 )
                 if include_comments
                 else []
@@ -3528,10 +3563,16 @@ class IssueService:
         include_comments: bool = True,
         include_relations: bool = True,
         include_updates: bool = False,
+        comment_page_limit: int = 1,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
             raise ValueError(f"Unsupported issue provider: {provider}")
+        comment_options = {}
+        if comment_page_limit != 1:
+            if provider != "azure_devops":
+                raise ValueError("comment pagination is only supported for Azure DevOps")
+            comment_options["comment_page_limit"] = comment_page_limit
         return adapter.get_backlog_item_by_id(
             directory_path=directory_path,
             backlog_item_id=backlog_item_id,
@@ -3539,6 +3580,7 @@ class IssueService:
             include_comments=include_comments,
             include_relations=include_relations,
             include_updates=include_updates,
+            **comment_options,
         )
 
     def delete_remote_issue(

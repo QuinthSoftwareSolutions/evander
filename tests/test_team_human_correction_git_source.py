@@ -215,11 +215,11 @@ def test_reassigned_rework_starts_from_immutable_rejected_deliverable(
         return f"/home/agent/worktrees/repo/{kwargs['worktree_name']}", composed_commit
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        "evander_team_addon.provider_git_contexts._project_repo_task_dependency_git_sources",
         lambda *_args, **_kwargs: [],
     )
     context = EffectRuntimeContext(
@@ -913,11 +913,11 @@ def test_container_correction_accepts_composed_base_and_validates_candidate_root
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: _ContainerBackend(),
     )
     context = SimpleNamespace(metadata={"directory_path": "root"})
@@ -1169,7 +1169,7 @@ def test_correction_git_context_records_manifest_and_reuses_composed_base(
         return f"/home/agent/worktrees/repo/{kwargs['worktree_name']}", fix_commit
 
     monkeypatch.setattr(
-        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        "evander_team_addon.provider_git_contexts._prepare_project_repo_task_worktree",
         _prepare,
     )
     context = EffectRuntimeContext(

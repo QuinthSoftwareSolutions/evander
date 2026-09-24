@@ -65,11 +65,17 @@ def actionable_dispatch_tasks(
     if agent.team_id is None:
         return []
     visible_project_ids = _visible_project_ids_for_agent(state, agent)
+    candidates = [
+        task for task in state.tasks.values()
+        if task.owner_agent_id == agent.id and task.project_id in visible_project_ids
+    ]
+    if not candidates:
+        return []
     assessments = TaskAssessmentService(state)
     stalled_task_ids = _stalled_task_ids(state, agent_id=agent.id)
     rows = [
         task
-        for task in state.tasks.values()
+        for task in candidates
         if task.owner_agent_id == agent.id
         and task.project_id in visible_project_ids
         and task.project_id in state.projects

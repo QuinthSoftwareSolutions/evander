@@ -168,6 +168,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
             "stdout": stdout,
             "stderr": stderr,
             "vm_name": None,
+            "toolchain_mounts": status_metadata.get("read_only_mounts", []) if isinstance(status_metadata, Mapping) else [],
         }
         if check and not success:
             raise RuntimeError(

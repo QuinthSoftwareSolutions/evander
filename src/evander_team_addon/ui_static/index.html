@@ -1,15 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-admin-design data-addon="team">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Team Add-on</title>
-    <link rel="stylesheet" href="team-ui.css" />
-    <link rel="stylesheet" href="team-org-flow.css" />
-    <link rel="stylesheet" href="team-agent-create.css" />
     <script type="module" src="team-org-flow.js"></script>
     <script type="module" src="team-agent-create.js"></script>
     <script type="module" src="team-ui.js"></script>
+    <link rel="stylesheet" href="admin-design.css" />
+    <script type="module" src="admin-design.js"></script>
   </head>
   <body data-team-addon-ui>
     <div class="team-shell">
@@ -60,6 +59,9 @@
 
       <div id="status-message" class="status-message" role="status" aria-live="polite" hidden></div>
 
+      <label class="team-view-switcher">View
+        <select id="team-view-select" aria-label="Team view"></select>
+      </label>
       <nav class="team-view-tabs" role="tablist" aria-label="Team Add-on views">
         <button
           id="team-view-workspace-tab"
@@ -419,7 +421,11 @@
             </section>
             <div class="teams-records-view" data-teams-records-view></div>
           </section>
-          <aside class="content-panel people-agent-detail-panel" aria-label="Selected team record detail">
+          <aside class="content-panel people-agent-detail-panel" aria-label="Selected team record detail" hidden>
+            <div class="team-record-inspector-toolbar">
+              <span class="section-label">Record details</span>
+              <button type="button" class="record-action" data-team-detail-close aria-label="Close record details">Close</button>
+            </div>
             <div id="people-agent-detail-view" class="people-agent-detail-view" data-agent-detail-view></div>
           </aside>
         </div>

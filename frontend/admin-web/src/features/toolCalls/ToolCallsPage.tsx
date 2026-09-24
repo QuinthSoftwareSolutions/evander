@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { RefreshIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
+import { RecordInspector } from "../admin/RecordInspector";
 
 type AdminSectionTab =
   | "agents"
@@ -749,6 +750,8 @@ export function ToolCallsPage() {
   const [filters, setFilters] = useState<ToolCallFilters>(() => toolCallFiltersFromHash());
   const [response, setResponse] = useState<ToolCallsResponse | null>(null);
   const [selectedCallKey, setSelectedCallKey] = useState<string>("");
+  const [inspectorOpen, setInspectorOpen] = useState(() => Boolean(toolCallFiltersFromHash().query));
+  const inspectorTriggerRef = useRef<HTMLElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -876,24 +879,32 @@ export function ToolCallsPage() {
   }
 
   return (
-    <div className="feature-page tool-calls-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Audit trail</div>
-            <h1>Tool Calls</h1>
-          </div>
+    <div className="feature-page tool-calls-page table-workspace">
+      <div className="feature-toolbar">
+        <div>
+          <h1>Tool Calls</h1>
+          <p className="muted-text">
+            Review redacted MCP tool invocations, inspect details, and jump to related admin views.
+          </p>
+        </div>
+        <div className="feature-toolbar-actions">
+          <span className="panel-meta">{visibleTotal} visible</span>
           <button className="admin-action-button compact" type="button" onClick={() => void loadToolCalls()}>
             <RefreshIcon />
             Refresh
           </button>
         </div>
+      </div>
+
+      <section className="feature-sidebar">
         <div className="panel section-panel">
           <div className="feature-list-title-row">
             <strong>Directory scope</strong>
             <span className="panel-meta">{selectedDirectoryPath}</span>
           </div>
-          <div className="feature-list-meta">{filters.directOnly ? "Direct matches only" : "Including descendants"}</div>
+          <div className="feature-list-meta">
+            {filters.directOnly ? "Direct matches only" : "Including descendants"}
+          </div>
         </div>
         <label className="field-stack">
           <span>Search</span>
@@ -919,16 +930,21 @@ export function ToolCallsPage() {
             placeholder="prompt_agent"
           />
         </label>
-          <label className="field-stack">
-            <span>Status</span>
-            <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as ToolCallFilters["status"] }))}>
-              <option value="all">All</option>
-              <option value="success">Success</option>
-              <option value="pending_approval">Pending approval</option>
-              <option value="denied">Denied</option>
-              <option value="error">Error</option>
-            </select>
-          </label>
+        <label className="field-stack">
+          <span>Status</span>
+          <select
+            value={filters.status}
+            onChange={(event) =>
+              setFilters((current) => ({ ...current, status: event.target.value as ToolCallFilters["status"] }))
+            }
+          >
+            <option value="all">All</option>
+            <option value="success">Success</option>
+            <option value="pending_approval">Pending approval</option>
+            <option value="denied">Denied</option>
+            <option value="error">Error</option>
+          </select>
+        </label>
         <label className="checkbox-row">
           <input
             type="checkbox"
@@ -967,25 +983,11 @@ export function ToolCallsPage() {
       </section>
 
       <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>Tool call audit log</h2>
-            <p className="muted-text">
-              Review redacted MCP tool invocations, inspect details, and jump to related admin views.
-            </p>
-          </div>
-          <div className="feature-toolbar-actions">
-            <span className="panel-meta">{visibleTotal} visible</span>
-            <button className="admin-action-button compact" type="button" onClick={() => void loadToolCalls()}>
-              <RefreshIcon />
-              Refresh
-            </button>
-          </div>
-        </div>
-
         {error ? <div className="callout error-callout">{error}</div> : null}
 
-        <div className="admin-grid two-column tool-calls-grid">
+        <div
+          className={`admin-grid two-column tool-calls-grid${inspectorOpen && selectedCall ? " has-inspector" : ""}`}
+        >
           <article className="panel section-panel">
             <div className="panel-header">
               <div>
@@ -1002,7 +1004,8 @@ export function ToolCallsPage() {
               <div className="tool-call-count-summary">
                 {recentOnly ? <span className="status-pill state-idle">Recent entries</span> : null}
                 <span className="panel-meta">
-                  {successCount} success / {pendingApprovalCount} pending approval / {deniedCount} denied / {errorCount} error
+                  {successCount} success / {pendingApprovalCount} pending approval / {deniedCount} denied / {errorCount}{" "}
+                  error
                 </span>
               </div>
             </div>
@@ -1033,20 +1036,32 @@ export function ToolCallsPage() {
                           <tr
                             key={itemKey}
                             className={itemKey === selectedCallKey ? "selected" : ""}
-                            onClick={() => setSelectedCallKey(itemKey)}
+                            onClick={(event) => {
+                              setSelectedCallKey(itemKey);
+                              setInspectorOpen(true);
+                              inspectorTriggerRef.current = event.currentTarget.querySelector("button");
+                            }}
                           >
                             <td>{formatTimestamp(item.created_at)}</td>
                             <td>
-                              <span className={`status-pill ${statusClass(itemStatus)}`}>{statusLabel(itemStatus)}</span>
+                              <span className={`status-pill ${statusClass(itemStatus)}`}>
+                                {statusLabel(itemStatus)}
+                              </span>
                             </td>
                             <td>{formatDurationMs(item.duration_ms)}</td>
                             <td>{stringField(item, "session_id") ?? "None"}</td>
                             <td>{normalizeActor(item)}</td>
                             <td>{stringField(item, "directory_path") ?? "root"}</td>
-                            <td>{item.tool_name}</td>
+                            <td>
+                              <button type="button" className="record-name">
+                                {item.tool_name}
+                              </button>
+                            </td>
                             <td>
                               <div>{normalizeRequestId(stringField(item, "request_id"))}</div>
-                              <div className="panel-meta">{normalizeRequestId(stringField(item, "correlation_id"))}</div>
+                              <div className="panel-meta">
+                                {normalizeRequestId(stringField(item, "correlation_id"))}
+                              </div>
                             </td>
                             <td>{truncateText(stringField(item, "error_summary", "error"), 88)}</td>
                           </tr>
@@ -1072,7 +1087,11 @@ export function ToolCallsPage() {
                         type="button"
                         className={`mobile-record-card${itemKey === selectedCallKey ? " selected" : ""}`}
                         aria-pressed={itemKey === selectedCallKey}
-                        onClick={() => setSelectedCallKey(itemKey)}
+                        onClick={(event) => {
+                          setSelectedCallKey(itemKey);
+                          setInspectorOpen(true);
+                          inspectorTriggerRef.current = event.currentTarget;
+                        }}
                       >
                         <div className="mobile-record-title-row">
                           <strong>{item.tool_name}</strong>
@@ -1120,154 +1139,165 @@ export function ToolCallsPage() {
             )}
           </article>
 
-          <article className="panel detail-panel tool-call-detail-panel">
-            <div className="panel-header">
-              <div>
-                <h3>{selectedCall?.tool_name ?? "Select a tool call"}</h3>
-                <p className="muted-text">
-                  {selectedCall ? formatTimestamp(selectedCall.created_at) : "Choose a row to inspect redacted arguments and metadata."}
-                </p>
-              </div>
+          {inspectorOpen && selectedCall ? (
+            <RecordInspector
+              key={selectedCallKey}
+              className="tool-call-detail-panel"
+              title={selectedCall.tool_name}
+              subtitle={
+                <>
+                  {formatTimestamp(selectedCall.created_at)} · {statusSummary(selectedCall)}
+                </>
+              }
+              returnFocus={() => inspectorTriggerRef.current}
+              onClose={() => setInspectorOpen(false)}
+            >
               {selectedCall ? (
-                <span className={`status-pill ${statusClass(normalizeStatus(selectedCall))}`}>{statusSummary(selectedCall)}</span>
-              ) : (
-                <span className="panel-meta">{visibleTotal} total</span>
-              )}
-            </div>
-
-            {selectedCall ? (
-              <div className="tool-call-detail-stack">
-                {relations.length > 0 ? (
-                  <div className="feature-toolbar-actions compact-actions tool-call-relations">
-                    {relations.map((link) => (
-                      <Tooltip key={`${link.tab}-${link.value}`} content={link.tooltip}>
-                        <button className="admin-action-button compact" type="button" onClick={() => navigateToTab(link.tab)}>
-                          {relationButtonLabel(link)}
-                        </button>
-                      </Tooltip>
-                    ))}
-                  </div>
-                ) : null}
-
-                {stringField(selectedCall, "error_summary", "error") ? (
-                  <div className="callout error-callout">{stringField(selectedCall, "error_summary", "error")}</div>
-                ) : null}
-
-                {approvalDiagnostic ? <ToolCallApprovalDiagnosticSection diagnostic={approvalDiagnostic} /> : null}
-
-                <dl className="detail-list">
-                  <div>
-                    <span>Timestamp</span>
-                    <strong>{formatTimestamp(selectedCall.created_at)}</strong>
-                  </div>
-                  <div>
-                    <span>Status</span>
-                    <strong>{statusSummary(selectedCall)}</strong>
-                  </div>
-                  <div>
-                    <span>Duration</span>
-                    <strong>{formatDurationMs(selectedCall.duration_ms)}</strong>
-                  </div>
-                  <div>
-                    <span>Session</span>
-                    <strong>{stringField(selectedCall, "session_id") ?? "None"}</strong>
-                  </div>
-                  <div>
-                    <span>Role / actor</span>
-                    <strong>{normalizeActor(selectedCall)}</strong>
-                  </div>
-                  <div>
-                    <span>Directory</span>
-                    <strong>{stringField(selectedCall, "directory_path") ?? selectedDirectoryPath}</strong>
-                  </div>
-                  <div>
-                    <span>Tool</span>
-                    <strong>{selectedCall.tool_name}</strong>
-                  </div>
-                  {stringField(selectedCall, "connector_id") ? (
-                    <div>
-                      <span>Connector</span>
-                      <strong>
-                        {stringField(selectedCall, "connector_id")}.{stringField(selectedCall, "connector_operation") ?? "unknown"}
-                      </strong>
+                <div className="tool-call-detail-stack">
+                  {relations.length > 0 ? (
+                    <div className="feature-toolbar-actions compact-actions tool-call-relations">
+                      {relations.map((link) => (
+                        <Tooltip key={`${link.tab}-${link.value}`} content={link.tooltip}>
+                          <button
+                            className="admin-action-button compact"
+                            type="button"
+                            onClick={() => navigateToTab(link.tab)}
+                          >
+                            {relationButtonLabel(link)}
+                          </button>
+                        </Tooltip>
+                      ))}
                     </div>
                   ) : null}
-                  <div>
-                    <span>Request id</span>
-                    <strong>{stringField(selectedCall, "request_id") ?? "None"}</strong>
-                  </div>
-                  <div>
-                    <span>Correlation id</span>
-                    <strong>{stringField(selectedCall, "correlation_id") ?? "None"}</strong>
-                  </div>
-                  <div>
-                    <span>Approval request</span>
-                    <strong>{stringField(selectedCall, "approval_request_id") ?? "None"}</strong>
-                  </div>
-                  <div>
-                    <span>Workflow run</span>
-                    <strong>{stringField(selectedCall, "workflow_run_id") ?? stringField(selectedCall, "trace_id") ?? "None"}</strong>
-                  </div>
-                  <div>
-                    <span>Agent / VM</span>
-                    <strong>
-                      {stringField(selectedCall, "agent_id", "agent_session_id") ??
-                        stringField(selectedCall, "vm_id", "vm_name") ??
-                        "None"}
-                    </strong>
-                  </div>
-                </dl>
 
-                <div className="tool-call-json-grid">
-                  <ToolCallJsonField
-                    label="Arguments"
-                    value={jsonValue(selectedCall, "redacted_args", "args", "payload", "request_payload", "input")}
-                  />
-                  <ToolCallJsonField
-                    label="Result"
-                    value={jsonValue(selectedCall, "redacted_result", "result", "response", "output")}
-                  />
-                </div>
+                  {stringField(selectedCall, "error_summary", "error") ? (
+                    <div className="callout error-callout">{stringField(selectedCall, "error_summary", "error")}</div>
+                  ) : null}
 
-                <details className="raw-json-panel" open>
-                  <summary>Normalized metadata</summary>
-                  <p className="field-description">
-                    The fields below are the structured values surfaced by the audit log and the UI.
-                  </p>
+                  {approvalDiagnostic ? <ToolCallApprovalDiagnosticSection diagnostic={approvalDiagnostic} /> : null}
+
+                  <dl className="detail-list">
+                    <div>
+                      <span>Timestamp</span>
+                      <strong>{formatTimestamp(selectedCall.created_at)}</strong>
+                    </div>
+                    <div>
+                      <span>Status</span>
+                      <strong>{statusSummary(selectedCall)}</strong>
+                    </div>
+                    <div>
+                      <span>Duration</span>
+                      <strong>{formatDurationMs(selectedCall.duration_ms)}</strong>
+                    </div>
+                    <div>
+                      <span>Session</span>
+                      <strong>{stringField(selectedCall, "session_id") ?? "None"}</strong>
+                    </div>
+                    <div>
+                      <span>Role / actor</span>
+                      <strong>{normalizeActor(selectedCall)}</strong>
+                    </div>
+                    <div>
+                      <span>Directory</span>
+                      <strong>{stringField(selectedCall, "directory_path") ?? selectedDirectoryPath}</strong>
+                    </div>
+                    <div>
+                      <span>Tool</span>
+                      <strong>{selectedCall.tool_name}</strong>
+                    </div>
+                    {stringField(selectedCall, "connector_id") ? (
+                      <div>
+                        <span>Connector</span>
+                        <strong>
+                          {stringField(selectedCall, "connector_id")}.
+                          {stringField(selectedCall, "connector_operation") ?? "unknown"}
+                        </strong>
+                      </div>
+                    ) : null}
+                    <div>
+                      <span>Request id</span>
+                      <strong>{stringField(selectedCall, "request_id") ?? "None"}</strong>
+                    </div>
+                    <div>
+                      <span>Correlation id</span>
+                      <strong>{stringField(selectedCall, "correlation_id") ?? "None"}</strong>
+                    </div>
+                    <div>
+                      <span>Approval request</span>
+                      <strong>{stringField(selectedCall, "approval_request_id") ?? "None"}</strong>
+                    </div>
+                    <div>
+                      <span>Workflow run</span>
+                      <strong>
+                        {stringField(selectedCall, "workflow_run_id") ??
+                          stringField(selectedCall, "trace_id") ??
+                          "None"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Agent / VM</span>
+                      <strong>
+                        {stringField(selectedCall, "agent_id", "agent_session_id") ??
+                          stringField(selectedCall, "vm_id", "vm_name") ??
+                          "None"}
+                      </strong>
+                    </div>
+                  </dl>
+
                   <div className="tool-call-json-grid">
                     <ToolCallJsonField
-                      label="Metadata"
-                      value={{
-                        created_at: selectedCall.created_at,
-                        status: normalizeStatus(selectedCall),
-                        decision: stringField(selectedCall, "decision"),
-                        session_id: stringField(selectedCall, "session_id"),
-                        directory_path: stringField(selectedCall, "directory_path") ?? selectedDirectoryPath,
-                        duration_ms: selectedCall.duration_ms ?? null,
-                        tool_name: selectedCall.tool_name,
-                        connector_id: stringField(selectedCall, "connector_id"),
-                        connector_operation: stringField(selectedCall, "connector_operation"),
-                        request_id: stringField(selectedCall, "request_id"),
-                        correlation_id: stringField(selectedCall, "correlation_id"),
-                        approval_request_id: stringField(selectedCall, "approval_request_id"),
-                        workflow_run_id: stringField(selectedCall, "workflow_run_id"),
-                        trace_id: stringField(selectedCall, "trace_id"),
-                        role: stringField(selectedCall, "role"),
-                        agent_role: stringField(selectedCall, "agent_role"),
-                        actor_user_id: stringField(selectedCall, "actor_user_id"),
-                        vm_id: stringField(selectedCall, "vm_id"),
-                        vm_name: stringField(selectedCall, "vm_name"),
-                        agent_id: stringField(selectedCall, "agent_id"),
-                      }}
+                      label="Arguments"
+                      value={jsonValue(selectedCall, "redacted_args", "args", "payload", "request_payload", "input")}
                     />
-                    <ToolCallJsonField label="Raw event data" value={jsonValue(selectedCall, "metadata", "context", "raw_metadata")} />
+                    <ToolCallJsonField
+                      label="Result"
+                      value={jsonValue(selectedCall, "redacted_result", "result", "response", "output")}
+                    />
                   </div>
-                </details>
-              </div>
-            ) : (
-              <div className="empty-state">No tool call is selected.</div>
-            )}
-          </article>
+
+                  <details className="raw-json-panel" open>
+                    <summary>Normalized metadata</summary>
+                    <p className="field-description">
+                      The fields below are the structured values surfaced by the audit log and the UI.
+                    </p>
+                    <div className="tool-call-json-grid">
+                      <ToolCallJsonField
+                        label="Metadata"
+                        value={{
+                          created_at: selectedCall.created_at,
+                          status: normalizeStatus(selectedCall),
+                          decision: stringField(selectedCall, "decision"),
+                          session_id: stringField(selectedCall, "session_id"),
+                          directory_path: stringField(selectedCall, "directory_path") ?? selectedDirectoryPath,
+                          duration_ms: selectedCall.duration_ms ?? null,
+                          tool_name: selectedCall.tool_name,
+                          connector_id: stringField(selectedCall, "connector_id"),
+                          connector_operation: stringField(selectedCall, "connector_operation"),
+                          request_id: stringField(selectedCall, "request_id"),
+                          correlation_id: stringField(selectedCall, "correlation_id"),
+                          approval_request_id: stringField(selectedCall, "approval_request_id"),
+                          workflow_run_id: stringField(selectedCall, "workflow_run_id"),
+                          trace_id: stringField(selectedCall, "trace_id"),
+                          role: stringField(selectedCall, "role"),
+                          agent_role: stringField(selectedCall, "agent_role"),
+                          actor_user_id: stringField(selectedCall, "actor_user_id"),
+                          vm_id: stringField(selectedCall, "vm_id"),
+                          vm_name: stringField(selectedCall, "vm_name"),
+                          agent_id: stringField(selectedCall, "agent_id"),
+                        }}
+                      />
+                      <ToolCallJsonField
+                        label="Raw event data"
+                        value={jsonValue(selectedCall, "metadata", "context", "raw_metadata")}
+                      />
+                    </div>
+                  </details>
+                </div>
+              ) : (
+                <div className="empty-state">No tool call is selected.</div>
+              )}
+            </RecordInspector>
+          ) : null}
         </div>
       </section>
     </div>

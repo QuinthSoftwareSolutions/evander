@@ -35,6 +35,7 @@ from evander.worker.service import (
     _git_subprocess_env,
 )
 from evander.worker.models import (
+    WorkerFileWriteRequest,
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
     WorkerReferenceRepoPrepareRequest,
@@ -204,6 +205,164 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
                 configuration_version="1",
             ),
         )
+
+
+def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source-receipt"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / ".gitattributes").write_text("README.md filter=attacker\n", encoding="utf-8")
+    (source / "README.md").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitattributes", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=source, check=True)
+    commit_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    request = WorkerReferenceRepoPrepareRequest(
+        repo_source=str(source),
+        repo_name="repo",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        configuration_version="1",
+        update_existing=False,
+        preparation_fingerprint="b" * 64,
+    )
+
+    first = daemon.prepare_reference_repo("session-receipt", request)
+    checkout = (
+        tmp_path / "worker-root" / "sessions" / "session-receipt" / "agent_home" / "repos" / "repo"
+    )
+    filter_marker = tmp_path / "cached-filter-ran-on-host"
+    filter_program = tmp_path / "cached-filter.sh"
+    filter_program.write_text(
+        f"#!/bin/sh\nprintf ran > {filter_marker}\ncat\n",
+        encoding="utf-8",
+    )
+    filter_program.chmod(0o755)
+    subprocess.run(
+        ["git", "config", "extensions.worktreeConfig", "true"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--worktree", "filter.attacker.clean", str(filter_program)],
+        cwd=checkout,
+        check=True,
+    )
+    os.utime(checkout / "README.md", None)
+
+    cached_tip_request = request.model_copy(
+        update={
+            # The managed mirror can advance while refresh_upstream=false
+            # deliberately retains the worker's trusted checkout.
+            "commit_sha": "c" * 40,
+            "preparation_fingerprint": "d" * 64,
+        }
+    )
+    retained = daemon.prepare_reference_repo("session-receipt", cached_tip_request)
+    receipt = json.loads(
+        (
+            tmp_path
+            / "worker-root"
+            / "sessions"
+            / "session-receipt"
+            / "preparation-receipts"
+            / "reference-repo-repo.json"
+        ).read_text(encoding="utf-8")
+    )
+    reused = daemon.prepare_reference_repo("session-receipt", cached_tip_request)
+    subprocess.run(
+        ["git", "config", "--worktree", "--unset-all", "filter.attacker.clean"],
+        cwd=checkout,
+        check=True,
+    )
+    original_run = subprocess.run
+    injected_filter = False
+
+    def add_filter_after_local_config(
+        *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal injected_filter
+        command = args[0] if args else kwargs.get("args")
+        if command and command[:2] == ["git", "read-tree"]:
+            pytest.fail("warm reference checkout rebuilt its host-owned status index")
+        if not injected_filter and command == [
+            "git",
+            "-C",
+            str(checkout),
+            "config",
+            "--local",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process|required)$",
+        ]:
+            original_run(
+                ["git", "config", "--worktree", "filter.attacker.clean", str(filter_program)],
+                cwd=checkout,
+                check=True,
+            )
+            injected_filter = True
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", add_filter_after_local_config)
+    raced_reuse = daemon.prepare_reference_repo("session-receipt", cached_tip_request)
+    (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
+
+    assert first.preparation_reused is False
+    assert retained.preparation_reused is False
+    assert retained.commit_sha == commit_sha
+    assert reused.preparation_reused is True
+    assert raced_reuse.preparation_reused is True
+    assert receipt["requested_commit_sha"] == "c" * 40
+    assert receipt["checkout_commit_sha"] == commit_sha
+    assert injected_filter is True
+    assert not filter_marker.exists()
+    assert subprocess.run(
+        ["git", "config", "--worktree", "--get", "filter.attacker.clean"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == str(filter_program)
+    (checkout / "README.md").write_text("staged guest change\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "restore", "--source=HEAD", "--worktree", "README.md"],
+        cwd=checkout,
+        check=True,
+    )
+    assert (
+        subprocess.run(
+            ["git", "status", "--porcelain", "--", "README.md"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == "MM README.md\n"
+    )
+    with pytest.raises(ValueError, match="checkout is dirty"):
+        daemon.prepare_reference_repo("session-receipt", cached_tip_request)
+    subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=checkout, check=True)
+    with pytest.raises(ValueError, match="checkout is dirty"):
+        (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
+        daemon.prepare_reference_repo("session-receipt", cached_tip_request)
 
 
 @pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
@@ -1820,7 +1979,7 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
             }
         ],
         dependency_merge_author_name="Jonathan Quinth",
-        dependency_merge_author_email="operator@example.invalid",
+        dependency_merge_author_email="jonathan.quinth@exampleindustry.com",
     )
 
     prepared = daemon.prepare_task_worktree("session-1", request)
@@ -2017,7 +2176,7 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
         base_ref="main",
         dependency_git_sources=dependency_rows,
         dependency_merge_author_name="Jonathan Quinth",
-        dependency_merge_author_email="operator@example.invalid",
+        dependency_merge_author_email="jonathan.quinth@exampleindustry.com",
         dependency_composition_commit_message=("Compose accepted dependencies for task task-ui"),
     )
     prepared = daemon.prepare_task_worktree("session-1", request)
@@ -2044,7 +2203,7 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
         "Compose accepted dependencies for task task-ui",
         " ".join([base_commit, *dependency_commits]),
         "Jonathan Quinth",
-        "operator@example.invalid",
+        "jonathan.quinth@exampleindustry.com",
         "Evander Team Dependency Composer",
         "team-dependencies@evander.invalid",
     ]
@@ -4374,6 +4533,115 @@ def test_session_file_write_skips_identical_existing_content_and_mode(tmp_path: 
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
+def test_session_file_preparation_receipt_reuses_and_invalidates_on_guest_change(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    payload = {
+        "preparation_fingerprint": "a" * 64,
+        "files": [
+            {
+                "destination_path": "/home/agent/AGENTS.md",
+                "content": "# Agent\n",
+                "mode": "0644",
+            }
+        ],
+    }
+
+    first = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    second = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    target.write_text("guest changed\n", encoding="utf-8")
+    repaired = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+
+    assert first.json()["preparation_reused"] is False
+    assert second.json()["preparation_reused"] is True
+    assert repaired.json()["preparation_reused"] is False
+    assert repaired.json()["copied_count"] == 1
+    assert target.read_text(encoding="utf-8") == "# Agent\n"
+
+
+@pytest.mark.parametrize("race", ["replace", "delete", "chmod"])
+def test_session_file_preparation_receipt_requires_requested_postcondition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    race: str,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    daemon.prepare_session(WorkerSessionPrepareRequest(session_id="session-1"))
+    request = WorkerFileWriteRequest(
+        preparation_fingerprint="c" * 64,
+        files=[
+            {
+                "destination_path": "/home/agent/AGENTS.md",
+                "content": "# Agent\n",
+                "mode": "0644",
+            }
+        ],
+    )
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    original_write = daemon._write_container_file
+    raced = False
+
+    def write_then_race(**kwargs: Any) -> None:
+        nonlocal raced
+        original_write(**kwargs)
+        if raced:
+            return
+        raced = True
+        if race == "replace":
+            target.write_text("guest changed\n", encoding="utf-8")
+        elif race == "delete":
+            target.unlink()
+        else:
+            target.chmod(0o600)
+
+    monkeypatch.setattr(daemon, "_write_container_file", write_then_race)
+
+    first = daemon.write_files("session-1", request)
+    receipt = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "preparation-receipts"
+        / "files-managed.json"
+    )
+    assert not receipt.exists()
+    if race == "delete":
+        receipt.parent.mkdir(mode=0o700)
+        receipt.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "request_fingerprint": request.preparation_fingerprint,
+                    "observations": [{"path": "/home/agent/AGENTS.md", "missing": True}],
+                }
+            ),
+            encoding="utf-8",
+        )
+    second = daemon.write_files("session-1", request)
+    third = daemon.write_files("session-1", request)
+
+    assert first.preparation_reused is False
+    assert second.preparation_reused is False
+    assert second.copied_count == 1
+    assert third.preparation_reused is True
+    assert receipt.is_file()
+    assert target.read_text(encoding="utf-8") == "# Agent\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
 def test_session_file_write_merges_managed_section(tmp_path: Path) -> None:
     client = _client(tmp_path)
     prepared = client.post(
@@ -4455,9 +4723,9 @@ def test_session_file_write_removes_stale_managed_sections(tmp_path: Path) -> No
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         "# Base\n\n"
-        "<!-- evander-managed-section:truman-team-addon:begin -->\n"
+        "<!-- evander-managed-section:prior-team-addon:begin -->\n"
         "Old guidance\n"
-        "<!-- evander-managed-section:truman-team-addon:end -->\n\n"
+        "<!-- evander-managed-section:prior-team-addon:end -->\n\n"
         "<!-- evander-managed-section:evander-team-addon:begin -->\n"
         "Team guidance v1\n"
         "<!-- evander-managed-section:evander-team-addon:end -->\n",
@@ -4476,14 +4744,14 @@ def test_session_file_write_removes_stale_managed_sections(tmp_path: Path) -> No
                     "overwrite": True,
                     "merge_strategy": "managed_section",
                     "section_id": "evander-team-addon",
-                    "remove_section_ids": ["truman-team-addon"],
+                    "remove_section_ids": ["prior-team-addon"],
                 }
             ]
         },
     )
 
     assert replaced.status_code == 200
-    assert "truman-team-addon" not in target.read_text(encoding="utf-8")
+    assert "prior-team-addon" not in target.read_text(encoding="utf-8")
     assert "Team guidance v2" in target.read_text(encoding="utf-8")
 
 
@@ -4513,6 +4781,21 @@ def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
     assert response.status_code == 200
     assert response.text == "daily summary\n"
     assert escaped.status_code == 400
+
+
+@pytest.mark.parametrize("limit,status", [(4, 200), (3, 400), (0, 400), (-1, 400), ("bad", 400)])
+def test_session_artifact_text_endpoint_enforces_byte_limit(tmp_path, limit, status):
+    client = _client(tmp_path)
+    root = tmp_path / "worker-root" / "sessions" / "session-1" / "artifacts"
+    root.mkdir(parents=True)
+    (root / "report.txt").write_bytes("éé".encode())
+    response = client.get(
+        "/v1/sessions/session-1/artifacts/report.txt",
+        params={"max_bytes": limit}, headers=_auth(),
+    )
+    assert response.status_code == status
+    if status == 200:
+        assert response.text == "éé"
 
 
 def test_session_artifact_text_endpoint_rejects_symlink_leaf_inside_artifacts(
@@ -5072,18 +5355,18 @@ def test_session_repo_clone_clones_into_named_repo_under_agent_home(tmp_path: Pa
     first = client.post(
         "/v1/sessions/session-1/repo",
         headers=_auth(),
-        json={"repo_source": str(source), "repo_name": "ExampleIndustryAPP"},
+        json={"repo_source": str(source), "repo_name": "SampleApplication"},
     )
     second = client.post(
         "/v1/sessions/session-1/repo",
         headers=_auth(),
-        json={"repo_source": str(source), "repo_name": "ExampleIndustryAPP"},
+        json={"repo_source": str(source), "repo_name": "SampleApplication"},
     )
 
     assert first.status_code == 200
     assert first.json()["cloned"] is True
-    assert first.json()["target_dir"] == "/home/agent/repos/ExampleIndustryAPP"
-    assert first.json()["guest_repo_name"] == "ExampleIndustryAPP"
+    assert first.json()["target_dir"] == "/home/agent/repos/SampleApplication"
+    assert first.json()["guest_repo_name"] == "SampleApplication"
     assert second.status_code == 200
     assert second.json()["cloned"] is False
     checkout = (
@@ -5093,7 +5376,7 @@ def test_session_repo_clone_clones_into_named_repo_under_agent_home(tmp_path: Pa
         / "session-1"
         / "agent_home"
         / "repos"
-        / "ExampleIndustryAPP"
+        / "SampleApplication"
     )
     assert (checkout / "README.md").read_text(encoding="utf-8") == "hello\n"
 
@@ -5147,7 +5430,7 @@ def test_session_repo_clone_rejects_conflicting_non_empty_target(tmp_path: Path)
         / "session-1"
         / "agent_home"
         / "repos"
-        / "ExampleIndustryAPP"
+        / "SampleApplication"
     )
     conflict.mkdir(parents=True)
     (conflict / "README.md").write_text("not this repo\n", encoding="utf-8")
@@ -5155,7 +5438,7 @@ def test_session_repo_clone_rejects_conflicting_non_empty_target(tmp_path: Path)
     response = client.post(
         "/v1/sessions/session-1/repo",
         headers=_auth(),
-        json={"repo_source": str(source), "repo_name": "ExampleIndustryAPP"},
+        json={"repo_source": str(source), "repo_name": "SampleApplication"},
     )
 
     assert response.status_code == 400

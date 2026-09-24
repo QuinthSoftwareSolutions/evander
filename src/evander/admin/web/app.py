@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from evander.admin.web.website_sessions import website_session_routes
+from evander.admin.web.classification import classification_routes
 
 import argparse
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import json
+import logging
 import re
+import time
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -16,7 +19,7 @@ from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
-from starlette.routing import Mount, Route
+from starlette.routing import Match, Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from evander.addons import (
@@ -34,6 +37,7 @@ from evander.admin.web.frontend_assets import (
     admin_frontend_assets_ready,
     admin_frontend_dist_dir,
 )
+from evander.admin.web.ui_rollout import addon_rollout_routes, decorate_ui_html, selected_ui
 from evander.admin.web.git_repositories import git_repository_routes
 from evander.admin.web.repository_index import repository_index_routes
 from evander.admin.web.agents import agent_routes
@@ -81,6 +85,7 @@ _DEFAULT_BRANDING_ASSETS = {
     f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/qss-light.png": "qss-light.png",
     f"{ADMIN_WEB_BRANDING_ASSET_BASE_PATH}/qss-dark.png": "qss-dark.png",
 }
+logger = logging.getLogger(__name__)
 
 
 class AdminWebAddonServiceAdapter:
@@ -184,10 +189,12 @@ def _script_json(payload: object) -> str:
     )
 
 
-def _index_html(dist_dir: Path, *, branding_payload: dict[str, object]) -> str:
+def _index_html(
+    dist_dir: Path, *, branding_payload: dict[str, object], asset_root: Path | None = None
+) -> str:
     index_path = dist_dir / "index.html"
     page_title = str(branding_payload.get("page_title") or "")
-    if not admin_frontend_assets_ready(dist_dir):
+    if not admin_frontend_assets_ready(dist_dir, asset_root=asset_root, include_rollout=False):
         return _fallback_html(
             dist_dir,
             page_title=page_title,
@@ -270,6 +277,151 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return json_error("Authentication required", status_code=401)
             return await call_next(request)
         return await call_next(request)
+
+
+class AdminWebRequestTimingMiddleware:
+    """Log response latency, not successful SSE subscription lifetime."""
+
+    def __init__(self, app, *, routes: list[Any], slow_request_threshold_ms: int) -> None:
+        self.app = app
+        self.routes = routes
+        self.slow_request_threshold_ms = slow_request_threshold_ms
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        started_at = time.perf_counter()
+        request_scope = dict(scope)
+        status_code: int | None = None
+        response_start_ms: int | None = None
+        first_body_ms: int | None = None
+        event_stream = False
+        startup_logged = False
+        failed = False
+
+        def elapsed_ms() -> int:
+            return max(0, int((time.perf_counter() - started_at) * 1000))
+
+        def log_timing(duration_ms: int, *, phase: str) -> None:
+            route = self._route_template_for_scope(request_scope, self.routes)
+            logger.warning(
+                "admin_web_request_timing method=%s route=%s status=%s duration_ms=%s "
+                "slow=%s response_start_ms=%s first_body_ms=%s total_ms=%s "
+                "event_stream=%s failed=%s phase=%s",
+                scope.get("method", ""),
+                route,
+                status_code if status_code is not None else 500,
+                duration_ms,
+                duration_ms >= self.slow_request_threshold_ms,
+                response_start_ms,
+                first_body_ms,
+                elapsed_ms(),
+                event_stream,
+                failed,
+                phase,
+            )
+
+        async def send_with_status(message) -> None:
+            nonlocal status_code, response_start_ms, first_body_ms, event_stream, startup_logged
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+                response_start_ms = elapsed_ms()
+                event_stream = any(
+                    key.lower() == b"content-type"
+                    and value.lower().split(b";", 1)[0].strip() == b"text/event-stream"
+                    for key, value in message.get("headers", [])
+                )
+            elif message["type"] == "http.response.body" and first_body_ms is None:
+                if message.get("body") or not message.get("more_body", False):
+                    first_body_ms = elapsed_ms()
+            await send(message)
+            if (
+                event_stream
+                and first_body_ms is not None
+                and not startup_logged
+                and first_body_ms >= self.slow_request_threshold_ms
+            ):
+                log_timing(first_body_ms, phase="stream_start")
+                startup_logged = True
+
+        try:
+            await self.app(scope, receive, send_with_status)
+        except Exception:
+            failed = True
+            raise
+        finally:
+            total_ms = elapsed_ms()
+            duration_ms = (
+                first_body_ms if event_stream and first_body_ms is not None else total_ms
+            )
+            response_status = status_code if status_code is not None else 500
+            is_slow = duration_ms >= self.slow_request_threshold_ms
+            if failed or response_status >= 500 or (is_slow and not startup_logged):
+                log_timing(duration_ms, phase="stream_end" if event_stream else "response")
+
+    @classmethod
+    def _route_template_for_scope(
+        cls,
+        scope: dict[str, Any],
+        routes: list[Any],
+        *,
+        prefix: str = "",
+    ) -> str:
+        partial_match: tuple[Any, dict[str, Any]] | None = None
+        for route in routes:
+            match, child_scope = route.matches(scope)
+            if match == Match.FULL:
+                return cls._matched_route_template(
+                    scope,
+                    route,
+                    child_scope,
+                    prefix=prefix,
+                )
+            if match == Match.PARTIAL and partial_match is None:
+                partial_match = (route, child_scope)
+        if partial_match is not None:
+            route, child_scope = partial_match
+            return cls._matched_route_template(
+                scope,
+                route,
+                child_scope,
+                prefix=prefix,
+            )
+        return "<unmatched>"
+
+    @classmethod
+    def _matched_route_template(
+        cls,
+        scope: dict[str, Any],
+        route: Any,
+        child_scope: dict[str, Any],
+        *,
+        prefix: str,
+    ) -> str:
+        route_path = getattr(route, "path", None)
+        if not isinstance(route_path, str):
+            return "<unmatched>"
+        full_path = cls._join_route_path(prefix, route_path)
+        nested_routes = getattr(route, "routes", None)
+        if isinstance(nested_routes, list) and nested_routes:
+            nested_scope = dict(scope)
+            nested_scope.update(child_scope)
+            nested_template = cls._route_template_for_scope(
+                nested_scope,
+                nested_routes,
+                prefix=full_path,
+            )
+            if nested_template != "<unmatched>":
+                return nested_template
+        return full_path
+
+    @staticmethod
+    def _join_route_path(prefix: str, route_path: str) -> str:
+        if not prefix or prefix == "/":
+            return route_path if route_path.startswith("/") else f"/{route_path}"
+        return f"{prefix.rstrip('/')}/{route_path.lstrip('/')}"
 
 
 class AdminWebStaticFiles(StaticFiles):
@@ -555,10 +707,13 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             }
         )
 
-    async def index(_: Request) -> Response:
+    async def index(request: Request) -> Response:
+        version = selected_ui(request)
+        selected_dist = dist_dir / "classic" if version == "classic" else dist_dir
+        html = _index_html(selected_dist, branding_payload=branding_payload(), asset_root=dist_dir)
         return HTMLResponse(
-            _index_html(dist_dir, branding_payload=branding_payload()),
-            headers={"Cache-Control": _HTML_CACHE_CONTROL},
+            decorate_ui_html(html, version),
+            headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
         )
 
     routes = [
@@ -597,6 +752,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(discord_webhook_routes(service, auth))
     routes.extend(host_directory_routes(service, auth))
     routes.extend(website_session_routes(service, auth))
+    routes.extend(classification_routes(service, auth))
     routes.extend(capacity_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
@@ -641,7 +797,10 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             routes.append(Mount(f"/api/addons/{addon.addon_id}", routes=list(api_routes)))
         ui_routes = resolve_addon_admin_ui_routes(addon, context)
         if ui_routes:
-            routes.append(Mount(f"/addons/{addon.addon_id}", routes=list(ui_routes)))
+            routes.append(Mount(
+                f"/addons/{addon.addon_id}",
+                routes=addon_rollout_routes(addon.addon_id, ui_routes, dist_dir, auth),
+            ))
     if dist_dir.exists():
         routes.append(Route("/", index, methods=["GET"]))
         routes.append(Route("/index.html", index, methods=["GET"]))
@@ -663,6 +822,11 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     app.state.dashboard_cache = dashboard_cache
     app.state.addon_catalog = addon_catalog
     app.add_middleware(AuthMiddleware, auth=auth)
+    app.add_middleware(
+        AdminWebRequestTimingMiddleware,
+        routes=app.router.routes,
+        slow_request_threshold_ms=auth.config.slow_request_threshold_ms,
+    )
     return app
 
 

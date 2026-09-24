@@ -163,11 +163,9 @@ def _submit(env, lease, *, queued_activation=False):
         env.hook.on_post_completion_dispatch(worker=env.worker)
     else:
         _activate_delivered_team_prompt(
-            None,
             repo=env.repo,
             dispatch_id=lease["dispatch_id"],
             result_payload=result.model_dump(),
-            mirror_session_metadata=False,
         )
     records = env.worker.execution_store.list_waiting_records("effect:agent:enqueue-prompt")
     record = next(row for row in records if row.outputs["dispatch_id"] == lease["dispatch_id"])
@@ -540,6 +538,23 @@ def _seed_historical_native_receipts(env, count):
         return state
 
     env.repo.update(seed)
+    # Recovery now queries receipts by immutable dispatch ID. Keep these in the
+    # actual execution repository so the indexed path, not a global scan stub,
+    # is exercised.
+    template_record = env.worker.execution_store.list_executions()[0]
+    for receipt in receipts:
+        raw = _receipt_record(receipt)
+        env.worker.execution_store.record_execution(
+            template_record.model_copy(
+                update={
+                    "execution_id": raw.execution_id,
+                    "idempotency_key": raw.execution_id,
+                    "status": raw.status,
+                    "finished_at": raw.finished_at,
+                    "outputs": raw.outputs,
+                }
+            )
+        )
     return receipts
 
 
@@ -564,7 +579,7 @@ def test_historical_native_reconciliation_is_batched_restart_safe_and_eventually
     limit = TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE
     receipts = _seed_historical_native_receipts(env, 2 * limit + 5)
     monkeypatch.setattr(
-        "evander_team_addon.providers._completed_agent_prompt_records",
+        "evander_team_addon.provider_prompt_queue._completed_agent_prompt_records",
         lambda worker: [_receipt_record(receipt) for receipt in receipts],
     )
     transactions = []
@@ -575,19 +590,29 @@ def test_historical_native_reconciliation_is_batched_restart_safe_and_eventually
         return update_state(store, *args, **kwargs)
 
     monkeypatch.setattr(TeamStateSqliteStore, "update_state", track_update)
-    # A fresh hook/repository on every pass also models a restart between batches.
-    for expected_count, expected_transactions in [
-        (limit, 1), (2 * limit, 1), (len(receipts), 1), (len(receipts), 0)
-    ]:
+    # Candidate pages use a cooperative time/item budget. Restart once during
+    # recovery: already persisted observations must not be rewritten or lost.
+    hook = TeamAgentPromptCompletionFinalizeHook()
+    previous_count = 0
+    for attempt in range(100):
         transactions.clear()
-        hook = TeamAgentPromptCompletionFinalizeHook()
+        if attempt == 2:
+            hook = TeamAgentPromptCompletionFinalizeHook()
         assert hook.on_post_completion_dispatch(worker=env.worker) == 0
         state = env.repo.read()
         recorded = sum(
             state.dispatches[r.dispatch_id].native_thread_id is not None for r in receipts
         )
-        assert recorded == expected_count
-        assert len(transactions) == expected_transactions
+        assert previous_count <= recorded <= previous_count + 50
+        assert len(transactions) == recorded - previous_count
+        previous_count = recorded
+        if recorded == len(receipts):
+            break
+    assert recorded == len(receipts)
+    transactions.clear()
+    for _ in range(5):
+        hook.on_post_completion_dispatch(worker=env.worker)
+    assert transactions == []
 
 
 def test_native_reconciliation_prioritizes_active_completion_over_history(native_env, monkeypatch):
@@ -600,13 +625,13 @@ def test_native_reconciliation_prioritizes_active_completion_over_history(native
     assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=env.worker) == 1
     completed = env.worker.execution_store.get_execution(record.execution_id)
     monkeypatch.setattr(
-        "evander_team_addon.providers._completed_agent_prompt_records",
+        "evander_team_addon.provider_prompt_queue._completed_agent_prompt_records",
         lambda worker: [*map(_receipt_record, receipts), completed],
     )
     monkeypatch.setattr(
         "evander_team_addon.services.runtime_service.TEAM_NATIVE_THREAD_RECONCILIATION_BATCH_SIZE", 1
     )
-    assert env.hook.on_post_completion_dispatch(worker=env.worker) == 1
+    env.hook.on_prompt_execution_changed(worker=env.worker, record=completed)
     state = env.repo.read()
     assert state.dispatches[lease["dispatch_id"]].native_thread_id == NATIVE_A
     assert state.agent_runtimes["backend"].active_dispatch_id is None
@@ -690,9 +715,20 @@ def test_workflow_finalizer_preserves_lineage_when_33rd_active_receipt_is_deferr
     job.status = ExecutionStatusKind.STOPPED
     assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=env.worker) == 1
     monkeypatch.setattr(
-        "evander_team_addon.providers._waiting_agent_prompt_records", lambda worker: waiting
+        "evander_team_addon.provider_prompt_queue._waiting_agent_prompt_records", lambda worker: waiting
     )
-    assert env.hook.on_post_completion_dispatch(worker=env.worker) == 0
+    # Exercise the unchanged transactional batch guard directly: an independent
+    # finalizer must still preserve the deferred 33rd receipt before release.
+    completed = env.worker.execution_store.get_execution(record.execution_id)
+    assert (
+        env.hook._reconcile_selected_completion(
+            worker=env.worker,
+            repo=env.repo,
+            dispatch_ids={r.outputs["dispatch_id"] for r in [*waiting, completed]},
+            records=[*waiting, completed],
+        )
+        == 0
+    )
     state = env.repo.read()
     assert sum(d.native_thread_id is not None for d in state.dispatches.values()) == 32
     assert state.dispatches[lease["dispatch_id"]].native_thread_id is None

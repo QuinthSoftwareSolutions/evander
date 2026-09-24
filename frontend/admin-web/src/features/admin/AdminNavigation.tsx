@@ -157,7 +157,7 @@ export function AdminNavigation({
       if (!(event.ctrlKey || event.metaKey) || event.key.toLocaleLowerCase() !== "k") {
         return;
       }
-      if (!quickNavigatorOpen && document.querySelector('[role="dialog"][aria-modal="true"]')) {
+      if (!quickNavigatorOpen && document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]')) {
         return;
       }
       event.preventDefault();

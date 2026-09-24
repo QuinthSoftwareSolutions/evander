@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from evander.admin.composition import AdminRuntimeComponents
-from evander.admin.web.cache import AdminWebJsonResponseCache
+from evander.admin.web.cache import AdminWebJsonResponseCache, _request_bypasses_cache
 from evander.admin.web.shared import AdminWebAuth, json_error
 
 
@@ -31,9 +31,12 @@ def capacity_routes(
     _auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
-    async def get_capacity_health(_: Request) -> JSONResponse:
+    async def get_capacity_health(request: Request) -> JSONResponse:
         try:
-            payload = await run_in_threadpool(service.capacity_health_admin.read_capacity_health)
+            kwargs = {"refresh": True} if _request_bypasses_cache(request) else {}
+            payload = await run_in_threadpool(
+                service.capacity_health_admin.read_capacity_health, **kwargs
+            )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         except Exception as exc:

@@ -49,6 +49,7 @@ from evander_team_addon.models import (
     TeamRecordState,
     TeamRole,
     TeamState,
+    TeamTaskKind,
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateRepository
@@ -1367,6 +1368,7 @@ def test_changes_requested_replay_has_exact_consequences_and_no_publication(
     case = correction_cases[0]
     assert len(case.task_ids) == 3
     aggregation_task_id = case.metadata["human_correction_aggregation_task_id"]
+    assert first_state.tasks[aggregation_task_id].task_kind == TeamTaskKind.COORDINATION
     assert {first_state.tasks[task_id].owner_agent_id for task_id in case.task_ids} == {
         "lead",
         "owner",

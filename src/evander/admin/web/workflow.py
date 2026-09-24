@@ -404,27 +404,24 @@ def _graph_directories_from_payload(
     fallback_graphs: list[Any] | None = None,
 ) -> tuple[str, ...]:
     graphs_payload = payload.get("graphs")
-    submitted_graphs = service.workflow_config_admin.coerce_workflow_editor_graphs(
-        graphs_payload,
-        strict=False,
+    graphs_were_submitted = isinstance(graphs_payload, list)
+    graph_source = (
+        graphs_payload
+        if graphs_were_submitted
+        else [
+            graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
+            for graph in (fallback_graphs or [])
+        ]
+    )
+    normalized_graphs = service.workflow_config_admin.normalize_workflow_editor_graphs_for_config(
+        config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
+        graphs=graph_source,
+        strict=graphs_were_submitted,
     )
     directories = _graph_directory_paths(
-        [graph.model_dump(mode="json") for graph in submitted_graphs]
+        [graph.model_dump(mode="json") for graph in normalized_graphs]
     )
-    if directories:
-        return directories
-    if graphs_payload is None or (isinstance(graphs_payload, list) and len(graphs_payload) == 0):
-        fallback = fallback_graphs or []
-        fallback_directories = _graph_directory_paths(
-            [
-                graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
-                for graph in fallback
-            ]
-        )
-        if fallback_directories:
-            return fallback_directories
-        return ("root",)
-    return ()
+    return directories or ("root",)
 
 
 async def workflow_run_events(
@@ -436,17 +433,15 @@ async def workflow_run_events(
     journal = service.workflow_config_admin.workflow_event_journal()
     cursor = journal.cursor()
 
-    async def snapshot_event() -> tuple[str, str] | None:
-        if await request.is_disconnected():
-            return None
+    def build_snapshot_event() -> tuple[str, str]:
         try:
             snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
             if auth is None:
                 payload = json.dumps(snapshot.model_dump(mode="json"))
             else:
                 document = service.workflow_config_admin.read_composed_workflow_editor_document()
-                _, readable_graphs, readable_node_ids = _workflow_run_graphs_for_document(
-                    service, auth, request
+                readable_graphs, readable_node_ids = _require_workflow_run_read_access(
+                    auth=auth, request=request, graphs=document.graphs
                 )
                 if not document.graphs:
                     payload = json.dumps(snapshot.model_dump(mode="json"))
@@ -490,6 +485,11 @@ async def workflow_run_events(
         )
         return state_key, f"event: snapshot\ndata: {payload}\n\n"
 
+    async def snapshot_event() -> tuple[str, str] | None:
+        if await request.is_disconnected():
+            return None
+        return await run_in_threadpool(build_snapshot_event)
+
     first = await snapshot_event()
     if first is None:
         return
@@ -519,7 +519,7 @@ def workflow_routes(
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[Route]:
-    async def get_document(request: Request) -> JSONResponse:
+    def build_document_response(request: Request) -> JSONResponse:
         try:
             requested_workflow_pack = request.query_params.get("workflow_pack")
             if requested_workflow_pack is None:
@@ -575,7 +575,10 @@ def workflow_routes(
             )
         )
 
-    async def get_catalog(request: Request) -> JSONResponse:
+    async def get_document(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_document_response, request)
+
+    def build_catalog_response(request: Request) -> JSONResponse:
         try:
             directory_path = service.teams_admin.normalize_directory_reference(
                 request.query_params.get("directory_path") or "root"
@@ -592,6 +595,9 @@ def workflow_routes(
         except PermissionError as exc:
             return json_error(str(exc), status_code=403)
         return JSONResponse(catalog.model_dump(mode="json"))
+
+    async def get_catalog(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_catalog_response, request)
 
     async def get_target_catalog(request: Request) -> JSONResponse:
         try:
@@ -635,7 +641,7 @@ def workflow_routes(
             }
         )
 
-    async def get_runs(request: Request) -> JSONResponse:
+    def build_runs_response(request: Request) -> JSONResponse:
         try:
             document = service.workflow_config_admin.read_composed_workflow_editor_document()
             snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
@@ -654,6 +660,9 @@ def workflow_routes(
             return json_error(str(exc))
         except PermissionError as exc:
             return json_error(str(exc), status_code=403)
+
+    async def get_runs(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_runs_response, request)
 
     async def get_run_search(request: Request) -> JSONResponse:
         query = request.query_params
@@ -968,7 +977,7 @@ def workflow_routes(
             auth.require(request)
             payload = await json_body(request)
             fallback_graphs = None
-            if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
+            if not isinstance(payload.get("graphs"), list):
                 fallback_graphs = service.workflow_config_admin.read_workflow_editor_document(
                     workflow_pack=(
                         str(payload.get("workflow_pack"))
@@ -1145,7 +1154,7 @@ def workflow_routes(
             session = auth.require(request)
             payload = await json_body(request)
             fallback_graphs = None
-            if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
+            if not isinstance(payload.get("graphs"), list):
                 fallback_graphs = service.workflow_config_admin.read_workflow_editor_document(
                     workflow_pack=(
                         str(payload.get("workflow_pack"))
@@ -1164,7 +1173,8 @@ def workflow_routes(
             if not request_has_privileged_operations(auth=auth, service=service, request=request):
                 return json_error("Privileged operations are locked.", status_code=403)
             expected_revision = expected_revision_from_payload(payload)
-            save_result = service.workflow_config_admin.save_workflow_editor_document(
+            save_result = await run_in_threadpool(
+                service.workflow_config_admin.save_workflow_editor_document,
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
                 graphs=payload.get("graphs") if isinstance(payload.get("graphs"), list) else None,

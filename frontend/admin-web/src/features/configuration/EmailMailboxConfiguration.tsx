@@ -1,3 +1,4 @@
+import { RecordCollection } from "../admin/RecordCollection";
 import {
   encodeStringListDraftValue,
   parseStringListDraftValue,
@@ -142,11 +143,15 @@ export function EmailMailboxesEditor({
       {parsed.error ? (
         <div className="callout error-callout">Email mailbox draft could not be read: {parsed.error}</div>
       ) : null}
-      {!parsed.error && entries.length === 0 ? (
-        <div className="empty-state">No email mailboxes are configured for this override.</div>
-      ) : null}
-      {!parsed.error
-        ? entries.map((mailbox, mailboxIndex) => {
+      {!parsed.error ? <RecordCollection label="Email mailboxes" entries={entries}
+        name={(mailbox, index) => mailbox.mailboxId.trim() || `Mailbox ${index + 1}`}
+        description={mailbox => mailbox.accountIdentifier}
+        searchText={mailbox => [mailbox.provider, ...mailbox.folders.map(folder => folder.folder)].join(" ")}
+        category={mailbox => mailbox.provider}
+        metadata={mailbox => <><span className="record-provider">{mailbox.provider}</span><span>{mailbox.folders.length} folders</span></>}
+        isNew={mailbox => !mailbox.mailboxId.trim()}
+      >
+        {(mailbox, mailboxIndex) => {
             const accountLabel = mailbox.provider === "graph"
               ? "Mailbox address"
               : mailbox.provider === "gmail"
@@ -388,8 +393,8 @@ export function EmailMailboxesEditor({
                 </div>
               </div>
             );
-          })
-        : null}
+          }}
+      </RecordCollection> : null}
     </div>
   );
 }

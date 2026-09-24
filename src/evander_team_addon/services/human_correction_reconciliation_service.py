@@ -16,6 +16,7 @@ from ..models import (
     TeamInboxPriority,
     TeamRecordState,
     TeamDispatchStatus,
+    TeamTaskKind,
     TeamTaskState,
     TaskDeliverableContract,
     project_lead_agent_id,
@@ -32,6 +33,7 @@ from .domain.blockers import (
 from .domain.human_reviews import (
     HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY,
     HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY,
+    _upgrade_system_human_review_coordination_task,
     ensure_human_correction_aggregation,
 )
 from .domain.release_packages import (
@@ -226,6 +228,13 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
         return False
     findings = _case_findings(state, case)
     successors = _successors(state, predecessor.id)
+    parent = state.tasks.get(_coordination_parent_id(case) or "")
+    if (
+        parent is not None
+        and parent.created_by_actor == "system:human-review"
+        and parent.task_kind == TeamTaskKind.SUPPORT
+    ):
+        return True
     if successors:
         if case.status not in _TERMINAL_CORRECTION_CASE_STATUSES:
             return True
@@ -238,8 +247,9 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
             for successor in successors
         ):
             return True
-        parent = state.tasks.get(_coordination_parent_id(case) or "")
         return parent is not None and parent.state not in _TERMINAL_COORDINATION_PARENT_STATES
+    if case.metadata.get("human_correction_graph_version") != 2:
+        return True
     if any(
         blocker.reason_code == "human_correction_aggregation_failed"
         for blocker in active_blockers_for_source(
@@ -636,7 +646,19 @@ def _reconcile_case(
                 or migrated
             )
         parent = state.tasks.get(_coordination_parent_id(case) or "")
-        changed = _finish_coordination_parent(parent, now=now) if parent is not None else False
+        changed = False
+        if parent is not None and _upgrade_system_human_review_coordination_task(
+            parent,
+            now=now,
+        ):
+            result.setdefault("migrated_coordination_task_ids", []).append(parent.id)
+            changed = True
+        if parent is not None:
+            changed = _finish_coordination_parent(parent, now=now) or changed
+        if case.metadata.get("human_correction_graph_version") != 2:
+            case.metadata["human_correction_graph_version"] = 2
+            case.updated_at = now
+            changed = True
         resolved = _resolve_correction_case(
             state,
             case=case,
@@ -649,6 +671,7 @@ def _reconcile_case(
         return changed or migrated or resolved
     before_created = set(result.get("created_task_ids") or [])
     before_reparented = set(result.get("reparented_correction_task_ids") or [])
+    before_migrated = set(result.get("migrated_coordination_task_ids") or [])
     try:
         parent = ensure_human_correction_aggregation(
             state,
@@ -668,10 +691,15 @@ def _reconcile_case(
         return True
     created_task_ids = set(result.get("created_task_ids") or [])
     reparented_task_ids = set(result.get("reparented_correction_task_ids") or [])
+    migrated_task_ids = set(result.get("migrated_coordination_task_ids") or [])
     newly_created = sorted(created_task_ids - before_created)
     if parent.id in newly_created:
         result.setdefault("created_coordination_task_ids", []).append(parent.id)
-    changed = bool(newly_created or reparented_task_ids - before_reparented)
+    changed = bool(
+        newly_created
+        or reparented_task_ids - before_reparented
+        or migrated_task_ids - before_migrated
+    )
     if not findings:
         return changed
     configured_ambiguous_finding_ids = {

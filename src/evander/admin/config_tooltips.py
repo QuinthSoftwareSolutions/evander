@@ -430,7 +430,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "inbound_phone_routes": (
         "Fixed inbound DID or called-number routes that map a caller policy and projection "
-        "prompt to an existing Truman session. Caller and number fields are normalized and "
+        "prompt to an existing Evander session. Caller and number fields are normalized and "
         "stored host-side only."
     ),
     "contacts": (

@@ -302,6 +302,7 @@ def test_contracted_leaf_can_flow_through_operator_configured_review_primitives(
     assert payload["task"]["deliverable_contract"] == {
         "require_git_provenance": False,
         "required_contribution_task_ids": [],
+        "pinned_source_deliverable_ids": [],
     }
 
     effect = TeamCreateReviewCohortEffectProvider()

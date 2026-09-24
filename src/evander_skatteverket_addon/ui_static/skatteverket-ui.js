@@ -1,3 +1,5 @@
+import { onAddonPrivileges } from "./admin-design.js";
+
 (function () {
   const apiBase = "/api/addons/skatteverket-addon";
   const connectionEl = document.getElementById("connection");
@@ -8,8 +10,17 @@
   const connectionForm = document.getElementById("connection-form");
   const apiPickerEl = document.getElementById("api-picker");
   const formStatusEl = document.getElementById("connection-form-status");
-  const saveConnectionButton = document.getElementById("save-connection");
   let catalogApis = [];
+  let privilegedUnlocked = false;
+  let saving = false;
+  const lockedMessage = "Unlock privileged operations in Admin Web to edit Skatteverket connections.";
+  function applyPrivileges() {
+    connectionForm.querySelectorAll('input, select, button').forEach(control => {
+      control.disabled = saving || !privilegedUnlocked;
+      control.title = privilegedUnlocked ? '' : lockedMessage;
+    });
+    document.getElementById('privilege-notice').hidden = privilegedUnlocked;
+  }
 
   function row(title, detail) {
     const item = document.createElement("div");
@@ -121,7 +132,9 @@
 
   async function saveConnection(event) {
     event.preventDefault();
-    saveConnectionButton.disabled = true;
+    if (!privilegedUnlocked || saving) { setFormStatus(lockedMessage, "error"); return; }
+    saving = true;
+    applyPrivileges();
     setFormStatus("Saving...", "pending");
     try {
       const response = await fetch(`${apiBase}/connections`, {
@@ -139,7 +152,8 @@
     } catch (error) {
       setFormStatus(String(error), "error");
     } finally {
-      saveConnectionButton.disabled = false;
+      saving = false;
+      applyPrivileges();
     }
   }
 
@@ -154,6 +168,7 @@
       catalogApis = catalog.apis || [];
       connectionEl.textContent = JSON.stringify(status, null, 2);
       populateConnectionForm((state.connections || [])[0], catalogApis);
+      applyPrivileges();
       renderList(catalogEl, catalogApis, "No APIs", (item) => ({
         title: item.display_name || item.name,
         detail: `${item.name} · ${item.version} · ${(item.implemented_operations || []).join(", ") || "configured later"}`,
@@ -179,5 +194,6 @@
 
   refreshButton.addEventListener("click", load);
   connectionForm.addEventListener("submit", saveConnection);
+  onAddonPrivileges(unlocked => { privilegedUnlocked=unlocked;applyPrivileges(); });
   load();
 })();

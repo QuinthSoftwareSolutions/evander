@@ -93,6 +93,7 @@ class TeamCommandExecutor:
         git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
         git_candidate_snapshot_pinner: Callable[..., Mapping[str, Any]] | None = None,
         git_default_branch_resolver: Callable[..., object] | None = None,
+        git_base_commit_resolver: Callable[..., object] | None = None,
         dependency_recovery_commit_verifier: (DependencyRecoveryCommitVerifier | None) = None,
     ) -> None:
         self._repository = repository
@@ -100,6 +101,7 @@ class TeamCommandExecutor:
         self._git_candidate_commit_resolver = git_candidate_commit_resolver
         self._git_candidate_snapshot_pinner = git_candidate_snapshot_pinner
         self._git_default_branch_resolver = git_default_branch_resolver
+        self._git_base_commit_resolver = git_base_commit_resolver
         self._dependency_recovery_commit_verifier = dependency_recovery_commit_verifier
 
     @property
@@ -119,6 +121,10 @@ class TeamCommandExecutor:
     @property
     def git_default_branch_resolver(self) -> Callable[..., object] | None:
         return self._git_default_branch_resolver
+
+    @property
+    def git_base_commit_resolver(self) -> Callable[..., object] | None:
+        return self._git_base_commit_resolver
 
     @property
     def dependency_recovery_commit_verifier(
@@ -1101,6 +1107,7 @@ _STAND_DOWN_DISPATCH_COMPLETION_TOOLS = frozenset(
 )
 _PROJECT_SCOPE_TOOLS = frozenset(
     {
+        "team_reintegrate_release",
         "team_create_task",
         "team_create_task_for_role",
         "team_create_tasks",

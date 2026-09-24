@@ -67,7 +67,7 @@ def _state_with_hierarchy(*, child_count: int = 1) -> TeamState:
         owner_agent_id="parent-owner",
         project_id="project",
         priority=1,
-        task_kind=TeamTaskKind.SUPPORT,
+        task_kind=TeamTaskKind.COORDINATION,
         title="Integrate children",
         description="Combine the constituent results.",
         created_by_actor="operator:test",
@@ -389,7 +389,38 @@ def test_child_resolution_coalesces_and_emits_integration_ready_transition() -> 
     assert resolution.payload["child_task_ids"] == ["child-1", "child-2"]
     assert integration_ready.payload["parent_task_id"] == "parent"
     assert integration_ready.payload["child_task_ids"] == ["child-2"]
+    assert "fresh top-level integration boundary" in integration_ready.payload["next_action"]
+    assert "originating_task_id set to coordination task parent" in integration_ready.payload[
+        "next_action"
+    ]
     assert state.agent_runtimes["parent-owner"].next_wake_at is None
+
+
+def test_system_human_review_coordination_suppresses_manual_integration_transition() -> None:
+    state = _state_with_hierarchy()
+    parent = state.tasks["parent"]
+    parent.created_by_actor = "system:human-review"
+    child = state.tasks["child-1"]
+    deliverable = Deliverable(
+        id="deliverable-human-correction",
+        task_id=child.id,
+        producer_agent_id="child-owner",
+        summary="Corrected rejected candidate",
+        state=TeamRecordState.PENDING,
+    )
+    state.deliverables[deliverable.id] = deliverable
+    child.deliverable_ids = [deliverable.id]
+
+    assert _accept_deliverable_and_maybe_task(
+        state,
+        deliverable=deliverable,
+        task=child,
+        now=utc_now(),
+    )
+
+    assert {item.payload.get("transition") for item in _pending_for(state, "parent-owner")} == {
+        "resolution"
+    }
 
 
 def test_final_review_acceptance_emits_parent_wake_event() -> None:

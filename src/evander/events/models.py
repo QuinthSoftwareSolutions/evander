@@ -13,6 +13,7 @@ from pydantic import (
 )
 from typing_extensions import TypeAliasType
 
+from evander.classification.switch import ClassifierSwitchConfig
 from evander.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from evander.workflow.contracts import (
     EdgeDefinition as EdgeDefinition,
@@ -111,6 +112,10 @@ class GateWhileDefinition(GateDefinition):
         if self.outputs is None:
             self.outputs = effective_node_output_schema(self)
         return self
+
+
+class GateClassifierSwitchDefinition(GateDefinition, ClassifierSwitchConfig):
+    type: Literal["gate:classifier:switch"]
 
 
 class GateSwitchCaseDefinition(BaseModel):
@@ -575,6 +580,10 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
     from evander.events import provider_models
 
     models_by_type: dict[str, type[BaseModel]] = {
+        "query:ado:builds": provider_models.AdoBuildsQueryDefinition,
+        "query:text:regex": provider_models.TextRegexQueryDefinition,
+        "effect:ado:build-wait": provider_models.AdoBuildWaitEffectDefinition,
+        "effect:agent:install-skills": provider_models.AgentInstallSkillsEffectDefinition,
         "trigger:event": provider_models.EventTriggerDefinition,
         "trigger:agent:artifact-staged": provider_models.AgentArtifactStagedTriggerDefinition,
         "trigger:http:webhook": provider_models.WebhookTriggerDefinition,
@@ -612,6 +621,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:agent:prompt:new": provider_models.AgentPromptNewTriggerDefinition,
         "gate:filter": GateFilterDefinition,
         "gate:switch": GateSwitchDefinition,
+        "gate:classifier:switch": GateClassifierSwitchDefinition,
         "gate:validate": GateValidateDefinition,
         "gate:map": GateMapDefinition,
         "gate:aggregate": GateAggregateDefinition,

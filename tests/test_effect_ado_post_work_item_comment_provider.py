@@ -72,8 +72,8 @@ def test_ado_post_work_item_comment_posts_comment(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         comment="Please assign this work item to the owner.",
     )
@@ -100,8 +100,8 @@ def test_ado_post_work_item_comment_posts_comment(
         {
             "provider": "azure_devops",
             "remote_issue_id": "123",
-            "directory_path": "root/example/truman",
-            "project": "Example Industry APP",
+            "directory_path": "root/example/evander",
+            "project": "Example Industry App",
             "comment": "Please assign this work item to the owner.",
             "mentions": None,
         }
@@ -129,8 +129,8 @@ def test_ado_post_work_item_comment_passes_normalized_mentions(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         comment="Could you clarify the acceptance criterion?",
         mentions=[" owner@example.com ", "OWNER@example.com"],
@@ -198,8 +198,8 @@ def test_ado_post_work_item_comment_idempotency_reuses_local_result(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         comment="What result should this produce?",
         mentions=["owner@example.com"],
@@ -237,8 +237,8 @@ def test_ado_post_work_item_comment_recovers_ambiguous_remote_success(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         comment="Which tolerance applies?",
         mentions=["owner@example.com"],
@@ -256,7 +256,7 @@ def test_ado_post_work_item_comment_recovers_ambiguous_remote_success(
     assert len(service.post_calls) == 1
     assert service.resolve_mention_calls == [
         {
-            "directory_path": "root/example/truman",
+            "directory_path": "root/example/evander",
             "mentions": ["owner@example.com"],
         }
     ]
@@ -270,8 +270,8 @@ def test_ado_post_work_item_comment_rejects_idempotency_payload_conflict(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         comment="First question",
         idempotency_key="clarification:123:round-3",
@@ -292,8 +292,8 @@ def test_ado_post_work_item_comment_rejects_remote_marker_payload_conflict(
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
-        directory_path="root/example/truman",
-        project="Example Industry APP",
+        directory_path="root/example/evander",
+        project="Example Industry App",
         work_item_id="123",
         comment="Original question",
         idempotency_key="clarification:123:round-conflict",
@@ -323,8 +323,8 @@ def test_ado_post_work_item_comment_idempotency_is_process_safe_between_instance
     providers = [
         _provider(
             tmp_path,
-            directory_path="root/example/truman",
-            project="Example Industry APP",
+            directory_path="root/example/evander",
+            project="Example Industry App",
             work_item_id="123",
             comment="Is this expected to be backward compatible?",
             idempotency_key="clarification:123:round-4",
@@ -364,7 +364,7 @@ def test_ado_post_work_item_comment_idempotency_is_scoped_to_resolved_ado_target
             tmp_path,
             provider_config_resolver=_SharedTargetResolver(),
             directory_path=directory_path,
-            project="Example Industry APP",
+            project="Example Industry App",
             work_item_id="123",
             comment="Which environment should validate this?",
             idempotency_key="clarification:123:round-5",

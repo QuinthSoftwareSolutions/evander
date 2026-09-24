@@ -7,6 +7,8 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from evander.effects.providers.schemas import (
+    AdoBuildWaitEffectDefinition,
+    AgentInstallSkillsEffectDefinition,
     AdoAddWorkItemTagEffectDefinition,
     AdoPipelineRunEffectDefinition,
     AdoPostWorkItemCommentEffectDefinition,
@@ -113,6 +115,8 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:issue:update-metadata": IssueUpdateMetadataEffectDefinition,
     "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectDefinition,
     "effect:ado:pipeline-run": AdoPipelineRunEffectDefinition,
+    "effect:ado:build-wait": AdoBuildWaitEffectDefinition,
+    "effect:agent:install-skills": AgentInstallSkillsEffectDefinition,
     "effect:ado:post-work-item-comment": AdoPostWorkItemCommentEffectDefinition,
     "effect:ado:add-work-item-tag": AdoAddWorkItemTagEffectDefinition,
     "effect:ado:remove-work-item-tag": AdoRemoveWorkItemTagEffectDefinition,

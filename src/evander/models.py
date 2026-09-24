@@ -115,6 +115,7 @@ class ToolName(str, Enum):
     MAKE_PHONE_CALL = "make_phone_call"
     GET_PHONE_CALL_RESULT = "get_phone_call_result"
     SUBMIT_VOICE_QUERY_RESPONSE = "submit_voice_query_response"
+    EMAIL_LIST_MAILBOXES = "email_list_mailboxes"
     EMAIL_LIST_UNREAD = "email_list_unread"
     EMAIL_LIST_MESSAGES = "email_list_messages"
     EMAIL_GET_MESSAGE = "email_get_message"
@@ -129,6 +130,8 @@ class ToolName(str, Enum):
     HAS_PENDING_FEEDBACK = "has_pending_feedback"
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
     LIST_ALL_FEEDBACK = "list_all_feedback"
+    LIST_PR_FEEDBACK_ATTACHMENTS = "list_pr_feedback_attachments"
+    DOWNLOAD_PR_FEEDBACK_ATTACHMENT = "download_pr_feedback_attachment"
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
     LIST_PULL_REQUESTS = "list_pull_requests"
     GET_PULL_REQUEST = "get_pull_request"
@@ -158,6 +161,8 @@ class ToolName(str, Enum):
     GET_WORKFLOW_SNAPSHOT = "get_workflow_snapshot"
     SEMANTIC_UPSERT_TEXT = "semantic_upsert_text"
     SEMANTIC_SEARCH = "semantic_search"
+    CLASSIFICATION_EVALUATE = "classification_evaluate"
+    CLASSIFICATION_LIST_PROFILES = "classification_list_profiles"
     CODE_INDEX_STATUS = "code_index_status"
     CODE_SEARCH = "code_search"
     CODE_NAVIGATE = "code_navigate"
@@ -777,12 +782,6 @@ class SessionManifest(BaseModel):
 
     def http_targets_metadata(self) -> "SessionHttpTargetsMetadata":
         raw_metadata = self.metadata.get("http_targets")
-        if raw_metadata is None and "example_app" in self.metadata:
-            app_metadata = self.metadata.get("example_app", {})
-            if app_metadata is None:
-                app_metadata = {}
-            if isinstance(app_metadata, dict):
-                raw_metadata = {"targets": app_metadata.get("environments", {})}
         if raw_metadata is None:
             raw_metadata = {}
         try:
@@ -792,19 +791,6 @@ class SessionManifest(BaseModel):
 
     def http_target(self, alias: str) -> "HttpTargetMetadata":
         return self.http_targets_metadata().require_target(alias)
-
-    def app_metadata(self) -> "SessionMesMetadata":
-        raw_metadata = self.metadata.get("example_app", {})
-        if raw_metadata is None:
-            raw_metadata = {}
-        try:
-            return SessionMesMetadata.model_validate(raw_metadata)
-        except ValidationError as exc:
-            raise ValueError("session metadata field 'example_app' is invalid") from exc
-
-    def app_environment(self, alias: str) -> "MesEnvironmentMetadata":
-        return self.app_metadata().require_environment(alias)
-
 
 class SessionToolApprovalLease(BaseModel):
     lease_id: str = Field(min_length=1)
@@ -911,28 +897,6 @@ class SessionHttpTargetsMetadata(BaseModel):
         if target is None:
             raise ValueError(f"unknown HTTP target alias: {normalized_alias}")
         return target
-
-
-class MesEnvironmentMetadata(HttpTargetMetadata):
-    pass
-
-
-class SessionMesMetadata(BaseModel):
-    environments: dict[str, MesEnvironmentMetadata] = Field(default_factory=dict)
-
-    @field_validator("environments", mode="before")
-    @classmethod
-    def normalize_environments(cls, value: object) -> dict[str, object]:
-        return SessionHttpTargetsMetadata.normalize_targets(value)
-
-    def require_environment(self, alias: str) -> MesEnvironmentMetadata:
-        normalized_alias = str(alias).strip()
-        if not normalized_alias:
-            raise ValueError("environment alias must be non-empty")
-        environment = self.environments.get(normalized_alias)
-        if environment is None:
-            raise ValueError(f"unknown APP environment alias: {normalized_alias}")
-        return environment
 
 
 class DirectoryPath(BaseModel):
@@ -1498,6 +1462,46 @@ class InlineMediaRef(BaseModel):
     byte_count: int | None = Field(default=None, ge=0)
     url: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PrFeedbackAttachmentRef(BaseModel):
+    provider: str = Field(min_length=1)
+    feedback_id: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    thread_id: str | None = None
+    comment_id: str | None = None
+    attachment_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    mime_type: str | None = None
+    byte_count: int | None = Field(default=None, ge=0)
+    url: str = Field(min_length=1, exclude=True, repr=False)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListPrFeedbackAttachmentsRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    feedback_id: str = Field(min_length=1)
+
+
+class ListPrFeedbackAttachmentsResponse(BaseModel):
+    provider: str = Field(min_length=1)
+    feedback_id: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    thread_id: str | None = None
+    comment_id: str | None = None
+    attachments: list[PrFeedbackAttachmentRef] = Field(default_factory=list)
+
+
+class DownloadPrFeedbackAttachmentRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    feedback_id: str = Field(min_length=1)
+    attachment_id: str = Field(min_length=1)
+
+
+class DownloadPrFeedbackAttachmentResponse(BaseModel):
+    artifact: "CommunicationFileArtifact"
 
 
 class ListInlineMediaRequest(BaseModel):

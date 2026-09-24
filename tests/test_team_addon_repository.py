@@ -6585,6 +6585,87 @@ def test_operator_can_resolve_terminal_blocker_with_audited_reason(tmp_path: Pat
     )
 
 
+def test_operator_terminal_blocker_resolution_recalculates_project_status(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="operator-project-status-recovery", owner_agent_id="worker")
+
+    def _seed_project_blocker(state: TeamState) -> TeamState:
+        state.projects["project"].status = ProjectStatus.BLOCKED
+        state.blockers["operator-project-status-blocker"] = TeamBlocker(
+            id="operator-project-status-blocker",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id="stale-project-dependency",
+            owner_agent_id="manager",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="The project is waiting for operator recovery.",
+        )
+        return state
+
+    state = repo.update(_seed_project_blocker)
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="operator-project-status-blocker",
+        note="The stale project dependency is no longer blocking work.",
+        operator_actor_id="operator:admin",
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is True
+    assert state.blockers["operator-project-status-blocker"].state == (
+        TeamBlockerState.RESOLVED
+    )
+    assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
+def test_operator_terminal_release_review_blocker_resolution_recalculates_project_status(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _seed_terminal_release_review_blocker(state: TeamState) -> TeamState:
+        state.projects["project"].status = ProjectStatus.BLOCKED
+        state.release_packages["terminal-release"] = ReleasePackage(
+            id="terminal-release",
+            project_id="project",
+            state=TeamRecordState.ACCEPTED,
+            review_request_ids=["terminal-release-review"],
+        )
+        state.review_requests["terminal-release-review"] = ReviewRequest(
+            id="terminal-release-review",
+            release_package_id="terminal-release",
+            candidate_commit_sha="terminal-release-candidate",
+            reviewer_agent_id="worker",
+            state=TeamRecordState.BLOCKED,
+        )
+        state.blockers["terminal-release-review-blocker"] = TeamBlocker(
+            id="terminal-release-review-blocker",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.REVIEW_REQUEST,
+            source_id="terminal-release-review",
+            owner_agent_id="manager",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="The terminal release review needs operator recovery.",
+        )
+        return state
+
+    state = repo.update(_seed_terminal_release_review_blocker)
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="terminal-release-review-blocker",
+        note="The stale terminal review incident is no longer blocking work.",
+        operator_actor_id="operator:admin",
+        expected_revision=state.revision,
+    )
+
+    assert result["success"] is True
+    assert state.blockers["terminal-release-review-blocker"].state == (TeamBlockerState.RESOLVED)
+    assert state.review_requests["terminal-release-review"].state == TeamRecordState.PENDING
+    assert state.projects["project"].status == ProjectStatus.ACTIVE
+
+
 def test_operator_resolution_wakes_execution_stall_source(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     future = datetime(2026, 8, 24, 12, tzinfo=UTC)
@@ -8043,6 +8124,10 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
 
     repo.update(_configure_unset_base)
     lookups: list[tuple[str, str]] = []
+    commit_lookups: list[tuple[str, str, str]] = []
+    pinned_commit = "a" * 40
+    supplied_commit = "b" * 40
+    ancestry_checks: list[dict[str, object]] = []
 
     class _ManagedGit:
         def get_repository(
@@ -8054,7 +8139,55 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
             lookups.append((managed_repo_id, directory_path))
             return {"default_branch": "trunk"}
 
+        def resolve_branch_commit(
+            self,
+            managed_repo_id: str,
+            *,
+            directory_path: str,
+            branch: str,
+        ) -> str:
+            commit_lookups.append((managed_repo_id, directory_path, branch))
+            return pinned_commit
+
+        def verify_branch_commit_ancestry(
+            self,
+            managed_repo_id: str,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            ancestry_checks.append({"managed_repo_id": managed_repo_id, **kwargs})
+            return {}
+
     admin = TeamAdminService(repo, managed_git_admin=_ManagedGit())
+    admin.create_or_reprioritize_task(
+        task_id="existing-coordination-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Coordinate accepted contributions",
+        description="This long-lived task must not become the final boundary.",
+        created_by_agent_id="lead",
+        git_base_branch="trunk",
+    )
+    with pytest.raises(ValueError, match="cannot be converted into an integration boundary"):
+        admin.update_task(
+            task_id="existing-coordination-task",
+            integration_boundary=True,
+            deliverable_contract={"require_git_provenance": True},
+        )
+    with pytest.raises(ValueError, match="cannot be converted into an integration boundary"):
+        admin.create_or_reprioritize_task(
+            task_id="existing-coordination-task",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            title="Do not repurpose coordination",
+            description="Create a fresh integration task instead.",
+            created_by_agent_id="lead",
+            integration_boundary=True,
+            deliverable_contract={"require_git_provenance": True},
+        )
+    assert repo.read().tasks["existing-coordination-task"].integration_boundary is False
+
     state = admin.create_or_reprioritize_task(
         task_id="resolved-admin-default",
         owner_agent_id="backend",
@@ -8068,12 +8201,55 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
     assert state.projects["project"].git is not None
     assert state.projects["project"].git.base_branch is None
 
+    state = admin.create_or_reprioritize_task(
+        task_id="resolved-admin-integration",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Snapshot the integration baseline",
+        description="Create the final integration task after coordination.",
+        created_by_agent_id="lead",
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert state.tasks["resolved-admin-integration"].git_base_branch == "trunk"
+    assert state.tasks["resolved-admin-integration"].git_base_commit_sha == pinned_commit
+
+    state = admin.create_or_reprioritize_task(
+        task_id="validated-admin-integration",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Validate an explicit integration baseline",
+        description="Accept only a managed ancestor of the selected branch.",
+        created_by_agent_id="lead",
+        git_base_branch="trunk",
+        git_base_commit_sha=supplied_commit,
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert state.tasks["validated-admin-integration"].git_base_commit_sha == supplied_commit
+
+    def _resolve_task_base(**kwargs: object) -> object:
+        required_ancestor_shas = kwargs.pop("required_ancestor_shas", None)
+        commit_sha = _ManagedGit().resolve_branch_commit(**kwargs)
+        if required_ancestor_shas:
+            _ManagedGit().verify_branch_commit_ancestry(
+                kwargs["managed_repo_id"],
+                directory_path=kwargs["directory_path"],
+                branch=kwargs["branch"],
+                commit_sha=commit_sha,
+                required_ancestor_shas=required_ancestor_shas,
+            )
+        return commit_sha
+
     _lease_agent_dispatch(repo, agent_id="lead")
     command = TeamTaskCreationCommandService(
         repo,
         git_default_branch_resolver=lambda **kwargs: _ManagedGit().get_repository(**kwargs)[
             "default_branch"
         ],
+        git_base_commit_resolver=_resolve_task_base,
     )
     state, result = command.create_task_command(
         session_id="session-lead",
@@ -8087,10 +8263,107 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
 
     assert result["success"] is True
     assert state.tasks["resolved-command-default"].git_base_branch == "trunk"
+    state, result = command.create_task_command(
+        session_id="session-lead",
+        task_id="resolved-command-integration",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Resolve a pinned integration boundary",
+        description="Snapshot the current managed branch commit.",
+        request_id="request-resolve-managed-integration",
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert result["success"] is True
+    assert state.tasks["resolved-command-integration"].git_base_branch == "trunk"
+    assert state.tasks["resolved-command-integration"].git_base_commit_sha == pinned_commit
+    state, result = command.create_task_command(
+        session_id="session-lead",
+        task_id="validated-command-integration",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Validate an explicit command baseline",
+        description="Persist the supplied pin only after ancestry verification.",
+        request_id="request-validate-managed-integration",
+        git_base_branch="trunk",
+        git_base_commit_sha=supplied_commit,
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert result["success"] is True
+    assert state.tasks["validated-command-integration"].git_base_commit_sha == supplied_commit
     assert lookups == [
         (MANAGED_REPO_ID, "root/team-project"),
         (MANAGED_REPO_ID, "root/team-project"),
+        (MANAGED_REPO_ID, "root/team-project"),
+        (MANAGED_REPO_ID, "root/team-project"),
     ]
+    assert commit_lookups == [
+        (MANAGED_REPO_ID, "root/team-project", "trunk"),
+        (MANAGED_REPO_ID, "root/team-project", "trunk"),
+        (MANAGED_REPO_ID, "root/team-project", "trunk"),
+        (MANAGED_REPO_ID, "root/team-project", "trunk"),
+    ]
+    assert ancestry_checks == [
+        {
+            "managed_repo_id": MANAGED_REPO_ID,
+            "directory_path": "root/team-project",
+            "branch": "trunk",
+            "commit_sha": pinned_commit,
+            "required_ancestor_shas": [supplied_commit],
+        },
+        {
+            "managed_repo_id": MANAGED_REPO_ID,
+            "directory_path": "root/team-project",
+            "branch": "trunk",
+            "commit_sha": pinned_commit,
+            "required_ancestor_shas": [supplied_commit],
+        },
+    ]
+
+    rejecting_command = TeamTaskCreationCommandService(
+        repo,
+        git_default_branch_resolver=lambda **kwargs: _ManagedGit().get_repository(**kwargs)[
+            "default_branch"
+        ],
+        git_base_commit_resolver=lambda **_kwargs: (_ for _ in ()).throw(
+            ValueError("supplied commit is not an ancestor of the selected branch")
+        ),
+    )
+    state, rejected = rejecting_command.create_task_command(
+        session_id="session-lead",
+        task_id="invalid-explicit-pin",
+        owner_agent_id="backend",
+        project_id="project",
+        title="Reject an unrelated integration baseline",
+        description="Do not persist an invalid caller-supplied object ID.",
+        request_id="request-reject-invalid-explicit-pin",
+        git_base_branch="trunk",
+        git_base_commit_sha="c" * 40,
+        integration_boundary=True,
+        deliverable_contract={"require_git_provenance": True},
+    )
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "git_base_commit_invalid"
+    assert "invalid-explicit-pin" not in state.tasks
+
+    with pytest.raises(
+        ValueError,
+        match="immutable Git base commit.*branch-commit resolution is unavailable",
+    ):
+        TeamAdminService(repo).create_or_reprioritize_task(
+            task_id="unresolved-integration",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            title="Reject an unpinned integration boundary",
+            description="Fail closed when the managed branch cannot be resolved.",
+            created_by_agent_id="lead",
+            git_base_branch="trunk",
+            integration_boundary=True,
+            deliverable_contract={"require_git_provenance": True},
+        )
+    assert "unresolved-integration" not in repo.read().tasks
 
 
 @pytest.mark.parametrize("lock_kind", ["context", "deliverable", "promotion"])
@@ -11443,6 +11716,187 @@ def test_transfer_project_lead_promotes_existing_manager_overlay(tmp_path: Path)
     assert assignments["manager"].role_id == "team__manager"
     assert assignments["lead"].kind.value == "project_member"
     assert assignments["lead"].role_id == "project__project-lead"
+
+
+def test_transfer_project_lead_deduplicates_existing_member_assignment(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    state = _team_admin_service(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = _team_admin_service(repo).create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=state.revision,
+    )
+
+    state = _team_admin_service(repo).update_agent(
+        agent_id="lead",
+        project_id="project",
+        set_project_id=True,
+        expected_revision=state.revision,
+    )
+    assert sorted(
+        assignment.kind.value
+        for assignment in state.project_assignments.values()
+        if assignment.agent_id == "lead" and assignment.project_id == "project"
+    ) == ["project_lead", "project_member"]
+
+    state = _team_admin_service(repo).transfer_project_lead(
+        project_id="project",
+        lead_agent_id="manager",
+        expected_revision=state.revision,
+    )
+
+    assert state.projects["project"].lead_agent_id == "manager"
+    assert [
+        assignment.kind.value
+        for assignment in state.project_assignments.values()
+        if assignment.agent_id == "lead" and assignment.project_id == "project"
+    ] == ["project_member"]
+
+
+def test_update_agent_project_ids_manages_multiple_memberships_and_retains_leads(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    state = _team_admin_service(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = _team_admin_service(repo).create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=state.revision,
+    )
+    state = _team_admin_service(repo).create_project(
+        project_id="other-project",
+        team_id="team",
+        name="Other project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=state.revision,
+    )
+    state = _team_admin_service(repo).create_role(
+        role_id="team__member",
+        team_id="team",
+        name="Member",
+        expected_revision=state.revision,
+    )
+    state = _team_admin_service(repo).register_agent(
+        agent_id="member",
+        team_id="team",
+        role_id="team__member",
+        session_id="session-member",
+        reports_to_agent_id="manager",
+        expected_revision=state.revision,
+    )
+
+    state = _team_admin_service(repo).update_agent(
+        agent_id="member",
+        project_ids=["other-project", "project"],
+        set_project_ids=True,
+        expected_revision=state.revision,
+    )
+    assert agent_project_ids(state, "member") == ["other-project", "project"]
+    assert sorted(
+        (assignment.project_id, assignment.kind.value)
+        for assignment in state.project_assignments.values()
+        if assignment.agent_id == "member"
+    ) == [
+        ("other-project", "project_member"),
+        ("project", "project_member"),
+    ]
+
+    state = _team_admin_service(repo).update_agent(
+        agent_id="member",
+        project_ids=["other-project"],
+        set_project_ids=True,
+        expected_revision=state.revision,
+    )
+    assert agent_project_ids(state, "member") == ["other-project"]
+
+    with pytest.raises(ValueError, match="cannot remove project lead assignments"):
+        _team_admin_service(repo).update_agent(
+            agent_id="lead",
+            project_ids=[],
+            set_project_ids=True,
+            expected_revision=state.revision,
+        )
+
+
+def test_update_agent_project_ids_limits_project_role_to_its_assignment(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=state.revision,
+    )
+    state = admin.create_project(
+        project_id="other-project",
+        team_id="team",
+        name="Other project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=state.revision,
+    )
+    state = admin.create_role(
+        role_id="project__member",
+        team_id="team",
+        project_id="project",
+        name="Member",
+        expected_revision=state.revision,
+    )
+    state = admin.register_agent(
+        agent_id="member",
+        team_id="team",
+        project_id="project",
+        role_id="project__member",
+        session_id="session-member",
+        reports_to_agent_id="manager",
+        expected_revision=state.revision,
+    )
+
+    state = admin.update_agent(
+        agent_id="member",
+        project_ids=["project", "other-project"],
+        set_project_ids=True,
+        expected_revision=state.revision,
+    )
+
+    assert {
+        assignment.project_id: assignment.role_id
+        for assignment in state.project_assignments.values()
+        if assignment.agent_id == "member"
+    } == {
+        "other-project": None,
+        "project": "project__member",
+    }
 
 
 def test_create_project_existing_project_lead_is_assignment_overlay(
@@ -22440,15 +22894,21 @@ def test_integration_feature_promotion_acknowledges_idempotently_without_synthet
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
     _seed_task(repo, task_id="task")
-    _team_admin_service(repo).update_task(
-        task_id="task",
-        integration_boundary=True,
-        deliverable_contract={
+
+    def _seed_existing_integration(state: TeamState) -> TeamState:
+        task = state.tasks["task"]
+        task.git_base_branch = "main"
+        task.git_base_commit_sha = "a" * 40
+        task.integration_boundary = True
+        task.deliverable_contract = TaskDeliverableContract.model_validate(
+            {
             "require_git_provenance": True,
             "required_contribution_task_ids": [],
-        },
-        expected_revision=repo.read().revision,
-    )
+            }
+        )
+        return state
+
+    repo.update(_seed_existing_integration)
 
     def _seed_promotion(state):
         state.git_promotions["promotion-integration"] = GitPromotionRecord(
@@ -25889,6 +26349,49 @@ def test_apply_agent_action_creates_child_task_with_graph_fields(tmp_path: Path)
     assert child.parent_task_id == "parent"
     assert child.dependency_task_ids == ["dep"]
     assert state.child_task_ids("parent") == ["child"]
+
+
+def test_apply_agent_action_rejects_integration_child_of_coordination_without_origin(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="coordination",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Coordinate work",
+        description="Supervise contribution tasks.",
+        created_by_agent_id="lead",
+        task_kind=TeamTaskKind.COORDINATION,
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_creations": [
+                {
+                    "id": "nested-integration",
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Nested integration",
+                    "description": "Must instead be a provenance-linked root task.",
+                    "parent_task_id": "coordination",
+                    "integration_boundary": True,
+                    "deliverable_contract": {
+                        "required_contribution_task_ids": [],
+                    },
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["created_task_ids"] == []
+    assert any("cannot be a child of coordination task" in error for error in result["errors"])
+    assert any("set originating_task_id" in error for error in result["errors"])
+    assert "nested-integration" not in state.tasks
 
 
 def test_apply_agent_action_rejects_batch_child_under_subordinate_parent(

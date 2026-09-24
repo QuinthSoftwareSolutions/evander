@@ -1,9 +1,23 @@
 # Configuration Reference
 
+Project release policies support `reintegration`, `verification_max_generations`,
+`verification_log_retention_days` and opt-in per-command `result_protocol`,
+`allow_baseline_exceptions`, and `command_failure_action`. See
+[Release recovery and verifier policy](release-recovery-and-verifier-policy.md) for defaults,
+frozen-manifest semantics and safe rollout. Worker .NET paths use
+`evander_worker_dotnet_bundle_selector` with `sdk` and `tools` children.
+
 For Azure DevOps work-item images, the session needs `list_inline_media`, `download_inline_media`
 and `communication_copy_artifact_to_workspace`, plus `communication_file_receive_enabled: true`
 in its session or effective directory policy. Existing file size/type limits apply. See the
 [image viewing runbook](operations.md#view-images-in-azure-devops-work-items) for the full flow.
+
+For files linked from Azure DevOps PR feedback, grant `list_pr_feedback_attachments`,
+`download_pr_feedback_attachment`, and `communication_copy_artifact_to_workspace`. The same
+`communication_file_receive_enabled`, `communication_file_max_bytes`, MIME, extension, and blocked
+extension settings apply. The list/download calls are also restricted to the session's
+`metadata.pr_feedback_streams` entries and use the directory-scoped Azure DevOps organization,
+project, and `azure_devops_pr_pat_env` credential.
 
 This document lists the **user-configurable parameters** in this repository, where each parameter is defined, and where it is consumed.
 
@@ -21,6 +35,20 @@ load the matching per-service `config/*.env` files as optional inputs, so startu
 if a file is absent. Runtime configuration comes from `runtime/host-config.json` plus
 `runtime/directory-config/root/...`, and secret values can also be supplied through the service
 manager environment or optional repo-root `secrets.env`.
+
+### Optional Figma collaboration
+
+The `figma-addon` stores revisioned settings per exact directory through its Admin Web page.
+[`config/figma/settings.json.example`](../config/figma/settings.json.example) documents approved
+OAuth client configuration, host credential setting names, registered files, and file-level
+`read`/`comment`/`edit` capabilities with optional edit roots. The add-on does not maintain a
+separate session list; MCP and workflow operations use normal session tool permissions.
+An explicit `figma_query` or `figma_execute` grant also exposes `figma_list_targets` for local
+file discovery, subject to directory tool denials and discovery approval requirements.
+Credentials stay in the host service environment; guests receive only the Figma MCP tools
+allowed by their session policy. See
+[Figma setup and authoring verification](figma.md) before enabling it. No new firewall port or
+standalone service is required.
 
 ### Personal ADO OAuth (shared host environment)
 
@@ -215,9 +243,30 @@ The bundled add-ons ship `addon.json` manifests beside their package
 `__init__.py` files, so they use the same scanned-package shape as local copied
 add-ons in a source checkout. Enable them from Admin Web or set
 `addon_loader.enabled_addon_ids` to add-on ids such as `team-addon`,
-`skatteverket-addon`, `bokio-addon`, or `mssql-seed-addon`. Explicit
+`skatteverket-addon`, `bokio-addon`, `mssql-seed-addon`, or `freshservice-addon`. Explicit
 `addon_loader.modules` entries and `evander.addons` entry points remain
 supported compatibility paths.
+
+The bundled Freshservice Add-on is headless and contributes the `freshservice` connector driver.
+Enable `freshservice-addon` in the host add-on loader before saving a connector definition that
+selects that driver, then restart Admin Web and the gateway. The trigger/effect workers do not call
+the connector directly; agents receive its operations through gateway-managed connector grants.
+
+The bundled `miro-addon` uses add-on-owned named connections managed in **Miro**. Each connection
+belongs to a directory and defines approved boards (read or write),
+`allow_workflows` (default false), `allow_create_boards` (default false), and a
+`daily_call_budget` (default 100). Connections resolve through directory ancestry; an identically
+named child connection overrides the inherited connection. Agent access uses normal session
+`miro_*` tool permissions; legacy connection `session_ids` lists are ignored and removed on save.
+An explicit grant to any Miro operation also exposes `miro_list_connections` for local discovery
+of enabled connections, including inherited connections and their board counts. Source-tool
+denials and discovery's own directory denial/approval rules still apply. A disabled child
+connection shadows its ancestor and is omitted from discovery.
+The `redirect_uri` must be the Admin Web HTTPS origin followed by
+`/api/addons/miro-addon/oauth/callback` (HTTP is allowed only on
+loopback for development). Settings use revision-checked writes. OAuth tokens, registration
+secrets, and pending PKCE material are encrypted in `runtime/addons/miro-addon/`; credentials
+are never directory JSON or session metadata. See [Miro configuration](miro-addon.md).
 
 For the bundled Team Add-on, configure the same add-on loader in the host config
 to expose Admin Web routes/navigation, and in
@@ -244,6 +293,15 @@ are:
 Omission is intentionally different from explicitly setting `true`. All three
 modes retain the same state, reference, repository, branch, commit, and
 dirty-file safety checks.
+
+### Case context
+
+For directory-scoped case-context recipes and the `query:team:case-context`,
+`query:team:case-context-snapshot`, `effect:team:snapshot-case-context`,
+`effect:team:record-source-evidence`, `effect:team:capture-ado-case-source` and
+`effect:team:refresh-case-sources` nodes, see [Case context](case-context.md).
+Recipes are revisioned Team state, not provider overlays. Wake injection has a
+separate, fixed 6,000-character ceiling including serialized metadata.
 
 ### Communication-to-Team Chat bridge
 
@@ -349,7 +407,7 @@ Type-specific keys:
 | `trigger:event` | `event_type` | `correlation_key` |
 | `trigger:agent:artifact-staged` | — | `artifact_path`, `path_prefix` |
 | `trigger:http:webhook` | `slug`, `secret_env` | `event_type` |
-| `trigger:cron` | `expression` | — |
+| `trigger:cron` | `expression` | `timezone` |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
 | `trigger:issue:comment-created` | — | `provider`, `organization_url`, `project`, `directories` |
@@ -361,7 +419,7 @@ Type-specific keys:
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `content_starts_with`, `case_sensitive` |
 | `trigger:teams:new-message` | `targets` | `user_ids` |
-| `trigger:teams:direct-message` | `targets`, `sender_user_ids` | `message_filter` |
+| `trigger:teams:direct-message` | `targets`, `sender_user_ids` | `chat_target_mode`, `direct_chat_user_upns`, `message_filter` |
 | `trigger:email:new-message` | `mailbox_ids` | `folder` |
 | `trigger:host-directory:file-added` | `directory_id` | `path`, `recursive`, `include_globs`, `exclude_globs`, `settle_seconds` |
 | `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids`, `suppress_agent_authored_feedback` |
@@ -371,12 +429,15 @@ Type-specific keys:
 | `trigger:approval:pending-created` | — | `directory_path`, `action_types`, `tool_names` |
 | `trigger:git:push` | exactly one of `managed_repo_id`, `managed_repo_id_glob` | — |
 
-`trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
-ranges, stepped ranges, lists, and month/weekday names. When a cron trigger is overdue, the
-trigger orchestrator queues only the latest due occurrence. The provider stages that occurrence
-as pending and advances `last_fired_at` only after the trigger event is durably published and
-acknowledged, so a queue publish failure can retry the same scheduled occurrence. Editing a
-trigger to a higher frequency still does not replay historical runs.
+`trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports ranges,
+stepped ranges, lists, and month/weekday names. `timezone` is an optional IANA timezone name and
+defaults to `UTC`; for example, `Europe/Stockholm` keeps `0 8 * * *` at 08:00 local time across
+daylight-saving changes. Cron events retain the UTC `scheduled_for` value and also expose
+`scheduled_for_local` and `timezone` in their payload. When a cron trigger is overdue, the trigger
+orchestrator queues only the latest due occurrence. The provider stages that occurrence as pending
+and advances `last_fired_at` only after the trigger event is durably published and acknowledged,
+so a queue publish failure can retry the same scheduled occurrence. Editing a trigger to a higher
+frequency still does not replay historical runs.
 
 `trigger:host-directory:file-added` resolves `directory_id` from the workflow graph's Evander
 directory scope. Its first successful scan establishes a baseline. Later regular files must remain
@@ -524,18 +585,8 @@ described above. Review requests are fed from the host-owned
 `runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Script run
 requests are fed from `runtime/script-run-requests-store.json`, which the `run_script(...)` MCP
 tool appends to after validating that the calling session is allowed to invoke the requested
-script name. The checked-in global workflow currently filters that trigger down to
-`provision_exampleindustry_app_demo_environment.sh`, queues a typed Azure DevOps pipeline run,
-maps the derived demo-environment relay metadata with `gate:map`, and resumes the originating
-session after `effect:session:update-metadata` stores that metadata.
-
-The `app-demo-modification.v1-example` pack is the no-deployment continuation path for an already
-deployed named demo. It consumes `external.app-demo-change-requested`, derives the deterministic
-session from `payload.resourceBaseName`, renews the session to an eight-hour window with
-`effect:session:renew-if-expired`, refreshes the APP/browser and optional Elastic target metadata,
-then uses `effect:agent:enqueue-prompt` with the stored `metadata.agent_thread_id`. The external
-publisher must retain the workflow-event token server-side and must derive rather than accept
-caller-selected target URLs or session IDs.
+script name. Operator-owned workflow packs can route the request to an approved host action,
+then store any resulting session metadata with `effect:session:update-metadata`.
 
 `trigger:approval:pending-created` watches the durable approval store for pending requests,
 scopes by `directory_path` with descendant matching, and accepts optional `action_types` and
@@ -594,7 +645,8 @@ Example:
       "id": "cron-15m",
       "display_name": "Every 15 minutes",
       "type": "trigger:cron",
-      "expression": "*/15 * * * *"
+      "expression": "*/15 * * * *",
+      "timezone": "UTC"
     },
     {
       "id": "mailbox-ops",
@@ -769,6 +821,7 @@ Type-specific keys:
 | `effect:agent:prepare-reference-repositories` | one of `target`, `session_id`, `vm_name`; `directory_path`; `repositories` | `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
+| `effect:agent:install-skills` | `target`, `codex_skills` | `vm_user`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:agent:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `allowed_source_roots`, `outputs` |
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
@@ -793,7 +846,8 @@ Type-specific keys:
 | `effect:ado:add-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:post-work-item-comment` | `directory_path`, `project`, `work_item_id`, `comment` | `mentions`, `idempotency_key`, `outputs` |
-| `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
+| `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `reject_running_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
+| `effect:ado:build-wait` | `directory_path`, `run_id` | `project`, `timeout_seconds`, `poll_interval_seconds`, `outputs` |
 | `effect:ado:sync-activity-index` | `since` | `until`, `directory_path`, `scope`, `actor`, `project`, `repo`, `states`, `types`, `tags_any`, `statuses`, `include_system_comments`, `outputs` |
 | `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `ado_organization`, `project`, `outputs` |
 | `effect:pull-request:remove-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `ado_organization`, `project`, `outputs` |
@@ -921,18 +975,17 @@ effective only when `model_provider_mode` resolves to `openai_public`.
 routes without rewriting the stored preference. Missing credentials fail
 closed only when a public Codex turn actually selects subscription mode.
 
-`effect:agent:create.subscription_profile_id` is a fixed, non-bindable profile
+`effect:agent:create.subscription_profile_id` is a non-bindable profile
 slug. It is valid only with `execution_backend: container_worker_vm`,
 `agent_provider: codex`, `model_provider_mode: openai_public`, and
 `codex_auth_mode: chatgpt_subscription`. The workflow editor obtains every
 enabled option from the node's effective worker; directory configuration does
 not default, grant, or restrict the list. The session persists the selection.
-Omitting the field on an existing-agent upsert preserves its binding, and a
-bound session cannot change profiles. A metered session can receive its first
-profile only in the same explicit update that switches it to subscription
-mode. Legacy profile-less subscription sessions resolve to reserved profile
-`default`; newly created subscription agents in Admin Web require a named
-selection.
+Omitting the field on an existing-agent upsert preserves its current profile.
+An upsert can select another enabled profile, and setting `codex_auth_mode` to
+`metered_api` clears the stored profile. Legacy profile-less subscription
+sessions resolve to reserved profile `default`; newly created subscription
+agents in Admin Web require a named selection.
 
 `effect:agent:create.worker_id` selects a named `container_workers` entry from the
 effective directory provider configuration. It supports a literal ID or runtime
@@ -1031,12 +1084,15 @@ scheduled-event deadlines.
 
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have three named
 outgoing ports: `started` emits after the prompt is dispatched, `completed`
-emits after the agent run completes, and `error` emits only for supported
-prompt dispatch failures when the workflow wires an outbound error edge. Use
+emits after the agent run completes, and `error` emits for supported
+prompt dispatch failures, terminal execution failures, and container job timeouts
+when the workflow wires an outbound error edge. Context-exhaustion retries happen
+before a terminal execution error is routed. Use
 the `error` branch for notification, retry, or cleanup paths that should see a
-redacted failure payload. When no `error` edge exists, the prompt node remains
-failed as before, and successful `started` / `completed` paths do not populate
-error fields.
+redacted failure payload. When no `error` edge exists, legacy behavior is retained:
+dispatch failures and container timeouts fail the node, while completed runs still
+emit `completed` even if their execution result is unsuccessful. Successful
+`started` / `completed` paths do not populate error fields.
 For `effect:agent:enqueue-prompt`, routed dispatch failures include the queued
 retry context (`queued`, `queue_key`, and `coalesced_count`) when the prompt was
 written to the durable retry queue before dispatch failed. The prompt queue also
@@ -1138,6 +1194,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:communication:messages` | `communication_target_id` | `directory_path`, `limit`, `cursor`, `before_cursor`, `thread_id`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
+| `query:classification:evaluate` | `state`, exactly one of `questions` / `profile_id` | `provider`, `model` (inline only), `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
 | `query:team:memory` | _none beyond envelope_ | `team_id`, `project_id`, `codebase_id`, `agent_id`, `query_text`, `semantic`, `kinds`, `statuses`, `tags_any`, `limit`, `directory_path`, `score_threshold`, `outputs` |
@@ -1146,6 +1203,8 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:artifact-space:latest` | `space_path` | `artifact_id`, `subject`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
+| `query:ado:builds` | `directory_path`, `pipeline_id`, `repository_id`, `filters` | `project`, `repository_type`, `limit`, `outputs` |
+| `query:text:regex` | `text`, `pattern` | `operation`, `replacement`, `require_match`, `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
 
 `query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
@@ -1300,11 +1359,45 @@ Effect schema envelope example:
 }
 ```
 
-The checked-in APP provisioning workflow uses `effect:ado:pipeline-run` to queue an Azure DevOps
+The checked-in App provisioning workflow uses `effect:ado:pipeline-run` to queue an Azure DevOps
 deployment pipeline, then uses `gate:map` to derive fields such as `app_base_url`,
 `app_public_url`, `app_api_alias`, `app_ui_alias`, and `public_domain`. The mapped
 `session_metadata_patch` is stored with `effect:session:update-metadata` before the originating
 agent session is resumed.
+
+`query:ado:builds` returns `builds` and `count`, newest queue time first. Supply
+`filters` as an array of `{ "branch": "refs/tags/v1", "source_version": "<sha>" }`
+objects. An omitted `source_version` accepts any revision; an explicit null or
+empty version disables that filter, preventing an unresolved pin from selecting
+an arbitrary build. Filters are unioned and runs deduplicated by ID. `limit`
+defaults to 100 (maximum 1000); the query paginates until enough matches are found.
+It does not derive PR refs or apply a successful-build policy. Workflows specify
+their own refs, commits and result handling. `repository_type` defaults to `TfsGit`.
+
+`effect:ado:build-wait` polls that exact run and routes unsuccessful completion,
+API failure or timeout to its `error` edge. Both use the directory's configured
+`azure_devops_pat_env` (Build Read required), never a credential from PR text.
+
+`effect:ado:pipeline-run.reject_running_parameters` optionally rejects queueing
+when a nonterminal run of the same pipeline has matching template parameters.
+Unreadable active-run parameters fail closed. This is a best-effort preflight,
+not an atomic environment lock. Omit it to retain the normal queue behavior.
+
+`effect:agent:install-skills` resolves the existing session's execution backend
+and installs managed skills additively. It does not recreate the agent or replace
+its tool grants, model selection, or thread.
+
+`query:text:regex` performs a configured `fullmatch` (default) or `replace` and
+returns `value`, `matched` and named capture `groups`. For full matching, `value`
+is unchanged; for replacement it is the substituted text. `require_match: true`
+turns a full-match miss into a query error; otherwise it returns `matched: false`.
+Patterns use Python regular expressions, including inline flags and replacement
+backreferences. Text is bounded to 32768 characters and patterns to 4096. Use
+`gate:map` to construct targets from captures and `gate:switch` for validation or
+business decisions. Command syntax and URL naming are not provider behavior.
+
+[Workflow document patches](workflow-document-patches.md) install node and edge
+configurations with revision-safe Admin saves.
 
 ### Graph examples
 
@@ -1705,7 +1798,9 @@ configuration file.
 | `gateway_url` | composed runtime config | `src/evander/cli.py` health checks / external endpoint references. |
 | `execution_backend`, `container_workers`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_active_tool_timeout_seconds`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and remains an inherited compatibility choice only for Codex sessions. `container_worker_base_url` selects the worker for new sessions. Existing sessions retain their saved worker connection settings, including the token environment-variable name, images, relay addresses, and database endpoint. Admin saves pin legacy sessions before changes; external configuration cutovers require `execution pin-worker-assignments --apply` under the original settings. Directory config never chooses, grants, or restricts that worker's subscription profiles. Named profile selection is session/workflow state. `container_worker_active_tool_timeout_seconds` defaults to 300 and lets the reconciler safely interrupt only a recognized stalled test or build process group while retaining the agent container; the 1800-second `container_worker_job_timeout_seconds` remains the whole-job fallback. `chatgpt_subscription` applies only to public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing stored session state. Unavailable subscription capacity queues rather than falling back to API billing. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
 | `agent_consultation_profiles`, `agent_consultation_default_profile`, `agent_consultation_max_wait_seconds`, `agent_consultation_retention_days`, `agent_consultation_token_secret_env` | root or directory `providers.json` | Request-scoped `consult_codebase` workers. Each named profile requires `model`, is restricted to `container_worker_vm`, and may set `agent_provider`, `model_provider_mode`, `container_image`, `timeout_seconds`, and `max_concurrency`. The gateway pins a managed-Git commit, persists the request, and returns after the bounded wait; the hidden system workflow creates and cleans up the worker. The token field names a host env var and defaults to `AGENT_PROMPT_TOKEN_SECRET`; it never contains the secret itself. |
-| `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_http_target_browser_proxy_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for model relays, MCP, HTTP-target API/browser access, and package restores. |
+| `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_http_target_browser_proxy_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root or directory `providers.json` | Container session bootstrap files under `/home/agent` for model relays, MCP, HTTP-target API/browser access, and package restores. |
+| `provider_state.nuget.private_package_patterns` | root or directory `providers.json` | Optional package ID patterns routed to the private Azure NuGet relay source in new container sessions. Defaults to an empty list. Set it in the directory that owns the private packages before switching from a hardcoded mapping. Example: `{"nuget":{"private_package_patterns":["Example.Private.*"]}}`. |
+| `provider_state.team_addon.legacy_guidance_section_ids` | root or directory `providers.json` | Optional managed-section IDs to remove when Team guidance is next seeded. Use this for deployment-specific retired section names; defaults to an empty list. Example: `{"team_addon":{"legacy_guidance_section_ids":["previous-team-addon"]}}`. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
 | `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `openai_image_generation_max_request_bytes`, `openai_image_edit_max_request_bytes`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/evander/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Image generation JSON defaults to a 1 MiB request limit; multipart image edits default to 256 MiB and are spooled and streamed without retaining their content. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `local_openai_max_concurrency` | root `providers.json` | Optional host-global limit for concurrent agent turns whose fully resolved provider mode is `local_openai`, across VM and container-worker backends. Excess prompts enter the durable FIFO prompt queue and are admitted as running turns finish. Omit the field for unlimited concurrency. Child directories cannot override it. |
@@ -1759,6 +1854,29 @@ provider mode for that session while still inheriting the directory's endpoint
 and credential fields. This allows a single directory to host both public
 OpenAI Codex sessions and local OpenAI-compatible Codex sessions by setting
 session metadata to `openai_public` or `local_openai` per agent.
+
+### Smart switch gate
+
+`gate:classifier:switch` accepts `state`, `instructions`, `cases` (port, optional label, description),
+`default_port`, optional `default_description`, `provider`, `model`, and `min_probability`.
+It routes the unchanged input to one described branch or the default. The optional cutoff uses
+selected-option probability. Calls use the graph directory's classification settings and execute
+asynchronously with durable decisions. See [Smart switch](classification.md#smart-switch).
+
+### Classification keys
+
+The typed `classification` field in directory `providers.json` contains `enabled` (default
+`false`), `default_provider` (`jev`), `providers`, and `profiles`. Jev defaults to model
+`jev-1.13.0`, credential environment variable `TYPESAFE_API_KEY`, a 30-second total timeout,
+two transient retries, a 1 MiB request limit, and a 2 MiB response limit. Provider settings
+inherit by field; each profile ID replaces its entire inherited definition. A disabled profile
+can be represented as `{ "enabled": false }`. Removing a child override restores inheritance.
+
+Use the structured Classification utility in the Models configuration area, or the revisioned
+`GET/PUT /api/classification?directory_path=...` API. `POST /api/classification/evaluate` accepts
+sample requests and does not persist them. APIs require directory owner permission; saves and
+sample requests also require unlocked privileged operations. See [Classification](classification.md)
+for definitions, outputs, agent grants, retry behavior, and live verification.
 
 ### Semantic store keys
 
@@ -1916,7 +2034,7 @@ of injecting host-side credentials. The separate managed website session endpoin
 operator-configured host logins only for targets carrying an explicit
 `managed_website_session` profile binding. Tokenized sessions may receive an
 `HTTP_TARGET_RELAY_BASE_URL` with relay auth embedded in the path prefix; guests should treat the
-base URL as opaque and append `/session/<session-id>/target/<alias>/`. The APP demo workflow is
+base URL as opaque and append `/session/<session-id>/target/<alias>/`. The App demo workflow is
 one consumer layered on top of this generic relay pattern and can register separate UI and API
 aliases for the same provisioned environment.
 
@@ -2203,13 +2321,13 @@ Example `policy.json` overlay:
     "create_ado_backlog_item": [
       {
         "id": "app-ado-work-item-constraints",
-        "name": "APP backlog item constraints",
+        "name": "App backlog item constraints",
         "constraints": [
           {
             "id": "project-fixed",
             "path": "project",
             "operator": "fixed",
-            "value": "Example Industry APP"
+            "value": "Example Industry App"
           },
           {
             "id": "type-allowed",
@@ -2305,6 +2423,13 @@ logical `drafts` folder. Sending email requires a send-capable mailbox grant and
 email target for every recipient whose auth profile names that same mailbox. Creating a draft needs
 the mailbox grant but no send target, so an agent can prepare a draft for human handoff.
 
+`email_list_mailboxes` exposes only the calling session's configured, authorized mailbox IDs,
+account identities, providers, mailbox access levels and logical folders. It is included for new
+email-enabled sessions and available to existing sessions with any allowed email operation, unless
+directory tool policy denies it; explicit discovery-only grants are also supported. It does not
+read email, expose credential references, validate provider authentication, or grant additional
+read/draft/send authority. Use its returned `mailbox_id`, not `account_identifier`, in email tools.
+
 Both canonical fields are nullable for compatibility. Missing or `null` retains the legacy
 allowlist behavior; an explicit empty list grants no targets or mailboxes. Existing sessions are not
 converted implicitly. Admin Web labels legacy sessions and converts them only after an explicit
@@ -2316,9 +2441,13 @@ targets with `teams_chat_allowlist`, and one-on-one user send targets with
 Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
 `teams_post_status` can mention Graph users in channel posts, channel thread replies, and chat
 posts; user targets are resolved into one-on-one chats before sending.
-Direct-message trigger polling requires `targets` and `sender_user_ids` on
-`trigger:teams:direct-message`. Each target is a `chat:<chat-id>` value; sender entries can be
-Graph user IDs, UPNs, or mail addresses.
+Direct-message trigger polling uses resolved `targets` and `sender_user_ids` on
+`trigger:teams:direct-message`. In Admin Web, `chat_target_mode: direct` accepts readable
+`direct_chat_user_upns`; a revision-gated save resolves each UPN to its Graph user ID and ensures
+the corresponding one-to-one chat before persisting both canonical IDs. The UPNs remain stored for
+later editing. `chat_target_mode: explicit` retains the manual form, where each target is a
+`chat:<chat-id>` value and sender entries can be Graph user IDs, UPNs, or mail addresses. Existing
+definitions without `chat_target_mode` continue to use the explicit form.
 The Teams ingest worker persists backoff independently for each channel, chat, discovery endpoint,
 and user lookup. Retryable failure of one target does not delay healthy targets. Configure the
 initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and
@@ -2351,7 +2480,11 @@ Teams Graph change notifications are optional and disabled by default. Set
 discovered one-on-one chat. `evander-teams-notifications.service` listens only on
 `change_notification_listener_host` and `change_notification_listener_port` (defaults
 `127.0.0.1:11882`); the managed Caddy configuration exposes only `/msgraph/teams/*` when a public
-callback base URL is configured. The defaults request a 48-hour subscription, renew 24 hours before
+callback base URL is configured. The listener acknowledges each durably queued callback and drains
+the notification queue in an independent background processor, so a slow serial fallback poll does
+not delay exact-message retrieval. The ingest worker also retains queue leasing as a restart-safe
+fallback. `/healthz` reports processor state and the oldest queued notification age. The defaults
+request a 48-hour subscription, renew 24 hours before
 expiry, and retain a 60-second reconciliation poll for healthy targets. Targets without a confirmed
 healthy subscription continue polling at `poll_interval_seconds` (two seconds by default) without a
 restart. Turning notifications off restores fast polling immediately, stops creation and renewal,
@@ -2418,6 +2551,7 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 | `EVANDER_GIT_SSH_ALIAS` | root `issue_setup` config or host environment | Managed guest clone URL construction; defaults to `evander-git-host`. |
 | `MSSQL_SA_PASSWORD` | `src/evander/cli.py`, `scripts/setup_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
 | `EVANDER_MODEL_PRICING_PATH` | `src/evander/model_usage/pricing.py` and Admin Web Configuration | Optional override for the operator-owned model pricing catalog used by `query:model-usage:list` cost estimates. Defaults to `model-pricing.openai.json` under the configured runtime directory; `evander-cli init-state` seeds it from `config/model-pricing.openai.json.example`, and Admin Web displays and edits the active runtime catalog after privileged unlock with revision checks. The legacy tracked `config/model-pricing.openai.json` file is retained only for upgrade compatibility and is not active by default. |
+| `EVANDER_ADMIN_WEB_SLOW_REQUEST_THRESHOLD_MS` | `config/admin-web.env` | Non-negative duration threshold in milliseconds, default `500`, for `admin_web_request_timing` journal records. Every 5xx response and raised request error is also recorded, including errors after headers. Records include method, canonical route template, status, response-start/first-body/total timings, and stream/failure flags; query strings, cookies, exception text, and request bodies are not logged. For SSE, `duration_ms` measures first-body latency and slow starts are logged immediately, not after the subscription closes; successful subscription lifetime alone does not trigger a warning. Set `0` to log every request (SSE at startup). |
 | `EVANDER_ADMIN_WEB_PAGE_TITLE`, `EVANDER_ADMIN_WEB_HEADER_TITLE`, `EVANDER_ADMIN_WEB_HEADER_TITLE_VISIBLE`, `EVANDER_ADMIN_WEB_HEADER_LOGO_SIZE`, `EVANDER_ADMIN_WEB_*_LOGO_*`, `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` | `config/admin-web.env` | Optional Admin Web branding. The Python service exposes `/api/admin/branding` and `/api/admin/branding/assets/...`; the React shell uses them for the browser title, header title, header logo, product logo, sign-in company logo, and optional wordmark-style header presentation without rebuilding per environment. |
 | Provider mailbox OAuth values (`GMAIL_*_ACCESS_TOKEN`; Graph tenant/client/secret values; legacy `GRAPH_*_ACCESS_TOKEN`) | Referenced indirectly in effective root directory config under `auth_secret_refs` | `src/evander/runtime.py`, `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. Graph client credentials are exchanged and cached host-side; static Graph access tokens remain a compatibility mode. |
 | Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/evander/runtime.py`, `src/evander/services.py`. |

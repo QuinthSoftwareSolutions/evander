@@ -14,7 +14,7 @@ from typing import Any, Iterator
 from evander.models import DirectoryPath
 from evander.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
 
-AUDIT_INDEX_SCHEMA_VERSION = 2
+AUDIT_INDEX_SCHEMA_VERSION = 3
 DEFAULT_TAIL_IMPORT_MAX_LINES = 20_000
 
 _AUDIT_SEARCH_TABLE = "tool_call_audit_search"
@@ -321,6 +321,8 @@ def ensure_audit_index_schema(path: Path | str) -> None:
                 ON tool_call_audit_entries(created_at DESC, row_id DESC);
             CREATE INDEX IF NOT EXISTS idx_tool_call_audit_directory
                 ON tool_call_audit_entries(directory_path, created_at DESC, row_id DESC);
+            CREATE INDEX IF NOT EXISTS idx_tool_call_audit_directory_status
+                ON tool_call_audit_entries(directory_path, status, created_at);
             CREATE INDEX IF NOT EXISTS idx_tool_call_audit_session
                 ON tool_call_audit_entries(session_id, created_at DESC, row_id DESC);
             CREATE INDEX IF NOT EXISTS idx_tool_call_audit_tool
@@ -659,12 +661,23 @@ class ToolCallAuditIndex:
                 ),
             )
             where_clause = f"WHERE {' AND '.join(where_sql)}" if where_sql else ""
+            # Counts must not visit the large payload rows. SQLite otherwise
+            # sometimes prefers the status index for descendant-directory GROUP
+            # BY queries, even though it cannot cover the directory filter.
+            count_index = (
+                "INDEXED BY idx_tool_call_audit_directory_status"
+                if directory_path is not None
+                and session_id is None
+                and tool_name is None
+                and not normalized_query
+                else ""
+            )
             status_counts = {
                 str(row["status"] or "success"): int(row["count"])
                 for row in connection.execute(
                     f"""
                     SELECT status, COUNT(*) AS count
-                    FROM tool_call_audit_entries
+                    FROM tool_call_audit_entries {count_index}
                     {where_clause}
                     GROUP BY status
                     """,

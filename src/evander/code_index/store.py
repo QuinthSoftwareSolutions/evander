@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS scip_files(snapshot TEXT NOT NULL REFERENCES snapshot
  name TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(snapshot,name));
 """
 
+PERFORMANCE_SCHEMA = """
+CREATE INDEX IF NOT EXISTS chunks_snapshot_hash_path ON chunks(snapshot,hash,path);
+CREATE INDEX IF NOT EXISTS chunks_hash ON chunks(hash);
+CREATE INDEX IF NOT EXISTS embeddings_hash ON embeddings(hash);
+CREATE TABLE IF NOT EXISTS content_search_rows(hash TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS content_gc_candidates(hash TEXT PRIMARY KEY);
+INSERT OR REPLACE INTO content_search_rows SELECT hash,rowid FROM content_search;
+INSERT OR IGNORE INTO content_gc_candidates
+ SELECT hash FROM contents WHERE NOT EXISTS (SELECT 1 FROM chunks WHERE chunks.hash=contents.hash);
+"""
+
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
@@ -68,8 +79,17 @@ class IndexStore:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 db.execute("PRAGMA journal_mode=WAL")
-                db.executescript(SCHEMA + "PRAGMA user_version=1;")
-            elif version != 1:
+                db.executescript(SCHEMA + PERFORMANCE_SCHEMA + "PRAGMA user_version=2;")
+            elif version == 1:
+                db.execute("BEGIN IMMEDIATE")
+                # Another process may have migrated while this connection waited.
+                if db.execute("PRAGMA user_version").fetchone()[0] == 1:
+                    for statement in PERFORMANCE_SCHEMA.split(";"):
+                        if statement.strip():
+                            db.execute(statement)
+                    db.execute("PRAGMA user_version=2")
+                db.commit()
+            elif version != 2:
                 raise ValueError("Unsupported repository index schema version")
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             with db:
@@ -86,6 +106,94 @@ class IndexStore:
                 IndexSettings.model_validate_json(row["body"]) if row else IndexSettings()
             ).model_dump(),
         }
+
+    def delete_snapshot(self, build_id: str) -> None:
+        """Queue only the deleted snapshot's content for bounded reclamation."""
+        with self.connect(write=True) as db:
+            db.execute(
+                "INSERT OR IGNORE INTO content_gc_candidates SELECT hash FROM chunks WHERE snapshot=?",
+                (build_id,),
+            )
+            db.execute("DELETE FROM snapshots WHERE id=?", (build_id,))
+
+    def collect_content_garbage(self, *, limit: int = 1000) -> int:
+        with self.connect(write=True) as db:
+            candidates = [
+                row[0]
+                for row in db.execute(
+                    "SELECT hash FROM content_gc_candidates ORDER BY hash LIMIT ?", (limit,)
+                )
+            ]
+            removed = 0
+            for content_hash in candidates:
+                referenced = db.execute(
+                    "SELECT 1 FROM chunks WHERE hash=? LIMIT 1", (content_hash,)
+                ).fetchone()
+                if referenced is None:
+                    db.execute(
+                        "DELETE FROM content_search WHERE rowid IN "
+                        "(SELECT search_rowid FROM content_search_rows WHERE hash=?)",
+                        (content_hash,),
+                    )
+                    db.execute("DELETE FROM embeddings WHERE hash=?", (content_hash,))
+                    removed += db.execute(
+                        "DELETE FROM contents WHERE hash=?", (content_hash,)
+                    ).rowcount
+                    db.execute("DELETE FROM content_search_rows WHERE hash=?", (content_hash,))
+                db.execute("DELETE FROM content_gc_candidates WHERE hash=?", (content_hash,))
+            return removed
+
+    def semantic_page(
+        self,
+        snapshot: str,
+        repo: str,
+        fingerprint: str,
+        *,
+        after: tuple[str, str] | None = None,
+        from_hash: str | None = None,
+        limit: int = 32,
+    ) -> list[dict]:
+        conditions, args = ["snapshot=?"], [snapshot]
+        if after is not None:
+            conditions.append("(hash,path) > (?,?)")
+            args.extend(after)
+        elif from_hash is not None:
+            conditions.append("hash >= ?")
+            args.append(from_hash)
+        with self.connect() as db:
+            rows = db.execute(
+                "WITH page AS (SELECT DISTINCT hash,path FROM chunks WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY hash,path LIMIT ?) "
+                "SELECT page.hash,page.path,t.text,e.vector FROM page "
+                "JOIN contents t ON t.hash=page.hash "
+                "LEFT JOIN embeddings e ON e.repo=? AND e.fingerprint=? AND e.hash=page.hash "
+                "ORDER BY page.hash,page.path",
+                (*args, limit, repo, fingerprint),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def legacy_semantic_checkpoint(self, snapshot: str, completed: int) -> tuple[str | None, int]:
+        """Replay the last hash group when converting the old positional checkpoint.
+
+        The old query ordered only by hash. Replaying that entire group avoids
+        skipping paths if SQLite happened to order equal hashes differently.
+        """
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT DISTINCT hash,path FROM chunks WHERE snapshot=? "
+                "ORDER BY hash,path LIMIT 1 OFFSET ?",
+                (snapshot, max(0, completed - 1)),
+            ).fetchone()
+            if row is None:
+                return None, 0
+            content_hash = str(row["hash"])
+            preceding = db.execute(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT hash,path FROM chunks "
+                "WHERE snapshot=? AND hash<?)",
+                (snapshot, content_hash),
+            ).fetchone()[0]
+        return content_hash, preceding
 
     def save_settings(self, repo: str, settings: IndexSettings, revision: int) -> dict:
         with self.connect(write=True) as db:
@@ -163,6 +271,7 @@ class IndexStore:
         *,
         active: bool = False,
         sha: str | None = None,
+        statuses: tuple[str, ...] | None = None,
         limit: int = 200,
         offset: int = 0,
     ) -> list[dict]:
@@ -175,12 +284,15 @@ class IndexStore:
         if sha:
             clauses.append("sha=?")
             args.append(sha)
+        if statuses:
+            clauses.append("status IN (" + ",".join("?" for _ in statuses) + ")")
+            args.extend(statuses)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         order = (
             "CASE WHEN status='running' OR json_extract(metrics,'$.compiler_submission_pending')=1 "
-            "THEN 0 WHEN status='importing' THEN 1 ELSE 2 END, created ASC"
+            "THEN 0 WHEN status='importing' THEN 1 ELSE 2 END, created ASC, id ASC"
             if active
-            else "created DESC"
+            else "created DESC, id DESC"
         )
         with self.connect() as db:
             rows = db.execute(
@@ -188,6 +300,28 @@ class IndexStore:
                 [*args, limit, offset],
             ).fetchall()
         return [self.payload(row) for row in rows]
+
+    def count(
+        self,
+        repo: str | None = None,
+        *,
+        sha: str | None = None,
+        statuses: tuple[str, ...] | None = None,
+    ) -> int:
+        clauses, args = [], []
+        if repo:
+            clauses.append("repo=?")
+            args.append(repo)
+        if sha:
+            clauses.append("sha=?")
+            args.append(sha)
+        if statuses:
+            clauses.append("status IN (" + ",".join("?" for _ in statuses) + ")")
+            args.extend(statuses)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as db:
+            row = db.execute("SELECT COUNT(*) count FROM snapshots" + where, args).fetchone()
+        return int(row["count"])
 
     def update(self, build_id: str, **values) -> None:
         allowed = {
@@ -212,6 +346,17 @@ class IndexStore:
                 + " WHERE id=? AND status!='cancelled'",
                 (*values.values(), build_id),
             )
+
+    def update_worker_cleanup_metrics(self, build_id: str, metrics: dict) -> None:
+        """Persist cleanup progress only after compilation no longer needs the worker."""
+        with self.connect(write=True) as db:
+            cursor = db.execute(
+                "UPDATE snapshots SET metrics=?,updated=? WHERE id=? "
+                "AND status IN ('importing','ready','partial','failed','cancelled')",
+                (json.dumps(metrics), now(), build_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Index build still requires its worker")
 
     def usable(self, repo: str, sha: str) -> dict | None:
         with self.connect() as db:

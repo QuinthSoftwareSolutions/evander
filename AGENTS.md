@@ -393,6 +393,10 @@ Do not leave stalled test processes running while continuing work.
 
 ## Guidance For Future Changes
 
+- Keep this repository customer-neutral. Customer-specific names, identifiers,
+  verifier scripts, policies, tests, incident notes and evidence belong in
+  operator-owned storage outside the repository, never in tracked or ignored files.
+  Keep platform behavior generic and use synthetic identities in examples and tests.
 - Treat `src/evander/admin/composition.py::build_admin_runtime` and
   `AdminRuntimeComponents` as the supported admin runtime assembly surface for CLI, gateway,
   and Admin Web integration. Place domain logic in the narrow services under

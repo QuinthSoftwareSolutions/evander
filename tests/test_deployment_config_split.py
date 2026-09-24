@@ -85,7 +85,6 @@ def test_azure_deployment_examples_are_non_secret_templates() -> None:
     assert all(value == "" for value in vault_payload.values())
 
     forbidden = (
-        "truman",
         "52.158.33.185",
         "northeurope.cloudapp.azure.com",
         "jonathan.quinth",

@@ -252,7 +252,7 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
     }
   });
 
-  const uploadDir = mkdtempSync(path.join(os.tmpdir(), "truman-artifact-upload-"));
+  const uploadDir = mkdtempSync(path.join(os.tmpdir(), "evander-artifact-upload-"));
   const uploadFilePath = path.join(uploadDir, "sample.txt");
   writeFileSync(uploadFilePath, "artifact payload\n");
 
@@ -261,15 +261,15 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
   });
 
   await page.getByRole("heading", { name: "Artifacts", exact: true }).waitFor({ state: "visible" });
-  await page.getByRole("heading", { name: "Published artifacts" }).waitFor({ state: "visible" });
+  await page.getByRole("heading", { name: "Archive list" }).waitFor({ state: "visible" });
   await page.waitForFunction(
-    () => document.querySelector(".artifacts-table tbody tr strong")?.textContent === "existing/artifact",
+    () => document.querySelector(".artifacts-table tbody tr .record-name")?.textContent === "existing/artifact",
     undefined,
     { timeout: 5000 },
   );
   await page.locator(".artifact-space-tree-button", { hasText: "/teams/team" }).click();
   await page.waitForFunction(
-    () => document.querySelector(".artifacts-table tbody tr strong")?.textContent === "team/backend/report",
+    () => document.querySelector(".artifacts-table tbody tr .record-name")?.textContent === "team/backend/report",
     undefined,
     { timeout: 5000 },
   );
@@ -279,7 +279,7 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
   );
   await page.locator(".artifact-space-tree-all").click();
   await page.waitForFunction(
-    () => document.querySelector(".artifacts-table tbody tr strong")?.textContent === "existing/artifact",
+    () => document.querySelector(".artifacts-table tbody tr .record-name")?.textContent === "existing/artifact",
     undefined,
     { timeout: 5000 },
   );
@@ -294,9 +294,9 @@ test("admin shell artifacts upload keeps the success banner visible after the mo
   await assert.doesNotReject(() => dialog.waitFor({ state: "detached" }));
   await assert.doesNotReject(() => page.getByText("Uploaded uploads/example.").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "uploads/example" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("Published artifacts").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Archive list").waitFor({ state: "visible" }));
   assert.equal(await page.locator(".callout.success-callout").innerText(), "Uploaded uploads/example.");
-  assert.equal(await page.locator(".artifacts-table tbody tr").first().locator("strong").innerText(), "uploads/example");
+  assert.equal(await page.locator(".artifacts-table tbody tr").first().locator(".record-name").innerText(), "uploads/example");
   assert.equal(uploadRequests.length, 1);
   assert.ok(
     requestedEndpoints.some((endpoint) => endpoint.startsWith("/api/admin/artifacts")),

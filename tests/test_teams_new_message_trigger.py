@@ -343,7 +343,7 @@ def test_teams_trigger_message_filter_matches_content_case_insensitively(tmp_pat
             author_id="user-a",
             author_name="User A",
             chat_id="19:abc@thread.v2",
-            content="hello @Truman Bot",
+            content="hello @Evander Bot",
             created_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
             metadata={"source": "teams_graph_api", "chat_id": "19:abc@thread.v2"},
         ),
@@ -372,7 +372,7 @@ def test_teams_trigger_message_filter_matches_content_case_insensitively(tmp_pat
                         "target": "chat:19:abc@thread.v2",
                         "message_filter": {
                             "content": {
-                                "contains": "@truman bot",
+                                "contains": "@evander bot",
                                 "case_sensitive": False,
                             }
                         },
@@ -405,7 +405,7 @@ def test_teams_trigger_message_filter_matches_mentions_by_user_id(tmp_path: Path
             author_id="user-a",
             author_name="User A",
             chat_id="19:abc@thread.v2",
-            content='<p><at id="0">Truman</at>&nbsp;<at id="1">Bot</at>&nbsp;Welcome</p>',
+            content='<p><at id="0">Evander</at>&nbsp;<at id="1">Bot</at>&nbsp;Welcome</p>',
             created_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
             metadata={
                 "source": "teams_graph_api",
@@ -414,7 +414,7 @@ def test_teams_trigger_message_filter_matches_mentions_by_user_id(tmp_path: Path
                     "mentions": [
                         {
                             "id": 0,
-                            "mentionText": "Truman",
+                            "mentionText": "Evander",
                             "mentioned": {
                                 "user": {
                                     "id": "143e5b02-868f-4f0c-a262-cf509b6c09e5",

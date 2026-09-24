@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from evander.admin.services.website_session_admin_service import WebsiteSessionAdminService
+from evander.admin.services.classification_admin_service import ClassificationAdminService
+from evander.classification.service import ClassificationService
 from evander.admin.services.repository_index_service import RepositoryIndexService
 
 import os
@@ -22,6 +24,7 @@ from evander.agent_control import AgentControlStore
 from evander.addons import (
     AddonContext,
     LoadedAddonCatalog,
+    addon_mcp_discovery_permissions,
     addon_mcp_tool_catalog_payloads,
     addon_runtime_dir,
     load_addons,
@@ -239,6 +242,7 @@ class AdminRuntimeComponents:
     capacity_health_admin: CapacityHealthAdminService
     connector_admin: ConnectorAdminService
     website_session_admin: WebsiteSessionAdminService
+    classification_admin: ClassificationAdminService
     host_directory_admin: HostDirectoryAdminService
     codex_auth_admin: CodexAuthAdminService
     documentation_admin: DocumentationService
@@ -377,7 +381,8 @@ def _build_admin_runtime_components(
     addon_tool_names = [item["value"] for item in addon_mcp_tool_catalog_payloads(addon_catalog)]
     if addon_tool_names:
         runtime.policy.set_extra_mcp_tool_names(
-            set(runtime.policy.extra_mcp_tool_names).union(addon_tool_names)
+            set(runtime.policy.extra_mcp_tool_names).union(addon_tool_names),
+            discovery_permissions=addon_mcp_discovery_permissions(addon_catalog),
         )
     for addon in addon_catalog.registrations:
         if addon.outbound_identity_resolver is None:
@@ -523,6 +528,7 @@ def _build_admin_runtime_components(
             normalize_directory_reference=normalize_directory_reference,
             addon_catalog=addon_catalog,
             managed_git_admin=managed_git_admin,
+            teams_admin=teams_admin,
         )
     )
     addon_admin = AddonAdminService(
@@ -772,6 +778,13 @@ def _build_admin_runtime_components(
         agent_create_executor=agent_create_executor,
         project_dir_provider=lambda: project_dir,
     )
+    skill_admin.configure_agent_skill_propagation(
+        list_active_sessions=runtime.session_repository.list_active_sessions,
+        install_agent_skills=lambda *args, **kwargs: vm_agent_admin.install_admin_agent_skills(
+            *args, **kwargs
+        ),
+        is_container_session=vm_agent_admin.is_container_session,
+    )
 
     components = AdminRuntimeComponents(
         runtime_dir=runtime_dir_path,
@@ -808,6 +821,10 @@ def _build_admin_runtime_components(
         connector_admin=connector_admin,
         website_session_admin=WebsiteSessionAdminService(
             operations_admin, runtime.provider_config, runtime.audit
+        ),
+        classification_admin=ClassificationAdminService(
+            operations_admin, runtime.provider_config, runtime.audit,
+            ClassificationService(config.runtime_dir),
         ),
         host_directory_admin=host_directory_admin,
         codex_auth_admin=codex_auth_admin,

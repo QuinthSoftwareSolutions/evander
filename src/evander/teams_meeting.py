@@ -451,7 +451,7 @@ class TeamsMeetingService:
         if origin_session is not None:
             voice_prompt = (
                 str(prompt or "").strip()
-                or "Join this Teams meeting as a projected live voice session for the originating Truman agent."
+                or "Join this Teams meeting as a projected live voice session for the originating Evander agent."
             )
             tool_summary = None
             tool_policy = getattr(self.runtime, "policy", None)

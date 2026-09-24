@@ -30,7 +30,7 @@ def test_upsert_ado_proxy_issue_items_accepts_query_items_and_writes_managed_bin
                     "Microsoft.VSTS.TCM.ReproSteps": "Open picker",
                     "Microsoft.VSTS.Common.AcceptanceCriteria": "Selection persists",
                     "System.State": "Committed",
-                    "System.Tags": "truman; backend",
+                    "System.Tags": "evander; backend",
                     "System.ChangedDate": "2026-05-22T10:00:00Z",
                 },
             }

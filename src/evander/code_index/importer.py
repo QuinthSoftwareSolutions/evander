@@ -78,6 +78,10 @@ def import_artifact(
         row = db.execute("SELECT status FROM snapshots WHERE id=?", (build["id"],)).fetchone()
         if row is None or row[0] == "cancelled":
             return {}
+        db.execute(
+            "INSERT OR IGNORE INTO content_gc_candidates SELECT hash FROM chunks WHERE snapshot=?",
+            (build["id"],),
+        )
         for table in ("chunks", "occurrences", "relationships", "scip_files"):
             db.execute(f"DELETE FROM {table} WHERE snapshot=?", (build["id"],))
         for document in documents:
@@ -101,9 +105,13 @@ def import_artifact(
                         "INSERT OR IGNORE INTO contents VALUES(?,?)", (content_hash, text)
                     ).rowcount
                     if inserted:
-                        db.execute(
+                        search_row = db.execute(
                             "INSERT INTO content_search(hash,terms) VALUES(?,?)",
                             (content_hash, search_terms(document.path + "\n" + text)),
+                        )
+                        db.execute(
+                            "INSERT OR REPLACE INTO content_search_rows VALUES(?,?)",
+                            (content_hash, search_row.lastrowid),
                         )
                     chunk_id = digest([build["id"], document.path, first, last])
                     db.execute(

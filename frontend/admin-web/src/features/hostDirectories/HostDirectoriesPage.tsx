@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson } from "../admin/api";
+import { RecordWorkspace } from "../admin/RecordWorkspace";
+import { readAdminHashQuery } from "../admin/hash";
 
 type HostDirectoryCapability = "list" | "import" | "delete";
 
@@ -159,7 +161,7 @@ export function HostDirectoriesPage({
 }) {
   const [state, setState] = useState<HostDirectoryState | null>(null);
   const [draft, setDraft] = useState<HostDirectoryConfig>({});
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => readAdminHashQuery().get("directory_id"));
   const [newDirectoryId, setNewDirectoryId] = useState("");
   const [query, setQuery] = useState("");
   const [healthById, setHealthById] = useState<Record<string, HostDirectoryHealth | null>>({});
@@ -529,349 +531,470 @@ export function HostDirectoriesPage({
   const selectedHealth = selectedId ? healthById[selectedId] ?? selectedRecord?.health : null;
 
   return (
-    <div className="feature-page host-directories-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Scoped host filesystem access</div>
-            <h1>Host Directories</h1>
-          </div>
-          <button type="button" onClick={() => void refresh()} disabled={loading || saving}>
-            Refresh
-          </button>
-        </div>
-        <label className="field-stack">
-          <span>Search</span>
+    <RecordWorkspace
+      recordLabel="directory"
+      title="Host directories"
+      description="Compare granted filesystem roots, capabilities, and inherited sources. Inspect recovery and policy on the directory page."
+      columns={["Directory", "Health", "Capabilities", "Source"]}
+      records={visibleRecords.map((record) => ({
+        id: record.directory_id,
+        title: record.display_name || record.directory_id,
+        description: record.root,
+        href: `#host-directories?${new URLSearchParams({ directory_id: record.directory_id })}`,
+        cells: [
+          {
+            value: record.disabled ? "Disabled" : healthLabel(record.health),
+            content: (
+              <span className={`status-pill ${record.disabled ? "state-idle" : healthClass(record.health)}`}>
+                {record.disabled ? "Disabled" : healthLabel(record.health)}
+              </span>
+            ),
+          },
+          { value: record.capabilities.join(", ") || "None" },
+          { value: record.defined_here ? "Local override" : record.source_directory_path || "Inherited" },
+        ],
+        facts: [
+          ["ID", record.directory_id],
+          ["Root", record.root],
+          ["Health", healthLabel(record.health)],
+          ["Capabilities", record.capabilities.join(", ") || "None"],
+          ["Source", record.defined_here ? "Local override" : record.source_directory_path || "Inherited"],
+          ["Delete approval", record.delete_requires_approval ? "Required" : "Not required"],
+        ],
+      }))}
+      selectedId={selectedId}
+      onSelect={setSelectedId}
+      loading={loading}
+      error={error}
+      initialRecordOpen={Boolean(readAdminHashQuery().get("directory_id"))}
+      recordRouteKeys="directory_id"
+      filters={
+        <label className="field-stack collection-search">
+          <span>Search host directories</span>
           <input
+            type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Name, ID, or host path"
           />
         </label>
-        <div className="feature-list">
-          {visibleRecords.map((record) => (
-            <button
-              key={record.directory_id}
-              type="button"
-              className={`feature-list-item${selectedId === record.directory_id ? " selected" : ""}`}
-              onClick={() => setSelectedId(record.directory_id)}
-            >
-              <div className="feature-list-title-row">
-                <strong>{record.display_name || record.directory_id}</strong>
-                <span className={`status-pill ${record.disabled ? "state-idle" : healthClass(record.health)}`}>
-                  {record.disabled ? "Disabled" : healthLabel(record.health)}
-                </span>
-              </div>
-              <div className="feature-list-meta">
-                {record.directory_id} · {record.defined_here ? "Local override" : record.source_directory_path || "Inherited"}
-              </div>
-            </button>
-          ))}
-          {!loading && visibleRecords.length === 0 ? (
-            <div className="empty-state">No host directories match this directory and filter.</div>
-          ) : null}
-        </div>
-        <div className="host-directory-add">
-          <label className="field-stack">
-            <span>New directory ID</span>
-            <input
-              value={newDirectoryId}
-              onChange={(event) => setNewDirectoryId(event.target.value)}
-              placeholder="shared-inbox"
-              disabled={saving || !privilegedUnlocked}
-            />
-          </label>
+      }
+      actions={(openRecord) => (
+        <>
+          <button type="button" disabled={loading || saving} onClick={() => void refresh()}>
+            Refresh
+          </button>
           <button
             type="button"
-            onClick={addDirectory}
-            disabled={!newDirectoryId.trim() || saving || !privilegedUnlocked}
+            className="primary"
+            disabled={saving || !privilegedUnlocked}
+            title={!privilegedUnlocked ? "Unlock privileged operations to add directories" : undefined}
+            onClick={() => {
+              openRecord();
+              window.requestAnimationFrame(() =>
+                document.querySelector<HTMLInputElement>(".host-directory-add input")?.focus(),
+              );
+            }}
           >
             Add directory
           </button>
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selectedRecord?.display_name ?? "Host directory configuration"}</h2>
-            <p className="muted-text">
-              Definitions inherit by Evander directory. Agents see the resource ID and relative paths, never the absolute host root.
-            </p>
-          </div>
-          <div className="feature-toolbar-actions">
-            <button
-              type="button"
-              onClick={() => activeState && setDraft(activeState.config)}
-              disabled={!dirty || saving}
-            >
-              Reset
-            </button>
-            <button
-              type="button"
-              onClick={() => void checkHealth()}
-              disabled={!selectedId || !recordsById[selectedId] || checkingHealth || saving || !privilegedUnlocked}
-            >
-              {checkingHealth ? "Checking…" : "Check health"}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void save()}
-              disabled={!dirty || saving || !activeState || !privilegedUnlocked}
-            >
-              {saving ? "Saving…" : "Save configuration"}
+        </>
+      )}
+      inspectorContent={
+        dirty ? (
+          <p className="callout warning-callout">
+            Unsaved directory configuration is preserved. View the directory to continue editing.
+          </p>
+        ) : null
+      }
+    >
+      <div className="feature-page host-directories-page">
+        <section className="feature-sidebar">
+          <div className="feature-sidebar-header">
+            <div>
+              <div className="eyebrow">Scoped host filesystem access</div>
+              <h1>Host Directories</h1>
+            </div>
+            <button type="button" onClick={() => void refresh()} disabled={loading || saving}>
+              Refresh
             </button>
           </div>
-        </div>
-
-        {!privilegedUnlocked ? (
-          <div className="callout warning-callout">
-            Unlock privileged operations to edit definitions, check host paths, or recover quarantined entries.
-          </div>
-        ) : null}
-        {error ? <div className="callout warning-callout">{error}</div> : null}
-        {status ? <div className="callout">{status}</div> : null}
-
-        {selectedId && selectedDefinition ? (
-          <>
-            <article className="panel">
-              <div className="panel-header">
-                <div>
-                  <h3>Resource definition</h3>
-                  <p className="muted-text">
-                    ID <strong>{selectedId}</strong>
-                    {rawDefinitions[selectedId] ? " is defined in this directory." : " is inherited; editing creates a local override."}
-                  </p>
+          <label className="field-stack">
+            <span>Search</span>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Name, ID, or host path"
+            />
+          </label>
+          <div className="feature-list">
+            {visibleRecords.map((record) => (
+              <button
+                key={record.directory_id}
+                type="button"
+                className={`feature-list-item${selectedId === record.directory_id ? " selected" : ""}`}
+                onClick={() => setSelectedId(record.directory_id)}
+              >
+                <div className="feature-list-title-row">
+                  <strong>{record.display_name || record.directory_id}</strong>
+                  <span className={`status-pill ${record.disabled ? "state-idle" : healthClass(record.health)}`}>
+                    {record.disabled ? "Disabled" : healthLabel(record.health)}
+                  </span>
                 </div>
-                <div className="status-pills">
+                <div className="feature-list-meta">
+                  {record.directory_id} ·{" "}
+                  {record.defined_here ? "Local override" : record.source_directory_path || "Inherited"}
+                </div>
+              </button>
+            ))}
+            {!loading && visibleRecords.length === 0 ? (
+              <div className="empty-state">No host directories match this directory and filter.</div>
+            ) : null}
+          </div>
+          <div className="host-directory-add">
+            <label className="field-stack">
+              <span>New directory ID</span>
+              <input
+                value={newDirectoryId}
+                onChange={(event) => setNewDirectoryId(event.target.value)}
+                placeholder="shared-inbox"
+                disabled={saving || !privilegedUnlocked}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={addDirectory}
+              disabled={!newDirectoryId.trim() || saving || !privilegedUnlocked}
+            >
+              Add directory
+            </button>
+          </div>
+        </section>
+
+        <section className="feature-content">
+          <div className="feature-toolbar">
+            <div>
+              <h2>{selectedRecord?.display_name ?? "Host directory configuration"}</h2>
+              <p className="muted-text">
+                Definitions inherit by Evander directory. Agents see the resource ID and relative paths, never the
+                absolute host root.
+              </p>
+            </div>
+            <div className="feature-toolbar-actions">
+              <button
+                type="button"
+                onClick={() => activeState && setDraft(activeState.config)}
+                disabled={!dirty || saving}
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                onClick={() => void checkHealth()}
+                disabled={!selectedId || !recordsById[selectedId] || checkingHealth || saving || !privilegedUnlocked}
+              >
+                {checkingHealth ? "Checking…" : "Check health"}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void save()}
+                disabled={!dirty || saving || !activeState || !privilegedUnlocked}
+              >
+                {saving ? "Saving…" : "Save configuration"}
+              </button>
+            </div>
+          </div>
+
+          {!privilegedUnlocked ? (
+            <div className="callout warning-callout">
+              Unlock privileged operations to edit definitions, check host paths, or recover quarantined entries.
+            </div>
+          ) : null}
+          {error ? <div className="callout warning-callout">{error}</div> : null}
+          {status ? <div className="callout">{status}</div> : null}
+
+          {selectedId && selectedDefinition ? (
+            <>
+              <article className="panel">
+                <div className="panel-header">
+                  <div>
+                    <h3>Resource definition</h3>
+                    <p className="muted-text">
+                      ID <strong>{selectedId}</strong>
+                      {rawDefinitions[selectedId]
+                        ? " is defined in this directory."
+                        : " is inherited; editing creates a local override."}
+                    </p>
+                  </div>
+                  <div className="status-pills">
+                    <span className={`status-pill ${healthClass(selectedHealth)}`}>{healthLabel(selectedHealth)}</span>
+                    {dirty ? <span className="status-pill state-pending">Unsaved</span> : null}
+                  </div>
+                </div>
+
+                <div className="form-grid host-directory-form">
+                  <label className="field-stack">
+                    <span>Display name</span>
+                    <input
+                      value={selectedDefinition.display_name}
+                      onChange={(event) => updateDefinition({ display_name: event.target.value })}
+                      disabled={saving || !privilegedUnlocked}
+                    />
+                  </label>
+                  <label className="field-stack host-directory-root-field">
+                    <span>Absolute host root</span>
+                    <input
+                      value={selectedDefinition.root}
+                      onChange={(event) => updateDefinition({ root: event.target.value })}
+                      placeholder="/srv/evander/inbox"
+                      disabled={saving || !privilegedUnlocked}
+                    />
+                  </label>
+                  <label className="field-stack host-directory-description-field">
+                    <span>Description</span>
+                    <textarea
+                      rows={3}
+                      value={selectedDefinition.description}
+                      onChange={(event) => updateDefinition({ description: event.target.value })}
+                      disabled={saving || !privilegedUnlocked}
+                    />
+                  </label>
+                </div>
+
+                <fieldset className="host-directory-capabilities">
+                  <legend>Agent capabilities</legend>
+                  <div className="host-directory-capability-options">
+                    {CAPABILITIES.map((capability) => (
+                      <label className="checkbox-row" key={capability}>
+                        <input
+                          type="checkbox"
+                          checked={selectedDefinition.capabilities.includes(capability)}
+                          onChange={(event) => {
+                            const next = event.target.checked
+                              ? [...selectedDefinition.capabilities, capability]
+                              : selectedDefinition.capabilities.filter((item) => item !== capability);
+                            const capabilities = CAPABILITIES.filter((item) => next.includes(item));
+                            updateDefinition({
+                              capabilities,
+                              ...(capability === "delete" && !event.target.checked
+                                ? { delete_requires_approval: true }
+                                : {}),
+                            });
+                          }}
+                          disabled={saving || !privilegedUnlocked}
+                        />
+                        <span>{capability}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                <div className="form-grid">
+                  <label className="field-stack">
+                    <span>Maximum import bytes</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100 * 1024 * 1024}
+                      value={selectedDefinition.max_import_bytes}
+                      onChange={(event) => updateDefinition({ max_import_bytes: Number(event.target.value) })}
+                      disabled={saving || !privilegedUnlocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Maximum import entries</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10_000}
+                      value={selectedDefinition.max_import_entries}
+                      onChange={(event) => updateDefinition({ max_import_entries: Number(event.target.value) })}
+                      disabled={saving || !privilegedUnlocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Maximum watched entries</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100_000}
+                      value={selectedDefinition.max_watch_entries}
+                      onChange={(event) => updateDefinition({ max_watch_entries: Number(event.target.value) })}
+                      disabled={saving || !privilegedUnlocked}
+                    />
+                  </label>
+                </div>
+
+                <div className="host-directory-toggle-row">
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={selectedDefinition.delete_requires_approval}
+                      onChange={(event) => updateDefinition({ delete_requires_approval: event.target.checked })}
+                      disabled={saving || !privilegedUnlocked || !selectedDefinition.capabilities.includes("delete")}
+                    />
+                    <span>Agent deletes require approval</span>
+                  </label>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={selectedDefinition.disabled}
+                      onChange={(event) => updateDefinition({ disabled: event.target.checked })}
+                      disabled={saving || !privilegedUnlocked}
+                    />
+                    <span>Disable this resource</span>
+                  </label>
+                </div>
+
+                {rawDefinitions[selectedId] ? (
+                  <div className="inline-actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={removeDefinition}
+                      disabled={saving || !privilegedUnlocked}
+                    >
+                      Remove local definition
+                    </button>
+                  </div>
+                ) : null}
+              </article>
+
+              <article className="panel">
+                <div className="panel-header">
+                  <div>
+                    <h3>Host path health</h3>
+                    <p className="muted-text">
+                      Checks are run by the host and do not expose this root to agent sessions.
+                    </p>
+                  </div>
                   <span className={`status-pill ${healthClass(selectedHealth)}`}>{healthLabel(selectedHealth)}</span>
-                  {dirty ? <span className="status-pill state-pending">Unsaved</span> : null}
                 </div>
-              </div>
-
-              <div className="form-grid host-directory-form">
-                <label className="field-stack">
-                  <span>Display name</span>
-                  <input
-                    value={selectedDefinition.display_name}
-                    onChange={(event) => updateDefinition({ display_name: event.target.value })}
-                    disabled={saving || !privilegedUnlocked}
-                  />
-                </label>
-                <label className="field-stack host-directory-root-field">
-                  <span>Absolute host root</span>
-                  <input
-                    value={selectedDefinition.root}
-                    onChange={(event) => updateDefinition({ root: event.target.value })}
-                    placeholder="/srv/evander/inbox"
-                    disabled={saving || !privilegedUnlocked}
-                  />
-                </label>
-                <label className="field-stack host-directory-description-field">
-                  <span>Description</span>
-                  <textarea
-                    rows={3}
-                    value={selectedDefinition.description}
-                    onChange={(event) => updateDefinition({ description: event.target.value })}
-                    disabled={saving || !privilegedUnlocked}
-                  />
-                </label>
-              </div>
-
-              <fieldset className="host-directory-capabilities">
-                <legend>Agent capabilities</legend>
-                <div className="host-directory-capability-options">
-                  {CAPABILITIES.map((capability) => (
-                    <label className="checkbox-row" key={capability}>
-                      <input
-                        type="checkbox"
-                        checked={selectedDefinition.capabilities.includes(capability)}
-                        onChange={(event) => {
-                          const next = event.target.checked
-                            ? [...selectedDefinition.capabilities, capability]
-                            : selectedDefinition.capabilities.filter((item) => item !== capability);
-                          const capabilities = CAPABILITIES.filter((item) => next.includes(item));
-                          updateDefinition({
-                            capabilities,
-                            ...(capability === "delete" && !event.target.checked
-                              ? { delete_requires_approval: true }
-                              : {}),
-                          });
-                        }}
-                        disabled={saving || !privilegedUnlocked}
-                      />
-                      <span>{capability}</span>
-                    </label>
-                  ))}
+                <div className="detail-grid">
+                  <div>
+                    <span>Availability</span>
+                    <strong>
+                      {selectedHealth?.available == null
+                        ? "Not checked"
+                        : selectedHealth.available
+                          ? "Available"
+                          : "Unavailable"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Safe directory open</span>
+                    <strong>
+                      {selectedHealth?.status == null
+                        ? "Not checked"
+                        : selectedHealth.status === "ok"
+                          ? "Passed"
+                          : "Failed"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Readable</span>
+                    <strong>
+                      {selectedHealth?.checks?.readable == null
+                        ? "Not checked"
+                        : selectedHealth.checks.readable
+                          ? "Passed"
+                          : "Failed"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Mount boundary checks</span>
+                    <strong>
+                      {selectedHealth?.checks?.mount_boundary_verified == null
+                        ? "Not checked"
+                        : selectedHealth.checks.mount_boundary_verified
+                          ? "Available"
+                          : "Unavailable"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Delete quarantine</span>
+                    <strong>
+                      {selectedHealth?.checks?.quarantine_writable == null
+                        ? "Not checked"
+                        : selectedHealth.checks.quarantine_writable
+                          ? "Writable"
+                          : "Unavailable"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Status</span>
+                    <strong>{selectedHealth?.status ?? "Not checked"}</strong>
+                  </div>
+                  <div>
+                    <span>Error class</span>
+                    <strong>{selectedHealth?.error_class ?? "None"}</strong>
+                  </div>
                 </div>
-              </fieldset>
+                {selectedHealth?.message || selectedHealth?.error ? (
+                  <div className="callout warning-callout">{selectedHealth.message || selectedHealth.error}</div>
+                ) : null}
+              </article>
 
-              <div className="form-grid">
-                <label className="field-stack">
-                  <span>Maximum import bytes</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={100 * 1024 * 1024}
-                    value={selectedDefinition.max_import_bytes}
-                    onChange={(event) => updateDefinition({ max_import_bytes: Number(event.target.value) })}
-                    disabled={saving || !privilegedUnlocked}
-                  />
-                </label>
-                <label className="field-stack">
-                  <span>Maximum import entries</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10_000}
-                    value={selectedDefinition.max_import_entries}
-                    onChange={(event) => updateDefinition({ max_import_entries: Number(event.target.value) })}
-                    disabled={saving || !privilegedUnlocked}
-                  />
-                </label>
-                <label className="field-stack">
-                  <span>Maximum watched entries</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={100_000}
-                    value={selectedDefinition.max_watch_entries}
-                    onChange={(event) => updateDefinition({ max_watch_entries: Number(event.target.value) })}
-                    disabled={saving || !privilegedUnlocked}
-                  />
-                </label>
-              </div>
-
-              <div className="host-directory-toggle-row">
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={selectedDefinition.delete_requires_approval}
-                    onChange={(event) => updateDefinition({ delete_requires_approval: event.target.checked })}
-                    disabled={
-                      saving ||
-                      !privilegedUnlocked ||
-                      !selectedDefinition.capabilities.includes("delete")
-                    }
-                  />
-                  <span>Agent deletes require approval</span>
-                </label>
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={selectedDefinition.disabled}
-                    onChange={(event) => updateDefinition({ disabled: event.target.checked })}
-                    disabled={saving || !privilegedUnlocked}
-                  />
-                  <span>Disable this resource</span>
-                </label>
-              </div>
-
-              {rawDefinitions[selectedId] ? (
-                <div className="inline-actions">
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={removeDefinition}
-                    disabled={saving || !privilegedUnlocked}
-                  >
-                    Remove local definition
+              <article className="panel">
+                <div className="panel-header">
+                  <div>
+                    <h3>Quarantine recovery</h3>
+                    <p className="muted-text">
+                      Agent deletes are recoverable until an operator permanently purges them.
+                    </p>
+                  </div>
+                  <button type="button" onClick={() => void refreshQuarantine()} disabled={Boolean(recoveryBusy)}>
+                    Refresh
                   </button>
                 </div>
-              ) : null}
-            </article>
-
-            <article className="panel">
-              <div className="panel-header">
-                <div>
-                  <h3>Host path health</h3>
-                  <p className="muted-text">Checks are run by the host and do not expose this root to agent sessions.</p>
-                </div>
-                <span className={`status-pill ${healthClass(selectedHealth)}`}>{healthLabel(selectedHealth)}</span>
-              </div>
-              <div className="detail-grid">
-                <div><span>Availability</span><strong>{selectedHealth?.available == null ? "Not checked" : selectedHealth.available ? "Available" : "Unavailable"}</strong></div>
-                <div><span>Safe directory open</span><strong>{selectedHealth?.status == null ? "Not checked" : selectedHealth.status === "ok" ? "Passed" : "Failed"}</strong></div>
-                <div><span>Readable</span><strong>{selectedHealth?.checks?.readable == null ? "Not checked" : selectedHealth.checks.readable ? "Passed" : "Failed"}</strong></div>
-                <div><span>Mount boundary checks</span><strong>{selectedHealth?.checks?.mount_boundary_verified == null ? "Not checked" : selectedHealth.checks.mount_boundary_verified ? "Available" : "Unavailable"}</strong></div>
-                <div><span>Delete quarantine</span><strong>{selectedHealth?.checks?.quarantine_writable == null ? "Not checked" : selectedHealth.checks.quarantine_writable ? "Writable" : "Unavailable"}</strong></div>
-                <div><span>Status</span><strong>{selectedHealth?.status ?? "Not checked"}</strong></div>
-                <div><span>Error class</span><strong>{selectedHealth?.error_class ?? "None"}</strong></div>
-              </div>
-              {selectedHealth?.message || selectedHealth?.error ? (
-                <div className="callout warning-callout">{selectedHealth.message || selectedHealth.error}</div>
-              ) : null}
-            </article>
-
-            <article className="panel">
-              <div className="panel-header">
-                <div>
-                  <h3>Quarantine recovery</h3>
-                  <p className="muted-text">Agent deletes are recoverable until an operator permanently purges them.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void refreshQuarantine()}
-                  disabled={Boolean(recoveryBusy)}
-                >
-                  Refresh
-                </button>
-              </div>
-              <div className="detail-stack">
-                {quarantine?.entries.map((entry) => (
-                  <div className="detail-block host-directory-quarantine-entry" key={entry.recovery_id}>
-                    <div>
-                      <strong>{entryPath(entry)}</strong>
-                      <p className="muted-text">
-                        {entry.kind || "entry"} · {formatBytes(entry.size)}
-                        {entry.deleted_at ? ` · ${entry.deleted_at}` : ""}
-                      </p>
-                      {entry.recovery_status && entry.recovery_status !== "ready" ? (
-                        <p className="callout warning-callout">
-                          Recovery record needs attention: {entry.recovery_status.replace(/_/g, " ")}.
-                          Restore is unavailable; purge can clean up this incomplete record.
+                <div className="detail-stack">
+                  {quarantine?.entries.map((entry) => (
+                    <div className="detail-block host-directory-quarantine-entry" key={entry.recovery_id}>
+                      <div>
+                        <strong>{entryPath(entry)}</strong>
+                        <p className="muted-text">
+                          {entry.kind || "entry"} · {formatBytes(entry.size)}
+                          {entry.deleted_at ? ` · ${entry.deleted_at}` : ""}
                         </p>
-                      ) : null}
+                        {entry.recovery_status && entry.recovery_status !== "ready" ? (
+                          <p className="callout warning-callout">
+                            Recovery record needs attention: {entry.recovery_status.replace(/_/g, " ")}. Restore is
+                            unavailable; purge can clean up this incomplete record.
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="inline-actions">
+                        <button
+                          type="button"
+                          onClick={() => void recover(entry, "restore")}
+                          disabled={Boolean(recoveryBusy) || !privilegedUnlocked || entry.restore_available === false}
+                        >
+                          {recoveryBusy === `restore:${entry.recovery_id}` ? "Restoring…" : "Restore"}
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() => void recover(entry, "purge")}
+                          disabled={Boolean(recoveryBusy) || !privilegedUnlocked || entry.purge_available === false}
+                        >
+                          {recoveryBusy === `purge:${entry.recovery_id}` ? "Purging…" : "Purge permanently"}
+                        </button>
+                      </div>
                     </div>
-                    <div className="inline-actions">
-                      <button
-                        type="button"
-                        onClick={() => void recover(entry, "restore")}
-                        disabled={
-                          Boolean(recoveryBusy) ||
-                          !privilegedUnlocked ||
-                          entry.restore_available === false
-                        }
-                      >
-                        {recoveryBusy === `restore:${entry.recovery_id}` ? "Restoring…" : "Restore"}
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={() => void recover(entry, "purge")}
-                        disabled={
-                          Boolean(recoveryBusy) ||
-                          !privilegedUnlocked ||
-                          entry.purge_available === false
-                        }
-                      >
-                        {recoveryBusy === `purge:${entry.recovery_id}` ? "Purging…" : "Purge permanently"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {quarantine && quarantine.entries.length === 0 ? (
-                  <div className="empty-state">No quarantined entries for this resource.</div>
-                ) : null}
-                {!quarantine ? <div className="empty-state">Loading quarantine entries…</div> : null}
-              </div>
-            </article>
-          </>
-        ) : (
-          <div className="empty-state">Add or select a host directory resource to configure it.</div>
-        )}
-      </section>
-    </div>
+                  ))}
+                  {quarantine && quarantine.entries.length === 0 ? (
+                    <div className="empty-state">No quarantined entries for this resource.</div>
+                  ) : null}
+                  {!quarantine ? <div className="empty-state">Loading quarantine entries…</div> : null}
+                </div>
+              </article>
+            </>
+          ) : (
+            <div className="empty-state">Add or select a host directory resource to configure it.</div>
+          )}
+        </section>
+      </div>
+    </RecordWorkspace>
   );
 }

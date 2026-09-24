@@ -472,16 +472,82 @@
     mode: "0640"
   when: evander_worker_dotnet_toolchain_enabled | bool
 
-- name: Reset worker dotnet toolchain cache
-  ansible.builtin.file:
-    path: "{{ evander_worker_dotnet_cache_path }}"
-    state: absent
+- name: Fingerprint immutable dotnet bundle inputs
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop:
+    - "{{ evander_worker_dotnet_toolchain_remote_archive_path }}"
+    - "{{ evander_worker_dotnet_tools_remote_archive_path }}"
+  register: evander_dotnet_bundle_inputs
   when: evander_worker_dotnet_toolchain_enabled | bool
 
-- name: Reset worker dotnet tools cache
+- name: Validate dotnet selector configuration
+  ansible.builtin.assert:
+    that:
+      - evander_worker_dotnet_cache_path == evander_worker_dotnet_bundle_selector ~ '/sdk'
+      - evander_worker_dotnet_tools_cache_path == evander_worker_dotnet_bundle_selector ~ '/tools'
+    fail_msg: Configure evander_worker_dotnet_bundle_selector; SDK and tools paths must use its sdk and tools children.
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Compute dotnet validation identity
+  ansible.builtin.set_fact:
+    evander_dotnet_bundle_identity: "{{ (evander_dotnet_bundle_inputs.results | map(attribute='stat.checksum') | join(':')) ~ ':' ~ evander_runner_image_name }}"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Inspect selected validated dotnet bundle identity
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import pathlib, sys
+        selector = pathlib.Path(sys.argv[1])
+        if selector.is_symlink():
+            target = selector.resolve()
+            marker = target / '.complete'
+            if marker.is_file() and marker.read_text().strip() == sys.argv[2]:
+                print(target)
+      - "{{ evander_worker_dotnet_bundle_selector }}"
+      - "{{ evander_dotnet_bundle_identity }}"
+  register: evander_dotnet_existing_bundle
+  changed_when: false
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Allocate private dotnet bundle staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    path: "{{ evander_worker_toolchain_cache_root }}"
+    prefix: "dotnet-bundle-{{ evander_dotnet_bundle_inputs.results | map(attribute='stat.checksum') | join(':') | hash('sha256') }}-"
+  register: evander_dotnet_staging
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not evander_dotnet_existing_bundle.stdout
+
+- name: Select immutable dotnet staging directory
+  ansible.builtin.set_fact:
+    evander_dotnet_bundle_path: "{{ evander_dotnet_existing_bundle.stdout or evander_dotnet_staging.path }}"
+    evander_dotnet_sdk_selector: "{{ evander_worker_dotnet_cache_path }}"
+    evander_dotnet_tools_selector: "{{ evander_worker_dotnet_tools_cache_path }}"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Allow runner access to the immutable bundle
   ansible.builtin.file:
-    path: "{{ evander_worker_dotnet_tools_cache_path }}"
-    state: absent
+    path: "{{ evander_dotnet_bundle_path }}"
+    state: directory
+    mode: "0755"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Use staged dotnet paths for validation
+  ansible.builtin.set_fact:
+    evander_worker_dotnet_cache_path: "{{ evander_dotnet_bundle_path }}/sdk"
+    evander_worker_dotnet_tools_cache_path: "{{ evander_dotnet_bundle_path }}/tools"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Inspect validated dotnet bundle
+  ansible.builtin.stat:
+    path: "{{ evander_dotnet_bundle_path }}/.complete"
+  register: evander_dotnet_bundle_complete
   when: evander_worker_dotnet_toolchain_enabled | bool
 
 - name: Recreate worker dotnet toolchain cache
@@ -509,7 +575,9 @@
     remote_src: true
     owner: "{{ evander_run_user }}"
     group: "{{ evander_run_user }}"
-  when: evander_worker_dotnet_toolchain_enabled | bool
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not evander_dotnet_bundle_complete.stat.exists
 
 - name: Unpack dotnet tools into worker cache
   ansible.builtin.unarchive:
@@ -518,7 +586,9 @@
     remote_src: true
     owner: "{{ evander_run_user }}"
     group: "{{ evander_run_user }}"
-  when: evander_worker_dotnet_toolchain_enabled | bool
+  when:
+    - evander_worker_dotnet_toolchain_enabled | bool
+    - not evander_dotnet_bundle_complete.stat.exists
 
 - name: Unpack dotnet restore support packages into worker NuGet fallback cache
   ansible.builtin.unarchive:
@@ -616,6 +686,44 @@
           -p:NuGetAudit=false \
           -v minimal
   changed_when: false
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Mark validated immutable dotnet bundle
+  ansible.builtin.copy:
+    content: "{{ evander_dotnet_bundle_identity }}\n"
+    dest: "{{ evander_dotnet_bundle_path }}/.complete"
+    mode: "0444"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Atomically select validated dotnet bundle for future sessions
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os, pathlib, sys, uuid
+        target, selector = map(pathlib.Path, sys.argv[1:])
+        if not (target / '.complete').is_file():
+            raise SystemExit('bundle has not passed validation')
+        if selector.is_symlink() and selector.resolve() == target.resolve():
+            raise SystemExit(0)
+        temporary = selector.with_name(selector.name + '.' + uuid.uuid4().hex)
+        temporary.symlink_to(target)
+        try:
+            os.replace(temporary, selector)
+        finally:
+            temporary.unlink(missing_ok=True)
+        print('selected')
+      - "{{ evander_dotnet_bundle_path }}"
+      - "{{ evander_worker_dotnet_bundle_selector }}"
+  register: evander_dotnet_bundle_selection
+  changed_when: "'selected' in evander_dotnet_bundle_selection.stdout"
+  when: evander_worker_dotnet_toolchain_enabled | bool
+
+- name: Restore configured dotnet selectors
+  ansible.builtin.set_fact:
+    evander_worker_dotnet_cache_path: "{{ evander_dotnet_sdk_selector }}"
+    evander_worker_dotnet_tools_cache_path: "{{ evander_dotnet_tools_selector }}"
   when: evander_worker_dotnet_toolchain_enabled | bool
 
 - name: Remove temporary local dotnet toolchain archive directory

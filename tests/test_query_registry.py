@@ -102,6 +102,8 @@ class _RecordingProvider(QueryProviderBase):
 
 def test_default_registry_includes_known_query_types() -> None:
     assert set(DEFAULT_QUERY_PROVIDER_REGISTRY) == {
+        "query:ado:builds",
+        "query:text:regex",
         "query:vm:run-state",
         "query:artifact-space:list",
         "query:artifact-space:latest",
@@ -115,6 +117,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:issue:list",
         "query:ado:work-items",
         "query:remote-issues",
+        "query:classification:evaluate",
         "query:pull-request:list",
         "query:pull-request:feedback",
         "query:communication:messages",
@@ -123,6 +126,9 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:semantic:store-status",
         "query:semantic:search",
         "query:semantic:get",
+        "query:code-index:status",
+        "query:code-index:search",
+        "query:code-index:navigate",
         "query:state:get",
     }
 
@@ -415,7 +421,7 @@ def test_session_context_query_provider_returns_metadata(tmp_path: Path) -> None
             "session_id": "session-1",
             "vm_name": "vm-1",
             "directory_path": "root/team-a",
-            "metadata": {"issue_number": "14084", "issue_title": "Fix APP"},
+            "metadata": {"issue_number": "14084", "issue_title": "Fix App"},
             "created_at": "2026-04-07T10:00:00+00:00",
             "expires_at": "2026-04-09T10:00:00+00:00",
             "model": "gpt-5.4",
@@ -868,7 +874,7 @@ def test_remote_issues_query_provider_passes_ado_query_mode(
         display_name="Remote ADO issues",
         type="query:remote-issues",
         provider="ado",
-        project="APP",
+        project="App",
         query_mode="structured_filters",
         states=["Committed"],
     )

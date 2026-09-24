@@ -1,5 +1,8 @@
 # Architecture Notes
 
+For source ownership and compatibility entry points, see
+[control-plane implementation boundaries](maintainability-boundaries.md).
+
 ## Components
 
 
@@ -7,8 +10,8 @@ Guest and worker-container networking is default-deny. Reachability is limited t
 - Host orchestrator: creates session manifests, launches VMs, and destroys them at the end of a run.
 - MCP gateway: the MCP capability boundary reachable from guests; it is not the only guest-reachable host service.
 - Connector service: directory-scoped named operations implemented by fixed REST, approved-root
-  filesystem, or add-on drivers; sessions see only their granted operation schemas and never host
-  credentials or arbitrary destinations.
+  filesystem, or add-on drivers such as Freshservice; sessions see only their granted operation
+  schemas and never host credentials or arbitrary destinations.
 - Host Directory service: dedicated directory-scoped filesystem resources with per-session
   list/import/delete grants, descriptor-relative traversal, artifact-backed imports, and
   recoverable quarantine deletes. Agent and trigger payloads never expose configured roots.
@@ -53,10 +56,11 @@ network admits its private port only from the worker subnet, and the worker's `D
 allows containers to reach that endpoint without granting them direct public egress.
 
 The profile identifier, never its credentials, flows from `effect:agent:create` into the session,
-Codex turn, worker job metadata, agent summaries, and durable prompt queue. Assignment is
-write-once because changing accounts underneath a resumable session would mix identity and usage
-history. The first successful login pins the upstream account ID; a later login as another account
-is logged out and rejected.
+Codex turn, worker job metadata, agent summaries, and durable prompt queue. An operator can change
+the session's usage source or selected profile; running turns retain their launch-time route and
+later turns use the updated selection. Prompts deferred by the old subscription route become
+eligible immediately under the new route. The first successful login still pins each profile's
+upstream account ID; a later login as another account is logged out and rejected.
 
 Before launching a public-OpenAI subscription turn, the worker checks enabled state, login,
 broker availability, and rate limits. A capacity failure returns a structured deferral rather than
@@ -233,7 +237,13 @@ boundaries.
 
 Per PR feedback polling loop, the host worker processes streams allowlisted in active session manifests and updates the shared feedback store.
 
-Guests continue to use MCP tools (`has_pending_feedback`, `list_unread_feedback`, `list_all_feedback`, `post_pr_feedback_reply`) for consumption and reply actions.
+Guests continue to use MCP tools (`has_pending_feedback`, `list_unread_feedback`,
+`list_all_feedback`, `post_pr_feedback_reply`) for consumption and reply actions. Azure DevOps
+feedback attachments are a separate, policy-controlled path:
+`list_pr_feedback_attachments` resolves safe metadata from the authorized host-stored feedback,
+`download_pr_feedback_attachment` re-resolves and downloads the selected file with host credentials,
+and `communication_copy_artifact_to_workspace` copies the resulting opaque artifact into the guest.
+Provider URLs and credentials are not returned to the agent.
 
 This sequence minimizes payload volume when there is no new feedback and supports explicit at-least-once processing semantics.
 
@@ -247,6 +257,9 @@ This sequence minimizes payload volume when there is no new feedback and support
   - advance only after feedback is successfully persisted/processed
   - optionally coupled with explicit host acknowledgment/update call
 - Sessions are isolated: cursor `A` for session `X` is never reused for session `Y`.
+- Azure DevOps short and organization/project/repository stream names are treated as aliases only
+  when the host PR map binds the PR to one unambiguous scoped repository. Session cursors advance
+  together across those aliases so an identity-format change does not replay older comments.
 
 ### Scheduled wake dispatch model
 
@@ -348,17 +361,19 @@ Execution model:
    forward the original payload with its current `count`.
 10. `gate:switch` nodes evaluate ordered cases, forward the first matching branch through the case
    `source_port`, and fall back to `default_port` when present.
-11. `gate:validate` nodes evaluate every named predicate, route to `valid` or `invalid`, and add
+11. `gate:classifier:switch` uses the graph directory's classification settings to choose one
+   described branch or its default while preserving the unchanged input payload.
+12. `gate:validate` nodes evaluate every named predicate, route to `valid` or `invalid`, and add
    ordered failure codes and messages to the forwarded payload.
-12. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
+13. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
 
-The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:throttle`, `gate:counter`, `gate:switch`, `gate:validate`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
-13. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
-    upstream event payload.
-14. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
-    downstream edges can continue the chain.
+The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:throttle`, `gate:counter`, `gate:switch`, `gate:classifier:switch`, `gate:validate`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
+14. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
+   upstream event payload.
+15. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
+   downstream edges can continue the chain.
 
 Safety/idempotency guarantees:
 

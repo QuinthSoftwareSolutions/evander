@@ -37,6 +37,9 @@ OUTPUTS = {
 }
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 MARKUP_RE = re.compile(r"[`*_~]|<[^>]+>")
+MARKDOWN_LINK_DESTINATION_RE = re.compile(
+    r"(?P<prefix>!?\[[^\]\n]*\]\()(?P<destination><[^>\n]+>|[^)\s]+)"
+)
 
 
 class BuildError(RuntimeError):
@@ -130,8 +133,33 @@ def _book_layout() -> tuple[dict[str, Any], list[tuple[dict[str, Any], Path, str
     return manifest, rows
 
 
-def _rewrite_source_links(text: str) -> str:
-    return text.replace("../../assets/", "assets/")
+def _rewrite_source_links(text: str, *, source_path: Path) -> str:
+    """Make chapter-local links relative to the assembled manual in docs/."""
+
+    def replace(match: re.Match[str]) -> str:
+        raw_destination = match.group("destination")
+        wrapped = raw_destination.startswith("<") and raw_destination.endswith(">")
+        destination = raw_destination[1:-1] if wrapped else raw_destination
+        if (
+            not destination
+            or destination.startswith(("#", "/"))
+            or re.match(r"^[a-z][a-z0-9+.-]*:", destination, re.IGNORECASE)
+        ):
+            return match.group(0)
+        path_part = re.split(r"[?#]", destination, maxsplit=1)[0]
+        if not path_part:
+            return match.group(0)
+        resolved = (source_path.parent / path_part).resolve()
+        try:
+            rewritten_path = resolved.relative_to(DOCS.resolve()).as_posix()
+        except ValueError:
+            return match.group(0)
+        rewritten = rewritten_path + destination[len(path_part) :]
+        if wrapped:
+            rewritten = f"<{rewritten}>"
+        return match.group("prefix") + rewritten
+
+    return MARKDOWN_LINK_DESTINATION_RE.sub(replace, text)
 
 
 def _headings(text: str) -> dict[str, str]:
@@ -265,7 +293,9 @@ def _assemble() -> tuple[str, dict[str, Any]]:
             if row_part is not part:
                 continue
             chapter_index += 1
-            lines.append(_rewrite_source_links(path.read_text(encoding="utf-8")).rstrip())
+            lines.append(
+                _rewrite_source_links(path.read_text(encoding="utf-8"), source_path=path).rstrip()
+            )
             lines.extend(["", ""])
 
     without_index = "\n".join(lines).rstrip() + "\n"

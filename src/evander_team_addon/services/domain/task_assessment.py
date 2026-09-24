@@ -69,7 +69,11 @@ class TaskAssessmentService:
     def __init__(self, state: TeamState) -> None:
         self._state = state
         self._children = _children_by_parent(state)
-        self._deliverables = _deliverables_by_task(state)
+        self._all_deliverables = _deliverables_by_task(state, include_superseded=True)
+        self._deliverables = {
+            task_id: tuple(row for row in rows if row.superseded_by_deliverable_id is None)
+            for task_id, rows in self._all_deliverables.items()
+        }
         self._reviews = _reviews_by_task(state)
         self._blockers = _blockers_by_task(state)
         self._static_invalid_codes = _static_task_invalid_reason_codes(
@@ -194,6 +198,7 @@ class TaskAssessmentService:
                 self._state,
                 task=task,
                 direct_child_ids=direct_child_ids,
+                deliverables_by_task=self._all_deliverables,
             )
             invalid_codes.update(
                 _local_lifecycle_invalid_reason_codes(
@@ -208,10 +213,11 @@ class TaskAssessmentService:
                 )
             )
 
-            integration_task_ids = _required_contribution_task_ids(
+            integration_task_ids = _integration_readiness_task_ids(
                 self._state,
                 task,
                 direct_child_ids=direct_child_ids,
+                deliverables_by_task=self._all_deliverables,
             )
             integration_ready = bool(integration_task_ids) and all(
                 contribution_task_id in self._state.tasks
@@ -300,6 +306,7 @@ def task_payload_with_assessment(
     task: AgentTask,
     *,
     assessment: TaskAssessment | None = None,
+    assessment_service: TaskAssessmentService | None = None,
     assessments: Mapping[str, TaskAssessment] | None = None,
     visible_task_ids: Collection[str] | None = None,
     visible_deliverable_ids: Collection[str] | None = None,
@@ -309,14 +316,15 @@ def task_payload_with_assessment(
 ) -> dict[str, Any]:
     """Return the backwards-compatible task payload plus canonical lifecycle state."""
 
-    payload = task_payload_with_derived(state, task)
-    assessment_service: TaskAssessmentService | None = None
     if assessment is None:
         if assessments is not None and task.id in assessments:
             assessment = assessments[task.id]
         else:
-            assessment_service = TaskAssessmentService(state)
+            assessment_service = assessment_service or TaskAssessmentService(state)
             assessment = assessment_service.assess(task.id)
+    payload = task_payload_with_derived(
+        state, task, child_task_ids=assessment.direct_child_ids, assessment=assessment,
+    )
     assessment_payload = assessment.model_dump(mode="json")
     if visible_task_ids is not None:
         payload["parent_task_id"] = _visible_reference(
@@ -421,11 +429,14 @@ def inherited_task_blocker_payloads(
 ) -> list[dict[str, Any]]:
     """Project upstream blocker reasons without creating another durable blocker."""
 
-    service = assessment_service or TaskAssessmentService(state)
+    service = assessment_service
 
     def _assessment(candidate_task_id: str) -> TaskAssessment:
+        nonlocal service
         if assessments is not None and candidate_task_id in assessments:
             return assessments[candidate_task_id]
+        if service is None:
+            service = TaskAssessmentService(state)
         return service.assess(candidate_task_id)
 
     assessment = _assessment(task_id)
@@ -802,7 +813,7 @@ def require_task_can_finish(
                 ],
             },
         )
-    if task.task_kind != TeamTaskKind.SUPPORT:
+    if task.task_kind not in {TeamTaskKind.SUPPORT, TeamTaskKind.COORDINATION}:
         raise TaskAssessmentBoundaryError(
             code="outcome_task_direct_finish_forbidden",
             message=(
@@ -943,6 +954,24 @@ def require_deliverable_submission(
     task_id: str,
     source_deliverable_ids: Sequence[str],
 ) -> TaskAssessment:
+    task = state.tasks.get(task_id)
+    if task is not None and task.task_kind == TeamTaskKind.COORDINATION:
+        raise TaskAssessmentBoundaryError(
+            code="coordination_task_deliverable_forbidden",
+            message=(
+                f"coordination task {task_id} cannot submit a deliverable; "
+                "finish it directly or create a fresh top-level integration boundary"
+            ),
+            correction_context={
+                "task_id": task_id,
+                "required_action": (
+                    "create a top-level integration boundary with parent_task_id unset, "
+                    "originating_task_id set to this coordination task, and exact accepted "
+                    "contribution tasks declared as dependencies and required contributions"
+                ),
+                "supported_tools": ["team_create_task", "team_create_task_for_role"],
+            },
+        )
     current_assessment = assess_task(state, task_id)
     if current_assessment.resolution_status == TaskResolutionStatus.RESOLVED:
         raise _boundary_error(
@@ -1272,10 +1301,12 @@ def _children_by_parent(state: TeamState) -> dict[str, tuple[str, ...]]:
 
 def _deliverables_by_task(
     state: TeamState,
+    *,
+    include_superseded: bool = False,
 ) -> dict[str, tuple[Deliverable, ...]]:
     rows: dict[str, list[Deliverable]] = {}
     for deliverable in state.deliverables.values():
-        if deliverable.superseded_by_deliverable_id is None:
+        if include_superseded or deliverable.superseded_by_deliverable_id is None:
             rows.setdefault(deliverable.task_id, []).append(deliverable)
     return {
         task_id: tuple(sorted(deliverables, key=lambda item: item.id))
@@ -1492,7 +1523,7 @@ def _local_lifecycle_invalid_reason_codes(
         elif task.completion is not None:
             invalid.add("outcome_completion_without_acceptance")
     elif task.state == TeamTaskState.ACCEPTED:
-        invalid.add("support_task_accepted_instead_of_finished")
+        invalid.add(f"{task.task_kind.value}_task_accepted_instead_of_finished")
 
     if task.deliverable_contract is not None and task.state in {
         TeamTaskState.FINISHED,
@@ -1622,8 +1653,15 @@ def _task_resolution_reason(
         TeamTaskState.ACCEPTED,
     }:
         return "integration_deliverable_accepted"
-    if task.task_kind == TeamTaskKind.SUPPORT and task.state == TeamTaskState.FINISHED:
-        return "support_task_finished"
+    if (
+        task.task_kind in {TeamTaskKind.SUPPORT, TeamTaskKind.COORDINATION}
+        and task.state == TeamTaskState.FINISHED
+    ):
+        return (
+            "coordination_task_finished"
+            if task.task_kind == TeamTaskKind.COORDINATION
+            else "support_task_finished"
+        )
     if (
         task.task_kind == TeamTaskKind.OUTCOME
         and task.state == TeamTaskState.ACCEPTED
@@ -1715,20 +1753,32 @@ def _active_review_ids(reviews: Sequence[Any]) -> list[str]:
     return sorted(review.id for review in reviews if review.state in _ACTIVE_RECORD_STATES)
 
 
+def _task_deliverables(
+    state: TeamState,
+    task_id: str,
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None,
+) -> Iterable[Deliverable]:
+    if deliverables_by_task is not None:
+        return deliverables_by_task.get(task_id, ())
+    return (row for row in state.deliverables.values() if row.task_id == task_id)
+
+
 def _task_contribution_coverage(
     state: TeamState,
     *,
     task: AgentTask,
     direct_child_ids: Sequence[str],
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None = None,
 ) -> dict[str, Any]:
     required_contribution_task_ids = _required_contribution_task_ids(
         state,
         task,
         direct_child_ids=direct_child_ids,
+        deliverables_by_task=deliverables_by_task,
     )
     current_deliverables = [
         deliverable
-        for deliverable in state.deliverables.values()
+        for deliverable in _task_deliverables(state, task.id, deliverables_by_task)
         if deliverable.task_id == task.id
         and deliverable.superseded_by_deliverable_id is None
         and deliverable.state in _CURRENT_COMPOSITION_STATES
@@ -1765,16 +1815,19 @@ def _task_contribution_coverage(
             task=task,
             required_contribution_task_ids=required_contribution_task_ids,
             source_deliverable_ids=deliverable.source_deliverable_ids,
+            deliverables_by_task=deliverables_by_task,
         )
     required_ids = _required_source_deliverable_ids(
         state,
         task=task,
         required_contribution_task_ids=required_contribution_task_ids,
+        deliverables_by_task=deliverables_by_task,
     )
     missing_contribution_task_ids = _missing_contribution_task_ids(
         state,
         task=task,
         required_contribution_task_ids=required_contribution_task_ids,
+        deliverables_by_task=deliverables_by_task,
     )
     provided_ids = sorted(
         {
@@ -1834,17 +1887,20 @@ def _coverage_for_source_ids(
     task: AgentTask,
     required_contribution_task_ids: Sequence[str],
     source_deliverable_ids: Sequence[str],
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None = None,
 ) -> dict[str, Any]:
     provided_ids = _unique_strings(source_deliverable_ids)
     required_ids = _required_source_deliverable_ids(
         state,
         task=task,
         required_contribution_task_ids=required_contribution_task_ids,
+        deliverables_by_task=deliverables_by_task,
     )
     missing_contribution_task_ids = _missing_contribution_task_ids(
         state,
         task=task,
         required_contribution_task_ids=required_contribution_task_ids,
+        deliverables_by_task=deliverables_by_task,
     )
     contribution_task_set = set(required_contribution_task_ids)
     invalid_ids: set[str] = set()
@@ -1883,17 +1939,46 @@ def _required_contribution_task_ids(
     task: AgentTask,
     *,
     direct_child_ids: Sequence[str],
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None = None,
 ) -> list[str]:
     if task.integration_boundary and task.deliverable_contract is not None:
         return list(task.deliverable_contract.required_contribution_task_ids)
-    if _uses_legacy_direct_child_contributions(state, task):
+    if _uses_legacy_direct_child_contributions(
+        state, task, deliverables_by_task=deliverables_by_task,
+    ):
         return sorted(set(direct_child_ids))
     return []
+
+
+def _integration_readiness_task_ids(
+    state: TeamState,
+    task: AgentTask,
+    *,
+    direct_child_ids: Sequence[str],
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None = None,
+) -> list[str]:
+    """Return work whose resolution makes a parent ready for its next handoff.
+
+    Coordination children drive supervision only. They are deliberately not Git
+    composition inputs; a fresh integration boundary must name the accepted
+    source-producing tasks explicitly.
+    """
+
+    if task.task_kind == TeamTaskKind.COORDINATION:
+        return sorted(set(direct_child_ids))
+    return _required_contribution_task_ids(
+        state,
+        task,
+        direct_child_ids=direct_child_ids,
+        deliverables_by_task=deliverables_by_task,
+    )
 
 
 def _uses_legacy_direct_child_contributions(
     state: TeamState,
     task: AgentTask,
+    *,
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None = None,
 ) -> bool:
     """Preserve aggregates that predate explicit integration contracts.
 
@@ -1904,13 +1989,11 @@ def _uses_legacy_direct_child_contributions(
     to bootstrap aggregate semantics.
     """
 
-    if task.integration_boundary:
+    if task.integration_boundary or task.task_kind == TeamTaskKind.COORDINATION:
         return False
-    if task.deliverable_contract is None:
-        return True
     return any(
         deliverable.task_id == task.id and bool(deliverable.source_deliverable_ids)
-        for deliverable in state.deliverables.values()
+        for deliverable in _task_deliverables(state, task.id, deliverables_by_task)
     )
 
 
@@ -1919,6 +2002,7 @@ def _accepted_contribution_deliverables(
     *,
     task: AgentTask,
     contribution_task_id: str,
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None = None,
 ) -> list[Deliverable]:
     contribution_task = state.tasks.get(contribution_task_id)
     if contribution_task is None:
@@ -1926,6 +2010,7 @@ def _accepted_contribution_deliverables(
     legacy_direct_child_policy = _uses_legacy_direct_child_contributions(
         state,
         task,
+        deliverables_by_task=deliverables_by_task,
     )
     if legacy_direct_child_policy and contribution_task.state == TeamTaskState.CANCELLED:
         return []
@@ -1939,10 +2024,15 @@ def _accepted_contribution_deliverables(
     return sorted(
         (
             deliverable
-            for deliverable in state.deliverables.values()
+            for deliverable in _task_deliverables(state, contribution_task_id, deliverables_by_task)
             if deliverable.task_id == contribution_task_id
             and deliverable.state == TeamRecordState.ACCEPTED
             and deliverable.superseded_by_deliverable_id is None
+            and (
+                not task.deliverable_contract
+                or not task.deliverable_contract.pinned_source_deliverable_ids
+                or deliverable.id in task.deliverable_contract.pinned_source_deliverable_ids
+            )
             and (
                 not legacy_direct_child_policy
                 or deliverable.completion is None
@@ -1958,6 +2048,7 @@ def _required_source_deliverable_ids(
     *,
     task: AgentTask,
     required_contribution_task_ids: Sequence[str],
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None = None,
 ) -> list[str]:
     return sorted(
         deliverable.id
@@ -1966,6 +2057,28 @@ def _required_source_deliverable_ids(
             state,
             task=task,
             contribution_task_id=contribution_task_id,
+            deliverables_by_task=deliverables_by_task,
+        )
+    )
+
+
+def _missing_contribution_task_ids(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    required_contribution_task_ids: Sequence[str],
+    deliverables_by_task: Mapping[str, Sequence[Deliverable]] | None = None,
+) -> list[str]:
+    if not task.integration_boundary:
+        return []
+    return sorted(
+        contribution_task_id
+        for contribution_task_id in required_contribution_task_ids
+        if not _accepted_contribution_deliverables(
+            state,
+            task=task,
+            contribution_task_id=contribution_task_id,
+            deliverables_by_task=deliverables_by_task,
         )
     )
 
@@ -1985,6 +2098,8 @@ def required_source_deliverable_ids_for_task(
     task = state.tasks.get(task_id)
     if task is None:
         raise ValueError(f"task {task_id} does not exist")
+    if task.task_kind == TeamTaskKind.COORDINATION:
+        return []
     direct_child_ids = sorted(
         child.id for child in state.tasks.values() if child.parent_task_id == task.id
     )
@@ -1997,25 +2112,6 @@ def required_source_deliverable_ids_for_task(
         state,
         task=task,
         required_contribution_task_ids=required_task_ids,
-    )
-
-
-def _missing_contribution_task_ids(
-    state: TeamState,
-    *,
-    task: AgentTask,
-    required_contribution_task_ids: Sequence[str],
-) -> list[str]:
-    if not task.integration_boundary:
-        return []
-    return sorted(
-        contribution_task_id
-        for contribution_task_id in required_contribution_task_ids
-        if not _accepted_contribution_deliverables(
-            state,
-            task=task,
-            contribution_task_id=contribution_task_id,
-        )
     )
 
 

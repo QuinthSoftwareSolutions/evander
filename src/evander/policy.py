@@ -51,6 +51,7 @@ from evander.repositories.session_manifests import (
 from evander.repositories.session_tool_approval_leases import (
     SessionToolApprovalLeaseRepository,
 )
+from evander.pr_feedback.identity import pr_feedback_stream_aliases
 from evander.storage import JsonStore
 
 
@@ -76,6 +77,27 @@ class ApprovalPolicyError(PolicyError):
         self.approval_diagnostic = approval_diagnostic
         self.diagnostic = approval_diagnostic
         super().__init__(message)
+
+
+_EMAIL_OPERATION_TOOLS = frozenset(
+    {
+        ToolName.EMAIL_LIST_UNREAD,
+        ToolName.EMAIL_LIST_MESSAGES,
+        ToolName.EMAIL_GET_MESSAGE,
+        ToolName.EMAIL_CREATE_DRAFT,
+        ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+        ToolName.EMAIL_SEND,
+        ToolName.EMAIL_SEND_WITH_ATTACHMENTS,
+        ToolName.EMAIL_SEND_APPROVED,
+        ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS,
+    }
+)
+
+
+def _has_email_discovery_permission(session: SessionManifest, tool_name: McpToolName) -> bool:
+    return tool_name == ToolName.EMAIL_LIST_MAILBOXES and bool(
+        _EMAIL_OPERATION_TOOLS.intersection(session.allowed_tools)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +407,7 @@ class PolicyEngine:
             for tool_name in extra_mcp_tool_names or []
             if str(tool_name or "").strip()
         }
+        self._addon_discovery_permissions: dict[str, frozenset[str]] = {}
         self.policy_config = policy_config or PolicyConfigResolver(
             config,
             session_store=session_store,
@@ -394,10 +417,42 @@ class PolicyEngine:
     def set_approval_notification_dispatcher(self, dispatcher: Any | None) -> None:
         self.approval_notification_dispatcher = dispatcher
 
-    def set_extra_mcp_tool_names(self, tool_names: list[str] | tuple[str, ...] | set[str]) -> None:
+    def set_extra_mcp_tool_names(
+        self,
+        tool_names: list[str] | tuple[str, ...] | set[str],
+        *,
+        discovery_permissions: dict[str, tuple[str, ...]] | None = None,
+    ) -> None:
         self.extra_mcp_tool_names = {
             str(tool_name or "").strip() for tool_name in tool_names if str(tool_name or "").strip()
         }
+        permissions = (
+            self._addon_discovery_permissions
+            if discovery_permissions is None
+            else discovery_permissions
+        )
+        self._addon_discovery_permissions = {
+            tool: frozenset(sources).intersection(self.extra_mcp_tool_names) - {tool}
+            for tool, sources in permissions.items()
+            if tool in self.extra_mcp_tool_names
+        }
+
+    def _has_addon_discovery_permission(
+        self,
+        session: SessionManifest,
+        tool_name: McpToolName,
+        *,
+        effective_policy: EffectivePolicyConfig | None = None,
+    ) -> bool:
+        sources = self._addon_discovery_permissions.get(tool_name_value(tool_name), frozenset())
+        granted = sources.intersection(tool_name_value(tool) for tool in session.allowed_tools)
+        if not granted:
+            return False
+        effective_policy = effective_policy or self.effective_policy_for_session(session)
+        return any(
+            not (rule := effective_policy.mcp_tool_policies.get(source)) or not rule.denied
+            for source in granted
+        )
 
     def _iter_known_tool_names(self) -> list[McpToolName]:
         builtins: list[McpToolName] = list(ToolName)
@@ -541,6 +596,14 @@ class PolicyEngine:
             has_tool_permission = ToolName.RESPOND_TO_AGENT.value in allowed_tool_values
             if has_tool_permission:
                 source = "session.allowed_tools.respond_to_agent"
+        if not has_tool_permission and _has_email_discovery_permission(session, tool_name):
+            has_tool_permission = True
+            source = "session.allowed_tools.email"
+        if not has_tool_permission and self._has_addon_discovery_permission(
+            session, tool_name, effective_policy=effective_policy
+        ):
+            has_tool_permission = True
+            source = "session.allowed_tools.addon_discovery"
         if not has_tool_permission:
             has_tool_permission = self._lease_allows_tool(
                 session_id=session.session_id,
@@ -575,6 +638,8 @@ class PolicyEngine:
             ToolName.HAS_PENDING_FEEDBACK,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
+            ToolName.LIST_PR_FEEDBACK_ATTACHMENTS,
+            ToolName.DOWNLOAD_PR_FEEDBACK_ATTACHMENT,
         }:
             try:
                 self.require_pr_feedback_streams(session)
@@ -698,6 +763,11 @@ class PolicyEngine:
         session = self.get_session(normalized_session_id)
         tool_value = tool_name_value(tool_name)
         if tool_value in {tool_name_value(tool) for tool in session.allowed_tools}:
+            return False
+        if _has_email_discovery_permission(session, tool_name):
+            return False
+        if self._has_addon_discovery_permission(session, tool_name):
+            self.require_tool_not_denied(session, tool_name)
             return False
         self.require_tool_not_denied(session, tool_name)
         lease_is_usable = self.tool_approval_leases.is_tool_approved(
@@ -1078,7 +1148,14 @@ class PolicyEngine:
         pr_id: str,
     ) -> None:
         streams = self.require_pr_feedback_streams(session)
-        allowed = {(stream["provider"], stream["repo"], stream["pr_id"]) for stream in streams}
+        allowed = {
+            (alias["provider"], alias["repo"], alias["pr_id"])
+            for stream in streams
+            for alias in pr_feedback_stream_aliases(
+                stream,
+                pr_map_path=self.config.pr_map_path,
+            )
+        }
         key = (provider, repo, pr_id)
         if key not in allowed:
             raise PolicyError(

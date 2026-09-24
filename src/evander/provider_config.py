@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import AliasChoices, BaseModel, Field
 
 from evander.config import GatewayConfig
+from evander.classification.models import ClassificationSettings
 from evander.container_workers import ContainerWorkerProfile
 from evander.contact_allowlists import resolve_effective_contact_directory
 from evander.connectors.models import ConnectorDirectoryConfig
@@ -123,6 +124,7 @@ class EffectProviderConfig(BaseModel):
 
 class QueryProviderConfig(BaseModel):
     runtime_dir: Path
+    classification: ClassificationSettings = Field(default_factory=ClassificationSettings)
     semantic_store_provider: str = "qdrant"
     qdrant_base_url: str = "http://127.0.0.1:6333"
     qdrant_api_key_env: str | None = "QDRANT_API_KEY"
@@ -154,6 +156,7 @@ class QueryProviderConfig(BaseModel):
 
 class GateProviderConfig(BaseModel):
     runtime_dir: Path
+    classification: ClassificationSettings = Field(default_factory=ClassificationSettings)
 
 
 class ProviderSessionManifest(BaseModel):

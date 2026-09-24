@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import field_validator, model_validator
+from evander.classification.models import EvaluationRequest, Question
 
 from evander.events.models import ConfigValue, QueryDefinition
 
@@ -159,6 +160,26 @@ class AgentArtifactTextQueryDefinition(QueryDefinition):
 class IssueGetQueryDefinition(QueryDefinition):
     type: Literal["query:issue:get"]
     issue_id: ConfigValue
+
+
+class AdoBuildsQueryDefinition(QueryDefinition):
+    type: Literal["query:ado:builds"]
+    directory_path: ConfigValue
+    pipeline_id: ConfigValue
+    repository_id: ConfigValue
+    filters: ConfigValue
+    limit: ConfigValue = 100
+    repository_type: ConfigValue = "TfsGit"
+    project: ConfigValue | None = None
+
+
+class TextRegexQueryDefinition(QueryDefinition):
+    type: Literal["query:text:regex"]
+    text: ConfigValue
+    pattern: ConfigValue
+    operation: ConfigValue = "fullmatch"
+    replacement: ConfigValue = ""
+    require_match: ConfigValue = False
 
 
 class AdoWorkItemsQueryDefinition(QueryDefinition):
@@ -357,6 +378,48 @@ class PullRequestWorkItemsQueryDefinition(QueryDefinition):
             if normalized in {"ado", "azure-devops", "azure_devops"}:
                 return "azure_devops"
         return value
+
+
+class ClassificationEvaluateQueryDefinition(QueryDefinition):
+    type: Literal["query:classification:evaluate"]
+    state: ConfigValue
+    questions: ConfigValue | None = None
+    profile_id: ConfigValue | None = None
+    provider: ConfigValue | None = None
+    model: ConfigValue | None = None
+
+    @field_validator("questions")
+    @classmethod
+    def validate_questions(cls, value):
+        if value is None or (isinstance(value, str) and value.startswith("${{")):
+            return value
+        if not isinstance(value, dict) or not value or any(not key.strip() for key in value):
+            raise ValueError("questions must be a nonempty map or a binding")
+        for question in value.values():
+            if not _classification_has_binding(question):
+                Question.model_validate(question)
+        return value
+
+    @model_validator(mode="after")
+    def validate_classification_source(self):
+        if (self.questions is None) == (self.profile_id is None):
+            raise ValueError("provide exactly one of questions or profile_id")
+        if self.profile_id is not None and (self.provider is not None or self.model is not None):
+            raise ValueError("profile calls cannot override provider or model")
+        payload = {key: getattr(self, key) for key in ("state", "questions", "profile_id", "provider", "model")}
+        if not _classification_has_binding(payload):
+            EvaluationRequest.model_validate(payload)
+        return self
+
+
+def _classification_has_binding(value):
+    if isinstance(value, str):
+        return "${{" in value
+    if isinstance(value, dict):
+        return any(_classification_has_binding(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_classification_has_binding(item) for item in value)
+    return False
 
 
 class SemanticStoreStatusQueryDefinition(QueryDefinition):

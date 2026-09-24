@@ -48,6 +48,7 @@ function createWorkflowDocument(toolArgumentPolicies) {
           id: "trigger-1",
           display_name: "Incoming command",
           type: "trigger:manual",
+          config: {},
         },
       ],
       gates: [],
@@ -56,9 +57,11 @@ function createWorkflowDocument(toolArgumentPolicies) {
           id: "effect-1",
           display_name: "Dispatch agent",
           type: "effect:agent:create",
-          execution_backend: "libvirt_vm",
-          prompt: "Handle ticket",
-          tool_argument_policies: toolArgumentPolicies,
+          config: {
+            execution_backend: "libvirt_vm",
+            prompt: "Handle ticket",
+            tool_argument_policies: toolArgumentPolicies,
+          },
         },
       ],
       queries: [],
@@ -456,7 +459,7 @@ test("workflow editor structured tool argument policies support structured editi
   await page.getByRole("button", { name: "Save workflow" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
   assert.equal(saveRequests.length, 1);
-  assert.deepEqual(saveRequests[0].config.effects[0].tool_argument_policies, {
+  assert.deepEqual(saveRequests[0].config.effects[0].config.tool_argument_policies, {
     run_script: [
       {
         id: "seed-rule",
@@ -543,7 +546,7 @@ test("workflow editor structured tool argument policies support structured editi
   await page.getByRole("button", { name: "Save workflow" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
   assert.equal(saveRequests.length, 1);
-  assert.deepEqual(saveRequests[0].config.effects[0].tool_argument_policies, rawValue);
+  assert.deepEqual(saveRequests[0].config.effects[0].config.tool_argument_policies, rawValue);
 
   await page.close();
   page = await context.newPage();
@@ -565,7 +568,7 @@ test("workflow editor structured tool argument policies support structured editi
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
   assert.equal(saveRequests.length, 1);
   assert.equal(
-    saveRequests[0].config.effects[0].tool_argument_policies.run_script[0].constraints[0].pattern,
+    saveRequests[0].config.effects[0].config.tool_argument_policies.run_script[0].constraints[0].pattern,
     "(?P<script>^seed-[a-z]+$)",
   );
 
@@ -583,14 +586,14 @@ test("workflow editor structured tool argument policies support structured editi
   const fallbackRawEditor = page.locator(".tool-argument-policy-editor textarea");
   await assert.equal(
     await fallbackRawEditor.inputValue(),
-    JSON.stringify(scenario.unsupported.config.effects[0].tool_argument_policies, null, 2),
+    JSON.stringify(scenario.unsupported.config.effects[0].config.tool_argument_policies, null, 2),
   );
 
   saveRequests.length = 0;
   await page.getByRole("button", { name: "Save workflow" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
   assert.equal(saveRequests.length, 1);
-  assert.deepEqual(saveRequests[0].config.effects[0].tool_argument_policies, scenario.unsupported.config.effects[0].tool_argument_policies);
+  assert.deepEqual(saveRequests[0].config.effects[0].config.tool_argument_policies, scenario.unsupported.config.effects[0].config.tool_argument_policies);
 
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);

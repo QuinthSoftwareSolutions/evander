@@ -33,7 +33,7 @@ export type WorkflowNodeOutputContract = {
 };
 
 export function isPassThroughGateType(type: string | null | undefined): boolean {
-  return type === "gate:filter" || type === "gate:dedupe" || type === "gate:debounce" || type === "gate:throttle" || type === "gate:switch";
+  return type === "gate:filter" || type === "gate:dedupe" || type === "gate:debounce" || type === "gate:throttle" || type === "gate:switch" || type === "gate:classifier:switch";
 }
 
 function isCounterGateType(type: string | null | undefined): boolean {
@@ -156,7 +156,9 @@ export function deriveWorkflowOutputSchemas(
       schema = copyOutputSchema(
         node.type === "gate:deserialize"
           ? deserializeOutputSchema(node, backendSchema, nodeOutputs)
-          : backendSchema ?? nodeOutputs,
+          : node.type === "query:classification:evaluate"
+            ? {...backendSchema, ...nodeOutputs, ...(isRecord(node.config.questions) ? {answers: classificationAnswerSchema(node.config.questions)} : {})}
+            : backendSchema ?? nodeOutputs,
       );
     }
     visiting.delete(nodeId);
@@ -637,4 +639,22 @@ function outputSchemaDetails(schema: unknown): string[] {
     details.push(`items: ${outputSchemaTypeLabel(schema.items)}`);
   }
   return details;
+}
+
+export function classificationAnswerSchema(questions: unknown): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  if (isRecord(questions)) for (const [id, question] of Object.entries(questions)) {
+    if (!isRecord(question)) continue;
+    if (!["choice", "score", "boolean"].includes(String(question.type))) continue;
+    const fields: Record<string, unknown> = {type: {type: "string"}};
+    if (question.type === "boolean") fields.probability_true = {type: "number"};
+    else {
+      fields[question.type === "choice" ? "choice" : "score"] = {type: question.type === "choice" ? "string" : "number"};
+      fields.confidence = {type: "number"};
+      fields.probabilities = {type: "object"};
+      if (question.type === "score") fields.legend = {type: "object"};
+    }
+    properties[id] = {type: "object", properties: fields};
+  }
+  return {type: "object", properties, additionalProperties: {type: "object"}};
 }

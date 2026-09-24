@@ -53,8 +53,8 @@ class FakeManagedGitAdmin:
             "canonical_repository_url": "https://github.com/example/project",
             "default_branch": "main",
             "host_commit_identity": {
-                "name": "Truman Bot",
-                "email": "truman@quinth.se",
+                "name": "Evander Bot",
+                "email": "evander@quinth.se",
             },
         }
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
@@ -93,6 +93,7 @@ class FakeManagedGitAdmin:
     def maintenance(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("maintenance", args, kwargs))
         return {"maintained": [self.repository["managed_repo_id"]]}
+
 
 def _route_client(
     managed_git: FakeManagedGitAdmin,
@@ -204,14 +205,14 @@ def test_managed_git_route_sets_repository_scoped_host_commit_identity() -> None
         ),
         json={
             "name": " Jonathan Quinth ",
-            "email": " operator@example.invalid ",
+            "email": " jonathan.quinth@exampleindustry.com ",
         },
     )
 
     assert response.status_code == 200
     assert response.json()["repository"]["host_commit_identity"] == {
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
     assert [call[0] for call in managed_git.calls] == ["get", "set-host-identity"]
     assert managed_git.calls[1] == (
@@ -220,7 +221,7 @@ def test_managed_git_route_sets_repository_scoped_host_commit_identity() -> None
         {
             "directory_path": "root/team-a",
             "name": "Jonathan Quinth",
-            "email": "operator@example.invalid",
+            "email": "jonathan.quinth@exampleindustry.com",
         },
     )
     assert auth.permission_paths == ["root/team-a", "root/team-a"]
@@ -299,7 +300,7 @@ def test_git_repos_cli_emits_json_and_forwards_registration(monkeypatch) -> None
 
     managed_git = FakeManagedGitAdmin()
     monkeypatch.setattr(
-        "evander.cli.build_admin_runtime",
+        "evander.cli_runtime.build_admin_runtime",
         lambda _config: SimpleNamespace(managed_git_admin=managed_git),
     )
 
@@ -334,7 +335,7 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
 
     managed_git = FakeManagedGitAdmin()
     monkeypatch.setattr(
-        "evander.cli.build_admin_runtime",
+        "evander.cli_runtime.build_admin_runtime",
         lambda _config: SimpleNamespace(managed_git_admin=managed_git),
     )
     runner = CliRunner()
@@ -367,7 +368,7 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
                 "--name",
                 "Jonathan Quinth",
                 "--email",
-                "operator@example.invalid",
+                "jonathan.quinth@exampleindustry.com",
             ],
         ),
         runner.invoke(app, ["git-repos", "delete", managed_repo_id]),
@@ -395,7 +396,7 @@ def test_git_repos_cli_exposes_repository_lifecycle_commands(monkeypatch) -> Non
     assert managed_git.calls[3][2] == {
         "directory_path": "root/team-a",
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
 
 
@@ -423,7 +424,7 @@ def test_git_repos_cli_exposes_agent_grant_revoke_and_clone_commands(monkeypatch
             return {"managed_repo_id": repo_id, "target_dir": "/home/agent/repo"}
 
     monkeypatch.setattr(
-        "evander.cli.build_admin_runtime",
+        "evander.cli_runtime.build_admin_runtime",
         lambda _config: SimpleNamespace(vm_agent_admin=VmAgentAdmin()),
     )
     runner = CliRunner()

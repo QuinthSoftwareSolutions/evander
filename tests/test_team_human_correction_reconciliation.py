@@ -34,6 +34,7 @@ from evander_team_addon.models import (
     TeamRecordState,
     TeamRole,
     TeamState,
+    TeamTaskKind,
     TeamTaskState,
     TaskCancellation,
 )
@@ -373,12 +374,13 @@ def test_reconciliation_keeps_unresolved_ambiguous_finding_routed(
         state.tasks["human-correction-child"].state = TeamTaskState.IN_PROGRESS
         return state
 
-    state = repo.update(_restore_unresolved_ambiguity)
+    repo.update(_restore_unresolved_ambiguity)
     result = HumanCorrectionReconciliationService(repo).reconcile()
 
-    assert result["changed"] is False
-    assert result["revision"] == state.revision
+    assert result["changed"] is True
+    assert result["migrated_coordination_task_ids"] == ["human-correction-aggregate"]
     final = repo.read()
+    assert final.tasks["human-correction-aggregate"].task_kind == TeamTaskKind.COORDINATION
     assert final.cases["human-case"].metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] == [
         "finding"
     ]
@@ -386,6 +388,40 @@ def test_reconciliation_keeps_unresolved_ambiguous_finding_routed(
         release.supersedes_release_package_id == "release-rejected"
         for release in final.release_packages.values()
     )
+    replay = HumanCorrectionReconciliationService(repo).reconcile()
+    assert replay["changed"] is False
+    assert replay["revision"] == final.revision
+
+
+def test_reconciliation_upgrades_existing_system_correction_parent_to_coordination(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def _leave_correction_in_flight(state: TeamState) -> TeamState:
+        state.tasks["human-correction-child"].state = TeamTaskState.IN_PROGRESS
+        state.deliverables["correction-deliverable"].state = TeamRecordState.PENDING
+        return state
+
+    initial = repo.update(_leave_correction_in_flight)
+    assert initial.tasks["human-correction-aggregate"].task_kind == TeamTaskKind.SUPPORT
+
+    migrated = HumanCorrectionReconciliationService(repo).reconcile()
+    state = repo.read()
+
+    assert migrated["changed"] is True
+    assert migrated["migrated_coordination_task_ids"] == ["human-correction-aggregate"]
+    assert state.tasks["human-correction-aggregate"].task_kind == TeamTaskKind.COORDINATION
+    assert state.tasks["human-correction-aggregate"].deliverable_ids == []
+    assert state.cases["human-case"].metadata["human_correction_graph_version"] == 2
+    assert not any(
+        release.supersedes_release_package_id == "release-rejected"
+        for release in state.release_packages.values()
+    )
+
+    replay = HumanCorrectionReconciliationService(repo).reconcile()
+    assert replay["changed"] is False
+    assert replay["revision"] == state.revision
 
 
 def test_reconciliation_carries_manifest_only_candidate_branch_into_successor(

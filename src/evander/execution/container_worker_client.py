@@ -204,11 +204,23 @@ class ContainerWorkerClient:
         session_id: str,
         request: WorkerReferenceRepoPrepareRequest,
     ) -> WorkerReferenceRepoPrepareRecord:
-        response = self._request(
-            "POST",
-            f"/v1/sessions/{session_id}/reference-repo",
-            json=request.model_dump(mode="json", exclude_none=True),
-        )
+        path = f"/v1/sessions/{session_id}/reference-repo"
+        try:
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_dump(mode="json", exclude_none=True),
+            )
+        except ContainerWorkerClientError as exc:
+            if not _worker_rejected_preparation_fingerprint(request, exc):
+                raise
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_copy(update={"preparation_fingerprint": None}).model_dump(
+                    mode="json", exclude_none=True
+                ),
+            )
         return WorkerReferenceRepoPrepareRecord.model_validate(
             self._json_dict(response, operation="prepare reference repo")
         )
@@ -293,11 +305,23 @@ class ContainerWorkerClient:
         session_id: str,
         request: WorkerFileWriteRequest,
     ) -> WorkerFileWriteRecord:
-        response = self._request(
-            "POST",
-            f"/v1/sessions/{session_id}/files",
-            json=request.model_dump(mode="json", exclude_none=True),
-        )
+        path = f"/v1/sessions/{session_id}/files"
+        try:
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_dump(mode="json", exclude_none=True),
+            )
+        except ContainerWorkerClientError as exc:
+            if not _worker_rejected_preparation_fingerprint(request, exc):
+                raise
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_copy(update={"preparation_fingerprint": None}).model_dump(
+                    mode="json", exclude_none=True
+                ),
+            )
         return WorkerFileWriteRecord.model_validate(
             self._json_dict(response, operation="write files")
         )
@@ -313,7 +337,7 @@ class ContainerWorkerClient:
     def read_session_artifact_text_bounded(
         self, session_id: str, relative_path: str, *, max_bytes: int
     ) -> str:
-        """Read an index artifact without buffering an unbounded worker response."""
+        """Bound both the worker's file read and the streamed response body."""
         from contextlib import nullcontext
 
         if max_bytes <= 0:
@@ -332,7 +356,8 @@ class ContainerWorkerClient:
         with (
             manager as client,
             client.stream(
-                "GET", self._url(path), headers={"Authorization": f"Bearer {token}"}
+                "GET", self._url(path), headers={"Authorization": f"Bearer {token}"},
+                params={"max_bytes": max_bytes},
             ) as response,
         ):
             if response.status_code >= 400:
@@ -599,6 +624,19 @@ def _worker_rejected_preparation_attempt_id(
     error = str(payload.get("error") or "").casefold()
     return "preparation_attempt_id" in error and (
         "extra_forbidden" in error or "extra inputs are not permitted" in error
+    )
+
+
+def _worker_rejected_preparation_fingerprint(request: Any, exc: ContainerWorkerClientError) -> bool:
+    if getattr(request, "preparation_fingerprint", None) is None or exc.status_code not in {
+        400,
+        409,
+        422,
+    }:
+        return False
+    error = str(exc).casefold()
+    return "preparation_fingerprint" in error and (
+        "extra" in error or "unexpected" in error or "not permitted" in error
     )
 
 

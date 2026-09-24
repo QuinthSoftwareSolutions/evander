@@ -2693,11 +2693,11 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
 
@@ -2787,11 +2787,11 @@ def test_container_preparation_recovers_legacy_base_from_prior_team_context(
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
 
@@ -2828,11 +2828,11 @@ def test_container_preparation_records_legacy_worker_receipt(monkeypatch) -> Non
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
     receipt: dict[str, Any] = {}
@@ -2873,11 +2873,11 @@ def test_container_preparation_refuses_to_guess_legacy_base_from_task_head(
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
 
@@ -2913,11 +2913,11 @@ def test_container_preparation_refuses_guest_reported_base_without_server_author
             )
 
     monkeypatch.setattr(
-        "evander_team_addon.providers.selected_execution_backend_for_target",
+        "evander_team_addon.provider_git_worktrees.selected_execution_backend_for_target",
         lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
     )
     monkeypatch.setattr(
-        "evander_team_addon.providers.container_backend",
+        "evander_team_addon.provider_git_worktrees.container_backend",
         lambda *_args, **_kwargs: FakeContainerBackend(),
     )
 

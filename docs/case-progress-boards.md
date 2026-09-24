@@ -35,31 +35,9 @@ comments and other links, suitable for appending to the configured Admin base UR
 ## Workflow configuration
 
 Deploy version 0.38.0 before using these workflow fields. Deployment does not
-modify workflow packs or post provider comments. Intake eligibility, case creation
-and progress-link notifications belong in operator-owned workflows. For APP,
-these changes are configured separately on the remote after deployment, using
-the existing revision-checked workflow editing service.
-
-## Existing APP case linkage
-
-The optional standalone backfill helper previews existing case linkage. Run it
-from the deployed checkout as the service account:
-
-```bash
-./.venv/bin/python scripts/backfill_app_intake_cases.py
-```
-
-The backfill uses stored ADO attribution and recognized ADO source references.
-It reuses existing intake cases, normalizes their source identity, creates missing
-cases, and links only tasks without a case. It preserves specialized cases and
-all task states, posts no comments, and dispatches no work. Ambiguous matches are
-reported and block application. Apply with `--apply` after reviewing the plan.
-Concurrent Team edits raise a revision conflict; rerun the preview to continue
-from the already-applied portion.
-
-The helper uses supported revision-checked Team services, never direct state or
-workflow-pack edits. Existing work can use the board after backfill; sharing links
-for existing items is a separate publication step.
+modify workflow packs or post provider comments. Intake eligibility, case creation,
+and progress-link notifications belong in operator-owned workflows edited with
+revision checks.
 
 The case board reports task execution and completion; it does not treat an intake
 task being finished as proof that the whole case has been released or deployed.

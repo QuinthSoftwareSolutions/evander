@@ -30,13 +30,13 @@ bearer token. Its token is never passed to the agent or stored in the connector 
 1. Copy `config/workflow-packs/alexa-agent-bridge.v1-example.json` into an operator-owned live pack
    through Admin Web **Workflow**. Do not overwrite a live pack file directly.
 2. Replace `REPLACE_WITH_FIXED_AGENT_SESSION_ID` with the persistent target session. For the
-   personal Truman installation this is the session currently backing Truman, not a value supplied
+   personal Evander installation this is the session currently backing Evander, not a value supplied
    by Alexa.
 3. Keep the webhook slug random or host-private if the public proxy cannot expose the example
-   `alexa-truman` slug unchanged. The Lambda URL and workflow slug must match exactly.
+   `alexa-evander` slug unchanged. The Lambda URL and workflow slug must match exactly.
 4. Add the pack to the trigger-orchestrator `workflow_packs` list using the editor's revision and
    lock behavior, save, relock, and read it back.
-5. Load the AWS-generated webhook secret as `ALEXA_TRUMAN_WEBHOOK_SECRET` in the Admin Web service
+5. Load the AWS-generated webhook secret as `ALEXA_EVANDER_WEBHOOK_SECRET` in the Admin Web service
    environment and restart `evander-admin-web.service`.
 6. Expose only `POST /api/workflow-webhooks/<slug>` through the public HTTPS reverse proxy. Do not
    expose the whole Admin Web application merely for this integration.

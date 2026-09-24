@@ -1376,7 +1376,7 @@ def test_pr_feedback_suppressed_agent_authored_feedback_advances_cursor(
                 "display_name": "PR feedback",
                 "type": "trigger:pull-request:new-feedback",
                 "provider": "local",
-                "agent_author_names": ["evander Bot"],
+                "agent_author_names": ["Evander Bot"],
                 "suppress_agent_authored_feedback": True,
             }
         ),
@@ -1388,7 +1388,7 @@ def test_pr_feedback_suppressed_agent_authored_feedback_advances_cursor(
         provider="local",
         repo="org/repo",
         pr_id="11",
-        author="evander Bot",
+        author="Evander Bot",
         body="I handled this.",
         created_at=created_at,
     )
@@ -1425,7 +1425,7 @@ def test_pr_feedback_suppressed_github_feedback_updates_next_poll_cursor(
                 "display_name": "PR feedback",
                 "type": "trigger:pull-request:new-feedback",
                 "provider": "github",
-                "agent_author_names": ["evander Bot"],
+                "agent_author_names": ["Evander Bot"],
                 "suppress_agent_authored_feedback": True,
             }
         ),
@@ -1441,7 +1441,7 @@ def test_pr_feedback_suppressed_github_feedback_updates_next_poll_cursor(
                     provider="github",
                     repo="org/repo",
                     pr_id="11",
-                    author="evander Bot",
+                    author="Evander Bot",
                     body="I handled this.",
                     created_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
                 )
@@ -1524,6 +1524,95 @@ def test_conformance_cron_due_and_cursor_persistence(
         coverage=["provider behavior correctness"],
         details="Cron emits when due, stages pending_scheduled_for until acknowledgement, and then persists last_fired_at.",
     )
+
+
+def test_conformance_cron_uses_iana_timezone_and_reports_local_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    frozen_now = datetime(2026, 3, 29, 6, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return frozen_now.replace(tzinfo=None)
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
+
+    provider = CronTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "cron-stockholm-morning",
+                "display_name": "Stockholm morning",
+                "type": "trigger:cron",
+                "expression": "0 8 * * *",
+                "timezone": "Europe/Stockholm",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].occurred_at == frozen_now
+    assert events[0].payload == {
+        "scheduled_for": "2026-03-29T06:00:00Z",
+        "scheduled_for_local": "2026-03-29T08:00:00+02:00",
+        "timezone": "Europe/Stockholm",
+    }
+
+
+def test_conformance_cron_never_publishes_a_future_fallback_occurrence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    frozen_now = datetime(2026, 10, 25, 0, 59, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        current = frozen_now
+
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return cls.current.replace(tzinfo=None)
+            return cls.current.astimezone(tz)
+
+    monkeypatch.setattr("evander.triggers.providers.cron.datetime", _FrozenDatetime)
+
+    provider = CronTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "cron-stockholm-fallback",
+                "display_name": "Stockholm fallback",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+                "timezone": "Europe/Stockholm",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].occurred_at == frozen_now
+    assert events[0].payload["scheduled_for"] == "2026-10-25T00:59:00Z"
+    assert events[0].payload["scheduled_for_local"] == "2026-10-25T02:59:00+02:00"
+
+    provider.acknowledge_published_event(events[0])
+    _FrozenDatetime.current = datetime(2026, 10, 25, 1, 0, tzinfo=timezone.utc)
+
+    next_events = provider.poll()
+
+    assert len(next_events) == 1
+    assert next_events[0].occurred_at == _FrozenDatetime.current
+    assert next_events[0].payload["scheduled_for"] == "2026-10-25T01:00:00Z"
+    assert next_events[0].payload["scheduled_for_local"] == "2026-10-25T02:00:00+01:00"
 
 
 def test_conformance_cron_high_frequency_edit_skips_backlog(
@@ -2079,8 +2168,8 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
                 "display_name": "PR GitHub",
                 "type": "trigger:pull-request:new-feedback",
                 "provider": "github",
-                "agent_author_names": ["evander Bot"],
-                "agent_mention_names": ["Truman Bot"],
+                "agent_author_names": ["Evander Bot"],
+                "agent_mention_names": ["Evander Bot"],
                 "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
             }
         ),
@@ -2098,7 +2187,7 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
                     author="reviewer",
                     body="Can you make this change?",
                     created_at=datetime(2026, 4, 8, 5, 33, 41, tzinfo=timezone.utc),
-                    metadata={"prior_thread_comment_author_names": ["evander Bot"]},
+                    metadata={"prior_thread_comment_author_names": ["Evander Bot"]},
                 ),
                 PrFeedbackItem(
                     feedback_id="github:comment:2",
@@ -2106,7 +2195,7 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
                     repo="org/repo",
                     pr_id="11",
                     author="reviewer",
-                    body="@Truman Bot can you take this?",
+                    body="@Evander Bot can you take this?",
                     created_at=datetime(2026, 4, 8, 5, 33, 42, tzinfo=timezone.utc),
                 ),
                 PrFeedbackItem(

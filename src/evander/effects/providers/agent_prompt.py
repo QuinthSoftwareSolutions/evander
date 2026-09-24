@@ -186,6 +186,7 @@ def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
 
 
 class AgentPromptEffectProvider(EffectProviderBase):
+    supports_waiting_slices = True
     capability = NodeCapability(
         min_inbound=1,
         max_inbound=1,
@@ -881,7 +882,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         worker = kwargs.get("worker")
         if worker is None:
             return 0
-        waiting_records = _waiting_execution_records(worker, cls.node_type())
+        waiting_records = (
+            kwargs["records"]
+            if "records" in kwargs
+            else _waiting_execution_records(worker, cls.node_type())
+        )
         if not waiting_records:
             return 0
 
@@ -895,7 +900,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if not vm_records:
             return completed
         try:
-            summaries = list_vm_summaries_for_agent_reconciliation(worker)
+            load_summaries = kwargs.get("vm_summaries_loader")
+            summaries = (
+                load_summaries()
+                if callable(load_summaries)
+                else list_vm_summaries_for_agent_reconciliation(worker)
+            )
         except Exception:
             logger.exception(
                 "AgentPromptEffectProvider inventory reconciliation skipped "
@@ -1260,7 +1270,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             logs=logs,
             stop_error=stop_error,
         )
-        cls._fail_waiting_record_without_completion_event(
+        cls._fail_waiting_record(
             worker=worker,
             record=record,
             outputs={
@@ -1357,7 +1367,17 @@ class AgentPromptEffectProvider(EffectProviderBase):
         return "\n".join(useful[-max(1, max_lines) :])
 
     @classmethod
-    def _fail_waiting_record_without_completion_event(
+    def _has_error_route(cls, *, worker: Any, record: Any) -> bool:
+        from evander.daemons.effect_orchestrator import _effect_error_outbound_edge_exists
+
+        build_graph = getattr(worker, "_build_execution_graph", None)
+        return callable(build_graph) and _effect_error_outbound_edge_exists(
+            graph=build_graph(),
+            effect_id=record.effect_id,
+        )
+
+    @classmethod
+    def _fail_waiting_record(
         cls,
         *,
         worker: Any,
@@ -1372,6 +1392,23 @@ class AgentPromptEffectProvider(EffectProviderBase):
         record.published_event_id = None
         record.completion_event_enqueued_at = None
         record.finished_at = finished_at
+        if cls._has_error_route(worker=worker, record=record):
+            record.outputs.update(
+                _prompt_error_outputs(
+                    message=error,
+                    failed_phase="execution",
+                    error_class="AgentExecutionError",
+                )
+            )
+            record.published_event_id = worker._publish_completion_event_from_record(
+                record=record,
+                outputs=record.outputs,
+                branch_port=AGENT_PROMPT_ERROR_PORT,
+            )
+            record.status = "error_routed"
+            record.completion_event_branch_port = AGENT_PROMPT_ERROR_PORT
+            record.completion_event_enqueued_at = finished_at
+            record.completion_published_at = finished_at
         worker.execution_store.put(record)
         worker._update_event_delivery_state(record.event_id)
         cls._release_enqueue_prompt_lock(
@@ -1751,18 +1788,42 @@ class AgentPromptEffectProvider(EffectProviderBase):
             if record.effect_type in {cls.node_type(), AGENT_ENQUEUE_PROMPT_EFFECT_TYPE}
             else None
         )
+        execution_failed = (
+            merged_outputs.get("success") is False
+            or merged_outputs.get("agent_state") == "failed"
+        )
+        error_routed = execution_failed and cls._has_error_route(
+            worker=worker,
+            record=record,
+        )
+        if error_routed:
+            branch_port = AGENT_PROMPT_ERROR_PORT
+            merged_outputs.update(
+                _prompt_error_outputs(
+                    message=str(merged_outputs.get("message") or "Agent execution failed"),
+                    failed_phase="execution",
+                    error_class="AgentExecutionError",
+                )
+            )
         published_event_id = worker._publish_completion_event_from_record(
             record=record,
             outputs=merged_outputs,
             branch_port=branch_port,
         )
-        record.status = "succeeded"
+        record.status = "error_routed" if error_routed else "succeeded"
+        if error_routed:
+            record.error = merged_outputs["error_message"]
+        record.completion_event_branch_port = branch_port
         record.outputs = merged_outputs
         record.published_event_id = published_event_id
         record.completion_event_enqueued_at = finished_at
+        record.completion_published_at = datetime.now(UTC)
         record.finished_at = finished_at
         worker.execution_store.put(record)
         worker._update_event_delivery_state(record.event_id)
+        notify = getattr(worker, "_notify_prompt_lifecycle", None)
+        if callable(notify):
+            notify(record)
         dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
         runtime_dir = getattr(getattr(worker, "config", None), "runtime_dir", None)
         if runtime_dir is not None and dispatch_id:

@@ -207,6 +207,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "semantic_embedding_model",
             "semantic_embedding_provider",
             "semantic_store_provider",
+            "classification",
             "semantic_vector_distance",
             "teams_backend",
             "teams_delegated_authority_base_url",
@@ -818,7 +819,13 @@ class DirectoryConfigStore:
                 "validation_scope": validation_scope,
             },
         )
-        return validated.model_dump(mode="json", include=set(provider_payload))
+        result = validated.model_dump(mode="json", include=set(provider_payload))
+        if validation_scope == "overlay" and "classification" in provider_payload:
+            # Preserve omitted nested defaults so child overlays continue to inherit.
+            result["classification"] = validated.classification.model_dump(
+                mode="json", exclude_unset=True
+            )
+        return result
 
     @staticmethod
     def _canonicalize_provider_domain_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1025,6 +1032,11 @@ class DirectoryConfigResolver:
     ) -> DirectoryConfigResolution:
         details = self._service.show(reference)
         effective = deepcopy(base_config) if base_config is not None else {}
+        if domain == "providers" and "classification" in effective:
+            # Classification is directory-owned. Do not resurrect removed profiles or
+            # enablement from the process's cached root configuration.
+            from evander.classification.models import ClassificationSettings
+            effective["classification"] = ClassificationSettings().model_dump(mode="json")
         if domain == "providers" and "managed_website_sessions" in effective:
             # Profiles are live grants, not bootstrap defaults. A loaded GatewayConfig
             # may contain yesterday's root profiles; only current layers may grant them.
@@ -1068,10 +1080,13 @@ class DirectoryConfigResolver:
                     directory_id=directory.id,
                     directory_path=directory.path,
                 ),
-                replace_paths=frozenset(
+                replace_paths=(frozenset(
                     ("managed_website_sessions", profile_id)
                     for profile_id in (overlay.get("managed_website_sessions") or {})
-                ) if domain == "providers" else frozenset(),
+                ) | frozenset(
+                    ("classification", "profiles", profile_id)
+                    for profile_id in ((overlay.get("classification") or {}).get("profiles") or {})
+                )) if domain == "providers" else frozenset(),
             )
 
         validation_errors: list[str] = []

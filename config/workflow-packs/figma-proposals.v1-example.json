@@ -1,0 +1,185 @@
+{
+  "pack_id": "figma-proposals-example",
+  "pack_version": "v1",
+  "description": "Separate proposals, immutable review, and explicitly selected composition.",
+  "graphs": [
+    {
+      "id": "figma-proposals",
+      "name": "Separate proposals",
+      "directory_path": "root/design",
+      "node_ids": [
+        "proposals-request",
+        "proposal-a",
+        "proposal-b",
+        "snapshot-a",
+        "snapshot-b",
+        "review-a",
+        "review-b"
+      ]
+    },
+    {
+      "id": "figma-compose",
+      "name": "Compose selected snapshots",
+      "directory_path": "root/design",
+      "node_ids": [
+        "compose-request",
+        "inspect-destination",
+        "compose-selected"
+      ]
+    }
+  ],
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {
+        "id": "proposals-request",
+        "display_name": "Request separate proposals",
+        "type": "trigger:event",
+        "config": {
+          "event_type": "example.figma.proposals_requested"
+        }
+      },
+      {
+        "id": "proposal-a",
+        "display_name": "proposal-a",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "designer-a",
+          "prompt": "Design a UI proposal in target mockups, node ${{proposals-request.payload.proposal_a_node_id}}. Brief: ${{proposals-request.payload.brief}} Use figma_query inspect before each small figma_execute edit, include expected_revision, and use stable unique request IDs. On a stale revision, inspect and revise your edit. If an operation is uncertain, stop and report its operation_id; do not retry with a new ID. Stay within your granted design area.",
+          "vm_user": "agent"
+        }
+      },
+      {
+        "id": "proposal-b",
+        "display_name": "proposal-b",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "designer-b",
+          "prompt": "Design an independent UI proposal in target mockups, node ${{proposals-request.payload.proposal_b_node_id}}. Brief: ${{proposals-request.payload.brief}} Use figma_query inspect before each small figma_execute edit, include expected_revision, and use stable unique request IDs. On a stale revision, inspect and revise your edit. If an operation is uncertain, stop and report its operation_id; do not retry with a new ID. Stay within your granted design area.",
+          "vm_user": "agent"
+        }
+      },
+      {
+        "id": "snapshot-a",
+        "display_name": "snapshot-a",
+        "type": "effect:figma:execute",
+        "config": {
+          "session_id": "designer-a",
+          "request": {
+            "operation": "snapshot",
+            "target_id": "mockups",
+            "node_id": "${{proposals-request.payload.proposal_a_node_id}}",
+            "request_id": "${{proposals-request.event_id}}:snapshot-a"
+          }
+        }
+      },
+      {
+        "id": "snapshot-b",
+        "display_name": "snapshot-b",
+        "type": "effect:figma:execute",
+        "config": {
+          "session_id": "designer-b",
+          "request": {
+            "operation": "snapshot",
+            "target_id": "mockups",
+            "node_id": "${{proposals-request.payload.proposal_b_node_id}}",
+            "request_id": "${{proposals-request.event_id}}:snapshot-b"
+          }
+        }
+      },
+      {
+        "id": "review-a",
+        "display_name": "review-a",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "reviewer",
+          "prompt": "Review immutable Figma snapshot ${{snapshot-a.result.snapshot_id}}. Use figma_execute import_snapshot for target mockups and this snapshot ID, then communication_copy_artifact_to_workspace for each artifact_id. Inspect preview.png and design.json. Give actionable feedback with the snapshot ID and node IDs. Add a Figma comment if useful. Your task is review.",
+          "vm_user": "agent"
+        }
+      },
+      {
+        "id": "review-b",
+        "display_name": "review-b",
+        "type": "effect:agent:prompt",
+        "config": {
+          "target": "reviewer-b",
+          "prompt": "Review immutable Figma snapshot ${{snapshot-b.result.snapshot_id}}. Use figma_execute import_snapshot for target mockups and this snapshot ID, then communication_copy_artifact_to_workspace for each artifact_id. Inspect preview.png and design.json. Give actionable feedback with the snapshot ID and node IDs. Add a Figma comment if useful. Your task is review.",
+          "vm_user": "agent"
+        }
+      },
+      {
+        "id": "compose-request",
+        "display_name": "Explicit selection of accepted snapshots",
+        "type": "trigger:event",
+        "config": {
+          "event_type": "example.figma.proposals_accepted"
+        }
+      },
+      {
+        "id": "inspect-destination",
+        "display_name": "inspect-destination",
+        "type": "query:figma:read",
+        "config": {
+          "session_id": "designer-a",
+          "request": {
+            "operation": "inspect",
+            "target_id": "mockups",
+            "node_id": "${{compose-request.payload.integration_node_id}}"
+          }
+        }
+      },
+      {
+        "id": "compose-selected",
+        "display_name": "compose-selected",
+        "type": "effect:figma:execute",
+        "config": {
+          "session_id": "designer-a",
+          "request": {
+            "operation": "compose",
+            "target_id": "mockups",
+            "node_id": "${{compose-request.payload.integration_node_id}}",
+            "expected_revision": "${{inspect-destination.revision}}",
+            "source_snapshot_ids": "${{compose-request.payload.accepted_snapshot_ids}}",
+            "request_id": "${{compose-request.event_id}}:compose"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source_id": "proposals-request",
+        "target_id": "proposal-a"
+      },
+      {
+        "source_id": "proposals-request",
+        "target_id": "proposal-b"
+      },
+      {
+        "source_id": "proposal-a",
+        "target_id": "snapshot-a",
+        "source_port": "completed"
+      },
+      {
+        "source_id": "proposal-b",
+        "target_id": "snapshot-b",
+        "source_port": "completed"
+      },
+      {
+        "source_id": "snapshot-a",
+        "target_id": "review-a"
+      },
+      {
+        "source_id": "snapshot-b",
+        "target_id": "review-b"
+      },
+      {
+        "source_id": "compose-request",
+        "target_id": "inspect-destination"
+      },
+      {
+        "source_id": "inspect-destination",
+        "target_id": "compose-selected"
+      }
+    ]
+  }
+}

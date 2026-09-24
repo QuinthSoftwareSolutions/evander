@@ -234,11 +234,13 @@ export function agentCreateTargetLabel(form: AgentCreateFormState): string {
 export async function loadAgentCreateOptions(
   directoryPath: string,
   workerId = "",
+  sessionId = "",
 ): Promise<AgentCreateOptionsResponse> {
   const query = new URLSearchParams();
   const trimmed = directoryPath.trim();
   if (trimmed) query.set("directory_path", trimmed);
   if (workerId.trim()) query.set("worker_id", workerId.trim());
+  if (sessionId.trim()) query.set("session_id", sessionId.trim());
   const suffix = query.toString();
   return fetchJson<AgentCreateOptionsResponse>(
     `/api/admin/agents/create-options${suffix ? `?${suffix}` : ""}`,

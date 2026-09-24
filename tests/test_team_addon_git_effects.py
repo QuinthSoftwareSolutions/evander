@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander_team_addon import api_release
+
 import subprocess
 import time
 from datetime import timedelta
@@ -1596,7 +1598,7 @@ def test_release_verification_live_payload_returns_bounded_worker_tail_without_t
                 container_worker_request_timeout_seconds=12,
             )
 
-    monkeypatch.setattr(team_addon_api, "ContainerWorkerClient", _WorkerClient)
+    monkeypatch.setattr(api_release, "ContainerWorkerClient", _WorkerClient)
 
     payload = team_addon_api._release_verification_live_payload(
         state,
