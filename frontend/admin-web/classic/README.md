@@ -21,7 +21,7 @@ The server chooses the document before returning HTML:
 
 1. `?admin_ui=classic` or `?admin_ui=new` explicitly selects the version for a tab.
 2. Otherwise, the `admin_ui_version` preference cookie is used.
-3. Otherwise, Classic is the default.
+3. Otherwise, New UI is the default.
 
 The shared header selector preserves the rest of the URL and confirms before
 reloading, giving the operator an opportunity to save changes. Existing browser
