@@ -1574,6 +1574,10 @@ async function createTeamAddonServer(
         await serveStatic(response, "team-ui.js", "application/javascript; charset=utf-8");
         return;
       }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-ui-state.js") {
+        await serveStatic(response, "team-ui-state.js", "application/javascript; charset=utf-8");
+        return;
+      }
       if (request.method === "GET" && pathname === "/addons/team-addon/admin-design.css") {
         await serveStatic(response, "admin-design.css", "text/css; charset=utf-8");
         return;

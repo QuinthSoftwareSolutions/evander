@@ -1,11 +1,25 @@
 # Changelog
 
-## 2026-09-23 - Resolve Teams direct chats from UPNs (0.62.0)
+## 2026-09-24 - Resolve Teams direct chats from UPNs (0.62.0)
 
 - Let workflow editors choose direct-chat setup by UPN or retain explicit Teams chat and sender
   IDs. Resolve direct-chat UPNs through host-owned Microsoft Graph access during revision-gated
   saves, ensure each one-to-one chat, and persist canonical user and chat IDs while keeping the
   readable UPNs in the form.
+
+## 2026-09-24 - Separate oversized maintenance responsibilities (0.61.1)
+
+- Move Team agent leasing, action application, task administration, and task-update
+  execution into named domain modules while retaining service constructors, method
+  signatures, revision checks, clock behavior, and outbox transactions.
+- Give worker Git workspace preparation, dependency composition, and cleanup a dedicated
+  implementation boundary while preserving established exception and helper imports.
+- Replace numbered Team MCP registration slices with domain names without changing tool
+  registration order, names, descriptions, or handlers.
+- Separate Team UI state and routing, session approval policy and dialogs, DIDWW delegated
+  origin queries, and OpenAI usage accounting from their oversized entry points.
+- Document the compatibility contracts for the new boundaries and keep their implementation
+  bodies mechanically equivalent to the prior code.
 
 ## 2026-09-23 - Unify the Admin Web design (0.61.0)
 
