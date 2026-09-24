@@ -2012,6 +2012,13 @@ class WorkflowConfigAdminService:
     def _communication_target_options(
         self, directory_path: str | None, *, purpose: str
     ) -> list[WorkflowEditorFieldOption]:
+        return self._communication_target_options_for_targets(
+            self._communication_targets_for_directory(directory_path), purpose=purpose
+        )
+
+    def _communication_targets_for_directory(
+        self, directory_path: str | None
+    ) -> list[dict[str, Any]]:
         normalized_directory = self._normalize_directory_reference(directory_path)
         result = self.directory_admin.compute_effective_config(
             normalized_directory,
@@ -2026,11 +2033,14 @@ class WorkflowConfigAdminService:
         targets = result.data.resolution.effective_config.get("targets")
         if not isinstance(targets, list):
             return []
+        return [target for target in targets if isinstance(target, dict)]
 
+    @staticmethod
+    def _communication_target_options_for_targets(
+        targets: list[dict[str, Any]], *, purpose: str
+    ) -> list[WorkflowEditorFieldOption]:
         options: list[WorkflowEditorFieldOption] = []
         for target in targets:
-            if not isinstance(target, dict):
-                continue
             provider = str(target.get("provider") or "").strip()
             capabilities = set(_communication_target_capabilities(target))
             if purpose == "send-message":
@@ -2155,14 +2165,21 @@ class WorkflowConfigAdminService:
             self.config.addon_loader, base_dir=self.project_dir
         )
         tool_options = _tool_field_options(addon_mcp_tool_catalog_payloads(addon_catalog))
-        communication_send_target_options = self._communication_send_target_options(directory_path)
-        communication_notification_target_options = self._communication_notification_target_options(
-            directory_path
+        communication_targets = self._communication_targets_for_directory(directory_path)
+        communication_send_target_options = self._communication_target_options_for_targets(
+            communication_targets, purpose="send-message"
         )
-        communication_read_target_options = self._communication_read_target_options(directory_path)
-        team_chat_bridge_target_options = self._team_chat_bridge_target_options(directory_path)
-        agent_communication_target_options = self._agent_communication_target_options(
-            directory_path
+        communication_notification_target_options = self._communication_target_options_for_targets(
+            communication_targets, purpose="notification"
+        )
+        communication_read_target_options = self._communication_target_options_for_targets(
+            communication_targets, purpose="read-message"
+        )
+        team_chat_bridge_target_options = self._communication_target_options_for_targets(
+            communication_targets, purpose="team-chat-bridge"
+        )
+        agent_communication_target_options = self._communication_target_options_for_targets(
+            communication_targets, purpose="agent-session"
         )
         managed_git_repository_options = self._managed_git_reference_repository_options(
             directory_path

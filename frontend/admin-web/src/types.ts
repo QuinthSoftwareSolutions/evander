@@ -366,7 +366,7 @@ export type WorkflowNodeExecutionSearch = {
   node_id: string;
   started_from: string;
   started_to: string;
-  matched: number;
+  matched: number | null;
   returned: number;
   limit: number;
   has_more: boolean;

@@ -140,7 +140,7 @@ export function useNodeExecutionHistory(selectedNode: WorkflowNodeConfig | undef
         limit: 50,
       };
     }
-    const body = { ...query, cursor };
+    const body = { ...query, cursor, include_total: false };
     setNodeExecutionLoading(true);
     setNodeExecutionError(null);
     try {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-24 - Reduce Admin Web read overhead (0.62.4)
+
+- Let execution-history clients omit exact match counts while retaining cursor pagination;
+  show loaded rows and whether more are available in the workflow editor.
+- Find execution-history availability bounds with index seeks and move history reads and
+  response serialization off the web event loop, preserving authorization checks.
+- Filter session inventories before sorting so narrow views only sort their matching rows.
+- Read workflow run and recent-activity display fields directly from SQLite instead of
+  hydrating and serializing full execution payloads; keep control operations on full records.
+- Resolve communication targets once per workflow catalog request, retaining directory and
+  capability filtering without introducing a shared configuration cache.
+- Keep cleanup audit tests independent of the current date by aligning the journal's
+  retention clock with their simulated cleanup timestamps.
+
 ## 2026-09-24 - Stable Team copy previews (0.62.3)
 
 - Keep Team copy previews valid while tasks, inbox items, dispatches, runtime state, cost history,
