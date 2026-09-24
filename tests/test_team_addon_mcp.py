@@ -1951,7 +1951,7 @@ def test_team_addon_mcp_record_note_uses_command_implementation(
     assert state.agent_runtimes["manager"].active_dispatch_id == "dispatch-mcp-note"
 
 
-def test_team_addon_mcp_slice6_tools_use_command_implementation(
+def test_team_addon_mcp_work_management_tools_use_command_implementation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1973,7 +1973,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
         "request_team_outbox_publication_for_records",
         _request_outbox_publication,
     )
-    slice6_tools = [
+    work_management_tools = [
         TEAM_CREATE_CASE_TOOL,
         TEAM_UPDATE_CASE_TOOL,
         TEAM_CREATE_TASK_TOOL,
@@ -1987,7 +1987,11 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     ]
     context = _runtime(tmp_path, allowed_tools=[])
     for session_id in ("session-manager", "session-lead", "session-backend"):
-        _upsert_session(context, session_id=session_id, allowed_tools=slice6_tools)
+        _upsert_session(
+            context,
+            session_id=session_id,
+            allowed_tools=work_management_tools,
+        )
     repo = _seed_planning_state(context.config.runtime_dir)
 
     def _configure_project_git(state):
@@ -2419,7 +2423,7 @@ def test_team_addon_mcp_requires_fresh_git_integration_boundary(
     ]
 
 
-def test_team_addon_mcp_slice6_tool_requires_active_lease_without_mutation(
+def test_team_addon_mcp_work_management_tool_requires_active_lease_without_mutation(
     tmp_path: Path,
 ) -> None:
     context = _runtime(tmp_path, allowed_tools=[])

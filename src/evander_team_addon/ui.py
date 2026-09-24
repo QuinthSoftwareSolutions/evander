@@ -15,6 +15,7 @@ _STATIC_ASSET_NAMES = frozenset(
         "admin-design.js",
         "team-ui.css",
         "team-ui.js",
+        "team-ui-state.js",
         "team-case-board.js",
         "team-case-context.js",
         "team-mail.js",
