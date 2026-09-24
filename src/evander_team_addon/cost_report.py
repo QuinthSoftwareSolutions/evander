@@ -94,12 +94,12 @@ def _changed_keys(previous: Mapping[str, Any], current: Mapping[str, Any]) -> se
 
 
 def _empty_amounts() -> list[Any]:
-    return [0] * len(_COUNTERS) + [Decimal("0")]
+    return [0] * len(_COUNTERS) + [Decimal("0"), Decimal("0")]
 
 
 def _amounts(payload: str) -> list[Any]:
     values = json.loads(payload)
-    values[-1] = Decimal(values[-1])
+    values[-2:] = [Decimal(value) for value in values[-2:]]
     return values
 
 
@@ -120,6 +120,9 @@ def _contributions(
     cells: dict[str, tuple[list[Any], str]] = {}
     for event in dedupe_model_usage_cost_events(events):
         estimate = estimate_model_usage_cost(event, catalog, currency="usd")
+        estimated_total = estimate.estimated_total
+        reported_total = estimate.reported_total if estimated_total is None else None
+        priced = estimated_total is not None or reported_total is not None
         attribution = service._attribute_event(event)
         window = windows.get(attribution.team_id) if attribution.team_id else None
         occurred_at = _ensure_utc(event.occurred_at)
@@ -152,8 +155,8 @@ def _contributions(
             values,
             [
                 1,
-                int(estimate.estimated_total is not None),
-                int(estimate.estimated_total is None),
+                int(priced),
+                int(not priced),
                 input_tokens,
                 int(extract_cached_input_tokens(event) or 0),
                 extract_cache_write_input_tokens(event).total,
@@ -161,7 +164,8 @@ def _contributions(
                 int(event.total_tokens)
                 if event.total_tokens is not None
                 else input_tokens + output_tokens,
-                estimate.estimated_total or Decimal("0"),
+                estimated_total or Decimal("0"),
+                reported_total or Decimal("0"),
             ],
         )
     return cells
@@ -207,7 +211,7 @@ def cost_report_cells(
     path = service.runtime_dir / "team-cost-report.db"
     current_attributions = _attributions(service)
     current_config = {
-        "version": 1,
+        "version": 2,
         "source": str(service.usage_store.path.resolve()),
         "pricing": model_pricing_catalog_fingerprint(catalog) if catalog else None,
         # Cap amounts and group membership affect final presentation only.
@@ -398,7 +402,8 @@ def add_cell_to_bucket(bucket: dict[str, Any], cell: list[Any], amounts: list[An
     def add(target: dict[str, Any]) -> None:
         for name, value in zip(_COUNTERS, amounts, strict=False):
             target[name] += value
-        target["_estimated_cost"] += amounts[-1]
+        target["_estimated_cost"] += amounts[-2]
+        target["_reported_cost"] += amounts[-1]
         for name, key in (("source_counts", source), ("cost_status_counts", status)):
             target[name][key] = target[name].get(key, 0) + amounts[0]
         if amounts[2]:

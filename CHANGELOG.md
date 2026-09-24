@@ -11,7 +11,8 @@
   agents in OpenRouter-default directories; explicit Claude/OpenRouter routing remains rejected.
 - Capture routing metadata and provider-reported USD charges without retaining
   prompt or response content. Separate reported charges from catalog estimates
-  and include both in Team budgets and cost displays while preserving fractional dollars.
+  and include both in Team budgets, durable cost reports, and cost displays while
+  preserving fractional dollars.
 - Leave OpenRouter routes empty and public OpenAI as the default; live provider
   compatibility and credentials require operator configuration.
 
