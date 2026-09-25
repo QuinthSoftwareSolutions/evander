@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 import html
 from html.parser import HTMLParser
@@ -53,6 +55,7 @@ _ADO_PROXY_SYNC_FIELDS = (
     "System.ChangedDate",
 )
 _ADO_WORK_ITEMS_BATCH_LIMIT = 200
+_ADO_ACTIVITY_FETCH_WORKERS = 8
 _ADO_ACTIVITY_BOOKKEEPING_FIELDS = {
     "Microsoft.VSTS.Common.StateChangeDate",
     "System.AuthorizedAs",
@@ -1696,7 +1699,54 @@ class AzureDevOpsIssueAdapter:
         candidate_scanned_count = 0
         candidate_scan_complete = True
         matched_items: list[dict[str, Any]] = []
-        with httpx.Client(timeout=self.timeout_seconds) as client:
+
+        def load_activity_item(candidate: dict[str, Any]) -> dict[str, Any] | None:
+            item_id = str(candidate.get("id") or "").strip()
+            if not item_id:
+                return None
+            detail = self.get_backlog_item_by_id(
+                directory_path=directory_path,
+                backlog_item_id=item_id,
+                project=normalized_project,
+                include_comments="commented" in normalized_types,
+                include_relations=False,
+                include_updates="changed" in normalized_types,
+                _client=client,
+                _connection=(organization_url, configured_project, pat),
+            )
+            activities = self._work_item_activity_records(
+                detail,
+                actor=actor,
+                since=since,
+                until=until,
+                activity_types=normalized_types,
+            )
+            if not activities:
+                return None
+            return {
+                "provider": self.provider_name,
+                "id": detail.get("id"),
+                "project": detail.get("project") or normalized_project,
+                "title": detail.get("title"),
+                "state": detail.get("state"),
+                "type": detail.get("type"),
+                "url": detail.get("url"),
+                "web_url": detail.get("web_url"),
+                "activities": activities,
+                "fields": detail.get("fields") or {},
+            }
+
+        with (
+            httpx.Client(timeout=self.timeout_seconds) as client,
+            ThreadPoolExecutor(max_workers=_ADO_ACTIVITY_FETCH_WORKERS) as workers,
+        ):
+            candidate_ids = self._run_work_item_wiql(
+                client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                wiql=wiql,
+            )
             while True:
                 remaining_candidates = (
                     None
@@ -1717,6 +1767,7 @@ class AzureDevOpsIssueAdapter:
                     else min(candidate_page_size, remaining_candidates),
                     skip=candidate_skip,
                     include_relations=False,
+                    work_item_ids=candidate_ids,
                 )
                 candidate_paging = (
                     candidates.get("paging") if isinstance(candidates.get("paging"), dict) else {}
@@ -1726,41 +1777,12 @@ class AzureDevOpsIssueAdapter:
                     candidate_total_matches = raw_candidate_total
                 candidate_items = candidates.get("items") or []
                 candidate_scanned_count += len(candidate_items)
-                for candidate in candidate_items:
-                    item_id = str(candidate.get("id") or "").strip()
-                    if not item_id:
-                        continue
-                    detail = self.get_backlog_item_by_id(
-                        directory_path=directory_path,
-                        backlog_item_id=item_id,
-                        project=normalized_project,
-                        include_comments="commented" in normalized_types,
-                        include_relations=False,
-                        include_updates="changed" in normalized_types,
-                    )
-                    activities = self._work_item_activity_records(
-                        detail,
-                        actor=actor,
-                        since=since,
-                        until=until,
-                        activity_types=normalized_types,
-                    )
-                    if not activities:
-                        continue
-                    matched_items.append(
-                        {
-                            "provider": self.provider_name,
-                            "id": detail.get("id"),
-                            "project": detail.get("project") or normalized_project,
-                            "title": detail.get("title"),
-                            "state": detail.get("state"),
-                            "type": detail.get("type"),
-                            "url": detail.get("url"),
-                            "web_url": detail.get("web_url"),
-                            "activities": activities,
-                            "fields": detail.get("fields") or {},
-                        }
-                    )
+                page_results = (
+                    workers.map(load_activity_item, candidate_items)
+                    if len(candidate_items) >= _ADO_ACTIVITY_FETCH_WORKERS
+                    else map(load_activity_item, candidate_items)
+                )
+                matched_items.extend(item for item in page_results if item is not None)
                 raw_next_skip = candidate_paging.get("next_skip")
                 next_candidate_skip = raw_next_skip if isinstance(raw_next_skip, int) else None
                 scanned_all_reported_candidates = (
@@ -2244,6 +2266,7 @@ class AzureDevOpsIssueAdapter:
         top: int = 50,
         skip: int = 0,
         include_relations: bool = False,
+        work_item_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         normalized_top = max(1, min(int(top), 200))
         normalized_skip = max(0, int(skip))
@@ -2260,7 +2283,6 @@ class AzureDevOpsIssueAdapter:
                 tags_any=tags_any,
                 text_search=text_search,
             )
-        wiql_url = f"{organization_url}/{quote(project, safe='')}/_apis/wit/wiql"
         select_fields = [
             "System.Id",
             "System.Title",
@@ -2280,21 +2302,14 @@ class AzureDevOpsIssueAdapter:
             "Microsoft.VSTS.Common.AcceptanceCriteria",
             *DEFAULT_EFFORT_FIELDS,
         ]
-        wiql_response = client.post(
-            wiql_url,
-            params={"api-version": "7.1"},
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            json={"query": normalized_wiql},
-        )
-        if wiql_response.is_error:
-            self._raise_ado_http_error(action="query backlog items", response=wiql_response)
-        wiql_payload = wiql_response.json()
-        raw_work_items = wiql_payload.get("workItems") if isinstance(wiql_payload, dict) else None
-        work_item_ids = [
-            int(item.get("id"))
-            for item in (raw_work_items or [])
-            if isinstance(item, dict) and isinstance(item.get("id"), int)
-        ]
+        if work_item_ids is None:
+            work_item_ids = self._run_work_item_wiql(
+                client,
+                organization_url=organization_url,
+                project=project,
+                auth_header=auth_header,
+                wiql=normalized_wiql,
+            )
         total_matches = len(work_item_ids)
         paged_ids = work_item_ids[normalized_skip : normalized_skip + normalized_top]
         items: list[dict[str, Any]] = []
@@ -2410,6 +2425,32 @@ class AzureDevOpsIssueAdapter:
             },
         }
 
+    def _run_work_item_wiql(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+        wiql: str,
+    ) -> list[int]:
+        wiql_url = f"{organization_url}/{quote(project, safe='')}/_apis/wit/wiql"
+        response = client.post(
+            wiql_url,
+            params={"api-version": "7.1"},
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            json={"query": wiql},
+        )
+        if response.is_error:
+            self._raise_ado_http_error(action="query backlog items", response=response)
+        payload = response.json()
+        raw_work_items = payload.get("workItems") if isinstance(payload, dict) else None
+        return [
+            item["id"]
+            for item in (raw_work_items or [])
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
+        ]
+
     def get_backlog_item_by_id(
         self,
         *,
@@ -2420,14 +2461,23 @@ class AzureDevOpsIssueAdapter:
         include_relations: bool = True,
         include_updates: bool = False,
         comment_page_limit: int = 1,
+        _client: httpx.Client | None = None,
+        _connection: tuple[str, str, str] | None = None,
     ) -> dict[str, Any]:
-        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        organization_url, configured_project, pat = (
+            _connection if _connection is not None else self._resolve_connection(directory_path)
+        )
         normalized_project = str(project or configured_project).strip()
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps backlog item retrieval.")
         auth_header = self._auth_header(pat)
         work_item_url = f"{organization_url}/{quote(normalized_project, safe='')}/_apis/wit/workitems/{backlog_item_id}"
-        with httpx.Client(timeout=self.timeout_seconds) as client:
+        client_context = (
+            nullcontext(_client)
+            if _client is not None
+            else httpx.Client(timeout=self.timeout_seconds)
+        )
+        with client_context as client:
             response = client.get(
                 work_item_url,
                 params={"api-version": "7.1", "$expand": "All"},
