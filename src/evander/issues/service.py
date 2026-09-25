@@ -1694,10 +1694,7 @@ class AzureDevOpsIssueAdapter:
         normalized_skip = max(0, int(skip))
         normalized_max_candidates = _ado_activity_max_candidates(max_candidates)
         candidate_page_size = 200 if exhaustive else min(200, normalized_max_candidates)
-        candidate_skip = 0
-        candidate_total_matches: int | None = None
         candidate_scanned_count = 0
-        candidate_scan_complete = True
         matched_items: list[dict[str, Any]] = []
 
         def load_activity_item(candidate: dict[str, Any]) -> dict[str, Any] | None:
@@ -1747,65 +1744,34 @@ class AzureDevOpsIssueAdapter:
                 auth_header=auth_header,
                 wiql=wiql,
             )
-            while True:
-                remaining_candidates = (
-                    None
-                    if exhaustive
-                    else max(0, normalized_max_candidates - candidate_scanned_count)
-                )
-                if remaining_candidates == 0:
-                    candidate_scan_complete = False
-                    break
+            candidate_total_matches = len(candidate_ids)
+            candidate_limit = (
+                candidate_total_matches
+                if exhaustive
+                else min(candidate_total_matches, normalized_max_candidates)
+            )
+            candidate_scan_complete = candidate_limit == candidate_total_matches
+            # Omitted/deleted IDs still consume their positions in the frozen WIQL list.
+            for candidate_skip in range(0, candidate_limit, candidate_page_size):
                 candidates = self._query_backlog_items_core(
                     client,
                     organization_url=organization_url,
                     project=normalized_project,
                     auth_header=auth_header,
                     wiql=wiql,
-                    top=candidate_page_size
-                    if remaining_candidates is None
-                    else min(candidate_page_size, remaining_candidates),
+                    top=min(candidate_page_size, candidate_limit - candidate_skip),
                     skip=candidate_skip,
                     include_relations=False,
                     work_item_ids=candidate_ids,
                 )
-                candidate_paging = (
-                    candidates.get("paging") if isinstance(candidates.get("paging"), dict) else {}
-                )
-                raw_candidate_total = candidate_paging.get("total_matches")
-                if isinstance(raw_candidate_total, int):
-                    candidate_total_matches = raw_candidate_total
                 candidate_items = candidates.get("items") or []
                 candidate_scanned_count += len(candidate_items)
                 page_results = (
                     workers.map(load_activity_item, candidate_items)
-                    if len(candidate_items) >= _ADO_ACTIVITY_FETCH_WORKERS
+                    if len(candidate_items) > 1
                     else map(load_activity_item, candidate_items)
                 )
                 matched_items.extend(item for item in page_results if item is not None)
-                raw_next_skip = candidate_paging.get("next_skip")
-                next_candidate_skip = raw_next_skip if isinstance(raw_next_skip, int) else None
-                scanned_all_reported_candidates = (
-                    candidate_total_matches is not None
-                    and candidate_scanned_count >= candidate_total_matches
-                )
-                if not exhaustive and candidate_scanned_count >= normalized_max_candidates:
-                    candidate_scan_complete = not (
-                        candidate_paging.get("has_more")
-                        or (
-                            candidate_total_matches is not None
-                            and candidate_scanned_count < candidate_total_matches
-                        )
-                    )
-                    break
-                if next_candidate_skip is not None and next_candidate_skip > candidate_skip:
-                    candidate_skip = next_candidate_skip
-                    continue
-                if not candidate_paging.get("has_more") or not candidate_items:
-                    break
-                if scanned_all_reported_candidates:
-                    break
-                candidate_skip += len(candidate_items)
         total_activity_matches = len(matched_items)
         items = matched_items[normalized_skip : normalized_skip + normalized_top]
         next_skip = (
@@ -2405,9 +2371,10 @@ class AzureDevOpsIssueAdapter:
         id_order = {str(item_id): index for index, item_id in enumerate(paged_ids)}
         items.sort(key=lambda item: id_order.get(str(item.get("id") or ""), len(id_order)))
         returned_count = len(items)
+        consumed_count = len(paged_ids)
         next_skip = (
-            normalized_skip + returned_count
-            if normalized_skip + returned_count < total_matches
+            normalized_skip + consumed_count
+            if normalized_skip + consumed_count < total_matches
             else None
         )
         return {

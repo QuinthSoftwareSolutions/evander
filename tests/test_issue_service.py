@@ -32,9 +32,16 @@ class _DummyClient:
 
 
 class _RecordingClient:
-    def __init__(self, calls: list[dict[str, object]], responses: list[httpx.Response]) -> None:
+    def __init__(
+        self,
+        calls: list[dict[str, object]],
+        responses: list[httpx.Response],
+        *,
+        get_responses: dict[str, httpx.Response] | None = None,
+    ) -> None:
         self._calls = calls
         self._responses = responses
+        self._get_responses = get_responses
 
     def __enter__(self) -> _RecordingClient:
         return self
@@ -66,7 +73,10 @@ class _RecordingClient:
 
     def get(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "GET", "url": url, **kwargs})
-        return self._with_request(self._responses.pop(0), method="GET", url=url)
+        response = (
+            self._get_responses[url] if self._get_responses is not None else self._responses.pop(0)
+        )
+        return self._with_request(response, method="GET", url=url)
 
     def delete(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "DELETE", "url": url, **kwargs})
@@ -1782,7 +1792,14 @@ def test_query_work_item_activity_paginates_after_activity_filtering(
     ]
     monkeypatch.setattr(
         "evander.issues.service.httpx.Client",
-        lambda timeout: _RecordingClient(calls, responses),
+        lambda timeout: _RecordingClient(
+            calls,
+            responses[:2],
+            get_responses={
+                f"https://dev.azure.com/example/My%20Project/_apis/wit/workitems/{response.json()['id']}": response
+                for response in responses[2:]
+            },
+        ),
     )
 
     result = adapter.query_work_item_activity(
@@ -1859,7 +1876,14 @@ def test_query_work_item_activity_bounds_candidate_scan(
     ]
     monkeypatch.setattr(
         "evander.issues.service.httpx.Client",
-        lambda timeout: _RecordingClient(calls, responses),
+        lambda timeout: _RecordingClient(
+            calls,
+            responses[:2],
+            get_responses={
+                f"https://dev.azure.com/example/My%20Project/_apis/wit/workitems/{response.json()['id']}": response
+                for response in responses[2:]
+            },
+        ),
     )
 
     result = adapter.query_work_item_activity(
