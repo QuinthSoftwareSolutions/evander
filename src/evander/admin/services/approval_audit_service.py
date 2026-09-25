@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections import deque
 from collections.abc import Iterator
@@ -30,6 +31,13 @@ from evander.models import (
 )
 from evander.repositories.audit_index import DEFAULT_TAIL_IMPORT_MAX_LINES
 from evander.repositories.session_manifests import as_session_manifest_repository
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+class AuditLogUnavailableError(RuntimeError):
+    """The persisted audit log could not be read."""
 
 
 @dataclass(frozen=True)
@@ -198,7 +206,8 @@ class ApprovalAuditAdminService:
             return []
         try:
             lines = self.config.audit_log_path.read_text(encoding="utf-8").splitlines()
-        except Exception:
+        except (OSError, UnicodeError) as exc:
+            LOGGER.error("Approval audit log read failed (%s)", type(exc).__name__)
             return []
         matches: list[dict[str, Any]] = []
         for raw_line in reversed(lines):
@@ -451,8 +460,9 @@ class ApprovalAuditAdminService:
                         counts.status_counts.get(entry.status or "success", 0) + 1
                     )
                     entries.append(entry)
-        except Exception:
-            return ToolCallAuditListPayload(limit=normalized_limit)
+        except (OSError, UnicodeError) as exc:
+            LOGGER.error("Tool-call audit log read failed (%s)", type(exc).__name__)
+            raise AuditLogUnavailableError("Tool-call audit log is unavailable") from exc
         items = list(entries)
         items.reverse()
         counts.returned = len(items)
@@ -542,7 +552,11 @@ class ApprovalAuditAdminService:
                 q=q,
                 limit=limit,
             )
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning(
+                "Tool-call audit index query failed (%s)",
+                type(exc).__name__,
+            )
             return None
 
         items: list[ToolCallAuditEntryPayload] = []
@@ -627,8 +641,9 @@ class ApprovalAuditAdminService:
                     counts.status_counts.get(entry.status or "success", 0) + 1
                 )
                 items.append(entry)
-        except Exception:
-            return ToolCallAuditListPayload(limit=limit)
+        except (OSError, UnicodeError) as exc:
+            LOGGER.error("Tool-call audit log tail read failed (%s)", type(exc).__name__)
+            raise AuditLogUnavailableError("Tool-call audit log is unavailable") from exc
 
         counts.returned = len(items)
         return ToolCallAuditListPayload(

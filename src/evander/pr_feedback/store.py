@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from evander.models import InlineMediaRef
+from evander.storage import write_json_atomically
 
 _FEEDBACK_RETENTION = timedelta(days=90)
 
@@ -426,9 +427,7 @@ class PrFeedbackStore:
             payload["feedback"] = compacted
 
     def _atomic_write(self, payload: dict[str, Any]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        write_json_atomically(self.path, payload)
 
 
 def _stream_key(provider: str, repo: str, pr_id: str) -> str:

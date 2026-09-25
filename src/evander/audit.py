@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from evander.models import AuditEvent
 from evander.repositories.audit_index import ToolCallAuditIndex
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class AuditEventType:
@@ -51,8 +55,11 @@ class AuditLogger:
                 previous_mtime_ns=previous_mtime_ns,
                 appended_offset_bytes=appended_offset_bytes,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            LOGGER.warning(
+                "Tool-call audit index update failed; JSONL entry retained (%s)",
+                type(exc).__name__,
+            )
 
     def log_decision(
         self,

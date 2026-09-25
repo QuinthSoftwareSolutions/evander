@@ -697,6 +697,47 @@ def team_copy_configuration_token(state: TeamState, source_team_id: str) -> str:
     return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
+def _validated_team_copy_session_ids(
+    agent_session_ids: Mapping[str, object],
+    included_agents: Mapping[str, PersistentAgent],
+    current_state: TeamState,
+) -> dict[str, str]:
+    """Require one new, distinct session for every agent in a team copy."""
+    normalized_session_ids = {
+        _required_text(source_agent_id, "agent_session_ids key"): _required_text(
+            session_id,
+            f"agent_session_ids.{source_agent_id}",
+        )
+        for source_agent_id, session_id in agent_session_ids.items()
+    }
+    expected_agent_ids = set(included_agents)
+    supplied_agent_ids = set(normalized_session_ids)
+    missing_agent_ids = sorted(expected_agent_ids - supplied_agent_ids)
+    extra_agent_ids = sorted(supplied_agent_ids - expected_agent_ids)
+    if missing_agent_ids or extra_agent_ids:
+        details: list[str] = []
+        if missing_agent_ids:
+            details.append("missing: " + ", ".join(missing_agent_ids))
+        if extra_agent_ids:
+            details.append("unexpected: " + ", ".join(extra_agent_ids))
+        raise ValueError(
+            "agent_session_ids must exactly match copied agents (" + "; ".join(details) + ")"
+        )
+    session_values = list(normalized_session_ids.values())
+    if len(session_values) != len(set(session_values)):
+        raise ValueError("agent_session_ids must assign a distinct session to every copied agent")
+    bound_sessions = {
+        agent.session_id: agent.id for agent in current_state.agents.values() if agent.session_id
+    }
+    reused_sessions = sorted(set(session_values) & set(bound_sessions))
+    if reused_sessions:
+        bindings = ", ".join(
+            f"{session_id} ({bound_sessions[session_id]})" for session_id in reused_sessions
+        )
+        raise ValueError(f"agent sessions are already bound to Team agents: {bindings}")
+    return normalized_session_ids
+
+
 class TeamAdminService(TeamTaskAdministration):
     _PROJECT_REPOSITORY_BINDING_KIND = "team_projects"
 
@@ -1745,42 +1786,11 @@ class TeamAdminService(TeamTaskAdministration):
         included_review_profiles = configuration["review_profiles"]
         included_assignments = configuration["assignments"]
 
-        normalized_session_ids = {
-            _required_text(source_agent_id, "agent_session_ids key"): _required_text(
-                session_id,
-                f"agent_session_ids.{source_agent_id}",
-            )
-            for source_agent_id, session_id in agent_session_ids.items()
-        }
-        expected_agent_ids = set(included_agents)
-        supplied_agent_ids = set(normalized_session_ids)
-        missing_agent_ids = sorted(expected_agent_ids - supplied_agent_ids)
-        extra_agent_ids = sorted(supplied_agent_ids - expected_agent_ids)
-        if missing_agent_ids or extra_agent_ids:
-            details: list[str] = []
-            if missing_agent_ids:
-                details.append("missing: " + ", ".join(missing_agent_ids))
-            if extra_agent_ids:
-                details.append("unexpected: " + ", ".join(extra_agent_ids))
-            raise ValueError(
-                "agent_session_ids must exactly match copied agents ("
-                + "; ".join(details)
-                + ")"
-            )
-        session_values = list(normalized_session_ids.values())
-        if len(session_values) != len(set(session_values)):
-            raise ValueError("agent_session_ids must assign a distinct session to every copied agent")
-        bound_sessions = {
-            agent.session_id: agent.id
-            for agent in current_state.agents.values()
-            if agent.session_id
-        }
-        reused_sessions = sorted(set(session_values) & set(bound_sessions))
-        if reused_sessions:
-            bindings = ", ".join(
-                f"{session_id} ({bound_sessions[session_id]})" for session_id in reused_sessions
-            )
-            raise ValueError(f"agent sessions are already bound to Team agents: {bindings}")
+        normalized_session_ids = _validated_team_copy_session_ids(
+            agent_session_ids,
+            included_agents,
+            current_state,
+        )
 
         effective_team_id = normalized_team_id or _generated_id(
             prefix="team",

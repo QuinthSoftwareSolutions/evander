@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import UTC, datetime
@@ -298,6 +299,57 @@ def test_admin_service_tool_call_fallback_reads_jsonl_when_index_is_disabled(
     ]
 
 
+def test_admin_service_tool_call_fallback_reports_index_failure_without_audit_payload(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    _write_audit_log(service.config.audit_log_path)
+
+    class FailingIndex:
+        def import_is_complete(self, audit_log_path):
+            raise RuntimeError("index failure with super-secret payload")
+
+    service.approval_audit_admin.tool_call_audit_index = FailingIndex()
+    with caplog.at_level(logging.WARNING, logger="evander.admin.services.approval_audit_service"):
+        page = service.approval_audit_admin.list_tool_call_audit_entries(limit=2)
+
+    assert [item.tool_name for item in page.items] == ["prompt_agent", "make_phone_call"]
+    assert "Tool-call audit index query failed" in caplog.text
+    assert "super-secret" not in caplog.text
+
+
+def test_admin_web_tool_calls_reports_unreadable_audit_log(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setattr(
+        admin_composition,
+        "_start_tool_call_audit_index_import",
+        lambda index, audit_log_path: None,
+    )
+    service = build_admin_runtime(write_config(tmp_path))
+    audit_log_path = service.config.audit_log_path
+    audit_log_path.unlink(missing_ok=True)
+    audit_log_path.mkdir()
+
+    class FailingIndex:
+        def import_is_complete(self, audit_log_path):
+            raise RuntimeError("index failure with super-secret payload")
+
+    service.approval_audit_admin.tool_call_audit_index = FailingIndex()
+    client = TestClient(create_app(service))
+    with caplog.at_level(logging.WARNING, logger="evander.admin.services.approval_audit_service"):
+        response = client.get("/api/admin/tool-calls")
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "Tool-call audit log is unavailable"}
+    assert "Tool-call audit index query failed" in caplog.text
+    assert "Tool-call audit log read failed" in caplog.text
+    assert "super-secret" not in caplog.text
+
+
 def test_admin_service_directory_filter_falls_back_when_audit_index_is_incomplete(
     tmp_path: Path,
 ) -> None:
@@ -413,6 +465,33 @@ def test_audit_logger_writes_jsonl_and_indexes_tool_call_entries(tmp_path: Path)
     )
     assert page.matched == 1
     assert page.payloads[0]["tool_name"] == "assistant_read_status"
+
+
+def test_audit_logger_keeps_jsonl_when_index_update_fails(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+) -> None:
+    audit_log_path = tmp_path / "runtime" / "audit.jsonl"
+    logger = AuditLogger(audit_log_path)
+
+    def fail_index(*args, **kwargs):
+        raise RuntimeError("index failure with super-secret payload")
+
+    monkeypatch.setattr(logger._index, "index_appended_payload", fail_index)
+    with caplog.at_level(logging.WARNING, logger="evander.audit"):
+        logger.log(
+            AuditEvent(
+                event_type="tool_call",
+                args={"token": "super-secret"},
+            )
+        )
+
+    assert json.loads(audit_log_path.read_text(encoding="utf-8"))["args"] == {
+        "token": "super-secret"
+    }
+    assert "JSONL entry retained" in caplog.text
+    assert "super-secret" not in caplog.text
 
 
 def test_audit_logger_advances_complete_import_source_after_appends(tmp_path: Path) -> None:

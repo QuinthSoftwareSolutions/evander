@@ -194,6 +194,25 @@ def test_managed_git_routes_require_privilege_unlock_for_mutations() -> None:
     assert auth.permission_paths == ["root/team-a", "root/team-a"]
 
 
+def test_managed_git_missing_repository_does_not_fall_back_to_root_scope() -> None:
+    class MissingRepositoryAdmin(FakeManagedGitAdmin):
+        def get_repository(self, *args: Any, **kwargs: Any) -> None:
+            self.calls.append(("get", args, kwargs))
+            return None
+
+    managed_git = MissingRepositoryAdmin()
+    client, auth = _route_client(managed_git)
+
+    response = client.delete(
+        f"/api/admin/git-repositories/{managed_git.repository['managed_repo_id']}"
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"error": "Managed Git repository unavailable"}
+    assert [call[0] for call in managed_git.calls] == ["get"]
+    assert auth.permission_paths == []
+
+
 def test_managed_git_route_sets_repository_scoped_host_commit_identity() -> None:
     managed_git = FakeManagedGitAdmin()
     client, auth = _route_client(managed_git)

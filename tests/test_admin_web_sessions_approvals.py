@@ -862,6 +862,19 @@ def test_admin_web_approval_detail_falls_back_to_action_type_for_tool_name(tmp_p
     assert detail_response.json()["request"]["payload"]["secret"] == "<redacted>"
 
 
+def test_admin_web_approval_detail_returns_error_for_missing_loaded_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    monkeypatch.setattr(service.approval_audit_admin, "get_approval_request", lambda _id: None)
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/approvals/approval-1")
+
+    assert response.status_code == 500
+    assert response.json() == {"error": "Approval request unavailable"}
+
+
 def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

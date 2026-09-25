@@ -20,6 +20,7 @@ from evander.repositories.orchestration_db import (
     json_loads_object,
     maybe_run_orchestration_retention,
 )
+from evander.storage import write_json_atomically
 
 logger = logging.getLogger(__name__)
 
@@ -175,10 +176,7 @@ class JsonCursorRepository:
         return payload
 
     def _write_payload(self, payload: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        write_json_atomically(self.path, payload)
 
 
 class JsonGateCursorRepository(JsonCursorRepository):

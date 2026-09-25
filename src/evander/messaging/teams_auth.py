@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+import fcntl
 import json
+import os
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -10,6 +14,8 @@ from typing import Any, Callable, Protocol
 
 import httpx
 from pydantic import AnyHttpUrl, BaseModel, Field, TypeAdapter, field_validator
+
+from evander.storage import write_json_atomically
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 _DEFAULT_AUTHORITY_BASE_URL = "https://login.microsoftonline.com"
@@ -271,6 +277,22 @@ class TeamsCredentialStore(Protocol):
     def clear(self) -> None: ...
 
 
+@contextmanager
+def _credential_file_lock(path: Path) -> Iterator[None]:
+    # Lock a stable sidecar: locking the credential file itself would stop
+    # coordinating writers as soon as an atomic replacement changes its inode.
+    lock_path = path.with_name(f".{path.name}.lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
 class JsonTeamsCredentialStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -279,9 +301,10 @@ class JsonTeamsCredentialStore:
 
     def load(self) -> TeamsAuthCredentials | None:
         with self._lock:
-            if not self.path.exists():
+            try:
+                raw = self.path.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
                 return None
-            raw = self.path.read_text(encoding="utf-8").strip()
             if not raw:
                 return None
             return TeamsAuthCredentials.model_validate(json.loads(raw))
@@ -289,12 +312,13 @@ class JsonTeamsCredentialStore:
     def save(self, credentials: TeamsAuthCredentials) -> None:
         payload = credentials.model_dump(mode="json")
         with self._lock:
-            self.path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            with _credential_file_lock(self.path):
+                write_json_atomically(self.path, payload, new_file_mode=0o600, fsync_directory=True)
 
     def clear(self) -> None:
         with self._lock:
-            if self.path.exists():
-                self.path.unlink()
+            with _credential_file_lock(self.path):
+                self.path.unlink(missing_ok=True)
 
 
 class JsonTeamsIdentityCredentialStore:
@@ -309,18 +333,20 @@ class JsonTeamsIdentityCredentialStore:
 
     def save(self, credentials: TeamsAuthCredentials) -> None:
         with self._lock:
-            payload = self._read_raw_payload()
-            payload[self.identity_id] = credentials.model_dump(mode="json")
-            self._write_raw_payload(payload)
+            with _credential_file_lock(self.path):
+                payload = self._read_raw_payload()
+                payload[self.identity_id] = credentials.model_dump(mode="json")
+                self._write_raw_payload(payload)
 
     def clear(self) -> None:
         with self._lock:
-            payload = self._read_raw_payload()
-            payload.pop(self.identity_id, None)
-            if payload:
-                self._write_raw_payload(payload)
-            elif self.path.exists():
-                self.path.unlink()
+            with _credential_file_lock(self.path):
+                payload = self._read_raw_payload()
+                payload.pop(self.identity_id, None)
+                if payload:
+                    self._write_raw_payload(payload)
+                else:
+                    self.path.unlink(missing_ok=True)
 
     def list_all(self) -> dict[str, TeamsAuthCredentials]:
         return self._read_all()
@@ -335,9 +361,10 @@ class JsonTeamsIdentityCredentialStore:
 
     def _read_raw_payload(self) -> dict[str, Any]:
         with self._lock:
-            if not self.path.exists():
+            try:
+                raw = self.path.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
                 return {}
-            raw = self.path.read_text(encoding="utf-8").strip()
             if not raw:
                 return {}
             payload = json.loads(raw)
@@ -349,7 +376,7 @@ class JsonTeamsIdentityCredentialStore:
             return payload
 
     def _write_raw_payload(self, payload: dict[str, Any]) -> None:
-        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        write_json_atomically(self.path, payload, new_file_mode=0o600, fsync_directory=True)
 
 
 class TeamsDeviceCodeTokenProvider:
