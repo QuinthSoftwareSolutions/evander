@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-25 - Speed up Azure DevOps work-item activity queries (0.63.8)
+
+- Reuse one HTTP connection pool while fetching candidate work items and their activity history.
+- Fetch activity for up to eight candidates concurrently, preserving result order and paging behavior.
+- Run the candidate WIQL query once per activity scan instead of once per candidate page.
+- Advance pagination and scan limits by consumed candidate IDs when Azure DevOps omits deleted items.
+- Use concurrent fetching for partial pages containing two to seven candidates as well.
+
 ## 2026-09-24 - Remove tests without distinct regression value (0.63.7)
 
 - Remove 169 Python test definitions and 111 Admin Web cases that only checked
