@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from evander.admin.composition import AdminRuntimeComponents
+from evander.admin.services.approval_audit_service import AuditLogUnavailableError
 from evander.admin.web.cache import DASHBOARD_CACHE_PARAM, AdminWebJsonResponseCache
 from evander.admin.web.shared import json_error
 
@@ -83,6 +84,8 @@ def tool_call_routes(
             )
         except ValueError as exc:
             return json_error(str(exc))
+        except AuditLogUnavailableError:
+            return json_error("Tool-call audit log is unavailable", status_code=503)
         return JSONResponse(entries.model_dump(mode="json"))
 
     return [

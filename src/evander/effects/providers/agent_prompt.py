@@ -1534,8 +1534,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
             try:
                 update_fn(target=session_id, metadata=metadata_patch)
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "session_thread_metadata_admin_update_failed session_id=%s error_type=%s",
+                    session_id,
+                    type(exc).__name__,
+                )
 
         repository = getattr(getattr(admin_service, "runtime", None), "session_repository", None)
         get_session = getattr(repository, "get_session", None)
@@ -1552,8 +1556,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
             merged_metadata = cls._deep_merge_metadata(dict(metadata), metadata_patch)
             updated = manifest.model_copy(update={"metadata": merged_metadata})
             upsert_session(updated)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "session_thread_metadata_repository_update_failed session_id=%s error_type=%s",
+                session_id,
+                type(exc).__name__,
+            )
 
     @staticmethod
     def _resume_thread_metadata_key_from_record(record: Any) -> str | None:

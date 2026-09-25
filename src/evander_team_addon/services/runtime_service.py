@@ -4,8 +4,6 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from pathlib import Path
-from threading import Lock
 from typing import Any, Callable, Literal
 from uuid import uuid4
 
@@ -20,37 +18,18 @@ from .agent_leasing import (
     MAX_REVIEW_MCP_CAPABILITY_ATTEMPTS,
     TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS as TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
     lease_due_agents as _lease_due_agents,
-    _action_feedback_cause_id,
-    _action_feedback_for_dispatch,
-    _chat_dispatch_seeded_ordinary_context,
     _fail_dispatch_preparation_in_state,
-    _has_prior_successful_ordinary_wake,
-    _inbox_references_blocker_ids,
-    _latest_delivered_wake_work_attempt_for_agent,
-    _latest_terminal_dispatch_for_agent,
-    _manager_fallback_lineage_ids,
-    _manager_fallback_supervision_task_ids,
+    # Compatibility import used by callers of the former runtime helper location.
+    _has_prior_successful_ordinary_wake as _has_prior_successful_ordinary_wake,
     _mark_dispatch_terminal,
-    _new_review_mcp_capability_receipt,
-    _ordered_work_lineage_ids,
-    _preparation_recovery_blockers,
     _release_blocker_dispatch_reservations,
-    _release_package_payloads_for_dispatch,
-    _review_mcp_capability_attempt,
-    _runtime_attention_payloads_for_dispatch,
-    _runtime_attention_work_lineage_ids,
     _runtime_has_active_dispatch_reservation,
-    _team_lease_planning_lock,
-    _wake_record_snapshot_has_additions_or_updates,
-    _wake_work_changed_since_latest_lineage_attempt,
 )
 from .domain.role_task_queue import (
-    plan_role_task_allocations,
     append_role_queue_wake_events,
     set_unstarted_role_task_owner,
 )
 from .domain import common as _team_common
-from .case_context_dispatch import prepare_case_context, dispatch_case_contexts
 from ..repository import (
     TeamStateConflictError,
     TeamStateRepository,
@@ -61,7 +40,6 @@ from ..sqlite_store import (
 from ..models import (
     SCHEMA_VERSION,
     AgentContextClearingPolicy,
-    AgentInboxItem,
     AgentRuntime,
     AgentStandDown,
     AgentStandDownSource,
@@ -70,7 +48,6 @@ from ..models import (
     PersistentAgent,
     TaskAssessmentReadiness,
     TeamBlockerRoute,
-    TeamBlocker,
     TeamBlockerState,
     TeamDispatch,
     TeamDispatchActivityStatus,
@@ -80,43 +57,25 @@ from ..models import (
     TeamDispatchStatus,
     TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS,
     TeamInboxItemType,
-    TeamInboxPriority,
     TeamInboxItemState,
     TeamRecordState,
     TeamState,
-    agent_has_project_assignment,
-    external_source_evidence_snapshot_payload,
-    wake_work_changed_since_latest_attempt,
-    wake_work_fingerprint,
-    wake_work_record_fingerprints,
 )
-from .domain.action_feedback_payloads import _latest_action_feedback_for_agent
-from .domain.task_assessment import task_payload_with_assessment
 from .domain.task_assessment import TaskAssessmentService
 from .domain.agent_access import (
     _agent_for_session,
     _agent_payload,
-    _subordinate_agent_payloads,
-    _team_ids_with_open_work,
     agent_role_description_fingerprint,
 )
 from .domain.chat import (
     _append_pending_chat_message_queued_event_for_agent,
     _chat_dispatch_finalization_error,
-    _clear_completed_chat_dispatch_lease,
     _mark_chat_dispatch_message_failed,
     _mark_chat_dispatch_message_replied_from_activity,
-    _operator_chat_participant_payloads,
-    _requeue_unacknowledged_in_dispatch_messages,
 )
 from .domain.blockers import (
-    assign_blockers_to_dispatch,
-    blockers_assigned_to_agent,
-    blockers_due_for_agent,
     complete_blocker_dispatches,
     open_agent_mcp_capability_blocker,
-    open_or_update_agent_execution_stall,
-    reconcile_unavailable_blocker_assignments,
 )
 from .domain.common import (
     _NON_TERMINAL_TASK_STATES,
@@ -134,14 +93,6 @@ from .domain.dispatch_scope import (
     _blocker_project_ids,
     _inbox_project_ids,
     _review_project_ids,
-    actionable_dispatch_reviews,
-    actionable_dispatch_tasks,
-    build_agent_dispatch_scope,
-    build_preparation_recovery_dispatch_scope,
-    external_source_evidence_snapshot_ids_for_dispatch,
-    inbox_references_review_ids,
-    mcp_capability_blocked_review_ids,
-    reconcile_stale_inbox_preparation_blockers,
 )
 from .domain.dispatch_progress import (
     _dispatch_activity_counts_as_progress,
@@ -160,25 +111,12 @@ from .domain.git_work_contexts import (
     finalize_active_git_work_contexts_for_dispatch,
     reconcile_git_work_context_lifecycle,
 )
-from .read_service import TeamReadService
 from .domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
-    _manager_fallback_review_routing_authorities,
-    _manager_fallback_initial_release_decision_ids,
-    _manager_fallback_summary_payload,
-    _manager_fallback_summary_has_actionable_work,
     manager_fallback_dispatch_supervision_task_ids,
-    manager_fallback_work_fingerprint,
-    manager_fallback_work_record_fingerprints,
 )
 from .domain.initial_release import (
     manager_fallback_initial_release_authority_error,
-)
-from .domain.project_status import project_blocking_sources
-from .domain.outcome_catalog import effective_outcome_kind_payloads
-from .domain.preparation_failures import (
-    EXECUTION_PREPARATION_BLOCKER_REASON_CODES,
-    reconcile_stale_task_preparation_blockers,
 )
 from .domain.stand_down import (
     _active_stand_downs_for_agent,
@@ -187,25 +125,14 @@ from .domain.stand_down import (
 )
 from .domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
-    _active_tasks_for_agent,
     _agent_immediate_wake_request,
     _append_agent_wake_requested_event,
     _append_follow_up_agent_wake_requested_event,
-    _dispatch_case_payloads,
-    _ordinary_wake_work_for_agent,
-    _pending_inbox_for_agent,
-    _pending_reviews_for_agent,
-    _release_package_payloads_for_agent,
-    _runtime_attention_payloads_for_agent,
-    _wakeable_inbox_items,
 )
 from .domain.work_due import (
-    _advance_low_priority_batch,
     _agent_has_open_execution_stall,
-    _clear_low_priority_batch,
     _mark_agent_work_due,
 )
-from .domain.work_lineage import work_lineage_id_for_record
 from .commands.outbox import _team_event_outbox_records
 
 

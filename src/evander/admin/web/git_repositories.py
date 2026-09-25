@@ -187,6 +187,8 @@ def git_repository_routes(
             return None, json_error(str(exc), status_code=403)
         except Exception as exc:
             return None, _service_error_response(exc)
+        if repository is None:
+            return None, json_error("Managed Git repository unavailable", status_code=500)
         return repository, None
 
     async def list_repositories(request: Request) -> JSONResponse:
@@ -246,7 +248,6 @@ def git_repository_routes(
         repository, error = await _repository_for_scoped_request(request, managed_repo_id)
         if error is not None:
             return error
-        assert repository is not None
         owner_error = _owner_error(
             request,
             directory_path=_directory_path_for_repository(repository),
@@ -260,7 +261,6 @@ def git_repository_routes(
         repository, error = await _repository_for_scoped_request(request, managed_repo_id)
         if error is not None:
             return error
-        assert repository is not None
         access_error = _mutation_access_error(
             request,
             directory_path=_directory_path_for_repository(repository),
@@ -286,7 +286,6 @@ def git_repository_routes(
         repository, error = await _repository_for_scoped_request(request, managed_repo_id)
         if error is not None:
             return error
-        assert repository is not None
         directory_path = _directory_path_for_repository(repository)
         access_error = _mutation_access_error(
             request,
@@ -311,7 +310,6 @@ def git_repository_routes(
         repository, error = await _repository_for_scoped_request(request, managed_repo_id)
         if error is not None:
             return error
-        assert repository is not None
         access_error = _mutation_access_error(
             request,
             directory_path=_directory_path_for_repository(repository),
@@ -344,7 +342,6 @@ def git_repository_routes(
             )
             if error is not None:
                 return error
-            assert repository is not None
             directory_path = _directory_path_for_repository(repository)
         elif directory_path != "root":
             return json_error(

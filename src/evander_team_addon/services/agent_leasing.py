@@ -129,6 +129,154 @@ _TEAM_LEASE_PLANNING_LOCKS_GUARD = Lock()
 _TEAM_LEASE_PLANNING_LOCKS: dict[str, Lock] = {}
 
 
+def _reconcile_leasing_state(
+    state_model: TeamState,
+    *,
+    effective_now: datetime,
+    normalized_team_id: str | None,
+    normalized_agent_id: str | None,
+    blocked_teams: set[str],
+    blocker_routing_events: list[dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    """Reconcile prior dispatches and context rotation before selecting new work."""
+    reconcile_git_work_context_lifecycle(
+        state_model,
+        now=effective_now,
+        prune_before=effective_now - timedelta(days=GIT_WORK_CONTEXT_RETENTION_DAYS),
+    )
+    stale_preparation_result: dict[str, Any] = {
+        "events": [],
+        "errors": [],
+    }
+    reconcile_stale_task_preparation_blockers(
+        state_model,
+        result=stale_preparation_result,
+        now=effective_now,
+    )
+    reconcile_stale_inbox_preparation_blockers(
+        state_model,
+        result=stale_preparation_result,
+        now=effective_now,
+    )
+    blocker_routing_events.extend(stale_preparation_result.get("events") or [])
+    availability_result: dict[str, Any] = {"events": [], "errors": []}
+    reconcile_unavailable_blocker_assignments(
+        state_model,
+        result=availability_result,
+        now=effective_now,
+    )
+    blocker_routing_events.extend(availability_result.get("events") or [])
+    teams_with_open_work = _team_ids_with_open_work(state_model)
+    teams_with_lease = set()
+    idle_rotation_result: dict[str, Any] = {"events": []}
+    for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
+        runtime = state_model.agent_runtimes.get(agent.id)
+        if runtime is not None:
+            preparing_dispatch = state_model.dispatches.get(
+                _optional_text(runtime.active_dispatch_id) or ""
+            )
+            if (
+                preparing_dispatch is not None
+                and preparing_dispatch.cause_kind != "team_chat"
+                and preparing_dispatch.status == TeamDispatchStatus.PREPARING
+                and preparing_dispatch.preparation_expires_at is not None
+                and _ensure_utc(preparing_dispatch.preparation_expires_at) <= effective_now
+            ):
+                _fail_dispatch_preparation_in_state(
+                    state_model,
+                    dispatch_id=preparing_dispatch.id,
+                    error=(
+                        "dispatch preparation reservation expired before durable prompt delivery"
+                    ),
+                    completed_at=effective_now,
+                )
+            _clear_completed_chat_dispatch_lease(
+                state_model,
+                runtime,
+                now=effective_now,
+            )
+            if (
+                runtime.active_dispatch_id is not None
+                and runtime.wake_leased_until is not None
+                and _ensure_utc(runtime.wake_leased_until) <= effective_now
+            ):
+                expired_dispatch_id = runtime.active_dispatch_id
+                durable_dispatch = state_model.dispatches.get(expired_dispatch_id)
+                if (
+                    durable_dispatch is not None
+                    and durable_dispatch.status == TeamDispatchStatus.PREPARING
+                ):
+                    _release_blocker_dispatch_reservations(
+                        state_model,
+                        dispatch_id=expired_dispatch_id,
+                        now=effective_now,
+                    )
+                else:
+                    expiry_result: dict[str, Any] = {
+                        "events": [],
+                        "errors": [],
+                    }
+                    processed_blockers = complete_blocker_dispatches(
+                        state_model,
+                        agent_id=agent.id,
+                        dispatch_id=expired_dispatch_id,
+                        result=expiry_result,
+                        now=effective_now,
+                    )
+                    blocker_routing_events.extend(expiry_result.get("events") or [])
+                    if processed_blockers:
+                        runtime.no_progress_count += 1
+                finalize_active_git_work_contexts_for_dispatch(
+                    state_model,
+                    agent_id=agent.id,
+                    dispatch_id=expired_dispatch_id,
+                    now=effective_now,
+                )
+                _mark_dispatch_terminal(
+                    state_model,
+                    dispatch_id=expired_dispatch_id,
+                    status=TeamDispatchStatus.EXPIRED,
+                    completed_at=effective_now,
+                )
+                runtime.active_dispatch_id = None
+                runtime.wake_leased_until = None
+                runtime.wake_reason = None
+                if (
+                    durable_dispatch is not None
+                    and durable_dispatch.cause_kind == "context_handoff"
+                ):
+                    runtime.context_handoff_preparation_pending = False
+                    runtime.context_handoff_preparation_status = "timed_out"
+                    runtime.next_wake_at = effective_now
+                runtime.updated_at = effective_now
+        if normalized_agent_id is None or agent.id == normalized_agent_id:
+            _maybe_mark_idle_context_rotation_due(
+                state_model,
+                agent_id=agent.id,
+                now=effective_now,
+                result=idle_rotation_result,
+            )
+        runtime = state_model.agent_runtimes.get(agent.id)
+        if agent.status != AgentStatus.ACTIVE or agent.team_id is None:
+            continue
+        if normalized_team_id is not None and agent.team_id != normalized_team_id:
+            continue
+        if agent.team_id in blocked_teams:
+            continue
+        if _active_stand_downs_for_agent(state_model, agent.id):
+            continue
+        if runtime is not None and (
+            _runtime_has_active_dispatch_reservation(state_model, runtime)
+            or (
+                runtime.wake_leased_until is not None
+                and _ensure_utc(runtime.wake_leased_until) > effective_now
+            )
+        ):
+            teams_with_lease.add(agent.team_id)
+    blocker_routing_events.extend(idle_rotation_result.get("events") or [])
+    return teams_with_open_work, teams_with_lease
+
+
 def lease_due_agents(
     service: Any,
     *,
@@ -154,146 +302,543 @@ def lease_due_agents(
     blocked_teams = set(blocked_team_ids or set())
     leases: list[dict[str, Any]] = []
     blocker_routing_events: list[dict[str, Any]] = []
-    idle_rotation_result: dict[str, Any] = {"events": []}
     if normalized_limit == 0:
         return service._repository.read(), leases
 
-    def _mutate(state_model: TeamState) -> TeamState:
-        reconcile_git_work_context_lifecycle(
-            state_model,
-            now=effective_now,
-            prune_before=effective_now - timedelta(days=GIT_WORK_CONTEXT_RETENTION_DAYS),
-        )
-        stale_preparation_result: dict[str, Any] = {
-            "events": [],
-            "errors": [],
-        }
-        reconcile_stale_task_preparation_blockers(
-            state_model,
-            result=stale_preparation_result,
-            now=effective_now,
-        )
-        reconcile_stale_inbox_preparation_blockers(
-            state_model,
-            result=stale_preparation_result,
-            now=effective_now,
-        )
-        blocker_routing_events.extend(stale_preparation_result.get("events") or [])
-        availability_result: dict[str, Any] = {"events": [], "errors": []}
-        reconcile_unavailable_blocker_assignments(
-            state_model,
-            result=availability_result,
-            now=effective_now,
-        )
-        blocker_routing_events.extend(availability_result.get("events") or [])
-        teams_with_open_work = _team_ids_with_open_work(state_model)
-        teams_with_lease = set()
-        for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
-            runtime = state_model.agent_runtimes.get(agent.id)
-            if runtime is not None:
-                preparing_dispatch = state_model.dispatches.get(
-                    _optional_text(runtime.active_dispatch_id) or ""
-                )
-                if (
-                    preparing_dispatch is not None
-                    and preparing_dispatch.cause_kind != "team_chat"
-                    and preparing_dispatch.status == TeamDispatchStatus.PREPARING
-                    and preparing_dispatch.preparation_expires_at is not None
-                    and _ensure_utc(preparing_dispatch.preparation_expires_at) <= effective_now
-                ):
-                    _fail_dispatch_preparation_in_state(
-                        state_model,
-                        dispatch_id=preparing_dispatch.id,
-                        error=(
-                            "dispatch preparation reservation expired before durable "
-                            "prompt delivery"
-                        ),
-                        completed_at=effective_now,
-                    )
-                _clear_completed_chat_dispatch_lease(
-                    state_model,
-                    runtime,
-                    now=effective_now,
-                )
-                if (
-                    runtime.active_dispatch_id is not None
-                    and runtime.wake_leased_until is not None
-                    and _ensure_utc(runtime.wake_leased_until) <= effective_now
-                ):
-                    expired_dispatch_id = runtime.active_dispatch_id
-                    durable_dispatch = state_model.dispatches.get(expired_dispatch_id)
-                    if (
-                        durable_dispatch is not None
-                        and durable_dispatch.status == TeamDispatchStatus.PREPARING
-                    ):
-                        _release_blocker_dispatch_reservations(
-                            state_model,
-                            dispatch_id=expired_dispatch_id,
-                            now=effective_now,
-                        )
-                    else:
-                        expiry_result: dict[str, Any] = {
-                            "events": [],
-                            "errors": [],
-                        }
-                        processed_blockers = complete_blocker_dispatches(
-                            state_model,
-                            agent_id=agent.id,
-                            dispatch_id=expired_dispatch_id,
-                            result=expiry_result,
-                            now=effective_now,
-                        )
-                        blocker_routing_events.extend(expiry_result.get("events") or [])
-                        if processed_blockers:
-                            runtime.no_progress_count += 1
-                    finalize_active_git_work_contexts_for_dispatch(
-                        state_model,
-                        agent_id=agent.id,
-                        dispatch_id=expired_dispatch_id,
-                        now=effective_now,
-                    )
-                    _mark_dispatch_terminal(
-                        state_model,
-                        dispatch_id=expired_dispatch_id,
-                        status=TeamDispatchStatus.EXPIRED,
-                        completed_at=effective_now,
-                    )
-                    runtime.active_dispatch_id = None
-                    runtime.wake_leased_until = None
-                    runtime.wake_reason = None
-                    if (
-                        durable_dispatch is not None
-                        and durable_dispatch.cause_kind == "context_handoff"
-                    ):
-                        runtime.context_handoff_preparation_pending = False
-                        runtime.context_handoff_preparation_status = "timed_out"
-                        runtime.next_wake_at = effective_now
-                    runtime.updated_at = effective_now
-            if normalized_agent_id is None or agent.id == normalized_agent_id:
-                _maybe_mark_idle_context_rotation_due(
-                    state_model,
-                    agent_id=agent.id,
-                    now=effective_now,
-                    result=idle_rotation_result,
-                )
-            runtime = state_model.agent_runtimes.get(agent.id)
-            if agent.status != AgentStatus.ACTIVE or agent.team_id is None:
+    def _plan_manager_fallback(
+        state_model: TeamState,
+        teams_with_open_work: set[str],
+        teams_with_lease: set[str],
+    ) -> None:
+        """Lease managers after ordinary dispatches and role allocations."""
+        for team in sorted(state_model.teams.values(), key=lambda item: item.id):
+            if normalized_limit and len(leases) >= normalized_limit:
+                break
+            if team.archived or team.id in blocked_teams or team.id not in teams_with_open_work:
                 continue
-            if normalized_team_id is not None and agent.team_id != normalized_team_id:
+            if normalized_team_id is not None and team.id != normalized_team_id:
                 continue
-            if agent.team_id in blocked_teams:
+            if team.id in teams_with_lease:
                 continue
-            if _active_stand_downs_for_agent(state_model, agent.id):
+            manager = state_model.agents.get(team.manager_agent_id)
+            if manager is None or manager.status != AgentStatus.ACTIVE or (manager.id is None):
                 continue
-            if runtime is not None and (
-                _runtime_has_active_dispatch_reservation(state_model, runtime)
-                or (
-                    runtime.wake_leased_until is not None
-                    and _ensure_utc(runtime.wake_leased_until) > effective_now
-                )
+            if normalized_project_id is not None and not agent_has_project_assignment(
+                state_model,
+                manager.id,
+                normalized_project_id,
             ):
-                teams_with_lease.add(agent.team_id)
-        blocker_routing_events.extend(idle_rotation_result.get("events") or [])
+                continue
+            if normalized_agent_id is not None and manager.id != normalized_agent_id:
+                continue
+            if session_is_busy is not None and session_is_busy(manager.session_id):
+                continue
+            if (
+                manager.id in state_model.agent_runtimes
+                and state_model.agent_runtimes[manager.id].wake_leased_until
+                and _ensure_utc(state_model.agent_runtimes[manager.id].wake_leased_until)
+                > effective_now
+            ):
+                continue
+            if _active_stand_downs_for_agent(state_model, manager.id):
+                continue
+            manager_runtime = state_model.agent_runtimes.setdefault(
+                manager.id,
+                AgentRuntime(agent_id=manager.id),
+            )
+            dispatch_id = f"team-dispatch-{uuid4().hex}"
+            manager_tasks = actionable_dispatch_tasks(
+                state_model,
+                agent=manager,
+            )
+            manager_active_task_ids = {
+                task.id for task in _active_tasks_for_agent(state_model, manager.id)
+            }
+            manager_inbox = _pending_inbox_for_agent(
+                state_model,
+                manager.id,
+            )
+            manager_reviews = actionable_dispatch_reviews(
+                _pending_reviews_for_agent(state_model, manager.id)
+            )
+            manager_blocked_review_ids = mcp_capability_blocked_review_ids(
+                state_model,
+                agent_id=manager.id,
+            )
+            if manager_blocked_review_ids:
+                manager_inbox = [
+                    item
+                    for item in manager_inbox
+                    if not inbox_references_review_ids(
+                        item,
+                        manager_blocked_review_ids,
+                    )
+                ]
+                manager_reviews = [
+                    review
+                    for review in manager_reviews
+                    if review.id not in manager_blocked_review_ids
+                ]
+            manager_low_priority_inbox_ids = {
+                item.id for item in manager_inbox if item.priority == TeamInboxPriority.LOW
+            }
+            manager_blockers = blockers_due_for_agent(
+                state_model,
+                agent_id=manager.id,
+                now=effective_now,
+            )
+            manager_scope_blockers = blockers_assigned_to_agent(
+                state_model,
+                agent_id=manager.id,
+            )
+            manager_owned_review_ids = {review.id for review in manager_reviews}
+            manager_owned_inbox_ids = {item.id for item in manager_inbox}
+            manager_owned_action_ids = {
+                record.id
+                for record in state_model.action_records.values()
+                if record.agent_id == manager.id
+            }
+            manager_fallback_selection_summary = _manager_fallback_summary_payload(
+                state_model,
+                team=team,
+                manager=manager,
+                now=effective_now,
+                limit_rows=False,
+                excluded_review_request_ids=(
+                    set(manager_blocked_review_ids) | manager_owned_review_ids
+                ),
+                excluded_inbox_item_ids=manager_owned_inbox_ids,
+                excluded_task_ids=manager_active_task_ids,
+                excluded_action_record_ids=manager_owned_action_ids,
+            )
+            if not _manager_fallback_summary_has_actionable_work(
+                manager_fallback_selection_summary
+            ):
+                continue
+            filter_manager_work_lineage = (
+                manager_runtime.context_clearing_policy == AgentContextClearingPolicy.WORK_LINEAGE
+            )
+            candidate_lineage_ids = (
+                _manager_fallback_lineage_ids(
+                    state_model,
+                    manager_fallback_selection_summary,
+                )
+                if filter_manager_work_lineage
+                else [None]
+            )
+            selected_manager_work: (
+                tuple[
+                    str | None,
+                    list[Any],
+                    list[Any],
+                    list[Any],
+                    list[Any],
+                    list[Any],
+                    dict[str, Any],
+                    str,
+                    dict[str, str],
+                ]
+                | None
+            ) = None
+            for candidate_lineage_id in candidate_lineage_ids:
+                manager_lineage_excluded_task_ids = (
+                    {
+                        task.id
+                        for task in state_model.tasks.values()
+                        if work_lineage_id_for_record(state_model, task) != candidate_lineage_id
+                    }
+                    if filter_manager_work_lineage
+                    else set()
+                )
+                manager_lineage_excluded_review_ids = (
+                    {
+                        review.id
+                        for review in state_model.review_requests.values()
+                        if work_lineage_id_for_record(state_model, review) != candidate_lineage_id
+                    }
+                    if filter_manager_work_lineage
+                    else set()
+                )
+                manager_lineage_excluded_inbox_ids = (
+                    {
+                        item.id
+                        for item in state_model.inbox.values()
+                        if work_lineage_id_for_record(state_model, item) != candidate_lineage_id
+                    }
+                    if filter_manager_work_lineage
+                    else set()
+                )
+                manager_lineage_excluded_action_ids = (
+                    {
+                        record.id
+                        for record in state_model.action_records.values()
+                        if work_lineage_id_for_record(state_model, record) != candidate_lineage_id
+                    }
+                    if filter_manager_work_lineage
+                    else set()
+                )
+
+                def _same_manager_lineage(record: object) -> bool:
+                    return (
+                        not filter_manager_work_lineage
+                        or work_lineage_id_for_record(state_model, record) == candidate_lineage_id
+                    )
+
+                candidate_manager_tasks = [
+                    row for row in manager_tasks if _same_manager_lineage(row)
+                ]
+                candidate_manager_inbox = [
+                    row for row in manager_inbox if _same_manager_lineage(row)
+                ]
+                candidate_manager_reviews = [
+                    row for row in manager_reviews if _same_manager_lineage(row)
+                ]
+                candidate_manager_blockers = [
+                    row for row in manager_blockers if _same_manager_lineage(row)
+                ]
+                candidate_manager_scope_blockers = [
+                    row for row in manager_scope_blockers if _same_manager_lineage(row)
+                ]
+                candidate_manager_fallback_summary = _manager_fallback_summary_payload(
+                    state_model,
+                    team=team,
+                    manager=manager,
+                    now=effective_now,
+                    excluded_review_request_ids=(
+                        set(manager_blocked_review_ids) | manager_lineage_excluded_review_ids
+                    ),
+                    excluded_inbox_item_ids=manager_lineage_excluded_inbox_ids,
+                    excluded_task_ids=manager_lineage_excluded_task_ids,
+                    excluded_action_record_ids=manager_lineage_excluded_action_ids,
+                )
+                candidate_trigger_summary = _manager_fallback_summary_payload(
+                    state_model,
+                    team=team,
+                    manager=manager,
+                    now=effective_now,
+                    limit_rows=False,
+                    excluded_review_request_ids=(
+                        set(manager_blocked_review_ids)
+                        | manager_lineage_excluded_review_ids
+                        | manager_owned_review_ids
+                    ),
+                    excluded_inbox_item_ids=(
+                        manager_lineage_excluded_inbox_ids | manager_owned_inbox_ids
+                    ),
+                    excluded_task_ids=(manager_lineage_excluded_task_ids | manager_active_task_ids),
+                    excluded_action_record_ids=(
+                        manager_lineage_excluded_action_ids | manager_owned_action_ids
+                    ),
+                )
+                if not _manager_fallback_summary_has_actionable_work(candidate_trigger_summary):
+                    continue
+                candidate_work_fingerprint = manager_fallback_work_fingerprint(
+                    candidate_trigger_summary,
+                    state=state_model,
+                )
+                candidate_work_record_fingerprints = manager_fallback_work_record_fingerprints(
+                    candidate_trigger_summary,
+                    state=state_model,
+                )
+                latest_manager_attempt = _latest_delivered_wake_work_attempt_for_agent(
+                    state_model,
+                    agent_id=manager.id,
+                    cause_kind="manager_fallback",
+                    work_lineage_id=candidate_lineage_id,
+                    filter_work_lineage=filter_manager_work_lineage,
+                )
+                candidate_work_changed = (
+                    latest_manager_attempt is None
+                    or _wake_record_snapshot_has_additions_or_updates(
+                        current=candidate_work_record_fingerprints,
+                        previous=(latest_manager_attempt.wake_work_record_fingerprints),
+                        current_aggregate=candidate_work_fingerprint,
+                        previous_aggregate=(latest_manager_attempt.wake_work_fingerprint),
+                    )
+                )
+                if (
+                    max_no_progress_count >= 0
+                    and manager_runtime.no_progress_count >= max_no_progress_count
+                    and not candidate_work_changed
+                ):
+                    continue
+                due_by_time = (
+                    manager_runtime.next_wake_at is None
+                    or _ensure_utc(manager_runtime.next_wake_at) <= effective_now
+                )
+                if not due_by_time and not candidate_work_changed:
+                    continue
+                selected_manager_work = (
+                    candidate_lineage_id,
+                    candidate_manager_tasks,
+                    candidate_manager_inbox,
+                    candidate_manager_reviews,
+                    candidate_manager_blockers,
+                    candidate_manager_scope_blockers,
+                    candidate_manager_fallback_summary,
+                    candidate_work_fingerprint,
+                    candidate_work_record_fingerprints,
+                )
+                break
+            if selected_manager_work is None:
+                continue
+            (
+                manager_dispatch_work_lineage_id,
+                manager_tasks,
+                manager_inbox,
+                manager_reviews,
+                manager_blockers,
+                manager_scope_blockers,
+                manager_fallback_summary,
+                manager_work_fingerprint,
+                manager_work_record_fingerprints,
+            ) = selected_manager_work
+            manager_fallback_routing_authorities = _manager_fallback_review_routing_authorities(
+                state_model,
+                summary=manager_fallback_summary,
+            )
+            initial_release_decision_ids = _manager_fallback_initial_release_decision_ids(
+                manager_fallback_summary
+            )
+            manager_fallback_supervision_task_ids = _manager_fallback_supervision_task_ids(
+                state_model,
+                manager=manager,
+                summary=manager_fallback_summary,
+            )
+            manager_reservation_scope = build_agent_dispatch_scope(
+                state_model,
+                agent=manager,
+                tasks=manager_tasks,
+                blockers=manager_blockers,
+                reviews=manager_reviews,
+                inbox_items=manager_inbox,
+            )
+            manager_scope = build_agent_dispatch_scope(
+                state_model,
+                agent=manager,
+                tasks=manager_tasks,
+                blockers=manager_scope_blockers,
+                reviews=manager_reviews,
+                inbox_items=manager_inbox,
+            )
+            initial_release_project_ids = {
+                task.project_id
+                for deliverable_id in initial_release_decision_ids
+                if (deliverable := state_model.deliverables.get(deliverable_id)) is not None
+                if (task := state_model.tasks.get(deliverable.task_id)) is not None
+            }
+            scoped_task_ids = sorted(
+                set(manager_scope.task_ids) | set(manager_fallback_supervision_task_ids)
+            )
+            scoped_project_ids = sorted(
+                set(manager_scope.project_ids) | initial_release_project_ids
+            )
+            scoped_managed_repo_ids = sorted(
+                {
+                    project.git.managed_repo_id
+                    for project_id in scoped_project_ids
+                    if (project := state_model.projects.get(project_id)) is not None
+                    and project.git is not None
+                }
+            )
+            manager_source_evidence_snapshot_ids = (
+                external_source_evidence_snapshot_ids_for_dispatch(
+                    state_model,
+                    agent=manager,
+                    task_ids={
+                        *scoped_task_ids,
+                        *(
+                            state_model.deliverables[deliverable_id].task_id
+                            for deliverable_id in initial_release_decision_ids
+                            if deliverable_id in state_model.deliverables
+                        ),
+                    },
+                    project_ids=scoped_project_ids,
+                    include_team_cases=True,
+                )
+            )
+            has_prior_successful_wake = _has_prior_successful_ordinary_wake(
+                state_model,
+                manager,
+            )
+            durable_dispatch = TeamDispatch(
+                id=dispatch_id,
+                agent_id=manager.id,
+                session_id=manager.session_id,
+                cause_kind="manager_fallback",
+                work_lineage_id=manager_dispatch_work_lineage_id,
+                status=TeamDispatchStatus.PREPARING,
+                review_routing_authorities=manager_fallback_routing_authorities,
+                initial_release_decision_deliverable_ids=(initial_release_decision_ids),
+                project_ids=scoped_project_ids,
+                managed_repo_ids=scoped_managed_repo_ids,
+                created_at=effective_now,
+                preparation_expires_at=(
+                    effective_now + timedelta(seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS)
+                    if defer_activation
+                    else None
+                ),
+                requested_lease_seconds=max(1, int(lease_seconds)),
+                task_ids=scoped_task_ids,
+                blocker_ids=list(manager_scope.blocker_ids),
+                review_request_ids=list(manager_scope.review_request_ids),
+                inbox_item_ids=list(manager_scope.inbox_item_ids),
+                source_evidence_snapshot_ids=list(manager_source_evidence_snapshot_ids),
+                mcp_capability_receipt=_new_review_mcp_capability_receipt(
+                    state_model,
+                    agent_id=manager.id,
+                    review_request_ids=manager_scope.review_request_ids,
+                ),
+                wake_work_fingerprint=manager_work_fingerprint,
+                wake_work_record_fingerprints=manager_work_record_fingerprints,
+            )
+            state_model.dispatches[dispatch_id] = durable_dispatch
+            manager_runtime.active_dispatch_id = dispatch_id
+            prepare_case_context(service._repository, state_model, durable_dispatch)
+            manager_runtime.wake_reason = "manager_fallback"
+            manager_runtime.last_wake_at = effective_now
+            manager_runtime.wake_leased_until = (
+                None if defer_activation else effective_now + timedelta(seconds=lease_seconds)
+            )
+            manager_runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
+            manager_runtime.updated_at = effective_now
+            if (
+                manager_runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+                and not manager_runtime.context_rotation_pending
+            ):
+                _mark_context_rotation_pending(
+                    state_model,
+                    agent=manager,
+                    runtime=manager_runtime,
+                    reason="every_wake",
+                    requested_by=None,
+                    requested_at=effective_now,
+                    request_note=None,
+                )
+            if (
+                not manager_low_priority_inbox_ids
+                or {item.id for item in manager_inbox if item.priority == TeamInboxPriority.LOW}
+                == manager_low_priority_inbox_ids
+            ):
+                _clear_low_priority_batch(manager_runtime)
+            assign_blockers_to_dispatch(
+                state_model,
+                agent_id=manager.id,
+                dispatch_id=dispatch_id,
+                blocker_ids=manager_reservation_scope.blocker_ids,
+                now=effective_now,
+            )
+            scoped_blockers = [
+                state_model.blockers[blocker_id].model_dump(mode="json")
+                for blocker_id in durable_dispatch.blocker_ids
+            ]
+            dispatch_assessments = TaskAssessmentService(state_model)
+            manager_payload = _agent_payload(state_model, manager)
+            role_description_fingerprint = agent_role_description_fingerprint(manager_payload)
+            durable_dispatch.role_description_fingerprint = role_description_fingerprint
+            teams_with_lease.add(team.id)
+            leases.append(
+                {
+                    "agent": manager_payload,
+                    "supervisory_overview": TeamReadService(
+                        state=state_model,
+                        actor=manager,
+                    ).supervisory_overview(),
+                    "runtime": manager_runtime.model_dump(mode="json"),
+                    "role_description_changed": (
+                        manager_runtime.last_delivered_role_description_fingerprint
+                        != role_description_fingerprint
+                    ),
+                    "role_description_fingerprint": role_description_fingerprint,
+                    "dispatch_id": dispatch_id,
+                    "has_prior_successful_wake": has_prior_successful_wake,
+                    "reason": "manager_fallback",
+                    "dispatch": durable_dispatch.model_dump(mode="json"),
+                    "tasks": [
+                        task_payload_with_assessment(
+                            state_model,
+                            task,
+                            assessment_service=dispatch_assessments,
+                        )
+                        for task in manager_tasks
+                    ],
+                    **_dispatch_case_payloads(
+                        state_model,
+                        agent=manager,
+                        dispatch=durable_dispatch,
+                    ),
+                    "external_source_evidence_snapshots": [
+                        external_source_evidence_snapshot_payload(
+                            state_model.external_source_evidence_snapshots[snapshot_id],
+                            now=effective_now,
+                        )
+                        for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
+                        if snapshot_id in state_model.external_source_evidence_snapshots
+                    ],
+                    "case_contexts": dispatch_case_contexts(state_model, dispatch_id),
+                    "case_contexts_delta": dispatch_case_contexts(
+                        state_model, dispatch_id, delta=True
+                    ),
+                    "inbox": [item.model_dump(mode="json") for item in manager_inbox],
+                    "blockers": scoped_blockers,
+                    "reviews": [review.model_dump(mode="json") for review in manager_reviews],
+                    "release_packages": _release_package_payloads_for_dispatch(
+                        state_model,
+                        manager,
+                        work_lineage_id=durable_dispatch.work_lineage_id,
+                        filter_work_lineage=filter_manager_work_lineage,
+                    ),
+                    "runtime_attention": _runtime_attention_payloads_for_dispatch(
+                        state_model,
+                        manager,
+                        work_lineage_id=durable_dispatch.work_lineage_id,
+                        filter_work_lineage=filter_manager_work_lineage,
+                    ),
+                    "recent_action_feedback": _action_feedback_for_dispatch(
+                        state_model,
+                        agent_id=manager.id,
+                        work_lineage_id=durable_dispatch.work_lineage_id,
+                        filter_work_lineage=filter_manager_work_lineage,
+                    ),
+                    "work_lineage_chat_sources": (
+                        [
+                            ref.model_dump(mode="json")
+                            for ref in lineage.chat_source_refs
+                            if (
+                                (conversation := state_model.conversations.get(ref.conversation_id))
+                                is not None
+                                and conversation.agent_id == manager.id
+                            )
+                        ]
+                        if durable_dispatch.work_lineage_id is not None
+                        and (
+                            lineage := state_model.work_lineages.get(
+                                durable_dispatch.work_lineage_id
+                            )
+                        )
+                        is not None
+                        else []
+                    ),
+                    "manager_fallback_summary": manager_fallback_summary,
+                    "operator_chat_participants": _operator_chat_participant_payloads(
+                        state_model,
+                        agent_id=manager.id,
+                    ),
+                    "superior_agent_id": manager.reports_to_agent_id,
+                    "subordinate_agent_ids": list(manager.subordinate_agent_ids),
+                    "subordinates": _subordinate_agent_payloads(state_model, manager),
+                }
+            )
+
+    def _mutate(state_model: TeamState) -> TeamState:
+        teams_with_open_work, teams_with_lease = _reconcile_leasing_state(
+            state_model,
+            effective_now=effective_now,
+            normalized_team_id=normalized_team_id,
+            normalized_agent_id=normalized_agent_id,
+            blocked_teams=blocked_teams,
+            blocker_routing_events=blocker_routing_events,
+        )
         role_allocations = plan_role_task_allocations(
             state_model,
             now=effective_now,
@@ -979,536 +1524,18 @@ def lease_due_agents(
                 }
             )
 
-        for team in sorted(state_model.teams.values(), key=lambda item: item.id):
-            if normalized_limit and len(leases) >= normalized_limit:
-                break
-            if team.archived or team.id in blocked_teams or team.id not in teams_with_open_work:
-                continue
-            if normalized_team_id is not None and team.id != normalized_team_id:
-                continue
-            if team.id in teams_with_lease:
-                continue
-            manager = state_model.agents.get(team.manager_agent_id)
-            if manager is None or manager.status != AgentStatus.ACTIVE or (manager.id is None):
-                continue
-            if normalized_project_id is not None and not agent_has_project_assignment(
-                state_model,
-                manager.id,
-                normalized_project_id,
-            ):
-                continue
-            if normalized_agent_id is not None and manager.id != normalized_agent_id:
-                continue
-            if session_is_busy is not None and session_is_busy(manager.session_id):
-                continue
-            if (
-                manager.id in state_model.agent_runtimes
-                and state_model.agent_runtimes[manager.id].wake_leased_until
-                and _ensure_utc(state_model.agent_runtimes[manager.id].wake_leased_until)
-                > effective_now
-            ):
-                continue
-            if _active_stand_downs_for_agent(state_model, manager.id):
-                continue
-            manager_runtime = state_model.agent_runtimes.setdefault(
-                manager.id,
-                AgentRuntime(agent_id=manager.id),
-            )
-            dispatch_id = f"team-dispatch-{uuid4().hex}"
-            manager_tasks = actionable_dispatch_tasks(
-                state_model,
-                agent=manager,
-            )
-            manager_active_task_ids = {
-                task.id for task in _active_tasks_for_agent(state_model, manager.id)
-            }
-            manager_inbox = _pending_inbox_for_agent(
-                state_model,
-                manager.id,
-            )
-            manager_reviews = actionable_dispatch_reviews(
-                _pending_reviews_for_agent(state_model, manager.id)
-            )
-            manager_blocked_review_ids = mcp_capability_blocked_review_ids(
-                state_model,
-                agent_id=manager.id,
-            )
-            if manager_blocked_review_ids:
-                manager_inbox = [
-                    item
-                    for item in manager_inbox
-                    if not inbox_references_review_ids(
-                        item,
-                        manager_blocked_review_ids,
-                    )
-                ]
-                manager_reviews = [
-                    review
-                    for review in manager_reviews
-                    if review.id not in manager_blocked_review_ids
-                ]
-            manager_low_priority_inbox_ids = {
-                item.id for item in manager_inbox if item.priority == TeamInboxPriority.LOW
-            }
-            manager_blockers = blockers_due_for_agent(
-                state_model,
-                agent_id=manager.id,
-                now=effective_now,
-            )
-            manager_scope_blockers = blockers_assigned_to_agent(
-                state_model,
-                agent_id=manager.id,
-            )
-            manager_owned_review_ids = {review.id for review in manager_reviews}
-            manager_owned_inbox_ids = {item.id for item in manager_inbox}
-            manager_owned_action_ids = {
-                record.id
-                for record in state_model.action_records.values()
-                if record.agent_id == manager.id
-            }
-            manager_fallback_selection_summary = _manager_fallback_summary_payload(
-                state_model,
-                team=team,
-                manager=manager,
-                now=effective_now,
-                limit_rows=False,
-                excluded_review_request_ids=(
-                    set(manager_blocked_review_ids) | manager_owned_review_ids
-                ),
-                excluded_inbox_item_ids=manager_owned_inbox_ids,
-                excluded_task_ids=manager_active_task_ids,
-                excluded_action_record_ids=manager_owned_action_ids,
-            )
-            if not _manager_fallback_summary_has_actionable_work(
-                manager_fallback_selection_summary
-            ):
-                continue
-            filter_manager_work_lineage = (
-                manager_runtime.context_clearing_policy == AgentContextClearingPolicy.WORK_LINEAGE
-            )
-            candidate_lineage_ids = (
-                _manager_fallback_lineage_ids(
-                    state_model,
-                    manager_fallback_selection_summary,
-                )
-                if filter_manager_work_lineage
-                else [None]
-            )
-            selected_manager_work: (
-                tuple[
-                    str | None,
-                    list[Any],
-                    list[Any],
-                    list[Any],
-                    list[Any],
-                    list[Any],
-                    dict[str, Any],
-                    str,
-                    dict[str, str],
-                ]
-                | None
-            ) = None
-            for candidate_lineage_id in candidate_lineage_ids:
-                manager_lineage_excluded_task_ids = (
-                    {
-                        task.id
-                        for task in state_model.tasks.values()
-                        if work_lineage_id_for_record(state_model, task) != candidate_lineage_id
-                    }
-                    if filter_manager_work_lineage
-                    else set()
-                )
-                manager_lineage_excluded_review_ids = (
-                    {
-                        review.id
-                        for review in state_model.review_requests.values()
-                        if work_lineage_id_for_record(state_model, review) != candidate_lineage_id
-                    }
-                    if filter_manager_work_lineage
-                    else set()
-                )
-                manager_lineage_excluded_inbox_ids = (
-                    {
-                        item.id
-                        for item in state_model.inbox.values()
-                        if work_lineage_id_for_record(state_model, item) != candidate_lineage_id
-                    }
-                    if filter_manager_work_lineage
-                    else set()
-                )
-                manager_lineage_excluded_action_ids = (
-                    {
-                        record.id
-                        for record in state_model.action_records.values()
-                        if work_lineage_id_for_record(state_model, record) != candidate_lineage_id
-                    }
-                    if filter_manager_work_lineage
-                    else set()
-                )
-
-                def _same_manager_lineage(record: object) -> bool:
-                    return (
-                        not filter_manager_work_lineage
-                        or work_lineage_id_for_record(state_model, record) == candidate_lineage_id
-                    )
-
-                candidate_manager_tasks = [
-                    row for row in manager_tasks if _same_manager_lineage(row)
-                ]
-                candidate_manager_inbox = [
-                    row for row in manager_inbox if _same_manager_lineage(row)
-                ]
-                candidate_manager_reviews = [
-                    row for row in manager_reviews if _same_manager_lineage(row)
-                ]
-                candidate_manager_blockers = [
-                    row for row in manager_blockers if _same_manager_lineage(row)
-                ]
-                candidate_manager_scope_blockers = [
-                    row for row in manager_scope_blockers if _same_manager_lineage(row)
-                ]
-                candidate_manager_fallback_summary = _manager_fallback_summary_payload(
-                    state_model,
-                    team=team,
-                    manager=manager,
-                    now=effective_now,
-                    excluded_review_request_ids=(
-                        set(manager_blocked_review_ids) | manager_lineage_excluded_review_ids
-                    ),
-                    excluded_inbox_item_ids=manager_lineage_excluded_inbox_ids,
-                    excluded_task_ids=manager_lineage_excluded_task_ids,
-                    excluded_action_record_ids=manager_lineage_excluded_action_ids,
-                )
-                candidate_trigger_summary = _manager_fallback_summary_payload(
-                    state_model,
-                    team=team,
-                    manager=manager,
-                    now=effective_now,
-                    limit_rows=False,
-                    excluded_review_request_ids=(
-                        set(manager_blocked_review_ids)
-                        | manager_lineage_excluded_review_ids
-                        | manager_owned_review_ids
-                    ),
-                    excluded_inbox_item_ids=(
-                        manager_lineage_excluded_inbox_ids | manager_owned_inbox_ids
-                    ),
-                    excluded_task_ids=(manager_lineage_excluded_task_ids | manager_active_task_ids),
-                    excluded_action_record_ids=(
-                        manager_lineage_excluded_action_ids | manager_owned_action_ids
-                    ),
-                )
-                if not _manager_fallback_summary_has_actionable_work(candidate_trigger_summary):
-                    continue
-                candidate_work_fingerprint = manager_fallback_work_fingerprint(
-                    candidate_trigger_summary,
-                    state=state_model,
-                )
-                candidate_work_record_fingerprints = manager_fallback_work_record_fingerprints(
-                    candidate_trigger_summary,
-                    state=state_model,
-                )
-                latest_manager_attempt = _latest_delivered_wake_work_attempt_for_agent(
-                    state_model,
-                    agent_id=manager.id,
-                    cause_kind="manager_fallback",
-                    work_lineage_id=candidate_lineage_id,
-                    filter_work_lineage=filter_manager_work_lineage,
-                )
-                candidate_work_changed = (
-                    latest_manager_attempt is None
-                    or _wake_record_snapshot_has_additions_or_updates(
-                        current=candidate_work_record_fingerprints,
-                        previous=(latest_manager_attempt.wake_work_record_fingerprints),
-                        current_aggregate=candidate_work_fingerprint,
-                        previous_aggregate=(latest_manager_attempt.wake_work_fingerprint),
-                    )
-                )
-                if (
-                    max_no_progress_count >= 0
-                    and manager_runtime.no_progress_count >= max_no_progress_count
-                    and not candidate_work_changed
-                ):
-                    continue
-                due_by_time = (
-                    manager_runtime.next_wake_at is None
-                    or _ensure_utc(manager_runtime.next_wake_at) <= effective_now
-                )
-                if not due_by_time and not candidate_work_changed:
-                    continue
-                selected_manager_work = (
-                    candidate_lineage_id,
-                    candidate_manager_tasks,
-                    candidate_manager_inbox,
-                    candidate_manager_reviews,
-                    candidate_manager_blockers,
-                    candidate_manager_scope_blockers,
-                    candidate_manager_fallback_summary,
-                    candidate_work_fingerprint,
-                    candidate_work_record_fingerprints,
-                )
-                break
-            if selected_manager_work is None:
-                continue
-            (
-                manager_dispatch_work_lineage_id,
-                manager_tasks,
-                manager_inbox,
-                manager_reviews,
-                manager_blockers,
-                manager_scope_blockers,
-                manager_fallback_summary,
-                manager_work_fingerprint,
-                manager_work_record_fingerprints,
-            ) = selected_manager_work
-            manager_fallback_routing_authorities = _manager_fallback_review_routing_authorities(
-                state_model,
-                summary=manager_fallback_summary,
-            )
-            initial_release_decision_ids = _manager_fallback_initial_release_decision_ids(
-                manager_fallback_summary
-            )
-            manager_fallback_supervision_task_ids = _manager_fallback_supervision_task_ids(
-                state_model,
-                manager=manager,
-                summary=manager_fallback_summary,
-            )
-            manager_reservation_scope = build_agent_dispatch_scope(
-                state_model,
-                agent=manager,
-                tasks=manager_tasks,
-                blockers=manager_blockers,
-                reviews=manager_reviews,
-                inbox_items=manager_inbox,
-            )
-            manager_scope = build_agent_dispatch_scope(
-                state_model,
-                agent=manager,
-                tasks=manager_tasks,
-                blockers=manager_scope_blockers,
-                reviews=manager_reviews,
-                inbox_items=manager_inbox,
-            )
-            initial_release_project_ids = {
-                task.project_id
-                for deliverable_id in initial_release_decision_ids
-                if (deliverable := state_model.deliverables.get(deliverable_id)) is not None
-                if (task := state_model.tasks.get(deliverable.task_id)) is not None
-            }
-            scoped_task_ids = sorted(
-                set(manager_scope.task_ids) | set(manager_fallback_supervision_task_ids)
-            )
-            scoped_project_ids = sorted(
-                set(manager_scope.project_ids) | initial_release_project_ids
-            )
-            scoped_managed_repo_ids = sorted(
-                {
-                    project.git.managed_repo_id
-                    for project_id in scoped_project_ids
-                    if (project := state_model.projects.get(project_id)) is not None
-                    and project.git is not None
-                }
-            )
-            manager_source_evidence_snapshot_ids = (
-                external_source_evidence_snapshot_ids_for_dispatch(
-                    state_model,
-                    agent=manager,
-                    task_ids={
-                        *scoped_task_ids,
-                        *(
-                            state_model.deliverables[deliverable_id].task_id
-                            for deliverable_id in initial_release_decision_ids
-                            if deliverable_id in state_model.deliverables
-                        ),
-                    },
-                    project_ids=scoped_project_ids,
-                    include_team_cases=True,
-                )
-            )
-            has_prior_successful_wake = _has_prior_successful_ordinary_wake(
-                state_model,
-                manager,
-            )
-            durable_dispatch = TeamDispatch(
-                id=dispatch_id,
-                agent_id=manager.id,
-                session_id=manager.session_id,
-                cause_kind="manager_fallback",
-                work_lineage_id=manager_dispatch_work_lineage_id,
-                status=TeamDispatchStatus.PREPARING,
-                review_routing_authorities=manager_fallback_routing_authorities,
-                initial_release_decision_deliverable_ids=(initial_release_decision_ids),
-                project_ids=scoped_project_ids,
-                managed_repo_ids=scoped_managed_repo_ids,
-                created_at=effective_now,
-                preparation_expires_at=(
-                    effective_now + timedelta(seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS)
-                    if defer_activation
-                    else None
-                ),
-                requested_lease_seconds=max(1, int(lease_seconds)),
-                task_ids=scoped_task_ids,
-                blocker_ids=list(manager_scope.blocker_ids),
-                review_request_ids=list(manager_scope.review_request_ids),
-                inbox_item_ids=list(manager_scope.inbox_item_ids),
-                source_evidence_snapshot_ids=list(manager_source_evidence_snapshot_ids),
-                mcp_capability_receipt=_new_review_mcp_capability_receipt(
-                    state_model,
-                    agent_id=manager.id,
-                    review_request_ids=manager_scope.review_request_ids,
-                ),
-                wake_work_fingerprint=manager_work_fingerprint,
-                wake_work_record_fingerprints=manager_work_record_fingerprints,
-            )
-            state_model.dispatches[dispatch_id] = durable_dispatch
-            manager_runtime.active_dispatch_id = dispatch_id
-            prepare_case_context(service._repository, state_model, durable_dispatch)
-            manager_runtime.wake_reason = "manager_fallback"
-            manager_runtime.last_wake_at = effective_now
-            manager_runtime.wake_leased_until = (
-                None if defer_activation else effective_now + timedelta(seconds=lease_seconds)
-            )
-            manager_runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
-            manager_runtime.updated_at = effective_now
-            if (
-                manager_runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
-                and not manager_runtime.context_rotation_pending
-            ):
-                _mark_context_rotation_pending(
-                    state_model,
-                    agent=manager,
-                    runtime=manager_runtime,
-                    reason="every_wake",
-                    requested_by=None,
-                    requested_at=effective_now,
-                    request_note=None,
-                )
-            if (
-                not manager_low_priority_inbox_ids
-                or {item.id for item in manager_inbox if item.priority == TeamInboxPriority.LOW}
-                == manager_low_priority_inbox_ids
-            ):
-                _clear_low_priority_batch(manager_runtime)
-            assign_blockers_to_dispatch(
-                state_model,
-                agent_id=manager.id,
-                dispatch_id=dispatch_id,
-                blocker_ids=manager_reservation_scope.blocker_ids,
-                now=effective_now,
-            )
-            scoped_blockers = [
-                state_model.blockers[blocker_id].model_dump(mode="json")
-                for blocker_id in durable_dispatch.blocker_ids
-            ]
-            dispatch_assessments = TaskAssessmentService(state_model)
-            manager_payload = _agent_payload(state_model, manager)
-            role_description_fingerprint = agent_role_description_fingerprint(manager_payload)
-            durable_dispatch.role_description_fingerprint = role_description_fingerprint
-            teams_with_lease.add(team.id)
-            leases.append(
-                {
-                    "agent": manager_payload,
-                    "supervisory_overview": TeamReadService(
-                        state=state_model,
-                        actor=manager,
-                    ).supervisory_overview(),
-                    "runtime": manager_runtime.model_dump(mode="json"),
-                    "role_description_changed": (
-                        manager_runtime.last_delivered_role_description_fingerprint
-                        != role_description_fingerprint
-                    ),
-                    "role_description_fingerprint": role_description_fingerprint,
-                    "dispatch_id": dispatch_id,
-                    "has_prior_successful_wake": has_prior_successful_wake,
-                    "reason": "manager_fallback",
-                    "dispatch": durable_dispatch.model_dump(mode="json"),
-                    "tasks": [
-                        task_payload_with_assessment(
-                            state_model,
-                            task,
-                            assessment_service=dispatch_assessments,
-                        )
-                        for task in manager_tasks
-                    ],
-                    **_dispatch_case_payloads(
-                        state_model,
-                        agent=manager,
-                        dispatch=durable_dispatch,
-                    ),
-                    "external_source_evidence_snapshots": [
-                        external_source_evidence_snapshot_payload(
-                            state_model.external_source_evidence_snapshots[snapshot_id],
-                            now=effective_now,
-                        )
-                        for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
-                        if snapshot_id in state_model.external_source_evidence_snapshots
-                    ],
-                    "case_contexts": dispatch_case_contexts(state_model, dispatch_id),
-                    "case_contexts_delta": dispatch_case_contexts(
-                        state_model, dispatch_id, delta=True
-                    ),
-                    "inbox": [item.model_dump(mode="json") for item in manager_inbox],
-                    "blockers": scoped_blockers,
-                    "reviews": [review.model_dump(mode="json") for review in manager_reviews],
-                    "release_packages": _release_package_payloads_for_dispatch(
-                        state_model,
-                        manager,
-                        work_lineage_id=durable_dispatch.work_lineage_id,
-                        filter_work_lineage=filter_manager_work_lineage,
-                    ),
-                    "runtime_attention": _runtime_attention_payloads_for_dispatch(
-                        state_model,
-                        manager,
-                        work_lineage_id=durable_dispatch.work_lineage_id,
-                        filter_work_lineage=filter_manager_work_lineage,
-                    ),
-                    "recent_action_feedback": _action_feedback_for_dispatch(
-                        state_model,
-                        agent_id=manager.id,
-                        work_lineage_id=durable_dispatch.work_lineage_id,
-                        filter_work_lineage=filter_manager_work_lineage,
-                    ),
-                    "work_lineage_chat_sources": (
-                        [
-                            ref.model_dump(mode="json")
-                            for ref in lineage.chat_source_refs
-                            if (
-                                (conversation := state_model.conversations.get(ref.conversation_id))
-                                is not None
-                                and conversation.agent_id == manager.id
-                            )
-                        ]
-                        if durable_dispatch.work_lineage_id is not None
-                        and (
-                            lineage := state_model.work_lineages.get(
-                                durable_dispatch.work_lineage_id
-                            )
-                        )
-                        is not None
-                        else []
-                    ),
-                    "manager_fallback_summary": manager_fallback_summary,
-                    "operator_chat_participants": _operator_chat_participant_payloads(
-                        state_model,
-                        agent_id=manager.id,
-                    ),
-                    "superior_agent_id": manager.reports_to_agent_id,
-                    "subordinate_agent_ids": list(manager.subordinate_agent_ids),
-                    "subordinates": _subordinate_agent_payloads(state_model, manager),
-                }
-            )
+        _plan_manager_fallback(
+            state_model,
+            teams_with_open_work,
+            teams_with_lease,
+        )
         return state_model
-
-    if normalized_limit == 0:
-        return service._repository.read(), []
 
     def _plan_and_commit() -> TeamState:
         last_conflict: TeamStateConflictError | None = None
         for _attempt in range(TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS):
             leases.clear()
             blocker_routing_events.clear()
-            idle_rotation_result.clear()
-            idle_rotation_result["events"] = []
 
             planning_state = service._repository.read()
             previous_payload = planning_state.model_dump(mode="json")

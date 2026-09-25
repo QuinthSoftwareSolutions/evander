@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-25 - Harden state writes and audit visibility (0.63.9)
+
+- Write Teams credentials atomically with cross-process coordination; share a unique-temp JSON writer
+  with cursor, assistant-session, and PR-feedback stores.
+- Log audit index and session thread metadata failures, and return an error when the tool-call audit
+  log is unreadable instead of reporting an empty history.
+- Separate lease reconciliation and manager fallback, extract team-copy session validation, remove
+  stale imports, and replace route assertions with explicit error responses.
+
 ## 2026-09-25 - Speed up Azure DevOps work-item activity queries (0.63.8)
 
 - Reuse one HTTP connection pool while fetching candidate work items and their activity history.
