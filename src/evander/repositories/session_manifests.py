@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -43,6 +44,13 @@ class JsonSessionManifestRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._store = JsonObjectStore(path, {})
+        self._lookup_lock = RLock()
+        self._lookup_revision: tuple[int, ...] | None = None
+        self._lookup_sessions: dict[str, SessionManifest] = {}
+
+    def _file_revision(self) -> tuple[int, ...]:
+        stat = self.path.stat()
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
     def read_all(self) -> dict[str, SessionManifest]:
         return self._validate_manifests(self._read_raw(), ignore_invalid=False)
@@ -55,7 +63,32 @@ class JsonSessionManifestRepository:
         return self._validate_manifests(raw, ignore_invalid=True)
 
     def get_session(self, session_id: str) -> SessionManifest | None:
-        return self.read_all_safe().get(session_id)
+        # Authorization callers must see replacements, in-place changes and
+        # writes from other processes immediately on their next lookup. A TTL
+        # cache would extend revoked grants. Retain only one bounded revision,
+        # and never expose its mutable models to callers.
+        with self._lookup_lock:
+            try:
+                revision = self._file_revision()
+                if revision == self._lookup_revision:
+                    session = self._lookup_sessions.get(session_id)
+                    return session.model_copy(deep=True) if session is not None else None
+                self._lookup_revision = None
+                self._lookup_sessions = {}
+                sessions = self._validate_manifests(self._read_raw(), ignore_invalid=True)
+                if (
+                    revision[2] <= 16 * 1024 * 1024
+                    and len(sessions) <= 10_000
+                    and self._file_revision() == revision
+                ):
+                    self._lookup_sessions = sessions
+                    self._lookup_revision = revision
+                session = sessions.get(session_id)
+                return session.model_copy(deep=True) if session is not None else None
+            except (OSError, json.JSONDecodeError):
+                self._lookup_revision = None
+                self._lookup_sessions = {}
+                return None
 
     def get(self, session_id: str) -> SessionManifest | None:
         return self.get_session(session_id)

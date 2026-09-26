@@ -21,6 +21,7 @@ from uuid import uuid4
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import Tool as MCPTool
 from pydantic import Field as PydanticField
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -853,7 +854,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
     )
     register_classification_tools(
-        server, context, deps, transport_session_map=transport_session_map,
+        server,
+        context,
+        deps,
+        transport_session_map=transport_session_map,
         audit_success=lambda *args, **kwargs: audit_success(*args, **kwargs),
         audit_failure=lambda *args, **kwargs: audit_failure(*args, **kwargs),
     )
@@ -985,6 +989,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
     _deprecate_session_id_parameter_schema()
     _inject_approval_request_id_schema()
 
+    async def run_request_storage(function: Any, *args: Any, **kwargs: Any) -> Any:
+        # Administrative in-process callers do not share a transport event loop.
+        if _MCP_REQUEST_CONTEXT.get() is None:
+            return function(*args, **kwargs)
+        return await run_in_threadpool(function, *args, **kwargs)
+
     def _offload_synchronous_tools() -> None:
         """Keep blocking MCP tool implementations off the transport event loop."""
 
@@ -1055,6 +1065,30 @@ def create_server(context: RuntimeContext) -> FastMCP:
         ]
 
     server._tool_manager.list_tools = _list_tools_for_request
+
+    def build_tool_list() -> list[MCPTool]:
+        return [
+            MCPTool(
+                name=tool.name,
+                title=tool.title,
+                description=tool.description,
+                inputSchema=tool.parameters,
+                outputSchema=tool.output_schema,
+                annotations=tool.annotations,
+                icons=tool.icons,
+                _meta=tool.meta,
+            )
+            for tool in _list_tools_for_request()
+        ]
+
+    async def list_tools() -> list[MCPTool]:
+        return await run_request_storage(build_tool_list)
+
+    # FastMCP registered its original bound method during construction. Replace
+    # both the public method and the protocol handler so discovery shares the
+    # same nonblocking boundary as tool execution.
+    server.list_tools = list_tools
+    server._mcp_server.list_tools()(list_tools)
 
     def audit_approval_gate(
         *,
@@ -1385,6 +1419,59 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
         raise ToolError(message)
 
+    def audit_dispatch_result(
+        raw_tool_name: str,
+        raw_arguments: dict[str, Any],
+        call_context: _ToolCallAuditContext,
+        result: Any,
+        *,
+        error: str | None = None,
+    ) -> None:
+        tool_name: McpToolName | None = (
+            ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name or None
+        )
+        session = (
+            context.session_repository.get_session(call_context.session_id)
+            if call_context.session_id
+            else None
+        )
+        redacted_keys = redacted_keys_for_session_id(call_context.session_id)
+        audit_result = _assistant_mutation_audit_result(
+            tool_name,
+            raw_arguments,
+            result if isinstance(result, dict) else {"result": result},
+            redacted_keys,
+            default_status="error" if error is not None else "success",
+        )
+        context.audit.log(
+            AuditEvent(
+                event_type="tool_call",
+                session_id=call_context.session_id,
+                vm_id=None if session is None else session.vm_id,
+                directory_path=None if session is None else session.directory_path,
+                agent_role=_session_actor_role(session),
+                tool_name=raw_tool_name or None,
+                actor_user_id=_session_actor_user_id(session),
+                **_tool_call_audit_fields(
+                    session=session,
+                    tool_name=tool_name,
+                    args=raw_arguments,
+                    result=audit_result,
+                ),
+                decision="error" if error is not None else "allowed",
+                reason=error,
+                args=_redact_args(redacted_keys, raw_arguments),
+                result=_redact_nested_value(redacted_keys, audit_result),
+            )
+        )
+        _mark_tool_call_audited()
+        if error is None:
+            logger.info(
+                "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
+                raw_tool_name,
+                call_context.session_id or "",
+            )
+
     original_call_tool = server._tool_manager.call_tool
 
     async def audited_call_tool(*call_args: Any, **call_kwargs: Any) -> Any:
@@ -1412,7 +1499,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
         sanitized_arguments = _approval_gate_arguments(raw_arguments)
         token = _TOOL_CALL_AUDIT_CONTEXT.set(call_context)
         try:
-            _bind_caller_session_argument(
+            await run_request_storage(
+                _bind_caller_session_argument,
                 raw_tool_name=raw_tool_name,
                 arguments=sanitized_arguments,
                 call_context=call_context,
@@ -1442,93 +1530,62 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 )
             ]
             try:
-                require_mcp_session_token(
-                    raw_tool_name=raw_tool_name,
-                    sanitized_arguments=sanitized_arguments,
-                    call_context=call_context,
-                )
-                maybe_require_registered_addon_tool(
-                    raw_tool_name=raw_tool_name,
-                    sanitized_arguments=sanitized_arguments,
-                    call_context=call_context,
-                )
-                enforce_tool_argument_policy(
-                    raw_tool_name=raw_tool_name,
-                    raw_arguments=raw_arguments,
-                    sanitized_arguments=sanitized_arguments,
-                    call_context=call_context,
-                )
-                consumed_approval = maybe_require_invocation_approval(
-                    raw_tool_name=raw_tool_name,
-                    raw_arguments=raw_arguments,
-                    sanitized_arguments=sanitized_arguments,
-                    call_context=call_context,
-                )
+
+                def authorize_call() -> bool:
+                    require_mcp_session_token(
+                        raw_tool_name=raw_tool_name,
+                        sanitized_arguments=sanitized_arguments,
+                        call_context=call_context,
+                    )
+                    maybe_require_registered_addon_tool(
+                        raw_tool_name=raw_tool_name,
+                        sanitized_arguments=sanitized_arguments,
+                        call_context=call_context,
+                    )
+                    enforce_tool_argument_policy(
+                        raw_tool_name=raw_tool_name,
+                        raw_arguments=raw_arguments,
+                        sanitized_arguments=sanitized_arguments,
+                        call_context=call_context,
+                    )
+                    consumed_approval = maybe_require_invocation_approval(
+                        raw_tool_name=raw_tool_name,
+                        raw_arguments=raw_arguments,
+                        sanitized_arguments=sanitized_arguments,
+                        call_context=call_context,
+                    )
+                    if tool_name:
+                        try:
+                            lease_reserved = context.policy.consume_tool_approval_lease_use(
+                                session_id=call_context.session_id,
+                                tool_name=tool_name,
+                                workflow_run_id=call_context.workflow_run_id,
+                                mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+                                per_invocation_approval_consumed=consumed_approval is not None,
+                            )
+                        except PolicyError as exc:
+                            raise ToolError(str(exc)) from exc
+                        return lease_reserved
+                    return False
+
                 tool_name: McpToolName = (
                     ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name
                 )
-                if tool_name:
-                    try:
-                        lease_reserved = context.policy.consume_tool_approval_lease_use(
+                lease_reserved = await run_request_storage(authorize_call)
+                if lease_reserved:
+                    approval_context_tokens.append(
+                        set_tool_approval_context(
                             session_id=call_context.session_id,
-                            tool_name=tool_name,
                             workflow_run_id=call_context.workflow_run_id,
-                            mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
-                            per_invocation_approval_consumed=consumed_approval is not None,
+                            lease_id=call_context.mcp_tool_approval_lease_id,
+                            reserved_tool_name=tool_name,
                         )
-                    except PolicyError as exc:
-                        raise ToolError(str(exc)) from exc
-                    if lease_reserved:
-                        approval_context_tokens.append(
-                            set_tool_approval_context(
-                                session_id=call_context.session_id,
-                                workflow_run_id=call_context.workflow_run_id,
-                                lease_id=call_context.mcp_tool_approval_lease_id,
-                                reserved_tool_name=tool_name,
-                            )
-                        )
+                    )
                 result = await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
+
                 if not call_context.audit_emitted:
-                    tool_value = tool_name_value(tool_name) if tool_name else raw_tool_name
-                    session = (
-                        context.session_repository.get_session(call_context.session_id)
-                        if call_context.session_id
-                        else None
-                    )
-                    redacted_keys = redacted_keys_for_session_id(call_context.session_id)
-                    result_payload = result if isinstance(result, dict) else {"result": result}
-                    audit_result = _assistant_mutation_audit_result(
-                        tool_name,
-                        raw_arguments,
-                        result_payload,
-                        redacted_keys,
-                        default_status="success",
-                    )
-                    context.audit.log(
-                        AuditEvent(
-                            event_type="tool_call",
-                            session_id=call_context.session_id,
-                            vm_id=None if session is None else session.vm_id,
-                            directory_path=None if session is None else session.directory_path,
-                            agent_role=_session_actor_role(session),
-                            tool_name=tool_value or None,
-                            actor_user_id=_session_actor_user_id(session),
-                            **_tool_call_audit_fields(
-                                session=session,
-                                tool_name=tool_name,
-                                args=raw_arguments,
-                                result=audit_result,
-                            ),
-                            decision="allowed",
-                            args=_redact_args(redacted_keys, raw_arguments),
-                            result=_redact_nested_value(redacted_keys, audit_result),
-                        )
-                    )
-                    _mark_tool_call_audited()
-                    logger.info(
-                        "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
-                        tool_value,
-                        call_context.session_id or "",
+                    await run_request_storage(
+                        audit_dispatch_result, raw_tool_name, raw_arguments, call_context, result
                     )
                 return result
             finally:
@@ -1536,49 +1593,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     reset_tool_approval_context(approval_context_token)
         except Exception as exc:
             if not call_context.audit_emitted:
-                tool_name: McpToolName | None = (
-                    ToolName._value2member_map_.get(raw_tool_name) or raw_tool_name or None
-                )
-                session = (
-                    context.session_repository.get_session(call_context.session_id)
-                    if call_context.session_id
-                    else None
-                )
-                redacted_keys = redacted_keys_for_session_id(call_context.session_id)
-                redacted_args = _redact_args(redacted_keys, raw_arguments)
-                error_result = _assistant_mutation_audit_result(
-                    tool_name,
+                await run_request_storage(
+                    audit_dispatch_result,
+                    raw_tool_name,
                     raw_arguments,
-                    {
-                        "status": "error",
-                        "error": str(exc),
-                        "error_class": "tool_dispatch_error",
-                    },
-                    redacted_keys,
-                    default_status="error",
+                    call_context,
+                    {"status": "error", "error": str(exc), "error_class": "tool_dispatch_error"},
+                    error=str(exc),
                 )
-                context.audit.log(
-                    AuditEvent(
-                        event_type="tool_call",
-                        session_id=call_context.session_id,
-                        vm_id=None if session is None else session.vm_id,
-                        directory_path=None if session is None else session.directory_path,
-                        agent_role=_session_actor_role(session),
-                        tool_name=raw_tool_name or None,
-                        actor_user_id=_session_actor_user_id(session),
-                        **_tool_call_audit_fields(
-                            session=session,
-                            tool_name=tool_name,
-                            args=raw_arguments,
-                            result=error_result,
-                        ),
-                        decision="error",
-                        reason=str(exc),
-                        args=redacted_args,
-                        result=error_result,
-                    )
-                )
-                _mark_tool_call_audited()
             raise
         finally:
             _TOOL_CALL_AUDIT_CONTEXT.reset(token)

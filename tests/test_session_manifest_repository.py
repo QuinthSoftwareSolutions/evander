@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from multiprocessing import get_context
@@ -12,6 +13,88 @@ from pydantic import ValidationError
 from evander.models import SessionManifest
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.storage import JsonObjectStore
+
+
+def test_cached_lookup_observes_external_revocation_and_detaches_models(tmp_path, monkeypatch):
+    path = tmp_path / "sessions.json"
+    repository = JsonSessionManifestRepository(path)
+    other = JsonSessionManifestRepository(path)
+    other.upsert_session(SessionManifest.model_validate(_session_payload()))
+    reads = 0
+    original = repository._read_raw
+
+    def read():
+        nonlocal reads
+        reads += 1
+        return original()
+
+    monkeypatch.setattr(repository, "_read_raw", read)
+    manifest = repository.get_session("session-1")
+    manifest.allowed_tools.clear()
+    assert repository.get_session("session-1").allowed_tools
+    assert reads == 1
+    revoked = other.get_session("session-1").model_copy(update={"allowed_tools": []})
+    other.upsert_session(revoked)
+    assert repository.get_session("session-1").allowed_tools == []
+    assert reads == 2
+    other.delete_session("session-1")
+    assert repository.get_session("session-1") is None
+
+
+@pytest.mark.parametrize("change", ["rewrite", "corrupt", "delete"])
+def test_cached_lookup_does_not_hide_in_place_changes_or_unreadable_state(tmp_path, change):
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({"session-1": _session_payload()}))
+    repository = JsonSessionManifestRepository(path)
+    assert repository.get_session("session-1") is not None
+    previous = path.stat()
+    if change == "delete":
+        path.unlink()
+    else:
+        original = path.read_text()
+        path.write_text(
+            original.replace("approval_submit", "approval_check ")
+            if change == "rewrite"
+            else "x" * len(original)
+        )
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    # Same size and restored mtime must not preserve old authority.
+    result = repository.get_session("session-1")
+    if change == "rewrite":
+        assert result is not None
+        assert "approval_submit" not in [_tool_value(tool) for tool in result.allowed_tools]
+    else:
+        assert result is None
+
+
+def test_lookup_preserves_canonical_ids_and_duplicate_precedence(tmp_path):
+    first = _session_payload(session_id="canonical")
+    last = {**first, "allowed_tools": []}
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({"legacy-key": first, "another-key": last}))
+    repository = JsonSessionManifestRepository(path)
+    for _ in range(2):
+        assert repository.get_session("canonical").allowed_tools == []
+        assert repository.get_session("legacy-key") is None
+
+
+def test_lookup_does_not_cache_a_failed_read(tmp_path, monkeypatch):
+    repository = JsonSessionManifestRepository(tmp_path / "sessions.json")
+    repository.upsert_session(SessionManifest.model_validate(_session_payload()))
+    original = repository._read_raw
+    attempts = 0
+
+    def read():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary storage failure")
+        return original()
+
+    monkeypatch.setattr(repository, "_read_raw", read)
+    assert repository.get_session("session-1") is None
+    assert repository.get_session("session-1") is not None
+    assert attempts == 2
 
 
 def _session_payload(*, session_id: str = "session-1") -> dict[str, object]:
