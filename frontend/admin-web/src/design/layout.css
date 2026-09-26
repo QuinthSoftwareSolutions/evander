@@ -304,6 +304,9 @@
 [data-admin-design] :is(.feature-list, .compact-list) {
   gap: 0;
 }
+[data-admin-design] .feature-list > * {
+  flex-shrink: 0;
+}
 [data-admin-design] .feature-list-item {
   border: 0;
   border-bottom: 1px solid var(--ui-border);
@@ -320,7 +323,19 @@
 }
 [data-admin-design] :is(.feature-list-meta, .feature-list-description) {
   font-size: 12px;
+  font-weight: 400;
   color: var(--ui-muted);
+  overflow-wrap: anywhere;
+}
+[data-admin-design] .session-list-item strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+[data-admin-design] .feature-list-title-row {
+  align-items: flex-start;
+}
+[data-admin-design] .feature-list-title-row > .status-pill {
+  flex-shrink: 0;
 }
 [data-admin-design] .feature-list-title-row strong {
   font-weight: 600;
@@ -330,6 +345,10 @@
   padding: 20px 12px;
   color: var(--ui-muted);
   min-height: 0;
+}
+[data-admin-design] .empty-state > button {
+  display: block;
+  margin: 12px auto 0;
 }
 [data-admin-design] .feature-sidebar .callout {
   font-size: 12px;

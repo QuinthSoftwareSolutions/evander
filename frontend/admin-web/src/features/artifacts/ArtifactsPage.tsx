@@ -104,7 +104,11 @@ function formatBytes(value: number | null | undefined): string {
 
 function shortSha(value: string | null | undefined): string {
   const text = value?.trim() ?? "";
-  return text.length > 16 ? `${text.slice(0, 16)}...` : text || "n/a";
+  return text.length > 12 ? `${text.slice(0, 12)}…` : text || "n/a";
+}
+
+function compactArtifactKey(key: string): string {
+  return key.length > 100 ? `${key.slice(0, 56)}…${key.slice(-40)}` : key;
 }
 
 function artifactSpaceLabel(space: ArtifactSpace): string {
@@ -591,16 +595,16 @@ export function ArtifactsPage() {
                         setResolvedArtifact(null);
                       }}
                     >
-                      <td>
-                        <button type="button" className="record-name">
-                          {item.key}
+                      <td className="artifact-key-cell">
+                        <button type="button" className="record-name" title={item.key} aria-label={item.key}>
+                          {compactArtifactKey(item.key)}
                         </button>
                       </td>
-                      <td>{formatTimestamp(item.published_at)}</td>
+                      <td className="artifact-fixed-cell">{formatTimestamp(item.published_at)}</td>
                       <td>{item.session_id}</td>
-                      <td>{formatBytes(item.byte_count)}</td>
-                      <td>{item.source_file_count}</td>
-                      <td>{shortSha(item.sha256)}</td>
+                      <td className="artifact-fixed-cell">{formatBytes(item.byte_count)}</td>
+                      <td className="artifact-fixed-cell">{item.source_file_count}</td>
+                      <td className="artifact-fixed-cell" title={item.sha256 ?? undefined}>{shortSha(item.sha256)}</td>
                       <td>
                         <div className="feature-toolbar-actions icon-actions artifacts-download-cell">
                           <button
@@ -644,6 +648,7 @@ export function ArtifactsPage() {
                   <button
                     type="button"
                     className="mobile-record-card-main"
+                    aria-label={item.key}
                     onClick={(event) => {
                       setSelectedKey(item.key);
                       setInspectorOpen(true);
@@ -652,7 +657,7 @@ export function ArtifactsPage() {
                     }}
                   >
                     <div className="mobile-record-title-row">
-                      <strong>{item.key}</strong>
+                      <strong title={item.key}>{compactArtifactKey(item.key)}</strong>
                     </div>
                     <div className="mobile-record-row">
                       <span>Published</span>

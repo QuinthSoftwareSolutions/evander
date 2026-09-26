@@ -151,7 +151,9 @@ function renderDatabases() {
       database.seed_alias,
       database.database_name,
       database.reset_count,
-      database.last_reset_at || "",
+      database.last_reset_at
+        ? (Number.isNaN(new Date(database.last_reset_at).getTime()) ? database.last_reset_at : new Date(database.last_reset_at).toLocaleString())
+        : "Never",
     ].forEach((value) => {
       const td = document.createElement("td");
       td.textContent = value;

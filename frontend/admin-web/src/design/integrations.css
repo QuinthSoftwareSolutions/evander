@@ -200,6 +200,19 @@
   border-radius: 0;
   padding: 10px 8px;
 }
+[data-addon="miro"] #connections button > :is(strong, span, small) {
+  display: block;
+  overflow-wrap: anywhere;
+}
+[data-addon="miro"] #connections button > :is(span, small) {
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ui-muted);
+}
+[data-addon="miro"] .toolbar {
+  align-items: end;
+}
 [data-addon="miro"] #settings {
   max-width: 1000px;
 }
@@ -214,6 +227,11 @@
 [data-addon="miro"] .checks {
   gap: 12px 24px;
   margin: 16px 0;
+}
+[data-addon="miro"] :is(.checks, .board) label,
+[data-addon="figma"] .check,
+[data-addon="skatteverket"] :is(.skv-check, .skv-api-option) {
+  align-items: flex-start;
 }
 [data-addon="miro"] .operation {
   display: flex;
@@ -256,6 +274,27 @@
 }
 [data-addon="figma"] .card strong {
   font-size: 14px;
+}
+[data-addon="figma"] .card .badge {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+[data-addon="figma"] .grid > label {
+  justify-content: end;
+}
+[data-addon="figma"] .card > details {
+  margin-top: 0;
+}
+[data-addon="figma"] .card > details[open] {
+  flex-basis: 100%;
+}
+[data-addon="figma"] .card > button {
+  align-self: center;
+}
+[data-addon="figma"] .card > details > :is(p, button) {
+  margin: 0 12px 12px;
 }
 [data-addon="figma"] details {
   margin: 12px 0 0;
@@ -352,6 +391,18 @@
 [data-addon="skatteverket"] .skv-form-actions {
   padding-top: 12px;
   border-top: 1px solid var(--ui-border);
+}
+[data-addon="skatteverket"] #connection .detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0 0 16px;
+}
+[data-addon="skatteverket"] #connection details > summary {
+  cursor: pointer;
+  color: var(--ui-muted);
+}
+[data-addon="skatteverket"] .skv-row {
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 800px) {

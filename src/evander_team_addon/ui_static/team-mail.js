@@ -1,3 +1,5 @@
+import { renderIdentifierText } from "./team-identifiers.js";
+
 function emptyMailState() {
   return {
     revision: 0,
@@ -609,7 +611,7 @@ export function createTeamMailController({
           ${item.response_requested ? `<span class="state-pill warning">Reply requested</span>` : ""}
         </div>
       </header>
-      <div class="mail-reader-body">${escapeHtml(bodyFor(item) || "No message body was recorded.")}</div>
+      <div class="mail-reader-body">${bodyFor(item, { render: true }) || "No message body was recorded."}</div>
       <div class="mail-reader-context">
         ${task ? `<span>Task: ${escapeHtml(task.title)} (${escapeHtml(task.id)}) · ${escapeHtml(taskStateLabel(task))}</span>` : ""}
         <span>Message ID: ${escapeHtml(item.id)}</span>
@@ -669,7 +671,7 @@ export function createTeamMailController({
     return subject || `${inboxItemLabels[item.item_type] || humanizeToken(item.item_type)} ${item.id}`;
   }
 
-  function bodyFor(item) {
+  function bodyFor(item, { render = false } = {}) {
     const payload = item.payload || {};
     const subject = subjectFor(item);
     const candidates = [
@@ -684,19 +686,23 @@ export function createTeamMailController({
       payload.description,
       payload.summary,
     ];
-    const bodyValues = candidates.map(bodyValue).filter(Boolean);
-    const body = bodyValues.find((value) => value !== subject);
+    const bodyValues = candidates.map((value) => ({ value, body: bodyValue(value) })).filter(({ body }) => Boolean(body));
+    const renderBody = ({ value, body }) => render
+      ? typeof value === "string" ? renderIdentifierText(body) : escapeHtml(body)
+      : body;
+    const body = bodyValues.find((entry) => entry.body !== subject);
     if (body) {
-      return body;
+      return renderBody(body);
     }
     const fallbackEntries = Object.entries(payload)
       .filter(([key]) => !["title", "subject", "summary"].includes(key))
       .map(([key, value]) => [humanizeToken(key), bodyValue(value)])
       .filter(([, value]) => Boolean(value));
     if (fallbackEntries.length) {
-      return fallbackEntries.map(([key, value]) => `${key}: ${value}`).join("\n\n");
+      const fallback = fallbackEntries.map(([key, value]) => `${key}: ${value}`).join("\n\n");
+      return render ? escapeHtml(fallback) : fallback;
     }
-    return bodyValues[0] || "";
+    return bodyValues.length ? renderBody(bodyValues[0]) : "";
   }
 
   function bodyValue(value) {

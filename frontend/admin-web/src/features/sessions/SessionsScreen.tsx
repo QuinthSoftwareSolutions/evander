@@ -1830,6 +1830,7 @@ export function SessionsScreen() {
           <label className="field-stack">
             <span>Find session</span>
             <input
+              type="search"
               value={sessionFilter}
               onChange={(event) => setSessionFilter(event.target.value)}
               placeholder="session, VM, issue, model"
@@ -1860,6 +1861,11 @@ export function SessionsScreen() {
                     {lifecycleLabel(item)}
                   </span>
                 </div>
+                {item.vm_id || item.issue_number || item.model ? (
+                  <div className="feature-list-meta">
+                    {[item.vm_id, item.issue_number ? `Issue ${item.issue_number}` : null, item.model].filter(Boolean).join(" · ")}
+                  </div>
+                ) : null}
                 {item.container_lifecycle?.last_signal_at ? (
                   <div className="feature-list-meta">
                     Last signal {formatTimestamp(item.container_lifecycle.last_signal_at)}
@@ -1867,7 +1873,8 @@ export function SessionsScreen() {
                 ) : null}
               </button>
             ))}
-            {visibleItems.length === 0 ? (
+            {!response && !error ? <div className="empty-state" role="status">Loading sessions...</div> : null}
+            {response && visibleItems.length === 0 ? (
               <div className="empty-state">No sessions matched the current view.</div>
             ) : null}
           </div>

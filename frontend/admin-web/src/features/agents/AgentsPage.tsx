@@ -2216,7 +2216,8 @@ export function AgentsPage() {
                   </div>
                 );
               })}
-              {!loading && filteredItems.length === 0 ? (
+              {loading && items.length === 0 ? <div className="empty-state" role="status">Loading agents...</div> : null}
+              {!loading && !error && filteredItems.length === 0 ? (
                 <div className="empty-state">No agents found for the selected filters.</div>
               ) : null}
             </div>

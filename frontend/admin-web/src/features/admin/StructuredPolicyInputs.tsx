@@ -84,6 +84,7 @@ type JsonObjectKeyValueEditorProps = {
 };
 
 type JsonTextEditorProps = {
+  validate?: boolean;
   value: string;
   onChange: (nextValue: string) => void;
   fieldLabel: string;
@@ -245,6 +246,7 @@ export function StringListEditor({
 }
 
 export function JsonTextEditor({
+  validate = true,
   value,
   onChange,
   fieldLabel,
@@ -253,7 +255,7 @@ export function JsonTextEditor({
   description,
   placeholder = "Enter valid JSON",
 }: JsonTextEditorProps) {
-  const validationError = validateJsonTextDraftValue(value, fieldLabel);
+  const validationError = validate ? validateJsonTextDraftValue(value, fieldLabel) : null;
   let preview: string | null = null;
   if (!validationError) {
     try {
@@ -268,6 +270,7 @@ export function JsonTextEditor({
     <div className={["structured-input-editor", className].filter(Boolean).join(" ")}>
       {description ? <div className="structured-input-description">{description}</div> : null}
       <textarea
+        aria-label={fieldLabel}
         className="json-editor compact-editor"
         value={value}
         spellCheck={false}

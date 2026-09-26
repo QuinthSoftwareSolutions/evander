@@ -107,14 +107,14 @@
 }
 
 [data-admin-design]
-  :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select) {
+  :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select) {
   min-height: var(--ui-control-height);
   padding: 5px 9px;
   border: 1px solid var(--ui-control-border);
 }
 
 [data-admin-design]
-  :is(
+  :where(
     input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
     select:not([multiple]):not([size]),
     select:not([multiple])[size="0"],
@@ -311,6 +311,30 @@
   font-weight: 500;
 }
 
+/* Keep the control beside the first line when an option label wraps. */
+[data-admin-design] :is(.checkbox-row, .checkbox-inline, .option-checkbox-row, .config-toggle-row) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.45;
+}
+[data-admin-design] :is(input[type="checkbox"], input[type="radio"]) {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--ui-accent);
+  box-shadow: none;
+}
+[data-admin-design] :is(.checkbox-row, .checkbox-inline, .option-checkbox-row) > span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-admin-design] *,
   [data-admin-design] *::before,
@@ -464,10 +488,7 @@
 }
 [data-addon="team"] .team-view-tabs {
   display: flex;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 16px;
 }
@@ -820,7 +841,15 @@
   font-size: 14px;
 }
 [data-addon="team"] .projects-detail-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
+}
+[data-addon="team"] .projects-detail-grid > section:first-child {
+  grid-column: 1 / -1;
+}
+[data-addon="team"] .projects-detail-grid .compact-record-main strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 [data-addon="team"]
   :is(.project-record-section, .review-profile-card, .memory-team-group, .governance-group, .planning-project-block) {
@@ -1187,6 +1216,40 @@
 [data-addon="team"] .chat-message--operator .chat-message-bubble {
   background: var(--ui-selected);
 }
+[data-addon="team"] button.identifier-badge {
+  display: inline-block;
+  vertical-align: baseline;
+  max-width: min(100%, 24ch);
+  min-height: 0;
+  margin: 0 1px;
+  padding: 1px 5px;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  background: var(--ui-navigation);
+  color: var(--ui-accent);
+  font: 500 12px/1.35 var(--ui-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: copy;
+}
+[data-addon="team"] button.identifier-badge:hover {
+  color: var(--ui-accent-hover);
+  background: var(--ui-selected);
+  border-color: var(--ui-accent);
+}
+[data-addon="team"] button.identifier-badge[data-copy-state="copied"] {
+  color: var(--ui-success);
+  border-color: var(--ui-success);
+}
+[data-addon="team"] button.identifier-badge[data-copy-state="error"] {
+  color: var(--ui-danger);
+  border-color: var(--ui-danger);
+}
+[data-addon="team"] .case-context-section-summary > .state-pill {
+  width: max-content;
+  flex-shrink: 0;
+}
 [data-addon="team"] .mail-layout {
   grid-template-columns: 164px minmax(220px, 0.9fr) minmax(300px, 1.3fr);
   gap: 16px;
@@ -1323,6 +1386,8 @@
   }
   [data-addon="team"] .projects-focus-list-items {
     display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
     overflow-x: auto;
   }
   [data-addon="team"] .projects-focus-row {
@@ -1396,6 +1461,15 @@
 [data-addon="team"] .planning-project-main {
   flex: 1;
   gap: 2px;
+}
+[data-addon="team"] .planning-project-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-addon="team"] .planning-project-meta > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 [data-addon="team"] :is(.planning-project-main > span, .planning-project-meta > span:not(.state-pill)) {
   font-size: 12px;
@@ -1518,6 +1592,17 @@
   padding: 12px 0;
   background: transparent;
 }
+[data-addon="team"] #team-memory-page .inline-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+}
+[data-addon="team"] :is(.checkbox-label, .planning-status-filter) {
+  align-items: flex-start;
+}
 [data-addon="team"] :is(#team-memory-page, #team-cases-page) .task-list {
   gap: 0;
 }
@@ -1549,6 +1634,9 @@
 }
 @media (max-width: 800px) {
   [data-addon="team"] .governance-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-addon="team"] .projects-detail-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -1755,6 +1843,19 @@
   border-radius: 0;
   padding: 10px 8px;
 }
+[data-addon="miro"] #connections button > :is(strong, span, small) {
+  display: block;
+  overflow-wrap: anywhere;
+}
+[data-addon="miro"] #connections button > :is(span, small) {
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ui-muted);
+}
+[data-addon="miro"] .toolbar {
+  align-items: end;
+}
 [data-addon="miro"] #settings {
   max-width: 1000px;
 }
@@ -1769,6 +1870,11 @@
 [data-addon="miro"] .checks {
   gap: 12px 24px;
   margin: 16px 0;
+}
+[data-addon="miro"] :is(.checks, .board) label,
+[data-addon="figma"] .check,
+[data-addon="skatteverket"] :is(.skv-check, .skv-api-option) {
+  align-items: flex-start;
 }
 [data-addon="miro"] .operation {
   display: flex;
@@ -1811,6 +1917,27 @@
 }
 [data-addon="figma"] .card strong {
   font-size: 14px;
+}
+[data-addon="figma"] .card .badge {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+[data-addon="figma"] .grid > label {
+  justify-content: end;
+}
+[data-addon="figma"] .card > details {
+  margin-top: 0;
+}
+[data-addon="figma"] .card > details[open] {
+  flex-basis: 100%;
+}
+[data-addon="figma"] .card > button {
+  align-self: center;
+}
+[data-addon="figma"] .card > details > :is(p, button) {
+  margin: 0 12px 12px;
 }
 [data-addon="figma"] details {
   margin: 12px 0 0;
@@ -1907,6 +2034,18 @@
 [data-addon="skatteverket"] .skv-form-actions {
   padding-top: 12px;
   border-top: 1px solid var(--ui-border);
+}
+[data-addon="skatteverket"] #connection .detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0 0 16px;
+}
+[data-addon="skatteverket"] #connection details > summary {
+  cursor: pointer;
+  color: var(--ui-muted);
+}
+[data-addon="skatteverket"] .skv-row {
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 800px) {

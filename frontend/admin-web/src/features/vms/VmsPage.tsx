@@ -39,6 +39,11 @@ const EMPTY_VM_FORM: VmCreateFormState = {
 
 const REFRESH_MS = 5000;
 
+function vmStateLabel(state: string | null | undefined): string {
+  const normalized = state?.trim().replace(/_/g, " ");
+  return normalized ? normalized[0].toUpperCase() + normalized.slice(1) : "Unknown";
+}
+
 async function loadVmList(directoryPath: string, directOnly: boolean): Promise<VmListResponse> {
   const query = new URLSearchParams({
     directory_path: directoryPath,
@@ -276,20 +281,25 @@ export function VmsPage() {
                 <div className="feature-list-title-row vm-list-item-row">
                   <strong>{item.vm_name}</strong>
                   <Tooltip
-                    content={item.libvirt_state === "running" ? "VM is currently running." : "VM is currently stopped."}
+                    content={`VM state: ${vmStateLabel(item.libvirt_state)}`}
                   >
                     <span
                       className={`status-pill vm-status-pill state-${item.libvirt_state === "running" ? "running" : "idle"}`}
-                      aria-label={item.libvirt_state === "running" ? "VM running" : "VM stopped"}
+                      aria-label={`VM ${vmStateLabel(item.libvirt_state).toLowerCase()}`}
                     >
                       {item.libvirt_state === "running" ? <VmRunningIcon /> : <VmStoppedIcon />}
+                      <span>{vmStateLabel(item.libvirt_state)}</span>
                     </span>
                   </Tooltip>
                 </div>
               </button>
             ))}
-            {!loading && visibleItems.length === 0 ? (
-              <div className="empty-state">No VMs found for the selected directory scope.</div>
+            {loading && items.length === 0 ? <div className="empty-state" role="status">Loading VMs...</div> : null}
+            {!loading && !error && visibleItems.length === 0 ? (
+              <div className="empty-state">
+                {search.trim() ? "No VMs match your search." : "No VMs found for the selected directory scope."}
+                {search.trim() ? <button type="button" onClick={() => setSearch("")}>Clear search</button> : null}
+              </div>
             ) : null}
           </div>
         </section>

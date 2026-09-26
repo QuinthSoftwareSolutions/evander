@@ -20,7 +20,7 @@ export const addonDesignResponses = {
     targets: { admin: { name: "Admin Web", connection_id: "design", file_key: "example-file", access: ["read", "comment"], edit_roots: [] } },
   }, connections: { design: { connected: true, authoring_ready: true } } },
   "/api/addons/figma-addon/history": { snapshots: [], operations: [{ operation_id: "design-review", request: { operation: "update_design" }, status: "uncertain", actor: "Design agent", created_at: timestamp }] },
-  "/api/addons/skatteverket-addon/connection-status": { status: "ready", environment: "sandbox", enabled_apis: ["vat"] },
+  "/api/addons/skatteverket-addon/connection-status": { configured: true, ready: true, connection_id: "default", environment: "sandbox", base_url_configured: true, submission_endpoint_configured: false, missing_secret_refs: [], enabled_api_names: ["vat"] },
   "/api/addons/skatteverket-addon/catalog": { apis: [{ name: "vat", display_name: "VAT declarations", version: "1", implemented_operations: ["prepare", "validate", "submit"] }] },
   "/api/addons/skatteverket-addon/state": {
     connections: [{ connection_id: "default", display_name: "Tax reporting", environment: "sandbox", enabled: true, enabled_api_names: ["vat"], client_id_env: "SKV_CLIENT_ID", client_secret_env: "SKV_CLIENT_SECRET" }],

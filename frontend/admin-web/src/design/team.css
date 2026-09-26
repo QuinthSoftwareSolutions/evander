@@ -9,10 +9,7 @@
 }
 [data-addon="team"] .team-view-tabs {
   display: flex;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 16px;
 }
@@ -365,7 +362,15 @@
   font-size: 14px;
 }
 [data-addon="team"] .projects-detail-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
+}
+[data-addon="team"] .projects-detail-grid > section:first-child {
+  grid-column: 1 / -1;
+}
+[data-addon="team"] .projects-detail-grid .compact-record-main strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 [data-addon="team"]
   :is(.project-record-section, .review-profile-card, .memory-team-group, .governance-group, .planning-project-block) {
@@ -732,6 +737,40 @@
 [data-addon="team"] .chat-message--operator .chat-message-bubble {
   background: var(--ui-selected);
 }
+[data-addon="team"] button.identifier-badge {
+  display: inline-block;
+  vertical-align: baseline;
+  max-width: min(100%, 24ch);
+  min-height: 0;
+  margin: 0 1px;
+  padding: 1px 5px;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  background: var(--ui-navigation);
+  color: var(--ui-accent);
+  font: 500 12px/1.35 var(--ui-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: copy;
+}
+[data-addon="team"] button.identifier-badge:hover {
+  color: var(--ui-accent-hover);
+  background: var(--ui-selected);
+  border-color: var(--ui-accent);
+}
+[data-addon="team"] button.identifier-badge[data-copy-state="copied"] {
+  color: var(--ui-success);
+  border-color: var(--ui-success);
+}
+[data-addon="team"] button.identifier-badge[data-copy-state="error"] {
+  color: var(--ui-danger);
+  border-color: var(--ui-danger);
+}
+[data-addon="team"] .case-context-section-summary > .state-pill {
+  width: max-content;
+  flex-shrink: 0;
+}
 [data-addon="team"] .mail-layout {
   grid-template-columns: 164px minmax(220px, 0.9fr) minmax(300px, 1.3fr);
   gap: 16px;
@@ -868,6 +907,8 @@
   }
   [data-addon="team"] .projects-focus-list-items {
     display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
     overflow-x: auto;
   }
   [data-addon="team"] .projects-focus-row {
@@ -941,6 +982,15 @@
 [data-addon="team"] .planning-project-main {
   flex: 1;
   gap: 2px;
+}
+[data-addon="team"] .planning-project-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-addon="team"] .planning-project-meta > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 [data-addon="team"] :is(.planning-project-main > span, .planning-project-meta > span:not(.state-pill)) {
   font-size: 12px;
@@ -1063,6 +1113,17 @@
   padding: 12px 0;
   background: transparent;
 }
+[data-addon="team"] #team-memory-page .inline-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+}
+[data-addon="team"] :is(.checkbox-label, .planning-status-filter) {
+  align-items: flex-start;
+}
 [data-addon="team"] :is(#team-memory-page, #team-cases-page) .task-list {
   gap: 0;
 }
@@ -1094,6 +1155,9 @@
 }
 @media (max-width: 800px) {
   [data-addon="team"] .governance-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-addon="team"] .projects-detail-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

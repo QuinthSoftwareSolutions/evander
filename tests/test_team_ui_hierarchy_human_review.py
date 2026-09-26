@@ -12,8 +12,42 @@ from evander_team_addon.providers import (
     _task_creation_mandate_guidance,
     _team_agent_guidance_content,
 )
+from evander_team_addon.provider_prompts import (
+    _build_governance_prompt,
+    _build_prompt,
+    _build_team_chat_prompt,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("mode", ["ordinary", "retained", "chat", "chat_mutations", "governance"])
+def test_wake_prompts_request_readable_references_without_reformatting_context(mode: str) -> None:
+    agent_id = "team-agent-" + "a" * 32
+    agent = {"id": agent_id, "display_name": "Avery", "role_name": "Reviewer"}
+    lease = {"agent": agent, "reason": "scheduled"}
+    if mode in {"chat", "chat_mutations"}:
+        prompt = _build_team_chat_prompt(
+            state={"agents": {agent_id: agent}, "conversation_messages": {}},
+            conversation={"id": "conversation", "agent_id": agent_id, "operator_user_id": "operator"},
+            message={"id": "message", "body": "Summarize the case."},
+            mutation_allowed=mode == "chat_mutations",
+        )
+        assert '`conversation_id="conversation"`' in prompt
+        assert '`message_ids=["message"]`' in prompt
+    elif mode == "governance":
+        prompt = _build_governance_prompt({**lease, "governance_group": {"id": "governance"}})
+        assert f'"id": "{agent_id}"' in prompt
+    else:
+        prompt = _build_prompt(lease, effective_resume_mode="same_context" if mode == "retained" else None)
+        assert f'"id":"{agent_id}"' in prompt
+
+    assert prompt.count("Human-facing references:") == 1
+    assert "display name and role when available" in prompt
+    assert "each exact value alone in Markdown inline backticks" in prompt
+    assert "Avoid repeating IDs" in prompt
+    assert "structured identifier arguments, URLs, commands and code blocks unchanged" in prompt
+    assert f"`{agent_id}`" not in prompt
 
 
 def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> None:

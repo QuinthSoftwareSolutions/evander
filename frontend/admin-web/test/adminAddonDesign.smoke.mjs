@@ -62,13 +62,33 @@ test("standalone add-ons share host appearance, preserve fields through locking,
       await page.goto(`http://127.0.0.1:${server.address().port}/?addon=${item.id}`);
       const frame = page.frames().find(candidate => candidate !== page.mainFrame());
       await frame.locator(item.ready).first().waitFor({ state: "attached" });
-      if (item.id === "miro") await frame.locator("#connections button").first().click();
+      if (item.id === "miro") {
+        await frame.locator('#connections button[aria-current="true"]').waitFor();
+        assert.equal(await frame.locator("#name").inputValue(), "Design workspace");
+        assert.equal(await frame.locator("#editor-title").innerText(), "Design workspace");
+      }
+      if (item.id === "bokio") {
+        await frame.locator('.action-row[aria-current="true"]').waitFor();
+        await frame.locator("#status-filter").selectOption("needs_attention");
+        assert.match(await frame.locator('.action-row[aria-current="true"]').innerText(), /Confirm the recorded outcome/);
+        assert.match(await frame.locator("#action-detail").innerText(), /Confirm the recorded outcome/);
+        assert.doesNotMatch(await frame.locator("#action-detail").innerText(), /September hosting invoice/);
+        await frame.locator("#action-search").fill("no matching action");
+        assert.equal(await frame.locator("#action-detail button").count(), 0, "an empty queue must not retain actions for a filtered-out record");
+        await frame.locator("#action-search").fill("");
+        await frame.locator("#status-filter").selectOption("pending_approval");
+      }
       if (item.id === "figma") {
         await frame.getByText("Add or update a connection", { exact: true }).click();
         await frame.getByRole("button", { name: "Refresh history", exact: true }).click();
         await frame.getByText("update_design · uncertain", { exact: true }).waitFor();
       }
-      if (item.id === "skatteverket") await frame.locator(".skv-connection-settings > summary").click();
+      if (item.id === "skatteverket") {
+        assert.match(await frame.locator("#connection .detail-grid").innerText(), /Credentials available/);
+        assert.match(await frame.locator("#connection .detail-grid").innerText(), /VAT declarations/);
+        assert.equal(await frame.locator("#connection details").getAttribute("open"), null);
+        await frame.locator(".skv-connection-settings > summary").click();
+      }
       const action = frame.locator(item.action).first();
       await action.waitFor();
       assert.equal(await action.isDisabled(), true, `${item.id} must start locked`);

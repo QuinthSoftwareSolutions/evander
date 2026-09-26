@@ -427,6 +427,7 @@ export function WorkersScreen() {
   function renderField(field: WorkerConfigField) {
     const value = draft[field.field_name] ?? normalizeFieldValue(field, undefined);
     const commonProps = {
+      "aria-label": field.label,
       title: field.tooltip || undefined,
       disabled: saving || acting !== null || loading,
     };
@@ -437,8 +438,8 @@ export function WorkersScreen() {
           value={String(Boolean(value))}
           onChange={(event) => updateField(field.field_name, event.target.value === "true")}
         >
-          <option value="false">false</option>
-          <option value="true">true</option>
+          <option value="false">No</option>
+          <option value="true">Yes</option>
         </select>
       );
     }

@@ -145,6 +145,17 @@ export function SkillsPage() {
     setDeleteConflict(null);
   }
 
+  async function handleRefresh() {
+    setLoading(true);
+    try {
+      await refreshSkills();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
@@ -317,8 +328,8 @@ export function SkillsPage() {
               <h1>Skills</h1>
             </div>
             <div className="inline-actions compact-actions">
-              <button type="button" onClick={() => void refreshSkills()} disabled={loading || busy !== null}>
-                Refresh
+              <button type="button" onClick={() => void handleRefresh()} disabled={loading || busy !== null}>
+                {loading ? "Refreshing..." : "Refresh"}
               </button>
             </div>
           </div>
@@ -341,7 +352,13 @@ export function SkillsPage() {
                 <div className="feature-list-meta">{formatTimestamp(item.updated_at)}</div>
               </button>
             ))}
-            {!loading && visibleItems.length === 0 ? <div className="empty-state">No skills found.</div> : null}
+            {loading && items.length === 0 ? <div className="empty-state" role="status">Loading skills...</div> : null}
+            {!loading && !error && visibleItems.length === 0 ? (
+              <div className="empty-state">
+                {search.trim() ? "No skills match your search." : "No skills found."}
+                {search.trim() ? <button type="button" onClick={() => setSearch("")}>Clear search</button> : null}
+              </div>
+            ) : null}
           </div>
         </section>
 

@@ -31,14 +31,14 @@
 }
 
 [data-admin-design]
-  :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select) {
+  :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select) {
   min-height: var(--ui-control-height);
   padding: 5px 9px;
   border: 1px solid var(--ui-control-border);
 }
 
 [data-admin-design]
-  :is(
+  :where(
     input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
     select:not([multiple]):not([size]),
     select:not([multiple])[size="0"],
@@ -233,6 +233,30 @@
 [data-admin-design] label {
   font-size: 13px;
   font-weight: 500;
+}
+
+/* Keep the control beside the first line when an option label wraps. */
+[data-admin-design] :is(.checkbox-row, .checkbox-inline, .option-checkbox-row, .config-toggle-row) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.45;
+}
+[data-admin-design] :is(input[type="checkbox"], input[type="radio"]) {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--ui-accent);
+  box-shadow: none;
+}
+[data-admin-design] :is(.checkbox-row, .checkbox-inline, .option-checkbox-row) > span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {

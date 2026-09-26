@@ -223,7 +223,7 @@ function issueStateClass(state: string | null | undefined): string {
     return "running";
   }
   if (normalized === "closed" || normalized === "completed") {
-    return "failed";
+    return "completed";
   }
   return "idle";
 }
@@ -316,6 +316,8 @@ export function IssuesPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [stateFilter, setStateFilter] = useState(() => readAdminHashQuery().get("issue_id") ? "all" : "active");
   const [items, setItems] = useState<IssueRecord[]>([]);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
   const [selectedIssueId, setSelectedIssueId] = useState<string>(() => readAdminHashQuery().get("issue_id") ?? "");
   const [selectedIssue, setSelectedIssue] = useState<IssueDetail | null>(null);
   const [creating, setCreating] = useState(false);
@@ -342,6 +344,9 @@ export function IssuesPage() {
     [items],
   );
   const mutationLocked = !privilegedUnlocked;
+  const visibleItems = sortedItems.filter((item) =>
+    [item.issue_number, item.title].join(" ").toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
 
   const refreshList = useCallback(async () => {
     const query = new URLSearchParams({
@@ -361,6 +366,7 @@ export function IssuesPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     async function load() {
       try {
         await refreshList();
@@ -371,6 +377,8 @@ export function IssuesPage() {
         if (!cancelled) {
           setError(reason instanceof Error ? reason.message : String(reason));
         }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
     void load();
@@ -576,6 +584,10 @@ export function IssuesPage() {
               Unlock privileged operations to create, edit, delete, or launch work from issues.
             </div>
           ) : null}
+          <label className="field-stack">
+            <span>Find issues</span>
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Issue number or title" />
+          </label>
           <div className="toolbar-grid issues-filter-grid">
             <label className="field-stack">
               <span>State</span>
@@ -591,7 +603,7 @@ export function IssuesPage() {
             </label>
           </div>
           <div className="feature-list issue-list">
-            {sortedItems.map((item) => (
+            {visibleItems.map((item) => (
               <button
                 key={item.issue_id}
                 type="button"
@@ -604,10 +616,15 @@ export function IssuesPage() {
                     {item.state ?? "New"}
                   </span>
                 </div>
+                <div className="feature-list-meta">{item.title}</div>
               </button>
             ))}
-            {items.length === 0 ? (
-              <div className="empty-state">No issues found for {selectedDirectoryPath}.</div>
+            {loading && items.length === 0 ? <div className="empty-state" role="status">Loading issues...</div> : null}
+            {!loading && !error && visibleItems.length === 0 ? (
+              <div className="empty-state">
+                {search.trim() ? "No issues match your search." : `No issues found for ${selectedDirectoryPath} with the selected state.`}
+                {search.trim() ? <button type="button" onClick={() => setSearch("")}>Clear search</button> : null}
+              </div>
             ) : null}
           </div>
         </section>

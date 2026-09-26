@@ -589,8 +589,8 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByRole("textbox", { name: "Find session", exact: true }).waitFor({ state: "visible" }));
-  assert.equal(await page.getByRole("textbox", { name: "Find session", exact: true }).inputValue(), "");
+  await assert.doesNotReject(() => page.getByRole("searchbox", { name: "Find session", exact: true }).waitFor({ state: "visible" }));
+  assert.equal(await page.getByRole("searchbox", { name: "Find session", exact: true }).inputValue(), "");
   assert.equal(await page.getByRole("combobox", { name: "State" }).inputValue(), "active");
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").getByText("session-1").waitFor({ state: "visible" }));
@@ -1642,7 +1642,7 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
 
-  await page.getByRole("textbox", { name: "Find session", exact: true }).fill("");
+  await page.getByRole("searchbox", { name: "Find session", exact: true }).fill("");
   await page.locator(".session-list-item").filter({ hasText: "libvirt-legacy" }).click();
   await assert.match(await page.locator(".feature-content").innerText(), /Legacy session: VM template metadata unavailable/);
 
@@ -1656,10 +1656,10 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   assert.ok(cleanupButtonBox, "expected cleanup toolbar button to have a bounding box");
   assert.ok(cleanupButtonBox.width <= 40, `expected cleanup toolbar button to stay icon-sized, got ${cleanupButtonBox.width}`);
 
-  await page.getByRole("textbox", { name: "Find session", exact: true }).fill("container");
+  await page.getByRole("searchbox", { name: "Find session", exact: true }).fill("container");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 1);
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 0);
-  await page.getByRole("textbox", { name: "Find session", exact: true }).fill("libvirt-explicit");
+  await page.getByRole("searchbox", { name: "Find session", exact: true }).fill("libvirt-explicit");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 1);
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 0);
 

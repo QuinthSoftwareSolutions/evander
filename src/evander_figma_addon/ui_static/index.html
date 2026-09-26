@@ -18,7 +18,7 @@
         <label>Registered callback URL<input name="redirect_uri" type="url" required></label>
         <label>Host REST-token setting (for comments and versions)<input name="rest_token_env" placeholder="FIGMA_REST_TOKEN"></label>
         <label>REST credential type<select name="rest_token_kind"><option value="personal">Personal access token</option><option value="oauth">OAuth access token</option></select></label>
-        <button>Save connection</button>
+        <button type="submit">Save connection</button>
       </form>
     </details>
   </section>
@@ -29,7 +29,7 @@
         <label>Display name<input name="name" required></label>
         <label>Connection<select name="connection_id" id="connection-select" required></select></label>
         <label>Figma Design file URL<input name="file_url" type="url" required></label>
-        <button>Save file</button>
+        <button type="submit">Save file</button>
       </form>
     </details>
     <details><summary>File permissions</summary>
@@ -41,7 +41,7 @@
           <label class="check"><input name="edit" type="checkbox">Edit</label>
         </fieldset>
         <label>Editable root node IDs (optional)<input name="roots" placeholder="12:34, 56:78"><small>Leave empty for the whole file. These limits apply to all agents using this file. Clear all capabilities to disable agent access.</small></label>
-        <button>Save permissions</button>
+        <button type="submit">Save permissions</button>
       </form>
     </details>
   </section>

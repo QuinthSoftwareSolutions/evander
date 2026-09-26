@@ -649,9 +649,19 @@ test("subscriptions page shows worker profile identity and capacity", { timeout:
     ],
   });
 
+  let finishLoading;
+  const loadingGate = new Promise((resolve) => { finishLoading = resolve; });
+  await page.route("**/api/admin/codex-subscriptions?*", async (route) => {
+    await loadingGate;
+    await route.fallback();
+  });
   await page.goto(`http://127.0.0.1:${address.port}/#subscriptions`, {
     waitUntil: "domcontentloaded",
   });
+  await page.getByRole("status").filter({ hasText: "Loading subscription profiles" }).waitFor();
+  assert.equal(await page.getByText("No container worker configured", { exact: true }).count(), 0);
+  assert.equal(await page.getByText("No subscription profiles are available.", { exact: true }).count(), 0);
+  finishLoading();
 
   await page.getByRole("heading", { name: "Subscriptions" }).waitFor({ state: "visible" });
   await page.locator(".subscription-profile-summary").filter({ hasText: "Team A" }).click();
@@ -873,6 +883,11 @@ test("quick navigator filters destinations and supports keyboard navigation", { 
 
 test("configuration navigation focuses sections, searches technical fields, and preserves drafts", { timeout: browserTestTimeout }, async (t) => {
   const configurationSaveRequests = [];
+  const configurationState = structuredClone(configurationStateResponse);
+  configurationState.tabs[1].sections[0].fields.push({
+    source_domain: "providers", field_name: "available_workers", label: "Available workers",
+    kind: "json", options: [], scope: "directory", root_starts_editable: false, tooltip: "Optional worker definitions.",
+  });
   const { address, page } = await createAdminPage(t, {
     session: {
       ...sessionResponse,
@@ -884,7 +899,7 @@ test("configuration navigation focuses sections, searches technical fields, and 
       privileged_operations: { unlocked: true },
     },
     configurationState: {
-      ...configurationStateResponse,
+      ...configurationState,
       directory_scoped_config_enabled: true,
     },
     configurationSaveRequests,
@@ -900,6 +915,9 @@ test("configuration navigation focuses sections, searches technical fields, and 
   await assert.doesNotReject(() => runtimeField.waitFor({ state: "visible" }));
   assert.equal(await runtimeField.getByRole("spinbutton").inputValue(), "900");
   assert.equal(await runtimeField.getByRole("spinbutton").evaluate((element) => element === document.activeElement), true);
+  const unsetJson = page.getByRole("textbox", { name: "Available workers", exact: true });
+  assert.equal(await unsetJson.isDisabled(), true);
+  assert.equal(await page.getByText("Available workers must be valid JSON.", { exact: true }).count(), 0);
 
   const search = page.getByRole("combobox", { name: "Find setting" });
   await search.fill("teams_timeout_seconds");
@@ -911,7 +929,12 @@ test("configuration navigation focuses sections, searches technical fields, and 
   assert.match(page.url(), /config_section=teams/);
   assert.match(page.url(), /config_field=teams_timeout_seconds/);
 
-  const teamsInput = page.locator("#configuration-field-people_communications-teams_timeout_seconds").getByRole("spinbutton");
+  const teamsField = page.locator("#configuration-field-people_communications-teams_timeout_seconds");
+  const teamsInput = page.getByRole("spinbutton", { name: "Teams timeout seconds", exact: true });
+  await teamsField.getByRole("checkbox", { name: "Unset", exact: true }).check();
+  assert.equal(await teamsInput.isDisabled(), true, "cleared settings must not accept edits that cannot be saved");
+  await teamsField.getByRole("checkbox", { name: "Unset", exact: true }).uncheck();
+  assert.equal(await teamsInput.isEnabled(), true);
   await teamsInput.fill("12");
   const configurationNav = page.getByRole("navigation", { name: "Configuration areas and sections" });
   await configurationNav.getByRole("button", { name: /Communication files/ }).click();

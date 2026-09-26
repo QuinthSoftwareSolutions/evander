@@ -23,6 +23,7 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     page.setDefaultTimeout(5000);
     const errors = [];
+    let failSkillRefresh = false;
     page.on("pageerror", (error) => errors.push(error.message));
     const items = ["alpha", "beta"].map((name) => ({ name, size_bytes: 42, updated_at: "2026-09-23T10:00:00Z" }));
     const session = {
@@ -39,7 +40,13 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
         ...session, selected_directory_path: "root", directory_scoped_config_enabled: false,
         execution_backend: "libvirt_vm", assistant: { enabled: false, show_launcher_when_disabled: false },
       };
-      else if (pathname === "/api/admin/skills") data = { items };
+      else if (pathname === "/api/admin/skills") {
+        if (failSkillRefresh) {
+          await route.fulfill({ status: 503, json: { error: "Skills service temporarily unavailable" } });
+          return;
+        }
+        data = { items };
+      }
       else if (pathname.startsWith("/api/admin/skills/")) {
         const name = decodeURIComponent(pathname.split("/").at(-1));
         data = { skill: { ...items.find((item) => item.name === name), content: `# ${name}` } };
@@ -80,7 +87,58 @@ test("record routing, inherited Miro recovery, and select listboxes", { timeout:
       await fullRecord.getByRole("heading", { name: "beta", exact: true }).waitFor();
       await page.evaluate(() => { location.hash = "#skills"; });
       await page.getByRole("heading", { name: "Select a skill to view details", exact: true }).waitFor();
+      failSkillRefresh = true;
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+      await page.getByText("Skills service temporarily unavailable", { exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Refresh", exact: true }).isEnabled(), true);
+      assert.equal(await page.locator(".skill-list-item").count(), 2);
+      failSkillRefresh = false;
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+      await page.getByText("Skills service temporarily unavailable", { exact: true }).waitFor({ state: "hidden" });
       assert.deepEqual(errors, []);
+    } finally {
+      await page.close();
+    }
+  });
+
+  await t.test("reports show no activity bar for inactive graphs and support keyboard selection", async () => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    page.setDefaultTimeout(5000);
+    const session = {
+      auth_mode: "none", auth_required: false, authenticated: true, username: "admin",
+      display_name: "Admin", permissions: ["admin.owner"], effective_permissions: ["admin.owner"],
+      can_manage_users: true, session_id: "fixture", available_login_methods: [],
+      privileged_operations: { unlocked: true },
+    };
+    const graphs = [{ graph_id: "active", name: "Active graph", activity_count: 100 }, { graph_id: "inactive", name: "Inactive graph", activity_count: 0 }]
+      .map((graph) => ({ ...graph, directory_path: "root", run_count: graph.activity_count, node_count: 0,
+        trigger_event_count: graph.activity_count, gate_execution_count: 0, effect_execution_count: 0,
+        nodes: [], user_ids: [], status_counts: {}, latest_activity_at: null }));
+    await page.route("**/api/**", async (route) => {
+      const { pathname } = new URL(route.request().url());
+      let data = {};
+      if (pathname === "/api/auth/session") data = session;
+      else if (pathname === "/api/admin/state") data = {
+        ...session, selected_directory_path: "root", directory_scoped_config_enabled: false,
+        execution_backend: "libvirt_vm", assistant: { enabled: false, show_launcher_when_disabled: false },
+      };
+      else if (pathname === "/api/admin/reports/workflow-graph-activity") data = { graphs };
+      else if (pathname === "/api/admin/reports/conformance") data = { reports: [] };
+      else if (pathname === "/api/admin/user-notifications") data = { unread_count: 0, notifications: [] };
+      else if (pathname === "/api/admin/deployment-status") data = { active: false };
+      await route.fulfill({ json: data });
+    });
+    try {
+      await page.goto(`${url}/#reports`);
+      const table = page.locator(".report-activity-table");
+      const inactive = table.getByRole("row").filter({ hasText: "Inactive graph" });
+      await inactive.waitFor();
+      assert.equal(await inactive.locator(".activity-bar span").evaluate((el) => el.getBoundingClientRect().width), 0);
+      const active = table.getByRole("row").filter({ has: page.getByRole("button", { name: "Active graph", exact: true }) });
+      assert.ok(await active.locator(".activity-bar span").evaluate((el) => el.getBoundingClientRect().width) > 0);
+      await inactive.getByRole("button", { name: "Inactive graph", exact: true }).focus();
+      await page.keyboard.press("Enter");
+      await page.locator(".report-grid .detail-panel").getByRole("heading", { name: "Inactive graph", exact: true }).waitFor();
     } finally {
       await page.close();
     }

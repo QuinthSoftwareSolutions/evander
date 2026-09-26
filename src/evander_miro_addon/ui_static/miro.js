@@ -70,6 +70,10 @@ function addBoard(board = {}) {
 function edit(connection = null) {
   state.selected = connection;
   const config = connection?.config || {};
+  $("editor-title").textContent = connection ? config.name : "New connection";
+  $("connections").querySelectorAll("button").forEach(control => {
+    control.setAttribute("aria-current", String(control.dataset.connectionId === config.id));
+  });
   $("connection-id").value = config.id || ""; $("connection-id").disabled = Boolean(connection);
   $("name").value = config.name || "";
   $("callback").value = config.redirect_uri || `${location.origin}/api/addons/miro-addon/oauth/callback`;
@@ -88,11 +92,17 @@ async function refresh() {
   $("connections").replaceChildren();
   for (const connection of state.connections) {
     const config = connection.config;
-    $("connections").append(button(`${config.name} · ${connection.connected ? "Connected" : "Not connected"}\n${connection.calls_today}/${config.daily_call_budget} calls today · ${config.directory_path}`, async () => { edit(connection); await activity(); }));
+    const control = button("", async () => { edit(connection); await activity(); });
+    control.dataset.connectionId = config.id;
+    const title = document.createElement("strong"); title.textContent = config.name;
+    const status = document.createElement("span"); status.textContent = connection.connected ? "Connected" : "Not connected";
+    const detail = document.createElement("small"); detail.textContent = `${connection.calls_today}/${config.daily_call_budget} calls today · ${config.directory_path}`;
+    control.append(title, status, detail);
+    $("connections").append(control);
   }
-  const selected = state.connections.find((item) => item.config.id === selectedId);
+  const selected = state.connections.find((item) => item.config.id === selectedId) || state.connections[0];
   if (selected) { edit(selected); await activity(); }
-  else if (!state.selected) edit();
+  else edit();
   if (!state.connections.length) notice("No connections in this directory. Create one to get started.");
 }
 function connectionPath() { if (!state.selected) throw new Error("Save or select a connection first"); return `/connections/${encodeURIComponent(state.selected.config.id)}`; }

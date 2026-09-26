@@ -1,4 +1,40 @@
 /* Table workbenches, settings, and expandable records share the same surfaces. */
+[data-admin-design] :is(.config-field-grid, .website-login-grid, .admin-toolbar) > .field-stack {
+  min-width: 0;
+  margin-bottom: 0;
+}
+[data-admin-design] :is(.website-login-grid, .admin-toolbar, .table-workspace > .feature-sidebar) > :is(.checkbox-row, .checkbox-inline) {
+  align-self: end;
+  min-height: var(--ui-control-height);
+  margin-bottom: 0;
+  padding-block: 6px;
+}
+[data-admin-design] .table-workspace > .feature-sidebar > .field-stack {
+  margin-bottom: 0;
+}
+[data-admin-design] .table-workspace > .feature-sidebar > .field-stack:has(input[type="number"]) {
+  flex: 0 1 100px;
+  min-width: 100px;
+}
+[data-admin-design] .artifacts-table .artifact-fixed-cell {
+  white-space: nowrap;
+}
+[data-admin-design] .vms-page .vm-status-pill {
+  gap: 0.35rem;
+}
+[data-admin-design] .config-field-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+[data-admin-design] .configuration-section-workspace .config-field-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-admin-design] :is(.feature-toolbar, .panel-header) > div {
+  min-width: 0;
+}
+[data-admin-design] :is(.feature-toolbar, .panel-header) :is(h1, h2, h3, p),
+[data-admin-design] .record-inspector-subtitle {
+  overflow-wrap: anywhere;
+}
 [data-admin-design] .subscriptions-page {
   display: block;
 }
@@ -111,7 +147,10 @@
 [data-admin-design] .table-workspace > .feature-sidebar > .section-panel {
   flex-basis: 100%;
   display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-start;
   gap: 12px;
   padding: 0;
   border: 0;
