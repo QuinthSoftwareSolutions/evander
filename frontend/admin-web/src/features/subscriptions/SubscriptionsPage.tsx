@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
@@ -17,6 +17,8 @@ type DeviceLogin = {
 
 export function SubscriptionsPage() {
   const { selectedDirectoryPath, privilegedUnlocked } = useAdminUi();
+  const refreshGeneration = useRef(0);
+  const [loading, setLoading] = useState(true);
   const [profiles, setProfiles] = useState<CodexSubscriptionProfile[]>([]);
   const [workerUrl, setWorkerUrl] = useState<string | null>(null);
   const [profileId, setProfileId] = useState("");
@@ -31,20 +33,29 @@ export function SubscriptionsPage() {
   }, [selectedDirectoryPath]);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
+    setLoading(true);
     try {
       const payload = await fetchJson<CodexSubscriptionProfilesResponse>(
         `/api/admin/codex-subscriptions${query()}`,
       );
+      if (generation !== refreshGeneration.current) return;
       setProfiles(payload.profiles);
       setWorkerUrl(payload.worker_url);
       setError(null);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (generation === refreshGeneration.current) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (generation === refreshGeneration.current) setLoading(false);
     }
   }, [query]);
 
   useEffect(() => {
+    setProfiles([]);
+    setWorkerUrl(null);
+    setPendingLogins({});
     void refresh();
+    return () => { refreshGeneration.current += 1; };
   }, [refresh]);
 
   useEffect(() => {
@@ -69,7 +80,7 @@ export function SubscriptionsPage() {
       await fetchJson(`/api/admin/codex-subscriptions${query()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile_id: profileId, display_name: displayName }),
+        body: JSON.stringify({ profile_id: profileId.trim(), display_name: displayName.trim() }),
       });
       setProfileId("");
       setDisplayName("");
@@ -144,10 +155,10 @@ export function SubscriptionsPage() {
         <div className="panel-header">
           <div>
             <h1>Subscriptions</h1>
-            <p className="muted-text">{workerUrl ?? "No container worker configured"}</p>
+            <p className="muted-text">{loading && !workerUrl ? "Loading subscription profiles…" : error && !workerUrl ? "Subscription profiles unavailable" : workerUrl ?? "No container worker configured"}</p>
           </div>
-          <button className="admin-action-button compact" type="button" onClick={() => void refresh()}>
-            Refresh
+          <button className="admin-action-button compact" type="button" disabled={loading || busy !== null} onClick={() => void refresh()}>
+            {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
         {error ? <div className="callout error-callout">{error}</div> : null}
@@ -157,7 +168,7 @@ export function SubscriptionsPage() {
           <summary>Create profile</summary>
           <div className="config-field-grid">
             <label className="field-stack">
-              <span>Immutable profile id</span>
+              <span>Profile ID (cannot be changed later)</span>
               <input value={profileId} onChange={(event) => setProfileId(event.target.value)} placeholder="team-plus" />
             </label>
             <label className="field-stack">
@@ -168,10 +179,10 @@ export function SubscriptionsPage() {
           <button
             className="admin-action-button primary compact"
             type="button"
-            disabled={!privilegedUnlocked || !profileId.trim() || !displayName.trim() || busy === "create"}
+            disabled={!privilegedUnlocked || !profileId.trim() || !displayName.trim() || busy !== null || loading}
             onClick={() => void createProfile()}
           >
-            Create
+            {busy === "create" ? "Creating…" : "Create profile"}
           </button>
         </details>
 
@@ -288,7 +299,8 @@ export function SubscriptionsPage() {
               </details>
             );
           })}
-          {!profiles.length ? <div className="empty-state">No subscription profiles are available.</div> : null}
+          {loading && !profiles.length ? <div className="empty-state" role="status">Loading subscription profiles…</div> : null}
+          {!loading && !error && !profiles.length ? <div className="empty-state">No subscription profiles are available. Create a profile to connect an account.</div> : null}
         </div>
       </section>
     </div>

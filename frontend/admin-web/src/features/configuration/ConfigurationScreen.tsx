@@ -2667,23 +2667,27 @@ export function ConfigurationScreen() {
   function renderFieldInput(
     field: ConfigurationField,
     fieldState: ConfigurationDraftFieldState,
+    inheritedOrCleared: boolean,
   ) {
-    const disabled = loading || saving || (!isGlobalField(field) && !state?.directory_scoped_config_enabled);
+    const disabled = inheritedOrCleared || loading || saving || (!isGlobalField(field) && !state?.directory_scoped_config_enabled);
+    const inputProps = { "aria-label": field.label };
     if (field.kind === "bool") {
       return (
         <select
+          {...inputProps}
           value={String(Boolean(fieldState.value))}
           onChange={(event) => updateFieldState(field.field_name, { value: event.target.value === "true" })}
           disabled={disabled}
         >
-          <option value="false">false</option>
-          <option value="true">true</option>
+          <option value="false">No</option>
+          <option value="true">Yes</option>
         </select>
       );
     }
     if (field.kind === "literal") {
       return (
         <select
+          {...inputProps}
           value={String(fieldState.value)}
           onChange={(event) => updateFieldState(field.field_name, { value: event.target.value })}
           disabled={disabled}
@@ -2718,6 +2722,7 @@ export function ConfigurationScreen() {
           value={String(fieldState.value)}
           onChange={(nextValue) => updateFieldState(field.field_name, { value: nextValue })}
           fieldLabel={field.label}
+          validate={!inheritedOrCleared}
           disabled={disabled}
         />
       );
@@ -2725,6 +2730,7 @@ export function ConfigurationScreen() {
     if (field.kind === "multiline_text") {
       return (
         <textarea
+          {...inputProps}
           className="json-editor compact-editor"
           value={String(fieldState.value)}
           spellCheck={false}
@@ -2735,6 +2741,7 @@ export function ConfigurationScreen() {
     }
     return (
       <input
+        {...inputProps}
         type={field.kind === "int" || field.kind === "float" ? "number" : "text"}
         value={String(fieldState.value)}
         onChange={(event) => updateFieldState(field.field_name, { value: event.target.value })}
@@ -3504,7 +3511,7 @@ export function ConfigurationScreen() {
                                 fieldState,
                                 inputDisabled || loading || saving || !state?.directory_scoped_config_enabled,
                               )
-                            : renderFieldInput(field, fieldState)}
+                            : renderFieldInput(field, fieldState, inputDisabled)}
                         </div>
                         {fieldIsGlobal ? (
                           <div className="panel-meta config-field-inheritance">Runtime-global setting.</div>

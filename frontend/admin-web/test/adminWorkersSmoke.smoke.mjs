@@ -258,7 +258,13 @@ test("workers page supports compact navigation, non-overlapping polling, and act
           config: {},
           revision: `${worker.worker_id}-revision-1`,
         },
-        config_schema: null,
+        config_schema: {
+          worker_id: worker.worker_id,
+          fields: [
+            { field_name: "enabled", label: "Enable polling", kind: "bool", options: [], tooltip: "Poll for new events." },
+            { field_name: "poll_interval", label: "Polling interval", kind: "int", options: [], tooltip: "Seconds between polls." },
+          ],
+        },
       }));
       return;
     }
@@ -280,6 +286,11 @@ test("workers page supports compact navigation, non-overlapping polling, and act
   assert.equal(requests.detail, 0);
   await page.locator(".worker-list-item").filter({ hasText: "Trigger Orchestrator" }).click();
   await page.locator(".worker-list-item.selected").waitFor({ state: "visible" });
+
+  const pollingControl = page.getByRole("combobox", { name: "Enable polling", exact: true });
+  await pollingControl.waitFor();
+  assert.deepEqual(await pollingControl.locator("option").allTextContents(), ["No", "Yes"]);
+  assert.equal(await page.getByRole("spinbutton", { name: "Polling interval", exact: true }).isVisible(), true);
 
   const selectedListText = await page.locator(".worker-list-item.selected").innerText();
   assert.match(selectedListText, /Trigger Orchestrator/);

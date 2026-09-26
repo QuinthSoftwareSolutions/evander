@@ -67,6 +67,19 @@ const EMPTY_GROUP_FORM: GroupFormState = {
 };
 
 const DIRECT_WORKFLOW_PERMISSIONS = ["workflows.read", "workflows.write"] as const;
+const PERMISSION_LABELS: Record<string, string> = {
+  "admin.owner": "Full administrator access",
+  "groups.manage": "Manage permission groups",
+  "team.human_reviews.decide": "Decide release reviews",
+  "team.chats.mutate": "Manage team chats",
+  "team.chats.read_all": "View all team chats",
+  "users.manage": "Manage users and access",
+  "workflow_runs.control": "Control workflow runs",
+  "workflow_runs.read": "View workflow runs",
+  "workflow_packs.manage": "Manage workflow packs",
+  "workflows.read": "View workflows",
+  "workflows.write": "Edit workflows",
+};
 const PERMISSION_HELP: Record<string, string> = {
   "admin.owner": "Full Admin Web ownership. Grants every catalog permission in every directory scope.",
   "groups.manage": "Create, edit, and delete reusable permission groups and the permissions assigned to them.",
@@ -139,11 +152,11 @@ function permissionHelp(permission: string): string {
 function PermissionTooltip({ permission, focusable = false }: { permission: string; focusable?: boolean }) {
   return (
     <Tooltip
-      content={permissionHelp(permission)}
+      content={`${permission}: ${permissionHelp(permission)}`}
       focusable={focusable}
       ariaLabel={`Permission help for ${permission}`}
     >
-      <span className="permission-label">{permission}</span>
+      <span className="permission-label">{PERMISSION_LABELS[permission] ?? permission}</span>
     </Tooltip>
   );
 }
@@ -822,6 +835,7 @@ export function UsersPage() {
                             key={`${assignment.groupId}-${assignment.directoryPath}-${index}`}
                           >
                             <select
+                              aria-label="Permission group"
                               value={assignment.groupId}
                               onChange={(event) =>
                                 setForm((current) => ({
@@ -892,6 +906,7 @@ export function UsersPage() {
                         {form.workflowGrants.map((grant, index) => (
                           <div className="inline-actions" key={`${grant.permission}-${grant.directoryPath}-${index}`}>
                             <select
+                              aria-label="Workflow permission"
                               value={grant.permission}
                               onChange={(event) =>
                                 setForm((current) => ({

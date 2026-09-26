@@ -75,7 +75,15 @@ This arrangement limits routine exposure, but it cannot make careless handling h
 >
 > The OpenAI relay demonstrates host-owned authentication. The guest receives a host relay URL and a placeholder API key for client compatibility. The relay authenticates upstream with the real credential and keeps the upstream client alive for the complete streaming response.
 >
-> The HTTP target relay has a different contract. It confines a session to an allowlisted base URL but forwards authentication headers and cookies supplied by the guest request. It does not inject a host credential. Treating target confinement as secret substitution would overstate the boundary.
+> Ordinary HTTP target requests forward the guest's authentication headers and cookies to an
+> allowlisted target. Managed website sessions add an explicitly granted login flow: the host
+> uses its stored website credentials and returns selected temporary browser storage. The
+> browser receives that session state, not the website password. The origin-restricted browser
+> proxy still constrains its destinations. See [managed website sessions](../../managed-website-sessions.md).
+>
+> Worker subscription authentication has its own boundary. Named ChatGPT profiles and durable
+> auth files stay on the worker; disposable Codex jobs receive the in-memory external tokens
+> needed by App Server. This is a bounded authentication path, not general host-secret transport.
 
 > <span class="sidebar-kicker">For administrators</span> **Where secrets belong**
 >
@@ -91,7 +99,7 @@ This changes how environments are prepared. Optional toolchains can be seeded fr
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Network enforcement**
 >
-> Guests do not receive general internet access by default. The host firewall admits explicit guest-to-host routes: SSH on port `22`, MCP on `8000`, the model relay on `11434`, the NuGet relay on `11666`, the HTTP target relay on `11777`, and the npm-audit facade on `11881`. Optional package caches commonly use Nexus on `8081` and apt-cacher-ng on `3142`. An open route remains subject to session and service policy.
+> Guests do not receive general internet access by default. The host firewall admits explicit guest-to-host routes: SSH on port `22`, MCP on `8000`, the model relay on `11434`, the NuGet relay on `11666`, the HTTP target relay on `11777`, the browser proxy on `11778`, and the npm-audit facade on `11881`. Optional package caches commonly use Nexus on `8081` and apt-cacher-ng on `3142`. An open route remains subject to session and service policy. Worker-container egress is configured separately on the worker VM.
 >
 > Separately, the host uses controlled SSH into libvirt VMs for bootstrap, status, log, and maintenance operations. That host-to-guest administrative path is not a guest session capability and should not be confused with the guest-to-host restricted-Git route.
 >

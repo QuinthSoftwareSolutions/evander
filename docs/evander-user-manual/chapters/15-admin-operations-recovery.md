@@ -108,6 +108,14 @@ evander-cli rebuild-audit-index --config runtime
 
 Audit redaction intentionally removes configured sensitive fields. Absence of a secret from an audit row is expected, not evidence that no credential was used.
 
+If an index update fails after an event is appended, Evander retains the JSONL entry and logs
+`Tool-call audit index update failed; JSONL entry retained`. The detailed Tool Calls view can fall
+back to that journal. When a required journal read fails, the API returns HTTP `503` with
+`Tool-call audit log is unavailable`; it does not present the failure as an empty successful
+result. Check the configured path, service-user access, encoding, and journal before rebuilding
+the derived index. Dashboard summaries use the existing index and can lag the detailed view
+while background import catches up.
+
 The remainder of the backup and restore material is administrator reference. An operator reporting a problem should preserve the visible records and identifiers; they should not copy, replace, or delete runtime databases.
 
 ## Administrator reference: durable state inventory
@@ -130,10 +138,17 @@ Before backup or repair, inventory the configured paths. Common current stores i
 | Communications/wakes/usage | provider inbox DBs, wake DB, `model-usage.db` | Cursors, dispatches, observations |
 | Add-on state | `runtime/addons/<id>/`, including Team `state.db` | Add-on-private durable records |
 | VM and worker execution storage | libvirt images and configured worker storage | Running execution state, outside the runtime directory |
+| Worker placement and executions | `runtime/container-worker-assignments.db`, `runtime/container-worker-executions.db` | Pinned connection settings and execution/cleanup history |
 
 Ephemeral Git worktrees under `runtime/git-worktrees/` are reconstructible scratch space. Bare managed repositories are not the same thing and must not be discarded casually: host-only pinned and Team/review refs may not yet exist upstream.
 
 Secrets and local service configuration—`config/*.env`, provider JSON, `secrets.env`, systemd environment, certificates—may live outside `runtime/`. Back them up separately with stricter permissions. Never place them in published artifacts or documentation captures.
+
+Worker-local subscription profile registries and credential homes are also outside the
+control-plane runtime. Decide explicitly whether recovery will preserve them or require a new
+device login. Restoring a worker assignment also requires its saved token environment-variable
+name and original worker storage; changing the directory default does not relocate an existing
+session.
 
 ## Administrator procedure: consistent backup
 
@@ -185,6 +200,7 @@ An operator can use the first and third columns to describe what they see and wh
 | Admin Web is unavailable | UI process/config/auth may be down; runtime can still be intact | service status/journal, then CLI and files |
 | UI shows revision conflict | Concurrent write was detected | reload and merge; do not force file write |
 | Tool Calls is empty but JSONL has rows | Search index is stale/corrupt | audit index status and rebuild |
+| Tool Calls returns `503` | A required audit journal read failed | configured path, ownership, encoding, and Admin Web journal |
 | Dashboard says unknown capacity | Collection failed or lacks permission | endpoint errors and filesystem ownership |
 | SQLite says locked | A live writer or abandoned operation holds access | identify owning service; do not delete WAL/lock files |
 | Restored worker repeats effects | Store/provider boundary was captured inconsistently | inspect effect idempotency key and provider state before enabling workers |

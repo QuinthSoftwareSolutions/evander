@@ -1,6 +1,7 @@
 import { createTeamMailController } from "./team-mail.js";
 import { createTeamActivityController } from "./team-activity.js";
 import { createCaseContextController } from "./team-case-context.js";
+import { attachIdentifierCopy, isOpaqueIdentifier, renderIdentifierText } from "./team-identifiers.js";
 import {
   caseTaskIds,
   caseBoardPermalink,
@@ -22,6 +23,7 @@ import {
 } from "./team-ui-state.js";
 
 const API_BASE = "/api/addons/team-addon";
+attachIdentifierCopy(document);
 
 const taskStates = [
   "pending",
@@ -925,6 +927,8 @@ function setTeamView(view) {
     void loadView(activeTeamView, { force: true });
   } else if (enteringChat) {
     syncChatStreamForActiveView({ refresh: true });
+  } else if (activeTeamView === "activity") {
+    scheduleAuxiliaryLoadsForView(activeTeamView);
   }
 }
 
@@ -5775,6 +5779,10 @@ function renderActiveView(view = activeTeamView) {
       mailController.render();
       decorateActiveViewTooltips();
       break;
+    case "activity":
+      activityController.render();
+      decorateActiveViewTooltips();
+      break;
     case "governance":
       renderGovernance();
       refreshActiveViewSelects();
@@ -6090,10 +6098,10 @@ function renderMemoryItem(memory) {
         </div>
       </div>
       <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
-      ${memory.summary ? `<div class="meta-line">${escapeHtml(memory.summary)}</div>` : ""}
+      ${memory.summary ? `<div class="meta-line">${renderIdentifierText(memory.summary)}</div>` : ""}
       ${renderMemoryTags(memory)}
       ${refs.length ? `<div class="meta-line">${escapeHtml(refs.join(" - "))}</div>` : ""}
-      ${memory.updated_at ? `<div class="meta-line">Updated ${escapeHtml(memory.updated_at)}</div>` : ""}
+      ${memory.updated_at ? `<div class="meta-line">Updated ${escapeHtml(formatTimelineTimestamp(memory.updated_at))}</div>` : ""}
     </li>
   `;
 }
@@ -6357,7 +6365,7 @@ function renderWorkspaceAttentionPanel(model) {
         ${workspaceViewButton("operations", "Open operations")}
       </div>
       ${body}
-      ${model.generatedAt ? `<div class="meta-line">Runtime generated ${escapeHtml(model.generatedAt)}</div>` : ""}
+      ${model.generatedAt ? `<div class="meta-line">Updated ${escapeHtml(formatTimelineTimestamp(model.generatedAt))}</div>` : ""}
     </section>
   `;
 }
@@ -8304,7 +8312,7 @@ function renderRuntimeOperations() {
     ${sections.join("")}
     ${
       runtime.generated_at
-        ? `<div class="meta-line runtime-generated-at">Runtime generated ${escapeHtml(runtime.generated_at)}</div>`
+        ? `<div class="meta-line runtime-generated-at">Updated ${escapeHtml(formatTimelineTimestamp(runtime.generated_at))}</div>`
         : ""
     }
   `);
@@ -10720,7 +10728,7 @@ function renderChatMessage(message) {
   return `
     <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
       <div class="chat-message-bubble">
-        ${message.body ? `<p>${escapeHtml(message.body)}</p>` : ""}
+        ${message.body ? `<p>${renderIdentifierText(message.body)}</p>` : ""}
         ${attachments.length ? `<div class="chat-message-attachments">${attachments.map(renderChatAttachment).join("")}</div>` : ""}
         ${attachmentImportWarning(attachmentImport)}
         <div class="chat-message-meta">
@@ -10730,7 +10738,7 @@ function renderChatMessage(message) {
           ${mutationModeLabel ? `<span class="chat-mutation-mode ${mutationMode === "project_scoped" ? "is-enabled" : "is-reply-only"}">${escapeHtml(mutationModeLabel)}</span>` : ""}
           ${externalDelivery ? `<span title="${escapeAttr(externalChatDeliveryTitle(externalDelivery))}">${escapeHtml(externalChatDeliveryLabel(externalDelivery))}</span>` : ""}
         </div>
-        ${message.error ? `<div class="chat-message-error">${escapeHtml(message.error)}</div>` : ""}
+        ${message.error ? `<div class="chat-message-error">${renderIdentifierText(message.error)}</div>` : ""}
       </div>
     </article>
   `;
@@ -13218,11 +13226,11 @@ function renderCaseItem(item) {
           ${project?.git && project.release_policy?.reintegration?.enabled !== false ? `<button type="button" class="record-action secondary" data-reintegrate-case-id="${escapeAttr(item.id)}">Reintegrate accepted work</button>` : ""}
         </div>
       </div>
-      <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
-      ${source ? `<div class="meta-line">Source ${escapeHtml(source)}</div>` : ""}
+      <div class="meta-line">${renderIdentifierText(metaParts.join(" - "))}</div>
+      ${source ? `<div class="meta-line">Source ${renderIdentifierText(source)}</div>` : ""}
       ${renderCaseTags(item)}
       ${renderCaseTaskLinks(item)}
-      ${item.description ? `<div class="meta-line">${escapeHtml(item.description)}</div>` : ""}
+      ${item.description ? `<div class="meta-line">${renderIdentifierText(item.description)}</div>` : ""}
     </li>
   `;
 }
@@ -15409,7 +15417,7 @@ function renderTaskHierarchyRow(
     </div>
     <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(taskAssignmentLabel(task))}</div>
     ${renderTaskGraph(task)}
-    <div class="meta-line">${escapeHtml(task.description)}</div>
+    <div class="meta-line">${renderIdentifierText(task.description)}</div>
   `;
   if (compact) {
     return `
@@ -15439,7 +15447,7 @@ function renderTaskHierarchyRow(
       </div>
       <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(taskAssignmentLabel(task))}</div>
       ${renderTaskGraph(task)}
-      <div class="meta-line">${escapeHtml(task.description)}</div>
+      <div class="meta-line">${renderIdentifierText(task.description)}</div>
     </li>
   `;
 }
@@ -15741,16 +15749,29 @@ function renderPlanningTaskBlockers(task) {
     <ul class="planning-task-blockers">
       ${rows.map((row) => {
         const owner = row.ownerId ? state.agents?.[row.ownerId] : null;
-        return `<li><strong>${escapeHtml(row.summary)}</strong><span>Owner: ${escapeHtml(owner ? agentLabel(owner) : "Operator")}</span><span>Next: ${escapeHtml(row.next)}</span></li>`;
+        return `<li><strong>${renderIdentifierText(row.summary)}</strong><span>Owner: ${escapeHtml(owner ? agentLabel(owner) : "Operator")}</span><span>Next: ${renderIdentifierText(row.next)}</span></li>`;
       }).join("")}
     </ul>
   `;
 }
 
 function renderPlanningInlineMarkdown(value) {
-  return escapeHtml(value)
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  const source = String(value ?? "");
+  const output = [];
+  let offset = 0;
+  for (const match of source.matchAll(/(`+)([^\n]+?)\1(?!`)|\*\*([^*\n]+)\*\*/g)) {
+    output.push(renderIdentifierText(source.slice(offset, match.index)));
+    if (match[1]) {
+      output.push(isOpaqueIdentifier(match[2], { explicit: true })
+        ? renderIdentifierText(match[0])
+        : `<code>${escapeHtml(match[2])}</code>`);
+    } else {
+      output.push(`<strong>${renderPlanningInlineMarkdown(match[3])}</strong>`);
+    }
+    offset = match.index + match[0].length;
+  }
+  output.push(renderIdentifierText(source.slice(offset)));
+  return output.join("");
 }
 
 function planningBriefHeading(line) {
@@ -15781,6 +15802,8 @@ function renderPlanningBriefMarkdown(value) {
   let paragraph = [];
   let listType = "";
   let listItems = [];
+  let codeFence = "";
+  let codeLines = [];
   const flushParagraph = () => {
     if (!paragraph.length) return;
     output.push(`<p>${renderPlanningInlineMarkdown(paragraph.join(" "))}</p>`);
@@ -15792,8 +15815,32 @@ function renderPlanningBriefMarkdown(value) {
     listType = "";
     listItems = [];
   };
+  const flushCode = () => {
+    output.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+    codeFence = "";
+    codeLines = [];
+  };
   lines.forEach((rawLine) => {
     const line = rawLine.trim();
+    if (codeFence) {
+      const closing = line.match(/^(`{3,}|~{3,})\s*$/);
+      if (closing && closing[1][0] === codeFence[0] && closing[1].length >= codeFence.length) flushCode();
+      else codeLines.push(rawLine);
+      return;
+    }
+    const fence = line.match(/^(`{3,}|~{3,})/);
+    if (fence) {
+      flushParagraph();
+      flushList();
+      const inline = line.match(/^(`{3,}|~{3,})(.*?)\1\s*$/);
+      if (inline) {
+        codeLines = [inline[2]];
+        flushCode();
+      } else {
+        codeFence = fence[1];
+      }
+      return;
+    }
     const heading = planningBriefHeading(line);
     const unordered = line.match(/^[-*•]\s+(.+)$/);
     const ordered = line.match(/^\d+[.)]\s+(.+)$/);
@@ -15823,6 +15870,7 @@ function renderPlanningBriefMarkdown(value) {
   });
   flushParagraph();
   flushList();
+  if (codeFence) flushCode();
   return output.join("");
 }
 
@@ -16012,7 +16060,7 @@ function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" }
               <div><span>State age</span><strong>${escapeHtml(taskRelativeAge(stateSince))}</strong></div>
               <div><span>Priority</span><strong>${Number(task.priority ?? 0)}</strong></div>
             </div>
-            <p class="planning-lifecycle-reason"><strong>Lifecycle reason:</strong> ${escapeHtml(reason)}</p>
+            <p class="planning-lifecycle-reason"><strong>Lifecycle reason:</strong> ${renderIdentifierText(reason)}</p>
             ${renderPlanningExecutionStatus(task)}
             ${renderPlanningTaskBlockers(task)}
           </section>
@@ -16617,10 +16665,10 @@ function renderDeliverableAcceptanceVerification(deliverable) {
         ${verification.run_id ? `<div><div class="delivery-detail-label">Run</div><div class="delivery-detail-value">${renderIdentifierCopy(verification.run_id, { label: "Copy ID" })}</div></div>` : ""}
         ${verification.candidate_commit_sha ? `<div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value"><code>${escapeHtml(verification.candidate_commit_sha)}</code></div></div>` : ""}
       </div>
-      ${verification.summary ? `<p class="meta-line">${escapeHtml(verification.summary)}</p>` : ""}
+      ${verification.summary ? `<p class="meta-line">${renderIdentifierText(verification.summary)}</p>` : ""}
       ${commands.length ? `<ul>${commands.map((command) => `<li><strong>${escapeHtml(command.name)}</strong> - ${escapeHtml(humanizeToken(command.state || "pending"))}${command.failure_kind ? ` (${escapeHtml(humanizeToken(command.failure_kind))})` : ""}</li>`).join("")}</ul>` : ""}
       ${(verification.evidence_refs || []).length ? `<p class="meta-line"><strong>Evidence:</strong> ${(verification.evidence_refs || []).map((ref) => `<code>${escapeHtml(ref)}</code>`).join(" ")}</p>` : ""}
-      ${waiver ? `<p class="meta-line"><strong>Waived by ${escapeHtml(waiver.actor_id)}:</strong> ${escapeHtml(waiver.reason)}</p>` : ""}
+      ${waiver ? `<p class="meta-line"><strong>Waived by ${escapeHtml(waiver.actor_id)}:</strong> ${renderIdentifierText(waiver.reason)}</p>` : ""}
     </section>
   `;
 }
@@ -16670,8 +16718,8 @@ function renderInitialReleaseDisposition(deliverable) {
         ${disposition.decided_at ? `<div><div class="delivery-detail-label">Decided</div><div class="delivery-detail-value">${renderRecordDate(disposition.decided_at)}</div></div>` : ""}
         ${disposition.release_package_id ? `<div><div class="delivery-detail-label">Release package</div><div class="delivery-detail-value">${renderIdentifierCopy(disposition.release_package_id, { label: "Copy ID" })}</div></div>` : ""}
       </div>
-      ${disposition.reason ? `<p class="meta-line"><strong>Reason:</strong> ${escapeHtml(disposition.reason)}</p>` : ""}
-      ${disposition.reopen_reason ? `<p class="meta-line"><strong>Last reopened:</strong> ${escapeHtml(disposition.reopen_reason)}${disposition.reopened_by_actor ? ` · ${escapeHtml(disposition.reopened_by_actor)}` : ""}${disposition.reopened_at ? ` · ${renderRecordDate(disposition.reopened_at)}` : ""}</p>` : ""}
+      ${disposition.reason ? `<p class="meta-line"><strong>Reason:</strong> ${renderIdentifierText(disposition.reason)}</p>` : ""}
+      ${disposition.reopen_reason ? `<p class="meta-line"><strong>Last reopened:</strong> ${renderIdentifierText(disposition.reopen_reason)}${disposition.reopened_by_actor ? ` · ${escapeHtml(disposition.reopened_by_actor)}` : ""}${disposition.reopened_at ? ` · ${renderRecordDate(disposition.reopened_at)}` : ""}</p>` : ""}
     </section>
   `;
 }
@@ -16696,7 +16744,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
         <div class="compact-record-body deliverable-card-body">
           <section class="deliverable-detail-group">
             <h4>Summary / outcome</h4>
-            <p class="deliverable-full-summary">${escapeHtml(deliverable.summary)}</p>
+            <p class="deliverable-full-summary">${renderIdentifierText(deliverable.summary)}</p>
             ${renderDeliverableOutcomes(deliverable)}
           </section>
           <section class="deliverable-detail-group">
@@ -16768,8 +16816,8 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
                 <span class="state-pill ${escapeHtml(review.state)}">${escapeHtml(review.state)}</span>
               </div>
               <div class="meta-line">${profile?.name ? `Profile ${escapeHtml(profile.name)}` : "No review profile"}${review.decision_at ? ` · decided ${renderRecordDate(review.decision_at)}` : review.created_at ? ` · requested ${renderRecordDate(review.created_at)}` : ""}</div>
-              ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
-              ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
+              ${review.instructions ? `<div class="meta-line">Instructions: ${renderIdentifierText(review.instructions)}</div>` : ""}
+              ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => renderIdentifierText(finding)).join("; ")}</div>` : ""}
               ${renderRecordBlockers("review_request", review.id)}
               ${renderCriterionResults(review.criteria || [])}
               ${renderCarriedFindings(carriedFindings)}
@@ -16859,7 +16907,7 @@ function renderReviewCriterionInputs(criteria) {
 function renderCarriedFindings(findings) {
   if (!findings.length) return "";
   return `<div class="meta-line"><strong>Open carried findings:</strong><ul>${findings
-    .map((finding) => `<li>${escapeHtml(finding.id)} - ${escapeHtml(finding.text)}</li>`)
+    .map((finding) => `<li>${escapeHtml(finding.id)} - ${renderIdentifierText(finding.text)}</li>`)
     .join("")}</ul></div>`;
 }
 
@@ -17938,7 +17986,7 @@ function renderReleaseNotes(release) {
   if (!summary) {
     return `<p class="empty-state release-notes-empty">No release notes were recorded for this package.</p>`;
   }
-  return `<div class="release-notes">${escapeHtml(summary)}</div>`;
+  return `<div class="release-notes">${renderIdentifierText(summary)}</div>`;
 }
 
 function renderReleaseTechnicalDetails(
@@ -18806,7 +18854,7 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
               <div class="meta-line">Workspace generation ${Number(run.execution_generation || 0)} · Last recorded progress: ${escapeHtml(run.updated_at || "Unavailable")}${run.state === "running" ? " · Running status does not confirm continuing progress." : ""}</div>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
-              ${run.retry_reason ? `<div class="meta-line"><strong>Retry comment:</strong> ${escapeHtml(run.retry_reason)}</div>` : ""}
+              ${run.retry_reason ? `<div class="meta-line"><strong>Retry comment:</strong> ${renderIdentifierText(run.retry_reason)}</div>` : ""}
               ${run.retry_requested_by ? `<div class="meta-line">Requested by ${escapeHtml(run.retry_requested_by)}</div>` : ""}
               ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
               ${(run.generation_history || []).map(generation => `<details ${teamDisclosureAttributes(teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "generation", String(generation.generation)))}><summary>Interrupted workspace generation ${Number(generation.generation)}</summary>${renderReleaseVerificationCommandResults({ ...run, state: "interrupted", command_results: generation.command_results }, `release-detail:${releaseId}:verification:g${generation.generation}`, releaseId)}</details>`).join("")}
@@ -18840,9 +18888,9 @@ function renderReleaseAgentReviews(reviews, releaseId, cohort = null) {
           const reviewer = state.agents?.[review.reviewer_agent_id];
           return `<li>
           <strong>Review by ${escapeHtml(reviewer ? agentLabel(reviewer) : "Assigned reviewer")}</strong> <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(humanizeToken(review.state))}</span>
-          ${review.instructions ? `<div class="meta-line">${escapeHtml(review.instructions)}</div>` : ""}
+          ${review.instructions ? `<div class="meta-line">${renderIdentifierText(review.instructions)}</div>` : ""}
           ${renderReleaseReviewCriteria(review)}
-          ${(review.findings || []).length ? `<div class="meta-line">Findings: ${escapeHtml(review.findings.join(", "))}</div>` : ""}
+          ${(review.findings || []).length ? `<div class="meta-line">Findings: ${renderIdentifierText(review.findings.join(", "))}</div>` : ""}
           ${renderTechnicalDetails([["Review ID", review.id], ["Review cohort ID", review.review_cohort_id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]], {
             disclosureKey: teamDisclosureKey("release-detail", releaseId, "agent-review", review.id, "technical"),
           })}
@@ -18915,7 +18963,7 @@ function renderHumanReviewRequest(request, carriedFindings, releaseId = "") {
       <div class="meta-line">${request.ready_at ? `Ready ${renderRecordDate(request.ready_at)}` : "Preparation pending"} · request revision ${Number(request.revision || 0)}</div>
       <div class="meta-line">Assigned reviewers: ${escapeHtml([...(assignment.explicitly_assigned_user_ids || []), ...(assignment.eligible_user_ids || [])].filter((value, index, values_) => values_.indexOf(value) === index).length || "none")}</div>
       <div class="meta-line">Preparation mode ${escapeHtml(humanizeToken(request.requirement_snapshot?.preparation_mode || "manual"))} · ${checklist.length} checklist item${checklist.length === 1 ? "" : "s"}</div>
-      ${request.requirement_snapshot?.test_instructions ? `<div class="human-test-instructions"><strong>Test instructions:</strong> ${escapeHtml(request.requirement_snapshot.test_instructions)}</div>` : ""}
+      ${request.requirement_snapshot?.test_instructions ? `<div class="human-test-instructions"><strong>Test instructions:</strong> ${renderIdentifierText(request.requirement_snapshot.test_instructions)}</div>` : ""}
       ${renderHumanReviewBundleDownload(request)}
       ${renderHumanReviewTarget(target)}
       ${renderHumanChecklistHistory(checklist)}
@@ -18963,7 +19011,7 @@ function renderHumanReviewTarget(target) {
     <div class="human-review-target">
       <strong>Prepared test target:</strong> <code>${escapeHtml(targetName)}</code>
       ${target.expires_at ? `<div class="meta-line">Expires ${escapeHtml(target.expires_at)}</div>` : ""}
-      ${target.instructions ? `<div>${escapeHtml(target.instructions)}</div>` : ""}
+      ${target.instructions ? `<div>${renderIdentifierText(target.instructions)}</div>` : ""}
       ${(target.evidence_refs || []).length ? `<div class="meta-line">Target evidence: ${escapeHtml(target.evidence_refs.join(", "))}</div>` : ""}
     </div>
   `;
@@ -18973,7 +19021,7 @@ function renderHumanChecklistHistory(checklist) {
   if (!checklist.length) {
     return `<div class="meta-line">Human checklist: no configured items.</div>`;
   }
-  return `<ul class="human-review-checklist">${checklist.map((item) => `<li><strong>${escapeHtml(item.label)}</strong> (${item.required === false ? "optional" : "required"})${item.description ? ` - ${escapeHtml(item.description)}` : ""}</li>`).join("")}</ul>`;
+  return `<ul class="human-review-checklist">${checklist.map((item) => `<li><strong>${escapeHtml(item.label)}</strong> (${item.required === false ? "optional" : "required"})${item.description ? ` - ${renderIdentifierText(item.description)}` : ""}</li>`).join("")}</ul>`;
 }
 
 function renderHumanDecisionHistory(decisions) {
@@ -18982,7 +19030,7 @@ function renderHumanDecisionHistory(decisions) {
   }
   return `<ul class="delivery-detail-list">${decisions.map((decision) => `<li>
     <strong>${escapeHtml(decision.decision)}</strong> by ${escapeHtml(decision.reviewer_display_name_snapshot || decision.reviewer_user_id)} at ${escapeHtml(decision.decided_at || "")}
-    ${decision.summary ? `<div>${escapeHtml(decision.summary)}</div>` : ""}
+    ${decision.summary ? `<div>${renderIdentifierText(decision.summary)}</div>` : ""}
     ${(decision.evidence_refs || []).length ? `<div class="meta-line">Evidence: ${escapeHtml(decision.evidence_refs.join(", "))}</div>` : ""}
   </li>`).join("")}</ul>`;
 }
@@ -19025,9 +19073,9 @@ function renderHumanFindingHistory(findings, correctionTasks, targetOptions = []
       <strong>Findings and correction work</strong>
       <ul class="delivery-detail-list">
         ${findings.map((finding) => `<li>
-          <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${escapeHtml(finding.text)}
+          <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${renderIdentifierText(finding.text)}
           <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${text(finding.target_scope) === "release_candidate" ? " · affected work: Entire release candidate" : finding.target_deliverable_ids?.length ? ` · affected work: ${escapeHtml(humanReviewTargetLabels(finding.target_deliverable_ids, targetOptions).join(", "))}` : ""}</div>
-          ${finding.proposed_resolution ? `<div>Resolution proposal: ${escapeHtml(finding.proposed_resolution)}</div>` : ""}
+          ${finding.proposed_resolution ? `<div>Resolution proposal: ${renderIdentifierText(finding.proposed_resolution)}</div>` : ""}
           ${(finding.resolution_evidence_refs || []).length ? `<div class="meta-line">Resolution evidence: ${escapeHtml(finding.resolution_evidence_refs.join(", "))}</div>` : ""}
         </li>`).join("")}
         ${correctionTasks.map((task) => `<li><strong>${escapeHtml(task.id)}</strong> - ${escapeHtml(task.title)} <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(task.state)}</span>${task.originating_task_id ? ` - origin ${escapeHtml(task.originating_task_id)}` : ""}</li>`).join("")}
@@ -19624,13 +19672,13 @@ function renderReleasePolicyDetails(release) {
   const scope = release.scope_validation || null;
   const waiverMarkup = waivers.length
     ? `<div class="meta-line"><strong>Verification waivers:</strong><ul>${waivers
-        .map((waiver) => `<li>${escapeHtml(waiver.deliverable_id)} (${escapeHtml(waiver.verification_status)}): ${escapeHtml(waiver.reason)} - ${escapeHtml(waiver.actor_kind)} ${escapeHtml(waiver.actor_id)}</li>`)
+        .map((waiver) => `<li>${escapeHtml(waiver.deliverable_id)} (${escapeHtml(waiver.verification_status)}): ${renderIdentifierText(waiver.reason)} - ${escapeHtml(waiver.actor_kind)} ${escapeHtml(waiver.actor_id)}</li>`)
         .join("")}</ul></div>`
     : "";
   const gateWaivers = release.gate_obligation_waivers || [];
   const gateWaiverMarkup = gateWaivers.length
     ? `<div class="meta-line"><strong>Gate obligation waivers:</strong><ul>${gateWaivers
-        .map((waiver) => `<li>${escapeHtml(humanizeToken(waiver.gate_kind))}: ${escapeHtml(waiver.reason)} - ${escapeHtml(waiver.authorized_by)}</li>`)
+        .map((waiver) => `<li>${escapeHtml(humanizeToken(waiver.gate_kind))}: ${renderIdentifierText(waiver.reason)} - ${escapeHtml(waiver.authorized_by)}</li>`)
         .join("")}</ul></div>`
     : "";
   const scopeMarkup = scope
@@ -20032,7 +20080,7 @@ function renderTemplatePreview() {
                 </div>
                 <div class="meta-line">${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_role_key)} - creator ${escapeHtml(task.created_by_role_key)} - priority ${task.priority}</div>
                 ${dependencyLine}
-                <div class="meta-line">${escapeHtml(task.description)}</div>
+                <div class="meta-line">${renderIdentifierText(task.description)}</div>
               </li>
             `;
           })
@@ -20665,7 +20713,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
     ${renderDeliverablePipeline(row)}
     <section class="deliverable-detail-group">
       <h4>Summary / outcome</h4>
-      <p class="deliverable-full-summary">${escapeHtml(deliverable.summary)}</p>
+      <p class="deliverable-full-summary">${renderIdentifierText(deliverable.summary)}</p>
       ${renderDeliverableOutcomes(deliverable)}
     </section>
     <section class="deliverable-detail-group">
@@ -21460,14 +21508,14 @@ function renderTimelineEntryDetails(entry) {
         change.before !== undefined
           ? `
             <div class="timeline-change-flow">
-              <div><span>Before</span><strong>${escapeHtml(change.before)}</strong></div>
+              <div><span>Before</span><strong>${renderIdentifierText(change.before)}</strong></div>
               <span aria-hidden="true">→</span>
-              <div><span>After</span><strong>${escapeHtml(change.after)}</strong></div>
+              <div><span>After</span><strong>${renderIdentifierText(change.after)}</strong></div>
             </div>
           `
-          : `<p><strong>${escapeHtml(change.label)}:</strong> ${escapeHtml(change.value)}</p>`
+          : `<p><strong>${escapeHtml(change.label)}:</strong> ${renderIdentifierText(change.value)}</p>`
       }
-      ${reason ? `<p class="timeline-reason"><strong>Reason:</strong> ${escapeHtml(reason)}</p>` : ""}
+      ${reason ? `<p class="timeline-reason"><strong>Reason:</strong> ${renderIdentifierText(reason)}</p>` : ""}
       ${
         !entry.before &&
         !entry.change &&

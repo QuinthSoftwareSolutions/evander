@@ -132,6 +132,7 @@
 }
 [data-admin-design] .admin-quick-nav {
   width: min(600px, calc(100vw - 24px));
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 [data-admin-design] .admin-quick-nav-header {
   padding: 16px;

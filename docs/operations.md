@@ -1,5 +1,20 @@
 # Operations
 
+Use this reference for setup, ongoing administration, and recovery. For a first deployment, begin
+with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
+[systemd services](#systemd-services). For an existing deployment, start with
+[the broad health check](#first-troubleshooting-step) and then the relevant domain:
+
+| Task | Runbook |
+|---|---|
+| Inspect sessions, approvals, configuration, or capacity | [Admin Web](#admin-web-operator-console) and [directory operations](#directory-operations) |
+| Configure or troubleshoot execution | [Execution backends](execution-backends.md) and [container workers](container-worker-backend.md) |
+| Trace a workflow or wake | [Workflow runtime](#workflow-runtime-files-and-troubleshooting) and [wake workers](#wake-workers) |
+| Configure models and package access | [Host-side model access](#host-side-llm-access), [NuGet](#host-side-nuget-access), and [npm audit](#host-side-npm-audit-facade) |
+| Configure communications | [Teams](#microsoft-teams-delegated-auth), [Discord](#host-side-discord-access), and [email](#host-side-email-access) |
+| Register or recover code transport | [Managed Git operations](#managed-git-repository-operations) |
+| Validate a deployment | [Live smoke tests](live-smoke-tests.md) |
+
 For contextual release reintegration, verifier recovery, retained logs and staged worker
 toolchain rollout, see [Release recovery and verifier policy](release-recovery-and-verifier-policy.md).
 
@@ -656,7 +671,7 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   owner/audit metadata only; workflow graph visibility is controlled by Admin Web group assignments
   and direct workflow grants. Saving from a filtered view keeps unchanged graph metadata entries
   intact, so graphs outside the selected directory are not rewritten by the presentation filter.
-- For the live Weekly App Audit graph, use Admin Web or the workflow API to edit the audit
+- For workflows that run npm audit, use Admin Web or the workflow API to edit the audit
   `effect:agent:create` node and set `npm_registry_url` to the control-plane facade URL,
   `http://<control-plane-private-ip>:11881/`. Keep the other container-worker agent-create nodes
   on Nexus-backed registry defaults so only audit sessions opt into the facade.
@@ -712,7 +727,11 @@ and surfaces:
   SQLite read model when available and falls back to JSONL when needed. Free-text
   searches use a compact trigram index that is backfilled in short background batches
   after an existing audit database is upgraded; the compatible SQLite scan remains
-  available until that backfill finishes.
+  available until that backfill finishes. A required journal read that fails returns HTTP `503`
+  (`Tool-call audit log is unavailable`); inspect path, permissions, encoding, and service logs
+  before treating an empty or failed display as evidence of no activity. Failed index updates
+  retain the appended JSONL entry and log a warning; `evander-cli rebuild-audit-index --config
+  runtime` rebuilds the derived index after the underlying problem is resolved.
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
 - a Host Directories page for revisioned resource configuration, host-only health checks, and
@@ -1132,8 +1151,11 @@ and record the backup SHA-256 in the resulting artifact bundle.
   ```
 
 - The guest receives `EVANDER_LLM_BASE_URL`, `OPENAI_BASE_URL`, `EVANDER_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/evander/session.env`.
-- The scaffold includes `evander-openai-relay`, a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
-- The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, a host-local OpenAI-compatible endpoint, Azure OpenAI, or Anthropic.
+- `evander-openai-relay` is a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
+- For metered model access, the guest talks to the relay URL and keeps placeholder provider auth
+  values. Host-side provider settings select public OpenAI, a local OpenAI-compatible endpoint,
+  Azure OpenAI, Anthropic, or OpenRouter. Container Codex subscription turns use the separate
+  [brokered subscription path](#switching-container-codex-usage-source).
 - For Azure OpenAI Codex routing, set `model_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
 - Example directory-scoped `providers.json` overlay:
 
@@ -2039,6 +2061,100 @@ minutes and cannot be reused with changed filters; omit `cursor` to start a new 
 returns message summaries. Use the separately granted `email_get_message` tool with a returned
 `message_id` when the full message body or attachment metadata is needed.
 
+### Gmail OAuth/token setup
+
+1. Create OAuth credentials in Google Cloud for Gmail API access.
+2. Obtain/refresh an access token for the mailbox scopes you need.
+3. Export the token only in host-side environment context (for example a systemd env file):
+
+```bash
+export GMAIL_OPS_ACCESS_TOKEN=...
+```
+
+4. Reference that env var in mailbox config:
+
+```yaml
+email_mailboxes:
+  - mailbox_id: "ops-gmail"
+    provider: "gmail"
+    account: "me"
+    auth_env_var_names:
+      access_token: "GMAIL_OPS_ACCESS_TOKEN"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+```
+
+### Microsoft Graph OAuth/token setup
+
+1. Register a confidential application in Microsoft Entra ID and grant the least-privileged
+   Microsoft Graph application permissions required by the mailbox workflow (for example,
+   `Mail.Read` for inbox processing), including administrator consent.
+2. Scope application access to the intended mailbox or mailboxes in Exchange Online.
+3. Export the application identity and credential only on the host:
+
+```bash
+export GRAPH_TENANT_ID=...
+export GRAPH_EXEC_CLIENT_ID=...
+export GRAPH_EXEC_CLIENT_SECRET=...
+export GRAPH_FINANCE_CLIENT_ID=...
+export GRAPH_FINANCE_CLIENT_SECRET=...
+```
+
+4. Reference the env vars in mailbox config. Evander lazily exchanges the client credentials at
+   the Microsoft identity platform token endpoint, caches the returned Graph access token, and
+   renews it shortly before expiry:
+
+```yaml
+email_folder_allowlist_by_mailbox:
+  ops-gmail: ["inbox", "drafts"]
+  exec-graph: ["inbox", "drafts"]
+  finance-graph: ["inbox", "drafts"]
+email_mailboxes:
+  - mailbox_id: "exec-graph"
+    provider: "graph"
+    address: "leader@example.com"
+    auth_env_var_names:
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_EXEC_CLIENT_ID"
+      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+  - mailbox_id: "finance-graph"
+    provider: "graph"
+    address: "finance@example.com"
+    auth_env_var_names:
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_FINANCE_CLIENT_ID"
+      client_secret: "GRAPH_FINANCE_CLIENT_SECRET"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+```
+
+For compatibility, a Graph mailbox can instead reference `auth_secret_refs.access_token`, but the
+operator must then replace that short-lived token whenever it expires. Do not put a client secret
+in an `access_token` environment variable; client secrets must be exchanged at the token endpoint.
+
+### Multi-mailbox session allowlist example
+
+```bash
+evander-cli directories config-set \
+  --runtime-dir runtime \
+  --domain policy \
+  root \
+  '{"email_mailbox_allowlist":["ops-gmail","exec-graph","finance-graph"],"email_folder_allowlist_by_mailbox":{"ops-gmail":["inbox","drafts"],"exec-graph":["inbox","drafts"],"finance-graph":["inbox","drafts"]}}'
+
+evander-cli create-session real-session --runtime-dir runtime
+```
+
+Admin Web exposes two independent session controls:
+
+- **Email mailbox access** selects mailbox accounts, folders, and `read`, `draft`, or `send`
+  capability. Prefer `read` for agents that only inspect mail.
+- **Communication targets** selects Teams/Discord destinations and outbound email recipients. These
+  targets do not grant mailbox access.
+
+Email send requires both a `send` mailbox grant and a write-capable recipient target bound to the
+same mailbox auth profile. Draft creation requires `draft` access but no recipient target. Existing
+sessions with nullable canonical fields remain on their legacy allowlists until the operator clicks
+**Convert to managed grants**; explicit empty canonical lists mean no access.
+
 ## Operator Approval Notifications
 
 Approval notifications are host-side operator alerts for newly created `ApprovalRequest` records.
@@ -2416,7 +2532,9 @@ without exposing provider credentials in the VM.
 1. Lightweight pending check:
    - `has_pending_feedback()`
 2. Unread fetch when pending is true:
-   - `list_unread_feedback(last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
+   - `list_unread_feedback(cursor=..., limit=...)` fetches unread items and immediately advances
+     the host's session read cursor to the returned `next_cursor`. An explicit cursor cannot
+     rewind the saved host cursor. Use a small limit when bounded batches are needed.
    - `list_all_feedback(limit)` when you need full PR comment history, including already-read items
    - `list_pr_feedback_attachments(feedback_id)` when an Azure DevOps feedback body references a
      file. Select an `attachment_id`, call
@@ -2448,8 +2566,10 @@ without exposing provider credentials in the VM.
      required.
 3. Post threaded replies (when needed):
    - `post_pr_feedback_reply(provider, repo, pr_id, body_text, thread_id/comment_id, feedback_kind, idempotency_key)`
-4. Cursor advancement:
-   - advance `last_read_cursor` only after local handling and any provider reply posting have completed durably.
+4. Local completion:
+   - persist the returned feedback IDs and bodies before processing; record completion and reply
+     idempotency keys separately. Fetching has already marked the batch read on the host, so
+     local completion is not a host acknowledgement operation.
 
 For session-scoped MCP connections, agents should omit `session_id` on these self-scoped tools. The
 gateway binds the caller session from the MCP connection and rejects conflicting legacy
@@ -2457,9 +2577,12 @@ gateway binds the caller session from the MCP connection and rejects conflicting
 
 ### Guest state model
 
-- Persist `last_read_cursor` per `session_id` in guest-local durable state.
-- Never share cursors across sessions.
-- Advance cursor only after the fetched items are durably handled.
+- Keep a durable local inbox of fetched items and their handling status per session.
+- `has_pending_feedback` checks unread state without consuming it. `list_unread_feedback`
+  consumes the host unread cursor on fetch; `list_all_feedback` ignores read cursors and supports
+  recovery from already-read history.
+- A local checkpoint does not rewind the host cursor. Do not rely on an older `cursor` argument
+  to redeliver a fetched batch.
 - Keep handlers idempotent by feedback ID to tolerate retries/replays.
 
 ### Cron-driven pull request polling
@@ -2722,18 +2845,19 @@ live provider APIs.
 ### Failure handling
 
 - MCP unavailable/timeouts:
-  - Keep cursor unchanged.
-  - Log and retry on next loop (optionally with bounded backoff/jitter).
+  - A fetch may have advanced the host cursor even if its response was lost. Inspect the local
+    inbox and use `list_all_feedback` to reconcile missing items by feedback ID.
+  - Log the failure and retry with bounded backoff as appropriate.
 - Provider API failures during `post_pr_feedback_reply`:
-  - Keep cursor unchanged for unhandled items.
+  - Keep the fetched item pending in the local inbox; the host read cursor has already advanced.
   - Retry with the same `idempotency_key` so duplicates are suppressed if the prior attempt actually succeeded upstream.
   - Validate host-side provider credentials and endpoint reachability before replaying.
-- Stale cursor:
-  - Detect host cursor error.
-  - Reset/recover cursor using a host-supported baseline, then continue.
-- Partial fetch or partial local processing:
-  - Treat as uncommitted.
-  - Do not advance cursor; re-fetch on next loop.
+- Partial local processing or a crash before persisting the fetched response:
+  - Resume locally retained pending items. Recover missing items from `list_all_feedback` and
+    compare feedback IDs before replying again.
+  - Fetching unread feedback is not an acknowledgement-after-processing queue; workflows that
+    need their own checkpoint should use the separate read-only query and workflow-owned state.
+
 ### Audit and log file locations
 
 - Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results), `runtime/host-agent-control-state.json` (durable enabled/disabled state by VM).
@@ -2743,30 +2867,9 @@ live provider APIs.
 
 ### Security boundary reminder
 
-- Guests call MCP only; they do not hold Discord, email, or OpenAI provider credentials.
+- Guests use MCP for provider tools and the dedicated relays for model/package/HTTP access;
+  they do not hold the host's Discord, email, or model provider credentials.
 - Upstream provider access and secret material stay host-side in gateway/relay components.
-
-### Gmail OAuth/token setup
-
-1. Create OAuth credentials in Google Cloud for Gmail API access.
-2. Obtain/refresh an access token for the mailbox scopes you need.
-3. Export the token only in host-side environment context (for example a systemd env file):
-
-```bash
-export GMAIL_OPS_ACCESS_TOKEN=...
-```
-
-4. Reference that env var in mailbox config:
-
-```yaml
-email_mailboxes:
-  - mailbox_id: "ops-gmail"
-    provider: "gmail"
-    account: "me"
-    auth_env_var_names:
-      access_token: "GMAIL_OPS_ACCESS_TOKEN"
-    folder_allowlist_defaults: ["inbox", "drafts"]
-```
 
 ## Review Request Workflow
 
@@ -2882,81 +2985,9 @@ The helper:
   - do not encode the file path and line number in `body_text`; the tool attaches the provider-native line context
   - for Azure DevOps, inline comments are resolved against the latest PR iteration changes and require a matching changed path; if a path cannot be safely anchored, post a top-level comment instead
 
-### Microsoft Graph OAuth/token setup
-
-1. Register a confidential application in Microsoft Entra ID and grant the least-privileged
-   Microsoft Graph application permissions required by the mailbox workflow (for example,
-   `Mail.Read` for inbox processing), including administrator consent.
-2. Scope application access to the intended mailbox or mailboxes in Exchange Online.
-3. Export the application identity and credential only on the host:
-
-```bash
-export GRAPH_TENANT_ID=...
-export GRAPH_EXEC_CLIENT_ID=...
-export GRAPH_EXEC_CLIENT_SECRET=...
-export GRAPH_FINANCE_CLIENT_ID=...
-export GRAPH_FINANCE_CLIENT_SECRET=...
-```
-
-4. Reference the env vars in mailbox config. Evander lazily exchanges the client credentials at
-   the Microsoft identity platform token endpoint, caches the returned Graph access token, and
-   renews it shortly before expiry:
-
-```yaml
-email_folder_allowlist_by_mailbox:
-  ops-gmail: ["inbox", "drafts"]
-  exec-graph: ["inbox", "drafts"]
-  finance-graph: ["inbox", "drafts"]
-email_mailboxes:
-  - mailbox_id: "exec-graph"
-    provider: "graph"
-    address: "leader@example.com"
-    auth_env_var_names:
-      tenant_id: "GRAPH_TENANT_ID"
-      client_id: "GRAPH_EXEC_CLIENT_ID"
-      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
-    folder_allowlist_defaults: ["inbox", "drafts"]
-  - mailbox_id: "finance-graph"
-    provider: "graph"
-    address: "finance@example.com"
-    auth_env_var_names:
-      tenant_id: "GRAPH_TENANT_ID"
-      client_id: "GRAPH_FINANCE_CLIENT_ID"
-      client_secret: "GRAPH_FINANCE_CLIENT_SECRET"
-    folder_allowlist_defaults: ["inbox", "drafts"]
-```
-
-For compatibility, a Graph mailbox can instead reference `auth_secret_refs.access_token`, but the
-operator must then replace that short-lived token whenever it expires. Do not put a client secret
-in an `access_token` environment variable; client secrets must be exchanged at the token endpoint.
-
-### Multi-mailbox session allowlist example
-
-```bash
-evander-cli directories config-set \
-  --runtime-dir runtime \
-  --domain policy \
-  root \
-  '{"email_mailbox_allowlist":["ops-gmail","exec-graph","finance-graph"],"email_folder_allowlist_by_mailbox":{"ops-gmail":["inbox","drafts"],"exec-graph":["inbox","drafts"],"finance-graph":["inbox","drafts"]}}'
-
-evander-cli create-session real-session --runtime-dir runtime
-```
-
-Admin Web exposes two independent session controls:
-
-- **Email mailbox access** selects mailbox accounts, folders, and `read`, `draft`, or `send`
-  capability. Prefer `read` for agents that only inspect mail.
-- **Communication targets** selects Teams/Discord destinations and outbound email recipients. These
-  targets do not grant mailbox access.
-
-Email send requires both a `send` mailbox grant and a write-capable recipient target bound to the
-same mailbox auth profile. Draft creation requires `draft` access but no recipient target. Existing
-sessions with nullable canonical fields remain on their legacy allowlists until the operator clicks
-**Convert to managed grants**; explicit empty canonical lists mean no access.
-
 ## Host-Side NuGet Access
 
-- The scaffold includes `evander-nuget-relay`, a host-side relay that proxies `nuget.org` and private Azure Artifacts feeds.
+- `evander-nuget-relay` proxies `nuget.org` and private Azure Artifacts feeds.
 - The relay reads Azure feed credentials from host environment (`AZURE_ARTIFACTS_PAT`) and does not require guest-side private feed credentials.
 - Configure the relay environment in `config/nuget-relay.env`.
 - After installing units, run `./scripts/bootstrap_nuget_vm.sh <vm-name>` so guest restores target relay URLs on `http://192.168.250.1:11666`.
@@ -3694,14 +3725,15 @@ See [Managed Git Repositories](git-remotes.md) for the complete contract.
 
 ## Live Smoke Tests
 
-Use [live-smoke-tests.md](live-smoke-tests.md) for the
-decision-complete runbook covering:
+Use [live-smoke-tests.md](live-smoke-tests.md) to select deployment checks covering:
 
 - host gateway only verification
 - full guest-to-host verification
 - dedicated Discord test channels
 - one Gmail and one Graph mailbox
 - read-only email validation
+- optional classification, subscription egress, and approved attachment-send checks
+- managed Git acceptance across VM and container sessions
 
 ## Operational Guardrails
 

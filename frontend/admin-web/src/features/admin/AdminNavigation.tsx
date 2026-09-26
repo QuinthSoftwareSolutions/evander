@@ -153,6 +153,11 @@ export function AdminNavigation({
   }, [quickNavigatorOpen]);
 
   useEffect(() => {
+    if (!quickNavigatorOpen) return;
+    dialogRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [quickNavigatorOpen, selectedIndex, filteredTabs]);
+
+  useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLocaleLowerCase() !== "k") {
         return;

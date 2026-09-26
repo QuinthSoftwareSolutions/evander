@@ -11,7 +11,7 @@ An installation currently has two choices:
 | Workspace choice | What the agent receives | What remains outside it |
 |---|---|---|
 | Temporary virtual machine (`libvirt_vm`) | A disposable VM with its own disk and selected toolchains | Session policy, real credentials, workflow state, managed Git, and audit evidence remain host-owned. |
-| Worker container (`container_worker_vm`) | A disposable Docker job on one configured worker VM, with selected session state kept between jobs | The control plane still owns permission, credentials, workflow state, Git identity, and durable evidence. |
+| Worker container (`container_worker_vm`) | A disposable Docker job on the session's assigned worker VM, with selected session state kept between jobs | The control plane still owns permission, workflow state, Git identity, and durable evidence; named subscription credentials remain on the worker. |
 
 To an operator, the shared promises matter more than the infrastructure names:
 
@@ -128,7 +128,23 @@ Directory-scoped `vm.json` may define `libvirt_vm_templates` and `libvirt_vm_def
 
 ### `container_worker_vm`: disposable jobs on a durable worker
 
-The container backend calls the authenticated HTTP API of `evander-worker-daemon` on one configured worker VM. It is currently a single-worker execution path, not a scheduler. The worker creates durable per-session directories and starts disposable Docker jobs against them.
+The container backend calls the authenticated HTTP API of `evander-worker-daemon` on the
+session's assigned worker. A directory can configure a default worker and named alternatives in
+`container_workers`. The worker creates durable per-session directories and starts disposable
+Docker jobs against them. Placement is explicit; Evander does not schedule or balance jobs across
+the catalog.
+
+Admin Web and Team's creation dialog let the operator select **Worker → Directory default** or
+a named worker. Workflow `effect:agent:create` and manual job creation accept `worker_id`.
+Evander pins the connection settings before preparation, including the token environment-variable
+name rather than its value. Later jobs, logs, Git access, and cleanup retain that assignment even
+if the directory default or catalog changes. Selecting a different worker requires a new session;
+an unavailable assigned worker does not trigger automatic failover.
+
+Before changing defaults for sessions created by older versions, follow
+[the worker cutover procedure](../../container-worker-backend.md#changing-the-default-worker).
+Back up `runtime/container-worker-assignments.db` with the execution mappings and preserve each
+assigned worker's credential references.
 
 The portable agent effects map as follows:
 
@@ -196,8 +212,9 @@ use reserved profile `default`.
 The subscription selection is effective only for a turn whose model provider mode is
 `openai_public`. A local OpenAI-compatible or Azure OpenAI turn keeps using its configured private
 endpoint and API-key route even when the stored session preference says `chatgpt_subscription`.
-Evander does not rewrite that preference, so a later public-OpenAI turn can use it. Chapter 10
-describes the network-routing distinction.
+Evander does not rewrite that preference, so a later public-OpenAI turn can use it. OpenRouter
+also uses metered API routing, but explicitly selecting a subscription for an OpenRouter session
+is rejected. Chapter 10 describes the network-routing distinction.
 
 Each named profile has an independent auth home, broker, file lock, and managed App Server process.
 Profile refreshes can run concurrently, but operations within one profile remain serialized. The

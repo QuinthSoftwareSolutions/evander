@@ -5,15 +5,21 @@ import {
   createCaseContextController,
   humanizeCaseContextToken,
 } from "../../../src/evander_team_addon/ui_static/team-case-context.js";
+import { attachIdentifierCopy } from "../../../src/evander_team_addon/ui_static/team-identifiers.js";
 
 class Element {
-  constructor(tag) {
+  constructor(tag, ownerDocument) {
     this.tag = tag;
+    this.tagName = tag.toUpperCase();
+    this.ownerDocument = ownerDocument;
+    this.attributes = new Map();
     this.children = [];
     this.dataset = {};
     this.listeners = {};
     this.textContent = "";
   }
+  get textContent() { return this._text + this.children.map(node => node.textContent).join(""); }
+  set textContent(value) { this._text = String(value); this.children = []; }
   append(...nodes) {
     for (const node of nodes) {
       node.parent = this;
@@ -21,7 +27,7 @@ class Element {
     }
   }
   replaceChildren(...nodes) {
-    this.children = [];
+    this.textContent = "";
     this.append(...nodes);
   }
   insertBefore(node, before) {
@@ -31,7 +37,20 @@ class Element {
   remove() {
     if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this);
   }
-  setAttribute() {}
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) {
+    const key = name.startsWith("data-") ? name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase()) : null;
+    return this.attributes.get(name) ?? (key ? this.dataset[key] : this[name]) ?? null;
+  }
+  contains(node) { return [...this.walk()].includes(node); }
+  closest(selector) {
+    const attribute = selector.match(/\[data-([a-z-]+)\]$/)?.[1];
+    const key = attribute?.replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+    for (let node = this; node; node = node.parent) {
+      if (key && key in node.dataset) return node;
+    }
+    return null;
+  }
   showModal() {}
   close() {}
   addEventListener(type, handler) { this.listeners[type] = handler; }
@@ -46,6 +65,24 @@ class Element {
     }[selector];
     return [...this.walk()].find(node => key ? key in node.dataset : node.tag === selector);
   }
+}
+
+function testDocument() {
+  const listeners = new Map();
+  const copied = [];
+  const doc = {
+    nodeType: 9,
+    copied,
+    contains: node => doc.body.contains(node),
+    createElement: tag => new Element(tag, doc),
+    createTextNode: text => { const node = new Element("#text", doc); node.textContent = text; return node; },
+    addEventListener(type, handler) { listeners.set(type, [...(listeners.get(type) ?? []), handler]); },
+    removeEventListener(type, handler) { listeners.set(type, (listeners.get(type) ?? []).filter(item => item !== handler)); },
+    dispatchEvent(event) { for (const handler of listeners.get(event.type) ?? []) handler(event); },
+    defaultView: { navigator: { clipboard: { writeText: async value => { copied.push(value); } } } },
+  };
+  doc.body = doc.createElement("body");
+  return doc;
 }
 
 function recipe(viewId, version, section) {
@@ -64,9 +101,7 @@ for (const historicalId of ["case-overview", "customer-handoff"]) {
       : [current, recipe(historicalId, 2, "verification")];
     const history = [historical, ...views];
     const requests = [];
-    const doc = {
-      body: new Element("body"), createElement: tag => new Element(tag), addEventListener() {},
-    };
+    const doc = testDocument();
     const context = view => ({ revision: 3, view, complete: true, sections: [], omissions: [] });
     const controller = createCaseContextController({
       documentRoot: doc,
@@ -130,9 +165,7 @@ function visibleText(root) {
 
 test("case context presents evidence as readable records with plain-language warnings", async () => {
   const view = { ...recipe("case-overview", 3, "request"), title: "Case overview" };
-  const doc = {
-    body: new Element("body"), createElement: tag => new Element(tag), addEventListener() {},
-  };
+  const doc = testDocument();
   const context = {
     revision: 42,
     view,
@@ -192,9 +225,7 @@ test("case context presents evidence as readable records with plain-language war
 
 test("loading complete evidence replaces a shortened preview and keeps only safe source links", async () => {
   const view = { ...recipe("case-overview", 1, "sources"), title: "Case overview" };
-  const doc = {
-    body: new Element("body"), createElement: tag => new Element(tag), addEventListener() {},
-  };
+  const doc = testDocument();
   const requests = [];
   const controller = createCaseContextController({
     documentRoot: doc,
@@ -314,4 +345,75 @@ test("case context labels preserve common technical acronyms", () => {
     "Some content from the artifact bundle was omitted while it was read (artifact-space:/teams/team/large-plan): document too large: report.md.",
   );
   assert.doesNotMatch(artifactWarning, /Load complete records/);
+});
+
+
+test("case context condenses identifiers across evidence and copies exact values without altering technical content", async t => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const opaque = "case_0123456789abcdef0123456789abcdef";
+  const uuid = "01901234-5678-7abc-8def-0123456789ab";
+  const view = { ...recipe("case-overview", 1, "sources"), title: "Case overview" };
+  const content = {
+    id: opaque,
+    title: `Delivery for ${opaque}`,
+    description: `Candidate ${sha}; context ${uuid}.`,
+    candidate_commit_sha: sha,
+    branch_ref: `feature/review-${sha}`,
+    body: {
+      content: `Inspect ${opaque}. Literal <img src=x onerror=alert(1)>. URL https://example.test/${sha} and `
+        + "`git show " + sha + "`.\n```sh\nprintf '" + opaque + "'\n```",
+    },
+    acceptance_criteria: [{ text: `Confirm ${uuid}.` }],
+    discussion: [{ author: "Reviewer", body: `Reviewed ${sha}.` }],
+    links: [{ label: `Open commit ${sha}`, url: `https://example.test/commit/${sha}` }],
+  };
+  const context = {
+    revision: 1, view, complete: false,
+    omissions: [{ kind: "stale", section: "sources", source_id: opaque }],
+    sections: [{ name: "sources", total: 1, next_cursor: null, records: [{
+      entity_type: "source", id: opaque, content, truncated: false,
+      provenance: { digest: sha },
+    }] }],
+  };
+  const doc = testDocument();
+  t.after(attachIdentifierCopy(doc));
+  const controller = createCaseContextController({
+    documentRoot: doc, apiBase: "", canMutate: () => true,
+    getState: () => ({ cases: { case: { title: `Review ${opaque}`, project_id: "project" } },
+      projects: { project: { directory_path: "root" } } }),
+    teamFetch: async url => ({ ok: true, json: async () => url.startsWith("/case-context/views?")
+      ? { revision: 1, views: [view], history: [] } : context }),
+  });
+  await controller.open("case");
+
+  const all = [...doc.body.walk()];
+  const badgeValue = node => node.tag === "button" && [sha, opaque, uuid].find(value =>
+    Object.values(node.dataset).includes(value));
+  const badges = all.filter(badgeValue);
+  assert.ok(badges.some(node => badgeValue(node) === sha));
+  assert.ok(badges.some(node => badgeValue(node) === opaque));
+  assert.ok(badges.some(node => badgeValue(node) === uuid));
+  assert.ok([...all.find(node => node.tag === "h2").walk()].some(badgeValue));
+  assert.ok([...all.find(node => node.tag === "h4").walk()].some(badgeValue));
+  assert.ok([...all.find(node => node.className === "case-context-warnings").walk()].some(badgeValue));
+  for (const badge of badges) {
+    const value = badgeValue(badge);
+    assert.ok(badge.title.includes(value), "hover must reveal the full identifier");
+    doc.dispatchEvent({ type: "click", target: badge, preventDefault() {}, stopPropagation() {} });
+    await new Promise(setImmediate);
+    assert.equal(doc.copied.at(-1), value);
+  }
+
+  const raw = all.find(node => node.tag === "pre" && node.textContent === JSON.stringify(content, null, 2));
+  assert.ok(raw, "raw JSON retains complete original values");
+  assert.equal(raw.children.length, 0);
+  const link = all.find(node => node.tag === "a" && node.href === content.links[0].url);
+  assert.equal(link.textContent, content.links[0].label);
+  assert.equal(link.children.length, 0, "copy controls must not be nested in links");
+  assert.equal(all.some(node => node.tag === "img" || node.tag === "script"), false);
+  const sourceBody = all.find(node => node.className === "case-context-field-text" && node.textContent.includes("Literal <img"));
+  assert.ok(sourceBody.textContent.includes(`https://example.test/${sha}`));
+  assert.ok(sourceBody.textContent.includes("`git show " + sha + "`"));
+  assert.ok(sourceBody.textContent.includes("```sh\nprintf '" + opaque + "'\n```"));
+  assert.equal([...sourceBody.walk()].filter(badgeValue).length, 1, "URLs and code must keep their original text");
 });

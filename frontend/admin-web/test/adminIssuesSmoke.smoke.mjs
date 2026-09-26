@@ -16,7 +16,7 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-test("admin shell issues page exposes VM bootstrap labels and tooltips", async (t) => {
+test("admin shell issues can be found by title and expose VM bootstrap labels and tooltips", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -231,6 +231,13 @@ test("admin shell issues page exposes VM bootstrap labels and tooltips", async (
   await assert.doesNotReject(() =>
     page.getByRole("heading", { name: "Issues", level: 1 }).waitFor({ state: "visible" }),
   );
+  const issueSearch = page.getByRole("searchbox", { name: "Find issues", exact: true });
+  await issueSearch.fill("BOOTSTRAP");
+  await page.locator(".issue-list-item").filter({ hasText: "Bootstrap the VM" }).waitFor();
+  await issueSearch.fill("another issue");
+  assert.equal(await page.locator(".issue-list-item").count(), 0);
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  assert.equal(await issueSearch.inputValue(), "");
   await page.locator(".issues-page .feature-list-item").first().click();
   await assert.doesNotReject(() => page.getByRole("button", { name: "Create VM" }).waitFor({ state: "visible" }));
   await page.getByRole("button", { name: "Create VM" }).hover();

@@ -58,6 +58,10 @@ The trigger worker illustrates why the distinction matters: its persistent unit 
 | `evander-trigger-orchestrator.service` | `evander-cli trigger-orchestrator` | Polls trigger providers, validates/deduplicates, and publishes durable trigger events | Workflow triggers are enabled |
 | `evander-effect-orchestrator.service` | `evander-effect-orchestrator` | Traverses downstream workflow nodes and executes gates, queries, and effects | Workflows may run beyond their trigger |
 
+The installer also enables `evander-team-runtime.target`, which groups the gateway, Admin Web,
+trigger orchestrator, and effect orchestrator. Those services declare `PartOf` so a target restart
+propagates to the processes that host Team runtime work. It is a systemd target, not another daemon.
+
 The container worker is intentionally absent from this list. `evander-worker-daemon` runs on a dedicated worker VM deployed by `ansible/worker.yml`, not as another control-plane service installed by the script above.
 
 ## 28.3 Default guest-reachable ports
@@ -70,7 +74,7 @@ The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 117
 | 8000 | MCP gateway | Invoke host tools at `/mcp` | A plain `GET /mcp` may return `406` and still prove reachability |
 | 11434 | Model relay | OpenAI-compatible `/v1` and configured Anthropic surface | The host keeps upstream credentials |
 | 11666 | NuGet relay | Restore from configured NuGet feeds | It is not a general HTTP proxy; health is `/healthz` |
-| 11777 | HTTP target relay | Reach a session allowlist of external targets | Guest-supplied auth can pass through; host secrets are not injected |
+| 11777 | HTTP target relay | Reach a session allowlist of external targets | Ordinary requests pass guest auth; explicitly granted website sessions can obtain managed login state |
 | 11778 | HTTP target browser proxy | Browse configured session target origins without rewriting them | Session id and proof token authenticate the proxy |
 | 11881 | npm audit facade | Narrow npm audit/cache operations | It is not general npm internet access |
 | 8081 | Nexus cache | PyPI/npm package cache when enabled | Optional host package-cache service |

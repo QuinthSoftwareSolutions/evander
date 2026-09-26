@@ -291,8 +291,12 @@ guarded by the index. Proof-token query values are also redacted in transport lo
 
 `runtime/audit.db` is a SQLite search index built from the JSONL stream. It stores normalized
 columns plus payload/search text and uses WAL. Appends try to index immediately; Admin runtime
-startup can import historical tail data. If indexing fails, the JSONL append remains canonical.
-Rebuilding the index must not rewrite the source log.
+startup can import historical tail data. If indexing fails, the JSONL append remains canonical
+and the service logs a warning containing the failure class without the event payload.
+Ordinary audit queries fall back to the JSONL source when the index is unavailable. An
+unreadable source log raises `AuditLogUnavailableError`; the Tool Calls API responds with
+HTTP 503 instead of presenting the failure as an empty history. Rebuilding the index must
+not rewrite the source log.
 
 Approval decisions create their own audit context, linked by request and session. Workflow
 execution journals remain complementary to this audit evidence.
@@ -310,6 +314,7 @@ execution journals remain complementary to this audit evidence.
 | Approved retry says exhausted/expired | Use or time bound has ended | Request status/settings/history |
 | Notification failed | Review delivery failed, not the durable request | Notification deliveries/error and pending queue health |
 | Admin audit view misses recent calls | SQLite index stale or unavailable | Canonical `audit.jsonl`; rebuild index |
+| Tool Calls returns HTTP 503 | Source audit log could not be read | Admin Web error log, configured audit path, permissions, storage health |
 | JSONL lacks expected event | Wrong runtime, process, or code path; append itself did not occur | Running unit config and gateway log |
 
 ## Administrator runbook

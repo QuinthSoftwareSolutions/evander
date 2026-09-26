@@ -130,6 +130,7 @@ export function McpToolsPage() {
   const [draftPolicies, setDraftPolicies] = useState<Record<string, McpToolPolicyRule>>({});
   const [selectedTool, setSelectedTool] = useState(() => readAdminHashQuery().get("tool") ?? "");
   const [filter, setFilter] = useState("");
+  const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -137,6 +138,7 @@ export function McpToolsPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     async function run() {
       try {
         const query = new URLSearchParams({ directory_path: selectedDirectoryPath });
@@ -150,6 +152,8 @@ export function McpToolsPage() {
         setSelectedTool((current) => current && payload.items.some((item) => item.value === current) ? current : "");
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
     void run();
@@ -286,6 +290,7 @@ export function McpToolsPage() {
           <label className="field-stack">
             <span>Find tool</span>
             <input
+              type="search"
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
               placeholder="tool name or description"
@@ -325,7 +330,8 @@ export function McpToolsPage() {
                 })}
               </div>
             ))}
-            {visibleItems.length === 0 ? <div className="empty-state">No MCP tools matched the filter.</div> : null}
+            {loading ? <div className="empty-state" role="status">Loading MCP tools...</div> : null}
+            {!loading && !error && visibleItems.length === 0 ? <div className="empty-state">No MCP tools matched the filter.</div> : null}
           </div>
         </section>
         <section className="feature-content">
@@ -378,7 +384,7 @@ export function McpToolsPage() {
                       </dd>
                     </div>
                     <div>
-                      <dt>TTL</dt>
+                      <dt>Approval duration</dt>
                       <dd>{selectedItem.effective_settings.ttl_seconds}s</dd>
                     </div>
                     <div>
@@ -431,11 +437,11 @@ export function McpToolsPage() {
                       onChange={(event) => updateRule(selectedItem.value, { require_approval: event.target.checked })}
                       disabled={mutationLocked || inheritedDeny}
                     />
-                    <span>Always require per-invocation approval</span>
+                    <span>Require approval each time this tool is used</span>
                   </label>
                   <div className="mcp-tool-policy-grid">
                     <label className="field-stack">
-                      <span>Default TTL seconds</span>
+                      <span>Default duration (seconds)</span>
                       <input
                         type="number"
                         min="1"
@@ -446,7 +452,7 @@ export function McpToolsPage() {
                         onChange={(event) => {
                           try {
                             updateDefaultSettings(selectedItem.value, {
-                              ttl_seconds: positiveInteger(event.target.value, "Default TTL seconds"),
+                              ttl_seconds: positiveInteger(event.target.value, "Default duration (seconds)"),
                             });
                           } catch (reason) {
                             setError(reason instanceof Error ? reason.message : String(reason));
@@ -495,7 +501,7 @@ export function McpToolsPage() {
                       </select>
                     </label>
                     <label className="field-stack">
-                      <span>Hard max TTL seconds</span>
+                      <span>Maximum duration (seconds)</span>
                       <input
                         type="number"
                         min="1"
@@ -505,7 +511,7 @@ export function McpToolsPage() {
                         onChange={(event) => {
                           try {
                             updateRule(selectedItem.value, {
-                              max_ttl_seconds: positiveIntegerOrNull(event.target.value, "Hard max TTL seconds"),
+                              max_ttl_seconds: positiveIntegerOrNull(event.target.value, "Maximum duration (seconds)"),
                             });
                           } catch (reason) {
                             setError(reason instanceof Error ? reason.message : String(reason));
@@ -515,7 +521,7 @@ export function McpToolsPage() {
                       />
                     </label>
                     <label className="field-stack">
-                      <span>Hard max uses</span>
+                      <span>Maximum uses</span>
                       <input
                         type="number"
                         min="1"
@@ -525,7 +531,7 @@ export function McpToolsPage() {
                         onChange={(event) => {
                           try {
                             updateRule(selectedItem.value, {
-                              max_uses: positiveIntegerOrNull(event.target.value, "Hard max uses"),
+                              max_uses: positiveIntegerOrNull(event.target.value, "Maximum uses"),
                             });
                           } catch (reason) {
                             setError(reason instanceof Error ? reason.message : String(reason));

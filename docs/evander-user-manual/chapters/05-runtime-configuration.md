@@ -211,6 +211,13 @@ The current directory-config store recognizes these canonical domains:
 | `issue_setup` | `issue-setup.json` | Issue-session bootstrap choices |
 | `pr_template` | `pr-template.json` | Pull-request template content/settings |
 | `automation` | `automation.json` | Directory automation configuration |
+| `connectors` | `connectors.json` | Named operations, drivers, and host-owned authentication profiles |
+| `host_directories` | `host-directories.json` | Approved host filesystem resources and operation limits |
+
+Classification profiles, model routes (including OpenRouter), and managed website login profiles
+are fields in the `providers` domain. Communication targets use the revisioned
+`communication-targets.db` store, not an extra directory-domain JSON file. Repository index settings
+live in `code-index/state.db` and use the index configuration service.
 
 Hyphenated CLI aliases such as `ado-worker` and `issue-setup` are normalized to canonical domain
 names. Legacy domain files and metadata overlays are migration compatibility surfaces; new work
@@ -257,6 +264,9 @@ The precise set grows with enabled features, but these paths are foundational:
 | `managed-git-repositories.json` | Managed-repository registry |
 | `managed-git/` / `git-worktrees/` | Evander-owned bare repositories and ephemeral host worktrees |
 | `admin-web.db` | Admin users, groups, assignments, and grants |
+| `communication-targets.db` | Directory-scoped communication target definitions and revisions |
+| `container-worker-assignments.db` | Durable session-to-worker connection assignments |
+| `code-index/state.db` | Repository index settings, generations, and job state |
 | `addons/` | Add-on-owned runtime state, including Team state when enabled |
 
 The service and repository types define transaction and locking behavior. JSON stores use their
@@ -294,7 +304,7 @@ idempotent setup, not a command to erase current state.
 ## Source trail
 
 - `src/evander/host_config.py` and `src/evander/bootstrap.py` — host bootstrap,
-  runtime-relative paths, legacy import, and root initialization.
+  runtime-relative paths and root initialization.
 - `src/evander/admin/composition.py` and `src/evander/runtime.py` — supported composition root and
   shared runtime services.
 - `src/evander/directories.py` and `src/evander/directory_config.py` — tree invariants, domain

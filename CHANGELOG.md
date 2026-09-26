@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-26 - Improve Admin Web readability and usability (0.64.0)
+
+- Refresh the documentation map and first-run path; align operator, configuration, execution,
+  Team, and recovery guidance with current behavior and publish an updated technical manual.
+
+- Keep populated record lists from overlapping, align checkbox filters with adjacent fields,
+  and remove duplicate search borders across the shared compact design.
+- Keep the page finder search visible and scroll keyboard-selected results into view.
+- Label configuration and worker inputs, use readable boolean choices, and prevent edits or
+  misleading validation on inherited and cleared settings.
+- Clarify loading states, issue and VM statuses, session context, and long artifact identifiers;
+  make report records keyboard-accessible and show zero activity accurately.
+- Improve Team navigation, project and memory layouts, and integration connection summaries,
+  selection feedback, and form alignment at desktop and narrow widths. Refresh Activity
+  when returning to the view.
+- Condense opaque identifiers and commit hashes into hoverable, copyable badges in Team chat,
+  case context, and other narratives, including existing records. Guide future agent messages
+  to use meaningful names and mark exact identifiers with inline backticks.
+
 ## 2026-09-25 - Harden state writes and audit visibility (0.63.9)
 
 - Write Teams credentials atomically with cross-process coordination; share a unique-temp JSON writer

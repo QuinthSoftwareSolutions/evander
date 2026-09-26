@@ -87,6 +87,16 @@ from .services.wake_prompt_context import (
 )
 
 
+_HUMAN_FACING_REFERENCES_GUIDANCE = (
+    "Human-facing references: Lead with meaningful case/task names or an agent's "
+    "display name and role when available. Include opaque IDs and commit hashes "
+    "only when useful for identifying a record; put each exact value alone in "
+    "Markdown inline backticks, with explanatory labels outside. Avoid repeating "
+    "IDs. Apply this to chat replies, case notes and summaries. Keep structured "
+    "identifier arguments, URLs, commands and code blocks unchanged.\n\n"
+)
+
+
 def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
     identity = _agent_guidance_identity(agent)
     display_name = identity["display_name"]
@@ -787,6 +797,7 @@ def _build_prompt(
         f"section {TEAM_AGENT_GUIDANCE_SECTION_ID}, version "
         f"{TEAM_AGENT_GUIDANCE_VERSION}. Tool discovery is authoritative for exact "
         "arguments; use Team read tools for omitted record detail.\n\n"
+        f"{_HUMAN_FACING_REFERENCES_GUIDANCE}"
         f"{mode_section}"
         f"{identity_section}"
         f"{role_description_delta_section}"
@@ -1038,6 +1049,7 @@ def _build_team_chat_prompt(
         f"not use {TEAM_ASK_QUESTION_TOOL} or {TEAM_SEND_PROGRESS_REPORT_TOOL} "
         "for this human chat reply; those are for agent-to-agent inbox communication. "
         f"{mutation_guidance}"
+        f"{_HUMAN_FACING_REFERENCES_GUIDANCE}"
         f"Current agent: {agent_display_name} ({agent_id})\n"
         f"Human operator: {operator_label} ({operator_user_id})\n"
         f"Conversation ID: {conversation_id}\n"
@@ -1117,6 +1129,7 @@ def _build_governance_prompt(lease: Mapping[str, Any]) -> str:
         f"Mark agenda items handled with {TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL} "
         "after deciding, routing required follow-up, or determining no action "
         "is needed. Do not invent project work.\n\n"
+        f"{_HUMAN_FACING_REFERENCES_GUIDANCE}"
         f"Governance context JSON:\n{json.dumps(context, sort_keys=True, indent=2)}\n"
     )
 

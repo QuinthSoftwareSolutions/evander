@@ -1,5 +1,33 @@
 # Configuration Reference
 
+This document lists the **user-configurable parameters** in this repository, where each parameter is defined, and where it is consumed.
+
+Scope included:
+
+- Host bootstrap configuration in `runtime/host-config.json`.
+- Environment-variable based configuration (`config/*.env.example`, plus generated guest env files).
+- The composed runtime configuration assembled from host bootstrap and directory domains.
+- Cloud-init template placeholders used by VM launch/bootstrap.
+
+## Find the right configuration surface
+
+| What you need to change | Where to look |
+|---|---|
+| Listener address, runtime root, or core store path | [Host bootstrap](#2-host-bootstrap-config-runtimehost-configjson) |
+| Service credentials or process environment | [Service environment](#1-service-environment-files-configenvexample) |
+| Model, execution backend, tools, or provider policy | [Composed runtime keys](#3-composed-runtime-keys) and [directory domains](#directory-config-domains-and-storage) |
+| Workflow nodes, queues, providers, or packs | [Trigger orchestrator configuration](#configtrigger-orchestratorconfigjson) |
+| VM launch and bootstrap overrides | [Cloud-init](#4-cloud-init-template-placeholders-configcloud-init-user-datayaml) and [script overrides](#6-script-level-environment-override-parameters) |
+| Optional process overrides | [Additional environment variables](#5-additional-env-vars-consumed-directly-in-code-paths) |
+| Repository index scheduling and coverage | [Repository indexing configuration](#repository-indexing-configuration) |
+
+Examples describe repository defaults, not a running deployment. Start with the effective directory
+view and the service's actual runtime root. Save live workflows through the revision- and
+lock-aware Admin API; do not edit their pack files directly. Store secret values in host secret
+sources and reference their environment-variable names in provider configuration.
+
+### Related feature configuration
+
 Project release policies support `reintegration`, `verification_max_generations`,
 `verification_log_retention_days` and opt-in per-command `result_protocol`,
 `allow_baseline_exceptions`, and `command_failure_action`. See
@@ -18,15 +46,6 @@ For files linked from Azure DevOps PR feedback, grant `list_pr_feedback_attachme
 extension settings apply. The list/download calls are also restricted to the session's
 `metadata.pr_feedback_streams` entries and use the directory-scoped Azure DevOps organization,
 project, and `azure_devops_pr_pat_env` credential.
-
-This document lists the **user-configurable parameters** in this repository, where each parameter is defined, and where it is consumed.
-
-Scope included:
-
-- Host bootstrap configuration in `runtime/host-config.json`.
-- Environment-variable based configuration (`config/*.env.example`, plus generated guest env files).
-- The composed runtime configuration assembled from host bootstrap and directory domains.
-- Cloud-init template placeholders used by VM launch/bootstrap.
 
 ## 1) Service environment files (`config/*.env.example`)
 
@@ -1764,6 +1783,9 @@ Key bootstrap fields include:
 - `log_level`
 - `gateway_host`, `gateway_port`
 - `openai_relay_host`, `openai_relay_port`
+- `http_target_relay_host`, `http_target_relay_port`
+- `http_target_browser_proxy_host`, `http_target_browser_proxy_port`, and browser-proxy timeouts/connection limits
+- `npm_audit_facade_host`, `npm_audit_facade_port`
 - `nuget_relay_host`, `nuget_relay_port`
 - `audit_log_path`
 - `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`
@@ -2469,8 +2491,8 @@ Timeouts, transport failures, and Graph `5xx` responses instead use the shorter
 `max_concurrent_target_polls` in that same worker configuration bounds concurrent channel and chat
 polls across the worker (range `1`–`32`, default `1`). Directory selection, sender resolution, and
 direct-chat discovery remain serial; directories are processed one at a time, so the configured
-limit is global to the worker cycle. Set it to `2` for the initial production trial and restart
-`evander-teams-ingest.service` for the change to apply.
+limit is global to the worker cycle. Choose a limit that fits the deployment's Graph quota and workload; restart
+`evander-teams-ingest.service` after changing this worker setting.
 
 `publish_trigger_events_directly` defaults to `true`. Each Teams ingest cycle captures one compiled
 workflow configuration revision, then uses that immutable snapshot for polling targets, direct-message
@@ -2551,7 +2573,7 @@ Key delegated Teams provider settings now include:
   Device-code login requests add the OIDC `openid` and `profile` scopes so the concrete authenticated
   tenant can be retained without another Graph request.
 
-## 4) Additional env vars consumed directly in code paths
+## 5) Additional env vars consumed directly in code paths
 
 These are not primarily defined in `*.env.example` but are explicit configuration points in code:
 
@@ -2587,7 +2609,7 @@ If you update configuration behavior, also update:
 - `docs/operations.md` / `README.md`
 - tests validating defaults and docs.
 
-## 5) Script-level environment override parameters
+## 6) Script-level environment override parameters
 
 The following environment variables are consumed directly by scripts as runtime overrides (typically via `${VAR:-default}` patterns).
 
@@ -2662,6 +2684,7 @@ Credential selection follows `model_provider_mode`: `openai_public` reads `opena
 reads `anthropic_api_key_env`, `openrouter` reads `openrouter_api_key_env`, and
 `local_openai` uses `local_openai_api_key`. Guests retain only a
 placeholder API key and never receive these host credentials.
+
 ## Repository indexing configuration
 
 Repository index settings are revision-checked records managed through Admin Web or

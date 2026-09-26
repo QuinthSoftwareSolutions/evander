@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="generator" content="pandoc" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
-  <meta name="dcterms.date" content="2026-07-29" />
+  <meta name="dcterms.date" content="2026-09-26" />
   <title>Evander Technical Manual — Core Platform and Team
 Add-on</title>
   <style>
@@ -692,8 +692,12 @@ Orchestration</a>
 <ul>
 <li><a href="#read-a-workflow-as-a-prepared-route" id="toc-read-a-workflow-as-a-prepared-route">Read a workflow as a
 prepared route</a></li>
-<li><a href="#following-a-run-in-admin-web" id="toc-following-a-run-in-admin-web">Following a run in Admin
-Web</a></li>
+<li><a href="#following-a-run-in-admin-web" id="toc-following-a-run-in-admin-web">Following a run in Admin Web</a>
+<ul>
+<li><a href="#configure-a-teams-direct-message-trigger" id="toc-configure-a-teams-direct-message-trigger">Configure a Teams
+direct-message trigger</a></li>
+<li><a href="#inspect-execution-history" id="toc-inspect-execution-history">Inspect execution history</a></li>
+</ul></li>
 <li><a href="#what-an-operator-may-notice-4" id="toc-what-an-operator-may-notice-4">What an operator may
 notice</a></li>
 <li><a href="#why-a-completed-action-may-still-be-waiting" id="toc-why-a-completed-action-may-still-be-waiting">Why a completed
@@ -790,7 +794,11 @@ package paths</a>
 audit</a></li>
 </ul></li>
 <li><a href="#administrator-reference-session-scoped-http-targets" id="toc-administrator-reference-session-scoped-http-targets">Administrator
-reference: session-scoped HTTP targets</a></li>
+reference: session-scoped HTTP targets</a>
+<ul>
+<li><a href="#browser-access-with-the-original-origin" id="toc-browser-access-with-the-original-origin">Browser access with the
+original origin</a></li>
+</ul></li>
 <li><a href="#administrator-reference-where-secrets-belong" id="toc-administrator-reference-where-secrets-belong">Administrator
 reference: where secrets belong</a>
 <ul>
@@ -804,7 +812,7 @@ trail</a></li>
 <li><a href="#11-managed-git-artifacts-and-code-consultations" id="toc-11-managed-git-artifacts-and-code-consultations">11. Managed
 Git, Artifacts, and Code Consultations</a>
 <ul>
-<li><a href="#three-kinds-of-movement" id="toc-three-kinds-of-movement">Three kinds of movement</a></li>
+<li><a href="#choosing-a-transport" id="toc-choosing-a-transport">Choosing a transport</a></li>
 <li><a href="#one-change-three-routes" id="toc-one-change-three-routes">One change, three routes</a></li>
 <li><a href="#what-an-operator-may-notice-7" id="toc-what-an-operator-may-notice-7">What an operator may
 notice</a></li>
@@ -849,6 +857,7 @@ Integrations</a>
 <li><a href="#one-work-item-three-views" id="toc-one-work-item-three-views">One work item, three views</a></li>
 <li><a href="#what-an-operator-may-notice-8" id="toc-what-an-operator-may-notice-8">What an operator may
 notice</a></li>
+<li><a href="#query-work-item-activity" id="toc-query-work-item-activity">Query work-item activity</a></li>
 <li><a href="#reviews-and-merge-checks" id="toc-reviews-and-merge-checks">Reviews and merge checks</a></li>
 <li><a href="#troubleshooting-1" id="toc-troubleshooting-1">Troubleshooting</a></li>
 <li><a href="#administrator-runbook-8" id="toc-administrator-runbook-8">Administrator runbook</a></li>
@@ -864,7 +873,11 @@ notice</a></li>
 <li><a href="#who-may-be-contacted" id="toc-who-may-be-contacted">Who
 may be contacted</a></li>
 <li><a href="#why-a-stored-message-may-not-wake-an-agent" id="toc-why-a-stored-message-may-not-wake-an-agent">Why a stored message
-may not wake an agent</a></li>
+may not wake an agent</a>
+<ul>
+<li><a href="#teams-notifications-and-polling-fallback" id="toc-teams-notifications-and-polling-fallback">Teams notifications
+and polling fallback</a></li>
+</ul></li>
 <li><a href="#reading-replying-and-exchanging-files" id="toc-reading-replying-and-exchanging-files">Reading, replying, and
 exchanging files</a></li>
 <li><a href="#email-drafting-and-sending-are-separate" id="toc-email-drafting-and-sending-are-separate">Email: drafting and
@@ -985,7 +998,13 @@ enabling it</a></li>
 flow</a></li>
 <li><a href="#administrator-check-verify-the-complete-registration" id="toc-administrator-check-verify-the-complete-registration">Administrator
 check: verify the complete registration</a></li>
-<li><a href="#the-fifteen-operator-views" id="toc-the-fifteen-operator-views">The fifteen operator views</a></li>
+<li><a href="#the-fifteen-operator-views" id="toc-the-fifteen-operator-views">The fifteen operator views</a>
+<ul>
+<li><a href="#read-narratives-and-copy-exact-references" id="toc-read-narratives-and-copy-exact-references">Read narratives and
+copy exact references</a></li>
+<li><a href="#follow-delivery-and-task-state" id="toc-follow-delivery-and-task-state">Follow delivery and task
+state</a></li>
+</ul></li>
 <li><a href="#bootstrap-northstar" id="toc-bootstrap-northstar">Bootstrap Northstar</a></li>
 <li><a href="#when-two-changes-happen-at-once" id="toc-when-two-changes-happen-at-once">When two changes happen at
 once</a></li>
@@ -1225,8 +1244,11 @@ release → approved handoff → optional canonical publication</a></li>
 </ul></li>
 <li><a href="#creating-a-release-package" id="toc-creating-a-release-package">Creating a release package</a></li>
 <li><a href="#verification-evidence" id="toc-verification-evidence">Verification evidence</a></li>
-<li><a href="#release-policy" id="toc-release-policy">Release
-policy</a></li>
+<li><a href="#release-policy" id="toc-release-policy">Release policy</a>
+<ul>
+<li><a href="#command-outcomes-restart-recovery-and-logs" id="toc-command-outcomes-restart-recovery-and-logs">Command outcomes,
+restart recovery, and logs</a></li>
+</ul></li>
 <li><a href="#scope-validation" id="toc-scope-validation">Scope
 validation</a></li>
 <li><a href="#gate-outcomes-and-retries" id="toc-gate-outcomes-and-retries">Gate outcomes and retries</a>
@@ -1234,6 +1256,8 @@ validation</a></li>
 <li><a href="#terminal-candidate-failures" id="toc-terminal-candidate-failures">Terminal candidate
 failures</a></li>
 <li><a href="#retryable-process-failures" id="toc-retryable-process-failures">Retryable process failures</a></li>
+<li><a href="#operator-authorized-retries" id="toc-operator-authorized-retries">Operator-authorized
+retries</a></li>
 <li><a href="#git-recovery" id="toc-git-recovery">Git recovery</a></li>
 </ul></li>
 <li><a href="#one-ordered-release-gate-sequencer" id="toc-one-ordered-release-gate-sequencer">One ordered release-gate
@@ -1509,8 +1533,8 @@ trail</a></li>
 Add-on</h2>
 <div class="manual-edition">
 
-<p><strong>Edition 1.0</strong> · Evander 0.3.1 · verified against
-<code>418936fa752c</code> · 2026-07-29</p>
+<p><strong>Edition 1.1</strong> · Evander 0.64.0 · verified against
+<code>f06ac65fba53</code> · 2026-09-26</p>
 <p>Current implementation is normative. Chapters explicitly labelled as
 design history are non-normative and describe how the present system
 evolved.</p>
@@ -2545,11 +2569,18 @@ receives a host relay URL and a placeholder API key for client
 compatibility. The relay authenticates upstream with the real credential
 and keeps the upstream client alive for the complete streaming
 response.</p>
-<p>The HTTP target relay has a different contract. It confines a session
-to an allowlisted base URL but forwards authentication headers and
-cookies supplied by the guest request. It does not inject a host
-credential. Treating target confinement as secret substitution would
-overstate the boundary.</p>
+<p>Ordinary HTTP target requests forward the guest&#39;s authentication
+headers and cookies to an allowlisted target. Managed website sessions
+add an explicitly granted login flow: the host uses its stored website
+credentials and returns selected temporary browser storage. The browser
+receives that session state, not the website password. The
+origin-restricted browser proxy still constrains its destinations. See
+<a href="managed-website-sessions.md">managed website sessions</a>.</p>
+<p>Worker subscription authentication has its own boundary. Named
+ChatGPT profiles and durable auth files stay on the worker; disposable
+Codex jobs receive the in-memory external tokens needed by App Server.
+This is a bounded authentication path, not general host-secret
+transport.</p>
 </blockquote>
 <blockquote>
 <p><span class="sidebar-kicker">For administrators</span> <strong>Where
@@ -2586,10 +2617,12 @@ enforcement</strong></p>
 firewall admits explicit guest-to-host routes: SSH on port
 <code>22</code>, MCP on <code>8000</code>, the model relay on
 <code>11434</code>, the NuGet relay on <code>11666</code>, the HTTP
-target relay on <code>11777</code>, and the npm-audit facade on
-<code>11881</code>. Optional package caches commonly use Nexus on
-<code>8081</code> and apt-cacher-ng on <code>3142</code>. An open route
-remains subject to session and service policy.</p>
+target relay on <code>11777</code>, the browser proxy on
+<code>11778</code>, and the npm-audit facade on <code>11881</code>.
+Optional package caches commonly use Nexus on <code>8081</code> and
+apt-cacher-ng on <code>3142</code>. An open route remains subject to
+session and service policy. Worker-container egress is configured
+separately on the worker VM.</p>
 <p>Separately, the host uses controlled SSH into libvirt VMs for
 bootstrap, status, log, and maintenance operations. That host-to-guest
 administrative path is not a guest session capability and should not be
@@ -3097,8 +3130,10 @@ state.</td>
 <tr class="even">
 <td>Teams intake</td>
 <td><code>evander-teams-ingest.service</code>,
+<code>evander-teams-notifications.service</code>,
 <code>evander-teams-meeting-ingest.service</code></td>
-<td>When Teams messages, meetings, or media enter configured flows.</td>
+<td>When Teams messages, optional Graph callbacks, meetings, or media
+enter configured flows.</td>
 </tr>
 <tr class="odd">
 <td>Packages and approved HTTP targets</td>
@@ -3336,8 +3371,25 @@ available.</td>
 <td><code>evander-http-target-relay</code></td>
 <td style="text-align: right;"><code>0.0.0.0:11777</code></td>
 <td>Session with a configured target alias</td>
-<td>Constrains external HTTP targets; forwards guest-managed
-authentication rather than injecting a host secret.</td>
+<td>Constrains target requests; ordinary requests forward guest-managed
+auth. Explicitly granted managed website sessions can obtain
+host-managed login state.</td>
+</tr>
+<tr class="even">
+<td>HTTP target browser proxy</td>
+<td><code>evander-http-target-browser-proxy</code></td>
+<td style="text-align: right;"><code>0.0.0.0:11778</code></td>
+<td>Authenticated session browser</td>
+<td>Preserves real origins while restricting access to configured
+session targets.</td>
+</tr>
+<tr class="odd">
+<td>Teams notifications</td>
+<td><code>evander-teams-notifications</code></td>
+<td style="text-align: right;"><code>127.0.0.1:11882</code></td>
+<td>Reverse proxy for configured Graph callbacks</td>
+<td>Validates and durably queues notifications; an independent processor
+retrieves exact messages.</td>
 </tr>
 <tr class="even">
 <td>npm audit facade</td>
@@ -3399,14 +3451,18 @@ only on an explicit list:</p>
 <td>HTTP target relay</td>
 </tr>
 <tr class="even">
+<td style="text-align: right;"><code>11778</code></td>
+<td>HTTP target browser proxy</td>
+</tr>
+<tr class="odd">
 <td style="text-align: right;"><code>11881</code></td>
 <td>npm audit facade</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;"><code>8081</code></td>
 <td>Optional Nexus PyPI/npm cache</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;"><code>3142</code></td>
 <td>Optional apt-cacher-ng provisioning cache</td>
 </tr>
@@ -3485,9 +3541,15 @@ or archive reads.</td>
 <tr class="odd">
 <td><code>evander-teams-ingest.service</code></td>
 <td>Run <code>evander-cli teams-ingest</code> through
-<code>scripts/run_teams_ingest.sh</code>.</td>
+<code>scripts/run_teams_ingest.sh</code>; poll authorized targets and
+reconcile optional Graph subscriptions.</td>
 </tr>
 <tr class="even">
+<td><code>evander-teams-notifications.service</code></td>
+<td>Validate Graph callbacks, persist a notification queue, and process
+exact-message retrieval independently of fallback polling.</td>
+</tr>
+<tr class="odd">
 <td><code>evander-teams-meeting-ingest.service</code></td>
 <td>Ingest configured Teams meeting media and events.</td>
 </tr>
@@ -3505,10 +3567,12 @@ bootstraps.</p>
 reference: installation and shared state</h2>
 <p>On a systemd-based host,
 <code>scripts/install_systemd_units.sh</code> renders and enables the
-firewall, gateway, Admin Web, OpenAI relay, Codex subscription egress
-proxy, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay,
-ADO and proxy workers, Discord ingest and wake, scheduled wake, Teams
-ingest and meeting ingest, and both orchestrators.</p>
+control-plane units listed in Chapter 28, including the HTTP browser
+proxy, managed Git refresh broker, and Teams notification listener. It
+prints start commands without starting the services. The
+<code>evander-team-runtime.target</code> groups the gateway, Admin Web,
+and both orchestrators so their Team runtime generations can be
+restarted together; Team work runs within those processes.</p>
 <blockquote>
 <p><span class="sidebar-kicker">Administrator note</span>
 <strong>Enabled does not mean configured or healthy</strong></p>
@@ -3992,8 +4056,26 @@ sessions</td>
 <td><code>automation.json</code></td>
 <td>Directory automation configuration</td>
 </tr>
+<tr class="odd">
+<td><code>connectors</code></td>
+<td><code>connectors.json</code></td>
+<td>Named operations, drivers, and host-owned authentication
+profiles</td>
+</tr>
+<tr class="even">
+<td><code>host_directories</code></td>
+<td><code>host-directories.json</code></td>
+<td>Approved host filesystem resources and operation limits</td>
+</tr>
 </tbody>
 </table>
+<p>Classification profiles, model routes (including OpenRouter), and
+managed website login profiles are fields in the <code>providers</code>
+domain. Communication targets use the revisioned
+<code>communication-targets.db</code> store, not an extra
+directory-domain JSON file. Repository index settings live in
+<code>code-index/state.db</code> and use the index configuration
+service.</p>
 <p>Hyphenated CLI aliases such as <code>ado-worker</code> and
 <code>issue-setup</code> are normalized to canonical domain names.
 Legacy domain files and metadata overlays are migration compatibility
@@ -4085,6 +4167,18 @@ foundational:</p>
 <td>Admin users, groups, assignments, and grants</td>
 </tr>
 <tr class="odd">
+<td><code>communication-targets.db</code></td>
+<td>Directory-scoped communication target definitions and revisions</td>
+</tr>
+<tr class="even">
+<td><code>container-worker-assignments.db</code></td>
+<td>Durable session-to-worker connection assignments</td>
+</tr>
+<tr class="odd">
+<td><code>code-index/state.db</code></td>
+<td>Repository index settings, generations, and job state</td>
+</tr>
+<tr class="even">
 <td><code>addons/</code></td>
 <td>Add-on-owned runtime state, including Team state when enabled</td>
 </tr>
@@ -4123,7 +4217,7 @@ setup, not a command to erase current state.</p>
 <ul>
 <li><code>src/evander/host_config.py</code> and
 <code>src/evander/bootstrap.py</code> — host bootstrap, runtime-relative
-paths, legacy import, and root initialization.</li>
+paths and root initialization.</li>
 <li><code>src/evander/admin/composition.py</code> and
 <code>src/evander/runtime.py</code> — supported composition root and
 shared runtime services.</li>
@@ -5123,7 +5217,12 @@ values are also redacted in transport logs.</p>
 JSONL stream. It stores normalized columns plus payload/search text and
 uses WAL. Appends try to index immediately; Admin runtime startup can
 import historical tail data. If indexing fails, the JSONL append remains
-canonical. Rebuilding the index must not rewrite the source log.</p>
+canonical and the service logs a warning containing the failure class
+without the event payload. Ordinary audit queries fall back to the JSONL
+source when the index is unavailable. An unreadable source log raises
+<code>AuditLogUnavailableError</code>; the Tool Calls API responds with
+HTTP 503 instead of presenting the failure as an empty history.
+Rebuilding the index must not rewrite the source log.</p>
 <p>Approval decisions create their own audit context, linked by request
 and session. Workflow execution journals remain complementary to this
 audit evidence.</p>
@@ -5185,6 +5284,12 @@ header/query</td>
 <td>Canonical <code>audit.jsonl</code>; rebuild index</td>
 </tr>
 <tr class="even">
+<td>Tool Calls returns HTTP 503</td>
+<td>Source audit log could not be read</td>
+<td>Admin Web error log, configured audit path, permissions, storage
+health</td>
+</tr>
+<tr class="odd">
 <td>JSONL lacks expected event</td>
 <td>Wrong runtime, process, or code path; append itself did not
 occur</td>
@@ -5338,6 +5443,25 @@ step.</li>
 <p>The editor is the authoring view. Runtime events and executions
 remain separate durable records underneath it, which is why opening or
 closing the browser does not start or stop the workflow.</p>
+<h3 id="configure-a-teams-direct-message-trigger">Configure a Teams
+direct-message trigger</h3>
+<p>For <code>trigger:teams:direct-message</code>, set <strong>Chat
+setup</strong> to <strong>Direct chats by UPN</strong> and enter user
+principal names such as <code>operator@example.com</code>. A
+revision-checked save resolves each user in the graph&#39;s directory,
+ensures the corresponding one-to-one Teams chat, and stores canonical
+chat targets and sender user IDs. The UPNs remain available for later
+editing. Saving this mode can therefore create a Teams chat; it requires
+a working Teams connection with permission to resolve users and
+chats.</p>
+<p>Choose <strong>Existing chat IDs</strong> to enter
+<code>chat:&lt;chat-id&gt;</code> targets and sender IDs or addresses
+yourself. Existing definitions without <code>chat_target_mode</code>
+retain that mode. A <code>user:</code> target is send-only and cannot
+replace a resolved chat target for polling. See <a href="configuration-reference.md#directory-config-domains-and-storage">directory
+communication configuration</a> for target permissions and ingest
+settings.</p>
+<h3 id="inspect-execution-history">Inspect execution history</h3>
 <p>For a cross-run question, select the relevant node and expand
 <strong>Execution history</strong> in its inspector. Choose a local-time
 date window (the default is the previous seven days), optionally limit
@@ -5867,10 +5991,11 @@ audit evidence remain host-owned.</td>
 </tr>
 <tr class="even">
 <td>Worker container (<code>container_worker_vm</code>)</td>
-<td>A disposable Docker job on one configured worker VM, with selected
-session state kept between jobs</td>
-<td>The control plane still owns permission, credentials, workflow
-state, Git identity, and durable evidence.</td>
+<td>A disposable Docker job on the session&#39;s assigned worker VM, with
+selected session state kept between jobs</td>
+<td>The control plane still owns permission, workflow state, Git
+identity, and durable evidence; named subscription credentials remain on
+the worker.</td>
 </tr>
 </tbody>
 </table>
@@ -6187,10 +6312,26 @@ Supplying a Docker image in this field is a category error.</p>
 <h3 id="container_worker_vm-disposable-jobs-on-a-durable-worker"><code>container_worker_vm</code>:
 disposable jobs on a durable worker</h3>
 <p>The container backend calls the authenticated HTTP API of
-<code>evander-worker-daemon</code> on one configured worker VM. It is
-currently a single-worker execution path, not a scheduler. The worker
-creates durable per-session directories and starts disposable Docker
-jobs against them.</p>
+<code>evander-worker-daemon</code> on the session&#39;s assigned worker. A
+directory can configure a default worker and named alternatives in
+<code>container_workers</code>. The worker creates durable per-session
+directories and starts disposable Docker jobs against them. Placement is
+explicit; Evander does not schedule or balance jobs across the
+catalog.</p>
+<p>Admin Web and Team&#39;s creation dialog let the operator select
+<strong>Worker → Directory default</strong> or a named worker. Workflow
+<code>effect:agent:create</code> and manual job creation accept
+<code>worker_id</code>. Evander pins the connection settings before
+preparation, including the token environment-variable name rather than
+its value. Later jobs, logs, Git access, and cleanup retain that
+assignment even if the directory default or catalog changes. Selecting a
+different worker requires a new session; an unavailable assigned worker
+does not trigger automatic failover.</p>
+<p>Before changing defaults for sessions created by older versions,
+follow <a href="container-worker-backend.md#changing-the-default-worker">the
+worker cutover procedure</a>. Back up
+<code>runtime/container-worker-assignments.db</code> with the execution
+mappings and preserve each assigned worker&#39;s credential references.</p>
 <p>The portable agent effects map as follows:</p>
 <table>
 <thead>
@@ -6312,8 +6453,10 @@ provider mode is <code>openai_public</code>. A local OpenAI-compatible
 or Azure OpenAI turn keeps using its configured private endpoint and
 API-key route even when the stored session preference says
 <code>chatgpt_subscription</code>. Evander does not rewrite that
-preference, so a later public-OpenAI turn can use it. Chapter 10
-describes the network-routing distinction.</p>
+preference, so a later public-OpenAI turn can use it. OpenRouter also
+uses metered API routing, but explicitly selecting a subscription for an
+OpenRouter session is rejected. Chapter 10 describes the network-routing
+distinction.</p>
 <p>Each named profile has an independent auth home, broker, file lock,
 and managed App Server process. Profile refreshes can run concurrently,
 but operations within one profile remain serialized. The first
@@ -6489,9 +6632,9 @@ route.</td>
 </tr>
 <tr class="even">
 <td>A named test or application environment</td>
-<td>HTTP target relay</td>
-<td>Reach only a target alias recorded for this session; use the
-application&#39;s own guest-held login.</td>
+<td>HTTP target relay or browser proxy</td>
+<td>Reach configured targets; use the application&#39;s own guest-held
+login.</td>
 </tr>
 <tr class="odd">
 <td>Source code</td>
@@ -6703,8 +6846,9 @@ reference: doors and network boundaries</h2>
 <li>the NuGet relay on <code>11666</code>, npm audit facade on
 <code>11881</code>, and optional Nexus cache on <code>8081</code> are
 package doors;</li>
-<li>the HTTP target relay on <code>11777</code> is a session-specific
-door to a named external origin;</li>
+<li>the HTTP target relay on <code>11777</code> serves named session
+targets, while the authenticated browser proxy on <code>11778</code>
+preserves the configured origins for browser traffic;</li>
 <li>host SSH on <code>22</code> is the managed Git transport door;</li>
 <li>apt-cacher-ng on <code>3142</code>, when enabled, is a
 worker-provisioning door rather than an agent application
@@ -6717,6 +6861,10 @@ it creates network reachability that the application may not further
 mediate. Container-worker networking has its own worker-side egress
 policy and must be configured explicitly; the libvirt firewall is not a
 container policy.</p>
+<p>The Codex subscription CONNECT proxy uses private worker-facing port
+<code>11889</code>. It is configured separately from the libvirt guest
+allowlist and restricts both worker source addresses and OpenAI/ChatGPT
+destination hosts.</p>
 <p>MCP is therefore a central capability boundary, but not the only
 reachable host service. Every direct relay must enforce its own narrow
 contract.</p>
@@ -6777,6 +6925,13 @@ be used upstream.</td>
 <td>Host injects <code>x-api-key</code>; WebSocket/realtime is
 rejected.</td>
 </tr>
+<tr class="odd">
+<td><code>openrouter</code></td>
+<td><code>GET /v1/models</code>, <code>POST /v1/responses</code>, and
+<code>POST /v1/responses/compact</code></td>
+<td>Host injects the OpenRouter key and pins the approved model/provider
+route; WebSocket/realtime is rejected.</td>
+</tr>
 </tbody>
 </table>
 <p>The general OpenAI-compatible HTTP allowlist is
@@ -6786,6 +6941,16 @@ rejected.</td>
 <code>/v1/embeddings</code>. Only <code>/v1/responses</code> is accepted
 on the OpenAI-compatible WebSocket surface. Unsupported paths fail
 before they become arbitrary proxy access.</p>
+<p>OpenRouter has the narrower allowlist shown above. It requires an
+explicit session model and an exact entry in
+<code>openrouter_model_routes</code>; guest routing overrides and
+OpenRouter server tools are rejected. The host requires the configured
+provider endpoint, disables fallback, and requests ZDR. Removing the
+route makes that model unavailable rather than selecting another
+provider. This is an opt-in Codex route for either backend; it does not
+change host assistant or embedding routing. See <a href="openrouter.md">OpenRouter setup and verification</a> for
+configuration, costs, and the live checks needed for a chosen
+model/endpoint pair.</p>
 <p>The relay removes guest <code>Authorization</code>,
 <code>x-api-key</code>, hop-by-hop headers, content length/encoding,
 host, and the Evander session token before building the upstream
@@ -6819,6 +6984,9 @@ stored session preference unchanged. This distinction matters when
 diagnosing a session that moves between provider modes: seeing
 <code>chatgpt_subscription</code> in session policy does not mean a
 local Ollama or Azure request was sent with the worker profile.</p>
+<p>OpenRouter always uses metered API authentication. An inherited
+subscription default is ignored for these turns, while an explicit
+subscription override is rejected.</p>
 <p>Subscription authentication also fails closed. An absent login,
 disabled profile, refresh failure, rate limit, broker ownership failure,
 or restricted-proxy failure does not cause a quiet retry against the
@@ -6901,6 +7069,24 @@ retry behavior in Northstar Platform&#39;s provisioned
 aliases to the session, while the agent authenticates to those
 applications using credentials it legitimately holds. The public
 environment URL does not become a general network permission.</p>
+<h3 id="browser-access-with-the-original-origin">Browser access with the
+original origin</h3>
+<p>Use <code>evander-http-target-browser-proxy</code> on
+<code>11778</code> when browser cookies, redirects, or JavaScript need
+the application&#39;s original origin. The browser authenticates to the
+proxy with its session identity and token; the proxy resolves allowed
+origins from the same current HTTP-target set. HTTP requests and HTTPS
+CONNECT tunnels are limited to those scheme/host/port combinations.
+CONNECT also validates the TLS server name against the requested
+host.</p>
+<p>This is an origin-level grant: a target base path does not restrict
+the paths available through the browser proxy. Each additional origin
+used by the application, such as an authentication or asset host, needs
+its own configured target. The proxy preserves application
+authentication and does not inject host credentials. For container
+Playwright jobs, use the generated
+<code>EVANDER_PLAYWRIGHT_LAUNCH_HELPER</code>, which selects the seeded
+browser and applies the session proxy; see <a href="container-worker-backend.md">the worker browser contract</a>.</p>
 <h2 id="administrator-reference-where-secrets-belong">Administrator
 reference: where secrets belong</h2>
 <p>Provider configuration stores <em>environment-variable names</em>,
@@ -6948,16 +7134,18 @@ errors are redacted; operators should record the mailbox ID and
 environment-variable names, never their values.</p>
 <h2 id="administrator-runbook-6">Administrator runbook</h2>
 <p>First verify the listeners locally on the control plane:</p>
-<div class="sourceCode" id="cb37"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-fsS</span> http://127.0.0.1:11434/healthz</span>
-<span id="cb37-2"><a href="#cb37-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-fsS</span> http://127.0.0.1:11666/healthz</span>
-<span id="cb37-3"><a href="#cb37-3" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-fsS</span> http://127.0.0.1:11777/healthz</span>
-<span id="cb37-4"><a href="#cb37-4" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-fsS</span> http://127.0.0.1:11881/healthz</span></code></pre></div>
+<div class="sourceCode" id="cb37"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">--max-time</span> 5 <span class="at">-fsS</span> http://127.0.0.1:11434/healthz</span>
+<span id="cb37-2"><a href="#cb37-2" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">--max-time</span> 5 <span class="at">-fsS</span> http://127.0.0.1:11666/healthz</span>
+<span id="cb37-3"><a href="#cb37-3" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">--max-time</span> 5 <span class="at">-fsS</span> http://127.0.0.1:11777/healthz</span>
+<span id="cb37-4"><a href="#cb37-4" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">--max-time</span> 5 <span class="at">-fsS</span> http://127.0.0.1:11778/healthz</span>
+<span id="cb37-5"><a href="#cb37-5" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">--max-time</span> 5 <span class="at">-fsS</span> http://127.0.0.1:11881/healthz</span></code></pre></div>
 <p>Then verify service and firewall state:</p>
 <div class="sourceCode" id="cb38"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb38-1"><a href="#cb38-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> systemctl status evander-openai-relay.service</span>
 <span id="cb38-2"><a href="#cb38-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> systemctl status evander-nuget-relay.service</span>
 <span id="cb38-3"><a href="#cb38-3" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> systemctl status evander-http-target-relay.service</span>
-<span id="cb38-4"><a href="#cb38-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> systemctl status evander-npm-audit-facade.service</span>
-<span id="cb38-5"><a href="#cb38-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> nft list table inet evander</span></code></pre></div>
+<span id="cb38-4"><a href="#cb38-4" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> systemctl status evander-http-target-browser-proxy.service</span>
+<span id="cb38-5"><a href="#cb38-5" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> systemctl status evander-npm-audit-facade.service</span>
+<span id="cb38-6"><a href="#cb38-6" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> nft list table inet evander</span></code></pre></div>
 <p>Inspect relay logs without printing service environments:</p>
 <div class="sourceCode" id="cb39"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> journalctl <span class="at">-u</span> evander-openai-relay.service <span class="at">-n</span> 200 <span class="at">--no-pager</span></span>
 <span id="cb39-2"><a href="#cb39-2" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> journalctl <span class="at">-u</span> evander-nuget-relay.service <span class="at">-n</span> 200 <span class="at">--no-pager</span></span></code></pre></div>
@@ -7023,7 +7211,7 @@ gives a temporary reader one bounded question. Choosing the right route
 keeps the result traceable without exposing arbitrary folders on the
 host.</p>
 </blockquote>
-<h2 id="three-kinds-of-movement">Three kinds of movement</h2>
+<h2 id="choosing-a-transport">Choosing a transport</h2>
 <p>It helps to begin with the thing being moved:</p>
 <ul>
 <li><strong>Source code</strong> belongs in managed Git. Git gives
@@ -7399,7 +7587,7 @@ bounded window before accepting the reused PR. A source branch that
 genuinely moved still produces a conflict.</p>
 <h3 id="ephemeral-host-worktrees">Ephemeral host worktrees</h3>
 <p>Most managed Git operations manipulate bare refs. Operations that
-genuinely require files create a unique detached worktree at:</p>
+require checked-out files create a unique detached worktree at:</p>
 <pre class="text"><code>runtime/git-worktrees/&lt;managed_repo_id&gt;/&lt;operation-id&gt;/checkout</code></pre>
 <p>It starts from a pinned host-only ref. Hooks, LFS smudge, submodule
 initialization, inherited commit signing, credential prompts, and
@@ -7848,6 +8036,28 @@ the expected HTTPS provider host and pass size and content checks before
 Evander makes them available. Arbitrary HTML or image URLs in an issue
 body are not fetched merely because a provider returned them.</p>
 </blockquote>
+<h2 id="query-work-item-activity">Query work-item activity</h2>
+<p><code>query_ado_work_item_activity</code> reads created, changed, and
+commented activity for a time window, with optional actor, project,
+state, type, and tag filters. It uses the session&#39;s directory connector
+and requires the tool in the session policy. It does not change work
+items or create local issue proxies.</p>
+<p>The default scan considers at most 50 candidate work items.
+<code>top</code> and <code>skip</code> page the matching work items
+after their histories have been inspected; <code>next_skip</code>
+continues that result set. Check
+<code>paging.candidate_scan_complete</code> and the
+<code>total_matches_complete</code> flags before treating counts as
+complete. When the candidate limit is reached, <code>has_more</code> can
+be true even if <code>next_skip</code> is absent: increase
+<code>max_candidates</code>, narrow the time window, or explicitly
+request <code>exhaustive=true</code> to broaden the scan. Paging an
+incomplete result does not expand its candidate scope.</p>
+<p>Each request freezes the candidate IDs from one WIQL query and reads
+candidate histories concurrently. Deleted or inaccessible batch items
+still consume their candidate positions, so an omitted item does not
+skip a later page. This improves bounded activity reads without changing
+the meaning of the returned activity.</p>
 <h2 id="reviews-and-merge-checks">Reviews and merge checks</h2>
 <p>During review, the important promise is that Evander checks the
 provider&#39;s current pull-request record against the exact code available
@@ -8179,6 +8389,44 @@ There is no current <code>evander-host-heartbeat</code> service.</p>
 session lifecycle decision and prevents one stored message from being
 delivered repeatedly without a durable cursor or dispatch record.</p>
 </blockquote>
+<h3 id="teams-notifications-and-polling-fallback">Teams notifications
+and polling fallback</h3>
+<p>Teams can receive Graph change notifications in addition to polling.
+This is optional and disabled by default. With notifications enabled,
+<code>evander-teams-notifications.service</code> validates callbacks,
+queues them durably, and retrieves exact messages through an independent
+background processor. Slow fallback polling therefore does not hold up
+that retrieval path. The ingest worker can also lease queued
+notifications after a restart.</p>
+<p>Healthy subscribed targets keep a reconciliation poll. Targets
+without a healthy subscription continue ordinary polling, including when
+a concrete tenant identity is unavailable. Turning notifications off
+restores fast polling and stops subscription creation and renewal; the
+worker only deletes subscriptions recorded as owned by this
+deployment.</p>
+<p>The listener defaults to <code>127.0.0.1:11882</code>; publish only
+the configured <code>/msgraph/teams/*</code> callback routes through the
+reverse proxy. Configure notifications in
+<code>config/teams-ingest/config.json</code>, provide an HTTPS public
+callback base URL, and supply a concrete tenant ID through
+delegated-login metadata or provider configuration. Check the worker
+detail and listener <code>/healthz</code> for subscription health, queue
+age, fallback state, and processing errors.</p>
+<p>Polling and notification retrieval use the same authorization, sender
+filtering, inbox deduplication, and workflow event identity. Polling can
+publish matching trigger events directly using one compiled workflow
+revision per cycle; the trigger orchestrator retains cursor and recovery
+responsibility. <code>publish_trigger_events_directly=false</code>
+disables that polling fast path, but exact notification deliveries still
+publish deterministically. See the <a href="configuration-reference.md#directory-config-domains-and-storage">configuration
+reference</a> for fields, defaults, and the distinction between the two
+paths.</p>
+<p>For a one-to-one Teams trigger, the workflow editor&#39;s <strong>Direct
+chats by UPN</strong> mode accepts user UPNs and resolves chat and
+sender IDs on a revision-checked save. <strong>Existing chat
+IDs</strong> remains available for manually selected existing chats.
+These editing conveniences do not relax runtime sender or target
+checks.</p>
 <h2 id="reading-replying-and-exchanging-files">Reading, replying, and
 exchanging files</h2>
 <p>Permission follows the action. Being allowed to read a project
@@ -9161,6 +9409,16 @@ preserve the JSONL and rebuild the index:</p>
 <p>Audit redaction intentionally removes configured sensitive fields.
 Absence of a secret from an audit row is expected, not evidence that no
 credential was used.</p>
+<p>If an index update fails after an event is appended, Evander retains
+the JSONL entry and logs
+<code>Tool-call audit index update failed; JSONL entry retained</code>.
+The detailed Tool Calls view can fall back to that journal. When a
+required journal read fails, the API returns HTTP <code>503</code> with
+<code>Tool-call audit log is unavailable</code>; it does not present the
+failure as an empty successful result. Check the configured path,
+service-user access, encoding, and journal before rebuilding the derived
+index. Dashboard summaries use the existing index and can lag the
+detailed view while background import catches up.</p>
 <p>The remainder of the backup and restore material is administrator
 reference. An operator reporting a problem should preserve the visible
 records and identifiers; they should not copy, replace, or delete
@@ -9236,6 +9494,12 @@ metadata</td>
 <td>libvirt images and configured worker storage</td>
 <td>Running execution state, outside the runtime directory</td>
 </tr>
+<tr class="odd">
+<td>Worker placement and executions</td>
+<td><code>runtime/container-worker-assignments.db</code>,
+<code>runtime/container-worker-executions.db</code></td>
+<td>Pinned connection settings and execution/cleanup history</td>
+</tr>
 </tbody>
 </table>
 <p>Ephemeral Git worktrees under <code>runtime/git-worktrees/</code> are
@@ -9247,6 +9511,12 @@ provider JSON, <code>secrets.env</code>, systemd environment,
 certificates—may live outside <code>runtime/</code>. Back them up
 separately with stricter permissions. Never place them in published
 artifacts or documentation captures.</p>
+<p>Worker-local subscription profile registries and credential homes are
+also outside the control-plane runtime. Decide explicitly whether
+recovery will preserve them or require a new device login. Restoring a
+worker assignment also requires its saved token environment-variable
+name and original worker storage; changing the directory default does
+not relocate an existing session.</p>
 <h2 id="administrator-procedure-consistent-backup">Administrator
 procedure: consistent backup</h2>
 <p>There is no single “copy this directory while everything runs”
@@ -9339,22 +9609,27 @@ see and which evidence an administrator should collect next.</p>
 <td>audit index status and rebuild</td>
 </tr>
 <tr class="even">
+<td>Tool Calls returns <code>503</code></td>
+<td>A required audit journal read failed</td>
+<td>configured path, ownership, encoding, and Admin Web journal</td>
+</tr>
+<tr class="odd">
 <td>Dashboard says unknown capacity</td>
 <td>Collection failed or lacks permission</td>
 <td>endpoint errors and filesystem ownership</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>SQLite says locked</td>
 <td>A live writer or abandoned operation holds access</td>
 <td>identify owning service; do not delete WAL/lock files</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Restored worker repeats effects</td>
 <td>Store/provider boundary was captured inconsistently</td>
 <td>inspect effect idempotency key and provider state before enabling
 workers</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Team/Add-on data is missing after restore</td>
 <td>Private add-on directory was omitted or wrong add-on not loaded</td>
 <td>restored add-on state, enablement, restart, API read</td>
@@ -10145,6 +10420,28 @@ Team, agent, dispatch, status, and tool.</td>
 maintained inside <strong>Teams</strong> and setup/edit forms. Reviews
 and releases similarly live inside <strong>Delivery</strong>, not
 separate top-level tabs.</p>
+<h3 id="read-narratives-and-copy-exact-references">Read narratives and
+copy exact references</h3>
+<p>Team messages, activity, task details, and case context keep readable
+titles and summaries prominent. Long opaque IDs and Git SHAs appear as
+compact <strong>ID</strong> or <strong>SHA</strong> badges. Hover to
+inspect the full value; click or activate the badge with the keyboard to
+copy that full value. <strong>Copied</strong> confirms success;
+<strong>Copy failed</strong> means the browser could not write to the
+clipboard. The compact caption is a display aid, not a shortened stored
+identifier. URLs, paths, commands, and raw structured values retain
+their original content.</p>
+<p>In <strong>Cases → Context</strong>, evidence is grouped by request,
+sources, plans, decisions, delivery, review, verification, and
+conversation. Expand <strong>Record fields and provenance</strong> for
+structured detail or <strong>Raw JSON</strong> for the record content.
+<strong>Load complete records</strong> retrieves evidence beyond a
+shortened preview; <strong>Load next record page</strong> continues when
+more records remain. Check freshness, missing-source, restricted-source,
+and truncation warnings before using a brief as evidence. See <a href="case-context.md">Case context</a> for saved views, frozen
+snapshots, and recipient grants.</p>
+<h3 id="follow-delivery-and-task-state">Follow delivery and task
+state</h3>
 <p><strong>Delivery</strong> opens on records that still need attention.
 Projects remain collapsed until selected or opened, and the project
 selector and status filters narrow the workspace without removing
@@ -10731,6 +11028,14 @@ current accepted deliverable from every required task in
 superseded source satisfies the contract. When Git provenance is
 required, artifact-only submission, direct finish, and direct acceptance
 cannot bypass the boundary.</p>
+<p>For a Git integration task with an exact pinned base, each accepted
+source must contain its recorded starting commit, and that starting
+commit must already be an ancestor of the integration base. Nested
+composition sources are checked too. A newer live branch does not expand
+the pinned task&#39;s authorized history. If a source was prepared from a
+newer or unrelated base, create reviewed replacement work on the pinned
+base or a new explicit integration boundary. Preparation and submission
+enforce this rule; acceptance requires the server-recorded proof.</p>
 <p>Before any deliverable has been submitted, the task owner, an
 authorized supervisor, the project lead, or the same-Team manager may
 designate or edit the boundary and contract. Once any deliverable
@@ -12041,12 +12346,11 @@ assigned agent can page the anchored transcript with
 the task description and cannot read another agent&#39;s conversation.</p>
 <p>For Northstar, Imani might use <code>idle</code> with a 60-minute
 grace: related telemetry reviews stay in one context across short gaps,
-then rotate after a genuine break. Rowan might use
-<code>every_wake</code> for strongly isolated review passes. Trudy might
-use <code>work_lineage</code> so each intake task family resumes its own
-context after unrelated work intervenes. None of these policies makes an
-agent poll constantly; the agent still needs a task, review, message, or
-other wake reason.</p>
+then rotate after a break. Rowan might use <code>every_wake</code> for
+isolated review passes. Mira might use <code>work_lineage</code> so each
+intake task family resumes its own context after unrelated work
+intervenes. Every policy still requires an eligible task, review,
+message, or other wake reason.</p>
 <h2 id="stand-down">Stand-down</h2>
 <p>Stand-down is a durable operational hold, not deletion and not a
 prompt suggestion.</p>
@@ -13948,13 +14252,13 @@ authority, result validation, workflow composition, and cleanup.</li>
 <h1 id="24-team-git-promotion-and-release-gates">24. Team Git Promotion
 and Release Gates</h1>
 <blockquote>
-<p><strong>At a glance.</strong> A safe release must publish the exact
-code that passed review, not whatever a branch happens to contain later.
-Team carries that exact version through its internal preparation and
-verification steps, then gives the final publication a narrow,
-time-bounded authority. If the code itself fails verification, it must
-change and be reviewed again; a retry is reserved for failures in the
-surrounding infrastructure or process.</p>
+<p><strong>At a glance.</strong> A safe release publishes the exact code
+that passed its required gates. Team carries that version through
+preparation, verification, and review, then authorizes publication under
+a Git lease. Candidate failures normally create correction work; process
+failures can permit a retry. Operators also have explicit, audited
+exception controls described below. Every retry preserves the earlier
+evidence and pinned candidate.</p>
 <p>An operator can follow the release with four questions: What exact
 code was approved? What evidence and policy apply? Did each required
 gate pass? What exact version reached the canonical branch? The internal
@@ -13971,10 +14275,10 @@ publishes that same candidate only after its gates pass.</p>
               -&gt; canonical publication of that same candidate</code></pre>
 <p>Internal review, feature, and release branches are preparation areas.
 The release package&#39;s canonical branch and published commit are the
-final publication evidence. If content fails, it must be corrected and
-reviewed as new content. If the candidate is sound but a test worker
-times out or a reviewer cannot access evidence, a linked retry may run
-against the unchanged candidate.</p>
+final publication evidence. Candidate defects normally require
+corrected, reviewed content. A worker timeout or inaccessible review
+evidence may justify a linked retry against the unchanged candidate;
+neither a retry request nor an internal branch proves publication.</p>
 <h2 id="cancelling-an-unwanted-release">Cancelling an unwanted
 release</h2>
 <p>A directory owner can choose <strong>Cancel release</strong> on a
@@ -14001,11 +14305,10 @@ requires <code>admin.owner</code> in the project&#39;s directory. Repeating
 cancellation preserves the original audit record. A subsequent release
 must be explicitly requested; the cancelled attempt cannot be retried or
 used as a successor&#39;s predecessor.</p>
-<p>SQLite schema 77 adds nullable
-<code>team_release_packages.cancellation_json</code>. Old rows retain
-their existing behavior. Upgrade all Team processes together before
-using cancellation; older binaries do not understand the new
-<code>cancelled</code> release/review states.</p>
+<p>Cancellation is persisted in
+<code>team_release_packages.cancellation_json</code>. Upgrade all Team
+processes together before using it; older binaries may not understand
+the <code>cancelled</code> release/review states.</p>
 <h2 id="the-repository-boundary">The repository boundary</h2>
 <p>Team refers to a repository by its registered identity rather than by
 an arbitrary host folder. Every preparation branch stays inside the
@@ -14273,8 +14576,9 @@ explicit all-disabled policy is valid.</p>
 positive CPU count, and positive integer <code>pids_limit</code>;</li>
 <li><code>gate_sequence</code>, containing each gate exactly once with
 an <code>enabled</code> flag, in execution order;</li>
-<li>ordered commands, each with name, working directory, argv, and
-timeout;</li>
+<li>ordered commands, each with name, working directory, argv, timeout,
+optional result protocol, and failure action;</li>
+<li>workspace recovery-generation and retained-log limits;</li>
 <li>required reviewer/profile pairs;</li>
 <li>optional human-review requirement with Admin reviewer groups,
 checklist, manual or workflow-prepared test instructions, and directory
@@ -14308,15 +14612,46 @@ legacy eager-rejection behavior.</p>
 <p>If <code>resource_limits</code> is omitted, a Team release verifier
 uses the worker/host CPU and memory defaults plus a 2,048 process/thread
 limit. A configured field overrides its corresponding default, and only
-an explicitly configured CPU value creates a Docker CPU quota. These
-limits are read from the live project policy for each disposable
-verifier session, including a retry; unlike candidate commands and
-review requirements, they are not frozen candidate evidence.</p>
+an explicitly configured CPU value creates a Docker CPU quota. The image
+and resource limits are snapshotted from current project policy when a
+verification attempt is created. Restart recovery preserves that
+attempt&#39;s settings; an authorized retry creates another attempt with the
+then-current settings. Older nonterminal attempts without a settings
+snapshot capture it once before resuming. Candidate commands and review
+requirements remain frozen in the release manifest.</p>
 <p>Worker inspection reports <code>pids_limit_exhausted</code> from
 cgroup <code>pids.events</code> and <code>memory_limit_exhausted</code>
 from Docker&#39;s OOM-killed state. Those structured causes are
 infrastructure failures, not strings inferred from test output, and
 enter the evidence-gated retry path.</p>
+<h3 id="command-outcomes-restart-recovery-and-logs">Command outcomes,
+restart recovery, and logs</h3>
+<p>Commands default to <code>result_protocol: &quot;exit_code&quot;</code> and
+<code>command_failure_action: &quot;correction&quot;</code>. Set the failure
+action to <code>&quot;block&quot;</code> when a failed command should wait for
+operator assessment instead of opening candidate correction work. Only
+an operator can retry such a command-blocked gate.</p>
+<p>The opt-in <code>json-v1</code> protocol lets a project-owned
+evaluator report <code>passed</code>, <code>baseline_exception</code>,
+<code>failed</code>, or <code>infrastructure</code> for the frozen
+candidate and base. Baseline exceptions also require explicit policy
+permission and evidence references. A timeout, nonzero evaluator exit,
+malformed report, or mismatched identity cannot be turned into success
+by a positive report. The UI distinguishes a permitted baseline
+exception from a clean pass. See the <a href="release-recovery-and-verifier-policy.md#structured-evidence-opt-in">verifier
+protocol and evidence contract</a> before configuring an evaluator.</p>
+<p>An interrupted command sequence restarts in a new disposable
+workspace and reruns every prerequisite. Earlier command passes cannot
+skip setup in a fresh checkout. The frozen
+<code>verification_max_generations</code> defaults to 3; exhaustion or
+failed cleanup blocks on infrastructure. Completed evidence and earlier
+generation results remain inspectable.</p>
+<p>Command output and local structured evidence are retained before
+cleanup in <code>runtime/release-verification-logs</code>, available
+through release details and the <code>execution logs</code> CLI. The
+manifest freezes retention, defaulting to 30 days, with bounded logs and
+best-effort secret redaction. Logs are not a complete live heartbeat or
+a permanent archive.</p>
 <h2 id="scope-validation">Scope validation</h2>
 <p>Feature promotion records the exact reviewed commits and changed
 paths. Release consolidation computes the candidate&#39;s changes and
@@ -14335,16 +14670,15 @@ failure</strong>. Content failure means the candidate must change.
 Process failure may justify another attempt against the same candidate.
 Git-promotion recovery is a third, separate path.</p>
 <h3 id="terminal-candidate-failures">Terminal candidate failures</h3>
-<p>A verification command returning nonzero means the candidate failed.
-The release is rejected. A release-review decision of
-<code>rejected</code> also means the candidate is defective. For a
-sealed review cohort, Team records each decision but waits for every
-slot to reach <code>accepted</code> or <code>rejected</code>, then
-creates one candidate-pinned correction containing all rejected
-findings. Repair the content and complete its accepted, reviewed Git
-deliverables; Team then creates one deterministic successor with the new
-reviewed tree. The project lead does not make a second release
-request.</p>
+<p>Under the default exit-code protocol and correction failure action, a
+nonzero verification command rejects the candidate. A release-review
+decision of <code>rejected</code> also records a candidate defect. For a
+sealed review cohort, Team waits for every slot to reach
+<code>accepted</code> or <code>rejected</code>, then creates one
+candidate-pinned correction containing all rejected findings. Repair the
+content and complete its accepted, reviewed Git deliverables; Team then
+creates one deterministic successor with the new reviewed tree. The
+project lead does not make a second release request.</p>
 <p>The review acceptance and successor intent are persisted atomically.
 Scheduled maintenance applies the same idempotent reconciliation to
 interrupted or older states and recognizes an existing direct successor
@@ -14354,14 +14688,14 @@ rather than waiting for a manager to remember the release.</p>
 <p>That blocker is a downstream release-recovery incident, not a reason
 to reopen the completed correction task. It therefore does not
 invalidate the correction or tasks that depend on it. In Admin Web,
-<strong>Retry packaging</strong> re-evaluates the current evidence,
+<strong>Retry packaging</strong> re-evaluates the current evidence, and
 <strong>Create verified replacement</strong> creates dependency-free
-work pinned to the accepted correction branch and exact commit, and
-<strong>Authorize waiver</strong> records the operator and reason before
-packaging. Generic blocker resolution cannot bypass these actions.
-Reconciliation continues while the incident remains open, accepts a
-passed downstream recovery deliverable, and resolves the incident
-immediately when a direct successor already exists.</p>
+work pinned to the accepted correction branch and exact commit.
+Verification-waiver recovery is retired: corrected reviewed content must
+pass candidate verification. Generic blocker resolution cannot bypass
+these actions. Reconciliation continues while the incident remains open,
+prefers a current accepted downstream recovery deliverable, and resolves
+the incident immediately when a direct successor exists.</p>
 <p>The system refuses a cosmetic new release of the same failed
 deliverables and tree.</p>
 <h3 id="retryable-process-failures">Retryable process failures</h3>
@@ -14384,6 +14718,28 @@ justified. This agent bound does not change the separate blocked
 release-review retry rules.</p>
 <p>Use <code>blocked</code> only when the review process cannot
 complete. Use <code>rejected</code> for an actual candidate defect.</p>
+<h3 id="operator-authorized-retries">Operator-authorized retries</h3>
+<p>In <strong>Projects → Releases</strong> or <strong>Delivery → Release
+history</strong>, an operator can choose <strong>Retry verification
+gate</strong> on an eligible rejected verification run. Use <strong>Show
+rejected</strong> if the project list hides it. The action requires
+unlocked privileged operations and a comment. It creates an immutable
+replacement run against the same candidate and frozen commands,
+preserves the failed result, and cancels unused generated verification
+correction work. It refuses a release with a successor or correction
+work that already has submitted deliverables, linked tasks, or active
+execution. Agents cannot invoke this exception.</p>
+<p>The API sends <code>allow_rejected_verification_retry: true</code>
+with the current gate ID and Team revision. The separate <strong>Retry
+rejected review by exception</strong> action uses
+<code>allow_rejected_review_exception: true</code>; it replaces the
+selected immutable review slot under operator authority and preserves
+other rejections and their correction obligations. Neither action
+accepts the release or skips remaining gates. A rejected-review
+exception instructs the replacement reviewer to treat the previous
+rejected finding as explicitly excepted, reevaluate every other required
+criterion, and report new defects. Use ordinary correction for a
+confirmed content defect.</p>
 <h3 id="git-recovery">Git recovery</h3>
 <p><code>team_recover_release</code> is different. It recovers failed
 prerequisite feature or internal release Git promotions. It is not a
@@ -14422,38 +14778,44 @@ changes-requested.</p>
 reviewed content, then Team creates its successor automatically.</td>
 </tr>
 <tr class="even">
+<td>Verification command failure with
+<code>command_failure_action=&quot;block&quot;</code></td>
+<td>Candidate remains blocked for operator assessment; only an operator
+may retry.</td>
+</tr>
+<tr class="odd">
 <td>Verification infrastructure failure or timeout</td>
 <td>Same attempt is blocked and may retry the unchanged candidate only
 after concrete recovery evidence; a failed agent-requested retry
 requires operator escalation.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Agent review rejection</td>
 <td>Candidate failure is recorded immediately. A sealed cohort waits for
 all other slots, then generates one correction from every rejection;
 legacy uncohorted reviews keep their eager behavior.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Agent review blocked</td>
 <td>Same candidate stays blocked until the typed review recovery
 runs.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Preview preparation failure or expiry</td>
 <td>Same human request and candidate are blocked; preparation can
 rerun.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Human <code>blocked</code></td>
 <td>Same request and candidate remain recoverable without product
 changes.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Human <code>changes_requested</code></td>
 <td>Attempt ends without publication and correction work is created
 atomically.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Human <code>approved</code></td>
 <td>Carried findings are confirmed, final approval passes, and
 publication may be queued once.</td>
@@ -14462,10 +14824,12 @@ publication may be queued once.</td>
 </table>
 <h2 id="authenticated-human-release-review">Authenticated human release
 review</h2>
-<p>The human request is created only after verification and all required
-agent release reviews have accepted. It freezes the release ID,
-candidate SHA and tree, Admin directory, reviewer groups, initially
-eligible users, checklist, test instructions, and preparation mode.</p>
+<p>The human request is created when the sequencer reaches the enabled
+human-review stage, after every preceding enabled gate in the frozen
+order has passed. Human review may therefore precede verification or
+agent review. It freezes the release ID, candidate SHA and tree, Admin
+directory, reviewer groups, initially eligible users, checklist, test
+instructions, and preparation mode.</p>
 <p>Manual mode creates a <code>pending</code> request. Workflow mode
 creates a <code>preparing</code> request and one idempotent preparation
 event. If the snapshotted groups have no eligible current users, Team
@@ -14666,8 +15030,9 @@ published SHA.</li>
 evidence-backed audited retry against the same SHA after the worker
 recovers. If that agent-requested attempt also fails for infrastructure
 reasons, Riley must escalate it rather than retry again. If a command
-exits nonzero, Imani must change and re-review the content; no one can
-retry it into approval.</p>
+identifies a content defect, Imani completes the generated correction
+with reviewed changes. An exceptional operator retry preserves the
+failed evidence and must still pass all gates.</p>
 <h2 id="complete-app-walkthrough-guarded-line-speed-control">Complete
 App walkthrough: guarded line-speed control</h2>
 <p>The following representative manufacturing flow combines task
@@ -14778,9 +15143,10 @@ content.</td>
 </tr>
 <tr class="even">
 <td>Verification command nonzero</td>
-<td>Terminal candidate defect. Complete the generated candidate-pinned
-correction with accepted, reviewed Git content; Team creates one
-successor automatically.</td>
+<td>Under the default correction policy, the candidate is rejected.
+Complete the generated correction with accepted, reviewed content, or
+use an eligible operator-authorized retry. A command configured to block
+instead waits for operator assessment.</td>
 </tr>
 <tr class="odd">
 <td>Verification infrastructure error, including structured PID or
@@ -14854,10 +15220,11 @@ not test or advertise the internal release branch. Hand the package&#39;s
 <code>canonical_branch</code> and <code>published_commit_sha</code>, the
 canonical-push promotion, and the visible remote mismatch to a release
 administrator.</p>
-<p>Never turn a failed test or rejected review into a retry merely to
-preserve the same package. Complete the generated candidate-pinned
-correction with new reviewed content and let Team create its
-successor.</p>
+<p>For confirmed content defects, complete the generated correction with
+reviewed changes and let Team create its successor. Use the explicit
+operator retry controls only when another attempt against unchanged
+content is justified; preserve the reason and inspect every resulting
+gate.</p>
 <h2 id="release-runbook">Release runbook</h2>
 <p>Before release:</p>
 <ol type="1">
@@ -15172,15 +15539,18 @@ connectivity and reindex rather than treating the vector collection as
 the backup.</p>
 </blockquote>
 <h2 id="cost-as-an-operational-guard">Cost as an operational guard</h2>
-<p>A cost cap is a brake on future Team wakes, not a billing system. The
-displayed total is an estimated lifetime amount based on the usage
-Evander can price and attribute. Always read it together with its
-coverage information.</p>
+<p>A cost cap limits future Team wakes against the active budget window.
+The report also retains the lifetime total. Both depend on the usage
+Evander can price and attribute; read them together with their coverage
+information.</p>
 <p>When a Team reaches its cap, future Team wakes are blocked, including
 queued Chat. Existing external provider spend may already have occurred,
-and unrelated core workloads are not retroactively canceled. Raising or
-clearing the cap re-enables evaluation; do so only after understanding
-coverage.</p>
+and unrelated core workloads are not retroactively canceled. An operator
+can start a new window with a revision-checked budget reset and reason,
+raise or clear the cap, or configure monthly renewal at 00:00 UTC on the
+first day of each month. Monthly windows do not carry unused budget
+forward. Legacy caps remain lifetime-based until their first explicit
+reset; an upgrade does not silently authorize more spending.</p>
 <p>Each Team has a durable governance warning ratio, defaulting to
 <code>0.8</code>. When a governed Team reaches that portion of its own
 cap, governance can emit a warning; reaching the cap produces an agenda
@@ -15205,10 +15575,20 @@ includes:</p>
 <li><code>coverage_status</code>;</li>
 <li><code>coverage_reasons</code>.</li>
 </ul>
-<p>These totals are an estimated lifetime operational safety rail, not
-billing-grade truth. Missing prices, incomplete attribution, transcript
-gaps, or ingestion delay can produce partial coverage.</p>
+<p>Where a catalog estimate is unavailable, a provider-reported USD
+charge contributes to the total and budget. The report keeps estimated
+and reported amounts separate and does not add both for the same
+deduplicated event. Missing prices, incomplete attribution, transcript
+gaps, or ingestion delay can still produce partial coverage.</p>
 </blockquote>
+<p>The cost report uses a durable derived projection at
+<code>runtime/team-cost-report.db</code>. Ordinary reads refresh changed
+request groups, including late transcript imports, corrections, and
+deletions. The first read, repricing, or a budget-window change can
+rebuild the projection from usage history. Preserve
+<code>runtime/model-usage.db</code>, attribution context, pricing, and
+Team policy for recovery; the report projection alone is not usage
+evidence.</p>
 <h2 id="what-an-operator-should-be-able-to-explain">What an operator
 should be able to explain</h2>
 <p>At the end of the telemetry retry release, an operator should be able
@@ -15269,8 +15649,8 @@ result</td>
 </tr>
 <tr class="even">
 <td>Cost discrepancy</td>
-<td>model-usage DB, attribution metadata, pricing catalog, coverage
-reasons</td>
+<td>model-usage DB, attribution metadata, pricing catalog,
+estimated/reported totals, active budget window, coverage reasons</td>
 </tr>
 <tr class="odd">
 <td>Voice discrepancy</td>
@@ -15466,13 +15846,14 @@ representative identities.</li>
 </ol>
 <h3 id="cost">Cost</h3>
 <ol type="1">
-<li>Read totals together with coverage status/reasons and unpriced
-usage.</li>
+<li>Read active-window and lifetime totals together with coverage
+status/reasons and unpriced usage.</li>
 <li>Trace attribution to session, dispatch, project, and ephemeral
 metadata.</li>
 <li>Compare the active pricing catalog with event
 timestamps/models.</li>
-<li>Change caps only with explicit operational intent.</li>
+<li>Use the supported budget reset with a reason when authorizing a new
+window; retain earlier window history.</li>
 </ol>
 <h3 id="internals">Internals</h3>
 <ol type="1">
@@ -15816,6 +16197,16 @@ repositories are suitable for small, low-contention records when atomic
 replacement/locking is explicit. SQLite is preferred for concurrent
 claims, leases, histories, and relational invariants. Enable foreign
 keys and define busy timeout/transaction boundaries consciously.</p>
+<p>Use <code>evander.storage.write_json_atomically</code> for JSON file
+replacement. It writes a unique temporary file beside the destination,
+flushes it, replaces the destination atomically, and preserves existing
+permissions unless an explicit mode is supplied. New files can specify
+their mode, and durable stores can request a parent-directory fsync.
+Atomic replacement protects the write; it does not protect a
+read-modify-write sequence. Use the store&#39;s mutation methods and stable
+sidecar file lock across that whole sequence, rather than reading a
+snapshot and writing it back after another process may have changed
+it.</p>
 <p>For operator-edited documents, expose a deterministic revision and
 require <code>expected_revision</code>. For workflow packs, use the
 existing editor lock/revision path. For remote publication, use provider
@@ -15845,20 +16236,31 @@ repositories rather than teaching every future feature both models.</p>
 Python suite before treating the extension as ready. Add failure,
 replay, authorization, cleanup, and deployment coverage in proportion to
 the seam you changed.</p>
-<p>Run focused tests while developing, then the Python suite:</p>
-<div class="sourceCode" id="cb64"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb64-1"><a href="#cb64-1" aria-hidden="true" tabindex="-1"></a><span class="ex">./.venv/bin/pytest</span> <span class="at">-q</span> tests/test_workflow_plugins.py tests/test_workflow_validation.py</span>
-<span id="cb64-2"><a href="#cb64-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./.venv/bin/pytest</span> <span class="at">-q</span></span></code></pre></div>
+<p>Run focused tests while developing, then the complete runner when
+validating the extension:</p>
+<div class="sourceCode" id="cb64"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb64-1"><a href="#cb64-1" aria-hidden="true" tabindex="-1"></a><span class="fu">timeout</span> <span class="at">--kill-after</span><span class="op">=</span>5s 120s ./.venv/bin/pytest <span class="at">-q</span> tests/test_workflow_plugins.py tests/test_workflow_validation.py</span>
+<span id="cb64-2"><a href="#cb64-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./.venv/bin/python</span> scripts/run_tests.py</span></code></pre></div>
 <p>For a new node, include registry and runtime-contract tests plus
 provider-specific failure/retry tests. For a service, include
 install/preflight and docs assertions. For UI/browser tests, apply
 explicit command timeouts; stop a hung process and report its last
 useful output rather than leaving it running.</p>
+<p>Every new test should protect an observable behavior against a
+realistic regression. Prefer stable service, API, persistence, or
+rendered behavior over source-text and incidental wording assertions.
+See <a href="testing.md">Testing</a> for test-value rules, the complete
+runner, and frontend verification.</p>
 <p>Before committing in a dirty tree:</p>
 <div class="sourceCode" id="cb65"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb65-1"><a href="#cb65-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> status <span class="at">--short</span></span>
 <span id="cb65-2"><a href="#cb65-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> diff <span class="at">--check</span></span>
 <span id="cb65-3"><a href="#cb65-3" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> diff <span class="at">--cached</span> <span class="at">--name-only</span></span></code></pre></div>
-<p>Preserve unrelated user changes. Record every feature and bug fix in
-<code>CHANGELOG.md</code>.</p>
+<p>Preserve unrelated user changes. Each feature or bugfix branch
+includes exactly one version bump and matching <code>CHANGELOG.md</code>
+entry: patch for fixes and maintenance, minor for a new user-visible
+capability. Keep <code>pyproject.toml</code> and
+<code>src/evander/__init__.py</code> synchronized and recheck the target
+branch&#39;s version before merge. A major bump requires explicit
+direction.</p>
 <h2 id="troubleshooting-an-extension">Troubleshooting an extension</h2>
 <p>First identify which boundary failed: registration, schema
 materialization, scoped configuration, provider transport, replay,
@@ -16957,6 +17359,11 @@ effects</td>
 </tr>
 </tbody>
 </table>
+<p>The installer also enables <code>evander-team-runtime.target</code>,
+which groups the gateway, Admin Web, trigger orchestrator, and effect
+orchestrator. Those services declare <code>PartOf</code> so a target
+restart propagates to the processes that host Team runtime work. It is a
+systemd target, not another daemon.</p>
 <p>The container worker is intentionally absent from this list.
 <code>evander-worker-daemon</code> runs on a dedicated worker VM
 deployed by <code>ansible/worker.yml</code>, not as another
@@ -17011,8 +17418,8 @@ surface</td>
 <td style="text-align: right;">11777</td>
 <td>HTTP target relay</td>
 <td>Reach a session allowlist of external targets</td>
-<td>Guest-supplied auth can pass through; host secrets are not
-injected</td>
+<td>Ordinary requests pass guest auth; explicitly granted website
+sessions can obtain managed login state</td>
 </tr>
 <tr class="even">
 <td style="text-align: right;">11778</td>

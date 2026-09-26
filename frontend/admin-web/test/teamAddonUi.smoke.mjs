@@ -28,6 +28,7 @@ const teamViewIds = [
   "people",
   "chat",
   "mail",
+  "activity",
   "governance",
   "planning",
   "timeline",
@@ -1584,6 +1585,10 @@ async function createTeamAddonServer(
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-ui-state.js") {
         await serveStatic(response, "team-ui-state.js", "application/javascript; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-identifiers.js") {
+        await serveStatic(response, "team-identifiers.js", "application/javascript; charset=utf-8");
         return;
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/admin-design.css") {
@@ -8775,6 +8780,47 @@ test("team add-on Chat uses a usable mobile conversation and thread flow", { tim
   assert.equal(await main.isVisible(), false);
 });
 
+test("team add-on Chat compacts narrative identifiers and copies complete values without interpreting markup", { timeout: browserTestTimeout }, async (t) => {
+  const initialState = seededLongChatState(2);
+  const identifiers = [
+    "0123456789abcdef0123456789abcdef01234567",
+    "4fb122a3-5b64-4fa5-b5fb-3c4969ef415d",
+    "task-0123456789abcdef0123456789abcdef",
+  ];
+  initialState.conversation_messages["msg-001"].body =
+    `The reviewed commit ${identifiers[0]} completes request ${identifiers[1]} for ${identifiers[2]}. `
+    + '<img src=x onerror="window.identifierMarkupRan=true">';
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+  await page.evaluate(() => {
+    window.identifierCopies = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (value) => { window.identifierCopies.push(value); } },
+    });
+  });
+  await waitForRevision(page, 9);
+  await page.getByRole("tab", { name: /^Chat/ }).click();
+  await page.locator('[data-chat-conversation-id="conversation-alpha-lead"]').click();
+  const body = page.locator(".chat-message--agent .chat-message-bubble > p").last();
+  await body.waitFor({ state: "visible" });
+  assert.equal(await body.locator(".identifier-badge").count(), 3);
+  for (const [index, identifier] of identifiers.entries()) {
+    const badge = body.locator(`[data-identifier-value="${identifier}"]`);
+    assert.ok((await badge.innerText()).length < identifier.length, "opaque values should be compact in prose");
+    assert.ok((await badge.getAttribute("title")).includes(identifier), "hover exposes the full value");
+    assert.ok(await badge.getAttribute("aria-label"), "copy action has an accessible name");
+    await badge.click();
+    await page.waitForFunction(count => window.identifierCopies.length === count, index + 1);
+  }
+  assert.deepEqual(await page.evaluate(() => window.identifierCopies), identifiers);
+  assert.match(await body.innerText(), /<img src=x onerror=/);
+  assert.equal(await body.locator("img, script").count(), 0);
+  assert.equal(await page.evaluate(() => window.identifierMarkupRan), undefined);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await body.evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
+});
+
 test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
@@ -10103,6 +10149,7 @@ test("team add-on Mail creates a manager-routed operator directive", { timeout: 
 
 test("team add-on Mail renders body, error, and generic historical payloads", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
+  const commit = "0123456789abcdef0123456789abcdef01234567";
   initialState.inbox = {
     "body-report": {
       id: "body-report",
@@ -10114,7 +10161,7 @@ test("team add-on Mail renders body, error, and generic historical payloads", { 
       state: "handled",
       payload: {
         summary: "Body-only historical report",
-        body: "This report stored its substantive update in payload.body.",
+        body: `This report stored its substantive update in payload.body. Verified commit ${commit}.`,
       },
       created_at: "2026-06-12T09:00:00Z",
       updated_at: "2026-06-12T10:00:00Z",
@@ -10144,7 +10191,7 @@ test("team add-on Mail renders body, error, and generic historical payloads", { 
       state: "handled",
       payload: {
         title: "Structured diagnostic",
-        diagnostic: { code: "stale_ref", retryable: true },
+        diagnostic: { code: "stale_ref", retryable: true, commit_sha: commit },
       },
       created_at: "2026-06-11T09:00:00Z",
       updated_at: "2026-06-11T10:00:00Z",
@@ -10164,11 +10211,49 @@ test("team add-on Mail renders body, error, and generic historical payloads", { 
   await mailPage.locator(".mail-reader-body").getByText("This report stored its substantive update in payload.body.").waitFor({
     state: "visible",
   });
+  const commitBadge = mailPage.locator(".mail-reader-body").getByRole("button", { name: `Copy SHA: ${commit}`, exact: true });
+  await commitBadge.waitFor({ state: "visible" });
+  assert.match(await commitBadge.getAttribute("title"), new RegExp(commit));
 
   await mailPage.locator('[data-mail-item-id="generic-notice"]').click();
   const genericBody = await mailPage.locator(".mail-reader-body").innerText();
   assert.match(genericBody, /Diagnostic:/);
   assert.match(genericBody, /"code": "stale_ref"/);
+  assert.match(genericBody, new RegExp(`"commit_sha": "${commit}"`));
+  assert.equal(await mailPage.locator(".mail-reader-body .identifier-badge").count(), 0);
+});
+
+test("team add-on Activity copies identifiers from event and correction prose", { timeout: browserTestTimeout }, async (t) => {
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const taskId = "task-3f706adc8d414f2ab93c2d57c832eb64";
+  const { port } = await createTeamAddonServer(t, { initialState: seededGitState() });
+  const page = await openBrowserPage(t, port, { permissions: ["clipboard-read", "clipboard-write"] });
+  await waitForRevision(page, 4);
+  let eventsRead = 0;
+  await page.route("**/api/addons/team-addon/dispatch-events?*", (route) => {
+    eventsRead += 1;
+    return route.fulfill({
+      json: { total_count: 1, retention_days: 30, events: [{
+        status: "failure", agent_display_name: "Avery Reviewer", tool_name: "team_submit_deliverable",
+        summary: `Verification failed for commit ${commit}.`, error_code: "verification_failed",
+        correction_context_summary: `Continue with correction task ${taskId}.`,
+        occurred_at: "2026-09-26T12:00:00Z", dispatch_id: "dispatch-fixture",
+      }] },
+    });
+  });
+  await page.getByRole("tab", { name: "Activity", exact: true }).click();
+  const activity = page.locator("#team-activity-page");
+  const shaBadge = activity.getByRole("button", { name: `Copy SHA: ${commit}`, exact: true });
+  await shaBadge.click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), commit);
+  const taskBadge = activity.getByRole("button", { name: `Copy ID: ${taskId}`, exact: true });
+  await taskBadge.click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), taskId);
+  assert.equal(await activity.locator("code").filter({ hasText: "team_submit_deliverable" }).count(), 1);
+  const readsBeforeRevisit = eventsRead;
+  await page.getByRole("tab", { name: "Mail", exact: true }).click();
+  await page.getByRole("tab", { name: "Activity", exact: true }).click();
+  await waitForCondition(() => eventsRead > readsBeforeRevisit);
 });
 
 test("team add-on Workspace deduplicates runtime-backed tasks without crowding attention", { timeout: browserTestTimeout }, async (t) => {
@@ -11880,7 +11965,7 @@ test("team add-on activity timeline leads with human context and explains retain
                 after: "Blocked",
                 before_known: false,
               },
-              reason: "Upstream schema verification failed.",
+              reason: "Upstream schema verification failed for commit 0123456789abcdef0123456789abcdef01234567.",
               summary: "Task entered blocked: Restore customer export",
             }
           : entry,
@@ -12009,9 +12094,12 @@ test("team add-on activity timeline leads with human context and explains retain
   await entry.getByText("Blocked", { exact: true }).last().waitFor({
     state: "visible",
   });
-  await entry.getByText("Reason: Upstream schema verification failed.", { exact: true }).waitFor({
-    state: "visible",
-  });
+  const reason = entry.locator(".timeline-reason");
+  assert.match(await reason.innerText(), /Reason: Upstream schema verification failed for commit/);
+  const reasonCommit = reason.getByRole("button", { name: "Copy SHA: 0123456789abcdef0123456789abcdef01234567", exact: true });
+  await reasonCommit.click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "0123456789abcdef0123456789abcdef01234567");
+  assert.equal(await entry.locator(":scope > details").evaluate(element => element.open), true, "copying a reference keeps the event open");
   assert.equal(await technicalDetails.evaluate((element) => element.open), false);
 
   await technicalDetails.locator("summary").click();
@@ -14266,7 +14354,20 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
       "1. Review the composed delivery",
       "2. Publish the operator handoff",
       "",
+      "Reference `task-0123456789abcdef0123456789abcdef` at **0123456789abcdef0123456789abcdef01234567**.",
+      "Keep `git show 0123456789abcdef0123456789abcdef01234567` as a command.",
+      "Keep ``echo `0123456789abcdef0123456789abcdef01234567` `` as a literal command too.",
+      "```sh",
+      "git show 0123456789abcdef0123456789abcdef01234567",
+      'echo "<script>window.__unsafePlanningFence = true</script>"',
+      "```",
+      "~~~text",
+      "4fb122a3-5b64-4fa5-b5fb-3c4969ef415d",
+      "~~~",
+      "",
       "<script>window.__unsafePlanningBrief = true</script>",
+      "```text",
+      "0123456789abcdef0123456789abcdef01234567",
     ].join("\n"),
     created_by_agent_id: "alpha-manager",
     child_task_ids: [
@@ -14569,6 +14670,19 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
   assert.equal(await briefDetails.locator("ul > li").count(), 2);
   assert.equal(await briefDetails.locator("ol > li").count(), 2);
   assert.equal(await briefDetails.locator("script").count(), 0);
+  assert.equal(await briefDetails.locator("pre code").count(), 3);
+  assert.equal(await briefDetails.locator("pre .identifier-badge").count(), 0, "fenced examples preserve complete literal identifiers");
+  assert.equal(await briefDetails.locator("pre code").first().innerText(),
+    'git show 0123456789abcdef0123456789abcdef01234567\necho "<script>window.__unsafePlanningFence = true</script>"');
+  assert.equal(await briefDetails.locator("pre code").nth(1).innerText(), "4fb122a3-5b64-4fa5-b5fb-3c4969ef415d");
+  assert.equal(await briefDetails.locator("pre code").last().innerText(), "0123456789abcdef0123456789abcdef01234567", "an unfinished fence also stays literal");
+  await briefDetails.locator("p > code", { hasText: "git show 0123456789abcdef0123456789abcdef01234567" }).waitFor({ state: "visible" });
+  const nestedBacktickCommand = briefDetails.locator("p > code", { hasText: "echo `0123456789abcdef0123456789abcdef01234567` " });
+  assert.equal(await nestedBacktickCommand.count(), 1, "double-backtick commands preserve embedded single backticks");
+  assert.equal(await nestedBacktickCommand.locator(".identifier-badge").count(), 0);
+  assert.equal(await briefDetails.locator(".identifier-badge").count(), 2, "standalone narrative references are compact");
+  assert.equal(await briefDetails.locator(".identifier-badge").evaluateAll(buttons => buttons.some(button => button.parentElement.closest("button, a, label"))), false, "copy badges must not nest in interactive controls");
+  assert.equal(await page.evaluate(() => window.__unsafePlanningFence), undefined);
   assert.equal(
     await briefDetails.getByText("=== THE GAME ===", { exact: true }).count(),
     0,

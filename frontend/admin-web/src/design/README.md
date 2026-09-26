@@ -54,6 +54,15 @@ and boards in the geometry their tasks require. Loading, empty, failed, partial,
 locked, and unsaved states must remain distinct. Preserve backend field metadata,
 revision checks, authorization, and disclosure state when changing presentation.
 
+Team narratives use `team-identifiers.js` to condense full commit hashes, UUIDs, and
+generated IDs into inline badges. Hover reveals the full value; clicking or keyboard
+activation copies it. Standalone identifiers in inline backticks also support composite
+IDs with opaque hash components. Keep labels outside the backticks and lead with
+meaningful record names.
+This is presentation only: stored values, raw JSON, URLs, paths, commands, and code
+blocks retain their original content. Use the shared renderer only in prose containers,
+never inside another interactive control.
+
 Keep targets reachable by keyboard and at narrow widths. Native modal dialogs must
 block background shortcuts; nested scrolling belongs inside a real table, graph, or
 conversation. Check a representative populated view in both themes before accepting

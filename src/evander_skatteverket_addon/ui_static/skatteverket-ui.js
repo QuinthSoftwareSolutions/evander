@@ -45,6 +45,45 @@ import { onAddonPrivileges } from "./admin-design.js";
     }
   }
 
+  function renderConnectionStatus(status) {
+    connectionEl.replaceChildren();
+    const summary = document.createElement("dl");
+    summary.className = "detail-grid";
+    const add = (label, value) => {
+      const item = document.createElement("div");
+      const term = document.createElement("dt");
+      const detail = document.createElement("dd");
+      term.textContent = label;
+      detail.textContent = value;
+      item.append(term, detail);
+      summary.append(item);
+    };
+    add("Status", status.configured === false ? "Not configured" : status.ready ? "Credentials available" : "Needs attention");
+    if (status.connection_id) add("Connection", status.connection_id);
+    if (status.environment) add("Environment", status.environment === "sandbox" ? "Sandbox (test)" : status.environment);
+    if (status.configured) {
+      add("API endpoint", status.base_url_configured ? "Configured" : "Not configured");
+      add("Submission endpoint", status.submission_endpoint_configured ? "Configured" : "Not configured");
+      const enabled = status.enabled_api_names || [];
+      add("Enabled APIs", enabled.map(name => catalogApis.find(api => api.name === name)?.display_name || name).join(", ") || "None");
+    }
+    connectionEl.append(summary);
+    if (status.reason || status.missing_secret_refs?.length) {
+      const message = document.createElement("p");
+      message.className = "skv-message";
+      message.dataset.state = "error";
+      message.textContent = status.reason || `Host settings are missing: ${status.missing_secret_refs.join(", ")}.`;
+      connectionEl.append(message);
+    }
+    const details = document.createElement("details");
+    const heading = document.createElement("summary");
+    heading.textContent = "Technical details";
+    const raw = document.createElement("pre");
+    raw.textContent = JSON.stringify(status, null, 2);
+    details.append(heading, raw);
+    connectionEl.append(details);
+  }
+
   function setFormStatus(message, state) {
     formStatusEl.textContent = message || "";
     formStatusEl.dataset.state = state || "";
@@ -166,7 +205,7 @@ import { onAddonPrivileges } from "./admin-design.js";
         fetch(`${apiBase}/state`).then((response) => response.json()),
       ]);
       catalogApis = catalog.apis || [];
-      connectionEl.textContent = JSON.stringify(status, null, 2);
+      renderConnectionStatus(status);
       populateConnectionForm((state.connections || [])[0], catalogApis);
       applyPrivileges();
       renderList(catalogEl, catalogApis, "No APIs", (item) => ({

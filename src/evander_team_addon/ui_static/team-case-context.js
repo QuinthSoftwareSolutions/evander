@@ -1,3 +1,5 @@
+import { appendIdentifierText, createIdentifierBadge, isOpaqueIdentifier } from "./team-identifiers.js";
+
 export function editableRecipe(view) {
   return Object.fromEntries(["view_id", "title", "sections", "text_budget"].map((key) => [key, view[key]]));
 }
@@ -74,6 +76,17 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     node.className = className;
     return node;
   };
+  const textWithIdentifiers = (tag, className, text) => {
+    const node = classed(tag, className);
+    appendIdentifierText(node, text);
+    return node;
+  };
+  const identifier = (value, key = "id") => {
+    const text = String(value);
+    // Human-readable references and paths stay readable; opaque machine IDs get a copy badge.
+    if (!isOpaqueIdentifier(text, { explicit: true })) return classed("code", "case-context-code", text);
+    return createIdentifierBadge(documentRoot, text, { kind: /sha|digest/.test(key) ? "sha" : "id" });
+  };
   const sectionLabel = (name) => SECTION_COPY[name]?.[0] || humanizeCaseContextToken(name);
   const formatTimestamp = (value) => {
     const date = new Date(value);
@@ -103,8 +116,8 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
         time.title = value;
         return time;
       }
-      if (/(^|_)(id|ids|sha|digest|ref|refs)$/.test(key)) return classed("code", "case-context-code", value);
-      return classed(value.includes("\n") || value.length > 180 ? "div" : "span", "case-context-field-text", value);
+      if (/(^|_)(id|ids|sha|digest|ref|refs)$/.test(key)) return identifier(value, key);
+      return textWithIdentifiers(value.includes("\n") || value.length > 180 ? "div" : "span", "case-context-field-text", value);
     }
     if (Array.isArray(value)) {
       if (!value.length) return classed("span", "case-context-empty-value", "None");
@@ -147,7 +160,7 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
   function appendSourceNarrative(parent, content) {
     const body = content?.body;
     if (body && typeof body === "object" && typeof body.content === "string" && body.content.trim()) {
-      appendNarrativeBlock(parent, "Captured content", classed("div", "case-context-field-text", body.content));
+      appendNarrativeBlock(parent, "Captured content", textWithIdentifiers("div", "case-context-field-text", body.content));
     }
 
     const criteria = Array.isArray(content?.acceptance_criteria)
@@ -157,7 +170,7 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
       const list = classed("ul", "case-context-value-list");
       for (const criterion of criteria) {
         const row = element("li");
-        row.append(classed("span", "case-context-field-text", criterion.text));
+        row.append(textWithIdentifiers("span", "case-context-field-text", criterion.text));
         if (criterion.status) row.append(pill(criterion.status));
         list.append(row);
       }
@@ -173,8 +186,8 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
         const row = element("li");
         const attribution = [entry.author, entry.occurred_at ? formatTimestamp(entry.occurred_at) : null]
           .filter(Boolean).join(" · ");
-        if (attribution) row.append(classed("div", "case-context-record-meta", attribution));
-        row.append(classed("div", "case-context-field-text", entry.body));
+        if (attribution) row.append(textWithIdentifiers("div", "case-context-record-meta", attribution));
+        row.append(textWithIdentifiers("div", "case-context-field-text", entry.body));
         list.append(row);
       }
       appendNarrativeBlock(parent, "Discussion", list);
@@ -185,7 +198,7 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     const content = recordContent(record);
     const [heading, headingKey] = recordHeading(content, record);
     const header = classed("header", "case-context-record-header");
-    const title = element("h4", heading);
+    const title = textWithIdentifiers("h4", "", heading);
     const badges = classed("div", "case-context-record-badges");
     badges.append(pill(record.entity_type, "neutral"));
     const freshness = record.entity_type === "source" ? content?.effective_freshness_status : null;
@@ -208,7 +221,7 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
         if (key === headingKey || typeof value !== "string" || !value.trim()) continue;
         const block = classed("div", "case-context-narrative-block");
         block.append(classed("div", "case-context-field-label", humanizeCaseContextToken(key)));
-        block.append(classed("div", "case-context-field-text", value));
+        block.append(textWithIdentifiers("div", "case-context-field-text", value));
         narrative.append(block);
       }
       if (record.entity_type === "source") appendSourceNarrative(narrative, content);
@@ -231,10 +244,10 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
       technical.append(structuredValue(content, "content"));
       const provenance = classed("dl", "case-context-field-grid provenance");
       provenance.append(element("dt", "Record ID"));
-      const id = element("dd"); id.append(classed("code", "case-context-code", record.id)); provenance.append(id);
+      const id = element("dd"); id.append(identifier(record.id)); provenance.append(id);
       if (record.provenance?.digest) {
         provenance.append(element("dt", "Evidence digest"));
-        const digest = element("dd"); digest.append(classed("code", "case-context-code", record.provenance.digest)); provenance.append(digest);
+        const digest = element("dd"); digest.append(identifier(record.provenance.digest, "digest")); provenance.append(digest);
       }
       technical.append(provenance);
       const raw = classed("details", "case-context-raw-disclosure");
@@ -260,7 +273,11 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     wrapper.append(node);
     return wrapper;
   }
-  function message(value) { dialog.querySelector("[data-context-status]").textContent = value; }
+  function message(value) {
+    const status = dialog.querySelector("[data-context-status]");
+    status.replaceChildren();
+    appendIdentifierText(status, value);
+  }
   function button(label, handler) {
     const node = element("button", label);
     node.type = "button";
@@ -278,7 +295,7 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     const totalRecords = (context.sections || []).reduce((total, section) => total + Number(section.total || 0), 0);
     const overview = classed("header", "case-context-overview");
     const overviewCopy = classed("div", "case-context-overview-copy");
-    overviewCopy.append(element("h3", context.view?.title || "Case context"));
+    overviewCopy.append(textWithIdentifiers("h3", "", context.view?.title || "Case context"));
     overviewCopy.append(classed(
       "p", "case-context-overview-meta",
       `${selectedSnapshot ? "Frozen snapshot" : draft ? "Draft preview" : "Live context"} · View version ${context.view?.version || 1} · Evidence revision ${context.revision}`,
@@ -293,7 +310,7 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
       warnings.open = true;
       warnings.append(element("summary", `${context.omissions.length} context warning${context.omissions.length === 1 ? "" : "s"}`));
       const list = element("ul");
-      for (const warning of context.omissions) list.append(element("li", caseContextWarningText(warning)));
+      for (const warning of context.omissions) list.append(textWithIdentifiers("li", "", caseContextWarningText(warning)));
       warnings.append(list);
       output.append(warnings);
     }
@@ -373,7 +390,7 @@ export function createCaseContextController({ documentRoot, teamFetch, apiBase, 
     if (dialog) dialog.remove();
     dialog = element("dialog"); dialog.className = "case-context-dialog";
     const dialogHeader = classed("header", "case-context-dialog-header");
-    dialogHeader.append(element("h2", `Case context: ${item?.title || id}`), button("Close", () => { generation++; dialog.close(); }));
+    dialogHeader.append(textWithIdentifiers("h2", "", `Case context: ${item?.title || id}`), button("Close", () => { generation++; dialog.close(); }));
     const status = classed("p", "case-context-status", "Loading context…"); status.dataset.contextStatus = ""; status.setAttribute("role", "status");
     const output = classed("section", "case-context-output"); output.dataset.contextOutput = "";
     dialog.append(dialogHeader, status, output);

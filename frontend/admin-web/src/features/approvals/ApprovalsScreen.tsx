@@ -743,6 +743,8 @@ export function ApprovalsScreen() {
               <span>Older than (minutes)</span>
             </Tooltip>
             <input
+              type="number"
+              min="0"
               value={filters.minAgeMinutes}
               onChange={(event) => setFilters((current) => ({ ...current, minAgeMinutes: event.target.value }))}
               placeholder="5"
@@ -778,7 +780,8 @@ export function ApprovalsScreen() {
                 <div className="feature-list-meta">{formatTimestamp(item.created_at)}</div>
               </button>
             ))}
-            {!loading && items.length === 0 ? (
+            {loading && items.length === 0 ? <div className="empty-state" role="status">Loading approval requests...</div> : null}
+            {!loading && !error && items.length === 0 ? (
               <div className="empty-state">No approval requests matched the current filters.</div>
             ) : null}
           </div>

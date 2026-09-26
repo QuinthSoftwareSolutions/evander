@@ -88,7 +88,7 @@ The names below often appear in status messages or an administrator's explanatio
 | Azure DevOps feedback and proxy issue state | `evander-ado-worker.service`, `evander-proxy-issue-sync.service` | When Azure DevOps supplies review feedback or locally mirrored issue state. |
 | Discord intake and wakes | `evander-discord-ingest.service`, `evander-discord-wake.service` | When Discord messages are ingested or allowed to wake an agent. |
 | Scheduled resumes | `evander-scheduled-wake.service` | When a session should resume at a recorded future time. |
-| Teams intake | `evander-teams-ingest.service`, `evander-teams-meeting-ingest.service` | When Teams messages, meetings, or media enter configured flows. |
+| Teams intake | `evander-teams-ingest.service`, `evander-teams-notifications.service`, `evander-teams-meeting-ingest.service` | When Teams messages, optional Graph callbacks, meetings, or media enter configured flows. |
 | Packages and approved HTTP targets | NuGet relay, npm-audit facade, optional package caches, HTTP target relay | When a workspace needs one of those controlled outside routes. |
 | Telephony | `evander-didww-sip-bridge.service` | When the DIDWW integration is configured. |
 | Remote container execution | `evander-worker-daemon` on a worker VM | Only when the selected backend uses disposable worker containers. |
@@ -168,7 +168,9 @@ Admin Web deliberately defaults to loopback. Exposing it through a reverse proxy
 |---|---|---:|---|---|
 | Codex subscription egress proxy | `evander-codex-egress-proxy` | `127.0.0.1:11889`; private control-plane IP under Ansible | Configured container workers | Restricts worker source CIDRs and OpenAI/ChatGPT destinations; it is not a guest firewall surface. |
 | NuGet relay | `evander-nuget-relay` | `0.0.0.0:11666` | Workspace package client | Narrow NuGet package surface; `/healthz` is available. |
-| HTTP target relay | `evander-http-target-relay` | `0.0.0.0:11777` | Session with a configured target alias | Constrains external HTTP targets; forwards guest-managed authentication rather than injecting a host secret. |
+| HTTP target relay | `evander-http-target-relay` | `0.0.0.0:11777` | Session with a configured target alias | Constrains target requests; ordinary requests forward guest-managed auth. Explicitly granted managed website sessions can obtain host-managed login state. |
+| HTTP target browser proxy | `evander-http-target-browser-proxy` | `0.0.0.0:11778` | Authenticated session browser | Preserves real origins while restricting access to configured session targets. |
+| Teams notifications | `evander-teams-notifications` | `127.0.0.1:11882` | Reverse proxy for configured Graph callbacks | Validates and durably queues notifications; an independent processor retrieves exact messages. |
 | npm audit facade | `evander-npm-audit-facade` | `0.0.0.0:11881` | Workspace npm tooling | Narrow audit compatibility surface. |
 | DIDWW SIP bridge | `evander-didww-sip-bridge` | Configurable; example is loopback `11888` | Host telephony integration | Host-local integration; do not confuse its example port with the worker daemon on a separate host. |
 | Worker daemon | `evander-worker-daemon` | CLI default `127.0.0.1:11888`; Ansible worker default `0.0.0.0:11888` | Authenticated control plane on the constrained worker network | Deployed by `ansible/worker.yml`, not the control-plane service installer. |
@@ -184,6 +186,7 @@ Admin Web deliberately defaults to loopback. Exposing it through a reverse proxy
 | `11434` | OpenAI-compatible model relay |
 | `11666` | NuGet relay |
 | `11777` | HTTP target relay |
+| `11778` | HTTP target browser proxy |
 | `11881` | npm audit facade |
 | `8081` | Optional Nexus PyPI/npm cache |
 | `3142` | Optional apt-cacher-ng provisioning cache |
@@ -211,7 +214,8 @@ Opening a port establishes a route. The service still applies its own session pr
 | `evander-discord-wake.service` | Turn eligible Discord messages into agent wake activity. |
 | `evander-scheduled-wake.service` | Resume sessions whose scheduled wake is due. |
 | `evander-managed-git-refresh.service` | Refresh an authorized managed repository before clone, fetch, pull, or archive reads. |
-| `evander-teams-ingest.service` | Run `evander-cli teams-ingest` through `scripts/run_teams_ingest.sh`. |
+| `evander-teams-ingest.service` | Run `evander-cli teams-ingest` through `scripts/run_teams_ingest.sh`; poll authorized targets and reconcile optional Graph subscriptions. |
+| `evander-teams-notifications.service` | Validate Graph callbacks, persist a notification queue, and process exact-message retrieval independently of fallback polling. |
 | `evander-teams-meeting-ingest.service` | Ingest configured Teams meeting media and events. |
 
 Most background services poll a provider or consume a queue rather than accept public network connections.
@@ -220,7 +224,11 @@ There is no current `evander-host-heartbeat.service`. Older references to it are
 
 ## Administrator reference: installation and shared state
 
-On a systemd-based host, `scripts/install_systemd_units.sh` renders and enables the firewall, gateway, Admin Web, OpenAI relay, Codex subscription egress proxy, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay, ADO and proxy workers, Discord ingest and wake, scheduled wake, Teams ingest and meeting ingest, and both orchestrators.
+On a systemd-based host, `scripts/install_systemd_units.sh` renders and enables the control-plane
+units listed in Chapter 28, including the HTTP browser proxy, managed Git refresh broker, and Teams
+notification listener. It prints start commands without starting the services. The
+`evander-team-runtime.target` groups the gateway, Admin Web, and both orchestrators so their Team
+runtime generations can be restarted together; Team work runs within those processes.
 
 > <span class="sidebar-kicker">Administrator note</span> **Enabled does not mean configured or healthy**
 >
