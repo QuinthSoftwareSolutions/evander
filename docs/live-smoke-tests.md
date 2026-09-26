@@ -1,23 +1,14 @@
 # Live Smoke Tests
 
-## Core classification (opt-in)
-
-After provisioning the host credential and enabling the target directory's classification
-settings, run `./.venv/bin/python scripts/smoke_classification.py --live --runtime-dir runtime
---directory-path root` on the control plane. This makes a billable request with synthetic input
-and prints normalized answers and usage. It does not enable classification or alter workflows.
-The assistant-level routing corpus has a separate opt-in check: `./.venv/bin/python
-scripts/smoke_classifier_switch.py --live --runtime-dir runtime --directory-path root`. It makes
-one billable call per labeled sample and does not edit workflows or assistant settings.
-See [Classification](classification.md) for profile setup and verification details.
-
-This runbook verifies live `Discord + read-only email` behavior in two stages:
+The core communication smoke verifies live Discord and read-only email in two stages:
 
 1. Host gateway only
 2. Full VM end to end
 
-The intent is to validate real credentials, policy enforcement, and host/guest wiring without
-enabling send flows or touching non-test destinations.
+Optional sections cover classification, subscription egress, attachment transfer, and managed Git
+acceptance. Select the checks that match the deployment, record which ran, and keep results from
+different runs separate. The core smoke posts a Discord status but leaves email sending disabled;
+outbound attachment checks require their own explicit send enablement and matching approval.
 
 ## Scope
 
@@ -31,7 +22,29 @@ enabling send flows or touching non-test destinations.
 - Providers:
   - one dedicated Gmail test mailbox
   - one dedicated Microsoft Graph test mailbox
-- Email send remains disabled.
+- Email send remains disabled during the core communication smoke.
+
+Start with a broad read-only check:
+
+```bash
+evander-cli status --runtime-dir runtime --json
+```
+
+Use command-level timeouts for automated browser and end-to-end checks. A timed-out check is
+incomplete: stop its process, retain the timeout and last useful output, and continue only with
+bounded checks. A responsive health endpoint proves reachability, not successful provider auth
+or an end-to-end task.
+
+## Optional classification smoke
+
+After provisioning the host credential and enabling the target directory's classification
+settings, run `./.venv/bin/python scripts/smoke_classification.py --live --runtime-dir runtime
+--directory-path root` on the control plane. This makes a billable request with synthetic input
+and prints normalized answers and usage. It does not enable classification or alter workflows.
+The assistant-level routing corpus has a separate opt-in check: `./.venv/bin/python
+scripts/smoke_classifier_switch.py --live --runtime-dir runtime --directory-path root`. It makes
+one billable call per labeled sample and does not edit workflows or assistant settings.
+See [Classification](classification.md) for profile setup and verification details.
 
 ## Optional Codex Subscription Egress Smoke
 
@@ -70,7 +83,9 @@ direct public egress to make this smoke pass.
 
 ## Suggested Test Fixture Config
 
-Use dedicated mailbox IDs and keep allowlists narrow:
+Use dedicated mailbox IDs and keep allowlists narrow. This YAML illustrates effective settings
+from several domains; it is not a gateway YAML file to load. Configure provider, email, and policy
+fields in their respective directory domains through Admin Web or `directories config-set`.
 
 ```yaml
 discord_backend: "bot_api"
@@ -191,7 +206,8 @@ Expected audit behavior:
 
 ## Stage B: Full VM End-to-End
 
-Launch a fresh VM for the same session:
+Launch a fresh VM for the same session. Use the destroy command only for this run's dedicated
+test VM; if the name belongs to another session, choose a new name instead.
 
 If you are validating a non-default libvirt base image, use
 [libvirt-vm-template-operations.md](libvirt-vm-template-operations.md) for the alias registration,
@@ -273,7 +289,8 @@ the same dedicated test destinations.
    and the exact file-send approval is passed as `request_id`. If MCP tool approval is also
    required, pass that separate approval as `approval_request_id`. The older
    `email_send_approved_with_attachments` compatibility tool can still be used for legacy smokes.
-7. Immediately return `communication_file_send_enabled` to `false` after the outbound test.
+7. Immediately return `communication_file_send_enabled` to `false` after the outbound test, and
+   restore `email_send_enabled: false` if it was enabled for the email send check.
 
 ### Attachment audit checks
 
@@ -344,12 +361,17 @@ The smoke test passes only if all of these are true:
 - only allowlisted Discord/email operations succeed
 - blocked Discord/email operations are denied and audited
 - provider auth/timeout failures are audited as `adapter_http_error`
-- no email send flow is enabled or exercised
+- no email send flow is enabled or exercised during the core smoke
 - all visible artifacts stay within dedicated test channels and test mailboxes
 - optional attachment tests use dedicated Discord, Teams, Gmail, and Graph destinations only, and
   outbound attachment sends occur only with matching approval when send policy is intentionally enabled
-- when migration acceptance is in scope, both execution backends use the same managed repository,
+- when managed Git acceptance is in scope, both execution backends use the same managed repository,
   publication matches the pinned SHA, operation worktrees clean up, and finalization remains explicit
+
+Report each optional smoke independently. Passing classification or proxy reachability does not
+establish that communication, subscription inference, or Git publication passed. If an optional
+outbound email test runs, record it separately from the core read-only email result and restore
+the temporary send settings afterward.
 
 ## Failure Triage
 

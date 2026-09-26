@@ -1,10 +1,10 @@
 {
   "title": "Evander Technical Manual",
   "subtitle": "Core Platform and Team Add-on",
-  "edition": "1.0",
-  "project_version": "0.3.1",
-  "publication_date": "2026-07-29",
-  "verified_commit": "418936fa752c95714cf940651149909a9bbb62a4",
+  "edition": "1.1",
+  "project_version": "0.64.0",
+  "publication_date": "2026-09-26",
+  "verified_commit": "f06ac65fba53677fc64c3a5d630ec44942a721a2",
   "language": "en",
   "parts": [
     {

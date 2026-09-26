@@ -34,10 +34,11 @@ comments and other links, suitable for appending to the configured Admin base UR
 
 ## Workflow configuration
 
-Deploy version 0.38.0 before using these workflow fields. Deployment does not
-modify workflow packs or post provider comments. Intake eligibility, case creation,
-and progress-link notifications belong in operator-owned workflows edited with
-revision checks.
+Before adding these fields to an older deployment, check its workflow catalog for
+`reuse_existing` and `task_board_path` support. Installing or upgrading Evander does
+not modify workflow packs or post provider comments. Intake eligibility, case
+creation, and progress-link notifications belong in operator-owned workflows
+edited with revision checks.
 
 The case board reports task execution and completion; it does not treat an intake
 task being finished as proof that the whole case has been released or deployed.

@@ -2,6 +2,9 @@
 
 ## 2026-09-26 - Improve Admin Web readability and usability (0.64.0)
 
+- Refresh the documentation map and first-run path; align operator, configuration, execution,
+  Team, and recovery guidance with current behavior and publish an updated technical manual.
+
 - Keep populated record lists from overlapping, align checkbox filters with adjacent fields,
   and remove duplicate search borders across the shared compact design.
 - Keep the page finder search visible and scroll keyboard-selected results into view.

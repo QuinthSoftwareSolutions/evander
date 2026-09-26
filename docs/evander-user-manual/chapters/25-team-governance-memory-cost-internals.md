@@ -128,9 +128,17 @@ Search results are checked again against current visibility. Finding or possessi
 
 ## Cost as an operational guard
 
-A cost cap is a brake on future Team wakes, not a billing system. The displayed total is an estimated lifetime amount based on the usage Evander can price and attribute. Always read it together with its coverage information.
+A cost cap limits future Team wakes against the active budget window. The report also
+retains the lifetime total. Both depend on the usage Evander can price and attribute;
+read them together with their coverage information.
 
-When a Team reaches its cap, future Team wakes are blocked, including queued Chat. Existing external provider spend may already have occurred, and unrelated core workloads are not retroactively canceled. Raising or clearing the cap re-enables evaluation; do so only after understanding coverage.
+When a Team reaches its cap, future Team wakes are blocked, including queued Chat.
+Existing external provider spend may already have occurred, and unrelated core workloads
+are not retroactively canceled. An operator can start a new window with a revision-checked
+budget reset and reason, raise or clear the cap, or configure monthly renewal at 00:00 UTC
+on the first day of each month. Monthly windows do not carry unused budget forward.
+Legacy caps remain lifetime-based until their first explicit reset; an upgrade does not
+silently authorize more spending.
 
 Each Team has a durable governance warning ratio, defaulting to `0.8`. When a
 governed Team reaches that portion of its own cap, governance can emit a
@@ -150,7 +158,17 @@ change them. A warning is not proof of exact invoiced spend.
 > - <code>coverage_status</code>;
 > - <code>coverage_reasons</code>.
 >
-> These totals are an estimated lifetime operational safety rail, not billing-grade truth. Missing prices, incomplete attribution, transcript gaps, or ingestion delay can produce partial coverage.
+> Where a catalog estimate is unavailable, a provider-reported USD charge contributes
+> to the total and budget. The report keeps estimated and reported amounts separate
+> and does not add both for the same deduplicated event. Missing prices, incomplete
+> attribution, transcript gaps, or ingestion delay can still produce partial coverage.
+
+The cost report uses a durable derived projection at
+<code>runtime/team-cost-report.db</code>. Ordinary reads refresh changed request
+groups, including late transcript imports, corrections, and deletions. The first
+read, repricing, or a budget-window change can rebuild the projection from usage
+history. Preserve <code>runtime/model-usage.db</code>, attribution context, pricing,
+and Team policy for recovery; the report projection alone is not usage evidence.
 
 ## What an operator should be able to explain
 
@@ -177,7 +195,7 @@ Use the table below to identify the first authoritative source an administrator 
 | Async action missing | Team outbox row, internal event, workflow run, effect result |
 | Git release discrepancy | release package, promotion record, managed bare ref, canonical push effect, remote ref |
 | Memory search omission | canonical memory visibility, Qdrant health/index generation, query result |
-| Cost discrepancy | model-usage DB, attribution metadata, pricing catalog, coverage reasons |
+| Cost discrepancy | model-usage DB, attribution metadata, pricing catalog, estimated/reported totals, active budget window, coverage reasons |
 | Voice discrepancy | core voice-session store and optional Team Chat projection |
 
 Avoid broad guesses from UI appearance alone. If a private memory record appears to the wrong identity, treat that as an authorization incident and preserve the query context immediately.
@@ -277,10 +295,10 @@ Do not replay legacy JSON over restored relational state.
 
 ### Cost
 
-1. Read totals together with coverage status/reasons and unpriced usage.
+1. Read active-window and lifetime totals together with coverage status/reasons and unpriced usage.
 2. Trace attribution to session, dispatch, project, and ephemeral metadata.
 3. Compare the active pricing catalog with event timestamps/models.
-4. Change caps only with explicit operational intent.
+4. Use the supported budget reset with a reason when authorizing a new window; retain earlier window history.
 
 ### Internals
 

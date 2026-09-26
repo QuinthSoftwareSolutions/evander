@@ -108,6 +108,26 @@ views appear consistent; refresh or retry the operation that owns the missing ha
 > host and pass size and content checks before Evander makes them available. Arbitrary HTML or image
 > URLs in an issue body are not fetched merely because a provider returned them.
 
+## Query work-item activity
+
+`query_ado_work_item_activity` reads created, changed, and commented activity for a
+time window, with optional actor, project, state, type, and tag filters. It uses the
+session's directory connector and requires the tool in the session policy. It does
+not change work items or create local issue proxies.
+
+The default scan considers at most 50 candidate work items. `top` and `skip` page
+the matching work items after their histories have been inspected; `next_skip`
+continues that result set. Check `paging.candidate_scan_complete` and the
+`total_matches_complete` flags before treating counts as complete. When the candidate
+limit is reached, `has_more` can be true even if `next_skip` is absent: increase
+`max_candidates`, narrow the time window, or explicitly request `exhaustive=true`
+to broaden the scan. Paging an incomplete result does not expand its candidate scope.
+
+Each request freezes the candidate IDs from one WIQL query and reads candidate
+histories concurrently. Deleted or inaccessible batch items still consume their
+candidate positions, so an omitted item does not skip a later page. This improves
+bounded activity reads without changing the meaning of the returned activity.
+
 ## Reviews and merge checks
 
 During review, the important promise is that Evander checks the provider's current pull-request

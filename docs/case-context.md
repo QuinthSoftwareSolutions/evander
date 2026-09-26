@@ -156,8 +156,20 @@ provide packaging context, not evidence of what the implementer knew at the time
 
 Open **Cases → Context** to select a view, inspect warnings and full evidence,
 preview/edit a recipe, save a new version, inspect version history, freeze a saved
-view, or page through snapshots. Draft preview is read-only. Saving/freeze requests
-use the current Team revision; conflicts must be refreshed, not overwritten.
+view, or page through snapshots.
+
+The overview groups evidence into expandable sections. Records show their title,
+status or source freshness, timestamp, and narrative before technical fields.
+Use **Record fields and provenance** for structured values and evidence digests,
+and **Raw JSON** for the underlying record content. Opaque IDs and SHAs appear as
+short badges: hover for the complete value or activate a badge to copy it. Stored
+evidence, links, paths, and commands retain their original values.
+
+**Shortened** and context warnings identify previews that omit content. Choose
+**Load complete records**, then **Load next record page** when available, to read
+beyond the brief. A draft recipe preview cannot page through full evidence; save
+the recipe first. Draft preview is read-only. Saving/freeze requests use the current
+Team revision; conflicts must be refreshed, not overwritten.
 
 All paths below are relative to `/api/addons/team-addon`:
 
@@ -181,40 +193,29 @@ get additive tables/columns; keep normal pre-upgrade backups. Immutable context
 history is durable and currently retained until an operator-managed retention
 policy is introduced—there is no automatic pruning in this version.
 
-## App rollout boundary
+## Integrate context into a workflow
 
-This change supplies application code, tests and an opt-in
-[workflow example](../config/workflow-packs/case-context.v1-example.json).
-It does **not** deploy services or edit live control-plane workflows.
+The [workflow example](../config/workflow-packs/case-context.v1-example.json) is
+opt-in. Installing Evander does not import it or alter operator-owned workflows.
 
-After Jonathan's CI/CD deployment is confirmed:
-
-1. Re-read deployed capabilities, the App agent/session configuration, and current
-   intake, owner-comment and release workflow documents with their revisions/locks.
-2. Add source capture after intake creates/resolves its case, and after relevant
-   ADO owner/Trudy discussion updates, before dispatching dependent work. Use the
-   existing case identity, host connector and directory; do not derive authority
-   or recipient sessions from comment text. Update the App planner/implementer/
-   reviewer guidance to record concise decisions and rationale at useful handoffs.
-3. Before the main release-packager prompt, query context by the **exact release
-   package**, refresh its returned case IDs, then snapshot using the exact
-   candidate SHA and already validated analysis-base SHA. Pin/review the
-   `app-release-brief` recipe and use a deterministic request key containing that
-   release/candidate/base and packaging contract version. This includes predecessor
-   and correction history, not just the latest top-level deliverable.
-4. Grant `app-release-packager` only `team_get_case_context_snapshot` in addition to
-   its existing tools, and grant the exact snapshot to that session. Pass the
-   snapshot ID, bounded text, omissions and pinned Git identities in the prompt.
-   Require source-supported intent plus independent diff inspection. Preserve the
-   existing v5 output JSON schema, size limits, artifact paths and verification
-   policy; do not introduce a release-description test rerun.
-5. Keep snapshot identity across packaging retries/repair prompts. Do not reuse the
-   App-specific change for another packager path (for example OPC) without reviewing
-   that workflow's scope. Save through supported revision-pinned APIs, validate and
-   read back. Never overwrite live pack files from a stale local copy.
-6. Run a bounded synthetic case through capture, note, correction, resumed-wake
-   delta and packaging snapshot reads. Verify grant denial from another session,
-   source-failure warnings, unchanged v5 output acceptance, and non-release use.
-
-Workflow application and any necessary orchestrator reload/restart belong to that
-separate, explicitly authorized post-deployment phase.
+1. Confirm that the deployed catalog exposes the context nodes and tools. Read the
+   current intake, discussion-update, and release workflows with their revisions
+   and editor locks before changing them.
+2. Capture source evidence after intake creates or resolves a case and after
+   relevant provider discussion updates, before dispatching dependent work. Use
+   the existing case identity, host connector, and directory. Recipient sessions
+   and authority must come from configuration, not source text.
+3. For release packaging, query context by the exact release package, refresh its
+   returned case IDs, and snapshot the selected view with the candidate SHA and
+   validated analysis-base SHA. A deterministic request key should identify the
+   release, candidate, base, and packaging contract version.
+4. If the consumer is a detached session, allow `team_get_case_context_snapshot`
+   in its policy and grant that exact snapshot to its session ID. Pass the snapshot
+   ID, bounded text, omissions, and Git identities in the prompt. Context supplies
+   intent and provenance; the consumer still inspects the candidate diff and follows
+   its existing output and verification contract.
+5. Reuse the snapshot identity across retries. Save workflow changes through the
+   revision-checked API, validate, and read back the saved document.
+6. Verify with a synthetic case: source capture, a superseding note, a resumed-wake
+   delta, and snapshot retrieval. Include denied retrieval from another session,
+   source-refresh failure, and an ordinary case without a release.

@@ -2,7 +2,7 @@
 
 > **At a glance.** Source code, produced files, approved inbound host files, and a quick question about a repository are different kinds of things, so Evander moves them in different ways. Git carries exact versions of code; artifact storage carries durable result files; a Host Directory imports from one approved root; a consultation gives a temporary reader one bounded question. Choosing the right route keeps the result traceable without exposing arbitrary folders on the host.
 
-## Three kinds of movement
+## Choosing a transport
 
 It helps to begin with the thing being moved:
 
@@ -181,7 +181,7 @@ This makes a race visible instead of letting stale automation overwrite a newer 
 
 ### Ephemeral host worktrees
 
-Most managed Git operations manipulate bare refs. Operations that genuinely require files create a unique detached worktree at:
+Most managed Git operations manipulate bare refs. Operations that require checked-out files create a unique detached worktree at:
 
 ```text
 runtime/git-worktrees/<managed_repo_id>/<operation-id>/checkout

@@ -1,5 +1,19 @@
 # Running and maintaining the test suite
 
+## Choose useful checks
+
+Start with the suites that exercise the changed behavior. A new test must identify
+a realistic regression and assert the observable behavior it protects through a
+stable boundary. Derive expected results independently of the fixture; reading back
+values the test just supplied does not establish correctness.
+
+Prefer failure and boundary cases involving permissions, isolation, persistence,
+retries, and recovery. Use source-text assertions only when the source artifact
+itself is the contract. For schemas, check fields, defaults, and validation. For
+documentation, check links, commands, and publication integrity rather than keywords
+in prose. Keep the strongest coverage for each behavior and reassess tests when
+the production path changes.
+
 ## Complete Python run
 
 Install the locked development dependencies and use the complete runner from the repository root:
@@ -11,8 +25,8 @@ uv sync --frozen --extra dev
 
 The default is at most four pytest-xdist workers. Work stealing balances independent cases
 across workers, including cases from large modules. After those workers exit, every test marked
-`performance` runs serially. Those tests assert real elapsed-time limits, and their limits and
-workloads are unchanged. Documentation checks remain in the complete run.
+`performance` runs serially. Those tests assert real elapsed-time limits, so they
+run outside the parallel pool. Documentation checks remain in the complete run.
 
 ```bash
 # The same complete selection in one process, for debugging or comparison.
@@ -70,9 +84,9 @@ From `frontend/admin-web`:
 
 ```bash
 npm run test:unit       # Function and source-contract checks.
-npm run test:browser    # The browser cases formerly mixed into npm test.
-npm test               # Both of the above; preserves the previous default selection.
-npm run build          # Prepare packaged New and Classic UI assets for smoke tests.
+timeout --kill-after=10s 600s npm run test:browser
+timeout --kill-after=10s 600s npm test   # Unit and browser cases.
+timeout --kill-after=10s 600s npm run build  # Package New and Classic UI assets.
 timeout --kill-after=10s 600s npm run test:all
 ```
 
@@ -82,14 +96,22 @@ assets; keep generated build changes out of unrelated source patches. Browser pr
 shared within a file, while every case gets a new browser context and mutable fixture state.
 See [frontend test notes](../frontend/admin-web/test/README.md).
 
+If a UI or smoke command reaches its deadline, stop its remaining descendants and
+record the command, timeout, and last useful output. Continue with focused checks
+that cover the change; do not leave a stalled broad run in the background. A passing
+nearby assertion does not establish that the timed-out command completed.
+
 ## Preserving coverage during cleanup
 
-- A deletion must identify the retained test and identical invariant. Similar names or setup
-  are insufficient evidence that two cases are redundant.
-- Parameterization preserves every original payload, negative case, boundary, and assertion.
-  Compare collected node IDs and document renamed or split cases.
+- For duplicate coverage, identify the retained stronger test and the same invariant.
+  Similar names or setup are insufficient evidence of duplication. Remove tests for
+  dead paths and tests that only restate their fixtures rather than preserving them
+  for their pass count.
+- Parameterization must preserve distinct behavior, negative cases, and boundaries.
+  Compare collected node IDs and document renamed, split, or intentionally removed cases.
 - Shared builders keep setup explicit and do not hide assertions or share mutable objects.
-- Replace source-text checks with behavior checks before removing the old assertions.
+- Replace valuable source-text checks with behavior checks. Remove incidental
+  wording or implementation-placement assertions when they protect no contract.
 - Keep authorization, failure, retries, concurrency, migrations, and performance workloads
   intact. Never weaken thresholds or skip failures to report a faster run.
 - Compare elapsed time only after changes settle and other test jobs have stopped. Record the

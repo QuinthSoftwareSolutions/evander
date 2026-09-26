@@ -1,10 +1,5 @@
 # Container Worker Backend
 
-Read-only toolchain mount sources are pinned per session. The .NET provisioner validates
-immutable bundles before atomically selecting one for future sessions. See
-[release recovery and toolchain rollout](release-recovery-and-verifier-policy.md#immutable-worker-sdk-rollout)
-for migration, drain, retention and rollback precautions.
-
 `evander-worker-daemon` is the worker-VM side of the container execution backend. It exposes a small HTTP API for starting, inspecting, stopping, deleting, and reading logs for jobs that run inside disposable Docker containers.
 
 The daemon is intentionally primarily an execution envelope. It does not receive control-plane
@@ -13,11 +8,23 @@ ChatGPT subscription execution is enabled, the worker additionally owns a regist
 authentication profiles and their durable credential homes; those files are never mounted into job
 containers.
 
+Start with [control-plane configuration](#control-plane-configuration) and the
+[operator runbook](#operator-runbook). For existing deployments, read
+[changing the default worker](#changing-the-default-worker) before changing placement and
+[session durability](#session-durability) before cleanup.
+
+Read-only toolchain mount sources are pinned per session. The .NET provisioner validates
+immutable bundles before atomically selecting one for future sessions. See
+[release recovery and toolchain rollout](release-recovery-and-verifier-policy.md#immutable-worker-sdk-rollout)
+for migration, drain, retention, and rollback precautions.
+
 ## Control-Plane Configuration
 
 `container_worker_vm` selects a default worker for new sessions. Existing sessions retain
 their assigned worker when that default changes. Configure the host gateway with the worker
-URL and the environment variable that contains the bearer token:
+URL and the environment variable that contains the bearer token through the directory's
+`providers` domain. Examples in YAML show the field names; persisted `providers.json` overlays
+use JSON, and legacy gateway YAML is not accepted.
 
 ```yaml
 execution_backend: container_worker_vm
@@ -446,8 +453,8 @@ Container sessions write `/home/agent/.config/pip/pip.conf` and `/home/agent/.np
 
 ## Worker Egress Policy
 
-The Docker sandbox profile still starts from `--network none`. Worker deploys can override the
-daemon network for the supported single-worker slice, but `host` is refused. Any non-`none`
+The Docker sandbox profile starts from `--network none`. Ansible worker deployments can override
+the daemon network, but do not allow `host`. Any non-`none`
 network on the worker VM must be paired with `evander_worker_egress_policy_enabled: true`
 and an explicit allowlist. The worker-managed policy installs rules in `DOCKER-USER`, blocks
 `169.254.0.0/16` including `169.254.169.254`, and only then permits named private endpoints.
@@ -517,7 +524,7 @@ npm and pip need their own registry proxy or mirror; they are not handled by the
 
 ## Operator Runbook
 
-For the Azure/single-worker slice, set the worker network override and enable the egress policy in
+For an Ansible-managed worker, set the worker network override and enable the egress policy in
 inventory:
 
 ```yaml
@@ -557,6 +564,13 @@ restricted OpenAI egress proxy. After confirming an old worker daemon is gone, r
 specific stale `evander-codex-auth-*` utility container before retrying that profile.
 The compatibility broker lock remains at `<worker-root>/codex-auth/.broker.lock`; named-profile
 locks live at `<worker-root>/codex-auth/profiles/<profile-id>/.broker.lock`.
+
+The utility container uses a writable 16 MiB tmpfs at `/home/agent` for `HOME` and mounts the
+durable profile at `/codex-auth` for `CODEX_HOME`. This lets Codex initialize its home when the
+configured UID/GID differs from the image's `agent` user. If device login fails with a home-directory
+permission error after an upgrade, verify the worker is running the current generated auth
+command and that its configured user can write the profile directory. Do not mount a session
+home or broaden access to other profiles as a workaround.
 
 The first successful device login pins the OpenAI account ID in the registry. A later login must
 resolve to the same account; a mismatch is logged out and rejected. Use a new profile ID for a
@@ -956,7 +970,7 @@ Container worker execution is exposed as an explicit operator-only path:
 ```bash
 evander-cli execution start-container-job \
   --session-id demo-session \
-  --directory root \
+  --directory-path root \
   --target-name demo-container-1 \
   --image evander-runner:latest \
   --memory 512m \
@@ -1099,7 +1113,7 @@ Docker is used as a local container runtime on the worker VM. The default sandbo
 - working directory `/home/agent`
 
 The Docker network can be overridden with worker config or `--docker-network`, but `host` is
-refused. In the Ansible-managed single-worker path, any non-`none` worker Docker network must be
+refused by default. In the Ansible-managed path, any non-`none` worker Docker network must be
 paired with `evander_worker_egress_policy_enabled: true`. That policy installs a
 default-deny `DOCKER-USER` chain for the configured container network, blocks `169.254.0.0/16`, and
 allows only the configured private control-plane endpoints. Workers should not have direct
@@ -1119,7 +1133,9 @@ The `strict` sandbox profile keeps the default profile behavior and also adds:
 - `--tmpfs /tmp:rw,noexec,nosuid,size=4g`
 - `--pids-limit 512` when the job did not provide its own pids limit
 
-Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and `--container-user`. `--docker-network` and `EVANDER_WORKER_DOCKER_NETWORK` override the selected profile network, but `host` remains rejected.
+Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and
+`--container-user`. `--docker-network` and `EVANDER_WORKER_DOCKER_NETWORK` override the selected
+profile network. `host` requires the explicit unsafe local-experiment override described above.
 
 Non-`none` networking requires the worker egress policy before it can protect cloud metadata or
 adjacent infrastructure endpoints. Do not treat a Docker network override as a
@@ -1137,8 +1153,8 @@ The job store must not contain request headers, bearer tokens, host credentials,
 
 ## Current Limitations
 
-The current implementation provides the worker-side daemon, durable session model, explicit worker
-container sandbox profile, and host control-plane backend for a single configured worker URL. It
-does not replace the existing libvirt backend, implement scheduling, implement AKS/Kubernetes,
-autoscale workers, publish PRs, add secret transport, or migrate the full issue/prompt
-orchestration stack.
+The backend supports a directory default plus named workers and durable per-session placement.
+The catalog does not provision, schedule, load-balance, or autoscale workers, and there is no
+AKS/Kubernetes backend. Each worker needs its own deployment and isolation policy. The daemon
+runs jobs; control-plane workflows retain issue intake, prompt orchestration, and PR publication.
+It does not replace libvirt or provide general secret transport or internet access.

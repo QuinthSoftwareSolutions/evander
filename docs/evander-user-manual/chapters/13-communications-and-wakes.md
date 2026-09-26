@@ -97,6 +97,38 @@ workflow chooses the session and the wake behavior.
 > prevents one stored message from being delivered repeatedly without a durable cursor or dispatch
 > record.
 
+### Teams notifications and polling fallback
+
+Teams can receive Graph change notifications in addition to polling. This is optional and disabled
+by default. With notifications enabled, `evander-teams-notifications.service` validates callbacks,
+queues them durably, and retrieves exact messages through an independent background processor.
+Slow fallback polling therefore does not hold up that retrieval path. The ingest worker can also
+lease queued notifications after a restart.
+
+Healthy subscribed targets keep a reconciliation poll. Targets without a healthy subscription
+continue ordinary polling, including when a concrete tenant identity is unavailable. Turning
+notifications off restores fast polling and stops subscription creation and renewal; the worker
+only deletes subscriptions recorded as owned by this deployment.
+
+The listener defaults to `127.0.0.1:11882`; publish only the configured `/msgraph/teams/*` callback
+routes through the reverse proxy. Configure notifications in `config/teams-ingest/config.json`,
+provide an HTTPS public callback base URL, and supply a concrete tenant ID through delegated-login
+metadata or provider configuration. Check the worker detail and listener `/healthz` for
+subscription health, queue age, fallback state, and processing errors.
+
+Polling and notification retrieval use the same authorization, sender filtering, inbox
+deduplication, and workflow event identity. Polling can publish matching trigger events directly
+using one compiled workflow revision per cycle; the trigger orchestrator retains cursor and
+recovery responsibility. `publish_trigger_events_directly=false` disables that polling fast path,
+but exact notification deliveries still publish deterministically. See the
+[configuration reference](../../configuration-reference.md#directory-config-domains-and-storage)
+for fields, defaults, and the distinction between the two paths.
+
+For a one-to-one Teams trigger, the workflow editor's **Direct chats by UPN** mode accepts user UPNs and
+resolves chat and sender IDs on a revision-checked save. **Existing chat IDs** remains available
+for manually selected existing chats. These editing conveniences do not relax runtime sender or
+target checks.
+
 ## Reading, replying, and exchanging files
 
 Permission follows the action. Being allowed to read a project channel does not automatically permit

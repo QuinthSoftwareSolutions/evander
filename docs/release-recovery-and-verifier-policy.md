@@ -152,11 +152,12 @@ and old bundles until no session refers to them. Rollback selects a previously
 validated bundle atomically; never replace its contents in place. Bundle garbage
 collection is deliberately manual and requires a reference/impact check.
 
-## Operator rollout
+## Deployment and policy changes
 
-Rollout checklist (not executed by this branch):
+Use this sequence when deploying compatible verifier code or changing a project's
+verification policy:
 
-1. Review and merge the branch; deploy compatible control-plane/worker code with
+1. Deploy reviewed control-plane/worker code with
    active-session drain/pinning precautions above. Preserve existing evaluator
    configuration until any replacement has passed a canary.
 2. Prepare any project-specific evaluators and reviewable command fragments in
@@ -177,4 +178,8 @@ Rollout checklist (not executed by this branch):
    and never mark baseline-exception acceptance as a clean build. Do not downgrade
    readers until snapshots containing the new fields have been accounted for.
 
-This implementation changes no live release, project policy or workflow pack.
+Changes to candidate commands, gate order, and review requirements apply to newly
+frozen candidates; they do not rewrite a live release's manifest or historical
+evidence. Verification image and resource limits are snapshotted separately for
+each attempt. A retry of an existing candidate uses those settings from current
+project policy, while restart recovery preserves the existing attempt's snapshot.

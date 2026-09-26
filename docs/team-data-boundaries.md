@@ -46,3 +46,21 @@ the store and use the same open connection.
 Read projections retain their omitted-collection guard and cannot be persisted.
 The store remains responsible for ensuring complete state reaches every update
 path and for closing SQLite connections after transaction context exit.
+
+## Runtime ownership and recovery
+
+Construct `TeamStateRepository` with the base runtime directory, such as
+`Path("runtime")`. The repository resolves its own
+`addons/team-addon/state.db` path; passing the add-on directory would nest it a
+second time. Live mutations belong in supported revision-checked Team services
+and Admin APIs, including command activity and outbox updates. Direct SQLite
+writes bypass those contracts.
+
+The cost report at `runtime/team-cost-report.db` is a separate, derived
+projection over core model usage, attribution, pricing, and Team budget windows.
+Its incremental updates include corrected and deleted source events; repricing
+or changed windows may rebuild it. It is not the canonical Team database or a
+replacement for model-usage backups.
+
+For schema upgrades, update all Team writers together and take a
+SQLite-consistent backup. See the [administrator recovery sequence](evander-user-manual/chapters/25-team-governance-memory-cost-internals.md#administrator-backup-and-recovery).

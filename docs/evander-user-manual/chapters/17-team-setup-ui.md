@@ -86,6 +86,26 @@ The add-on UI currently has these top-level views:
 
 There is no top-level **Roles** view. Roles are maintained inside **Teams** and setup/edit forms. Reviews and releases similarly live inside **Delivery**, not separate top-level tabs.
 
+### Read narratives and copy exact references
+
+Team messages, activity, task details, and case context keep readable titles and
+summaries prominent. Long opaque IDs and Git SHAs appear as compact **ID** or **SHA**
+badges. Hover to inspect the full value; click or activate the badge with the keyboard
+to copy that full value. **Copied** confirms success; **Copy failed** means the browser
+could not write to the clipboard. The compact caption is a display aid, not a shortened
+stored identifier. URLs, paths, commands, and raw structured values retain their original
+content.
+
+In **Cases → Context**, evidence is grouped by request, sources, plans, decisions,
+delivery, review, verification, and conversation. Expand **Record fields and provenance**
+for structured detail or **Raw JSON** for the record content. **Load complete records**
+retrieves evidence beyond a shortened preview; **Load next record page** continues when
+more records remain. Check freshness, missing-source, restricted-source, and truncation
+warnings before using a brief as evidence. See [Case context](../../case-context.md)
+for saved views, frozen snapshots, and recipient grants.
+
+### Follow delivery and task state
+
 **Delivery** opens on records that still need attention. Projects remain
 collapsed until selected or opened, and the project selector and status filters
 narrow the workspace without removing accepted or historical records from

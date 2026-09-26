@@ -4,6 +4,19 @@ Use `scripts/apply_workflow_patch.py --patch <json-file>` to preview a namespace
 node/edge extension to an existing operator-owned workflow. Add `--apply` to save
 through `WorkflowConfigAdminService` with expected-revision validation and readback.
 The installer contains no repository, command, deployment or agent-prompt rules.
+Run it from the deployed checkout so relative configuration and add-on discovery
+resolve against that installation, and select its base runtime directory explicitly:
+
+```bash
+./.venv/bin/python scripts/apply_workflow_patch.py \
+  --runtime-dir /path/to/runtime --patch /path/to/workflow-patch.json
+```
+
+Inspect `previous_revision`, `changed`, and `new_diagnostics` in the JSON result.
+After reviewing the preview, rerun with `--apply`. The tool rereads current state
+for that invocation, saves with its expected revision, and checks the saved
+revision on readback. Concurrent edits can still require another preview; do not
+force an older file over the operator's current document.
 
 A version-1 document declares:
 

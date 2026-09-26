@@ -11,7 +11,7 @@ An isolated workspace does not normally browse the internet or receive the host'
 | Evander tools | MCP gateway | Show and run only the tools allowed for this active session. |
 | A model | Model relay, or the worker's brokered subscription route | Keep provider keys and named ChatGPT profiles outside the agent workspace and constrain the upstream destination. |
 | Packages | Package relay, facade, or prepared cache | Reach configured package sources without opening a general download route. |
-| A named test or application environment | HTTP target relay | Reach only a target alias recorded for this session; use the application's own guest-held login. |
+| A named test or application environment | HTTP target relay or browser proxy | Reach configured targets; use the application's own guest-held login. |
 | Source code | Restricted managed Git over SSH | Read or write only the repository scope and refs granted to this session. |
 
 Three ideas keep this model understandable:
@@ -83,11 +83,16 @@ The exact service doors and default ports are:
 - MCP on port `8000` is the tool-capability door;
 - the model relay on `11434` is the inference door;
 - the NuGet relay on `11666`, npm audit facade on `11881`, and optional Nexus cache on `8081` are package doors;
-- the HTTP target relay on `11777` is a session-specific door to a named external origin;
+- the HTTP target relay on `11777` serves named session targets, while the authenticated browser
+  proxy on `11778` preserves the configured origins for browser traffic;
 - host SSH on `22` is the managed Git transport door;
 - apt-cacher-ng on `3142`, when enabled, is a worker-provisioning door rather than an agent application dependency.
 
 The checked-in firewall example allows those host TCP ports and drops other forwarded traffic from the libvirt bridge. A deployment may deliberately change the list, but adding a port is a security decision: it creates network reachability that the application may not further mediate. Container-worker networking has its own worker-side egress policy and must be configured explicitly; the libvirt firewall is not a container policy.
+
+The Codex subscription CONNECT proxy uses private worker-facing port `11889`. It is configured
+separately from the libvirt guest allowlist and restricts both worker source addresses and
+OpenAI/ChatGPT destination hosts.
 
 MCP is therefore a central capability boundary, but not the only reachable host service. Every direct relay must enforce its own narrow contract.
 
@@ -113,8 +118,17 @@ Session-bearing relay requests are authenticated with the session's MCP token. T
 | `azure_openai` | Azure OpenAI deployments selected through the model-to-deployment map | Host injects the Azure key; managed identity is not part of this implementation. |
 | `local_openai` | OpenAI-compatible HTTP/SSE endpoint such as Ollama | WebSocket/realtime is rejected; a configured placeholder bearer may be used upstream. |
 | `anthropic` | `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens` | Host injects `x-api-key`; WebSocket/realtime is rejected. |
+| `openrouter` | `GET /v1/models`, `POST /v1/responses`, and `POST /v1/responses/compact` | Host injects the OpenRouter key and pins the approved model/provider route; WebSocket/realtime is rejected. |
 
 The general OpenAI-compatible HTTP allowlist is `GET /v1/models` and `POST` to `/v1/responses`, `/v1/responses/compact`, `/v1/chat/completions`, `/v1/completions`, or `/v1/embeddings`. Only `/v1/responses` is accepted on the OpenAI-compatible WebSocket surface. Unsupported paths fail before they become arbitrary proxy access.
+
+OpenRouter has the narrower allowlist shown above. It requires an explicit session model and an
+exact entry in `openrouter_model_routes`; guest routing overrides and OpenRouter server tools are
+rejected. The host requires the configured provider endpoint, disables fallback, and requests ZDR.
+Removing the route makes that model unavailable rather than selecting another provider. This is
+an opt-in Codex route for either backend; it does not change host assistant or embedding routing.
+See [OpenRouter setup and verification](../../openrouter.md) for configuration, costs, and the
+live checks needed for a chosen model/endpoint pair.
 
 The relay removes guest `Authorization`, `x-api-key`, hop-by-hop headers, content length/encoding, host, and the Evander session token before building the upstream request. It then supplies the provider credential selected by host configuration. For streaming responses, the upstream client remains alive until the response iterator finishes, so raw SSE bytes can be forwarded without truncating the stream.
 
@@ -135,6 +149,9 @@ keeps the configured private endpoint and API-key/relay behavior. It leaves the 
 preference unchanged. This distinction matters when diagnosing a session that moves between
 provider modes: seeing `chatgpt_subscription` in session policy does not mean a local Ollama or
 Azure request was sent with the worker profile.
+
+OpenRouter always uses metered API authentication. An inherited subscription default is ignored
+for these turns, while an explicit subscription override is rejected.
 
 Subscription authentication also fails closed. An absent login, disabled profile, refresh failure,
 rate limit, broker ownership failure, or restricted-proxy failure does not cause a quiet retry
@@ -199,6 +216,21 @@ The relay:
 
 This is useful while the implementation agent verifies telemetry retry behavior in Northstar Platform's provisioned `mission-control` environment. A workflow can add `mission-control-api` and `mission-control-ui` aliases to the session, while the agent authenticates to those applications using credentials it legitimately holds. The public environment URL does not become a general network permission.
 
+### Browser access with the original origin
+
+Use `evander-http-target-browser-proxy` on `11778` when browser cookies, redirects, or JavaScript
+need the application's original origin. The browser authenticates to the proxy with its session
+identity and token; the proxy resolves allowed origins from the same current HTTP-target set.
+HTTP requests and HTTPS CONNECT tunnels are limited to those scheme/host/port combinations.
+CONNECT also validates the TLS server name against the requested host.
+
+This is an origin-level grant: a target base path does not restrict the paths available through
+the browser proxy. Each additional origin used by the application, such as an authentication or
+asset host, needs its own configured target. The proxy preserves application authentication and
+does not inject host credentials. For container Playwright jobs, use the generated
+`EVANDER_PLAYWRIGHT_LAUNCH_HELPER`, which selects the seeded browser and applies the session
+proxy; see [the worker browser contract](../../container-worker-backend.md).
+
 ## Administrator reference: where secrets belong
 
 Provider configuration stores *environment-variable names*, URLs, IDs, and non-secret routing metadata. The environment of the relevant host service stores the values. Typical examples are `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_DEVOPS_PAT`, `AZURE_ARTIFACTS_PAT`, `DISCORD_BOT_TOKEN`, `EVANDER_WORKER_TOKEN`, and bridge/provider tokens.
@@ -236,10 +268,11 @@ environment-variable names, never their values.
 First verify the listeners locally on the control plane:
 
 ```bash
-curl -fsS http://127.0.0.1:11434/healthz
-curl -fsS http://127.0.0.1:11666/healthz
-curl -fsS http://127.0.0.1:11777/healthz
-curl -fsS http://127.0.0.1:11881/healthz
+curl --max-time 5 -fsS http://127.0.0.1:11434/healthz
+curl --max-time 5 -fsS http://127.0.0.1:11666/healthz
+curl --max-time 5 -fsS http://127.0.0.1:11777/healthz
+curl --max-time 5 -fsS http://127.0.0.1:11778/healthz
+curl --max-time 5 -fsS http://127.0.0.1:11881/healthz
 ```
 
 Then verify service and firewall state:
@@ -248,6 +281,7 @@ Then verify service and firewall state:
 sudo systemctl status evander-openai-relay.service
 sudo systemctl status evander-nuget-relay.service
 sudo systemctl status evander-http-target-relay.service
+sudo systemctl status evander-http-target-browser-proxy.service
 sudo systemctl status evander-npm-audit-facade.service
 sudo nft list table inet evander
 ```

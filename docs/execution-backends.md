@@ -1,8 +1,8 @@
 # Execution Backends
 
 The execution backend abstraction separates host control-plane workflows from the runtime that
-actually runs an agent target. It started as a narrow lifecycle and log-inspection seam, and is now
-also used by container-worker sessions and explicit operator container jobs. It is not a scheduler
+actually runs an agent target. It supports lifecycle and log inspection,
+container-worker sessions, and explicit operator container jobs. It is not a scheduler
 or a replacement for the existing VM provider layer; provider-specific VM details still live behind
 the existing VM services.
 
@@ -12,12 +12,12 @@ the existing VM services.
 
 `container_worker_vm` has a worker-side HTTP daemon, `evander-worker-daemon`, that can run
 jobs in disposable Docker containers while preserving durable per-session state on the worker VM.
-It is wired for one configured worker URL, the single-worker Phase 5 deployment slice, explicit
-manual/operator use through `evander-cli execution ...`, and backend-aware
-`effect:agent:*` workflow nodes. It is additive; `libvirt_vm` remains the default and is
-unchanged.
+New sessions use the directory's default worker or an explicitly selected entry in
+`container_workers`. Each session keeps its worker assignment for later jobs, status checks, and
+cleanup. Operators use `evander-cli execution ...`; workflows use backend-aware
+`effect:agent:*` nodes. `libvirt_vm` remains the default backend.
 
-For that single-worker slice, non-`none` Docker networking is only valid when
+For an Ansible-managed worker, non-`none` Docker networking is only valid when
 `evander_worker_egress_policy_enabled: true` is set on the worker VM and the allowlist is
 explicit.
 
@@ -26,9 +26,7 @@ explicit.
 The shared backend/operator surface owns:
 
 - single-target status inspection
-- VM start
-- VM shutdown
-- VM destroy
+- target start, stop, and destroy
 - guest agent log snapshots
 - manual container job start/list/smoke operations through the execution CLI
 - container-worker session create/clone/copy/exec/prompt/destroy support through
@@ -40,13 +38,15 @@ The current implementation does not provide:
 - worker lifecycle rebuilds
 - general secret transport to workers
 - general internet egress or Docker-network-only metadata protection
-- full ADO/wake automation on the manual container execution CLI surface
-- ADO issue processing
-- PR publishing
+- issue intake, wake policy, and PR publishing within the execution backend itself; these remain
+  control-plane workflow and provider responsibilities
 
 ## Configuration
 
-Backend selection lives on `GatewayConfig`:
+Backend selection is part of the effective `GatewayConfig`, normally configured through the
+directory's `providers` domain. The YAML below illustrates field names; persisted overlays are
+JSON in `runtime/directory-config/root/.../providers.json`, and legacy gateway YAML is not a
+configuration input.
 
 ```yaml
 execution_backend: libvirt_vm
@@ -94,7 +94,7 @@ replace it only when `vm_image` is supplied explicitly. Catalog parsing validate
 inspect the referenced files. Operators must separately verify that each file exists, is readable by
 libvirt, is a qcow2 image, and is cloud-init compatible. These are libvirt templates, not Docker
 images, and the catalog map deep-merges across directory overlays.
- Use `container_image` for `container_worker_vm`.
+Use `container_image` for `container_worker_vm`.
 The selected image is passed through to `scripts/launch_agent_vm.sh` via `LIBVIRT_BASE_IMAGE`,
 which uses it as the base overlay image while still falling back to the default Ubuntu image when
 no selection is present.
@@ -110,6 +110,14 @@ Nexus while sending audit requests to public npm.
 
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services.
 
+For explicit worker placement, configure the `container_workers` catalog and pass `worker_id`
+when creating a new session or manual job. Existing sessions cannot be moved by changing that
+selector or the directory default. Before changing defaults for older sessions, preview and apply
+`evander-cli execution pin-worker-assignments --runtime-dir runtime` with `--apply` on the second
+run. Keep `runtime/container-worker-assignments.db` and the original token environment references
+available. See [worker selection](container-worker-backend.md#selecting-a-worker-when-creating-an-agent)
+and [changing the default worker](container-worker-backend.md#changing-the-default-worker).
+
 For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields:
 `command`, `image`, the internally resolved clone source/branch, `resource_limits`,
 `persistence_mode`, and `workspace_mode`. Public agent clone effects provide `managed_repo_id`; the
@@ -119,9 +127,9 @@ clone settings, credentials, or repository paths.
 
 The execution CLI never mutates the configured backend. `start-container-job` and
 `smoke-container-worker` explicitly construct the container backend from the loaded config.
-`status`, `logs`, `stop`, and `destroy` auto-use the container backend only when the target
-resolves in the container worker execution mapping store, or when the operator passes
-`--backend container_worker_vm`. The mapping store is backed by
+`status`, `logs`, `stop`, and `destroy` select the container backend when the target resolves in
+the container worker execution mapping store; otherwise they use the configured backend.
+`--backend container_worker_vm` or `--backend libvirt_vm` overrides that selection. The mapping store is backed by
 `runtime/container-worker-executions.db`.
 
 Portable workflow nodes use `effect:agent:*` for session setup. On `libvirt_vm` they delegate to
@@ -130,7 +138,7 @@ session manifest and worker directories, `effect:agent:clone-repo` clones into
 `/home/agent/repos/<repo-name>`, `effect:agent:copy-files` writes under `/home/agent`,
 `effect:agent:exec`
 runs deterministic setup commands in a transient worker job, and `effect:agent:prompt`
-starts a disposable worker job for Codex and removes the job after completion.
+starts the configured agent harness in a disposable worker job and removes the job after completion.
 Container clone jobs default to a session-scoped writable Git key so `git push-agent` works;
 set `git_access_mode: read-only` on `effect:agent:clone-repo` for fetch-only sessions.
 `effect:agent:destroy` is the cleanup counterpart: VM-backed sessions destroy the linked VM,
@@ -169,8 +177,8 @@ Next steps should move behavior only when the contract is stable:
 - move standalone VM creation behind `prepare` and `start`
 - have issue VM orchestration build an `ExecutionSpec`
 - migrate issue-worker orchestration to build container worker jobs without changing business-logic callers
-- extend the supported single-worker network/firewall enforcement to multi-worker or scheduler
-  deployments before treating those deployment models as security boundaries
+- provision and verify each additional worker's network, storage, credentials, and egress policy
+  independently; the worker catalog does not create infrastructure or balance load
 
 
 ## Backend-specific Observability and Recovery
@@ -181,7 +189,8 @@ Next steps should move behavior only when the contract is stable:
 - Chat assistant session mappings are global and should show one `metric_chat_session_mapping_created` and steady `..._reused` markers.
 - Recovery:
   - If backend selection is wrong, inspect session metadata and directory-level provider config resolution.
-  - If chat session mapping churn appears, inspect and repair `runtime/chat-assistant-session-mappings.json`.
+  - If chat session mapping churn appears, inspect the mapping store and initialization logs;
+    use supported session operations rather than editing the live JSON file.
 
 ### `container_worker_vm`
 
