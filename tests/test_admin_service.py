@@ -4289,8 +4289,12 @@ def test_resume_agent_routes_container_session_through_container_prompt_dispatch
     assert records[0].outputs["execution_backend"] == "container_worker_vm"
 
 
+@pytest.mark.parametrize(
+    "model,route,effort",
+    [("gpt-5.2-codex", "openai_public", "low"), ("gpt-4o", "local_openai", "minimal")],
+)
 def test_submit_operator_steering_interrupts_container_waiting_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str, route: str, effort: str
 ) -> None:
     from evander.effects.providers.agent_prompt import (
         CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY,
@@ -4298,9 +4302,16 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     from evander.operator_steering import operator_steering_note_store
 
     service = build_admin_runtime(write_config(tmp_path))
+    captured_effort = (
+        {"reasoning_effort": "low", "reasoning_effort_source": "prompt"}
+        if route == "openai_public"
+        else {}
+    )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="container-session",
+            model=model,
+            reasoning_effort="high" if captured_effort else effort,
             vm_provider="container_worker_vm",
             vm_provider_id="container-target",
             allowed_tools=[],
@@ -4325,7 +4336,7 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
         workflow_run_id="workflow-steer",
         effect_id="effect-steer",
         directory_path="root",
-        model="gpt-5.2-codex",
+        model=model,
         execution_backend="container_worker_vm",
     )
 
@@ -4349,12 +4360,13 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
                 "target": "container-session",
                 "session_id": "container-session",
                 "prompt": "Original workflow prompt",
-                "model": "gpt-5.2-codex",
+                "model": model,
                 "directory_path": "root",
                 "execution_backend": "container_worker_vm",
             },
             input_payload={"prompt": "Original workflow prompt"},
             outputs={
+                **captured_effort,
                 "dispatch_id": "dispatch-steer",
                 "thread_id": "dispatch-steer",
                 "success": True,
@@ -4369,7 +4381,9 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
 
     class InterruptBackend:
         def __init__(self) -> None:
-            self.config = service.runtime.provider_config.resolve_for_directory("root")
+            self.config = service.runtime.provider_config.resolve_for_directory("root").model_copy(
+                update={"model_provider_mode": route}
+            )
             self.stopped: list[str] = []
             self.started_specs: list[object] = []
             self.annotated_records: list[ContainerWorkerExecutionRecord] = []
@@ -4440,6 +4454,8 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     assert backend.stopped == ["agent-old-1"]
     assert len(backend.started_specs) == 1
     started_spec = backend.started_specs[0]
+    assert started_spec.codex_turn.reasoning_effort == effort
+    assert f'model_reasoning_effort="{effort}"' in str(started_spec.command)
     assert started_spec.session_id == "container-session"
     assert started_spec.directory_path == "root"
     assert started_spec.image == "runner:steer-image"
@@ -4450,6 +4466,10 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     assert "thread-steer-real" in str(started_spec.command)
     assert refreshed is not None
     assert refreshed.status == "waiting"
+    assert refreshed.outputs["reasoning_effort"] == effort
+    assert refreshed.outputs["reasoning_effort_source"] == (
+        "prompt" if captured_effort else "session"
+    )
     assert CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY not in refreshed.outputs
     assert refreshed.outputs["execution_id"] == started_spec.target_name
     assert refreshed.outputs["worker_execution_id"] == started_spec.target_name
@@ -4487,6 +4507,7 @@ def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
             vm_provider_id="container-target",
             codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
             subscription_profile_id="team-a",
+            reasoning_effort="high",
             allowed_tools=[],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={
@@ -4534,6 +4555,8 @@ def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
             outputs={
                 "dispatch_id": "dispatch-steer",
                 "thread_id": "thread-existing",
+                "reasoning_effort": "low",
+                "reasoning_effort_source": "prompt",
                 "success": True,
                 "queued": False,
                 "output_mode": "on_completion",
@@ -4576,6 +4599,7 @@ def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
 
         def start(self, spec):
             assert spec.codex_turn.subscription_profile_id == "team-a"
+            assert spec.codex_turn.reasoning_effort == "low"
             raise CodexSubscriptionDeferredClientError(
                 "capacity unavailable",
                 deferral=CodexSubscriptionDeferral(
@@ -4642,6 +4666,8 @@ def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
     assert queued is not None
     assert "Switch to implementation now." in queued.prompt
     assert queued.subscription_profile_id == "team-a"
+    assert queued.reasoning_effort == "low"
+    assert queued.reasoning_effort_source == "prompt"
     assert queued.queue_reason == "subscription_rate_limited"
     assert queued.retry_not_before == retry_at
     assert queued.retry_count == 0
@@ -4650,6 +4676,8 @@ def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
     assert refreshed.status == "succeeded"
     assert refreshed.outputs["queued"] is True
     assert refreshed.outputs["subscription_profile_id"] == "team-a"
+    assert refreshed.outputs["reasoning_effort"] == "low"
+    assert refreshed.outputs["reasoning_effort_source"] == "prompt"
     assert backend.stopped == ["agent-old-1"]
     assert backend.annotated_records[0].metadata["interrupted_by_operator"] is True
     assert "interrupt_replaced_by_execution_id" not in backend.annotated_records[0].metadata

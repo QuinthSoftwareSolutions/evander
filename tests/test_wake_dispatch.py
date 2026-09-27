@@ -7,8 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from evander.codex_auth import CodexSubscriptionDeferral
 from evander.config import GatewayConfig
+from evander.daemons.effect_orchestrator import SqliteExecutionStore
+from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from evander.execution import ExecutionBackendKind, ExecutionStatusKind
+from evander.execution.container_worker_client import CodexSubscriptionDeferredClientError
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityStore,
@@ -121,6 +125,7 @@ def _upsert_container_session(
     session_id: str,
     metadata: dict[str, object] | None = None,
     model: str | None = "gpt-5.4-mini",
+    reasoning_effort: str | None = None,
     vm_provider_id: str | None = None,
     web_search_enabled: bool = False,
     expires_at: datetime | None = None,
@@ -132,6 +137,7 @@ def _upsert_container_session(
         vm_provider_id=vm_provider_id,
         directory_path="root/team-a",
         model=model,
+        reasoning_effort=reasoning_effort,
         allowed_tools=[ToolName.SCHEDULE_RESUME],
         web_search_enabled=web_search_enabled,
         expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
@@ -174,7 +180,7 @@ def test_container_target_name_prefers_metadata_then_provider_then_session_id() 
     )
 
 
-def test_resume_binding_passes_session_web_search_mode_to_resume_script(
+def test_resume_binding_passes_session_settings_to_resume_script(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -188,6 +194,7 @@ def test_resume_binding_passes_session_web_search_mode_to_resume_script(
             model="gpt-5.4-mini",
             allowed_tools=[ToolName.SCHEDULE_RESUME],
             web_search_enabled=True,
+            reasoning_effort="low",
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
@@ -224,6 +231,8 @@ def test_resume_binding_passes_session_web_search_mode_to_resume_script(
     assert captured["env"]["AGENT_PROVIDER"] == "codex"
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4-mini"
     assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
+    assert captured["env"]["AGENT_REASONING_EFFORT"] == "low"
+    assert captured["env"]["AGENT_REASONING_EFFORT_SOURCE"] == "session"
     assert watcher_calls == [
         {
             "vm_name": "vm-a",
@@ -240,6 +249,7 @@ def test_resume_binding_uses_session_agent_provider_and_default_model_when_model
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "low")
     del wake_store
     session_repository.upsert_session(
         SessionManifest(
@@ -277,6 +287,8 @@ def test_resume_binding_uses_session_agent_provider_and_default_model_when_model
     assert result.status == "dispatched"
     assert captured["env"]["AGENT_PROVIDER"] == "claude"
     assert captured["env"]["AGENT_MODEL"] == "claude-sonnet-4-6"
+    assert captured["env"]["AGENT_REASONING_EFFORT"] == ""
+    assert captured["env"]["AGENT_REASONING_EFFORT_SOURCE"] == "default"
 
 
 def test_resume_binding_queues_resolved_local_model_when_global_capacity_is_full(
@@ -290,6 +302,7 @@ def test_resume_binding_queues_resolved_local_model_when_global_capacity_is_full
             vm_id="vm-local",
             directory_path="root/team-a",
             model="resolved-local-model",
+            reasoning_effort="medium",
             allowed_tools=[ToolName.SCHEDULE_RESUME],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
@@ -340,6 +353,8 @@ def test_resume_binding_queues_resolved_local_model_when_global_capacity_is_full
     )
     assert queued is not None
     assert queued.model == "resolved-local-model"
+    assert queued.reasoning_effort == "medium"
+    assert queued.reasoning_effort_source == "session"
     assert queued.model_provider_mode == "local_openai"
     assert queued.queue_reason == LOCAL_INFERENCE_QUEUE_REASON
     assert wake_store.latest_dispatch_by_request_id()["wake-local"].status == "queued"
@@ -653,14 +668,24 @@ def test_resume_binding_timeout_error_does_not_include_prompt_command(
     assert "--prompt" not in str(latest.metadata)
 
 
+@pytest.mark.parametrize(
+    "model,route,effort",
+    [("gpt-5.4-mini", "openai_public", "low"), ("gpt-4o", "local_openai", "minimal")],
+)
 def test_resume_container_binding_dispatches_idle_session_and_records_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    route: str,
+    effort: str,
 ) -> None:
     dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    config = config.model_copy(update={"model_provider_mode": route})
     session = _upsert_container_session(
         session_repository,
         session_id="session-1",
+        model=model,
+        reasoning_effort=effort,
         vm_provider_id="provider-target",
         web_search_enabled=True,
         metadata={"container_worker": {"image": "runner:wake-image"}},
@@ -704,7 +729,10 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     assert spec.image == "runner:wake-image"
     assert spec.target_name.startswith("agent-session-1-")
     assert "codex exec resume --last" in str(spec.command)
-    assert "--model gpt-5.4-mini" in str(spec.command)
+    assert f"--model {model}" in str(spec.command)
+    assert f'model_reasoning_effort="{effort}"' in str(spec.command)
+    assert spec.codex_turn.reasoning_effort == effort
+    assert spec.codex_turn.reasoning_effort_source == "session"
     assert 'web_search="live"' in str(spec.command)
     assert "evander_codex_json_to_log" in str(spec.command)
     assert spec.metadata["source"] == "scheduled_once"
@@ -727,14 +755,20 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
         "directory_path": "root/team-a",
         "vm_user": config.wake_vm_user,
         "prompt": "Resume work.",
-        "model": "gpt-5.4-mini",
-        "model_provider_mode": "openai_public",
+        "model": model,
+        "reasoning_effort": effort,
+        "reasoning_effort_source": "session",
+        "model_provider_mode": route,
         "request_id": "wake-1",
         "resume_mode": "same_context",
         "target_name": "provider-target",
         "dispatch_source": "scheduled_once",
         "scheduled_for": datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
-        "wake_metadata": {"schedule_cron": ""},
+        "wake_metadata": {
+            "schedule_cron": "",
+            "reasoning_effort": effort,
+            "reasoning_effort_source": "session",
+        },
         "runtime_dir": config.runtime_dir,
     }
 
@@ -799,6 +833,45 @@ def test_resume_container_binding_dispatches_idle_claude_session_and_records_suc
     assert latest.metadata["target_name"].startswith("agent-session-claude-")
     assert latest.metadata["source"] == "scheduled_once"
     assert latest.metadata["execution_id"].startswith("execution:agent-session-claude-")
+
+
+def test_subscription_preflight_deferral_retains_wake_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dispatcher, config, session_repository, _ = _build_dispatcher(tmp_path)
+    session = _upsert_container_session(
+        session_repository, session_id="session-1", reasoning_effort="low"
+    )
+    backend = _ContainerBackendStub(
+        start_error=CodexSubscriptionDeferredClientError(
+            "capacity unavailable",
+            deferral=CodexSubscriptionDeferral(profile_id="team-a", reason="rate_limited"),
+            status_code=429,
+        )
+    )
+    monkeypatch.setattr(
+        "evander.messaging.wake_dispatch.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+
+    result = dispatcher.resume_container_binding(
+        session,
+        worker_config=config,
+        prompt="Resume work.",
+        dispatch_source="scheduled_once",
+        request_id="wake-deferred",
+    )
+    assert result.status == "queued"
+    session.reasoning_effort = "high"
+    session_repository.upsert_session(session)
+    queued = AgentPromptQueueStore(config.runtime_dir / "queued-agent-prompts.json").get(
+        "scheduled-wake:wake-deferred"
+    )
+    assert queued is not None
+    assert queued.reasoning_effort == "low"
+    assert queued.reasoning_effort_source == "session"
+    assert queued.queue_reason == "subscription_rate_limited"
+    assert backend.started_specs[0].codex_turn.reasoning_effort == "low"
 
 
 def test_monitor_container_execution_completion_marks_wake_request_completed(
@@ -928,6 +1001,8 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
         vm_user="agent",
         prompt="Resume original work.",
         model="gpt-5.4",
+        reasoning_effort="low",
+        reasoning_effort_source="session",
         model_provider_mode="openai_public",
         request_id="wake-container",
         resume_mode="same_context",
@@ -942,6 +1017,8 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
     )
     assert queued is not None
     assert queued.prompt == "Resume original work."
+    assert queued.reasoning_effort == "low"
+    assert queued.reasoning_effort_source == "session"
     assert queued.dispatch_id == "wake-dispatch-rate-limit"
     assert queued.subscription_profile_id == "team-a"
     assert queued.queue_reason == "subscription_rate_limited"
@@ -1009,6 +1086,7 @@ def test_resume_container_binding_queues_busy_session_and_records_queue_metadata
     session = _upsert_container_session(
         session_repository,
         session_id="session-1",
+        reasoning_effort="low",
         metadata={"target_name": "metadata-target"},
         vm_provider_id="provider-target",
     )
@@ -1054,6 +1132,36 @@ def test_resume_container_binding_queues_busy_session_and_records_queue_metadata
     assert latest.metadata["source"] == "scheduled_cron"
     assert latest.resume_prompt.metadata["schedule_cron"] == "* * * * *"
 
+    # A session edit after submission must not change the queued invocation.
+    session.reasoning_effort = "high"
+    session_repository.upsert_session(session)
+    backend.active = False
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    replay_config = config.model_copy(update={"execution_backend": "container_worker_vm"})
+    worker = SimpleNamespace(
+        config=replay_config,
+        execution_store=SqliteExecutionStore(tmp_path / "orchestration.db"),
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(
+            resolve_for_session_id=lambda session_id: replay_config
+        ),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda *args, **kwargs: "effect-completed",
+        _update_event_delivery_state=lambda event_id: None,
+    )
+    assert AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker) == 1
+    assert backend.started_specs[0].codex_turn.reasoning_effort == "low"
+    assert backend.started_specs[0].codex_turn.reasoning_effort_source == "session"
+    assert queue_store.read_all() == {}
+
 
 def test_resume_container_binding_queues_busy_claude_session_with_provider_metadata(
     tmp_path: Path,
@@ -1095,6 +1203,8 @@ def test_resume_container_binding_queues_busy_claude_session_with_provider_metad
     queued = queue_store.get("scheduled-wake:wake-busy-claude")
     assert queued is not None
     assert queued.model == "claude-sonnet-4-6"
+    assert queued.reasoning_effort is None
+    assert queued.reasoning_effort_source == "default"
     assert queued.metadata["agent_provider"] == "claude"
     assert queued.metadata["wake_dispatch_id"] == result.dispatch_id
     assert queued.metadata["source"] == "scheduled_cron"
