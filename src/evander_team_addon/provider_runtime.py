@@ -20,7 +20,7 @@ from evander.models import (
     tool_name_value,
 )
 from evander.repositories.mcp_transport_bindings import (
-    JsonMcpTransportBindingRepository,
+    SqliteMcpTransportBindingRepository,
 )
 
 from .costs import (
@@ -390,7 +390,7 @@ def _review_mcp_capability_observation(
     if receipt is None or not receipt.required_tool_names or receipt.grant_confirmed_at is None:
         return None
     cutoff = receipt.grant_confirmed_at
-    bindings = JsonMcpTransportBindingRepository.from_runtime_dir(_runtime_dir(context))
+    bindings = SqliteMcpTransportBindingRepository.from_runtime_dir(_runtime_dir(context))
     try:
         candidates = [
             binding

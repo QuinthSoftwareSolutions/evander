@@ -45,7 +45,7 @@ from evander.repositories.session_manifests import (
     as_session_manifest_repository,
 )
 from evander.repositories.mcp_transport_bindings import (
-    JsonMcpTransportBindingRepository,
+    SqliteMcpTransportBindingRepository,
     McpTransportBindingRepository,
 )
 from evander.repositories.session_tool_approval_leases import (
@@ -419,7 +419,9 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(
         config.runtime_dir
     )
-    mcp_transport_bindings = JsonMcpTransportBindingRepository.from_runtime_dir(config.runtime_dir)
+    mcp_transport_bindings = SqliteMcpTransportBindingRepository.from_runtime_dir(
+        config.runtime_dir
+    )
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonEmailRecordsRepository(config.email_store_path)
     email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)

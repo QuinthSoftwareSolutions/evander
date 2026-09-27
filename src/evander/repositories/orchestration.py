@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
+import time
 from typing import Any, Generic, Protocol, TypeVar
 from uuid import uuid4
 
@@ -448,8 +449,9 @@ class SqliteExecutionRepository(Generic[TRecord]):
         self.put(record)
 
     def put(self, record: TRecord) -> None:
+        started = time.perf_counter()
         with self._lock, connect_orchestration_db(self.path) as connection:
-            self._upsert_record(connection, record)
+            phases = self._upsert_record(connection, record)
         if self._journal is not None and self._journal_source is not None:
             self._journal.append(
                 "workflow.execution.updated",
@@ -460,6 +462,29 @@ class SqliteExecutionRepository(Generic[TRecord]):
                     "status": str(getattr(record, "status", "")),
                 },
             )
+        self._log_write_duration(record, "record", started, phases)
+
+    def _log_write_duration(
+        self,
+        record: TRecord,
+        operation: str,
+        started: float,
+        phases: dict[str, float] | None,
+    ) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        duration_ms = (time.perf_counter() - started) * 1000
+        logger.debug(
+            "workflow_execution_storage operation=%s execution_id=%s trace_id=%s "
+            "node_id=%s status=%s duration_ms=%.3f phases_ms=%s",
+            operation,
+            getattr(record, "execution_id", ""),
+            getattr(record, "trace_id", ""),
+            getattr(record, self.node_id_field, ""),
+            getattr(record, "status", ""),
+            duration_ms,
+            {key: round(value, 3) for key, value in (phases or {}).items()},
+        )
 
     def find_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
         normalized_key = str(idempotency_key or "").strip()
@@ -697,7 +722,8 @@ class SqliteExecutionRepository(Generic[TRecord]):
             json_dumps(payload),
         )
 
-    def _upsert_record(self, connection: Any, record: TRecord) -> None:
+    def _upsert_record(self, connection: Any, record: TRecord) -> dict[str, float]:
+        started = time.perf_counter()
         node_id_column = self.node_id_field
         node_type_column = self.node_type_field
         connection.execute(
@@ -736,6 +762,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
             """,
             self._record_columns(record),
         )
+        record_written = time.perf_counter()
         from evander.repositories.execution_history import archive_execution_record
 
         archive_execution_record(
@@ -743,6 +770,10 @@ class SqliteExecutionRepository(Generic[TRecord]):
             kind="gate" if self.table_name == "gate_executions" else "effect",
             record=record.model_dump(mode="json"),
         )
+        return {
+            "record_write": (record_written - started) * 1000,
+            "history": (time.perf_counter() - record_written) * 1000,
+        }
 
 
 class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
@@ -777,6 +808,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
         if not event_id:
             raise ValueError("gate completion event_id is required")
 
+        started = time.perf_counter()
         created_event = False
         with self._lock, queue_lock, connect_orchestration_db(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -799,7 +831,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
             elif existing.event_id != event_id:
                 raise ValueError("gate completion idempotency key belongs to another event")
 
-            self._upsert_record(connection, record)
+            phases = self._upsert_record(connection, record)
             now = datetime.now(UTC)
             if created_event and getattr(event_queue, "_journal", None) is not None:
                 self._append_journal_row(
@@ -827,6 +859,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
                         "status": str(getattr(record, "status", "")),
                     },
                 )
+        self._log_write_duration(record, "gate_completion", started, phases)
         return event_id
 
     @staticmethod
