@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-27 - Configure agent reasoning effort (0.65.0)
+
+- Add session reasoning defaults and per-prompt overrides in Admin Web, the CLI, and agent creation, prompt, and enqueue-prompt workflow effects.
+- Forward native effort settings through Codex, Claude Code, and Copilot on their supported execution backends, including Codex subscription turns and OpenAI-compatible relays.
+- Validate known model capabilities, preserve provider defaults, and retain the resolved effort and its source across queues, subscription deferrals, and context retries.
+- Apply session effort to scheduled and Discord wakes, retain it through wake and steering replays, and validate local-model effort against the effective provider route.
+
 ## 2026-09-27 - Reduce gateway connection and workflow history write overhead (0.64.3)
 
 - Store MCP connection bindings in SQLite and transactionally update one connection at a time,

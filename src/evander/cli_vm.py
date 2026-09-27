@@ -361,6 +361,10 @@ def resume_agent(
         ),
     ] = 10,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option("--reasoning-effort", help="Native reasoning level; omit to inherit."),
+    ] = None,
 ) -> None:
     normalized = target.strip()
     cfg = cli_runtime._load_runtime_config_from_option(config)
@@ -403,6 +407,7 @@ def resume_agent(
             resolved_session_id,
             message,
             model=agent_model,
+            reasoning_effort=reasoning_effort,
             vm_user=vm_user,
             resume_mode="same_context",
         )
@@ -580,6 +585,10 @@ def create_vm(
             ),
         ),
     ] = None,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option("--reasoning-effort", help="Native reasoning level; omit to inherit."),
+    ] = None,
 ) -> None:
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
@@ -600,6 +609,7 @@ def create_vm(
         codex_skills=codex_skill,
         directory_path=directory_path,
         model=model,
+        reasoning_effort=reasoning_effort,
         model_provider_mode=model_provider_mode,
     )
     cli_common._echo_action_result_or_exit(result)

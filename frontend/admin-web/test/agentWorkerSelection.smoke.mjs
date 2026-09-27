@@ -52,7 +52,14 @@ test("shared agent creation selects a worker and clears worker-specific choices"
     }
     await route.fulfill({ json: {
       directory_path: "root", backends: ["libvirt_vm", "container_worker_vm"],
-      agent_providers: [], model_provider_modes: [], communication_targets: [],
+      reasoning_effort_catalog: {
+        harness_levels: { codex: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], claude: ["low", "medium", "high", "xhigh", "max"] },
+        model_rules: [{ pattern: "^gpt-4o$", levels: [] }, { pattern: "^claude-sonnet-4-6$", levels: ["low", "medium", "high", "max"] }],
+      },
+      agent_providers: [
+        { value: "codex", label: "Codex", execution_backends: ["libvirt_vm", "container_worker_vm"] },
+        { value: "claude", label: "Claude", execution_backends: ["libvirt_vm", "container_worker_vm"] },
+      ], model_provider_modes: [], communication_targets: [],
       email_mailboxes: [], connectors: [], host_directories: [],
       libvirt: { default_template: "ubuntu", templates: [] },
       container_worker: {
@@ -82,10 +89,21 @@ test("shared agent creation selects a worker and clears worker-specific choices"
   await profile.selectOption("fast-account");
   await image.selectOption("fast-image");
   assert.equal(await profile.locator('option[value="default-account"]').count(), 0);
+  const model = page.getByRole("textbox", { name: /^Model/ });
+  const effort = page.getByRole("combobox", { name: /^Reasoning effort/ });
+  await effort.selectOption("ultra");
+  await model.fill("gpt-4o");
+  assert.equal(await effort.inputValue(), "ultra", "retain an unsupported saved choice so it can be cleared");
+  assert.equal(await page.getByRole("alert").count(), 1);
+  await effort.selectOption("");
+  assert.equal(await effort.isDisabled(), true);
+  await model.fill("custom-deployment");
+  await effort.selectOption("low");
   await page.getByRole("textbox", { name: /^Session(?! TTL)/ }).fill("chosen");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForFunction(() => window.created.length === 1);
   const selected = await page.evaluate(() => window.created[0]);
+  assert.equal(selected.reasoning_effort, "low");
   assert.equal(selected.worker_id, "fast");
   assert.equal(selected.container_image, "fast-image");
   assert.equal(selected.subscription_profile_id, "fast-account");
@@ -97,5 +115,12 @@ test("shared agent creation selects a worker and clears worker-specific choices"
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForFunction(() => window.created.length === 2);
   assert.equal(await page.evaluate(() => Object.hasOwn(window.created[1], "worker_id")), false);
+  assert.equal(await page.evaluate(() => Object.hasOwn(window.created[1], "reasoning_effort")), false);
+  await page.getByRole("combobox", { name: /^Agent provider/ }).selectOption("claude");
+  await model.fill("claude-sonnet-4-6");
+  assert.equal(await effort.locator('option[value="xhigh"]').count(), 0);
+  await effort.selectOption("max");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
   assert.deepEqual(errors, []);
 });

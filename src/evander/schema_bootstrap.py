@@ -869,6 +869,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "copied_paths": {"type": "array"},
     },
     "effect:agent:prompt": {
+        "reasoning_effort": {"type": ["string", "null"]},
+        "reasoning_effort_source": {"type": ["string", "null"]},
         "dispatch_id": {"type": "string"},
         "thread_id": {"type": "string"},
         "success": {"type": "boolean"},
@@ -895,6 +897,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "failed_phase": {"type": "string"},
     },
     "effect:agent:enqueue-prompt": {
+        "reasoning_effort": {"type": ["string", "null"]},
+        "reasoning_effort_source": {"type": ["string", "null"]},
         "dispatch_id": {"type": "string"},
         "thread_id": {"type": "string"},
         "success": {"type": "boolean"},

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evander.reasoning_effort import session_agent_harness
 from evander.codex_auth import (
     CodexAuthMode,
     effective_codex_auth_mode,
@@ -58,6 +59,8 @@ class VmAgentContainerSessionPolicyMixin:
         return {
             "effective_codex_auth_mode": effective_mode.value,
             "codex_auth_mode_source": source,
+            "agent_harness": session_agent_harness(session, config),
+            "effective_model_provider_mode": model_provider_mode,
         }
 
     def _agent_session_policy_payload(
@@ -69,6 +72,7 @@ class VmAgentContainerSessionPolicyMixin:
         payload = {
             "session_id": session.session_id,
             "model": session.model,
+            "reasoning_effort": session.reasoning_effort,
             "expires_at": session.expires_at,
             "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
             "connector_grants": {

@@ -1,3 +1,4 @@
+import type { ReasoningEffortCatalog } from "./reasoningEffort";
 export type AdminView =
   | "workflow"
   | "agents"
@@ -163,6 +164,8 @@ export type AgentCapabilities = {
 };
 
 export type AgentPromptQueueRecord = {
+  reasoning_effort?: string | null;
+  reasoning_effort_source?: "prompt" | "session" | "default" | null;
   queue_key: string;
   effect_id: string;
   dispatch_id: string | null;
@@ -239,6 +242,7 @@ export type AgentCreateRequest = {
   session_id?: string | null;
   directory_path?: string | null;
   model?: string | null;
+  reasoning_effort?: string | null;
   ttl_seconds?: number | null;
   ttl_hours?: number | null;
   labels?: Record<string, string>;
@@ -364,6 +368,7 @@ export type AgentCreateHostDirectoryOption = {
 };
 
 export type AgentCreateOptionsResponse = {
+  reasoning_effort_catalog?: ReasoningEffortCatalog;
   directory_path: string;
   backends: AgentBackend[];
   agent_providers: AgentCreateProviderOption[];
@@ -389,6 +394,7 @@ export type AgentCreateOptionsResponse = {
 
 export type AgentPolicyUpdateRequest = {
   model?: string | null;
+  reasoning_effort?: string | null;
   ttl_hours?: number | null;
   labels?: Record<string, string>;
   web_search_enabled?: boolean;
@@ -425,6 +431,9 @@ export type HttpTargetsPayload = {
 };
 
 export type AgentSessionPolicy = {
+  agent_harness?: string;
+  effective_model_provider_mode?: string;
+  reasoning_effort?: string | null;
   session_id: string;
   model: string | null;
   expires_at: string | null;

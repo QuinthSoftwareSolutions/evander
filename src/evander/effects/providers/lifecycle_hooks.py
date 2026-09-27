@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from evander.reasoning_effort import resolve_reasoning_effort
 from evander.agent_threads import usable_agent_thread_id
 from evander.effects.providers.agent_session import (
     container_codex_turn_spec,
@@ -608,6 +609,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                     target=record.target,
                     prompt=record.prompt,
                     model=record.model,
+                    reasoning_effort=record.reasoning_effort,
+                    reasoning_effort_source=record.reasoning_effort_source,
                     vm_user=record.vm_user,
                     dispatch_id=dispatch_id,
                     resume_thread_id=effective_resume_thread_id,
@@ -619,6 +622,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                     ),
                 )
             if result is not None and bool(getattr(result, "success", False)):
+                # Legacy queue entries resolve their effort in the VM dispatcher.
+                # Capture that result before recording the execution for retries.
+                if getattr(result, "reasoning_effort_source", None) is not None:
+                    record.reasoning_effort = result.reasoning_effort
+                    record.reasoning_effort_source = result.reasoning_effort_source
                 self._mark_local_inference_running(
                     worker=worker,
                     admission=capacity_admission,
@@ -1256,18 +1264,28 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             or getattr(session, "model", None)
             or default_agent_model_for_provider(agent_harness, config)
         ).strip()
-        codex_turn = container_codex_turn_spec(
-            prompt=record.prompt,
-            model=model,
-            resume_thread_id=effective_resume_thread_id,
-            session=session,
-            config=config,
-            agent_provider=agent_harness,
-            resume_mode=getattr(record, "resume_mode", None),
-            mcp_gateway_url=mcp_gateway_url,
-            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
-        )
         try:
+            reasoning = resolve_reasoning_effort(
+                record.model_dump(),
+                session=session,
+                harness=agent_harness,
+                model=model,
+                route=config.model_provider_mode,
+            )
+            record.reasoning_effort = reasoning.value
+            record.reasoning_effort_source = reasoning.source
+            codex_turn = container_codex_turn_spec(
+                prompt=record.prompt,
+                model=model,
+                **reasoning.fields(),
+                resume_thread_id=effective_resume_thread_id,
+                session=session,
+                config=config,
+                agent_provider=agent_harness,
+                resume_mode=getattr(record, "resume_mode", None),
+                mcp_gateway_url=mcp_gateway_url,
+                web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
+            )
             with maintain_local_inference_launch(
                 resolve_runtime_dir(worker),
                 capacity_admission.slot_id,
@@ -1284,6 +1302,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             command=container_prompt_command(
                                 prompt=record.prompt,
                                 model=model,
+                                **reasoning.fields(),
                                 resume_thread_id=effective_resume_thread_id,
                                 session=session,
                                 agent_provider=agent_harness,
@@ -1299,6 +1318,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                                 "dispatch_id": dispatch_id,
                                 "agent_provider": agent_harness,
                                 "model": model,
+                                **reasoning.fields(),
                                 "model_provider_mode": config.model_provider_mode,
                                 **(
                                     {"codex_auth_mode": codex_turn.auth_mode.value}
@@ -1629,6 +1649,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "session_id": session_id,
             "prompt": record.prompt,
             "model": model,
+            "reasoning_effort": record.reasoning_effort,
+            "reasoning_effort_source": record.reasoning_effort_source,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_mode": getattr(record, "resume_mode", None),
@@ -1644,6 +1666,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             **local_capacity_metadata,
         }
         outputs = {
+            "reasoning_effort": record.reasoning_effort,
+            "reasoning_effort_source": record.reasoning_effort_source,
             "dispatch_id": dispatch_id,
             "thread_id": None,
             "native_thread_id": None,
@@ -1668,6 +1692,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "session_id": session_id,
             "prompt": record.prompt,
             "model": model,
+            "reasoning_effort": record.reasoning_effort,
+            "reasoning_effort_source": record.reasoning_effort_source,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_mode": getattr(record, "resume_mode", None),
@@ -1812,6 +1838,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "session_id": session_id,
             "prompt": record.prompt,
             "model": record.model,
+            "reasoning_effort": record.reasoning_effort,
+            "reasoning_effort_source": record.reasoning_effort_source,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_mode": getattr(record, "resume_mode", None),
@@ -1825,6 +1853,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             **local_capacity_metadata,
         }
         outputs = {
+            "reasoning_effort": record.reasoning_effort,
+            "reasoning_effort_source": record.reasoning_effort_source,
             "dispatch_id": dispatch_id,
             "success": True,
             "queued": False,
@@ -1846,6 +1876,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "session_id": session_id,
             "prompt": record.prompt,
             "model": record.model,
+            "reasoning_effort": record.reasoning_effort,
+            "reasoning_effort_source": record.reasoning_effort_source,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_mode": getattr(record, "resume_mode", None),

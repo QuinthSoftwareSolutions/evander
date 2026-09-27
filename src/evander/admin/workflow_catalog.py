@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
+from evander.reasoning_effort import LEVELS
 from evander.admin.payloads import WorkflowEditorGraphMetadata
 from evander.admin.services import vm_agent_service
 from evander.events.models import (
@@ -434,6 +435,21 @@ def _field(
         options=options or [],
         item_fields=item_fields or [],
         metadata=metadata or {},
+    )
+
+
+def _reasoning_effort_field() -> WorkflowEditorFieldDefinition:
+    return _field(
+        "reasoning_effort",
+        "Reasoning effort",
+        "enum",
+        bindable=True,
+        description=(
+            "Native provider effort level. Leave blank to use the session default "
+            "(Codex: high; Claude and Copilot: provider default). "
+            "The runtime validates support for the selected harness and model."
+        ),
+        options=[_field_option(level, level) for level in LEVELS],
     )
 
 
@@ -2471,6 +2487,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 bindable=True,
                 description="Model name the agent should use. Leave blank to inherit the directory default.",
             ),
+            _reasoning_effort_field(),
             _field(
                 "model_provider_mode",
                 "Model relay",
@@ -3296,6 +3313,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("vm_name", "VM name", "string", bindable=True),
             _field("prompt", "Prompt", "string", required=True, bindable=True, multiline=True),
             _field("model", "Model", "string", bindable=True),
+            _reasoning_effort_field(),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
             _field(
@@ -3352,6 +3370,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("vm_name", "VM name", "string", bindable=True),
             _field("prompt", "Prompt", "string", required=True, bindable=True, multiline=True),
             _field("model", "Model", "string", bindable=True),
+            _reasoning_effort_field(),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("dispatch_id", "Dispatch ID", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),

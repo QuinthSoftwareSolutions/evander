@@ -1267,6 +1267,12 @@ posted text.
 7. `post_pr_comment`, `post_pr_inline_comment`, or `submit_pr_review`
 8. `effect:vm:stop`
 
+Set a session **Reasoning effort** default in Admin Web, or override
+`reasoning_effort` on either prompt effect for one invocation. Codex, Claude Code,
+and Copilot use their native controls on their supported backends. Queued prompts
+and retries retain the selected effort. See the
+[reasoning effort reference](docs/configuration-reference.md#agent-reasoning-effort).
+
 Connect `effect:agent:prompt` or `effect:agent:enqueue-prompt` to
 `gate:await-agent` through the prompt's `started` source port. Use the
 prompt's `completed` source port for downstream work that should wait for the

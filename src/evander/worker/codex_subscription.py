@@ -145,6 +145,7 @@ class CodexSubscriptionTurnRunner:
                         "input": [{"type": "text", "text": self.turn.prompt}],
                         "cwd": self.cwd,
                         "model": self.turn.model,
+                        "effort": self.turn.reasoning_effort or "high",
                         "approvalPolicy": "never",
                     },
                 )
@@ -259,7 +260,12 @@ class CodexSubscriptionTurnRunner:
             # turns so managed Git/package access and the /artifacts mount remain usable.
             "sandbox": "danger-full-access",
         }
-        config: dict[str, Any] = {}
+        config: dict[str, Any] = {"model_reasoning_effort": self.turn.reasoning_effort or "high"}
+        if (
+            self.turn.reasoning_effort is not None
+            and self.turn.reasoning_effort_source != "default"
+        ):
+            config["model_supports_reasoning_summaries"] = True
         if self.turn.mcp_gateway_url is not None:
             config["mcp_servers"] = {"evander": {"url": str(self.turn.mcp_gateway_url)}}
         config["features"] = {"web_search_request": self.turn.web_search_enabled}

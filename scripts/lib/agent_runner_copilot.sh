@@ -89,6 +89,11 @@ _agent_runner_copilot_common_args() {
   if [[ -n "${model}" ]]; then
     dest_ref+=(--model "${model}")
   fi
+  case "${AGENT_REASONING_EFFORT:-}" in
+    "") ;;
+    low|medium|high|xhigh|max) dest_ref+=(--reasoning-effort "${AGENT_REASONING_EFFORT}") ;;
+    *) echo "Unsupported AGENT_REASONING_EFFORT '${AGENT_REASONING_EFFORT}'." >&2; return 1 ;;
+  esac
   dest_ref+=(-p "${prompt}")
 
   AGENT_RUNNER_COPILOT_CWD="${cwd}"

@@ -164,8 +164,9 @@ class DiskQuotaTurnProcess(FakeTurnProcess):
         raise CodexAppServerError("Codex app-server request failed: Disk quota exceeded")
 
 
+@pytest.mark.parametrize("effort", ["low", None])
 def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, effort: str | None
 ) -> None:
     ticks = iter([0.0, 0.1, 1.0, 1.2, 2.0, 2.3, 3.0, 3.4])
     monkeypatch.setattr("evander.worker.codex_subscription.time.perf_counter", lambda: next(ticks))
@@ -178,6 +179,7 @@ def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(
             auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
             prompt="Continue the task",
             model="gpt-5.4",
+            reasoning_effort=effort,
             resume_mode="same_context",
             mcp_gateway_url="http://gateway.internal:8000/mcp",
         ),
@@ -211,6 +213,9 @@ def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(
     assert resume["config"]["mcp_servers"]["evander"]["url"].endswith("/mcp")
     assert "dynamicTools" not in resume
     turn_start = next(params for method, params in process.requests if method == "turn/start")
+    assert turn_start["effort"] == (effort or "high")
+    assert resume["config"]["model_reasoning_effort"] == (effort or "high")
+    assert resume["config"].get("model_supports_reasoning_summaries", False) == (effort is not None)
     assert "dynamicTools" not in turn_start
     assert metadata[-1]["codex_subscription_exit_code"] == 0
     assert metadata[-1]["codex_subscription_startup_ms"] == pytest.approx(

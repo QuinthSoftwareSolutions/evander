@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from evander.reasoning_effort import resolve_reasoning_effort, session_agent_harness
 from evander.admin.services.vm_agent.common import (
     Any,
     VmActionResult,
-    _agent_provider_from_session,
     _is_synthetic_chat_assistant_thread_id,
     _source_project_dir,
     ensure_session_not_expired,
@@ -21,6 +21,8 @@ class VmAgentResumeMixin:
         prompt: str,
         *,
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -62,6 +64,8 @@ class VmAgentResumeMixin:
                 payload={
                     "prompt": prompt,
                     "model": model,
+                    "reasoning_effort": reasoning_effort,
+                    "reasoning_effort_source": reasoning_effort_source,
                     "vm_user": vm_user,
                     "dispatch_id": dispatch_id,
                     "resume_thread_id": resume_thread_id,
@@ -78,6 +82,8 @@ class VmAgentResumeMixin:
                 message=str(response.get("message") or ""),
                 provider="container_worker_vm",
                 thread_id=str(response.get("thread_id") or "") or None,
+                reasoning_effort=response.get("reasoning_effort"),
+                reasoning_effort_source=response.get("reasoning_effort_source"),
             )
 
         vm_name = self._resolve_vm_name_from_target(target)
@@ -100,7 +106,21 @@ class VmAgentResumeMixin:
             effective_resume_thread_id = str(resume_thread_id or "").strip() or None
             if _is_synthetic_chat_assistant_thread_id(effective_resume_thread_id):
                 effective_resume_thread_id = None
-            agent_provider = _agent_provider_from_session(manifest)
+            effective_config = self._deps.runtime.provider_config.resolve_for_directory(
+                manifest.directory_path
+            )
+            agent_provider = session_agent_harness(manifest, effective_config)
+            reasoning = resolve_reasoning_effort(
+                {
+                    "reasoning_effort": reasoning_effort,
+                    "reasoning_effort_source": reasoning_effort_source,
+                },
+                session=manifest,
+                harness=agent_provider,
+                model=resolved_model,
+                route=(manifest.metadata or {}).get("model_provider_mode")
+                or effective_config.model_provider_mode,
+            )
             manifest = self._reconcile_managed_git_remote_before_dispatch(
                 session_id=session_id,
                 session=manifest,
@@ -158,6 +178,8 @@ class VmAgentResumeMixin:
             resume_timeout_seconds = 120.0
         resume_env = os.environ | {
             "AGENT_MODEL": resolved_model,
+            "AGENT_REASONING_EFFORT": reasoning.value or "",
+            "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
             "AGENT_WEB_SEARCH_MODE": web_search_mode,
         }
         if agent_provider:
@@ -218,6 +240,8 @@ class VmAgentResumeMixin:
             action="resume_issue_agent",
             message=message or f"resume_issue_agent.sh exited with code {completed.returncode}",
             thread_id=resolved_thread_id,
+            model=resolved_model,
+            **reasoning.fields(),
         )
 
     def _spawn_agent_completion_watcher(

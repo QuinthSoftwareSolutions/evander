@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from evander.reasoning_effort import validate_session_reasoning_effort
+from evander.reasoning_effort import resolve_reasoning_effort, ResolvedReasoningEffort
+
 import html
 import json
 import re
@@ -523,6 +526,7 @@ def build_container_session_manifest(
     session_id: str,
     directory_path: str,
     model: str | None,
+    reasoning_effort: str | None = None,
     codex_auth_mode: CodexAuthMode | None = None,
     subscription_profile_id: str | None = None,
     ttl_hours: int | None,
@@ -634,11 +638,12 @@ def build_container_session_manifest(
             else []
         )
     )
-    return SessionManifest(
+    manifest = SessionManifest(
         session_id=session_id,
         vm_id=None,
         vm_provider=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
         model=model,
+        reasoning_effort=reasoning_effort,
         codex_auth_mode=codex_auth_mode,
         subscription_profile_id=subscription_profile_id,
         directory_path=directory_path,
@@ -689,6 +694,9 @@ def build_container_session_manifest(
         expires_at=datetime.now(UTC) + expires_delta,
         metadata=metadata,
     )
+
+    validate_session_reasoning_effort(manifest, config)
+    return manifest
 
 
 def wait_for_container_execution(
@@ -1100,6 +1108,8 @@ def container_prompt_command(
     *,
     prompt: str,
     model: str,
+    reasoning_effort: str | None = None,
+    reasoning_effort_source: str | None = None,
     resume_thread_id: str | None,
     session: object | None = None,
     agent_provider: str | None = None,
@@ -1107,12 +1117,23 @@ def container_prompt_command(
     mcp_gateway_url: str | None = None,
     web_search_enabled: bool = False,
 ) -> str:
+    reasoning = (
+        ResolvedReasoningEffort(reasoning_effort, reasoning_effort_source)
+        if reasoning_effort_source is not None
+        else resolve_reasoning_effort(
+            {"reasoning_effort": reasoning_effort},
+            session=session,
+            harness=agent_provider or "codex",
+            model=model,
+        )
+    )
     prompt = container_prompt_with_session_capabilities(prompt, session)
     provider = normalize_optional_string(agent_provider) or "codex"
     if provider == "claude":
         return _container_claude_prompt_command(
             prompt=prompt,
             model=model,
+            **reasoning.fields(),
             resume_thread_id=resume_thread_id,
             resume_mode=resume_mode,
             mcp_gateway_url=mcp_gateway_url,
@@ -1131,6 +1152,10 @@ def container_prompt_command(
         "-c",
         f"web_search={_toml_string('live' if web_search_enabled else 'disabled')}",
     ]
+    if reasoning.value is not None:
+        common_args.extend(["-c", f"model_reasoning_effort={_toml_string(reasoning.value)}"])
+        if reasoning.source != "default":
+            common_args.extend(["-c", "model_supports_reasoning_summaries=true"])
     if mcp_gateway_url:
         common_args.extend(
             [
@@ -1169,6 +1194,8 @@ def container_codex_turn_spec(
     *,
     prompt: str,
     model: str,
+    reasoning_effort: str | None = None,
+    reasoning_effort_source: str | None = None,
     resume_thread_id: str | None,
     session: object | None,
     config: GatewayConfig,
@@ -1199,6 +1226,17 @@ def container_codex_turn_spec(
         # Subscription tokens are valid only for the public OpenAI route. Keep
         # local/Azure traffic on its configured private endpoint and API-key mode.
         auth_mode = CodexAuthMode.METERED_API
+    reasoning = (
+        ResolvedReasoningEffort(reasoning_effort, reasoning_effort_source)
+        if reasoning_effort_source is not None
+        else resolve_reasoning_effort(
+            {"reasoning_effort": reasoning_effort},
+            session=session,
+            harness="codex",
+            model=model,
+            route=model_provider_mode,
+        )
+    )
     return CodexTurnSpec(
         auth_mode=auth_mode,
         subscription_profile_id=(
@@ -1208,6 +1246,7 @@ def container_codex_turn_spec(
         ),
         prompt=prompt,
         model=model,
+        **reasoning.fields(),
         resume_thread_id=_container_resume_thread_id(resume_thread_id),
         resume_mode=("same_context" if resume_mode == "same_context" else "new_context"),
         mcp_gateway_url=mcp_gateway_url,
@@ -1219,6 +1258,8 @@ def _container_claude_prompt_command(
     *,
     prompt: str,
     model: str,
+    reasoning_effort: str | None = None,
+    reasoning_effort_source: str | None = None,
     resume_thread_id: str | None,
     resume_mode: str | None = None,
     mcp_gateway_url: str | None = None,
@@ -1235,6 +1276,8 @@ def _container_claude_prompt_command(
         "--mcp-config",
         "/home/agent/.claude/mcp-config.json",
     ]
+    if reasoning_effort is not None:
+        common_args.extend(["--effort", reasoning_effort])
     if effective_resume_thread_id:
         args = ["claude", "--resume", effective_resume_thread_id, "-p", *common_args]
     elif effective_resume_mode == "same_context":

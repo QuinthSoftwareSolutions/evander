@@ -1799,6 +1799,8 @@ def test_create_issue_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None
                 str(config_path),
                 "--session-id",
                 "session-14084",
+                "--reasoning-effort",
+                "medium",
                 "--dotnet",
                 "--nuget",
                 "/tmp/project.slnx",
@@ -1828,6 +1830,7 @@ def test_create_issue_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None
         "playwright": True,
         "codex_skills": [],
         "model": "gpt-5.2-codex",
+        "reasoning_effort": "medium",
         "model_provider_mode": None,
     }
 
@@ -2049,6 +2052,8 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(
             "root/team",
             "--session-id",
             "lab-session",
+            "--reasoning-effort",
+            "low",
             "--dotnet",
             "--nuget",
             "--playwright",
@@ -2065,6 +2070,7 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(
         "vm_name": "lab-vm",
         "session_id": "lab-session",
         "model": None,
+        "reasoning_effort": "low",
         "vm_user": "agent",
         "ttl_hours": None,
         "discord_channels": [],
@@ -4222,6 +4228,8 @@ def test_resume_agent_routes_issue_target_through_queue_aware_admin_service(
             "12305",
             "--config",
             str(config_path),
+            "--reasoning-effort",
+            "low",
             "--message",
             "Continue from the failing restore",
         ],
@@ -4232,6 +4240,7 @@ def test_resume_agent_routes_issue_target_through_queue_aware_admin_service(
         "target": "issue-12305-session",
         "prompt": "Continue from the failing restore",
         "model": "gpt-5.2-codex",
+        "reasoning_effort": "low",
         "vm_user": "agent",
         "resume_mode": "same_context",
     }
@@ -4364,6 +4373,7 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
         "target": "evander-receptionist-vm-20260330T112127Z-1353036",
         "prompt": "Continue from Discord",
         "model": "gpt-5.4",
+        "reasoning_effort": None,
         "vm_user": "agent",
         "resume_mode": "same_context",
     }
@@ -5173,3 +5183,35 @@ def test_wake_schedules_create_enforces_mcp_mode_rules(tmp_path: Path) -> None:
     )
     assert result.exit_code != 0
     assert "MCP scheduling only supports" in result.output
+
+
+def test_session_reasoning_effort_cli_create_update_and_clear(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    created = runner.invoke(
+        app,
+        [
+            "create-session",
+            "--config",
+            str(config_path),
+            "--model",
+            "gpt-6-sol",
+            "--reasoning-effort",
+            "medium",
+            "effort-session",
+        ],
+    )
+    assert created.exit_code == 0, created.output
+    path = tmp_path / "runtime" / "sessions.json"
+    assert json.loads(path.read_text())["effort-session"]["reasoning_effort"] == "medium"
+    base = ["set-session-reasoning-effort", "--config", str(config_path), "effort-session"]
+    changed = runner.invoke(app, [*base, "--effort", "low"])
+    assert changed.exit_code == 0, changed.output
+    assert json.loads(path.read_text())["effort-session"]["reasoning_effort"] == "low"
+    rejected = runner.invoke(app, [*base, "--effort", "fastest"])
+    assert rejected.exit_code != 0
+    assert json.loads(path.read_text())["effort-session"]["reasoning_effort"] == "low"
+    cleared = runner.invoke(app, [*base, "--clear"])
+    assert cleared.exit_code == 0, cleared.output
+    assert json.loads(path.read_text())["effort-session"]["reasoning_effort"] is None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -266,6 +266,9 @@ class OperationsAdminService:
 
     def update_session_policy(self, target: str, payload: dict[str, object]):
         return self._session_admin.update_session_policy(target, payload)
+
+    def update_session_model_settings(self, target: str, settings: Mapping[str, Any]):
+        return self._session_admin.update_session_model_settings(target, settings)
 
     def set_session_model(self, target: str, model: str):
         return self._session_admin.set_session_model(target, model)

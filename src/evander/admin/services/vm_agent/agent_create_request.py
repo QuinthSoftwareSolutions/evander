@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from evander.reasoning_effort import (
+    normalize_reasoning_effort,
+    validate_session_reasoning_effort,
+    reasoning_effort_catalog,
+)
 from evander.provider_config import validate_openrouter_session
 from evander.admin.services.vm_agent.common import (
     Any,
@@ -159,6 +164,7 @@ class VmAgentCreateRequestMixin:
                 session_id=self._agent_optional_string(payload, "session_id"),
                 labels=_normalize_session_labels(payload.get("labels")),
                 model=self._agent_optional_string(payload, "model"),
+                reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
                 ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
@@ -464,12 +470,14 @@ class VmAgentCreateRequestMixin:
                 "vm_provider": "container_worker_vm",
                 "vm_provider_id": target_name,
                 "model": model,
+                "reasoning_effort": normalize_reasoning_effort(payload.get("reasoning_effort")),
                 "codex_auth_mode": codex_auth_mode,
                 "subscription_profile_id": subscription_profile_id,
                 "metadata": metadata,
             }
         )
         validate_openrouter_session(backend.config, manifest)
+        validate_session_reasoning_effort(manifest, backend.config)
         manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,
@@ -682,6 +690,7 @@ class VmAgentCreateRequestMixin:
         return {
             "directory_path": normalized_directory,
             "backends": ["libvirt_vm", "container_worker_vm"],
+            "reasoning_effort_catalog": reasoning_effort_catalog(),
             "agent_providers": [
                 {
                     "value": "codex",
