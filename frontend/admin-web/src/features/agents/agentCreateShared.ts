@@ -20,6 +20,7 @@ export type AgentCreateFormState = {
   sessionId: string;
   ttlDuration: string;
   model: string;
+  reasoningEffort: string;
   provider: string;
   vmUser: string;
   agentProvider: string;
@@ -62,6 +63,7 @@ export function emptyCreateForm(): AgentCreateFormState {
     sessionId: "",
     ttlDuration: "7d",
     model: "",
+    reasoningEffort: "",
     provider: "",
     vmUser: "agent",
     agentProvider: "",
@@ -163,6 +165,7 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   if (ttlSeconds != null) payload.ttl_seconds = ttlSeconds;
   const model = optionalText(form.model);
   if (model) payload.model = model;
+  if (form.reasoningEffort) payload.reasoning_effort = form.reasoningEffort;
   const agentProvider = optionalText(form.agentProvider);
   if (agentProvider) payload.agent_provider = agentProvider;
   const modelProviderMode = optionalText(form.modelProviderMode);

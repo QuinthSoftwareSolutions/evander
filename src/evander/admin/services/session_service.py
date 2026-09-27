@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services import git_helpers, session_helpers
 from evander.codex_auth import (
     CodexAuthMode,
@@ -341,21 +343,42 @@ class SessionAdminService:
             message=f"Updated policy for session {session_id}",
         )
 
-    def set_session_model(self, target: str, model: str) -> SessionActionResult:
+    def update_session_model_settings(
+        self, target: str, settings: Mapping[str, Any]
+    ) -> SessionActionResult:
         session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
-        normalized_model = str(model).strip()
-        if not normalized_model:
-            raise ValueError("model must be non-empty")
-        manifest.model = normalized_model
-        self._session_repository().upsert_session(manifest)
+        if not settings or set(settings) - {"model", "reasoning_effort"}:
+            raise ValueError("Provide model and/or reasoning_effort")
+        update: dict[str, Any] = {}
+        if "model" in settings:
+            model = settings["model"]
+            if model is not None and (not isinstance(model, str) or not model.strip()):
+                raise ValueError("model must be non-empty")
+            update["model"] = model.strip() if model is not None else None
+        if "reasoning_effort" in settings:
+            update["reasoning_effort"] = normalize_reasoning_effort(settings["reasoning_effort"])
+        updated = manifest.model_copy(update=update)
+        resolver = getattr(self._deps.runtime, "provider_config", None)
+        config = (
+            resolver.resolve_for_directory(updated.directory_path)
+            if resolver is not None
+            else self._deps.config
+        )
+        validate_session_reasoning_effort(updated, config)
+        self._session_repository().upsert_session(updated)
         return SessionActionResult(
             success=True,
             session_id=session_id,
             action="set_session_model",
             message=f"Updated model for session {session_id}",
         )
+
+    def set_session_model(self, target: str, model: str) -> SessionActionResult:
+        if not str(model).strip():
+            raise ValueError("model must be non-empty")
+        return self.update_session_model_settings(target, {"model": model})
 
     def set_session_codex_auth_mode(
         self,

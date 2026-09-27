@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 from datetime import datetime
 
+from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     AgentPromptRetryLimitExceeded,
@@ -98,6 +99,8 @@ def enqueue_agent_prompt(
     session_id: str | None,
     prompt: str,
     model: str | None,
+    reasoning_effort: ReasoningEffort | None = None,
+    reasoning_effort_source: ReasoningEffortSource | None = None,
     vm_user: str,
     dispatch_id: str | None,
     resume_thread_id: str | None,
@@ -127,6 +130,8 @@ def enqueue_agent_prompt(
             session_id=session_id,
             prompt=prompt,
             model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_effort_source=reasoning_effort_source,
             model_provider_mode=model_provider_mode,
             queue_reason=queue_reason,
             subscription_profile_id=subscription_profile_id,

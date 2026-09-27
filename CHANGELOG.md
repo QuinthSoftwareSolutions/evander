@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-27 - Configure agent reasoning effort (0.65.0)
+
+- Add session reasoning defaults and per-prompt overrides in Admin Web, the CLI, and agent creation, prompt, and enqueue-prompt workflow effects.
+- Forward native effort settings through Codex, Claude Code, and Copilot on their supported execution backends, including Codex subscription turns and OpenAI-compatible relays.
+- Validate known model capabilities, preserve provider defaults, and retain the resolved effort and its source across queues, subscription deferrals, and context retries.
+
 ## 2026-09-26 - Keep request storage off the event loop (0.64.1)
 
 - Offload MCP authentication, transport persistence, discovery, approval checks and dispatch

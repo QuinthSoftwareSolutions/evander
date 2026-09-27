@@ -3636,6 +3636,8 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
         prompt: str,
         *,
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -3648,6 +3650,8 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
                 "target": target,
                 "prompt": prompt,
                 "model": model,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_effort_source": reasoning_effort_source,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -3677,6 +3681,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
         backend="libvirt_vm",
         payload={
             "prompt": "Continue the investigation",
+            "reasoning_effort": "low",
             "resume_thread_id": "thread-keep-2",
         },
     )
@@ -3694,6 +3699,8 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
     assert resume_calls[0]["target"] == "receptionist-session"
     assert resume_calls[0]["prompt"] == "Continue the investigation"
     assert resume_calls[0]["model"] == "gpt-6-sol"
+    assert resume_calls[0]["reasoning_effort"] == "low"
+    assert resume_calls[0]["reasoning_effort_source"] == "prompt"
     assert resume_calls[0]["vm_user"] == "agent"
     assert str(resume_calls[0]["dispatch_id"]).startswith(
         "dispatch-admin-agent-prompt:libvirt_vm:receptionist-session-"
@@ -4046,6 +4053,8 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
         prompt: str,
         *,
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -4054,7 +4063,13 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         del self, target, prompt, model, vm_user, dispatch_id, resume_thread_id
-        del resume_mode, persist_thread_id, mcp_gateway_url
+        del (
+            resume_mode,
+            persist_thread_id,
+            mcp_gateway_url,
+            reasoning_effort,
+            reasoning_effort_source,
+        )
         return VmActionResult(
             success=False,
             vm_name="evander-receptionist-vm",

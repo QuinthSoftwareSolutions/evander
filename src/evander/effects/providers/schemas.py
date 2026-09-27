@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from evander.reasoning_effort import LEVELS, normalize_reasoning_effort
 from evander.events.models import ConfigValue, EffectDefinition
 from evander.codex_auth import normalize_subscription_profile_id
 from evander.events.internal import validate_internal_event_type
@@ -246,6 +247,11 @@ class AgentCreateEffectDefinition(EffectDefinition):
     existing_agent_behavior: ConfigValue | None = None
     labels: ConfigValue | None = None
     model: ConfigValue | None = None
+    reasoning_effort: ConfigValue | None = Field(
+        default=None,
+        description="Native reasoning level. Omit to inherit the session default.",
+        json_schema_extra={"examples": list(LEVELS)},
+    )
     model_provider_mode: ConfigValue | None = None
     codex_auth_mode: ConfigValue | None = None
     # Profile assignment is an immutable editor selector, never a runtime binding.
@@ -305,6 +311,15 @@ class AgentCreateEffectDefinition(EffectDefinition):
         if isinstance(value, str) and "${{" in value:
             return value
         return normalize_optional_http_url(value, field_name="npm_registry_url")
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def validate_reasoning_effort_value(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" not in value:
+            return normalize_reasoning_effort(value)
+        if value is not None and not isinstance(value, (str, dict)):
+            raise ValueError("reasoning_effort must be a native level or binding")
+        return value
 
 
 class AgentDestroyEffectDefinition(EffectDefinition):
@@ -463,6 +478,11 @@ class AgentPromptEffectDefinition(EffectDefinition):
     vm_name: ConfigValue | None = None
     prompt: ConfigValue
     model: ConfigValue | None = None
+    reasoning_effort: ConfigValue | None = Field(
+        default=None,
+        description="Native reasoning level. Omit to inherit the session default.",
+        json_schema_extra={"examples": list(LEVELS)},
+    )
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
     resume_thread_metadata_key: ConfigValue | None = None
@@ -474,6 +494,15 @@ class AgentPromptEffectDefinition(EffectDefinition):
     agent_context_retry_max_attempts: ConfigValue | None = None
     agent_context_retry_target_chars: ConfigValue | None = None
 
+    @field_validator("reasoning_effort")
+    @classmethod
+    def validate_reasoning_effort_value(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" not in value:
+            return normalize_reasoning_effort(value)
+        if value is not None and not isinstance(value, (str, dict)):
+            raise ValueError("reasoning_effort must be a native level or binding")
+        return value
+
 
 class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     type: Literal["effect:agent:enqueue-prompt"]
@@ -482,6 +511,11 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     vm_name: ConfigValue | None = None
     prompt: ConfigValue
     model: ConfigValue | None = None
+    reasoning_effort: ConfigValue | None = Field(
+        default=None,
+        description="Native reasoning level. Omit to inherit the session default.",
+        json_schema_extra={"examples": list(LEVELS)},
+    )
     vm_user: ConfigValue | None = None
     dispatch_id: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
@@ -495,6 +529,15 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     agent_context_retry_enabled: ConfigValue | None = None
     agent_context_retry_max_attempts: ConfigValue | None = None
     agent_context_retry_target_chars: ConfigValue | None = None
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def validate_reasoning_effort_value(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" not in value:
+            return normalize_reasoning_effort(value)
+        if value is not None and not isinstance(value, (str, dict)):
+            raise ValueError("reasoning_effort must be a native level or binding")
+        return value
 
 
 class CodeConsultationEffectDefinition(EffectDefinition):

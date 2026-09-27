@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
+from evander.reasoning_effort import reasoning_effort_catalog, session_agent_harness
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 from evander.admin.tool_visibility import _tool_category, _tool_provider
@@ -691,6 +692,8 @@ def _session_payload(
     policy_cache: _SessionPolicySummaryCache | None = None,
 ) -> dict[str, Any]:
     payload = summary.model_dump(mode="json")
+    effective_config = service.runtime.provider_config.resolve_for_directory(summary.directory_path)
+    payload["agent_harness"] = session_agent_harness(summary, effective_config)
     payload["allowed_tools"] = [tool_name_value(tool) for tool in summary.allowed_tools]
     try:
         payload["model_provider_mode"] = normalize_model_provider_mode_override(
@@ -702,6 +705,11 @@ def _session_payload(
         # Legacy or externally written metadata must not make the Admin Web
         # session detail impossible to open and repair.
         payload["model_provider_mode"] = None
+    payload["effective_model_provider_mode"] = payload["model_provider_mode"] or (
+        "anthropic"
+        if payload["agent_harness"] == "claude"
+        else effective_config.model_provider_mode
+    )
     payload.update(_session_policy_summary_payload(service, summary, cache=policy_cache))
     payload["approval_notification_target_options"] = [
         option.model_dump(mode="json")
@@ -979,6 +987,7 @@ def session_approval_routes(
             {
                 "tool_options": merged_tool_options,
                 "model_options": _model_options_from_pricing_catalog(service),
+                "reasoning_effort_catalog": reasoning_effort_catalog(),
                 "model_provider_modes": _model_provider_mode_options(),
                 "resume_mode_options": [
                     {"value": "same_context", "label": "same_context"},
@@ -1270,11 +1279,15 @@ def session_approval_routes(
             return json_error("Request body must be valid JSON.")
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object.")
-        model = str(payload.get("model") or "").strip()
-        if not model:
+        if "model" in payload and (
+            not isinstance(payload["model"], str) or not payload["model"].strip()
+        ):
             return json_error("Model is required.")
+        settings = {key: payload[key] for key in ("model", "reasoning_effort") if key in payload}
+        if not settings:
+            return json_error("Provide model and/or reasoning_effort.")
         try:
-            result = service.operations_admin.set_session_model(session_id, model)
+            result = service.operations_admin.update_session_model_settings(session_id, settings)
             summary = _get_session_summary(session_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)

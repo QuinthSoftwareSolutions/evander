@@ -9,6 +9,7 @@ from typing import Annotated
 
 import typer
 
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services.issue_setup_helpers import (
     resolve_agent_model_for_manifest,
     resolve_effective_issue_setup_config,
@@ -54,6 +55,10 @@ def create_session(
     model: Annotated[
         str | None,
         typer.Option("--model", help="Agent model override for this session."),
+    ] = None,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option("--reasoning-effort", help="Native agent reasoning level; omit to inherit."),
     ] = None,
 ) -> None:
     cfg = cli_runtime._load_runtime_config_from_option(config)
@@ -119,6 +124,10 @@ def create_session(
             manifest.model = resolve_agent_model_for_manifest(manifest, issue_setup=issue_setup)
         except ValueError:
             manifest.model = None
+    manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    validate_session_reasoning_effort(
+        manifest, runtime.provider_config.resolve_for_directory(manifest.directory_path)
+    )
     if manifest.email_send_enabled:
         manifest.allowed_tools.extend([ToolName.EMAIL_SEND, ToolName.EMAIL_SEND_APPROVED])
     session_repository = cli_session_support._runtime_session_repository(runtime)
@@ -364,11 +373,35 @@ def set_session_model(
     sessions = {session.session_id: session for session in session_repository.list_sessions()}
     session_id, manifest = cli_session_support._resolve_session_target(target, sessions)
     manifest.model = None if clear else model.strip()
+    validate_session_reasoning_effort(
+        manifest, runtime.provider_config.resolve_for_directory(manifest.directory_path)
+    )
     session_repository.upsert_session(manifest)
     if clear:
         typer.echo(f"Cleared model override for session {session_id}")
         return
     typer.echo(f"Set model override for session {session_id} to {manifest.model}")
+
+
+@cli_app.app.command("set-session-reasoning-effort", rich_help_panel="Sessions and Feedback")
+def set_session_reasoning_effort(
+    target: str,
+    effort: Annotated[str | None, typer.Option("--reasoning-effort", "--effort")] = None,
+    clear: Annotated[bool, typer.Option("--clear", help="Restore the harness default.")] = False,
+    config: cli_common.ConfigOption = cli_common.CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    if clear == (effort is not None):
+        raise typer.BadParameter("Provide --reasoning-effort or --clear, exclusively.")
+    try:
+        result = cli_runtime.build_admin_runtime(
+            config
+        ).session_admin.update_session_model_settings(
+            target,
+            {"reasoning_effort": None if clear else effort},
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(result.message)
 
 
 @cli_app.app.command(

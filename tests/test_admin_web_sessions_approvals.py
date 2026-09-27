@@ -2520,3 +2520,45 @@ def test_admin_web_rejects_invalid_tool_argument_policy_updates(tmp_path: Path) 
     assert "operator" in session_response.json()["error"]
     assert agent_response.status_code == 400
     assert "operator" in agent_response.json()["error"]
+
+
+def test_session_effort_update_is_authorized_atomic_and_clearable(tmp_path, monkeypatch) -> None:
+    service, owner, operator = _authenticated_owner_and_operator_clients(tmp_path, monkeypatch)
+    session = SessionManifest(
+        session_id="effort-session",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        model="gpt-6-astra",
+        reasoning_effort="ultra",
+        metadata={"agent_provider": "codex"},
+    )
+    service.runtime.session_repository.upsert_session(session)
+    endpoint = "/api/admin/sessions/effort-session/model"
+    assert operator.put(endpoint, json={"reasoning_effort": "low"}).status_code == 403
+    assert owner.put(endpoint, json={"reasoning_effort": "low"}).status_code == 403
+    _unlock_privileged_operations(owner)
+
+    # Changing just the model must not silently clamp the saved effort.
+    rejected = owner.put(endpoint, json={"model": "gpt-4o"})
+    assert rejected.status_code == 400
+    saved = service.runtime.session_repository.get_session("effort-session")
+    assert (saved.model, saved.reasoning_effort) == ("gpt-6-astra", "ultra")
+
+    updated = owner.put(endpoint, json={"model": "gpt-6-luna", "reasoning_effort": "low"})
+    assert updated.status_code == 200
+    assert updated.json()["session"]["reasoning_effort"] == "low"
+    saved = service.runtime.session_repository.get_session("effort-session")
+    assert (saved.model, saved.reasoning_effort) == ("gpt-6-luna", "low")
+
+    # Omission preserves the default, while explicit null clears it.
+    assert owner.put(endpoint, json={"model": "gpt-6-sol"}).status_code == 200
+    assert (
+        service.runtime.session_repository.get_session("effort-session").reasoning_effort == "low"
+    )
+    assert owner.put(endpoint, json={"reasoning_effort": None}).status_code == 200
+    assert service.runtime.session_repository.get_session("effort-session").reasoning_effort is None
+    assert owner.put(endpoint, json={"reasoning_effort": "fastest"}).status_code == 400
+    assert owner.put(endpoint, json={"reasoning_effort": {"level": "high"}}).status_code == 400
+    detail = owner.get("/api/admin/sessions/effort-session").json()["session"]
+    assert detail["reasoning_effort"] is None
+    assert detail["agent_harness"] == "codex"

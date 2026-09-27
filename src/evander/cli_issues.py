@@ -443,6 +443,10 @@ def create_issue_vm(
         str | None,
         typer.Option("--model", help="Agent model override for the created session."),
     ] = None,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option("--reasoning-effort", help="Native reasoning effort default for the session."),
+    ] = None,
     model_provider_mode: Annotated[
         str | None,
         typer.Option(
@@ -472,6 +476,7 @@ def create_issue_vm(
         playwright=playwright,
         codex_skills=codex_skill,
         model=model,
+        reasoning_effort=reasoning_effort,
         model_provider_mode=model_provider_mode,
     )
     cli_common._echo_action_result_or_exit(result)

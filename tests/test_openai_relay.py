@@ -139,7 +139,11 @@ def test_openrouter_relay_pins_provider_zdr_model_and_host_headers(tmp_path: Pat
             "authorization": "Bearer guest-key",
             "x-openrouter-title": "guest-title",
         },
-        json={"model": "openai/gpt-5.4", "input": "private request"},
+        json={
+            "model": "openai/gpt-5.4",
+            "input": "private request",
+            "reasoning": {"effort": "low"},
+        },
     )
 
     assert response.status_code == 200
@@ -150,6 +154,7 @@ def test_openrouter_relay_pins_provider_zdr_model_and_host_headers(tmp_path: Pat
     assert captured["payload"] == {
         "model": "openai/gpt-5.4",
         "input": "private request",
+        "reasoning": {"effort": "low"},
         "provider": {
             "order": ["openai"],
             "only": ["openai"],
@@ -1095,7 +1100,7 @@ def test_relay_routes_local_openai_requests_without_host_api_key_env(
 
     response = client.post(
         "/v1/session/session-local/responses?foo=bar",
-        json={"model": "qwen3-coder:30b", "input": "hello"},
+        json={"model": "qwen3-coder:30b", "input": "hello", "reasoning": {"effort": "low"}},
     )
 
     assert response.status_code == 200
@@ -1105,6 +1110,7 @@ def test_relay_routes_local_openai_requests_without_host_api_key_env(
     assert captured["payload"] == {
         "model": "qwen3-coder:30b",
         "input": "hello",
+        "reasoning": {"effort": "low"},
     }
 
 
@@ -1308,7 +1314,7 @@ def test_relay_routes_azure_openai_responses_requests_through_session_directory_
 
     response = client.post(
         "/v1/responses?session_id=session-azure&foo=bar&api-version=old",
-        json={"model": "gpt-5.4", "input": "hello"},
+        json={"model": "gpt-5.4", "input": "hello", "reasoning": {"effort": "low"}},
     )
 
     assert response.status_code == 200
@@ -1321,6 +1327,7 @@ def test_relay_routes_azure_openai_responses_requests_through_session_directory_
     assert captured["payload"] == {
         "model": "deployment-team-a",
         "input": "hello",
+        "reasoning": {"effort": "low"},
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services.vm_agent.common import (
     Any,
     COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
@@ -44,6 +45,7 @@ class VmAgentMutationMixin:
         body = dict(payload or {})
         allowed_fields = {
             "model",
+            "reasoning_effort",
             "ttl_hours",
             "allowed_tools",
             "connector_grants",
@@ -87,6 +89,8 @@ class VmAgentMutationMixin:
             target_name = str(session.vm_id or agent_id)
 
         update: dict[str, Any] = {}
+        if "reasoning_effort" in body:
+            update["reasoning_effort"] = normalize_reasoning_effort(body["reasoning_effort"])
         if "model" in body:
             update["model"] = self._agent_optional_string(body, "model")
         if "ttl_hours" in body:
@@ -311,6 +315,10 @@ class VmAgentMutationMixin:
             update["subscription_profile_id"] = None
 
         updated = session.model_copy(update=update)
+        validate_session_reasoning_effort(
+            updated,
+            self.runtime.provider_config.resolve_for_directory(updated.directory_path),
+        )
         self.runtime.session_repository.upsert_session(updated)
         if "codex_auth_mode" in body or "subscription_profile_id" in body:
             from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
@@ -507,6 +515,7 @@ class VmAgentMutationMixin:
                     agent_id,
                     prompt,
                     model=str(body.get("model") or "").strip() or None,
+                    reasoning_effort=normalize_reasoning_effort(body.get("reasoning_effort")),
                     resume_mode=str(body.get("resume_mode") or "same_context").strip()
                     or "same_context",
                 )

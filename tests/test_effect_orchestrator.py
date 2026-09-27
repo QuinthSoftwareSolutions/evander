@@ -341,6 +341,8 @@ class _AgentPromptDispatchPortStub:
         target: str,
         prompt: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -353,6 +355,8 @@ class _AgentPromptDispatchPortStub:
                 "target": target,
                 "prompt": prompt,
                 "model": model,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_effort_source": reasoning_effort_source,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -5536,8 +5540,9 @@ def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
     ]
 
 
+@pytest.mark.parametrize("captured", [True, False])
 def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes_idle(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, captured
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -5566,6 +5571,8 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
             session_id=None,
             prompt="hello",
             model=None,
+            reasoning_effort="low" if captured else None,
+            reasoning_effort_source="session" if captured else None,
             vm_user="agent",
             dispatch_id="caller-dispatch-1",
             resume_thread_id=None,
@@ -5589,12 +5596,23 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     )
     worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
         resume_calls,
-        type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+        type(
+            "Result",
+            (),
+            {
+                "success": True,
+                "thread_id": "thread-queued",
+                "reasoning_effort": "low",
+                "reasoning_effort_source": "session",
+            },
+        )(),
     )
 
     worker._run_post_completion_dispatch_hooks()
 
     assert len(resume_calls) == 1
+    assert resume_calls[0]["reasoning_effort"] == ("low" if captured else None)
+    assert resume_calls[0]["reasoning_effort_source"] == ("session" if captured else None)
     assert resume_calls[0]["target"] == "vm-1"
     assert resume_calls[0]["dispatch_id"] == "caller-dispatch-1"
     assert resume_calls[0]["resume_mode"] == "same_context"
@@ -5618,6 +5636,8 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
         waiting_records[0].input_payload,
         waiting_records[0].outputs,
     ):
+        assert payload["reasoning_effort"] == "low"
+        assert payload["reasoning_effort_source"] == "session"
         assert payload["workflow_run_id"] == "workflow-run-1"
         assert payload["mcp_tool_approval_lease_id"] == "approval-lease-1"
 
@@ -8371,6 +8391,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             vm_provider="container_worker_vm",
             vm_provider_id="evander",
             model="gpt-5.4-mini",
+            reasoning_effort="high",
             metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
@@ -8390,6 +8411,8 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             session_id="session-1",
             prompt="resume scheduled work",
             model=None,
+            reasoning_effort="low",
+            reasoning_effort_source="session",
             dispatch_id="dispatch-queued-steering",
             vm_user="agent",
             resume_thread_id=None,
@@ -8439,6 +8462,8 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
 
     assert dispatched == 1
     assert queue_store.read_all() == {}
+    assert backend.started_specs[0].codex_turn.reasoning_effort == "low"
+    assert backend.started_specs[0].codex_turn.reasoning_effort_source == "session"
     command = str(backend.started_specs[0].command)
     assert "codex exec resume --last" in command
     assert "resume scheduled work" in command
@@ -8446,6 +8471,8 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     assert "workflow_run_id=run-1" in command
     assert "mcp_tool_approval_lease_id=lease-1" in command
     waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].outputs["reasoning_effort"] == "low"
+    assert waiting_records[0].resolved_config["reasoning_effort_source"] == "session"
     assert waiting_records[0].resolved_config["resume_mode"] == "same_context"
     assert waiting_records[0].input_payload["resume_mode"] == "same_context"
     assert waiting_records[0].resolved_config["workflow_run_id"] == "run-1"
@@ -8609,6 +8636,7 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
         SessionManifest(
             session_id="session-1",
             vm_id=None,
+            reasoning_effort="high",
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
@@ -8630,6 +8658,8 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
             session_id="session-1",
             prompt="handle PR feedback",
             model=None,
+            reasoning_effort=None,
+            reasoning_effort_source="default",
             vm_user="agent",
             resume_thread_id=None,
             resume_mode="same_context",
@@ -8663,9 +8693,12 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
     assert dispatched == 1
     command = str(backend.started_specs[0].command)
     assert "claude --continue -p" in command
+    assert "--effort" not in command
     assert "claude-sonnet-4-6" in command
     assert "codex exec" not in command
     waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].outputs["reasoning_effort"] is None
+    assert waiting_records[0].outputs["reasoning_effort_source"] == "default"
     assert waiting_records[0].resolved_config["agent_provider"] == "claude"
     assert waiting_records[0].resolved_config["model"] == "claude-sonnet-4-6"
     assert waiting_records[0].resolved_config["wake_dispatch_id"] == "wake-dispatch-1"

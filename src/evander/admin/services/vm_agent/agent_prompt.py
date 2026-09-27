@@ -24,6 +24,8 @@ class VmAgentPromptMixin:
         prompt: str,
         *,
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -50,6 +52,8 @@ class VmAgentPromptMixin:
             payload={
                 "prompt": prompt,
                 "model": model,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_effort_source": reasoning_effort_source,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -72,6 +76,8 @@ class VmAgentPromptMixin:
             dispatch_id=str(response.get("dispatch_id") or dispatch_id or "").strip() or None,
             session_id=str(response.get("session_id") or "").strip() or None,
             model=str(response.get("model") or model or "").strip() or None,
+            reasoning_effort=response.get("reasoning_effort"),
+            reasoning_effort_source=response.get("reasoning_effort_source"),
             model_provider_mode=(str(response.get("model_provider_mode") or "").strip() or None),
             local_inference_capacity_enabled=bool(response.get("local_inference_capacity_enabled")),
             local_inference_active_count=int(response.get("local_inference_active_count") or 0),
@@ -96,6 +102,7 @@ class VmAgentPromptMixin:
         if not prompt:
             raise ValueError("prompt-agent requires a non-empty prompt")
         model = self._agent_optional_string(payload, "model")
+        reasoning_effort = payload.get("reasoning_effort")
         dispatch_id = self._agent_optional_string(payload, "dispatch_id")
         resume_thread_id = self._agent_optional_string(payload, "resume_thread_id")
         resume_mode = self._agent_optional_string(payload, "resume_mode")
@@ -148,6 +155,7 @@ class VmAgentPromptMixin:
             vm_name=target_name,
             prompt=prompt,
             model=model,
+            reasoning_effort=reasoning_effort,
             resume_thread_id=resume_thread_id,
             resume_mode=resume_mode,
             dispatch_id=dispatch_id,
@@ -161,7 +169,11 @@ class VmAgentPromptMixin:
         ).build(effect, directory_path=directory_path)
         dispatch_started_at = datetime.now(UTC)
         try:
-            result = provider.execute()
+            result = provider.execute(
+                resolved_config={
+                    "reasoning_effort_source": payload.get("reasoning_effort_source"),
+                }
+            )
         except RuntimeError as exc:
             queued_result = self._queued_admin_prompt_result_after_dispatch_error(
                 queue_key=queue_key,
@@ -317,6 +329,8 @@ class VmAgentPromptMixin:
             "session_id": session_id,
             "prompt": prompt,
             "model": result.get("model"),
+            "reasoning_effort": result.get("reasoning_effort"),
+            "reasoning_effort_source": result.get("reasoning_effort_source"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
             "resume_mode": resume_mode,
@@ -331,6 +345,8 @@ class VmAgentPromptMixin:
             "session_id": session_id,
             "prompt": prompt,
             "model": result.get("model"),
+            "reasoning_effort": result.get("reasoning_effort"),
+            "reasoning_effort_source": result.get("reasoning_effort_source"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
             "resume_mode": resume_mode,
@@ -413,6 +429,8 @@ class VmAgentPromptMixin:
             "session_id": session_id,
             "prompt": prompt,
             "model": result.get("model"),
+            "reasoning_effort": result.get("reasoning_effort"),
+            "reasoning_effort_source": result.get("reasoning_effort_source"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
             "directory_path": directory_path,
@@ -425,6 +443,8 @@ class VmAgentPromptMixin:
             "session_id": session_id,
             "prompt": prompt,
             "model": result.get("model"),
+            "reasoning_effort": result.get("reasoning_effort"),
+            "reasoning_effort_source": result.get("reasoning_effort_source"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
             "queue_key": effect_id,
