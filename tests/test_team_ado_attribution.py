@@ -20,7 +20,7 @@ from evander_team_addon.services.ado_attribution import release_publication_cont
 from evander_team_addon.services.domain.task_authorship import combined_deliverable_attributions
 from evander_team_addon.sqlite_store import TeamStateSqliteStore
 from test_team_task_authorship import _create, ALICE, BOB
-from test_team_addon_repository import (
+from team_repository_support import (
     _seed_hierarchy,
     _team_admin_service,
     _lease_agent_dispatch,
@@ -73,7 +73,7 @@ def test_host_intake_captures_assignee_once_and_preserves_project_fallback(tmp_p
             title="Intake",
             description="Coordinate work",
             ado_work_item_id="123",
-            ado_project="APP",
+            ado_project="App",
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)}, provider_config_resolver=resolver

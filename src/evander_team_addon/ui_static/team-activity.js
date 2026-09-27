@@ -1,3 +1,5 @@
+import { renderIdentifierText } from "./team-identifiers.js";
+
 function emptyActivityState() {
   return {
     total_count: 0,
@@ -176,7 +178,7 @@ export function createTeamActivityController({
     const statusClass = event.status === "failure" ? "error" : "success";
     const tool = event.tool_name ? `<code>${escapeHtml(event.tool_name)}</code>` : humanizeToken(event.kind);
     const error = event.error_code
-      ? `<div class="meta-line">${escapeHtml(event.error_code)}${event.correction_context_summary ? ` · ${escapeHtml(event.correction_context_summary)}` : ""}</div>`
+      ? `<div class="meta-line">${escapeHtml(event.error_code)}${event.correction_context_summary ? ` · ${renderIdentifierText(event.correction_context_summary)}` : ""}</div>`
       : "";
     return `
       <article class="mail-message activity-event ${escapeAttr(statusClass)}">
@@ -184,7 +186,7 @@ export function createTeamActivityController({
           <strong>${escapeHtml(event.agent_display_name || event.agent_id || "System")}</strong>
           <span class="record-state ${escapeAttr(statusClass)}">${escapeHtml(event.status || "")}</span>
         </div>
-        <div>${tool} · ${escapeHtml(event.summary || "")}</div>
+        <div>${tool} · ${renderIdentifierText(event.summary || "")}</div>
         <div class="meta-line">${escapeHtml(event.occurred_at || "")} · ${escapeHtml(event.dispatch_id || "no dispatch")}</div>
         ${error}
       </article>

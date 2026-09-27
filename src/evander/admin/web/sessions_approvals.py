@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
@@ -567,12 +569,19 @@ def _model_option(model: str) -> dict[str, str]:
     return {"value": model, "label": model}
 
 
+def _is_current_session_model_option(model: str) -> bool:
+    # Pricing retains older models for past usage, while this menu configures future sessions.
+    match = re.match(r"^gpt-(\d+)", model)
+    return match is None or int(match.group(1)) >= 6
+
+
 def _model_provider_mode_options() -> list[dict[str, str]]:
     return [
         {"value": "openai_public", "label": "Public OpenAI"},
         {"value": "local_openai", "label": "Local OpenAI"},
         {"value": "azure_openai", "label": "Azure OpenAI"},
         {"value": "anthropic", "label": "Anthropic"},
+        {"value": "openrouter", "label": "OpenRouter"},
     ]
 
 
@@ -597,7 +606,7 @@ def _model_options_from_pricing_catalog(service: AdminRuntimeComponents) -> list
             continue
         for raw_model in models:
             model = str(raw_model).strip()
-            if not model or model in seen_models:
+            if not model or model in seen_models or not _is_current_session_model_option(model):
                 continue
             seen_models.add(model)
             options.append(_model_option(model))
@@ -831,13 +840,14 @@ def session_approval_routes(
             cache[cache_key] = _owner_read_error(request, directory_path=cache_key) is None
         return cache[cache_key]
 
-    def _approval_request_or_error(
-        request_id: str,
-    ) -> tuple[ApprovalRequest | None, JSONResponse | None]:
+    def _approval_request_or_error(request_id: str) -> ApprovalRequest | JSONResponse:
         try:
-            return service.approval_audit_admin.get_approval_request(request_id), None
+            approval_request = service.approval_audit_admin.get_approval_request(request_id)
         except ValueError as exc:
-            return None, json_error(str(exc), status_code=404)
+            return json_error(str(exc), status_code=404)
+        if approval_request is None:
+            return json_error("Approval request unavailable", status_code=500)
+        return approval_request
 
     async def approvals_index(request: Request) -> JSONResponse:
         params = request.query_params
@@ -872,15 +882,11 @@ def session_approval_routes(
             }
         )
 
-    async def approval_detail(_: Request) -> JSONResponse:
-        raise AssertionError("unreachable")
-
     async def get_approval_detail(request: Request) -> JSONResponse:
         request_id = request.path_params.get("request_id", "")
-        approval_request, load_error = _approval_request_or_error(request_id)
-        if load_error is not None:
-            return load_error
-        assert approval_request is not None
+        approval_request = _approval_request_or_error(request_id)
+        if isinstance(approval_request, JSONResponse):
+            return approval_request
         auth_error = _owner_read_error(request, directory_path=approval_request.directory_path)
         if auth_error is not None:
             return auth_error
@@ -895,12 +901,12 @@ def session_approval_routes(
         if auth_error is not None:
             return auth_error
         request_id = request.path_params.get("request_id", "")
-        approval_request, load_error = _approval_request_or_error(request_id)
-        if load_error is not None:
-            return load_error
+        approval_request = _approval_request_or_error(request_id)
+        if isinstance(approval_request, JSONResponse):
+            return approval_request
         auth_error = _owner_privileged_error(
             request,
-            directory_path=approval_request.directory_path if approval_request else None,
+            directory_path=approval_request.directory_path,
         )
         if auth_error is not None:
             return auth_error
@@ -936,12 +942,12 @@ def session_approval_routes(
         if auth_error is not None:
             return auth_error
         request_id = request.path_params.get("request_id", "")
-        approval_request, load_error = _approval_request_or_error(request_id)
-        if load_error is not None:
-            return load_error
+        approval_request = _approval_request_or_error(request_id)
+        if isinstance(approval_request, JSONResponse):
+            return approval_request
         auth_error = _owner_privileged_error(
             request,
-            directory_path=approval_request.directory_path if approval_request else None,
+            directory_path=approval_request.directory_path,
         )
         if auth_error is not None:
             return auth_error
@@ -983,7 +989,7 @@ def session_approval_routes(
             }
         )
 
-    async def list_sessions(request: Request) -> JSONResponse:
+    def build_sessions_response(request: Request) -> JSONResponse:
         params = request.query_params
         requested_directory_path = params.get("directory_path")
         if requested_directory_path is not None:
@@ -1020,28 +1026,28 @@ def session_approval_routes(
             }
         )
 
-    def _get_session_summary(session_id: str) -> SessionSummary:
-        for item in service.vm_agent_admin.list_sessions(include_expired=True):
-            if item.session_id == session_id:
-                return item
-        raise ValueError(f"Unknown session: {session_id}")
+    async def list_sessions(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_sessions_response, request)
 
-    def _session_summary_or_error(
-        session_id: str,
-    ) -> tuple[SessionSummary | None, JSONResponse | None]:
+    def _get_session_summary(session_id: str) -> SessionSummary:
+        return service.vm_agent_admin.get_session_summary(session_id)
+
+    def _session_summary_or_error(session_id: str) -> SessionSummary | JSONResponse:
         try:
-            return _get_session_summary(session_id), None
+            summary = _get_session_summary(session_id)
         except ValueError as exc:
-            return None, json_error(str(exc), status_code=404)
+            return json_error(str(exc), status_code=404)
+        if summary is None:
+            return json_error("Session summary unavailable", status_code=500)
+        return summary
 
     def _authorize_session_mutation(
         request: Request,
         session_id: str,
     ) -> tuple[SessionSummary | None, JSONResponse | None]:
-        summary, load_error = _session_summary_or_error(session_id)
-        if load_error is not None:
-            return None, load_error
-        assert summary is not None
+        summary = _session_summary_or_error(session_id)
+        if isinstance(summary, JSONResponse):
+            return None, summary
         auth_error = _owner_privileged_error(
             request,
             directory_path=summary.directory_path,
@@ -1050,13 +1056,11 @@ def session_approval_routes(
             return None, auth_error
         return summary, None
 
-    def _wake_request_or_error(
-        request_id: str,
-    ) -> tuple[WakeScheduledRequest | None, JSONResponse | None]:
+    def _wake_request_or_error(request_id: str) -> WakeScheduledRequest | JSONResponse:
         wake_request = service.runtime.wake_store.get_request(request_id)
         if wake_request is None:
-            return None, json_error(f"Wake schedule not found: {request_id}", status_code=404)
-        return wake_request, None
+            return json_error(f"Wake schedule not found: {request_id}", status_code=404)
+        return wake_request
 
     def _wake_request_directory_path(wake_request: WakeScheduledRequest) -> str:
         directory_path = str(getattr(wake_request, "directory_path", "") or "").strip()
@@ -1073,10 +1077,9 @@ def session_approval_routes(
         request: Request,
         request_id: str,
     ) -> tuple[WakeScheduledRequest | None, JSONResponse | None]:
-        wake_request, load_error = _wake_request_or_error(request_id)
-        if load_error is not None:
-            return None, load_error
-        assert wake_request is not None
+        wake_request = _wake_request_or_error(request_id)
+        if isinstance(wake_request, JSONResponse):
+            return None, wake_request
         try:
             directory_path = _get_session_summary(wake_request.session_id).directory_path
         except ValueError:
@@ -1089,7 +1092,7 @@ def session_approval_routes(
             return None, auth_error
         return wake_request, None
 
-    async def get_session_detail(request: Request) -> JSONResponse:
+    def build_session_detail_response(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
             summary = _get_session_summary(session_id)
@@ -1111,12 +1114,14 @@ def session_approval_routes(
             }
         )
 
+    async def get_session_detail(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_session_detail_response, request)
+
     async def list_session_git_grants(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
-        summary, load_error = _session_summary_or_error(session_id)
-        if load_error is not None:
-            return load_error
-        assert summary is not None
+        summary = _session_summary_or_error(session_id)
+        if isinstance(summary, JSONResponse):
+            return summary
         auth_error = _owner_read_error(request, directory_path=summary.directory_path)
         if auth_error is not None:
             return auth_error

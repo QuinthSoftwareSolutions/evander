@@ -187,15 +187,15 @@ The distinction between add-on and core remained intact as more add-ons appeared
 
 Multi-user local authentication made the signed-in person's identity and permissions part of each operation. Team chat became per operator rather than one global conversation. The broad Lock/Unlock control was eventually narrowed to a local UI read-only guard; backend authority still comes from authentication, RBAC, privileged-operation checks, directory scope, and revisions. A visual lock is useful protection against accidental clicks, but it is not an authorization boundary.
 
-### June 26–30: a persisted name makes renaming an upgrade
+### June 26–30: naming becomes part of the upgrade
 
-Operational naming also moved to Evander: Python package, `evander-*` services, `EVANDER_*` variables, and guest `.evander` and `/etc/evander` paths. Installer and setup code retained narrow upgrade handling for earlier service, firewall, network, environment, and guest paths.
+Operational naming was standardized on Evander: Python package, `evander-*` services, `EVANDER_*` variables, and guest `.evander` and `/etc/evander` paths. Installer and setup code retained narrow upgrade handling for earlier service, firewall, network, environment, and guest paths.
 
 > <span class="sidebar-kicker">Compatibility sidebar</span> **A rename becomes a migration when the old name is durable**
 >
 > Changing a heading is cosmetic. Changing a systemd unit, environment-variable prefix, network name, package import, runtime path, guest profile hook, or stored workflow field changes how a running installation finds its state. The Evander rename therefore needed discovery, repair, cleanup, and compatibility logic—not merely search and replace.
 >
-> Historical changelog entries and rollback artifacts may use the former product name. That residue helps identify their era; it does not make the former service or path a current authority.
+> Older rollback artifacts can contain names from their era. Treat deployed configuration and current service paths as the authority for an upgrade.
 
 ### June 27–30: focused services expose domain ownership
 

@@ -205,6 +205,14 @@ superseded source satisfies the contract. When Git provenance is required,
 artifact-only submission, direct finish, and direct acceptance cannot bypass
 the boundary.
 
+For a Git integration task with an exact pinned base, each accepted source must
+contain its recorded starting commit, and that starting commit must already be
+an ancestor of the integration base. Nested composition sources are checked too.
+A newer live branch does not expand the pinned task's authorized history. If a
+source was prepared from a newer or unrelated base, create reviewed replacement
+work on the pinned base or a new explicit integration boundary. Preparation and
+submission enforce this rule; acceptance requires the server-recorded proof.
+
 Before any deliverable has been submitted, the task owner, an authorized
 supervisor, the project lead, or the same-Team manager may designate or edit
 the boundary and contract. Once any deliverable exists, or once the task is

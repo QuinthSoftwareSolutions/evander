@@ -70,6 +70,24 @@ For one run, an operator usually needs only a small set of landmarks:
 The editor is the authoring view. Runtime events and executions remain separate durable records
 underneath it, which is why opening or closing the browser does not start or stop the workflow.
 
+### Configure a Teams direct-message trigger
+
+For `trigger:teams:direct-message`, set **Chat setup** to **Direct chats by UPN**
+and enter user
+principal names such as `operator@example.com`. A revision-checked save resolves
+each user in the graph's directory, ensures the corresponding one-to-one Teams
+chat, and stores canonical chat targets and sender user IDs. The UPNs remain
+available for later editing. Saving this mode can therefore create a Teams chat;
+it requires a working Teams connection with permission to resolve users and chats.
+
+Choose **Existing chat IDs** to enter `chat:<chat-id>` targets and sender IDs or
+addresses yourself. Existing definitions without `chat_target_mode` retain that
+mode. A `user:` target is send-only and cannot replace a resolved chat target for
+polling. See [directory communication configuration](../../configuration-reference.md#directory-config-domains-and-storage)
+for target permissions and ingest settings.
+
+### Inspect execution history
+
 For a cross-run question, select the relevant node and expand **Execution history** in its
 inspector. Choose a local-time date window (the default is the previous seven days), optionally
 limit statuses, and add exact JSON Pointer filters over input or output fields. Up to eight filters

@@ -782,12 +782,6 @@ class SessionManifest(BaseModel):
 
     def http_targets_metadata(self) -> "SessionHttpTargetsMetadata":
         raw_metadata = self.metadata.get("http_targets")
-        if raw_metadata is None and "example_app" in self.metadata:
-            app_metadata = self.metadata.get("example_app", {})
-            if app_metadata is None:
-                app_metadata = {}
-            if isinstance(app_metadata, dict):
-                raw_metadata = {"targets": app_metadata.get("environments", {})}
         if raw_metadata is None:
             raw_metadata = {}
         try:
@@ -797,19 +791,6 @@ class SessionManifest(BaseModel):
 
     def http_target(self, alias: str) -> "HttpTargetMetadata":
         return self.http_targets_metadata().require_target(alias)
-
-    def app_metadata(self) -> "SessionMesMetadata":
-        raw_metadata = self.metadata.get("example_app", {})
-        if raw_metadata is None:
-            raw_metadata = {}
-        try:
-            return SessionMesMetadata.model_validate(raw_metadata)
-        except ValidationError as exc:
-            raise ValueError("session metadata field 'example_app' is invalid") from exc
-
-    def app_environment(self, alias: str) -> "MesEnvironmentMetadata":
-        return self.app_metadata().require_environment(alias)
-
 
 class SessionToolApprovalLease(BaseModel):
     lease_id: str = Field(min_length=1)
@@ -916,28 +897,6 @@ class SessionHttpTargetsMetadata(BaseModel):
         if target is None:
             raise ValueError(f"unknown HTTP target alias: {normalized_alias}")
         return target
-
-
-class MesEnvironmentMetadata(HttpTargetMetadata):
-    pass
-
-
-class SessionMesMetadata(BaseModel):
-    environments: dict[str, MesEnvironmentMetadata] = Field(default_factory=dict)
-
-    @field_validator("environments", mode="before")
-    @classmethod
-    def normalize_environments(cls, value: object) -> dict[str, object]:
-        return SessionHttpTargetsMetadata.normalize_targets(value)
-
-    def require_environment(self, alias: str) -> MesEnvironmentMetadata:
-        normalized_alias = str(alias).strip()
-        if not normalized_alias:
-            raise ValueError("environment alias must be non-empty")
-        environment = self.environments.get(normalized_alias)
-        if environment is None:
-            raise ValueError(f"unknown APP environment alias: {normalized_alias}")
-        return environment
 
 
 class DirectoryPath(BaseModel):

@@ -37,6 +37,17 @@ the base Ubuntu cloud image.
 - `group_vars/evander_worker_hosts.yml`: container-worker VM defaults
 - `roles/`: deployment steps grouped by responsibility
 
+Keep inventory and host-specific variables in operator-owned storage outside this checkout.
+For an existing host, set `evander_deploy_path` to its current installation path instead of
+relying on the default. When deploying workers, set or verify
+`evander_control_plane_deploy_path` against that same checkout. Copy any active Teams
+notification settings from the previous host override into external inventory when Ansible
+should manage them; [the host-vars example](host_vars/control-plane.yml.example) shows the
+fields. For an existing host where Teams ingest config is unmanaged, the playbook reads the
+live config before rendering Caddy, preserving the notification route during an update.
+Validate the resolved inventory variables with `ansible-inventory --host` before running
+the playbook.
+
 ## Managed Flow
 
 The playbook follows the repo-native bootstrap order:

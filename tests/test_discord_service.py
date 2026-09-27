@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from http_client_support import patch_httpx_client
+
 import hashlib
 import json
 import threading
@@ -18,17 +20,6 @@ from evander.models import DiscordCommandEnvelope
 from evander.outbound_identity import OutboundAvatar, OutboundIdentity
 from evander.services import DiscordBotApiService, StubDiscordService
 from evander.storage import JsonStore
-
-
-def patch_httpx_client(
-    monkeypatch: pytest.MonkeyPatch,
-    transport: httpx.BaseTransport,
-) -> None:
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        "evander.services.httpx.Client",
-        lambda timeout: real_client(timeout=timeout, transport=transport),
-    )
 
 
 class RecordingDiscordCommandStore:
@@ -873,22 +864,6 @@ def test_add_reaction_success_returns_normalized_payload(
     assert str(requests[0].url).endswith(
         "/channels/chan-a/messages/msg-123/reactions/%E2%9C%85/@me"
     )
-
-
-def test_stub_discord_add_reaction_returns_deterministic_success_payload(tmp_path: Path) -> None:
-    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
-    service = StubDiscordService(command_store)
-
-    result = service.add_reaction("chan-a", "msg-123", "👍", "session-1")
-
-    assert result == {
-        "status": "stubbed",
-        "channel_id": "chan-a",
-        "session_id": "session-1",
-        "message_id": "msg-123",
-        "emoji": "👍",
-        "reaction": "👍",
-    }
 
 
 def test_get_commands_raises_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

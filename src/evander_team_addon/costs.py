@@ -29,15 +29,16 @@ from evander.model_usage.pricing import (
     ModelCostEstimate,
     ModelPricingCatalog,
     default_model_pricing_catalog,
-    estimate_model_usage_cost,
     extract_cache_write_input_tokens,
     extract_cached_input_tokens,
     model_pricing_catalog_fingerprint,
 )
 from evander.model_usage.store import ModelUsageStore
+from evander.model_usage.report_snapshot import CostReportSnapshot
 from evander.models import utc_now
 
 from .models import EphemeralAssignment, PersistentAgent, TeamState, agent_project_ids
+from .cost_report import add_cell_to_bucket, cost_report_cells
 
 CLAUDE_TRANSCRIPT_ROOTS_ENV = "EVANDER_CLAUDE_TRANSCRIPT_ROOTS"
 WORKER_ROOT_ENV = "EVANDER_WORKER_ROOT"
@@ -330,6 +331,7 @@ class TeamCostService:
         self._pricing_catalog = pricing_catalog
         self._context_cache: dict[str, ModelUsageCorrelationContext | None] = {}
         self._request_attribution_cache: dict[tuple[str, str], TeamCostAttribution] = {}
+        self._cost_report_snapshot: CostReportSnapshot | None = None
 
     def costs_payload(
         self,
@@ -338,9 +340,6 @@ class TeamCostService:
         now: datetime | None = None,
     ) -> dict[str, Any]:
         backfill_result = self.backfill_claude_transcripts() if backfill_transcripts else None
-        raw_events = self.usage_store.list_events()
-        self._request_attribution_cache = self._request_attributions(raw_events)
-        events = _dedupe_cost_events(raw_events)
         catalog = self._load_pricing_catalog()
         effective_now = _ensure_utc(now or utc_now())
         team_budget_windows = {
@@ -354,45 +353,34 @@ class TeamCostService:
         unattributed_bucket = _new_bucket()
         root_bucket = _new_bucket()
 
-        for event in events:
-            estimate = estimate_model_usage_cost(event, catalog, currency="usd")
-            attribution = self._attribute_event(event)
-            source = _usage_source(event)
-
-            _add_event_to_bucket(root_bucket, event, estimate, source=source)
-            if attribution.team_id:
-                team_bucket = team_buckets.setdefault(attribution.team_id, _new_bucket())
-                _add_event_to_bucket(team_bucket, event, estimate, source=source)
-                budget_window = team_budget_windows.get(attribution.team_id)
-                if (
-                    budget_window is not None
-                    and _ensure_utc(event.occurred_at) >= budget_window["started_at"]
-                    and (
-                        budget_window.get("ends_at") is None
-                        or _ensure_utc(event.occurred_at) < budget_window["ends_at"]
-                    )
-                ):
+        for cell, amounts in cost_report_cells(self, catalog, team_budget_windows):
+            team_id, project_id, _, _, _, _, in_window = cell
+            add_cell_to_bucket(root_bucket, cell, amounts)
+            if team_id:
+                team_bucket = team_buckets.setdefault(team_id, _new_bucket())
+                add_cell_to_bucket(team_bucket, cell, amounts)
+                if in_window:
                     budget_bucket = team_budget_window_buckets.setdefault(
-                        attribution.team_id,
+                        team_id,
                         _new_bucket(),
                     )
-                    _add_event_to_bucket(budget_bucket, event, estimate, source=source)
-                if attribution.project_id and attribution.project_confident:
+                    add_cell_to_bucket(budget_bucket, cell, amounts)
+                if project_id:
                     project_bucket = project_buckets.setdefault(
-                        attribution.project_id,
-                        _new_bucket(team_id=attribution.team_id, project_id=attribution.project_id),
+                        project_id,
+                        _new_bucket(team_id=team_id, project_id=project_id),
                     )
-                    _add_event_to_bucket(project_bucket, event, estimate, source=source)
+                    add_cell_to_bucket(project_bucket, cell, amounts)
                 else:
-                    _add_event_to_bucket(unattributed_bucket, event, estimate, source=source)
+                    add_cell_to_bucket(unattributed_bucket, cell, amounts)
                     team_unattributed = team_bucket.setdefault(
                         "unattributed_costs",
-                        _new_bucket(team_id=attribution.team_id),
+                        _new_bucket(team_id=team_id),
                     )
-                    _add_event_to_bucket(team_unattributed, event, estimate, source=source)
+                    add_cell_to_bucket(team_unattributed, cell, amounts)
                 continue
 
-            _add_event_to_bucket(unattributed_bucket, event, estimate, source=source)
+            add_cell_to_bucket(unattributed_bucket, cell, amounts)
 
         for team_id, team in self.state.teams.items():
             if team_id not in team_buckets and team.max_cost_usd is not None:
@@ -801,6 +789,8 @@ class TeamCostService:
         payload = summary.public_payload()
         reasons = sorted(set(payload["coverage_reasons"]) | set(coverage_reasons))
         estimated = summary.estimated_cost_usd
+        reported = summary.reported_cost_usd
+        total = summary.total_cost_usd
         max_cost = Decimal(str(team.max_cost_usd)) if team.max_cost_usd is not None else None
         explicit_window = bool(window.get("explicit"))
         payload.update(
@@ -810,12 +800,16 @@ class TeamCostService:
                 "coverage_reasons": reasons,
                 "max_cost_usd": float(max_cost) if max_cost is not None else None,
                 "remaining_cost_usd": (
-                    float(max(max_cost - estimated, Decimal("0"))) if max_cost is not None else None
+                    float(max(max_cost - total, Decimal("0"))) if max_cost is not None else None
                 ),
-                "cost_limit_reached": bool(max_cost is not None and estimated >= max_cost),
+                "cost_limit_reached": bool(max_cost is not None and total >= max_cost),
                 "cost_limit_basis": "budget_window" if explicit_window else "lifetime",
                 "lifetime_estimated_cost": float(estimated) if not explicit_window else None,
                 "budget_window_estimated_cost": float(estimated) if explicit_window else None,
+                "lifetime_reported_cost": float(reported) if not explicit_window else None,
+                "budget_window_reported_cost": float(reported) if explicit_window else None,
+                "lifetime_total_cost": float(total) if not explicit_window else None,
+                "budget_window_total_cost": float(total) if explicit_window else None,
                 "budget_window_events_count": summary.events_count if explicit_window else 0,
                 "budget_window_started_at": (
                     _json_datetime(window["started_at"]) if explicit_window else None
@@ -861,6 +855,10 @@ class TeamCostService:
                 "cost_limit_basis": active_cost.get("cost_limit_basis"),
                 "lifetime_estimated_cost": float(lifetime_summary.estimated_cost_usd),
                 "budget_window_estimated_cost": active_cost.get("budget_window_estimated_cost"),
+                "lifetime_reported_cost": float(lifetime_summary.reported_cost_usd),
+                "budget_window_reported_cost": active_cost.get("budget_window_reported_cost"),
+                "lifetime_total_cost": float(lifetime_summary.total_cost_usd),
+                "budget_window_total_cost": active_cost.get("budget_window_total_cost"),
                 "budget_window_events_count": int(
                     active_cost.get("budget_window_events_count") or 0
                 ),
@@ -1004,6 +1002,9 @@ class TeamCostService:
 
     def _dispatch_context(self, dispatch_id: str) -> ModelUsageCorrelationContext | None:
         if dispatch_id not in self._context_cache:
+            if self._cost_report_snapshot is not None:
+                self._context_cache[dispatch_id] = self._cost_report_snapshot.context(dispatch_id)
+                return self._context_cache[dispatch_id]
             try:
                 self._context_cache[dispatch_id] = self.usage_store.get_correlation_context(
                     dispatch_id
@@ -1674,6 +1675,7 @@ def _new_bucket(*, team_id: str | None = None, project_id: str | None = None) ->
     bucket: dict[str, Any] = {
         "currency": "usd",
         "_estimated_cost": Decimal("0"),
+        "_reported_cost": Decimal("0"),
         "events_count": 0,
         "priced_events_count": 0,
         "unpriced_events_count": 0,
@@ -1703,9 +1705,13 @@ def _add_event_to_bucket(
     source: str,
 ) -> None:
     estimated_total = estimate.estimated_total
+    reported_total = estimate.reported_total
     bucket["events_count"] += 1
     if estimated_total is not None:
         bucket["_estimated_cost"] += estimated_total
+        bucket["priced_events_count"] += 1
+    elif reported_total is not None:
+        bucket["_reported_cost"] += reported_total
         bucket["priced_events_count"] += 1
     else:
         bucket["unpriced_events_count"] += 1
@@ -1745,6 +1751,7 @@ def _new_leaf() -> dict[str, Any]:
     return {
         "currency": "usd",
         "_estimated_cost": Decimal("0"),
+        "_reported_cost": Decimal("0"),
         "events_count": 0,
         "priced_events_count": 0,
         "unpriced_events_count": 0,
@@ -1767,9 +1774,13 @@ def _add_event_to_leaf(
     source: str,
 ) -> None:
     estimated_total = estimate.estimated_total
+    reported_total = estimate.reported_total
     leaf["events_count"] += 1
     if estimated_total is not None:
         leaf["_estimated_cost"] += estimated_total
+        leaf["priced_events_count"] += 1
+    elif reported_total is not None:
+        leaf["_reported_cost"] += reported_total
         leaf["priced_events_count"] += 1
     else:
         leaf["unpriced_events_count"] += 1
@@ -1796,6 +1807,9 @@ def _finalize_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
         if key == "_estimated_cost":
             finalized["estimated_cost"] = _decimal_to_float(value)
             continue
+        if key == "_reported_cost":
+            finalized["reported_cost"] = _decimal_to_float(value)
+            continue
         if key == "provider_breakdown":
             finalized[key] = {
                 item_key: _finalize_bucket(item_value)
@@ -1816,6 +1830,9 @@ def _finalize_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
     finalized["coverage_reasons"] = sorted(coverage_reasons)
     if "estimated_cost" not in finalized:
         finalized["estimated_cost"] = 0.0
+    if "reported_cost" not in finalized:
+        finalized["reported_cost"] = 0.0
+    finalized["total_cost"] = float(finalized["estimated_cost"] + finalized["reported_cost"])
     return finalized
 
 
@@ -1829,6 +1846,8 @@ def _finalize_team_bucket(
     finalized = _finalize_bucket(bucket)
     max_cost = _optional_decimal(getattr(team, "max_cost_usd", None))
     lifetime_estimated = _optional_decimal(finalized.get("estimated_cost")) or Decimal("0")
+    lifetime_reported = _optional_decimal(finalized.get("reported_cost")) or Decimal("0")
+    lifetime_total = lifetime_estimated + lifetime_reported
     window_finalized = (
         _finalize_bucket(budget_window_bucket or _new_bucket())
         if budget_window is not None
@@ -1837,17 +1856,25 @@ def _finalize_team_bucket(
     budget_window_estimated = _optional_decimal(window_finalized.get("estimated_cost")) or Decimal(
         "0"
     )
-    capped_estimated = budget_window_estimated if budget_window is not None else lifetime_estimated
+    budget_window_reported = _optional_decimal(window_finalized.get("reported_cost")) or Decimal(
+        "0"
+    )
+    budget_window_total = budget_window_estimated + budget_window_reported
+    capped_total = budget_window_total if budget_window is not None else lifetime_total
     finalized["max_cost_usd"] = _decimal_to_float(max_cost)
     finalized["remaining_cost_usd"] = (
-        _decimal_to_float(max(max_cost - capped_estimated, Decimal("0")))
+        _decimal_to_float(max(max_cost - capped_total, Decimal("0")))
         if max_cost is not None
         else None
     )
-    finalized["cost_limit_reached"] = bool(max_cost is not None and capped_estimated >= max_cost)
+    finalized["cost_limit_reached"] = bool(max_cost is not None and capped_total >= max_cost)
     finalized["cost_limit_basis"] = "budget_window" if budget_window is not None else "lifetime"
     finalized["lifetime_estimated_cost"] = _decimal_to_float(lifetime_estimated)
     finalized["budget_window_estimated_cost"] = _decimal_to_float(budget_window_estimated)
+    finalized["lifetime_reported_cost"] = _decimal_to_float(lifetime_reported)
+    finalized["budget_window_reported_cost"] = _decimal_to_float(budget_window_reported)
+    finalized["lifetime_total_cost"] = _decimal_to_float(lifetime_total)
+    finalized["budget_window_total_cost"] = _decimal_to_float(budget_window_total)
     finalized["budget_window_events_count"] = int(window_finalized.get("events_count") or 0)
     finalized["budget_window_started_at"] = (
         _json_datetime(budget_window["started_at"]) if budget_window is not None else None
@@ -1905,6 +1932,7 @@ def _governance_group_costs(
     group_costs: dict[str, dict[str, Any]] = {}
     for group_id, group in sorted(state.governance_groups.items()):
         estimated = Decimal("0")
+        reported = Decimal("0")
         events_count = 0
         priced_events_count = 0
         unpriced_events_count = 0
@@ -1928,6 +1956,7 @@ def _governance_group_costs(
                 continue
             member_team_costs[team_id] = team_cost
             estimated += _optional_decimal(team_cost.get("estimated_cost")) or Decimal("0")
+            reported += _optional_decimal(team_cost.get("reported_cost")) or Decimal("0")
             events_count += int(team_cost.get("events_count") or 0)
             priced_events_count += int(team_cost.get("priced_events_count") or 0)
             unpriced_events_count += int(team_cost.get("unpriced_events_count") or 0)
@@ -1942,21 +1971,28 @@ def _governance_group_costs(
                 continue
             max_cost = _optional_decimal(team_cost.get("max_cost_usd"))
             if max_cost is not None and max_cost > 0:
-                window_estimated = _optional_decimal(team_cost.get("budget_window_estimated_cost"))
-                team_estimated = (
-                    window_estimated
-                    if window_estimated is not None
-                    else _optional_decimal(team_cost.get("estimated_cost")) or Decimal("0")
+                window_total = _optional_decimal(
+                    team_cost.get(
+                        "budget_window_total_cost", team_cost.get("budget_window_estimated_cost")
+                    )
+                )
+                team_total = (
+                    window_total
+                    if window_total is not None
+                    else _optional_decimal(
+                        team_cost.get("total_cost", team_cost.get("estimated_cost"))
+                    ) or Decimal("0")
                 )
                 warning_ratio = _optional_decimal(
                     getattr(state.teams.get(team_id), "cost_warning_ratio", None)
                 ) or Decimal("0.8")
-                if team_estimated / max_cost >= warning_ratio:
+                if team_total / max_cost >= warning_ratio:
                     cap_warning_team_ids.append(team_id)
 
         max_cost = _optional_decimal(getattr(group, "max_cost_usd", None))
+        total = estimated + reported
         remaining = (
-            _decimal_to_float(max(max_cost - estimated, Decimal("0")))
+            _decimal_to_float(max(max_cost - total, Decimal("0")))
             if max_cost is not None
             else None
         )
@@ -1964,6 +2000,8 @@ def _governance_group_costs(
             "governance_group_id": group_id,
             "currency": "usd",
             "estimated_cost": _decimal_to_float(estimated),
+            "reported_cost": _decimal_to_float(reported),
+            "total_cost": _decimal_to_float(total),
             "events_count": events_count,
             "priced_events_count": priced_events_count,
             "unpriced_events_count": unpriced_events_count,
@@ -1976,7 +2014,7 @@ def _governance_group_costs(
             "coverage_reasons": sorted(coverage_reasons),
             "max_cost_usd": _decimal_to_float(max_cost),
             "remaining_cost_usd": remaining,
-            "cost_limit_reached": bool(max_cost is not None and estimated >= max_cost),
+            "cost_limit_reached": bool(max_cost is not None and total >= max_cost),
             "cost_limit_basis": "lifetime",
             "hard_enforced": False,
             "member_team_ids": list(group.member_team_ids),

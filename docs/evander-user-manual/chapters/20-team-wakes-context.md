@@ -282,7 +282,7 @@ assigned agent can page the anchored transcript with
 <code>team_list_conversation_messages</code>; delegated agents rely on the task
 description and cannot read another agent's conversation.
 
-For Northstar, Imani might use <code>idle</code> with a 60-minute grace: related telemetry reviews stay in one context across short gaps, then rotate after a genuine break. Rowan might use <code>every_wake</code> for strongly isolated review passes. Trudy might use <code>work_lineage</code> so each intake task family resumes its own context after unrelated work intervenes. None of these policies makes an agent poll constantly; the agent still needs a task, review, message, or other wake reason.
+For Northstar, Imani might use <code>idle</code> with a 60-minute grace: related telemetry reviews stay in one context across short gaps, then rotate after a break. Rowan might use <code>every_wake</code> for isolated review passes. Mira might use <code>work_lineage</code> so each intake task family resumes its own context after unrelated work intervenes. Every policy still requires an eligible task, review, message, or other wake reason.
 
 ## Stand-down
 

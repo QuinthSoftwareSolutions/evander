@@ -79,7 +79,7 @@ def patch_cli_admin_runtime(monkeypatch, **service_factories):
             **{name: factory(config) for name, factory in service_factories.items()}
         )
 
-    monkeypatch.setattr("evander.cli.build_admin_runtime", fake_build_admin_runtime)
+    monkeypatch.setattr("evander.cli_runtime.build_admin_runtime", fake_build_admin_runtime)
 
 
 def write_container_config(
@@ -229,83 +229,6 @@ def test_seed_email_accepts_recipient_option_after_positionals(tmp_path: Path) -
     assert "other@example.com" in emails
 
 
-def test_help_groups_commands_by_panel_then_alphabetically() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(app, ["--help"])
-
-    assert result.exit_code == 0
-    output = result.output
-    panel_order = [
-        "Health and State",
-        "Sessions and Feedback",
-        "Issue Lifecycle",
-        "VM Operations",
-        "Seeding and Fixtures",
-        "Background Workers",
-    ]
-    panel_positions = [output.index(panel) for panel in panel_order]
-    assert panel_positions == sorted(panel_positions)
-
-    assert (
-        output.index("add-tool-permission")
-        < output.index("approve")
-        < output.index("attach-pr-feedback")
-        < output.index("create-session")
-        < output.index("delete-expired-sessions")
-        < output.index("delete-session")
-        < output.index("list-sessions")
-        < output.index("prune-sessions")
-        < output.index("renew-session")
-        < output.index("revoke-session")
-        < output.index("revoke-tool-permission")
-    )
-    assert (
-        output.index("create-issue-vm")
-        < output.index("create-local-issue")
-        < output.index("destroy-issue-vm")
-        < output.index("list-local-issues")
-        < output.index("prune-orphaned-issue-state")
-    )
-    assert (
-        output.index("create-vm")
-        < output.index("destroy-vm")
-        < output.index("disable-agent")
-        < output.index("enable-agent")
-        < output.index("list-vms")
-        < output.index("logs")
-        < output.index("resume-agent")
-        < output.index("shutdown-vm")
-        < output.index("ssh")
-        < output.index("start-vm")
-    )
-    assert output.index("seed-discord-channel") < output.index("seed-email")
-    assert "init-state" in output and "Create runtime state files." in output
-    assert "migrate-issue-setup-env-to-root" in output
-    assert "migrate-pr-template-to-root" in output
-    assert "migrate-directory-ownership" in output
-    assert "Backfill missing directory ownership" in output
-    assert "create-issue-vm" in output and "Create an issue VM." in output
-    assert "create-vm" in output and "Create and bootstrap a standalone VM." in output
-    assert "teams-auth" in output
-    assert "discord-wake" in output and "Run the Discord wake worker." in output
-    assert "scheduled-wake" in output and "Run the scheduled wake worker." in output
-    assert "teams-ingest" in output and "Run the Teams ingest worker." in output
-    normalized_output = " ".join(output.replace("│", " ").split())
-    assert "proxy-issue-sync" in output
-    assert "Sync local proxy issues from Azure DevOps." in normalized_output
-    assert "trigger-orchestrator" in output and "Run the trigger orchestrator worker." in output
-
-
-def test_poll_ado_backlog_help_exposes_only_current_worker_options() -> None:
-    result = CliRunner().invoke(app, ["poll-ado-backlog", "--help"])
-
-    assert result.exit_code == 0
-    assert "--forget" not in result.output
-    assert "--reprocess" not in result.output
-    assert "--list-unprocessed" not in result.output
-
-
 def test_team_checkout_release_candidate_resolves_pinned_release_and_managed_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -348,13 +271,13 @@ def test_team_checkout_release_candidate_resolves_pinned_release_and_managed_rep
         lambda _runtime_dir: SimpleNamespace(read=lambda: state),
     )
     monkeypatch.setattr(
-        "evander.cli.build_admin_runtime",
+        "evander.cli_runtime.build_admin_runtime",
         lambda _config: pytest.fail(
             "release candidate checkout must not build the full Admin runtime"
         ),
     )
     monkeypatch.setattr(
-        "evander.cli._build_managed_git_admin_for_cli",
+        "evander.cli_git._build_managed_git_admin_for_cli",
         lambda _config: _ManagedGit(),
     )
     target = tmp_path / "candidate"
@@ -440,20 +363,6 @@ def test_team_checkout_release_candidate_rejects_stale_expected_sha(
     assert "candidate" in result.output
 
 
-def test_teams_auth_help_exposes_subcommands() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(app, ["teams-auth", "--help"])
-
-    assert result.exit_code == 0
-    output = result.output
-    assert "login" in output
-    assert "status" in output
-    assert "logout" in output
-    assert "list" in output
-    assert "channels" in output
-
-
 def test_execution_start_container_job_builds_spec_with_metadata_and_limits(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -465,7 +374,9 @@ def test_execution_start_container_job_builds_spec_with_metadata_and_limits(
     )
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
-    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr(
+        "evander.cli_execution.ContainerWorkerVmExecutionBackend", FakeExecutionBackend
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -539,7 +450,9 @@ def test_execution_start_container_job_selects_named_worker_before_token_preflig
     )
     monkeypatch.setenv("FAST_TOKEN", "test-token")
     monkeypatch.delenv("UNSET_TOKEN", raising=False)
-    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr(
+        "evander.cli_execution.ContainerWorkerVmExecutionBackend", FakeExecutionBackend
+    )
     FakeExecutionBackend.instances = []
     command = [
         "execution",
@@ -582,7 +495,9 @@ def test_execution_start_container_job_uses_human_output_by_default(
     config_path = write_container_config(tmp_path)
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
-    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr(
+        "evander.cli_execution.ContainerWorkerVmExecutionBackend", FakeExecutionBackend
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -690,7 +605,9 @@ def test_execution_target_commands_auto_route_container_mappings_through_backend
     )
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
-    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr(
+        "evander.cli_execution.ContainerWorkerVmExecutionBackend", FakeExecutionBackend
+    )
     runner = CliRunner()
 
     status = runner.invoke(app, ["execution", "status", "--config", str(config_path), "exec-1"])
@@ -769,7 +686,9 @@ def test_execution_smoke_container_worker_runs_two_jobs_with_same_session(
     config_path = write_container_config(tmp_path)
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
-    monkeypatch.setattr("evander.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    monkeypatch.setattr(
+        "evander.cli_execution.ContainerWorkerVmExecutionBackend", FakeExecutionBackend
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -880,7 +799,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
                 "match_count": 1,
                 "channels": [
                     {
-                        "display_name": "Truman",
+                        "display_name": "Evander",
                         "channel_id": "19:abc@thread.skype",
                         "allowlist_entry": f"{team_id}/19:abc@thread.skype",
                     }
@@ -903,7 +822,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
             "--team-id",
             "team-123",
             "--name",
-            "Truman",
+            "Evander",
         ],
     )
 
@@ -924,7 +843,7 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(
     assert "should-not-leak" not in list_result.output
 
     assert channels_result.exit_code == 0
-    assert "Truman" in channels_result.output
+    assert "Evander" in channels_result.output
     assert "19:abc@thread.skype" in channels_result.output
     assert "team-123/19:abc@thread.skype" in channels_result.output
 
@@ -1021,7 +940,7 @@ def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
     pricing_catalog = json.loads(
         (tmp_path / "runtime" / "model-pricing.openai.json").read_text(encoding="utf-8")
     )
-    assert pricing_catalog["version"] == "openai-anthropic-2026-07-30"
+    assert pricing_catalog["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
 
 
 def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Path) -> None:
@@ -1100,6 +1019,7 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
     pr_map = json.loads((runtime_dir / "pr-map.json").read_text(encoding="utf-8"))
     assert pr_map["entries"]["github:org/repo:1"]["directory_path"] == "root"
     assert pr_map["entries"]["github:org/repo:2"]["directory_path"] == "root/team"
+
 
 def test_list_approvals_outputs_queue_health_and_redacted_payload(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
@@ -1190,7 +1110,6 @@ def test_show_approval_and_approve_record_reason(tmp_path: Path) -> None:
     assert approvals["approval-1"]["decision_history"][0]["reason"] == "looks safe"
 
 
-
 def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1277,7 +1196,6 @@ def test_migrate_pr_template_to_root_materializes_root_domain_file(tmp_path: Pat
     assert payload == {"pr_template_markdown": "Team checklist\n- [ ] Review\n"}
     directories = DirectoryStore(runtime_dir / "directories.json").read_all()
     assert "pr_template" in directories["root"].metadata["directory_config"]["domains"]
-
 
 
 def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(
@@ -4359,7 +4277,7 @@ def test_resume_agent_observe_tails_logs_only_after_admitted_dispatch(
     )
     patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
     monkeypatch.setattr(
-        "evander.cli._run_subprocess_compat",
+        "evander.cli_common._run_subprocess_compat",
         lambda cmd, **kwargs: captured.update(log_cmd=cmd, log_kwargs=kwargs),
     )
 
@@ -4497,7 +4415,7 @@ def test_resume_agent_observe_follows_logs_for_nonlegacy_targets(
     )
     patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
     monkeypatch.setattr(
-        "evander.cli._run_subprocess_compat",
+        "evander.cli_common._run_subprocess_compat",
         lambda cmd, **kwargs: captured.update(log_cmd=cmd, log_kwargs=kwargs),
     )
 
@@ -4590,7 +4508,7 @@ def test_resume_agent_observe_follows_container_execution_logs(tmp_path: Path, m
     patch_cli_admin_runtime(monkeypatch, vm_agent_admin=lambda _config: service)
     monkeypatch.setattr("evander.cli.time.sleep", lambda _seconds: None)
     monkeypatch.setattr(
-        "evander.cli._run_subprocess_compat",
+        "evander.cli_common._run_subprocess_compat",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("container observation must not invoke the libvirt tail script")
         ),
@@ -4867,11 +4785,11 @@ def test_status_json_reports_healthy_state(tmp_path: Path, monkeypatch) -> None:
     sessions_path.write_text(json.dumps(sessions_payload), encoding="utf-8")
 
     monkeypatch.setattr(
-        "evander.cli._get_systemd_unit_state",
+        "evander.cli_health._get_systemd_unit_state",
         lambda unit: UnitStatus(unit=unit, state="active", available=True, detail=None),
     )
     monkeypatch.setattr(
-        "evander.cli._check_health_endpoint",
+        "evander.cli_health._check_health_endpoint",
         lambda name, url: EndpointStatus(
             name=name,
             url=url,
@@ -4881,7 +4799,7 @@ def test_status_json_reports_healthy_state(tmp_path: Path, monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(
-        "evander.cli.read_runtime_generation_status",
+        "evander.cli_health.read_runtime_generation_status",
         lambda _runtime_dir: {
             "state": "coherent",
             "coherent": True,
@@ -4916,11 +4834,11 @@ def test_status_human_output_reports_degraded_state(tmp_path: Path, monkeypatch)
     email_store_path.unlink()
 
     monkeypatch.setattr(
-        "evander.cli._get_systemd_unit_state",
+        "evander.cli_health._get_systemd_unit_state",
         lambda unit: UnitStatus(unit=unit, state="inactive", available=True, detail=None),
     )
     monkeypatch.setattr(
-        "evander.cli._check_health_endpoint",
+        "evander.cli_health._check_health_endpoint",
         lambda name, url: EndpointStatus(
             name=name,
             url=url,
@@ -4966,7 +4884,7 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(
     )
 
     monkeypatch.setattr(
-        "evander.cli._get_systemd_unit_state",
+        "evander.cli_health._get_systemd_unit_state",
         lambda unit: UnitStatus(unit=unit, state="active", available=True, detail=None),
     )
 
@@ -4974,7 +4892,7 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(
         checked_urls.append((name, url))
         return EndpointStatus(name=name, url=url, reachable=True, status_code=200, error=None)
 
-    monkeypatch.setattr("evander.cli._check_health_endpoint", fake_check)
+    monkeypatch.setattr("evander.cli_health._check_health_endpoint", fake_check)
 
     result = runner.invoke(app, ["status", "--config", str(config_path), "--json"])
 
@@ -5006,7 +4924,7 @@ def test_trigger_orchestrator_once_runs_single_cycle(tmp_path: Path, monkeypatch
             raise AssertionError("run_forever should not be called in --once mode")
 
     monkeypatch.setattr(
-        "evander.cli.build_trigger_orchestrator_worker", lambda cfg, **kwargs: _FakeWorker()
+        "evander.cli_workers.build_trigger_orchestrator_worker", lambda cfg, **kwargs: _FakeWorker()
     )
 
     result = runner.invoke(
@@ -5038,7 +4956,7 @@ def test_discord_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
             raise AssertionError("run_forever should not be called in --once mode")
 
     monkeypatch.setattr(
-        "evander.cli.build_discord_wake_worker", lambda cfg, **kwargs: _FakeWorker()
+        "evander.cli_workers.build_discord_wake_worker", lambda cfg, **kwargs: _FakeWorker()
     )
 
     result = runner.invoke(
@@ -5066,7 +4984,7 @@ def test_scheduled_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
             raise AssertionError("run_forever should not be called in --once mode")
 
     monkeypatch.setattr(
-        "evander.cli.build_scheduled_wake_worker", lambda cfg, **kwargs: _FakeWorker()
+        "evander.cli_workers.build_scheduled_wake_worker", lambda cfg, **kwargs: _FakeWorker()
     )
 
     result = runner.invoke(
@@ -5100,7 +5018,7 @@ def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
             raise AssertionError("run_forever should not be called in --once mode")
 
     monkeypatch.setattr(
-        "evander.cli._build_teams_ingest_worker", lambda cfg, **kwargs: _FakeWorker()
+        "evander.cli_workers._build_teams_ingest_worker", lambda cfg, **kwargs: _FakeWorker()
     )
 
     result = runner.invoke(

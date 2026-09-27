@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from http_client_support import patch_httpx_client
+
 import json
 from pathlib import Path
 
@@ -11,14 +13,6 @@ from evander.services import (
     GitHubPrPublishProvider,
     PrPublishService,
 )
-
-
-def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
-    real_client = httpx.Client
-    monkeypatch.setattr(
-        "evander.services.httpx.Client",
-        lambda timeout: real_client(timeout=timeout, transport=transport),
-    )
 
 
 def test_pr_publish_service_idempotency_reuses_first_comment_response(tmp_path: Path) -> None:

@@ -99,6 +99,13 @@ def canonical_execution_payload(value: Any, *, strip_node_outputs: bool = False)
 def _store_payload_blob(connection: sqlite3.Connection, payload: Any) -> str:
     raw = json_dumps(payload).encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
+    if (
+        connection.execute(
+            "SELECT 1 FROM workflow_execution_payload_blobs WHERE sha256 = ?", (digest,)
+        ).fetchone()
+        is not None
+    ):
+        return digest
     compressed = zlib.compress(raw, level=6)
     connection.execute(
         """
@@ -315,8 +322,17 @@ def archive_execution_record(
         config_revision=_optional_text(config_revision),
         record=record,
     )
+    # Backfill and retention may arrive without an existing write transaction.
+    # Keep reused blobs alive until the history row commits its references.
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
     input_digest = _store_payload_blob(connection, input_payload)
     output_digest = _store_payload_blob(connection, output_payload)
+    previous_payloads = connection.execute(
+        "SELECT input_blob_sha256, output_blob_sha256 "
+        "FROM workflow_node_execution_history WHERE execution_key = ?",
+        (execution_key,),
+    ).fetchone()
     connection.execute(
         """
         INSERT INTO workflow_node_execution_history(
@@ -368,12 +384,15 @@ def archive_execution_record(
             datetime_to_storage(datetime.now(UTC)),
         ),
     )
-    _replace_scalar_index(
-        connection,
-        execution_key=execution_key,
-        input_payload=input_payload,
-        output_payload=output_payload,
-    )
+    # Status, publication and timing updates do not change the searchable
+    # input/output values. Keep their existing index rows in the same transaction.
+    if previous_payloads is None or tuple(previous_payloads) != (input_digest, output_digest):
+        _replace_scalar_index(
+            connection,
+            execution_key=execution_key,
+            input_payload=input_payload,
+            output_payload=output_payload,
+        )
     _replace_source_provenance(
         connection,
         execution_key=execution_key,
@@ -460,13 +479,20 @@ def _snapshot_directory_path(
     if not config_revision:
         return None
     row = connection.execute(
-        "SELECT payload_json FROM workflow_config_snapshots WHERE revision = ?",
+        """
+        SELECT CASE WHEN json_valid(payload_json) THEN
+            CASE WHEN json_type(payload_json, '$.workflow_graphs') = 'array'
+                THEN json_extract(payload_json, '$.workflow_graphs') END
+            END AS graphs_json
+        FROM workflow_config_snapshots WHERE revision = ?
+        """,
         (config_revision,),
     ).fetchone()
-    if row is None:
+    if row is None or row["graphs_json"] is None:
         return None
-    snapshot = json_loads_object(row["payload_json"])
-    graphs = snapshot.get("workflow_graphs")
+    # The rest of a snapshot can contain megabytes of prompts and provider
+    # config. Only graph membership is needed to preserve historical scope.
+    graphs = json.loads(row["graphs_json"])
     if not isinstance(graphs, list):
         return None
     paths: set[str] = set()
@@ -702,6 +728,7 @@ def search_node_executions(
     cursor: str | None,
     full_retention_days: int,
     compact_retention_days: int,
+    include_total: bool = True,
 ) -> dict[str, Any]:
     ensure_orchestration_schema(path)
     where, params = _history_search_predicates(
@@ -727,12 +754,14 @@ def search_node_executions(
             statuses=statuses,
             filters=filters,
         )
-        matched = int(
-            connection.execute(
-                f"SELECT COUNT(*) {base_from} WHERE {' AND '.join(where)}",
-                params,
-            ).fetchone()[0]
-        )
+        matched = None
+        if include_total:
+            matched = int(
+                connection.execute(
+                    f"SELECT COUNT(*) {base_from} WHERE {' AND '.join(where)}",
+                    params,
+                ).fetchone()[0]
+            )
         rows = connection.execute(
             f"""
             SELECT h.*,
@@ -1122,18 +1151,25 @@ def _history_availability(
     full_retention_days: int,
     compact_retention_days: int,
 ) -> dict[str, Any]:
-    bounds = connection.execute(
-        """
-        SELECT MIN(started_at) AS earliest, MAX(started_at) AS latest
-        FROM workflow_node_execution_history
-        WHERE node_id = ? AND started_at >= ? AND started_at < ?
-        """,
-        (
-            node_id,
-            _storage_timestamp(started_from),
-            _storage_timestamp(started_to),
-        ),
-    ).fetchone()
+    # Separate index seeks avoid scanning the whole window for a combined
+    # MIN/MAX aggregate, including when the caller opts out of an exact count.
+    bounds: dict[str, str | None] = {}
+    for name, order in (("earliest", "ASC"), ("latest", "DESC")):
+        row = connection.execute(
+            f"""
+            SELECT started_at
+            FROM workflow_node_execution_history
+            WHERE node_id = ? AND started_at >= ? AND started_at < ?
+            ORDER BY started_at {order}
+            LIMIT 1
+            """,
+            (
+                node_id,
+                _storage_timestamp(started_from),
+                _storage_timestamp(started_to),
+            ),
+        ).fetchone()
+        bounds[name] = row["started_at"] if row is not None else None
     state_row = connection.execute(
         "SELECT value_json FROM orchestration_metadata WHERE key = ?",
         ("execution_history_backfill",),

@@ -200,14 +200,21 @@ Invalid registries or policies still fail closed; dispatch never repairs them.
 
 Approved relay paths no longer use implicit environment HTTP proxies or follow
 WebSocket redirects. Deployments depending on those behaviors need an explicitly
-reviewed configured route before upgrading. Unknown categories cannot be silently
-treated as public data.
+reviewed configured route before upgrading. The relay and classifier HTTP clients
+also ignore `SSL_CERT_FILE` and `SSL_CERT_DIR` when environment trust is disabled;
+private-CA deployments must provide an explicitly supported trust setup before
+upgrading. Unknown categories cannot be silently treated as public data.
 
 ## Upgrade, recovery and remaining milestones
 
 - No live service deployment or customer-data deletion is performed by this code
   change. Validate in an isolated fixture installation before enabling schedules.
-- Stop all Teams credential consumers during upgrade, initialize the managed
+- Upgrade all legacy Teams credential consumers together. Their first read of a
+  nonempty plaintext credential file encrypts it with a new sibling
+  `secrets/<credential-JSON-filename>.key`; old consumers cannot read that envelope.
+  Preserve the file and key together and ensure the service user can write them.
+  Explicit managed-store migration remains optional for existing credentials.
+- If migrating to managed custody, stop all Teams credential consumers, initialize the managed
   credential store, preview `evander-cli credentials migrate --family teams`, and
   apply it only with `--apply --maintenance`. Managed custody in
   `runtime/credentials/credentials.db` is authoritative once a directory has a

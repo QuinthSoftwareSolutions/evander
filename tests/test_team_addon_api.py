@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from evander_team_addon import (
+    api_routes_human_reviews,
+    api_routes_organization,
+    api_routes_reads,
+    api_routes_releases,
+)
+
 import asyncio
 import json
 import subprocess
@@ -72,6 +79,7 @@ from evander_team_addon.models import (
     HumanReviewRequirementSnapshot,
     ProjectGitConfig,
     ProjectReleasePolicy,
+    ProjectStatus,
     ReleaseCandidateManifest,
     ReleaseGateFailure,
     ReleasePackage,
@@ -1928,7 +1936,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
             return {
                 "managed_repo_id": managed_repo_id,
                 "canonical_repository_identity": "azure-devops:org/project/app",
-                "display_name": "ExampleIndustryAPP",
+                "display_name": "SampleApplication",
             }
 
     addon_service = SimpleNamespace(managed_git_admin=_ManagedGit())
@@ -1987,7 +1995,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     )
     assert release_detail.json()["candidate_checkout"] == {
         "canonical_repository_identity": "azure-devops:org/project/app",
-        "repository_display_name": "ExampleIndustryAPP",
+        "repository_display_name": "SampleApplication",
         "managed_repo_id": "mr_0123456789abcdefabcd",
         "release_ref": "refs/heads/team/team/releases/release-1",
         "candidate_commit_sha": "candidate-sha",
@@ -2291,7 +2299,7 @@ def test_human_review_decision_api_is_privileged_revisioned_and_idempotent(
 
     observed_at = datetime(2026, 8, 7, 7, 50, tzinfo=UTC)
     monkeypatch.setattr(
-        team_addon_api,
+        api_routes_human_reviews,
         "human_review_request_detail_payload",
         lambda *_args, **_kwargs: {
             "state": "blocked",
@@ -2913,6 +2921,104 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert not any(
         promotion.promotion_kind == "rollback" for promotion in final_state.git_promotions.values()
     )
+
+
+def test_post_release_report_during_execution_stall_can_be_cancelled_and_recovered(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+
+    def _publish_and_stall_lead(state: TeamState) -> TeamState:
+        release = state.release_packages["release-1"]
+        release.state = TeamRecordState.ACCEPTED
+        release.candidate_commit_sha = "candidate-sha"
+        release.approved_commit_sha = "candidate-sha"
+        release.published_commit_sha = "candidate-sha"
+        release.published_at = datetime(2026, 1, 3, tzinfo=UTC)
+        release.error = None
+        state.agent_runtimes["lead"].no_progress_count = 1
+        state.projects["project"].status = ProjectStatus.BLOCKED
+        state.blockers["stale-lead-execution-stall"] = TeamBlocker(
+            id="stale-lead-execution-stall",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.AGENT_EXECUTION_STALL,
+            source_id="lead",
+            owner_agent_id="lead",
+            affected_task_ids=[],
+            route=TeamBlockerRoute.OPERATOR,
+            summary="The lead has a stale execution-stall incident.",
+        )
+        return state
+
+    repo.update(_publish_and_stall_lead)
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=runtime_dir,
+                    addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(login="Reporter@Example.com"),
+                )
+            )
+        )
+    )
+
+    reported = client.post(
+        "/release-packages/release-1/report-issue",
+        json={
+            "report": "The released workflow needs an adjustment.",
+            "evidence_refs": ["artifact-space:reports/release-1-adjustment.png"],
+            "expected_revision": repo.read().revision,
+            "request_id": "report-during-stale-execution-stall",
+        },
+    )
+
+    assert reported.status_code == 200, reported.text
+    case_id = reported.json()["result"]["case_id"]
+    triage_task_id = reported.json()["result"]["triage_task_id"]
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="lead",
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["task_ids"] == []
+    assert leases[0]["dispatch"]["inbox_item_ids"]
+
+    admin = _team_admin_service(repo)
+    state = admin.cancel_task(
+        task_id=triage_task_id,
+        reason_code="no_longer_required",
+        reason="The operator confirmed that this adjustment is no longer necessary.",
+        actor_id="operator:admin",
+        expected_revision=repo.read().revision,
+    )
+    state, closed = admin.close_post_release_feedback_case_with_result(
+        case_id=case_id,
+        reason="The reported adjustment is no longer necessary.",
+        evidence_refs=[triage_task_id],
+        closed_by_user_id="operator:admin",
+        request_id="close-report-during-stale-execution-stall",
+        expected_state_revision=state.revision,
+    )
+    state, resolved = admin.resolve_terminal_blocker_as_operator(
+        blocker_id="stale-lead-execution-stall",
+        note="The stale execution incident is closed after operator review.",
+        operator_actor_id="operator:admin",
+        resolution_refs=[case_id, triage_task_id],
+        expected_revision=state.revision,
+    )
+
+    assert closed["success"] is True
+    assert resolved["success"] is True
+    assert state.tasks[triage_task_id].state == TeamTaskState.CANCELLED
+    assert state.cases[case_id].status == TeamCaseStatus.CLOSED
+    assert state.blockers["stale-lead-execution-stall"].state == (
+        TeamBlockerState.RESOLVED
+    )
+    assert state.agent_runtimes["lead"].no_progress_count == 0
 
 
 def test_human_finding_correction_and_post_release_closure_admin_api(
@@ -3617,7 +3723,7 @@ def test_generated_agent_avatar_preview_wraps_transport_failures(
 ) -> None:
     _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "evander_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api_routes_avatars.openai_avatar_generator_from_config",
         lambda _config: _FailingAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -3637,7 +3743,7 @@ def test_generated_agent_avatar_preview_is_accepted_with_revision(
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "evander_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api_routes_avatars.openai_avatar_generator_from_config",
         lambda _config: _FakeAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -3676,7 +3782,7 @@ def test_agent_avatar_accept_preview_requires_current_revision(
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
     monkeypatch.setattr(
-        "evander_team_addon.api.openai_avatar_generator_from_config",
+        "evander_team_addon.api_routes_avatars.openai_avatar_generator_from_config",
         lambda _config: _FakeAvatarGenerator(),
     )
     client = _client(tmp_path)
@@ -4675,7 +4781,7 @@ def test_team_addon_delivery_view_serializes_derived_datetime_values(
             "data": {"state": {"runtime_operations": {"attention": [{"at": observed_at}]}}},
         }
 
-    monkeypatch.setattr(team_addon_api, "_view_payload_for_request", _delivery_payload)
+    monkeypatch.setattr(api_routes_reads, "_view_payload_for_request", _delivery_payload)
 
     response = client.get("/api/addons/team-addon/views/delivery")
 
@@ -4714,7 +4820,7 @@ def test_team_addon_release_detail_serializes_derived_datetime_values(
             },
         }
 
-    monkeypatch.setattr(team_addon_api, "release_package_api_payload", _release_payload)
+    monkeypatch.setattr(api_routes_releases, "release_package_api_payload", _release_payload)
 
     response = client.get("/api/addons/team-addon/release-packages/release-1")
 
@@ -5220,6 +5326,7 @@ def test_team_addon_admin_api_designates_explicit_integration_boundary(
             assert task["deliverable_contract"] == {
                 "require_git_provenance": True,
                 "required_contribution_task_ids": ["implementation"],
+                "pinned_source_deliverable_ids": [],
             }
 
             detach_contribution = await client.patch(
@@ -5882,7 +5989,7 @@ def test_agent_voice_session_create_query_and_end(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api_routes_voice.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     operator_identity = {
@@ -5891,7 +5998,11 @@ def test_agent_voice_session_create_query_and_end(
         "actor": "operator:jonathan",
     }
     monkeypatch.setattr(
-        "evander_team_addon.api._operator_identity_from_request",
+        "evander_team_addon.api_routes_voice._operator_identity_from_request",
+        lambda _auth, _request: dict(operator_identity),
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.api_voice._operator_identity_from_request",
         lambda _auth, _request: dict(operator_identity),
     )
     client = TestClient(create_app(service))
@@ -6113,7 +6224,7 @@ def test_agent_voice_session_records_chat_conversation_message(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api_routes_voice.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -6200,7 +6311,7 @@ def test_agent_voice_session_can_end_by_request_id(
             return {"value": "ek_test", "expires_at": 123}
 
     monkeypatch.setattr(
-        "evander_team_addon.api.OpenAIRealtimeClientSecretService",
+        "evander_team_addon.api_routes_voice.OpenAIRealtimeClientSecretService",
         _FakeRealtimeClientSecretService,
     )
     client = TestClient(create_app(service))
@@ -6532,7 +6643,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert 'lockedAttrs("refresh transcript costs")' in script.text
     assert "renderTeamCostCounter" in script.text
     assert "renderTeamCostBlockedNotice" in script.text
-    assert "Blocked: estimated cost cap reached" in script.text
+    assert "Blocked: cost cap reached" in script.text
     assert "renderProjectCostCounter" in script.text
     assert "renderAgentInboxHeaderIndicators" in script.text
     assert "renderAgentInboxIndicatorIcon" in script.text
@@ -6646,6 +6757,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     agent_create_stylesheet = enabled.get("/addons/team-addon/team-agent-create.css")
     assert agent_create_stylesheet.status_code == 200
     assert ".agent-crud-modal" in agent_create_stylesheet.text
+    admin_design_stylesheet = enabled.get("/addons/team-addon/admin-design.css")
+    assert admin_design_stylesheet.status_code == 200
+    assert 'url("./team-agent-create.css") layer(admin-addon-structure)' in admin_design_stylesheet.text
     assert ".agent-inbox-indicator" in stylesheet.text
     assert ".agent-inbox-icon" in stylesheet.text
     assert ".agent-inbox-popover" in stylesheet.text
@@ -6660,7 +6774,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert html.status_code == 200
     assert 'name="max_cost_usd"' in html.text
     assert "team-agent-create.js" in html.text
-    assert "team-agent-create.css" in html.text
+    assert 'href="admin-design.css"' in html.text
 
 
 def test_team_addon_admin_api_mutations_require_privileged_unlock(
@@ -6742,6 +6856,108 @@ def test_team_addon_admin_api_copies_team_to_registered_unbound_sessions(
     )
     assert missing_session.status_code == 400
     assert missing_session.json()["error"] == "core sessions were not found: session-does-not-exist"
+
+
+def test_team_addon_admin_api_rebases_team_copy_after_live_state_changes(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    source = _team_admin_service(repo).create_team(
+        team_id="source",
+        name="Source Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-copy-manager",
+            vm_id="vm-copy-manager",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client = _client(tmp_path)
+    snapshot = client.get("/api/addons/team-addon/views/people").json()["data"]["state"]
+    source_token = snapshot["teams"]["source"]["copy_configuration_token"]
+    assert source_token.startswith("sha256:")
+
+    def _record_live_runtime(current: TeamState) -> TeamState:
+        current.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=1,
+        )
+        return current
+
+    live_state = repo.update(_record_live_runtime, expected_revision=source.revision)
+
+    response = client.post(
+        "/api/addons/team-addon/teams/source/copy",
+        json={
+            "expected_revision": source.revision,
+            "source_configuration_token": source_token,
+            "name": "Copied Team",
+            "agent_session_ids": {"manager": "session-copy-manager"},
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["rebased_from_revision"] == source.revision
+    assert body["revision"] == live_state.revision + 1
+    assert body["teams"][body["copied"]["team_id"]]["name"] == "Copied Team"
+
+
+def test_team_addon_admin_api_rejects_team_copy_after_source_configuration_changes(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    admin = _team_admin_service(repo)
+    source = admin.create_team(
+        team_id="source",
+        name="Source Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    session_repo = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_repo.upsert_session(
+        SessionManifest(
+            session_id="session-copy-manager",
+            vm_id="vm-copy-manager",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client = _client(tmp_path)
+    snapshot = client.get("/api/addons/team-addon/state").json()
+    source_token = snapshot["teams"]["source"]["copy_configuration_token"]
+    changed = admin.update_team(
+        team_id="source",
+        name="Changed Source Team",
+        expected_revision=source.revision,
+    )
+
+    response = client.post(
+        "/api/addons/team-addon/teams/source/copy",
+        json={
+            "expected_revision": source.revision,
+            "source_configuration_token": source_token,
+            "name": "Copied Team",
+            "agent_session_ids": {"manager": "session-copy-manager"},
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["current_revision"] == changed.revision
+    assert set(repo.read().teams) == {"source"}
 
 
 def test_team_addon_admin_api_team_copy_requires_owner_for_destination_sessions(
@@ -7394,7 +7610,7 @@ def test_team_addon_admin_api_costs_default_skips_backfill_and_uses_threadpool(
             "unpriced_events_count": 0,
         }
 
-    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(api_routes_reads, "run_in_threadpool", fake_run_in_threadpool)
     monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
     client = _client(tmp_path)
 
@@ -7486,7 +7702,7 @@ def test_team_addon_admin_api_costs_get_backfill_requires_privileged_unlock(
             "unpriced_events_count": 0,
         }
 
-    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(api_routes_reads, "run_in_threadpool", fake_run_in_threadpool)
     monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
     client = _client(tmp_path, unlock_privileged=False)
 
@@ -7544,7 +7760,7 @@ def test_team_addon_admin_api_costs_backfill_endpoint_runs_backfill_in_threadpoo
             },
         }
 
-    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(api_routes_reads, "run_in_threadpool", fake_run_in_threadpool)
     monkeypatch.setattr(team_addon_api.TeamCostService, "costs_payload", fake_costs_payload)
     client = _client(tmp_path)
 
@@ -9119,7 +9335,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                 "managed_repo_id": "mr_0123456789abcdefabcd",
                 "agent_author_identity": {
                     "name": "Jonathan Quinth",
-                    "email": "operator@example.invalid",
+                    "email": "jonathan.quinth@exampleindustry.com",
                 },
                 "agent_committer_identity": {
                     "name": "Evander Bot",
@@ -9143,7 +9359,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     )
     assert response.json()["projects"]["project"]["git"]["agent_author_identity"] == {
         "name": "Jonathan Quinth",
-        "email": "operator@example.invalid",
+        "email": "jonathan.quinth@exampleindustry.com",
     }
     assert response.json()["projects"]["project"]["release_policy"]["resource_limits"] == {
         "memory": "6g",
@@ -9159,7 +9375,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                 "base_branch": "develop",
                 "agent_author_identity": {
                     "name": "Jonathan Quinth",
-                    "email": "operator@example.invalid",
+                    "email": "jonathan.quinth@exampleindustry.com",
                 },
                 "agent_committer_identity": {
                     "name": "Evander Bot",
@@ -9376,7 +9592,7 @@ def test_team_addon_admin_api_imports_project_git_repo_in_threadpool(
         "register_repository",
         fake_register_repository,
     )
-    monkeypatch.setattr(team_addon_api, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(api_routes_organization, "run_in_threadpool", fake_run_in_threadpool)
     client = TestClient(create_app(service))
     _unlock_privileged_operations(client)
 
@@ -10643,7 +10859,7 @@ def test_team_addon_admin_api_rejects_stale_revision(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("operation", ["task", "agent", "role", "register"])
 def test_role_queue_admin_edits_prompt_outbox_publication(tmp_path: Path, operation: str) -> None:
-    from test_team_addon_repository import _seed_hierarchy, _lease_agent_dispatch, _command_service
+    from team_repository_support import _seed_hierarchy, _lease_agent_dispatch, _command_service
 
     client = _client(tmp_path)
     repo = _seed_hierarchy(tmp_path / "runtime")

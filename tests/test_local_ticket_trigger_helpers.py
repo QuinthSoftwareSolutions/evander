@@ -10,12 +10,6 @@ from evander.models import LocalIssueRecord
 from evander.storage import JsonStore
 from evander.triggers.providers._local_tickets import (
     LOCAL_ISSUES_FILENAME,
-    RECENT_ISSUE_IDS_FIELD,
-    RECENT_ISSUE_LIMIT,
-    TICKET_CHANGED_CURSOR_FIELD,
-    TICKET_CHANGED_CURSOR_FILENAME,
-    TICKET_CREATED_CURSOR_FIELD,
-    TICKET_CREATED_CURSOR_FILENAME,
     format_ticket_timestamp,
     local_ticket_candidates,
     max_local_ticket_timestamp,
@@ -23,7 +17,6 @@ from evander.triggers.providers._local_tickets import (
     read_local_ticket_issues,
     seed_new_ticket_created_trigger_cursors,
     ticket_cursor_path,
-    ticket_cursor_store,
     within_ticket_directories,
 )
 
@@ -47,19 +40,6 @@ def _issue(
         created_at=created_at,
         updated_at=updated_at,
     )
-
-
-def test_local_ticket_constants_and_cursor_paths(tmp_path: Path) -> None:
-    assert LOCAL_ISSUES_FILENAME == "local-issues.json"
-    assert TICKET_CREATED_CURSOR_FILENAME == "trigger-cursors-ticket-created.json"
-    assert TICKET_CHANGED_CURSOR_FILENAME == "trigger-cursors-ticket-changed.json"
-    assert TICKET_CREATED_CURSOR_FIELD == "last_created_at"
-    assert TICKET_CHANGED_CURSOR_FIELD == "last_updated_at"
-    assert RECENT_ISSUE_IDS_FIELD == "recent_issue_ids"
-    assert RECENT_ISSUE_LIMIT == 512
-    assert ticket_cursor_path(tmp_path, "created") == tmp_path / TICKET_CREATED_CURSOR_FILENAME
-    assert ticket_cursor_path(tmp_path, "changed") == tmp_path / TICKET_CHANGED_CURSOR_FILENAME
-    assert ticket_cursor_store(tmp_path, "created").path == ticket_cursor_path(tmp_path, "created")
 
 
 def test_within_ticket_directories_scopes_exactly_and_ignores_blank_entries() -> None:

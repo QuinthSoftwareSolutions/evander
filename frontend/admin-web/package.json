@@ -5,12 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test --test-concurrency=1 --experimental-strip-types test/**/*.test.mjs",
-    "test:smoke": "node --test --test-concurrency=1 --experimental-strip-types test/**/*.smoke.mjs",
+    "test": "npm run test:unit && npm run test:browser",
+    "test:smoke": "node --test --test-timeout=120000 --test-concurrency=1 --experimental-strip-types test/**/*.smoke.mjs",
     "build:team-org-flow": "vite build --config vite.team-org-flow.config.ts",
     "build:team-agent-create": "vite build --config vite.team-agent-create.config.ts",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "sync:design": "node scripts/sync-design-assets.mjs",
+    "check:design-assets": "node scripts/sync-design-assets.mjs --check",
+    "build": "npm run sync:design && tsc -b && vite build && python3 scripts/classic-ui.py install",
+    "preview": "vite preview",
+    "test:unit": "node --test --test-timeout=30000 --test-concurrency=1 --experimental-strip-types test/**/*.test.mjs",
+    "test:browser": "node --test --test-timeout=60000 --test-concurrency=1 --experimental-strip-types test/**/*.browser.mjs",
+    "test:all": "npm test && npm run test:smoke"
   },
   "dependencies": {
     "@xyflow/react": "^12.8.5",

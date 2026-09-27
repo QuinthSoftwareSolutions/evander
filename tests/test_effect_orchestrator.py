@@ -534,6 +534,26 @@ def _await_agent_store(worker: EffectOrchestratorWorker):
     return provider.load_state()
 
 
+def _cron_worker_config(runtime_dir: Path, graph: dict[str, object]):
+    """Fresh canonical graph using the common deterministic cron trigger."""
+    return canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+            ],
+            **graph,
+        }
+    )
+
+
 def test_agent_prompt_lock_store_allows_one_owner_until_release(tmp_path: Path) -> None:
     store = AgentPromptLockStore(tmp_path / "agent-prompt-locks.json")
     lock_key = agent_prompt_lock_key(
@@ -897,19 +917,9 @@ def test_effect_orchestrator_threads_graph_metadata_into_provider_contexts(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -1125,7 +1135,12 @@ def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> No
     assert worker._kernel.config.lock_path == worker.lock_path
 
     sentinel = object()
-    worker._kernel.run_once_with_lock = lambda: sentinel  # type: ignore[method-assign]
+
+    def run_once_with_lock(*, on_stop):
+        assert on_stop == worker.close
+        return sentinel
+
+    worker._kernel.run_once_with_lock = run_once_with_lock  # type: ignore[method-assign]
 
     assert worker.run_once_with_lock() is sentinel
 
@@ -1639,7 +1654,9 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert {item["trace_id"] for item in queue_payload.values()} == {"trace-1"}
 
 
-def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) -> None:
+def test_effect_orchestrator_hot_drains_fast_completion_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     worker_config = canonical_worker_config(
@@ -1706,6 +1723,9 @@ def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) ->
         )
     )
 
+    # Test eager successor handling independently of host/fsync latency. The
+    # elapsed event-slice limit is covered in test_orchestration_handoff_latency.
+    monkeypatch.setattr("evander.daemons.effect_orchestrator.time.monotonic", lambda: 0.0)
     active_result = worker.run_once()
     idle_result = worker.run_once()
 
@@ -1812,19 +1832,9 @@ def test_effect_orchestrator_session_list_query_applies_graph_directory_metadata
             metadata={"purpose": "spec"},
         ),
     }
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "queries": [
                 {
                     "id": "query-sessions",
@@ -1946,19 +1956,9 @@ def test_effect_orchestrator_persists_binding_error_on_failed_resolution(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -2000,19 +2000,9 @@ def test_effect_orchestrator_persists_workflow_config_snapshot_in_sqlite_backend
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -2579,19 +2569,9 @@ def test_for_gate_without_outgoing_edges_terminates_immediately(tmp_path: Path) 
 def test_while_gate_false_condition_routes_to_done(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "gates": [
                 {
                     "id": "while-1",
@@ -2653,19 +2633,9 @@ def test_while_gate_false_condition_routes_to_done(tmp_path: Path) -> None:
 def test_while_gate_exhausts_after_max_iterations(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "gates": [
                 {
                     "id": "while-1",
@@ -2756,19 +2726,9 @@ def test_while_gate_exhausts_after_max_iterations(tmp_path: Path) -> None:
 def test_while_gate_resumes_legacy_trace_scoped_state_key(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "gates": [
                 {
                     "id": "while-1",
@@ -2862,19 +2822,9 @@ def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "gates": [
                 {
                     "id": "merge-1",
@@ -3213,19 +3163,9 @@ def test_effect_orchestrator_depth_protection_skips_cyclic_graph(tmp_path: Path)
 def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -3288,19 +3228,9 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
 def test_effect_orchestrator_retries_running_effect_after_restart(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -3358,19 +3288,9 @@ def test_effect_orchestrator_retries_running_effect_after_restart(tmp_path: Path
 def test_effect_orchestrator_marks_provider_failure_failed(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -3410,19 +3330,9 @@ def test_effect_orchestrator_marks_provider_failure_failed(tmp_path: Path) -> No
 def test_effect_orchestrator_records_provider_failure_outputs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -3465,19 +3375,9 @@ def test_effect_orchestrator_routes_generic_provider_failure_to_error_branch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -3541,19 +3441,9 @@ def test_effect_orchestrator_marks_completion_publish_failure_pending(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -3608,19 +3498,9 @@ def test_effect_orchestrator_retries_pending_completion_publish_after_restart(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -3697,19 +3577,9 @@ def test_effect_orchestrator_retries_pending_started_branch_publish_after_restar
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -3803,19 +3673,9 @@ def test_effect_orchestrator_retries_partially_published_completion_publish_once
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -4294,19 +4154,9 @@ def test_filter_gate_when_supports_string_branch_operators(tmp_path: Path) -> No
 def test_filter_gate_when_can_match_ancestor_effect_outputs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "gates": [
                 {
                     "id": "gate-filter",
@@ -4386,19 +4236,9 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -4506,19 +4346,9 @@ def test_agent_enqueue_prompt_started_port_releases_downstream_after_dispatch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -4580,19 +4410,9 @@ def test_agent_enqueue_prompt_completed_port_waits_for_agent_completion(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -4685,19 +4505,9 @@ def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -4765,19 +4575,9 @@ def test_agent_enqueue_prompt_applies_local_capacity_after_model_resolution(
         local_openai_api_base_url="http://127.0.0.1:11435/v1",
         local_openai_max_concurrency=1,
     )
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -4905,19 +4705,9 @@ def test_local_capacity_reconciles_terminal_vm_lease_before_new_admission(
         local_openai_api_base_url="http://127.0.0.1:11435/v1",
         local_openai_max_concurrency=1,
     )
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -5751,19 +5541,9 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -5847,19 +5627,9 @@ def test_agent_enqueue_prompt_dispatch_keeps_queued_prompt_when_lock_is_held(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -7522,9 +7292,9 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
@@ -7532,7 +7302,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
         QueuedAgentPromptRecord(
             queue_key="session-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="hello",
             model=None,
@@ -7595,16 +7365,16 @@ def test_agent_enqueue_prompt_dispatch_retains_expired_subscription_capacity_pro
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
     queued = QueuedAgentPromptRecord(
         queue_key="session-1",
         target="session-1",
-        vm_name="truman",
+        vm_name="evander",
         session_id="session-1",
         prompt="hello after renewal",
         model=None,
@@ -7657,19 +7427,9 @@ def test_agent_enqueue_prompt_dispatch_preserves_mcp_lease_for_queued_libvirt_pr
         runtime_dir=runtime_dir,
         gateway_url="http://gateway.test/mcp",
     )
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -7923,19 +7683,9 @@ def test_session_renew_if_expired_runs_before_prompting(
     }
     if renew_if_expires_within is not None:
         renew_effect["renew_if_expires_within"] = renew_if_expires_within
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 renew_effect,
                 {
@@ -8006,19 +7756,9 @@ def test_session_prompt_without_renewal_still_fails_for_expired_session(
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
         )
     )
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-prompt",
@@ -8298,19 +8038,9 @@ def test_agent_enqueue_prompt_dispatch_does_not_publish_dispatch_id_as_thread_id
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -8378,11 +8108,11 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
             metadata={
                 "execution_backend": "container_worker_vm",
-                "target_name": "truman",
+                "target_name": "evander",
                 "container_worker": {"image": "runner:queue-image"},
                 "agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"},
             },
@@ -8393,7 +8123,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
         QueuedAgentPromptRecord(
             queue_key="session-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="check teams",
             model=None,
@@ -8515,11 +8245,11 @@ def test_container_prompt_completion_without_agent_output_fails_without_persisti
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
             metadata={
                 "execution_backend": "container_worker_vm",
-                "target_name": "truman",
+                "target_name": "evander",
                 "agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"},
             },
         )
@@ -8639,9 +8369,9 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
@@ -8656,7 +8386,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
         QueuedAgentPromptRecord(
             queue_key="scheduled-wake:wake-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="resume scheduled work",
             model=None,
@@ -8782,9 +8512,9 @@ def test_agent_enqueue_prompt_dispatch_hook_discards_cancelled_scheduled_wake_qu
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     wake_store = WakeRequestStore(tmp_path / "wake-requests-store.json")
@@ -8823,7 +8553,7 @@ def test_agent_enqueue_prompt_dispatch_hook_discards_cancelled_scheduled_wake_qu
         QueuedAgentPromptRecord(
             queue_key="scheduled-wake:wake-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="resume scheduled work",
             model=None,
@@ -8882,10 +8612,10 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             metadata={
                 "execution_backend": "container_worker_vm",
-                "target_name": "truman",
+                "target_name": "evander",
                 "agent_provider": "claude",
                 "wake_dispatch_id": "wake-dispatch-1",
             },
@@ -8896,7 +8626,7 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
         QueuedAgentPromptRecord(
             queue_key="pr-feedback:session-1:feedback-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="handle PR feedback",
             model=None,
@@ -8999,7 +8729,7 @@ def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_di
             "dispatch_id": "effect-dispatch-123",
             "wake_dispatch_id": "wake-dispatch-1",
             "session_id": "session-1",
-            "vm_name": "truman",
+            "vm_name": "evander",
             "execution_backend": "container_worker_vm",
         },
     )
@@ -9173,19 +8903,9 @@ def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -9258,19 +8978,9 @@ def test_agent_enqueue_prompt_routes_retry_context_to_error_branch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -9363,19 +9073,9 @@ def test_agent_enqueue_prompt_queue_dispatch_hook_is_neutral_when_provider_absen
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -9427,19 +9127,9 @@ def test_agent_prompt_fails_when_resume_agent_reports_unsuccessful_result(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -9497,19 +9187,9 @@ def test_agent_prompt_routes_failed_outputs_to_error_branch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-prompt",
@@ -9587,19 +9267,9 @@ def test_agent_prompt_error_branch_publish_failure_fails_loudly(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-prompt",
@@ -9670,19 +9340,9 @@ def test_agent_prompt_error_branch_publish_failure_fails_loudly(
 def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "gates": [
                 {
                     "id": "gate-filter",
@@ -9849,19 +9509,9 @@ def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path
 def test_await_agent_gate_releases_follow_up_on_matching_completion(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                },
-            ],
             "gates": [
                 {
                     "id": "await-agent-1",
@@ -10156,144 +9806,15 @@ def test_await_agent_recorded_failure_routes_to_error_branch_on_replay(tmp_path:
     assert recovery_record["status"] == "succeeded"
 
 
+@pytest.mark.parametrize("libvirt_state", ["running", "shut off", "stopped"])
 def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, libvirt_state: str
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                },
-            ],
-            "gates": [
-                {
-                    "id": "await-agent-1",
-                    "display_name": "Await agent",
-                    "type": "gate:await-agent",
-                    "session_id": "session-42",
-                    "vm_name": "vm-issue-42",
-                    "outputs": {},
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-1",
-                    "display_name": "Prompt",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-42",
-                    "prompt": "Continue main task",
-                },
-                {
-                    "id": "effect-2",
-                    "display_name": "Post exec",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-42",
-                    "prompt": "Write post-exec summary for ${{await-agent-1.vm_name}}",
-                },
-            ],
-            "edges": [
-                _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1", source_port="started"),
-                _edge("await-agent-1", "effect-2"),
-            ],
-        }
-    )
-    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    worker.provider_factory = _Factory(
-        {
-            "effect-1": {
-                "dispatch_id": "dispatch-effect-1-abc123",
-                "thread_id": "thread-1",
-                "success": True,
-            },
-            "effect-2": {
-                "thread_id": "thread-2",
-                "success": True,
-            },
-        }
-    )
-    worker.agent_run_status_port = _AgentRunStatusPortStub([])
-
-    worker.event_queue.publish(
-        TriggerEvent(
-            event_id="event-await-start",
-            trigger_id="trigger-1",
-            trigger_type="trigger:cron",
-            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
-            payload={},
-            trace_id="trace-await",
-        )
-    )
-
-    for _ in range(4):
-        worker.run_once()
-
-    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
-    assert pending is not None
-    pending.session_id = "session-42"
-    pending.vm_name = "vm-issue-42"
-    pending.payload["__node_outputs"]["effect-vm-create-1"] = {
-        "session_id": "session-42",
-        "vm_name": "vm-issue-42",
-    }
-    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
-
-    worker.agent_run_status_port.summaries = [
-        VmSummary(
-            vm_name="vm-issue-42",
-            session_ids=["session-42"],
-            labels={},
-            directory_paths=["root/team-a"],
-            libvirt_state="running",
-            ip_address="192.0.2.10",
-            agent_state="idle",
-            agent_repo_names=["repo-a"],
-            last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
-            dispatch_id="dispatch-effect-1-abc123",
-        )
-    ]
-
-    for _ in range(6):
-        worker.run_once()
-
-    effect_payload = effect_execution_payload(worker_config)
-    assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
-
-    gate_payload = gate_execution_payload(worker_config)
-    assert any(
-        item["gate_id"] == "await-agent-1" and item["status"] == "succeeded"
-        for item in gate_payload.values()
-    )
-
-
-@pytest.mark.parametrize("libvirt_state", ["shut off", "stopped"])
-def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll_for_same_dispatch_idle_non_running_vm(
-    tmp_path: Path, monkeypatch, libvirt_state: str
-) -> None:
-    runtime_dir = tmp_path / "runtime"
-    config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
-        {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                },
-            ],
             "gates": [
                 {
                     "id": "await-agent-1",
@@ -10403,19 +9924,9 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                },
-            ],
             "gates": [
                 {
                     "id": "await-agent-1",
@@ -10526,19 +10037,9 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
 def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                },
-            ],
             "gates": [
                 {
                     "id": "await-agent-1",
@@ -10721,19 +10222,9 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -10817,19 +10308,9 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
             "effects": [
                 {
                     "id": "effect-1",
@@ -10977,19 +10458,9 @@ def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = canonical_worker_config(
+    worker_config = _cron_worker_config(
+        runtime_dir,
         {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                },
-            ],
             "gates": [
                 {
                     "id": "await-agent-1",

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-admin-design data-addon="skatteverket">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -44,7 +44,8 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="./skatteverket-ui.css" />
+    <link rel="stylesheet" href="admin-design.css" />
+    <script type="module" src="admin-design.js"></script>
   </head>
   <body>
     <main class="skv-shell">
@@ -55,9 +56,11 @@
         </div>
         <button id="refresh" type="button">Refresh</button>
       </header>
+      <p id="privilege-notice" class="notice warning">Unlock privileged operations in Admin Web to edit Skatteverket connections.</p>
       <section class="skv-grid" aria-live="polite">
         <article class="skv-wide">
-          <h2>Connection settings</h2>
+          <details class="skv-connection-settings">
+          <summary>Connection settings</summary>
           <form id="connection-form" class="skv-form">
             <div class="skv-field-row">
               <label>
@@ -287,10 +290,11 @@
               <span id="connection-form-status" class="skv-message" role="status"></span>
             </div>
           </form>
+          </details>
         </article>
         <article>
           <h2>Connection status</h2>
-          <pre id="connection">Loading...</pre>
+          <div id="connection" aria-live="polite">Loading...</div>
         </article>
         <article>
           <h2>Catalog</h2>
@@ -306,6 +310,6 @@
         </article>
       </section>
     </main>
-    <script src="./skatteverket-ui.js"></script>
+    <script type="module" src="./skatteverket-ui.js"></script>
   </body>
 </html>

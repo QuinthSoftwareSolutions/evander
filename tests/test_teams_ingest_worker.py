@@ -1023,9 +1023,10 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
 
 
 def test_teams_ingest_worker_notifies_configured_trigger_wake_socket(
-    tmp_path: Path,
+    socket_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    tmp_path = socket_tmp_path
     trigger_lock_path = tmp_path / "runtime" / "custom-trigger.lock"
     write_trigger_config(tmp_path, [], extra={"lock_path": str(trigger_lock_path)})
     requests: list[httpx.Request] = []
@@ -1083,9 +1084,10 @@ def test_teams_ingest_worker_notifies_configured_trigger_wake_socket(
 
 
 def test_teams_ingest_worker_resolves_relative_trigger_wake_socket_from_project_dir(
-    tmp_path: Path,
+    socket_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    tmp_path = socket_tmp_path
     project_dir = tmp_path / "project"
     relative_trigger_lock_path = Path("runtime") / "custom-trigger.lock"
     write_trigger_config(

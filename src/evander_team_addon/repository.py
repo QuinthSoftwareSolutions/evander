@@ -23,6 +23,7 @@ from .sqlite_store import (
     STATE_DB_FILE,
     TeamStateSqliteCommandTransaction,
     TeamStateSqliteStore,
+    TeamStateReadProjection,
 )
 from .lifecycle_candidates import LifecycleCandidatePage
 
@@ -41,15 +42,20 @@ class TeamStateConflictError(RuntimeError):
 
 
 class TeamStateRepository:
-    def __init__(self, runtime_dir: str | Path) -> None:
+    def __init__(self, runtime_dir: str | Path, *, maintenance: bool = False) -> None:
         self.runtime_dir = Path(runtime_dir)
-        self.store = TeamStateSqliteStore(self.runtime_dir)
+        self.store = TeamStateSqliteStore(self.runtime_dir, maintenance=maintenance)
         self._dispatch_activity_repository = TeamDispatchActivityRepository(self.store)
         self._idempotency_repository = TeamIdempotencyRepository(self.store)
         self._outbox_repository = TeamOutboxRepository(self.store)
 
     def read(self) -> TeamState:
         return self.store.read_state()
+
+    def read_projection(self, *, collections: Sequence[str]) -> TeamStateReadProjection:
+        """Return a read-only subset; mutations must always use full state."""
+
+        return self.store.read_projection(collections=collections)
 
     def read_revision(self) -> int:
         return self.store.read_revision()
@@ -176,6 +182,31 @@ class TeamStateRepository:
                 current_revision=current_revision,
             )
         return state
+
+    def renew_dispatch_lease(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        renewal_due_at: datetime,
+        renewed_until: datetime,
+        now: datetime,
+        expected_revision: int | None = None,
+    ) -> tuple[int, datetime, bool]:
+        committed, revision, updated_at, renewed = self.store.renew_dispatch_lease(
+            agent_id=agent_id,
+            dispatch_id=dispatch_id,
+            renewal_due_at=renewal_due_at,
+            renewed_until=renewed_until,
+            now=now,
+            expected_revision=expected_revision,
+        )
+        if not committed:
+            assert expected_revision is not None
+            raise TeamStateConflictError(
+                expected_revision=expected_revision, current_revision=revision,
+            )
+        return revision, updated_at, renewed
 
     def append_dispatch_activity(
         self,

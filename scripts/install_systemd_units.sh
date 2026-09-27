@@ -273,6 +273,7 @@ PY
 
 admin_frontend_assets_ready() {
   python3 - "${ROOT_DIR}/frontend/admin-web/dist" <<'PY'
+import json
 import re
 import sys
 from pathlib import Path
@@ -293,6 +294,13 @@ if not references:
     raise SystemExit(1)
 
 missing = [dist_dir / reference for reference in references if not (dist_dir / reference).is_file()]
+rollout = dist_dir / "ui-rollout.json"
+if rollout.is_file():
+    try:
+        required = json.loads(rollout.read_text())["required_files"]
+        missing.extend(dist_dir.parent / name for name in required if not (dist_dir.parent / name).is_file())
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        missing.append(rollout)
 if missing:
     print("\n".join(str(path) for path in missing))
     raise SystemExit(1)

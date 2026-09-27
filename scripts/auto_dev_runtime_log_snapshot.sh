@@ -2,11 +2,11 @@
 set -uo pipefail
 umask 077
 
-PROJECT_DIR="${1:-/opt/truman}"
+PROJECT_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 RUNTIME_DIR="${PROJECT_DIR}/runtime"
 SINCE="${AUTO_DEV_LOG_SINCE:-24 hours ago}"
-OUT="${AUTO_DEV_LOG_OUTPUT:-$(mktemp -t truman-auto-dev-runtime-XXXXXX.log)}"
-RAW_OUT="$(mktemp -t truman-auto-dev-runtime-raw-XXXXXX.log)"
+OUT="${AUTO_DEV_LOG_OUTPUT:-$(mktemp -t evander-auto-dev-runtime-XXXXXX.log)}"
+RAW_OUT="$(mktemp -t evander-auto-dev-runtime-raw-XXXXXX.log)"
 
 cleanup() {
   rm -f "$RAW_OUT"
@@ -53,7 +53,7 @@ PY
 
 redact_snapshot() {
   if ! command -v perl >/dev/null 2>&1; then
-    printf '# Truman runtime log snapshot\n'
+    printf '# Evander runtime log snapshot\n'
     printf 'redaction_error=perl_not_available\n'
     printf 'Raw snapshot was withheld because redaction could not run.\n'
     return 0
@@ -77,7 +77,7 @@ redact_snapshot() {
 }
 
 {
-  printf '# Truman runtime log snapshot\n'
+  printf '# Evander runtime log snapshot\n'
   printf 'generated_at=%s\n' "$(date -Is)"
   printf 'project_dir=%s\n' "$PROJECT_DIR"
   printf 'runtime_dir=%s\n' "$RUNTIME_DIR"

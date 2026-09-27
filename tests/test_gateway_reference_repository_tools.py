@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import asyncio
+from gateway_tool_support import call_tool as _call_tool
+
 from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
@@ -19,16 +20,6 @@ from evander.runtime import build_runtime
 
 _ALLOWED_REPO_ID = "mr_0123456789abcdef0123"
 _DENIED_REPO_ID = "mr_fedcba9876543210fedc"
-
-
-def _call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
 
 
 def _runtime(tmp_path):
@@ -93,10 +84,10 @@ def test_prepare_reference_repository_uses_calling_session_and_fresh_read_only_p
                     {
                         "repo_source": "ssh://internal-bare-repository",
                         "managed_repo_id": _ALLOWED_REPO_ID,
-                        "repo_name": "ExampleIndustryAPP",
+                        "repo_name": "SampleApplication",
                         "source_ref": "refs/heads/main",
                         "commit_sha": "a" * 40,
-                        "target_dir": "/home/agent/repos/ExampleIndustryAPP",
+                        "target_dir": "/home/agent/repos/SampleApplication",
                         "refresh_performed": True,
                         "checkout_updated": True,
                         "access_reused": False,
@@ -131,10 +122,10 @@ def test_prepare_reference_repository_uses_calling_session_and_fresh_read_only_p
     assert result == {
         "success": True,
         "managed_repo_id": _ALLOWED_REPO_ID,
-        "repo_name": "ExampleIndustryAPP",
+        "repo_name": "SampleApplication",
         "source_ref": "refs/heads/main",
         "commit_sha": "a" * 40,
-        "target_dir": "/home/agent/repos/ExampleIndustryAPP",
+        "target_dir": "/home/agent/repos/SampleApplication",
         "refresh_performed": True,
         "checkout_updated": True,
         "access_reused": False,

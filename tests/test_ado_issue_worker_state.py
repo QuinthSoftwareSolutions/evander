@@ -122,8 +122,8 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
             "provider": "ado",
             "organization_url": "https://dev.azure.com/example-org",
             "project": "Example Project",
-            "agent_author_names": ["evander Bot"],
-            "agent_mention_names": ["Truman Bot"],
+            "agent_author_names": ["Evander Bot"],
+            "agent_mention_names": ["Evander Bot"],
             "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
         }
     )
@@ -401,8 +401,8 @@ def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
             "provider": "ado",
             "organization_url": "https://dev.azure.com/example-org",
             "project": "Example Project",
-            "agent_author_names": ["evander Bot"],
-            "agent_mention_names": ["Truman Bot"],
+            "agent_author_names": ["Evander Bot"],
+            "agent_mention_names": ["Evander Bot"],
             "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
             "suppress_agent_authored_feedback": suppress_agent_authored_feedback,
         }
@@ -432,12 +432,12 @@ def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
                     pr_id="6070",
                     thread_id="30830",
                     comment_id="5",
-                    author="evander Bot",
+                    author="Evander Bot",
                     body="@<C74221CB-EE08-6A83-9055-AF01C3333112> already handled.",
                     created_at=feedback_cursor,
                     metadata={
                         "mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
-                        "prior_thread_comment_author_names": ["evander Bot", "jonathan"],
+                        "prior_thread_comment_author_names": ["Evander Bot", "jonathan"],
                     },
                 )
             ],
@@ -1291,7 +1291,7 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
                     "directory_path": "root/team-a",
                     "allowed_tools": [],
                     "expires_at": "2026-04-22T00:00:00Z",
-                    "metadata": {"ado_project": "Example Industry Scanspac"},
+                    "metadata": {"ado_project": "Example Industry SecondaryApp"},
                 }
             }
         ),
@@ -1302,9 +1302,9 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
         json.dumps(
             {
                 "entries": {
-                    "azure_devops:exampleindustry/Scanspac/Scanspac:6281": {
+                    "azure_devops:exampleindustry/SecondaryApp/SecondaryApp:6281": {
                         "provider": "azure_devops",
-                        "repo": "exampleindustry/Scanspac/Scanspac",
+                        "repo": "exampleindustry/SecondaryApp/SecondaryApp",
                         "pr_id": "6281",
                         "session_id": "session-6281",
                     }
@@ -1333,7 +1333,7 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
             "type": "trigger:pull-request:new-feedback",
             "provider": "ado",
             "organization_url": "https://dev.azure.com/example-org",
-            "project": "Example Industry APP",
+            "project": "Example Industry App",
         }
     )
 
@@ -1343,7 +1343,7 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
 
     def fake_poll(self, *, client, repo, pr_id, cursor):
         observed_projects.append(self.project)
-        assert repo == "exampleindustry/Scanspac/Scanspac"
+        assert repo == "exampleindustry/SecondaryApp/SecondaryApp"
         assert pr_id == "6281"
         return SimpleNamespace(feedback=[], next_cursor=cursor)
 
@@ -1358,7 +1358,7 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
         )
 
     assert published == 0
-    assert observed_projects == ["Scanspac"]
+    assert observed_projects == ["SecondaryApp"]
 
 
 def test_publish_directory_pr_feedback_events_skips_missing_pr_stream_and_continues(
@@ -1578,7 +1578,7 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
                     pr_id="6070",
                     thread_id="30830",
                     comment_id="2",
-                    author="Truman Bot",
+                    author="Evander Bot",
                     body="Bot reply",
                     created_at=feedback_cursor,
                 )

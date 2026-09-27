@@ -17,7 +17,6 @@ from evander.events.models import (
 from evander.events.provider_models import (
     AdoWorkItemMatchingTriggerDefinition,
     AgentEnqueuePromptEffectDefinition,
-    AgentPromptNewTriggerDefinition,
     ApprovalPendingCreatedTriggerDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
@@ -37,8 +36,6 @@ from evander.events.provider_models import (
     PullRequestNewFeedbackTriggerDefinition,
     RemoteIssueCommentCreatedTriggerDefinition,
     RemoteIssueMatchingTriggerDefinition,
-    ReviewNewRequestTriggerDefinition,
-    ScriptRunRequestTriggerDefinition,
     SessionContextQueryDefinition,
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
@@ -136,7 +133,7 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
                 "config": {
                     "provider": "azure_devops",
                     "organization_url": " https://dev.azure.com/example/ ",
-                    "project": " APP ",
+                    "project": " App ",
                     "directories": [" root/team-a "],
                 },
             },
@@ -145,7 +142,7 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
 
     assert trigger.provider == "ado"
     assert trigger.organization_url == "https://dev.azure.com/example"
-    assert trigger.project == "APP"
+    assert trigger.project == "App"
     assert trigger.directories == ["root/team-a"]
 
 
@@ -161,7 +158,7 @@ def test_ado_work_item_comment_trigger_normalizes_config() -> None:
                 "type": "trigger:ado:work-item-comment-created",
                 "config": {
                     "directory_path": " root/team-a ",
-                    "project": " APP ",
+                    "project": " App ",
                     "states": [" New ", ""],
                     "tags_any": [" spec "],
                     "comment_contains": " @SpecAssistant ",
@@ -173,7 +170,7 @@ def test_ado_work_item_comment_trigger_normalizes_config() -> None:
     )
 
     assert trigger.directory_path == "root/team-a"
-    assert trigger.project == "APP"
+    assert trigger.project == "App"
     assert trigger.states == ["New"]
     assert trigger.tags_any == ["spec"]
     assert trigger.comment_contains == "@SpecAssistant"
@@ -309,7 +306,7 @@ def test_remote_issue_comment_trigger_normalizes_comment_filters() -> None:
                 "type": "trigger:remote-issue-comment-created",
                 "config": {
                     "provider": "ado",
-                    "project": " APP ",
+                    "project": " App ",
                     "comment_contains": " @Assistant ",
                     "comment_contains_any": [" fix ", ""],
                     "comment_author_exclude_ids": [" bot-id "],
@@ -320,7 +317,7 @@ def test_remote_issue_comment_trigger_normalizes_comment_filters() -> None:
 
     assert isinstance(trigger, RemoteIssueCommentCreatedTriggerDefinition)
     assert trigger.provider == "azure_devops"
-    assert trigger.project == "APP"
+    assert trigger.project == "App"
     assert trigger.comment_contains == "@Assistant"
     assert trigger.comment_contains_any == ["fix"]
     assert trigger.comment_author_exclude_ids == ["bot-id"]
@@ -705,16 +702,16 @@ def test_pr_feedback_trigger_accepts_agent_directed_identity_names() -> None:
             "display_name": "PR feedback",
             "type": "trigger:pull-request:new-feedback",
             "provider": "ado",
-            "agent_author_names": [" evander Bot ", "Truman Bot"],
-            "agent_mention_names": ["@evander", "Truman"],
+            "agent_author_names": [" Evander Bot ", "Evander Bot"],
+            "agent_mention_names": ["@Evander", "Evander"],
             "agent_author_ids": [" bot-id "],
             "agent_mention_ids": [" C74221CB-EE08-6A83-9055-AF01C3333112 "],
             "suppress_agent_authored_feedback": True,
         }
     )
 
-    assert trigger.agent_author_names == ["evander Bot", "Truman Bot"]
-    assert trigger.agent_mention_names == ["@evander", "Truman"]
+    assert trigger.agent_author_names == ["Evander Bot", "Evander Bot"]
+    assert trigger.agent_mention_names == ["@Evander", "Evander"]
     assert trigger.agent_author_ids == ["bot-id"]
     assert trigger.agent_mention_ids == ["C74221CB-EE08-6A83-9055-AF01C3333112"]
     assert trigger.suppress_agent_authored_feedback is True
@@ -799,7 +796,7 @@ def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
             "type": "trigger:ci:run:completed",
             "provider": "azure-pipelines",
             "ado_organization": " example ",
-            "project": " APP ",
+            "project": " App ",
             "repo": " ",
             "pipeline_id": "42",
             "pipeline_name": " nightly ",
@@ -810,7 +807,7 @@ def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
 
     assert trigger.provider == "ado_pipelines"
     assert trigger.ado_organization == "example"
-    assert trigger.project == "APP"
+    assert trigger.project == "App"
     assert trigger.repo is None
     assert trigger.pipeline_id == 42
     assert trigger.pipeline_name == "nightly"
@@ -930,31 +927,6 @@ def test_email_trigger_requires_mailboxes_only() -> None:
         )
 
 
-def test_pr_feedback_trigger_accepts_local_provider() -> None:
-    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
-        {
-            "id": "t-4",
-            "display_name": "Local PR feedback",
-            "type": "trigger:pull-request:new-feedback",
-            "provider": "local",
-        }
-    )
-
-    assert trigger.provider == "local"
-
-
-def test_review_request_trigger_validates() -> None:
-    trigger = ReviewNewRequestTriggerDefinition.model_validate(
-        {
-            "id": "review-1",
-            "display_name": "Review request",
-            "type": "trigger:review:new-request",
-        }
-    )
-
-    assert trigger.type == "trigger:review:new-request"
-
-
 def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
@@ -991,30 +963,6 @@ def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> N
     assert normalized_trigger.directory_path == "root/team-a"
     assert normalized_trigger.action_types == ["grant", "approve"]
     assert normalized_trigger.tool_names == ["approval_submit"]
-
-
-def test_script_run_request_trigger_validates() -> None:
-    trigger = ScriptRunRequestTriggerDefinition.model_validate(
-        {
-            "id": "script-run-1",
-            "display_name": "Script run request",
-            "type": "trigger:script-run-request",
-        }
-    )
-
-    assert trigger.type == "trigger:script-run-request"
-
-
-def test_agent_prompt_new_trigger_validates() -> None:
-    trigger = AgentPromptNewTriggerDefinition.model_validate(
-        {
-            "id": "agent-prompt-1",
-            "display_name": "Agent prompt",
-            "type": "trigger:agent:prompt:new",
-        }
-    )
-
-    assert trigger.type == "trigger:agent:prompt:new"
 
 
 def test_communication_trigger_output_schema_exposes_normalized_payload_fields() -> None:
@@ -1326,22 +1274,6 @@ def test_http_request_effect_rejects_invalid_allowed_url_patterns() -> None:
         )
 
 
-def test_vm_exec_effect_accepts_command_list() -> None:
-    adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = _validate_node(
-        adapter,
-        {
-            "id": "effect-exec",
-            "display_name": "Exec",
-            "type": "effect:vm:exec",
-            "vm_name": "vm-1",
-            "command": ["python3", "--version"],
-        },
-    )
-
-    assert effect.type == "effect:vm:exec"
-
-
 def test_vm_create_effect_accepts_labels_mapping() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     effect = _validate_node(
@@ -1445,37 +1377,6 @@ def test_agent_create_effect_accepts_allowed_contact_ids_list() -> None:
 
     assert effect.type == "effect:agent:create"
     assert effect.allowed_contact_ids == ["ops", "support"]
-
-
-def test_vm_start_effect_accepts_session_target() -> None:
-    adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = _validate_node(
-        adapter,
-        {
-            "id": "effect-start",
-            "display_name": "Start VM",
-            "type": "effect:vm:start",
-            "session_id": "session-1",
-        },
-    )
-
-    assert effect.type == "effect:vm:start"
-
-
-def test_vm_stop_effect_accepts_timeout_override() -> None:
-    adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = _validate_node(
-        adapter,
-        {
-            "id": "effect-stop",
-            "display_name": "Stop VM",
-            "type": "effect:vm:stop",
-            "vm_name": "vm-1",
-            "timeout_seconds": 120,
-        },
-    )
-
-    assert effect.type == "effect:vm:stop"
 
 
 def test_vm_copy_files_effect_requires_exactly_one_source_kind() -> None:

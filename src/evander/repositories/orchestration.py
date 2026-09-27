@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
+import time
 from typing import Any, Generic, Protocol, TypeVar
 from uuid import uuid4
 
@@ -13,12 +14,14 @@ from pydantic import BaseModel
 
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
+    connect_orchestration_db_read_only,
     datetime_to_storage,
     ensure_orchestration_schema,
     json_dumps,
     json_loads_object,
     maybe_run_orchestration_retention,
 )
+from evander.storage import write_json_atomically
 
 logger = logging.getLogger(__name__)
 
@@ -174,10 +177,7 @@ class JsonCursorRepository:
         return payload
 
     def _write_payload(self, payload: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        write_json_atomically(self.path, payload)
 
 
 class JsonGateCursorRepository(JsonCursorRepository):
@@ -389,7 +389,9 @@ class SqliteExecutionRepository(Generic[TRecord]):
         if self.table_name != "effect_executions":
             return []
         placeholders = ",".join("?" for _ in ids)
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        # Maintenance runs concurrently with foreground dispatch. A separate
+        # SQLite snapshot must not hold the execution repository's writer lock.
+        with connect_orchestration_db_read_only(self.path) as connection:
             rows = connection.execute(
                 f"""SELECT payload_json FROM effect_executions
                     WHERE effect_type = 'effect:agent:enqueue-prompt'
@@ -447,8 +449,9 @@ class SqliteExecutionRepository(Generic[TRecord]):
         self.put(record)
 
     def put(self, record: TRecord) -> None:
+        started = time.perf_counter()
         with self._lock, connect_orchestration_db(self.path) as connection:
-            self._upsert_record(connection, record)
+            phases = self._upsert_record(connection, record)
         if self._journal is not None and self._journal_source is not None:
             self._journal.append(
                 "workflow.execution.updated",
@@ -459,6 +462,29 @@ class SqliteExecutionRepository(Generic[TRecord]):
                     "status": str(getattr(record, "status", "")),
                 },
             )
+        self._log_write_duration(record, "record", started, phases)
+
+    def _log_write_duration(
+        self,
+        record: TRecord,
+        operation: str,
+        started: float,
+        phases: dict[str, float] | None,
+    ) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        duration_ms = (time.perf_counter() - started) * 1000
+        logger.debug(
+            "workflow_execution_storage operation=%s execution_id=%s trace_id=%s "
+            "node_id=%s status=%s duration_ms=%.3f phases_ms=%s",
+            operation,
+            getattr(record, "execution_id", ""),
+            getattr(record, "trace_id", ""),
+            getattr(record, self.node_id_field, ""),
+            getattr(record, "status", ""),
+            duration_ms,
+            {key: round(value, 3) for key, value in (phases or {}).items()},
+        )
 
     def find_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
         normalized_key = str(idempotency_key or "").strip()
@@ -504,6 +530,51 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 """
             ).fetchall()
         return [self._record_from_row(row) for row in rows]
+
+    def list_active_summaries(self) -> list[dict[str, Any]]:
+        """Read display metadata without hydrating execution inputs and outputs."""
+        return self._list_run_summaries(
+            where="status IN ('running', 'waiting', 'failed', 'completion_pending', 'error_routed')"
+            " AND dismissed_at IS NULL",
+            parameters=(),
+            newest_first=True,
+        )
+
+    def list_activity_summaries_between(
+        self, *, start_at: datetime, end_at: datetime
+    ) -> list[dict[str, Any]]:
+        return self._list_run_summaries(
+            where="COALESCE(finished_at, started_at) BETWEEN ? AND ?",
+            parameters=(datetime_to_storage(start_at), datetime_to_storage(end_at)),
+            newest_first=False,
+        )
+
+    def _list_run_summaries(
+        self, *, where: str, parameters: tuple[Any, ...], newest_first: bool
+    ) -> list[dict[str, Any]]:
+        # These projections are only for display. Control operations must still
+        # read full records, including the actual input required to resume a run.
+        # Missing legacy input_payload fields default to {} in the record models.
+        # Keep extra activity timestamps too: the renderer considers all of them.
+        order = "DESC" if newest_first else "ASC"
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT execution_id, event_id, trace_id, source_node_id, source_trigger_type,
+                       {self.node_id_field}, status, started_at, finished_at, dismissed_at,
+                       json_extract(payload_json, '$.error') AS error,
+                       COALESCE(json_type(payload_json, '$.input_payload'), 'object') = 'object'
+                           AS has_input_payload,
+                       json_extract(payload_json, '$.occurred_at') AS occurred_at,
+                       json_extract(payload_json, '$.inflight_at') AS inflight_at,
+                       json_extract(payload_json, '$.delivered_at') AS delivered_at
+                FROM {self.table_name}
+                WHERE {where}
+                ORDER BY COALESCE(finished_at, started_at) {order}, execution_id {order}
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_records_for_event(
         self, event_id: str, *, statuses: set[str] | None = None
@@ -651,7 +722,8 @@ class SqliteExecutionRepository(Generic[TRecord]):
             json_dumps(payload),
         )
 
-    def _upsert_record(self, connection: Any, record: TRecord) -> None:
+    def _upsert_record(self, connection: Any, record: TRecord) -> dict[str, float]:
+        started = time.perf_counter()
         node_id_column = self.node_id_field
         node_type_column = self.node_type_field
         connection.execute(
@@ -690,6 +762,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
             """,
             self._record_columns(record),
         )
+        record_written = time.perf_counter()
         from evander.repositories.execution_history import archive_execution_record
 
         archive_execution_record(
@@ -697,6 +770,10 @@ class SqliteExecutionRepository(Generic[TRecord]):
             kind="gate" if self.table_name == "gate_executions" else "effect",
             record=record.model_dump(mode="json"),
         )
+        return {
+            "record_write": (record_written - started) * 1000,
+            "history": (time.perf_counter() - record_written) * 1000,
+        }
 
 
 class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
@@ -731,6 +808,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
         if not event_id:
             raise ValueError("gate completion event_id is required")
 
+        started = time.perf_counter()
         created_event = False
         with self._lock, queue_lock, connect_orchestration_db(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -753,7 +831,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
             elif existing.event_id != event_id:
                 raise ValueError("gate completion idempotency key belongs to another event")
 
-            self._upsert_record(connection, record)
+            phases = self._upsert_record(connection, record)
             now = datetime.now(UTC)
             if created_event and getattr(event_queue, "_journal", None) is not None:
                 self._append_journal_row(
@@ -781,6 +859,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
                         "status": str(getattr(record, "status", "")),
                     },
                 )
+        self._log_write_duration(record, "gate_completion", started, phases)
         return event_id
 
     @staticmethod

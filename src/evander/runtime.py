@@ -45,7 +45,7 @@ from evander.repositories.session_manifests import (
     as_session_manifest_repository,
 )
 from evander.repositories.mcp_transport_bindings import (
-    JsonMcpTransportBindingRepository,
+    SqliteMcpTransportBindingRepository,
     McpTransportBindingRepository,
 )
 from evander.repositories.session_tool_approval_leases import (
@@ -373,6 +373,7 @@ class RuntimeContext:
         directory_path: str,
         *,
         allowed_channel_targets: Sequence[str],
+        allowed_user_targets: Sequence[str] = (),
     ) -> TeamsService:
         if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
             return self.teams_service
@@ -384,13 +385,20 @@ class RuntimeContext:
                 if str(target or "").strip()
             }
         )
+        exact_user_targets = sorted(
+            {
+                str(target or "").strip()
+                for target in allowed_user_targets
+                if str(target or "").strip()
+            }
+        )
         return _build_teams_service(
             resolved_config,
             self.teams_messages,
             self.session_repository,
             directory_path=directory_path,
             allowed_channel_targets_provider=lambda: exact_targets,
-            allowed_user_targets_provider=lambda: [],
+            allowed_user_targets_provider=lambda: exact_user_targets,
             user_chat_cache=self.teams_user_chat_cache,
         )
 
@@ -410,7 +418,9 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(
         config.runtime_dir
     )
-    mcp_transport_bindings = JsonMcpTransportBindingRepository.from_runtime_dir(config.runtime_dir)
+    mcp_transport_bindings = SqliteMcpTransportBindingRepository.from_runtime_dir(
+        config.runtime_dir
+    )
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonEmailRecordsRepository(config.email_store_path)
     email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)

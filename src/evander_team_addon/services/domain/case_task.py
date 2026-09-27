@@ -360,6 +360,28 @@ def inherited_task_case_id(
     return None
 
 
+def inherited_task_git_base_commit(
+    state: TeamState,
+    *,
+    parent_task_id: str | None,
+    git_base_branch: str | None,
+) -> str | None:
+    """Keep descendants on the nearest pinned parent in the same workstream."""
+
+    seen: set[str] = set()
+    while parent_task_id is not None:
+        if parent_task_id in seen:
+            raise ValueError("task parent cycle while resolving Git base")
+        seen.add(parent_task_id)
+        parent = _require_present(state.tasks, parent_task_id, "task parent")
+        if parent.git_base_branch != git_base_branch:
+            return None
+        if parent.git_base_commit_sha is not None:
+            return parent.git_base_commit_sha
+        parent_task_id = parent.parent_task_id
+    return None
+
+
 def _resolve_task_creation_plan_git_bases(
     state: TeamState,
     plans: list[_TaskCreationPlan],
@@ -485,14 +507,43 @@ def _resolve_task_creation_plan_git_bases(
                 work_item_attributions=_resolve_attribution(plan))
         for plan in plans
     ]
-    pinned_plans: list[_TaskCreationPlan] = []
-    for plan in resolved_plans:
+    resolved_plans_by_id = {plan.task_id: plan for plan in resolved_plans}
+    pinned_plans: dict[str, _TaskCreationPlan] = {}
+    pinning: set[str] = set()
+
+    def _pin(plan: _TaskCreationPlan) -> _TaskCreationPlan:
+        if plan.task_id in pinned_plans:
+            return pinned_plans[plan.task_id]
+        if plan.task_id in pinning:
+            raise ValueError(f"task parent cycle includes {plan.task_id}")
+        pinning.add(plan.task_id)
         project = _require_present(state.projects, plan.project_id, "project")
         supplied_commit = _normalized_task_git_base_commit(plan.git_base_commit_sha)
+        if supplied_commit is None and plan.parent_task_id is not None:
+            if parent := resolved_plans_by_id.get(plan.parent_task_id):
+                parent = _pin(parent)
+                inherited_commit = (
+                    parent.git_base_commit_sha
+                    if parent.git_base_branch == plan.git_base_branch
+                    else None
+                )
+            else:
+                inherited_commit = inherited_task_git_base_commit(
+                    state,
+                    parent_task_id=plan.parent_task_id,
+                    git_base_branch=plan.git_base_branch,
+                )
+            if inherited_commit is not None:
+                pinned_plans[plan.task_id] = replace(
+                    plan, git_base_commit_sha=inherited_commit
+                )
+                pinning.remove(plan.task_id)
+                return pinned_plans[plan.task_id]
         requires_automatic_pin = plan.integration_boundary and project.git is not None
         if not requires_automatic_pin and supplied_commit is None:
-            pinned_plans.append(plan)
-            continue
+            pinned_plans[plan.task_id] = plan
+            pinning.remove(plan.task_id)
+            return plan
         if project.git is None:
             raise TaskGitBaseValidationError(
                 code="git_base_commit_invalid",
@@ -562,13 +613,14 @@ def _resolve_task_creation_plan_git_bases(
                     f"integration boundary task {plan.task_id}"
                 ),
             )
-        pinned_plans.append(
-            replace(
-                plan,
-                git_base_commit_sha=supplied_commit or resolved_branch_commit,
-            )
+        pinned_plans[plan.task_id] = replace(
+            plan,
+            git_base_commit_sha=supplied_commit or resolved_branch_commit,
         )
-    return pinned_plans
+        pinning.remove(plan.task_id)
+        return pinned_plans[plan.task_id]
+
+    return [_pin(plan) for plan in resolved_plans]
 
 
 def _task_integration_boundary_transition_error(
@@ -1877,6 +1929,12 @@ def _task_deliverable_contract_scope_error(
             )
     if deliverable_contract is None:
         return None
+    for source_id in deliverable_contract.pinned_source_deliverable_ids:
+        source = state.deliverables.get(source_id)
+        if (not integration_boundary or source is None
+                or source.task_id not in deliverable_contract.required_contribution_task_ids
+                or source.state != TeamRecordState.ACCEPTED):
+            return "pinned source must be an accepted deliverable of a required contribution"
     if task_id in deliverable_contract.required_contribution_task_ids:
         return "task cannot require itself as a deliverable contribution"
     direct_child_ids = {

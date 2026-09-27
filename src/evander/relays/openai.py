@@ -17,6 +17,7 @@ from urllib.parse import quote, unquote, urlencode
 
 import httpx
 import anyio
+from anyio import CancelScope
 import uvicorn
 from python_multipart.multipart import (
     MultipartParseError,
@@ -24,6 +25,7 @@ from python_multipart.multipart import (
     parse_options_header,
 )
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -32,13 +34,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from evander.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from evander.config import GatewayConfig
-from evander.model_usage.adapters import (
-    MappingModelUsageExtractor,
-    ModelUsageExtractionRequest,
-)
-from evander.model_usage.models import ModelUsageCorrelationContext
 from evander.model_usage.runtime import (
-    MODEL_USAGE_AGENT_HARNESS,
     model_usage_store,
 )
 from evander.operator_steering import OperatorSteeringNote, operator_steering_note_store
@@ -52,6 +48,7 @@ from evander.relays.local_openai_tool_compatibility import (
     LocalOpenAIToolCompatibility,
     LocalOpenAIToolCompatibilityAdapter,
 )
+from evander.relays.openai_usage import OpenAIUsageAccounting
 from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
 from evander.session_auth import (
     MCP_SESSION_TOKEN_HEADER_NAMES,
@@ -102,6 +99,14 @@ OPENAI_COMPATIBLE_HTTP_ENDPOINTS = {
 OPENAI_COMPATIBLE_WEBSOCKET_ENDPOINTS = {
     "responses",
 }
+OPENROUTER_HTTP_ENDPOINTS = {
+    ("GET", "models"),
+    ("POST", "responses"),
+    ("POST", "responses/compact"),
+}
+OPENROUTER_FORBIDDEN_REQUEST_FIELDS = frozenset(
+    {"models", "route", "provider", "plugins", "preset"}
+)
 OPENAI_COMPATIBLE_ENDPOINTS_DESCRIPTION = (
     "OpenAI relay currently supports GET /v1/models and POST /v1/responses, "
     "/v1/responses/compact, /v1/chat/completions, /v1/completions, /v1/embeddings, "
@@ -146,6 +151,7 @@ class OpenAIAuthPathTokenMiddleware:
 @dataclass(frozen=True)
 class RelayRequestContext:
     session_id: str
+    model: str | None
     config: GatewayConfig
     web_search_enabled: bool
     image_generation_enabled: bool
@@ -260,7 +266,7 @@ class _MultipartModelCapture:
         self.model = text or None
 
 
-class OpenAIRelay:
+class OpenAIRelay(OpenAIUsageAccounting):
     def __init__(
         self,
         config: GatewayConfig,
@@ -292,6 +298,7 @@ class OpenAIRelay:
                     "provider_mode": relay.config.model_provider_mode,
                     "upstream": relay._resolved_upstream_base_url(relay.config),
                     "openai_upstream": relay.config.openai_api_base_url,
+                    "openrouter_upstream": relay.config.openrouter_api_base_url,
                     "local_openai_upstream": relay.config.local_openai_api_base_url,
                     "anthropic_upstream": relay.config.anthropic_api_base_url,
                     "api_key_env": api_key_env,
@@ -301,7 +308,7 @@ class OpenAIRelay:
 
         async def proxy(request: Request) -> Response:
             try:
-                request_context = relay._resolve_request_context(request)
+                request_context = await run_in_threadpool(relay._resolve_request_context, request)
             except SessionExpiredError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=403)
             except PrivacyDispatchDenied as exc:
@@ -367,6 +374,14 @@ class OpenAIRelay:
                 )
                 return relay._image_generation_disabled_response()
 
+            if request_context.config.model_provider_mode == "openrouter":
+                return await relay._proxy_openrouter_http(
+                    request=request,
+                    request_context=request_context,
+                    upstream_path=upstream_path,
+                    request_body=request_body,
+                )
+
             if request_context.config.model_provider_mode == "anthropic":
                 return await relay._proxy_anthropic_http(
                     request=request,
@@ -401,7 +416,8 @@ class OpenAIRelay:
                     )
                 except ValueError as exc:
                     return JSONResponse({"error": str(exc)}, status_code=400)
-                steering_injection = relay._operator_steering_injection(
+                steering_injection = await run_in_threadpool(
+                    relay._operator_steering_injection,
                     session_id=request_context.session_id,
                     method=request.method,
                     provider_name="openai",
@@ -454,18 +470,21 @@ class OpenAIRelay:
                             content=request_body,
                         )
                     except Exception as exc:
-                        relay._release_operator_steering_note(
+                        await run_in_threadpool(
+                            relay._release_operator_steering_note,
                             steering_injection.note,
                             error=f"upstream request failed before delivery: {exc}",
                         )
                         raise
-                    relay._mark_operator_steering_delivered(
+                    await run_in_threadpool(
+                        relay._mark_operator_steering_delivered,
                         steering_injection.note,
                         provider_name="openai",
                         provider_endpoint=upstream_path,
                     )
                     try:
-                        relay._record_model_usage_event(
+                        await run_in_threadpool(
+                            relay._record_model_usage_event,
                             session_id=request_context.session_id,
                             upstream_path=upstream_path,
                             request_body=request_body,
@@ -520,7 +539,8 @@ class OpenAIRelay:
             }
             headers["accept-encoding"] = "identity"
             headers["authorization"] = f"Bearer {openai_compatible_upstream.api_key}"
-            steering_injection = relay._operator_steering_injection(
+            steering_injection = await run_in_threadpool(
+                relay._operator_steering_injection,
                 session_id=request_context.session_id,
                 method=request.method,
                 provider_name=openai_compatible_upstream.provider_name,
@@ -568,18 +588,21 @@ class OpenAIRelay:
                         content=request_body,
                     )
                 except Exception as exc:
-                    relay._release_operator_steering_note(
+                    await run_in_threadpool(
+                        relay._release_operator_steering_note,
                         steering_injection.note,
                         error=f"upstream request failed before delivery: {exc}",
                     )
                     raise
-                relay._mark_operator_steering_delivered(
+                await run_in_threadpool(
+                    relay._mark_operator_steering_delivered,
                     steering_injection.note,
                     provider_name=openai_compatible_upstream.provider_name,
                     provider_endpoint=upstream_path,
                 )
                 try:
-                    relay._record_model_usage_event(
+                    await run_in_threadpool(
+                        relay._record_model_usage_event,
                         session_id=request_context.session_id,
                         upstream_path=upstream_path,
                         request_body=request_body,
@@ -610,7 +633,9 @@ class OpenAIRelay:
 
         async def websocket_proxy(websocket: WebSocket) -> None:
             try:
-                request_context = relay._resolve_websocket_context(websocket)
+                request_context = await run_in_threadpool(
+                    relay._resolve_websocket_context, websocket
+                )
             except SessionExpiredError as exc:
                 await websocket.close(code=1008, reason=str(exc))
                 return
@@ -627,6 +652,16 @@ class OpenAIRelay:
                 )
                 logger.warning(
                     "relay_rejected_azure_websocket session_id=%s path=%s reason=%s",
+                    request_context.session_id,
+                    websocket.url.path,
+                    reason,
+                )
+                await websocket.close(code=1008, reason=reason)
+                return
+            if request_context.config.model_provider_mode == "openrouter":
+                reason = "OpenRouter relay does not support websocket/realtime requests"
+                logger.warning(
+                    "relay_rejected_openrouter_websocket session_id=%s path=%s reason=%s",
                     request_context.session_id,
                     websocket.url.path,
                     reason,
@@ -731,6 +766,222 @@ class OpenAIRelay:
             ],
         )
 
+    async def _proxy_openrouter_http(
+        self,
+        *,
+        request: Request,
+        request_context: RelayRequestContext,
+        upstream_path: str,
+        request_body: bytes,
+    ) -> Response:
+        try:
+            normalized_path = _canonical_relay_path(
+                upstream_path,
+                field_name="OpenRouter relay path",
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if (request.method.upper(), normalized_path) not in OPENROUTER_HTTP_ENDPOINTS:
+            return JSONResponse(
+                {
+                    "error": (
+                        "OpenRouter relay supports only GET /v1/models, "
+                        "POST /v1/responses, and POST /v1/responses/compact"
+                    )
+                },
+                status_code=501,
+            )
+
+        api_key_env = request_context.config.openrouter_api_key_env
+        api_key = os.environ.get(api_key_env)
+        if not api_key:
+            return JSONResponse(
+                {"error": f"Host environment variable {api_key_env} is not set."},
+                status_code=503,
+            )
+
+        if request.method.upper() == "POST":
+            try:
+                request_body = self._rewrite_openrouter_request_body(
+                    request_body,
+                    session_model=request_context.model,
+                    model_routes=request_context.config.openrouter_model_routes,
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+        upstream_url = self._upstream_http_url(
+            base_url=request_context.config.openrouter_api_base_url,
+            upstream_path=normalized_path,
+            query_items=[],
+        )
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in HOP_BY_HOP_HEADERS
+            and not key.lower().startswith("x-openrouter-")
+            and key.lower() not in {"api-key", "cookie"}
+        }
+        headers["accept-encoding"] = "identity"
+        headers["authorization"] = f"Bearer {api_key}"
+        headers["x-openrouter-metadata"] = "enabled"
+
+        steering_injection = await run_in_threadpool(
+            self._operator_steering_injection,
+            session_id=request_context.session_id,
+            method=request.method,
+            provider_name="openrouter",
+            upstream_path=normalized_path,
+            request_body=request_body,
+        )
+        request_body = steering_injection.request_body
+        if request.method.upper() == "POST" and self._should_stream_http_response(
+            request=request, request_body=request_body
+        ):
+            return await self._stream_response(
+                request=request,
+                session_id=request_context.session_id,
+                upstream_path=normalized_path,
+                upstream_url=upstream_url,
+                headers=headers,
+                request_body=request_body,
+                timeout_seconds=request_context.config.openai_relay_timeout_seconds,
+                provider_name="openrouter",
+                operator_steering_note=steering_injection.note,
+                privacy_context=request_context,
+            )
+
+        async with httpx.AsyncClient(
+            timeout=request_context.config.openai_relay_timeout_seconds,
+            transport=self.transport,
+            trust_env=False,
+            follow_redirects=False,
+            event_hooks={"request": [self._privacy_request_hook(request_context)]},
+        ) as client:
+            started_at = time.perf_counter()
+            try:
+                upstream_response = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    headers=headers,
+                    content=request_body,
+                )
+            except Exception as exc:
+                await run_in_threadpool(
+                    self._release_operator_steering_note,
+                    steering_injection.note,
+                    error=f"upstream request failed before delivery: {exc}",
+                )
+                raise
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
+                steering_injection.note,
+                provider_name="openrouter",
+                provider_endpoint=normalized_path,
+            )
+            response_content = upstream_response.content
+            if request.method.upper() == "GET" and normalized_path == "models":
+                if upstream_response.is_success:
+                    try:
+                        response_content = self._filter_openrouter_models_response(
+                            response_content,
+                            allowed_models=request_context.config.openrouter_model_routes,
+                        )
+                    except ValueError as exc:
+                        return JSONResponse({"error": str(exc)}, status_code=502)
+            else:
+                try:
+                    await run_in_threadpool(
+                        self._record_model_usage_event,
+                        session_id=request_context.session_id,
+                        upstream_path=normalized_path,
+                        request_body=request_body,
+                        upstream_response=upstream_response,
+                        duration_ms=self._duration_ms_since(started_at),
+                        provider_name="openrouter",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                        request_context.session_id,
+                        request.url.path,
+                        exc.__class__.__name__,
+                        str(exc),
+                    )
+            return Response(
+                content=response_content,
+                status_code=upstream_response.status_code,
+                headers=self._response_headers(upstream_response),
+                media_type=upstream_response.headers.get("content-type"),
+            )
+
+    @staticmethod
+    def _rewrite_openrouter_request_body(
+        request_body: bytes,
+        *,
+        session_model: str | None,
+        model_routes: dict[str, str],
+    ) -> bytes:
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("OpenRouter request body must be a JSON object") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("OpenRouter request body must be a JSON object")
+
+        forbidden = sorted(OPENROUTER_FORBIDDEN_REQUEST_FIELDS.intersection(payload))
+        if forbidden:
+            raise ValueError(
+                "OpenRouter request must not set relay-controlled fields: "
+                + ", ".join(forbidden)
+            )
+        model = payload.get("model")
+        expected_model = session_model
+        if not isinstance(model, str) or not model:
+            raise ValueError("OpenRouter request requires an explicit model")
+        if model != expected_model:
+            raise ValueError(
+                f"OpenRouter request model {model!r} does not match session model "
+                f"{expected_model!r}"
+            )
+        provider = model_routes.get(model)
+        if not provider:
+            raise ValueError(f"OpenRouter model {model!r} is not approved for this session")
+        if _tools_declare_openrouter_server_tool(payload.get("tools")):
+            raise ValueError("OpenRouter server tools are not allowed")
+
+        rewritten = dict(payload)
+        rewritten["provider"] = {
+            "order": [provider],
+            "only": [provider],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+            "zdr": True,
+        }
+        return json.dumps(rewritten, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    @staticmethod
+    def _filter_openrouter_models_response(
+        response_content: bytes,
+        *,
+        allowed_models: dict[str, str],
+    ) -> bytes:
+        try:
+            payload = json.loads(response_content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("OpenRouter returned an invalid model listing") from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError("OpenRouter returned an invalid model listing")
+        filtered = dict(payload)
+        filtered["data"] = [
+            item
+            for item in payload["data"]
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and item["id"] in allowed_models
+        ]
+        return json.dumps(filtered, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
     async def _proxy_openai_image_http(
         self,
         *,
@@ -738,7 +989,11 @@ class OpenAIRelay:
         request_context: RelayRequestContext,
         upstream_path: str,
     ) -> Response:
-        if request_context.config.model_provider_mode in {"anthropic", "azure_openai"}:
+        if request_context.config.model_provider_mode in {
+            "anthropic",
+            "azure_openai",
+            "openrouter",
+        }:
             return JSONResponse(
                 {
                     "error": (
@@ -821,12 +1076,7 @@ class OpenAIRelay:
             upstream = self._openai_compatible_upstream(request_context.config)
             if not upstream.api_key:
                 return JSONResponse(
-                    {
-                        "error": (
-                            "Host environment variable "
-                            f"{upstream.api_key_source} is not set."
-                        )
-                    },
+                    {"error": (f"Host environment variable {upstream.api_key_source} is not set.")},
                     status_code=503,
                 )
             upstream_url = self._upstream_http_url(
@@ -875,14 +1125,13 @@ class OpenAIRelay:
                     content=self._spooled_file_chunks(spool),
                 )
                 try:
-                    self._record_model_usage_event(
+                    await run_in_threadpool(
+                        self._record_model_usage_event,
                         session_id=request_context.session_id,
                         upstream_path=upstream_path,
                         request_body=None,
                         request_body_bytes=request_size or None,
-                        request_body_sha256=(
-                            request_hasher.hexdigest() if request_size else None
-                        ),
+                        request_body_sha256=(request_hasher.hexdigest() if request_size else None),
                         request_model=request_model,
                         upstream_response=upstream_response,
                         duration_ms=self._duration_ms_since(started_at),
@@ -994,7 +1243,8 @@ class OpenAIRelay:
         headers["x-api-key"] = api_key
         if not any(key.lower() == "anthropic-version" for key in headers):
             headers["anthropic-version"] = request_context.config.anthropic_api_version
-        steering_injection = self._operator_steering_injection(
+        steering_injection = await run_in_threadpool(
+            self._operator_steering_injection,
             session_id=request_context.session_id,
             method=request.method,
             provider_name="anthropic",
@@ -1033,18 +1283,21 @@ class OpenAIRelay:
                     content=request_body,
                 )
             except Exception as exc:
-                self._release_operator_steering_note(
+                await run_in_threadpool(
+                    self._release_operator_steering_note,
                     steering_injection.note,
                     error=f"upstream request failed before delivery: {exc}",
                 )
                 raise
-            self._mark_operator_steering_delivered(
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
                 steering_injection.note,
                 provider_name="anthropic",
                 provider_endpoint=normalized_path,
             )
             try:
-                self._record_model_usage_event(
+                await run_in_threadpool(
+                    self._record_model_usage_event,
                     session_id=request_context.session_id,
                     upstream_path=normalized_path,
                     request_body=request_body,
@@ -1115,18 +1368,36 @@ class OpenAIRelay:
         started_at = time.perf_counter()
         try:
             upstream_response = await upstream_stream.__aenter__()
-        except Exception as exc:
-            self._release_operator_steering_note(
-                operator_steering_note,
-                error=f"upstream stream failed before delivery: {exc}",
-            )
-            await client.aclose()
+        except BaseException as exc:
+            with CancelScope(shield=True):
+                try:
+                    await run_in_threadpool(
+                        self._release_operator_steering_note,
+                        operator_steering_note,
+                        error=f"upstream stream failed before delivery: {exc}",
+                    )
+                finally:
+                    await client.aclose()
             raise
-        self._mark_operator_steering_delivered(
-            operator_steering_note,
-            provider_name=provider_name,
-            provider_endpoint=upstream_path,
-        )
+
+        async def close_upstream() -> None:
+            with CancelScope(shield=True):
+                try:
+                    await upstream_stream.__aexit__(None, None, None)
+                finally:
+                    await client.aclose()
+
+        try:
+            await run_in_threadpool(
+                self._mark_operator_steering_delivered,
+                operator_steering_note,
+                provider_name=provider_name,
+                provider_endpoint=upstream_path,
+            )
+        except BaseException:
+            # The response iterator does not own the upstream yet.
+            await close_upstream()
+            raise
         logger.info(
             "relay_stream_upstream_response stream_id=%s status_code=%s content_type=%s",
             stream_id,
@@ -1214,31 +1485,33 @@ class OpenAIRelay:
                     self.stream_transport_terminated_count,
                 )
             finally:
-                try:
-                    self._record_stream_model_usage_event(
-                        session_id=session_id,
-                        upstream_path=upstream_path,
-                        request_body=request_body,
-                        upstream_response=upstream_response,
-                        response_body_bytes=bytes_sent,
-                        response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
-                        response_payload=stream_payload,
-                        duration_ms=self._duration_ms_since(started_at),
-                        provider_name=provider_name,
-                        request_body_bytes=request_body_bytes,
-                        request_body_sha256=request_body_sha256,
-                        request_model=request_model,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "relay_stream_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
-                        session_id,
-                        request.url.path,
-                        exc.__class__.__name__,
-                        str(exc),
-                    )
-                await upstream_stream.__aexit__(None, None, None)
-                await client.aclose()
+                with CancelScope(shield=True):
+                    try:
+                        await run_in_threadpool(
+                            self._record_stream_model_usage_event,
+                            session_id=session_id,
+                            upstream_path=upstream_path,
+                            request_body=request_body,
+                            upstream_response=upstream_response,
+                            response_body_bytes=bytes_sent,
+                            response_body_sha256=response_hash.hexdigest() if bytes_sent else None,
+                            response_payload=stream_payload,
+                            duration_ms=self._duration_ms_since(started_at),
+                            provider_name=provider_name,
+                            request_body_bytes=request_body_bytes,
+                            request_body_sha256=request_body_sha256,
+                            request_model=request_model,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "relay_stream_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                            session_id,
+                            request.url.path,
+                            exc.__class__.__name__,
+                            str(exc),
+                        )
+                    finally:
+                        await close_upstream()
 
         return StreamingResponse(
             iterator(),
@@ -1416,21 +1689,6 @@ class OpenAIRelay:
             return normalized_path == "messages"
         return normalized_path in {"responses", "chat/completions"}
 
-    def _active_model_usage_correlation_context(
-        self,
-        *,
-        session_id: str,
-    ) -> ModelUsageCorrelationContext | None:
-        correlation_context = self.model_usage_store.get_active_correlation_context(
-            session_id=session_id,
-            agent_harness=MODEL_USAGE_AGENT_HARNESS,
-        )
-        if correlation_context is None:
-            correlation_context = self.model_usage_store.get_active_correlation_context(
-                session_id=session_id,
-            )
-        return correlation_context
-
     def _mark_operator_steering_delivered(
         self,
         note: OperatorSteeringNote | None,
@@ -1475,346 +1733,6 @@ class OpenAIRelay:
                 exc.__class__.__name__,
                 str(exc),
             )
-
-    def _record_model_usage_event(
-        self,
-        *,
-        session_id: str,
-        upstream_path: str,
-        request_body: bytes | None,
-        upstream_response: httpx.Response,
-        duration_ms: int | None = None,
-        provider_name: str = "openai",
-        request_body_bytes: int | None = None,
-        request_body_sha256: str | None = None,
-        request_model: str | None = None,
-    ) -> None:
-        if not self._is_model_usage_endpoint(upstream_path):
-            return
-
-        response_payload = self._json_payload_from_response(upstream_response)
-        response_body = upstream_response.content
-        self._record_model_usage_payload(
-            session_id=session_id,
-            upstream_path=upstream_path,
-            request_status=self._request_status_for_response(upstream_response.status_code),
-            request_body=request_body,
-            response_body_bytes=len(response_body) if response_body else None,
-            response_body_sha256=sha256(response_body).hexdigest() if response_body else None,
-            response_payload=response_payload,
-            request_metadata={
-                "method": "POST",
-                "path": f"/v1/{upstream_path}",
-            },
-            response_metadata=self._response_metadata_with_provider_request_id(
-                {
-                    "status_code": upstream_response.status_code,
-                    "content_type": upstream_response.headers.get("content-type"),
-                },
-                provider_request_id=self._provider_request_id_from_response(
-                    upstream_response=upstream_response,
-                    response_payload=response_payload,
-                ),
-            ),
-            duration_ms=duration_ms,
-            provider_name=provider_name,
-            request_body_bytes=request_body_bytes,
-            request_body_sha256=request_body_sha256,
-            request_model=request_model,
-        )
-
-    def _record_stream_model_usage_event(
-        self,
-        *,
-        session_id: str,
-        upstream_path: str,
-        request_body: bytes | None,
-        upstream_response: httpx.Response,
-        response_body_bytes: int,
-        response_body_sha256: str | None,
-        response_payload: dict[str, Any],
-        duration_ms: int | None,
-        provider_name: str = "openai",
-        request_body_bytes: int | None = None,
-        request_body_sha256: str | None = None,
-        request_model: str | None = None,
-    ) -> None:
-        if not self._is_model_usage_endpoint(upstream_path):
-            return
-
-        self._record_model_usage_payload(
-            session_id=session_id,
-            upstream_path=upstream_path,
-            request_status=self._request_status_for_response(upstream_response.status_code),
-            request_body=request_body,
-            response_body_bytes=response_body_bytes or None,
-            response_body_sha256=response_body_sha256,
-            response_payload=response_payload,
-            request_metadata={
-                "method": "POST",
-                "path": f"/v1/{upstream_path}",
-                "stream": True,
-            },
-            response_metadata=self._response_metadata_with_provider_request_id(
-                {
-                    "status_code": upstream_response.status_code,
-                    "content_type": upstream_response.headers.get("content-type"),
-                    "stream": True,
-                },
-                provider_request_id=self._provider_request_id_from_response(
-                    upstream_response=upstream_response,
-                    response_payload=response_payload,
-                ),
-            ),
-            duration_ms=duration_ms,
-            provider_name=provider_name,
-            request_body_bytes=request_body_bytes,
-            request_body_sha256=request_body_sha256,
-            request_model=request_model,
-        )
-
-    def _record_websocket_model_usage_event(
-        self,
-        *,
-        session_id: str,
-        upstream_path: str,
-        message: str | bytes,
-        response_payload: dict[str, Any],
-        event_type: str | None,
-        duration_ms: int | None,
-        provider_name: str = "openai",
-    ) -> None:
-        if not self._is_model_usage_endpoint(upstream_path):
-            return
-
-        if isinstance(message, bytes):
-            message_body = message
-        else:
-            message_body = message.encode("utf-8")
-        self._record_model_usage_payload(
-            session_id=session_id,
-            upstream_path=upstream_path,
-            request_status="success",
-            request_body=None,
-            response_body_bytes=len(message_body) if message_body else None,
-            response_body_sha256=sha256(message_body).hexdigest() if message_body else None,
-            response_payload=response_payload,
-            request_metadata={
-                "method": "WEBSOCKET",
-                "path": f"/v1/{upstream_path}",
-                "websocket": True,
-            },
-            response_metadata=self._response_metadata_with_provider_request_id(
-                {
-                    "websocket": True,
-                    "event_type": event_type,
-                    "message_bytes": len(message_body),
-                },
-                provider_request_id=self._provider_request_id_from_payload(response_payload),
-            ),
-            duration_ms=duration_ms,
-            provider_name=provider_name,
-        )
-
-    def _record_model_usage_payload(
-        self,
-        *,
-        session_id: str,
-        upstream_path: str,
-        request_status: str,
-        request_body: bytes | None,
-        response_body_bytes: int | None,
-        response_body_sha256: str | None,
-        response_payload: dict[str, Any],
-        request_metadata: dict[str, Any],
-        response_metadata: dict[str, Any],
-        duration_ms: int | None,
-        provider_name: str = "openai",
-        request_body_bytes: int | None = None,
-        request_body_sha256: str | None = None,
-        request_model: str | None = None,
-    ) -> None:
-        if not self._is_model_usage_endpoint(upstream_path):
-            return
-
-        correlation_context = self.model_usage_store.get_active_correlation_context(
-            session_id=session_id,
-            agent_harness=MODEL_USAGE_AGENT_HARNESS,
-        )
-        if correlation_context is None:
-            correlation_context = self.model_usage_store.get_active_correlation_context(
-                session_id=session_id,
-            )
-        resolved_request_body_bytes = (
-            request_body_bytes
-            if request_body_bytes is not None
-            else len(request_body)
-            if request_body
-            else None
-        )
-        resolved_request_body_sha256 = (
-            request_body_sha256
-            if request_body_sha256 is not None
-            else sha256(request_body).hexdigest()
-            if request_body
-            else None
-        )
-        extractor = MappingModelUsageExtractor(provider_name=provider_name)
-        result = extractor.extract(
-            ModelUsageExtractionRequest(
-                provider=provider_name,
-                provider_endpoint_identifier=upstream_path,
-                request_status=request_status,
-                model=(
-                    response_payload.get("model")
-                    or request_model
-                    or self._model_from_request_body(request_body)
-                ),
-                duration_ms=duration_ms,
-                request_body_bytes=resolved_request_body_bytes,
-                request_body_sha256=resolved_request_body_sha256,
-                response_body_bytes=response_body_bytes,
-                response_body_sha256=response_body_sha256,
-                response_payload=response_payload,
-                request_metadata=request_metadata,
-                response_metadata=response_metadata,
-                correlation_context=correlation_context,
-                request_id=self._provider_request_id_from_metadata(
-                    response_metadata=response_metadata,
-                    response_payload=response_payload,
-                ),
-            )
-        )
-        self.model_usage_store.upsert_event(result.event)
-
-    @classmethod
-    def _provider_request_id_from_response(
-        cls,
-        *,
-        upstream_response: httpx.Response,
-        response_payload: dict[str, Any],
-    ) -> str | None:
-        for header_name in (
-            "request-id",
-            "x-request-id",
-            "openai-request-id",
-            "anthropic-request-id",
-        ):
-            value = upstream_response.headers.get(header_name)
-            if value:
-                text = value.strip()
-                if text:
-                    return text
-        return cls._provider_request_id_from_payload(response_payload)
-
-    @staticmethod
-    def _response_metadata_with_provider_request_id(
-        response_metadata: dict[str, Any], *, provider_request_id: str | None
-    ) -> dict[str, Any]:
-        if provider_request_id is not None:
-            response_metadata["provider_request_id"] = provider_request_id
-        return response_metadata
-
-    @staticmethod
-    def _provider_request_id_from_payload(response_payload: dict[str, Any]) -> str | None:
-        for key in (
-            "request_id",
-            "requestId",
-            "provider_request_id",
-            "providerRequestId",
-        ):
-            value = response_payload.get(key)
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                return text
-        return None
-
-    @classmethod
-    def _provider_request_id_from_metadata(
-        cls,
-        *,
-        response_metadata: dict[str, Any],
-        response_payload: dict[str, Any],
-    ) -> str | None:
-        value = response_metadata.get("provider_request_id")
-        if value is not None:
-            text = str(value).strip()
-            if text:
-                return text
-        return cls._provider_request_id_from_payload(response_payload)
-
-    @classmethod
-    def _capture_stream_usage_payload(
-        cls, *, buffer: str, chunk: bytes, payload: dict[str, Any]
-    ) -> str:
-        try:
-            buffer += chunk.decode("utf-8")
-        except UnicodeDecodeError:
-            buffer += chunk.decode("utf-8", errors="ignore")
-        while "\n\n" in buffer:
-            event_text, buffer = buffer.split("\n\n", 1)
-            cls._merge_sse_event_payload(event_text, payload)
-        return buffer
-
-    @classmethod
-    def _merge_sse_event_payload(cls, event_text: str, payload: dict[str, Any]) -> None:
-        for raw_line in event_text.splitlines():
-            line = raw_line.strip()
-            if not line.startswith("data:"):
-                continue
-            data = line.removeprefix("data:").strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                event_payload = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(event_payload, dict):
-                cls._merge_stream_event_dict(event_payload, payload)
-
-    @staticmethod
-    def _merge_stream_event_dict(event_payload: dict[str, Any], payload: dict[str, Any]) -> None:
-        candidate = event_payload.get("response")
-        if not isinstance(candidate, dict):
-            candidate = event_payload.get("message")
-        if not isinstance(candidate, dict):
-            candidate = event_payload
-        for key in (
-            "id",
-            "model",
-            "deployment",
-            "request_id",
-            "requestId",
-            "provider_request_id",
-            "providerRequestId",
-        ):
-            value = candidate.get(key)
-            if value is not None:
-                payload[key] = value
-        event_type = candidate.get("type") or event_payload.get("type")
-        if event_type is not None:
-            payload["type"] = event_type
-        for usage in (candidate.get("usage"), event_payload.get("usage")):
-            if isinstance(usage, dict):
-                existing_usage = payload.get("usage")
-                merged_usage = dict(existing_usage) if isinstance(existing_usage, dict) else {}
-                merged_usage.update(usage)
-                payload["usage"] = merged_usage
-
-    @staticmethod
-    def _is_model_usage_endpoint(upstream_path: str) -> bool:
-        normalized = upstream_path.lstrip("/")
-        return normalized in {
-            "responses",
-            "responses/compact",
-            "chat/completions",
-            "completions",
-            "messages",
-            "images/generations",
-            "images/edits",
-        }
 
     @staticmethod
     def _supported_openai_compatible_http_path(*, method: str, upstream_path: str) -> str:
@@ -1938,6 +1856,7 @@ class OpenAIRelay:
         )
         context = RelayRequestContext(
             session_id=session_id,
+            model=getattr(session, "model", None),
             config=resolved_config,
             web_search_enabled=bool(session.web_search_enabled),
             image_generation_enabled=bool(session.image_generation_enabled),
@@ -1962,6 +1881,7 @@ class OpenAIRelay:
         )
         context = RelayRequestContext(
             session_id=session_id,
+            model=getattr(session, "model", None),
             config=resolved_config,
             web_search_enabled=bool(session.web_search_enabled),
             image_generation_enabled=bool(session.image_generation_enabled),
@@ -2120,6 +2040,8 @@ class OpenAIRelay:
             return config.anthropic_api_key_env
         if config.model_provider_mode == "local_openai":
             return "local_openai_api_key"
+        if config.model_provider_mode == "openrouter":
+            return config.openrouter_api_key_env
         return config.openai_api_key_env
 
     @classmethod
@@ -2136,6 +2058,8 @@ class OpenAIRelay:
             return config.azure_openai_endpoint or ""
         if config.model_provider_mode == "local_openai":
             return config.local_openai_api_base_url
+        if config.model_provider_mode == "openrouter":
+            return config.openrouter_api_base_url
         return config.openai_api_base_url
 
     @staticmethod
@@ -2439,7 +2363,8 @@ class OpenAIRelay:
                 if usage_payload is not None and session_id:
                     response_payload, event_type = usage_payload
                     try:
-                        self._record_websocket_model_usage_event(
+                        await run_in_threadpool(
+                            self._record_websocket_model_usage_event,
                             session_id=session_id,
                             upstream_path=upstream_path,
                             message=message,
@@ -2662,6 +2587,17 @@ def _tools_declare_image_generation(tools: Any) -> bool:
     if isinstance(tools, dict):
         return _tool_declares_image_generation(tools)
     return False
+
+
+def _tools_declare_openrouter_server_tool(tools: Any) -> bool:
+    if isinstance(tools, list):
+        return any(_tools_declare_openrouter_server_tool(tool) for tool in tools)
+    if not isinstance(tools, dict):
+        return False
+    raw_type = str(tools.get("type") or "").strip().casefold()
+    if raw_type.startswith("openrouter:"):
+        return True
+    return _tools_declare_openrouter_server_tool(tools.get("tools"))
 
 
 def _tool_declares_image_generation(tool: Any) -> bool:

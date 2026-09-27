@@ -1,24 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
   modelPricingDraftFromCatalog,
   modelPricingPayloadFromDraft,
 } from "../src/features/configuration/modelPricingDraft.ts";
-
-const configuration = readFileSync(
-  new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
-  "utf8",
-);
-
-test("configuration screen uses structured editors for model pricing rules", () => {
-  assert.match(configuration, /import \{ JsonTextEditor, RegexListEditor, StringListEditor \} from "\.\.\/admin\/StructuredPolicyInputs";/);
-  assert.match(configuration, /<StringListEditor[\s\S]*itemLabel="Exact model"/);
-  assert.match(configuration, /<RegexListEditor[\s\S]*fieldLabel="Model patterns"/);
-  assert.doesNotMatch(configuration, /<textarea\s+rows=\{3\}\s+value=\{rule\.modelsText\}/);
-  assert.doesNotMatch(configuration, /<textarea\s+rows=\{3\}\s+value=\{rule\.modelPatternsText\}/);
-});
 
 test("model pricing drafts hydrate and validate structured model rows", () => {
   const draft = modelPricingDraftFromCatalog({

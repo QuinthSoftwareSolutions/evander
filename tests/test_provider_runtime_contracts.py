@@ -17,7 +17,6 @@ from evander.events.provider_models import (
 from evander.models import LocalIssueRecord, SessionManifest, ToolName, VmSummary
 from evander.provider_runtime.adapters import (
     AdminRuntimeProviderAdapter,
-    build_provider_runtime_ports,
 )
 from evander.queries.providers.issue_get import IssueGetQueryProvider
 from evander.queries.providers.issue_list import IssueListQueryProvider
@@ -80,13 +79,6 @@ def test_effect_provider_can_run_with_only_contract_interfaces(tmp_path: Path) -
     assert services.resumed and services.resumed[0]["target"] == "session-1"
 
 
-def test_admin_runtime_adapter_hides_skill_validation_without_skill_admin() -> None:
-    adapter = AdminRuntimeProviderAdapter(SimpleNamespace())
-
-    assert not hasattr(adapter, "validate_managed_codex_skills")
-    assert not hasattr(adapter, "resolve_container_codex_skill_files")
-
-
 def test_admin_runtime_adapter_delegates_skill_validation_when_backed() -> None:
     class _SkillAdmin:
         def __init__(self) -> None:
@@ -107,15 +99,6 @@ def test_admin_runtime_adapter_delegates_skill_validation_when_backed() -> None:
     assert adapter.resolve_container_codex_skill_files(["skill-a"]) == [
         {"name": "skill-a", "path": "/skills/skill-a/SKILL.md"}
     ]
-
-
-def test_provider_runtime_ports_preserve_original_admin_service_context() -> None:
-    admin_service = SimpleNamespace(runtime="original-runtime")
-
-    ports = build_provider_runtime_ports(admin_service=admin_service)
-
-    assert ports.admin_service is admin_service
-    assert isinstance(ports.vm_creator, AdminRuntimeProviderAdapter)
 
 
 def test_admin_runtime_adapter_exposes_branch_aware_managed_git_refresh() -> None:

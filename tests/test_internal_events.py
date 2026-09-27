@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Barrier, Thread
+from threading import Barrier, BrokenBarrierError, Thread
+import traceback
 
 from config_helpers import canonical_worker_config
 import pytest
@@ -63,8 +64,9 @@ def test_concurrent_internal_event_publish_preserves_both_events(tmp_path: Path)
             bus = InternalEventBus(database_path)
             start.wait(timeout=10)
             bus.publish(event_type="custom.concurrent", payload={"value": value})
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            failures.append(repr(exc))
+        except BaseException:  # pragma: no cover - surfaced by assertion below
+            failures.append(traceback.format_exc())
+            start.abort()
 
     threads = [
         Thread(target=publish, args=("one",)),
@@ -72,9 +74,16 @@ def test_concurrent_internal_event_publish_preserves_both_events(tmp_path: Path)
     ]
     for thread in threads:
         thread.start()
-    start.wait(timeout=10)
+    try:
+        start.wait(timeout=10)
+    except BrokenBarrierError:
+        # A constructor failure must report its traceback, not only the main
+        # thread's rendezvous failure. Always join both publishers before asserting.
+        start.abort()
+    finally:
+        for thread in threads:
+            thread.join(timeout=10)
     for thread in threads:
-        thread.join(timeout=10)
         assert not thread.is_alive()
 
     assert failures == []

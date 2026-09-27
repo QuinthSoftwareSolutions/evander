@@ -33,7 +33,7 @@ def _session_repository(config: GatewayConfig, *, vm_provider: str = "libvirt_vm
             session_id="session-1",
             vm_id="vm-1",
             vm_provider=vm_provider,
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.2-codex",
             directory_path="root/team-a",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
@@ -490,7 +490,7 @@ def test_queued_container_prompt_dispatch_registers_and_clears_correlation_conte
         QueuedAgentPromptRecord(
             queue_key="session-1",
             target="session-1",
-            vm_name="truman",
+            vm_name="evander",
             session_id="session-1",
             prompt="Continue the task",
             model="gpt-5.2-codex",

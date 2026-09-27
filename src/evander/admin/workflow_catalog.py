@@ -1380,6 +1380,32 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Teams direct message",
         fields=[
             _field(
+                "chat_target_mode",
+                "Chat setup",
+                "enum",
+                required=True,
+                default_value="explicit",
+                description=(
+                    "Choose direct chats by user UPN, or retain manually configured chat and "
+                    "sender IDs. Saving direct-chat mode resolves and stores both Graph user IDs "
+                    "and one-to-one chat IDs."
+                ),
+                options=[
+                    _field_option("direct", "Direct chats by UPN"),
+                    _field_option("explicit", "Existing chat IDs"),
+                ],
+            ),
+            _field(
+                "direct_chat_user_upns",
+                "Direct chat users",
+                "string_list",
+                description=(
+                    "One Microsoft Entra UPN or mail address per line. Saving resolves each user "
+                    "and ensures its one-to-one Teams chat."
+                ),
+                placeholder="person@example.com",
+            ),
+            _field(
                 "targets",
                 "Chat targets",
                 "object_list",
@@ -1409,7 +1435,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
             _field(
                 "sender_user_ids",
-                "Sender user IDs or emails",
+                "Allowed sender references",
                 "string_list",
                 required=True,
                 description=(
@@ -2459,6 +2485,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     _field_option("openai_public", "Public OpenAI"),
                     _field_option("local_openai", "Local OpenAI"),
                     _field_option("azure_openai", "Azure OpenAI"),
+                    _field_option("openrouter", "OpenRouter"),
                 ],
             ),
             _field(
@@ -3237,7 +3264,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 required=True,
                 bindable=True,
                 description="Immutable key of the published tar.gz archive to import.",
-                placeholder="manuals/true-app/reviewed/latest",
+                placeholder="manuals/sample-app/reviewed/latest",
             ),
             _field(
                 "destination_path",

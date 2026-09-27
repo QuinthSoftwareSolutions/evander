@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from threading import RLock
 
+from evander.storage import write_json_atomically
+
 
 class JsonChatAssistantSessionRepository:
     """Durable mapping for assistant session resolution.
@@ -132,9 +134,7 @@ class JsonChatAssistantSessionRepository:
         return payload
 
     def _atomic_write(self, payload: dict[str, object]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        write_json_atomically(self.path, payload)
 
     @staticmethod
     def _compose_key(*, user_id: str, backend: str, assistant_scope: str) -> str:

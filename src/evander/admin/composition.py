@@ -9,6 +9,7 @@ from evander.admin.services.repository_index_service import RepositoryIndexServi
 
 import os
 import fcntl
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -115,6 +116,7 @@ from evander.storage import JsonStore
 from evander.models import LocalIssueRecord
 
 
+LOGGER = logging.getLogger(__name__)
 _ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
 _AUDIT_INDEX_BACKGROUND_IMPORT_MAX_LINES = 20_000
 _AUDIT_INDEX_BACKGROUND_IMPORT_MAX_SECONDS = 1.0
@@ -151,7 +153,11 @@ def _start_tool_call_audit_index_import(
                     break
                 if not result.stopped_by_limit and result.lines_scanned == 0:
                     return
-            except Exception:
+            except Exception as exc:
+                LOGGER.warning(
+                    "Tool-call audit index background import failed (%s)",
+                    type(exc).__name__,
+                )
                 return
             time.sleep(_AUDIT_INDEX_BACKGROUND_IMPORT_SLEEP_SECONDS)
 
@@ -161,7 +167,11 @@ def _start_tool_call_audit_index_import(
                     max_rows=_AUDIT_INDEX_BACKGROUND_SEARCH_MAX_ROWS
                 ):
                     return
-            except Exception:
+            except Exception as exc:
+                LOGGER.warning(
+                    "Tool-call audit search index backfill failed (%s)",
+                    type(exc).__name__,
+                )
                 return
             time.sleep(_AUDIT_INDEX_BACKGROUND_IMPORT_SLEEP_SECONDS)
 
@@ -409,7 +419,11 @@ def _build_admin_runtime_components(
     try:
         tool_call_audit_index.ensure_schema()
         _start_tool_call_audit_index_import(tool_call_audit_index, config.audit_log_path)
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning(
+            "Tool-call audit index initialization failed; JSONL fallback remains available (%s)",
+            type(exc).__name__,
+        )
         tool_call_audit_index = None
 
     skill_library = SkillLibraryRepository(config.runtime_dir)
@@ -532,6 +546,7 @@ def _build_admin_runtime_components(
             normalize_directory_reference=normalize_directory_reference,
             addon_catalog=addon_catalog,
             managed_git_admin=managed_git_admin,
+            teams_admin=teams_admin,
         )
     )
     addon_admin = AddonAdminService(

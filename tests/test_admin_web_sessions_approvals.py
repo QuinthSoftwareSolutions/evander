@@ -39,9 +39,6 @@ from evander.models import (
 from config_helpers import write_runtime_config
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     return write_runtime_config(
         tmp_path,
@@ -173,31 +170,6 @@ def _seed_session(
     }
     payload.update(overrides)
     service.runtime.session_repository.upsert_session(SessionManifest(**payload))
-
-
-def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> None:
-    source = (
-        ROOT / "frontend" / "admin-web" / "src" / "features" / "sessions" / "SessionsScreen.tsx"
-    ).read_text(encoding="utf-8")
-
-    assert '"Voice calling"' in source
-    assert (
-        '"list_contacts", "make_phone_call", "get_phone_call_result", "submit_voice_query_response"'
-        in source
-    )
-    assert (
-        '"stage_artifact",\n    "communication_copy_artifact_to_workspace",\n'
-        '    "communication_stage_workspace_file",' in source
-    )
-
-
-def test_mcp_tools_page_renders_tool_descriptions() -> None:
-    source = (
-        ROOT / "frontend" / "admin-web" / "src" / "features" / "mcpTools" / "McpToolsPage.tsx"
-    ).read_text(encoding="utf-8")
-
-    assert "mcp-tool-policy-description" in source
-    assert "item.description" in source
 
 
 def test_admin_web_approval_mutations_require_owner_unlock(
@@ -890,6 +862,19 @@ def test_admin_web_approval_detail_falls_back_to_action_type_for_tool_name(tmp_p
     assert detail_response.json()["request"]["payload"]["secret"] == "<redacted>"
 
 
+def test_admin_web_approval_detail_returns_error_for_missing_loaded_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    monkeypatch.setattr(service.approval_audit_admin, "get_approval_request", lambda _id: None)
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/approvals/approval-1")
+
+    assert response.status_code == 500
+    assert response.json() == {"error": "Approval request unavailable"}
+
+
 def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -1096,6 +1081,7 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         {"value": "local_openai", "label": "Local OpenAI"},
         {"value": "azure_openai", "label": "Azure OpenAI"},
         {"value": "anthropic", "label": "Anthropic"},
+        {"value": "openrouter", "label": "OpenRouter"},
     ]
     assert any(
         item["field_name"] == "tool_argument_policies"
@@ -1401,6 +1387,20 @@ def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
                         "service_tier": None,
                         "long_context": None,
                     },
+                    {
+                        "id": "openai:historical",
+                        "provider": "openai",
+                        "models": ["gpt-4o", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol"],
+                        "effective_from": "2026-06-04T00:00:00Z",
+                        "rates_per_1m_tokens": {"input": "1.00", "output": "2.00"},
+                    },
+                    {
+                        "id": "openai:current",
+                        "provider": "openai",
+                        "models": ["gpt-6-luna", "gpt-6-sol"],
+                        "effective_from": "2026-09-22T00:00:00Z",
+                        "rates_per_1m_tokens": {"input": "1.00", "output": "2.00"},
+                    },
                 ],
             }
         ),
@@ -1418,6 +1418,8 @@ def test_admin_web_sessions_catalog_uses_model_pricing_catalog_models(
         {"value": "alpha-model", "label": "alpha-model"},
         {"value": "shared-model", "label": "shared-model"},
         {"value": "beta-model", "label": "beta-model"},
+        {"value": "gpt-6-luna", "label": "gpt-6-luna"},
+        {"value": "gpt-6-sol", "label": "gpt-6-sol"},
     ]
     assert any(item["value"] == "approval_check" for item in payload["tool_options"])
 

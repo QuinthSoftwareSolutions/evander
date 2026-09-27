@@ -157,7 +157,7 @@ test("built-in tabs belong to one ordered navigation group", () => {
       automation: ["workflow", "skills"],
       extensions: ["addons", "connectors", "host-directories"],
       infrastructure: ["subscriptions", "git-repositories", "vms", "workers"],
-      governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "users"],
+      governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "privacy", "users"],
     },
   );
 });
@@ -223,12 +223,4 @@ test("invalid add-on hashes and duplicate payloads are ignored", () => {
     ]).map((tab) => tab.label),
     ["Teams"],
   );
-});
-
-test("users tab is labeled users and groups", () => {
-  const usersTab = tabsForExecutionBackend("libvirt_vm").find((tab) => tab.key === "users");
-  assert.ok(usersTab);
-  assert.equal(usersTab?.label, "Users & Groups");
-  assert.equal(usersTab?.shortLabel, "Users");
-  assert.equal(usersTab?.description, "Admin users, groups, and permissions.");
 });

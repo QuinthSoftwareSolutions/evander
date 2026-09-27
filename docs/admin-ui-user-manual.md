@@ -5,9 +5,9 @@ It is written for operators who need to monitor the control plane, manage execut
 review privileged work, adjust directory-scoped policy, and inspect workflow runtime behavior.
 
 The Admin UI is a host-side operator surface. It uses the same runtime state, configuration files,
-audit logs, workflow packs, and worker status that the CLI and systemd services use. When the UI
-shows an unavailable or empty state, treat that as live evidence from the current control plane
-rather than placeholder sample data.
+audit logs, workflow packs, and worker status that the CLI and systemd services use. An empty
+result means no matching records were returned; an unavailable state means the read failed.
+Check the selected scope, filters, and error before drawing conclusions about live activity.
 
 ## Open The Admin UI
 
@@ -68,6 +68,42 @@ When no asset directory is configured, Admin Web serves the bundled defaults fro
 
 ## Shared Shell
 
+### Appearance and record navigation
+
+During the design rollout, the header's **UI** selector offers **Classic** and **New UI**.
+**New UI** is the default when no explicit URL or saved preference selects Classic.
+Switching reloads the current page after a confirmation; save
+any edits first. The browser remembers your choice, and each open tab keeps its own
+version. Both versions operate on the same live data and share your signed-in session.
+Only the selected version and its matching built-in add-on assets are loaded.
+
+Use `/?admin_ui=classic` or `/?admin_ui=new` to open a particular version directly.
+The following appearance and list-navigation controls describe New UI.
+
+New UI uses a consistent compact layout. The browser remembers the light/dark theme,
+and embedded add-ons receive the same theme. Touch devices retain larger control targets.
+Long names and descriptions wrap in record details, and loading indicators distinguish a
+pending read from an empty inventory.
+
+Most pages start with a searchable list. Select an item to open its
+inspector, then choose **View agent**, **View session**, or the corresponding
+page-specific action for forms, controls, logs, and history.
+Close the inspector or press Escape to return focus to the selected record. On narrow
+screens the inspector opens as a dialog. The inventory and full record retain their
+filters and local editing state while switching between them.
+
+Click an inventory column header to sort ascending; click again for descending.
+The arrow indicates direction. Names use natural ordering (Agent 2 before Agent 10),
+numbers and dates use their actual values, and unavailable values stay last. Sorting
+keeps the current filters and inspected record, including when returning from the full record.
+
+Release news remains visible on the Dashboard. **Read article** opens a larger reader;
+**Older** and **Newer** browse the archive. Version, build, and changelog details are
+available below the story. Team views keep their existing destinations; narrow screens
+use a view selector, and task-board filters can be expanded when needed.
+
+### Navigation and context
+
 ![Admin dashboard and navigation](assets/admin-ui/manual-dashboard.png)
 
 Every Admin UI section uses the same shell:
@@ -111,10 +147,11 @@ Directories, Privacy, Configuration, Users, Workflow, and dashboard panels.
 
 ### Unlock Privileged Operations
 
-Use **Unlock** in the header before performing mutations. Locked mode is a local UI safety
-guard for read-only inspection: destructive or sensitive controls are disabled until you unlock.
-Backend writes are still protected by authentication, permissions, and revision checks rather
-than by the header lock state.
+Use **Unlock** in the header before performing mutations. Locked mode is a safety
+guard for read-only inspection, and sensitive API routes also check whether the current
+authenticated Admin Web session is unlocked. Unlocking does not add permissions or replace
+revision checks. Locking, signing out, cookie expiry, or restarting Admin Web clears the
+temporary unlock state.
 
 Privileged actions include:
 
@@ -219,9 +256,9 @@ Common tasks:
     authorized root owner can cancel the indefinitely queued prompt from the agent detail.
 13. Use lifecycle actions only after confirming the target and directory are correct.
 
-The same independent sidebar scrolling applies to the other card-list/detail pages, including
+The same independent sidebar scrolling applies to other list/detail pages, including
 Subscriptions, Sessions, VMs, Issues, Approvals, Workers, Skills, Add-ons, Connectors, Host Directories, users and groups, MCP Tools,
-Tool Visibility, and report navigation. Their existing card contents and density are unchanged.
+Tool Visibility, and report navigation.
 
 Notes:
 
@@ -498,7 +535,7 @@ Common tasks:
     preserve legacy behavior; an explicit empty list means no access.
 15. Configure **HTTP targets** as alias/base-URL pairs when the agent needs REST or browser access
     to an external application. The UI shows the relay URL template, preserves workflow-owned
-    target metadata, and converts legacy APP environment targets when edited. Removing every row
+    target metadata, and converts legacy App environment targets when edited. Removing every row
     stores an explicit empty target set.
 16. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.
@@ -637,6 +674,13 @@ full-history results remain stable until a filter changes or you select **Refres
 repeated expensive reads while an operator is still typing. Free-text searches of three or more
 characters use the audit database's trigram index when ready; shorter searches and indexes still
 being migrated retain the compatible scan fallback.
+
+The canonical evidence is the configured JSONL audit log; the SQLite database is a query
+index. Index failures are logged and ordinary Tool Calls reads fall back to the source log.
+If that log cannot be read, the API returns HTTP 503 with **Tool-call audit log is unavailable**.
+Treat this as missing access to evidence, not an empty history. Check Admin Web logs, the
+configured audit path, file permissions, and storage availability before retrying. Preserve
+the source log when repairing or rebuilding its index.
 
 ## Privacy
 
@@ -908,6 +952,15 @@ Common editing tasks:
 11. Use **Reset changes** for a selected dirty node when you want to return it to the saved
     version.
 12. Use **Save workflow** to persist the workflow document after all diagnostics are acceptable.
+
+For a **Teams direct message** trigger, choose **Chat setup → Direct chats by UPN**
+and enter one Microsoft Entra UPN or mail address per line in **Direct chat users**.
+Saving resolves the users and ensures their one-to-one chats through the directory's
+Teams connection, then stores the canonical chat and sender IDs. Validation previews
+do not create chats. Use **Existing chat IDs** for explicit `chat:<chat-id>` targets
+and allowed sender references; existing triggers without a setup mode retain this form.
+The save still requires current workflow revision and lock checks. An unresolved user
+or unavailable Teams connection must be corrected before the workflow can be saved.
 
 For pack-backed workflows, the Workflow tab shows a **History** section for the selected pack. Each
 entry records the operation, actor, timestamp, before/after revisions, changed files, and changed

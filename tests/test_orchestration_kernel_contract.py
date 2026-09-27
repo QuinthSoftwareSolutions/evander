@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import socket
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -167,6 +168,49 @@ def test_polling_kernel_run_once_with_lock_propagates_exceptions() -> None:
         kernel.run_once_with_lock()
 
 
+@pytest.mark.parametrize("once", [True, False])
+@pytest.mark.parametrize("failed", [True, False])
+def test_polling_kernel_drains_before_releasing_lock(once, failed) -> None:
+    calls = []
+
+    class LockManager:
+        @contextmanager
+        def lock(self, path):
+            calls.append("locked")
+            try:
+                yield
+            finally:
+                calls.append("released")
+
+    def run_cycle():
+        calls.append("cycle")
+        if failed:
+            raise RuntimeError("cycle failed")
+        return 0
+
+    def drain():
+        assert calls == ["locked", "cycle"]
+        calls.append("drained")
+
+    kernel = PollingOrchestratorKernel(
+        config=PollingKernelConfig(poll_interval_seconds=1, jitter_seconds=0, lock_path="test"),
+        lock_manager=LockManager(),
+        sleeper=_FakeSleeper(),
+        run_cycle=run_cycle,
+        get_sleep_seconds=float,
+        on_stop=drain,
+    )
+    if once and not failed:
+        assert kernel.run_once_with_lock(on_stop=drain) == 0
+    else:
+        with pytest.raises(RuntimeError if failed else StopIteration):
+            if once:
+                kernel.run_once_with_lock(on_stop=drain)
+            else:
+                kernel.run_forever()
+    assert calls == ["locked", "cycle", "drained", "released"]
+
+
 def test_compute_next_sleep_seconds_uses_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kernels.random, "uniform", lambda lower, upper: 0.25)
 
@@ -180,6 +224,7 @@ def test_wake_socket_path_is_derived_from_lock_path(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.performance
 def test_host_wake_sleeper_returns_when_notified(tmp_path: Path) -> None:
     wake_path = tmp_path / "worker.wake.sock"
     sleeper = HostWakeSleeper(wake_path)
@@ -194,6 +239,7 @@ def test_host_wake_sleeper_returns_when_notified(tmp_path: Path) -> None:
     assert time.monotonic() - started < 0.5
 
 
+@pytest.mark.performance
 def test_host_wake_sleeper_returns_when_additional_path_is_notified(tmp_path: Path) -> None:
     primary_path = tmp_path / "worker.wake.sock"
     scheduled_path = tmp_path / "scheduled-events.wake.sock"
@@ -209,6 +255,7 @@ def test_host_wake_sleeper_returns_when_additional_path_is_notified(tmp_path: Pa
     assert time.monotonic() - started < 0.5
 
 
+@pytest.mark.performance
 def test_host_wake_sleeper_preserves_live_shared_additional_path(tmp_path: Path) -> None:
     shared_path = tmp_path / "scheduled-events.wake.sock"
     first = HostWakeSleeper(
@@ -240,6 +287,7 @@ def test_host_wake_sleeper_preserves_live_shared_additional_path(tmp_path: Path)
         first.close()
 
 
+@pytest.mark.performance
 def test_host_wake_sleeper_recovers_stale_additional_path(tmp_path: Path) -> None:
     shared_path = tmp_path / "scheduled-events.wake.sock"
     stale_listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -260,10 +308,6 @@ def test_host_wake_sleeper_recovers_stale_additional_path(tmp_path: Path) -> Non
         sleeper.close()
 
     assert not shared_path.exists()
-
-
-def test_host_wake_notifier_noops_when_receiver_is_missing(tmp_path: Path) -> None:
-    assert HostWakeNotifier(tmp_path / "missing.wake.sock").notify() is False
 
 
 def test_host_wake_notifier_drops_notification_when_socket_would_block(

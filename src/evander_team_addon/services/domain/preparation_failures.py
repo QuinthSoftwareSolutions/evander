@@ -115,6 +115,9 @@ def _semantic_generation_payload(value: object) -> object:
                 "deliverable_ids",
                 "review_request_ids",
                 "review_cohort_id",
+                # Server verification of an unchanged candidate is not a new
+                # worktree input. Preserve generations for legacy manifests.
+                "source_bases_verified",
             }
         }
     if isinstance(value, (list, tuple)):

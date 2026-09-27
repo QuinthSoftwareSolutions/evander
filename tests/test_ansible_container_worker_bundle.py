@@ -62,31 +62,6 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
         assert (ansible_dir / "roles" / role_name / "tasks" / "main.yml").exists()
 
 
-def test_worker_role_task_files_are_not_ignored_by_git() -> None:
-    role_task_paths = [
-        "ansible/roles/container_worker_runtime/tasks/main.yml",
-        "ansible/roles/worker_git_access/tasks/main.yml",
-        "ansible/roles/worker_package_cache_preflight/tasks/main.yml",
-        "ansible/roles/worker_dotnet_toolchain/tasks/main.yml",
-        "ansible/roles/worker_node_toolchain/tasks/main.yml",
-        "ansible/roles/worker_playwright_toolchain/tasks/main.yml",
-        "ansible/roles/worker_mssql/tasks/main.yml",
-        "ansible/roles/worker_mssql_client_toolchain/tasks/main.yml",
-        "ansible/roles/worker_container_egress_policy/tasks/main.yml",
-        "ansible/roles/container_worker_service/tasks/main.yml",
-        "ansible/roles/container_worker_verification/tasks/main.yml",
-    ]
-
-    for role_task_path in role_task_paths:
-        result = subprocess.run(
-            ["git", "check-ignore", "--quiet", "--", role_task_path],
-            cwd=ROOT,
-            check=False,
-        )
-
-        assert result.returncode == 1
-
-
 def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     text = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
         encoding="utf-8"
@@ -724,41 +699,73 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "not the literal <control-plane-private-ip> placeholder" in role
 
 
-def test_worker_docs_and_inventory_reference_playbook() -> None:
-    inventory = (ROOT / "ansible" / "inventory" / "hosts.example.yml").read_text(encoding="utf-8")
-    ansible_docs = (ROOT / "ansible" / "README.md").read_text(encoding="utf-8")
-    worker_docs = (ROOT / "docs" / "container-worker-backend.md").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+def test_dotnet_bundle_selector_only_publishes_validated_directories(tmp_path):
+    import yaml
 
-    assert "evander_worker_hosts" in inventory
-    assert "ansible/worker.yml" in ansible_docs
-    assert "evander_worker_token" in ansible_docs
-    assert "container_worker_base_url" in ansible_docs
-    assert "container_worker_guest_http_target_relay_base_url" in ansible_docs
-    assert "container_worker_guest_http_target_browser_proxy_url" in ansible_docs
-    assert "container_worker_guest_pypi_index_url" in ansible_docs
-    assert "container_worker_guest_npm_registry_url" in ansible_docs
-    assert "evander_npm_audit_facade_port" in ansible_docs
-    assert "evander_services.npm_audit_facade" in ansible_docs
-    assert "config/npm-audit-facade.env" in ansible_docs
-    assert "local playbook commit" in ansible_docs
-    assert "evander_worker_enforce_revision_match: false" in ansible_docs
-    assert "Worker outbound rules should still deny direct access" in ansible_docs
-    assert "allowed Git source prefix" in ansible_docs
-    assert "GitHub/Azure DevOps egress" in ansible_docs
-    assert "evander_worker_egress_policy_enabled: true" in ansible_docs
-    assert 'evander_worker_docker_network: "bridge"' in ansible_docs
-    assert "evander-worker-egress-policy.service" in ansible_docs
-    assert "sudo systemctl status evander-worker-egress-policy.service" in ansible_docs
-    assert "sudo iptables -S DOCKER-USER" in ansible_docs
-    assert "evander-cli execution smoke-container-worker --json" in ansible_docs
-    assert "169.254.169.254" in ansible_docs
-    assert "smoke-container-worker" in ansible_docs
-    assert "ansible/worker.yml" in worker_docs
-    assert "worker-VM side of the container execution backend" in worker_docs
-    assert "single-worker" in worker_docs
-    assert "DOCKER-USER" in worker_docs
-    assert "evander-npm-audit-facade" in worker_docs
-    assert "dedicated container-worker VM playbook" in readme
-    assert "dedicated container-worker VM playbook" in operations
+    tasks = yaml.safe_load(
+        (ROOT / "ansible/roles/worker_dotnet_toolchain/tasks/main.yml").read_text()
+    )
+    task = next(
+        row
+        for row in tasks
+        if row["name"] == "Atomically select validated dotnet bundle for future sessions"
+    )
+    script = task["ansible.builtin.command"]["argv"][2]
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    selector = tmp_path / "current"
+    selector.symlink_to(old)
+    args = ["python3", "-c", script, str(new), str(selector)]
+    failed = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    assert failed.returncode != 0
+    assert selector.resolve() == old
+    (new / ".complete").write_text("validated")
+    passed = subprocess.run(args, capture_output=True, text=True, timeout=10, check=True)
+    assert "selected" in passed.stdout
+    assert selector.resolve() == new
+    assert old.is_dir()
+    repeated = subprocess.run(args, capture_output=True, text=True, timeout=10, check=True)
+    assert not repeated.stdout
+
+
+def test_enabling_dotnet_after_disabled_jobs_can_create_bundle_selector(tmp_path):
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    defaults = yaml.safe_load((ROOT / "ansible/group_vars/evander_worker_hosts.yml").read_text())
+    environment = NativeEnvironment()
+    environment.filters["bool"] = bool
+    template = environment.from_string(defaults["evander_worker_readonly_mounts"])
+    selector = tmp_path / "dotnet-current"
+    paths = {
+        name: str(tmp_path / name)
+        for name in defaults if name.endswith("_cache_path")
+    }
+    paths.update(
+        evander_worker_dotnet_cache_path=str(selector / "sdk"),
+        evander_worker_dotnet_tools_cache_path=str(selector / "tools"),
+        evander_worker_dotnet_toolchain_enabled=False,
+        evander_worker_mssql_client_toolchain_enabled=False,
+    )
+    disabled = template.render(**paths)
+    assert all("/opt/evander/toolchains/dotnet" not in mount for mount in disabled)
+    # Reproduce Docker -v's missing-source directory creation for a first job.
+    for mount in disabled:
+        Path(mount.split(":", 1)[0]).mkdir(parents=True, exist_ok=True)
+    assert not selector.exists()
+    paths["evander_worker_dotnet_toolchain_enabled"] = True
+    enabled = template.render(**paths)
+    assert f"{selector}/sdk:/opt/evander/toolchains/dotnet" in enabled
+    assert f"{selector}/tools:/opt/evander/toolchains/dotnet-tools" in enabled
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / ".complete").write_text("validated")
+    tasks = yaml.safe_load((ROOT / "ansible/roles/worker_dotnet_toolchain/tasks/main.yml").read_text())
+    selection = next(t for t in tasks if t["name"] == "Atomically select validated dotnet bundle for future sessions")
+    subprocess.run(
+        ["python3", "-c", selection["ansible.builtin.command"]["argv"][2], str(bundle), str(selector)],
+        check=True, capture_output=True, timeout=10,
+    )
+    assert selector.is_symlink()
+    assert selector.resolve() == bundle

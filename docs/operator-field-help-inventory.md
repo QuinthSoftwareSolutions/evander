@@ -49,10 +49,7 @@ The evidence in this document should come from the current repository state. Whe
 - `src/evander/admin/config_tooltips.py`
 - `src/evander/admin/web/workers_config.py`
 - `tests/test_admin_web.py`
-- `tests/test_git_remote_docs.py`
-- `tests/test_live_smoke_docs.py`
 - `tests/test_workflow_run_inspector_demo_docs.py`
-- `tests/test_root_config_docs.py`
 
 ## Inventory
 

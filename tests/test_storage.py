@@ -2,7 +2,6 @@ import json
 import os
 import stat
 import time
-import tempfile
 from multiprocessing import get_context
 from pathlib import Path
 from threading import Barrier, Thread
@@ -10,7 +9,7 @@ from threading import Barrier, Thread
 import pytest
 from pydantic import BaseModel
 
-from evander.storage import JsonObjectStore, JsonStore
+from evander.storage import JsonObjectStore, JsonStore, write_json_atomically
 
 
 class SampleRecord(BaseModel):
@@ -265,22 +264,54 @@ def test_json_object_store_file_mode_applies_to_initial_and_replacement_files(
         os.umask(old_umask)
 
 
-def test_json_object_store_uses_unique_temp_files(tmp_path: Path, monkeypatch) -> None:
-    path = tmp_path / "object-store.json"
-    created_paths: list[Path] = []
-    real_mkstemp = tempfile.mkstemp
+def test_atomic_json_writers_can_replace_same_file_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "shared.json"
+    write_json_atomically(path, {"writer": "initial"})
+    real_replace = os.replace
+    both_ready = Barrier(2)
+    errors: list[Exception] = []
 
-    def recording_mkstemp(*, prefix: str, suffix: str, dir: str | None):
-        fd, name = real_mkstemp(prefix=prefix, suffix=suffix, dir=dir)
-        created_paths.append(Path(name))
-        return fd, name
+    def replace_after_both_are_ready(source: Path, destination: Path) -> None:
+        if destination == path:
+            both_ready.wait(timeout=5)
+        real_replace(source, destination)
 
-    monkeypatch.setattr(tempfile, "mkstemp", recording_mkstemp)
+    def write(writer: str) -> None:
+        try:
+            write_json_atomically(path, {"writer": writer})
+        except Exception as exc:
+            errors.append(exc)
 
-    store = JsonObjectStore(path, {"messages": {}, "cursors": {}})
-    store.write_object({"messages": {"a": {"text": "a"}}, "cursors": {}})
+    monkeypatch.setattr(os, "replace", replace_after_both_are_ready)
+    writers = [Thread(target=write, args=(name,)) for name in ("first", "second")]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join(timeout=6)
+        assert not writer.is_alive()
 
-    assert created_paths
-    assert all(temp_path.name != f"{path.name}.tmp" for temp_path in created_paths)
-    assert all(temp_path.name.startswith(f".{path.name}.") for temp_path in created_paths)
-    assert all(temp_path.name.endswith(".tmp") for temp_path in created_paths)
+    assert errors == []
+    assert json.loads(path.read_text(encoding="utf-8")) in (
+        {"writer": "first"},
+        {"writer": "second"},
+    )
+    assert list(tmp_path.glob(".shared.json.*.tmp")) == []
+
+
+def test_atomic_json_writer_respects_umask_and_retains_existing_mode(tmp_path: Path) -> None:
+    path = tmp_path / "shared.json"
+    original_umask = os.umask(0o027)
+    try:
+        write_json_atomically(path, {"revision": 1})
+    finally:
+        os.umask(original_umask)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+    original_umask = os.umask(0o077)
+    try:
+        write_json_atomically(path, {"revision": 2})
+    finally:
+        os.umask(original_umask)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640

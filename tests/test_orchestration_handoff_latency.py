@@ -21,7 +21,7 @@ from evander.repositories.orchestration_db import connect_orchestration_db
 from evander_team_addon.providers import TeamAgentPromptCompletionFinalizeHook
 from evander_team_addon.sqlite_store import TeamStateSqliteStore
 from test_effect_orchestrator import _Factory, _ImmediateExecutor, _edge
-from test_team_addon_runtime import _seed_team, _team_runtime_service
+from team_runtime_support import _seed_team, _team_runtime_service
 
 
 class Clock:
@@ -100,6 +100,52 @@ def test_ready_successors_drain_without_repeated_slow_recovery(tmp_path):
     assert all(r.status == "succeeded" for r in records)
     assert calls == []
     assert 0 < result.next_sleep_seconds <= 5
+
+
+def test_graph_is_reused_until_reloaded_routes_change(tmp_path, monkeypatch):
+    import evander.daemons.effect_orchestrator as orchestrator
+
+    worker = _worker(tmp_path, chain_length=2)
+    worker._executor.shutdown(wait=True)
+    worker._executor = _ImmediateExecutor()
+    worker._completion_dispatch_hooks = ()
+    worker._lifecycle_reconciliation_hooks = ()
+    builds = []
+    build_graph = orchestrator._build_execution_graph
+
+    def build(config):
+        builds.append(config)
+        return build_graph(config)
+
+    monkeypatch.setattr(orchestrator, "_build_execution_graph", build)
+
+    def drain(event_id):
+        _publish(worker, event_id)
+        for _ in range(10):
+            if worker.run_once().next_sleep_seconds:
+                break
+
+    try:
+        drain("first")
+        drain("second")
+        assert len(builds) == 1
+        assert sorted(r.effect_id for r in worker.execution_store.list_executions()) == [
+            "step-0",
+            "step-0",
+            "step-1",
+            "step-1",
+        ]
+        payload = worker.worker_config.model_dump(mode="json")
+        payload["edges"] = [_edge("start", "step-1")]
+        updated = canonical_worker_config(payload)
+        worker._config_reloader = SimpleNamespace(get_latest=lambda: (updated, True))
+        drain("third")
+        assert len(builds) == 2
+        records = worker.execution_store.list_executions()
+        assert [r.effect_id for r in records if r.event_id == "third"] == ["step-1"]
+        assert len(records) == 5
+    finally:
+        worker.close()
 
 
 def test_recovery_continuations_and_due_leases_preempt_long_pass():
@@ -615,7 +661,7 @@ def test_native_receipt_preflight_matches_last_wins_timestamp_ties(monkeypatch):
         for i in range(2)
     ]
     monkeypatch.setattr(
-        "evander_team_addon.providers._team_native_thread_receipt",
+        "evander_team_addon.provider_completion._team_native_thread_receipt",
         lambda r: AgentDispatchNativeThreadReceipt(
             "session", "dispatch", "native", now, missing_thread=r.execution_id == "1"
         ),
@@ -633,7 +679,7 @@ def test_lifecycle_projection_snapshot_pages_and_query_indexes(tmp_path, monkeyp
         agent_id="backend", defer_activation=True
     )
     dispatch_id = leases[0]["dispatch_id"]
-    original_connect = repo.store._connect
+    original_connect = repo.store._read_connection
     statements = []
 
     def connect():
@@ -641,7 +687,7 @@ def test_lifecycle_projection_snapshot_pages_and_query_indexes(tmp_path, monkeyp
         connection.set_trace_callback(statements.append)
         return connection
 
-    monkeypatch.setattr(repo.store, "_connect", connect)
+    monkeypatch.setattr(repo.store, "_read_connection", connect)
     page = repo.lifecycle_candidates(limit=1)
     assert page.revision == repo.read_revision()
     assert page.candidates[0].dispatch_id == dispatch_id
@@ -666,7 +712,7 @@ def test_lifecycle_projection_cannot_mix_revisions(tmp_path, monkeypatch):
     )
     dispatch_id = leases[0]["dispatch_id"]
     revision = repo.read_revision()
-    connect = repo.store._connect
+    connect = repo.store._read_connection
     changed = []
 
     def concurrent_connect():
@@ -688,7 +734,7 @@ def test_lifecycle_projection_cannot_mix_revisions(tmp_path, monkeypatch):
         connection.set_trace_callback(on_statement)
         return connection
 
-    monkeypatch.setattr(repo.store, "_connect", concurrent_connect)
+    monkeypatch.setattr(repo.store, "_read_connection", concurrent_connect)
     page = repo.lifecycle_candidates()
     assert changed and page.revision == revision
     assert page.candidates[0].session_id == "session-backend"
@@ -810,6 +856,7 @@ def _seed_latency_history(worker, tmp_path):
         )
 
 
+@pytest.mark.performance
 def test_thirty_synthetic_chains_handoff_p95_under_two_seconds(tmp_path):
     """Local scheduler benchmark only: external work/model/clone are stubbed."""
     worker = _worker(tmp_path)

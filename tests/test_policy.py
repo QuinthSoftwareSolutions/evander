@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -120,7 +122,7 @@ def make_ado_tool_policy_engine(tmp_path: Path) -> tuple[PolicyEngine, SessionMa
                                 "id": "project",
                                 "path": "project",
                                 "operator": "fixed",
-                                "value": "Truman",
+                                "value": "Evander",
                                 "case_sensitive": False,
                             }
                         ],
@@ -1487,7 +1489,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         session,
         ToolName.CREATE_ADO_BACKLOG_ITEM,
         {
-            "project": "truman",
+            "project": "evander",
             "type": "task",
             "title": "IMPLEMENT POLICY ENGINE",
             "state": "ready",
@@ -1502,7 +1504,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
     [
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "task",
                 "title": "",
                 "state": "ready",
@@ -1516,7 +1518,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         ),
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "bug",
                 "title": "IMPLEMENT POLICY ENGINE",
                 "state": "ready",
@@ -1530,7 +1532,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         ),
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "task",
                 "title": "IMPLEMENT POLICY ENGINE",
                 "state": "ready",
@@ -1558,7 +1560,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         ),
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "task",
                 "title": "Ship policy engine",
                 "state": "ready",
@@ -1572,7 +1574,7 @@ def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
         ),
         (
             {
-                "project": "truman",
+                "project": "evander",
                 "type": "task",
                 "title": "IMPLEMENT POLICY ENGINE",
                 "state": "blocked",
@@ -1631,13 +1633,13 @@ def test_require_approved_rejects_payload_mismatch(tmp_path: Path) -> None:
 
 def test_build_payload_diagnostic_reports_changed_missing_and_extra_fields() -> None:
     approved = {
-        "project": "Truman",
+        "project": "Evander",
         "title": "Implement policy engine",
         "details": {"owner": "alice", "count": 1},
         "tags": ["alpha", "beta"],
     }
     attempted = {
-        "project": "Truman",
+        "project": "Evander",
         "title": "Implement approval diagnostics",
         "details": {"count": 1},
         "tags": ["alpha", "gamma", "delta"],
@@ -1831,6 +1833,57 @@ def test_build_payload_diagnostic_truncates_deep_array_diffs() -> None:
     ]
     assert diagnostic["differences"]["changed"]["truncated"] is True
     assert diagnostic["differences"]["truncated"] is True
+
+
+@pytest.mark.parametrize("recreate", [False, True])
+def test_concurrent_approval_creation_notifies_once(tmp_path: Path, monkeypatch, recreate):
+    engines = [make_engine(tmp_path), make_engine(tmp_path)]
+    engines[0].session_store.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    arguments = ("session-1", "probe", {"operation": "probe"}, "Approve probe")
+    if recreate:
+        stale = engines[0].create_approval(*arguments)
+        stale.status = ApprovalStatus.DENIED
+        engines[0].approval_store.put(stale.request_id, stale)
+
+    notifications = []
+    callers = threading.Barrier(2)
+    reads = threading.Barrier(2)
+
+    def synchronize_read(read):
+        def get(request_id):
+            result = read(request_id)
+            # Expose a read-then-write race if creation uses separate store calls.
+            reads.wait(timeout=3)
+            return result
+
+        return get
+
+    for engine in engines:
+        engine.approval_notification_dispatcher = SimpleNamespace(
+            dispatch=lambda request: notifications.append(request.request_id)
+        )
+        monkeypatch.setattr(
+            engine.approval_store, "get", synchronize_read(engine.approval_store.get)
+        )
+
+    def create(engine):
+        callers.wait(timeout=3)
+        return engine.create_approval(*arguments)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(create, engines))
+
+    assert results[0].request_id == results[1].request_id
+    assert notifications == [results[0].request_id]
+    stored = engines[0].approval_store.read_all()
+    assert len(stored) == 1
+    assert stored[results[0].request_id].status == ApprovalStatus.PENDING
 
 
 def test_create_approval_persists_redacted_payload(tmp_path: Path) -> None:
@@ -3051,7 +3104,7 @@ def test_require_pr_feedback_stream_enforces_allowlist(tmp_path: Path) -> None:
 
 def test_require_pr_feedback_stream_accepts_unambiguous_ado_repo_alias(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    canonical_repo = "exampleindustry/Example Industry APP/ExampleIndustryAPP"
+    canonical_repo = "exampleindustry/Example Industry App/SampleApplication"
     engine.config.pr_map_path.write_text(
         json.dumps(
             {
@@ -3072,7 +3125,7 @@ def test_require_pr_feedback_stream_accepts_unambiguous_ado_repo_alias(tmp_path:
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         metadata={
             "pr_feedback_streams": [
-                {"provider": "azure_devops", "repo": "ExampleIndustryAPP", "pr_id": "9463"}
+                {"provider": "azure_devops", "repo": "SampleApplication", "pr_id": "9463"}
             ]
         },
     )
@@ -3093,12 +3146,12 @@ def test_require_pr_feedback_stream_rejects_ambiguous_ado_repo_alias(tmp_path: P
                 "entries": {
                     "one": {
                         "provider": "azure_devops",
-                        "repo": "organization-one/project/ExampleIndustryAPP",
+                        "repo": "organization-one/project/SampleApplication",
                         "pr_id": "9463",
                     },
                     "two": {
                         "provider": "azure_devops",
-                        "repo": "organization-two/project/ExampleIndustryAPP",
+                        "repo": "organization-two/project/SampleApplication",
                         "pr_id": "9463",
                     },
                 }
@@ -3112,7 +3165,7 @@ def test_require_pr_feedback_stream_rejects_ambiguous_ado_repo_alias(tmp_path: P
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         metadata={
             "pr_feedback_streams": [
-                {"provider": "azure_devops", "repo": "ExampleIndustryAPP", "pr_id": "9463"}
+                {"provider": "azure_devops", "repo": "SampleApplication", "pr_id": "9463"}
             ]
         },
     )
@@ -3121,14 +3174,14 @@ def test_require_pr_feedback_stream_rejects_ambiguous_ado_repo_alias(tmp_path: P
         engine.require_pr_feedback_stream(
             session,
             provider="azure_devops",
-            repo="organization-one/project/ExampleIndustryAPP",
+            repo="organization-one/project/SampleApplication",
             pr_id="9463",
         )
 
 
 def test_require_pr_feedback_stream_rejects_cross_org_ssh_repo_alias(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    mapped_repo = "organization-two/project/ExampleIndustryAPP"
+    mapped_repo = "organization-two/project/SampleApplication"
     engine.config.pr_map_path.write_text(
         json.dumps(
             {
@@ -3152,7 +3205,7 @@ def test_require_pr_feedback_stream_rejects_cross_org_ssh_repo_alias(tmp_path: P
                 {
                     "provider": "azure_devops",
                     "repo": (
-                        "ssh://git@ssh.dev.azure.com/v3/organization-one/project/ExampleIndustryAPP"
+                        "ssh://git@ssh.dev.azure.com/v3/organization-one/project/SampleApplication"
                     ),
                     "pr_id": "9463",
                 }

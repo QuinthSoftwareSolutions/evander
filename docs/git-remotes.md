@@ -79,40 +79,6 @@ The operation acquires the repository's exclusive operation lock, updates only t
 record, and affects subsequent host-created commits. It does not rewrite existing commits or
 change agent checkout identities.
 
-## Materialize a Team release candidate for human testing
-
-An authorized human reviewer can copy the supported command from
-**Teams → Delivery → release detail → Test this candidate**. Its shape is:
-
-```bash
-evander-cli team checkout-release-candidate <release-package-id> \
-  --target ./release-candidate-review \
-  --expected-commit-sha <candidate-sha> \
-  --runtime-dir /absolute/path/to/evander/runtime
-```
-
-The command reads the durable Team release package, resolves its project and
-managed repository internally, and verifies that the immutable release ref
-still equals the recorded candidate commit and tree. It then creates a new
-detached checkout at `--target`. The target's parent must exist, while the
-target itself must not: existing paths are refused even when empty. Paths
-inside Evander's runtime directory are also refused.
-
-This is the supported operator alternative to discovering
-`runtime/managed-git/*.git` paths. Those private paths are deliberately absent
-from the UI and command. The absolute runtime root is included so the copied
-command remains valid when run from another repository or working directory;
-it is configuration identity, not a private repository path. The resulting checkout has only the sanitized
-canonical repository URL as `origin`; it retains no private managed-repository
-or temporary-worktree path.
-
-When the Admin Web is remote, an authorized reviewer can instead use
-**Download review bundle** on the human-review request. The ZIP is a
-source-only export of the verified candidate and includes
-`EVANDER-REVIEW.json` with the pinned ref, commit, tree, and release-review
-provenance. It is not a Git checkout: unpack it and run the repository's usual
-dependency setup locally, such as `dotnet restore` or `npm ci` where relevant.
-
 The explicit refresh command is an operator diagnostic and recovery surface. Normal managed Git
 reads do not require it: restricted SSH keys provisioned by Evander require the host-owned
 `evander-managed-git-refresh.service` to refresh the exact authorized repository before
@@ -127,7 +93,9 @@ The codes are `broker_busy`, `upstream_host_key_verification_failed`,
 `local_ref_update_failed`, `upstream_ref_policy_rejected`, and the fallback
 `upstream_refresh_failed`.
 
-The equivalent privileged Admin API is:
+### Admin API
+
+The directory-scoped Admin API exposes these operations:
 
 - `GET /api/admin/git-repositories`
 - `POST /api/admin/git-repositories`
@@ -273,6 +241,40 @@ report the preceding source commit in `lastMergeSourceCommit` after a push. Befo
 reused PR, Evander checks the highest-ID PR iteration for the expected source commit within a
 bounded confirmation window; a genuinely moved source still returns a conflict.
 
+## Materialize a Team release candidate for human testing
+
+An authorized human reviewer can copy the supported command from
+**Teams → Delivery → release detail → Test this candidate**. Its shape is:
+
+```bash
+evander-cli team checkout-release-candidate <release-package-id> \
+  --target ./release-candidate-review \
+  --expected-commit-sha <candidate-sha> \
+  --runtime-dir /absolute/path/to/evander/runtime
+```
+
+The command reads the durable Team release package, resolves its project and
+managed repository internally, and verifies that the immutable release ref
+still equals the recorded candidate commit and tree. It then creates a new
+detached checkout at `--target`. The target's parent must exist, while the
+target itself must not: existing paths are refused even when empty. Paths
+inside Evander's runtime directory are also refused.
+
+This is the supported operator alternative to discovering
+`runtime/managed-git/*.git` paths. Those private paths are deliberately absent
+from the UI and command. The absolute runtime root is included so the copied
+command remains valid when run from another repository or working directory;
+it is configuration identity, not a private repository path. The resulting checkout has only the sanitized
+canonical repository URL as `origin`; it retains no private managed-repository
+or temporary-worktree path.
+
+When the Admin Web is remote, an authorized reviewer can instead use
+**Download review bundle** on the human-review request. The ZIP is a
+source-only export of the verified candidate and includes
+`EVANDER-REVIEW.json` with the pinned ref, commit, tree, and release-review
+provenance. It is not a Git checkout: unpack it and run the repository's usual
+dependency setup locally, such as `dotnet restore` or `npm ci` where relevant.
+
 ## Temporary worktrees
 
 Operations that need checked-out files, including merge consolidation and PR preparation, create a
@@ -386,6 +388,7 @@ evander-cli git-repos delete mr_0123456789abcdef0123
 
 Deletion refuses a repository with active issue/project/session bindings, authorized sessions, or
 active or unreconciled worktrees. There is no force-delete path.
+
 ## Repository indexes
 
 Opt-in repository indexes retain exact commits under `refs/evander/code-index/BUILD_ID`

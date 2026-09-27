@@ -6,6 +6,27 @@ execution backends, workflow events, effects, artifacts, communication policy,
 and audit. Add-ons may consume those primitives, but must not make their domain
 concepts required by core.
 
+Use this guide as an add-on reference. For an operator walkthrough, start with
+the [Team setup chapter](evander-user-manual/chapters/17-team-setup-ui.md).
+
+- [Loading and enablement](#loading), [extension contract](#boundary-contract),
+  and [private storage](#storage)
+- [Miro](miro-addon.md), [Figma](figma.md),
+  [Freshservice](#freshservice-add-on-guidance),
+  [Azure DevOps activity](#azure-devops-activity-add-on-guidance),
+  [Elastic Stack](#elastic-stack-add-on-guidance),
+  [MSSQL seed](#mssql-seed-add-on-guidance),
+  [Skatteverket](#skatteverket-add-on-guidance), and [Bokio](#bokio-add-on-guidance)
+- [Team setup](#template-catalog-and-setup-flow),
+  [tools](#team-mcp-action-surface), [communication](#communication-and-escalation-rules),
+  [task and review contracts](#task-graphs-and-review-profiles),
+  [Git and releases](#git-promotion-and-release-publication), and [cost caps](#team-cost-guard)
+
+Detailed operational companions cover [wake decisions](team-addon-wake-decision-tree.md),
+[context policies](team-context-reduction-runbook.md),
+[release recovery](release-recovery-and-verifier-policy.md), and
+[model and persistence boundaries](team-data-boundaries.md).
+
 ## Boundary Contract
 
 Add-ons may register generic integration points:
@@ -671,12 +692,15 @@ guest filesystem contents and manually installed software are not cloned.
 
 The corresponding Admin API is
 `POST /api/addons/team-addon/teams/{team_id}/copy`. Its request contains
-`name`, `expected_revision`, an optional destination `id`, and an
-`agent_session_ids` object keyed by source agent ID. The operation creates new,
-collision-safe IDs for the Team graph and copies active or blocked projects,
-active or paused agents, non-archived roles, review profiles and outcome-kind
-definitions, project goals and assignments, release policy, Team settings, and
-managed Git bindings. Copied projects and agents start active, goals start
+`name`, `expected_revision`, the server-issued `source_configuration_token`, an
+optional destination `id`, and an `agent_session_ids` object keyed by source
+agent ID. The operation creates new, collision-safe IDs for the Team graph and
+copies active or blocked projects, active or paused agents, non-archived roles,
+review profiles and outcome-kind definitions, project goals and assignments,
+release policy, Team settings, and managed Git bindings. The configuration token
+allows unrelated tasks, inbox items, dispatches, runtime state, and cost history
+to advance while the wizard is open; a change to any copied configuration still
+invalidates the preview. Copied projects and agents start active, goals start
 pending, governance escalation starts disabled, and a configured cost cap
 receives a fresh budget window.
 
@@ -1257,8 +1281,11 @@ When a new integration boundary belongs to a Git-backed project and no commit is
 supplied, Team resolves its selected `git_base_branch` through the managed repository
 and stores that commit as an immutable baseline. Creation fails closed when the branch
 cannot be resolved. When a caller supplies a commit, Team first verifies that the object
-exists in the managed repository and is an ancestor of the selected branch tip. Ordinary
-coordination and leaf tasks retain branch-only behavior.
+exists in the managed repository and is an ancestor of the selected branch tip. Children
+that use the same base branch inherit the nearest parent's commit pin when no explicit
+commit is supplied, including nested children and parents created in the same batch.
+They do not resolve a newer branch tip when their worktree starts. Tasks without a pinned
+parent retain branch-only behavior; originating-task links alone do not inherit Git pins.
 
 For Azure DevOps intake, `effect:team:create-task` accepts `ado_work_item_id` and
 optional `ado_project`. The host fetches the work item in the Team project's directory
@@ -1622,6 +1649,7 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_request_release`
 - `team_decide_initial_release`
 - `team_recover_release`
+- `team_reintegrate_release`
 - `team_retry_release_gate`
 - `team_request_ephemeral_agent`
 - `team_request_ephemeral_agents`
@@ -2409,6 +2437,14 @@ source fingerprint, and the composed commit/tree. Required contribution tasks
 come from the deliverable contract even when no duplicate dependency edge was
 recorded. Accepted review refs are resolved instead of mutable agent branch tips;
 legacy accepted rows retain the older branch/context validation.
+Before composing accepted work into a pinned task, the host verifies that each source's
+recorded starting commit is already contained in the target's pinned base. It also checks
+nested compositions. Older source bases are allowed; newer, unrelated, or unknown bases
+block preparation with the source deliverable and base commits in the diagnostic.
+Submission repeats this verification for already prepared worktrees and records server
+proof in the deliverable's composition manifest. Acceptance of an integration candidate
+requires that proof. Existing records remain readable, but unverified candidates need a
+fresh submission; recovery never rewrites their accepted commits or silently changes a pin.
 Artifact-only deliverables,
 administrative work, customer-service work, operations work, and tasks with no
 deliverable do not need Git contexts. Once a deliverable includes Git metadata,
@@ -2603,13 +2639,17 @@ positive integer `pids_limit` values. For example:
 Admin Web's project release-policy JSON editor persists these values with the
 project. Omitted CPU and memory values use the worker/host defaults; the verifier
 retains a 2,048 process/thread default. Only an explicitly configured CPU value
-creates a Docker CPU quota. Resource limits are infrastructure configuration
-rather than candidate evidence, so the live project policy is applied when each
-disposable verifier session is created, including an authorized retry of the
-same pinned candidate.
+creates a Docker CPU quota. Each verification attempt snapshots the image and
+resource limits from current project policy. Its workspace-recovery generations
+reuse that snapshot. An authorized retry creates a new attempt using current
+settings while keeping the candidate and command sequence pinned.
 
-A nonzero verification-command exit is a candidate failure: the release is
-terminally rejected and requires changed, reviewed content in a new release.
+With the default exit-code protocol and correction failure action, a nonzero
+verification-command exit rejects the candidate and generates correction work.
+Projects can instead configure `command_failure_action: "block"` to wait for
+operator assessment. The opt-in `json-v1` result protocol also supports explicit,
+evidence-bound baseline exceptions. See [release recovery and verifier policy](release-recovery-and-verifier-policy.md)
+for command semantics, workspace restart recovery, and retained diagnostic logs.
 Creating another release with the same deliverables and failed tree is refused.
 Verification candidate failures, closed release-review cohorts containing at
 least one rejection, and legacy uncohorted rejections create candidate-pinned
@@ -2675,9 +2715,25 @@ correction task with the operator's comment. It refuses a release with a
 successor or correction work with submitted deliverables, linked tasks, or an
 active dispatch/worker. All verification and review gates still apply. Agents
 cannot request this operator-only retry.
-The verification history displays the retry comment and requester.
+The verification history displays the retry comment and requester. For a rejected
+agent release review, the separate **Retry rejected review by exception** action
+requires operator authority and `allow_rejected_review_exception: true`. It
+creates a new attempt for the selected review slot, preserves the rejection as
+history, and keeps any other rejected slots and their correction obligations.
+The replacement reviewer is instructed to treat the previous rejected finding
+as explicitly excepted, reevaluate every other required criterion, and report
+new defects. This action records a scoped operator exception to that finding.
+These exception controls never mark the release accepted or bypass later gates.
 `team_recover_release` remains limited to failed Git feature/release promotions
 and is not a release-gate retry mechanism.
+
+`team_reintegrate_release` previews current accepted release contributions on
+the refreshed configured Git base, then submits that exact preview as an
+integration task. It requires the configured project lead and an active dispatch
+scoped to the release's project. Submission requires the matching `preview` and
+a `request_id`; a changed preview must be refreshed and reviewed again. Project
+reintegration policy controls ownership and source-release retirement, and the
+existing review and release workflows apply to the resulting work.
 
 Use an explicit policy with every `gate_sequence` entry disabled for an
 intentionally ungated project; a missing policy blocks a new Git release rather
@@ -2828,9 +2884,19 @@ Existing caps remain lifetime-based until an operator performs their first
 budget reset; upgrading does not silently authorize more spend. This is an
 operational safety rail, not billing-grade enforcement: totals are derived from
 recorded model-usage events, the local pricing catalog, and optional Claude
-transcript backfill. Cost payloads expose `coverage_status` and
+transcript backfill. When no catalog estimate is available, a provider-reported
+USD charge counts toward both report totals and the active budget. Estimated
+and reported amounts stay separate; the same event is not charged twice.
+Cost payloads expose `coverage_status` and
 `coverage_reasons`; operators should treat partial coverage as a reason to
 inspect the underlying usage data before making spend promises.
+
+Operator reports use the derived `runtime/team-cost-report.db` projection.
+Ordinary reads refresh changed request groups, preserving late imports,
+corrections, deletions, and deduplication. Initial creation, repricing, and
+budget-window changes can rebuild it from canonical model-usage history. Back
+up the source usage, attribution, pricing, and Team state; the projection alone
+does not preserve those inputs.
 
 Each Team also stores its own `cost_warning_ratio`, which defaults to `0.8`.
 When a governed Team reaches that portion of its own `max_cost_usd`, the

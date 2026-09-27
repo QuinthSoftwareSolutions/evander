@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from voice_bridge_test_support import RealtimeAudioRecorder
+
 import asyncio
 import base64
 import json
@@ -293,7 +295,7 @@ def test_projection_to_instructions_sets_natural_phone_behavior() -> None:
 
 def test_initial_outbound_call_uses_complete_objective_without_startup_scaffolding() -> None:
     objective = (
-        "Open with: Hi Jonathan, this is Truman calling about the auto-dev approval queue. "
+        "Open with: Hi Jonathan, this is Evander calling about the auto-dev approval queue. "
         "Briefly summarize the candidate work items and ask which IDs should be approved."
     )
     instructions = initial_outbound_call_instructions(
@@ -3625,7 +3627,7 @@ def test_realtime_end_call_duplicates_do_not_duplicate_cleanup(
 def test_goodbye_transcript_does_not_treat_inbound_greetings_as_closings() -> None:
     assert not didww_sip_bridge._is_goodbye_transcript("Thanks for calling, how can I help?")
     assert not didww_sip_bridge._is_goodbye_transcript(
-        "Thank you for calling Truman support. How may I direct your call?"
+        "Thank you for calling Evander support. How may I direct your call?"
     )
     assert not didww_sip_bridge._is_goodbye_transcript("Thanks for calling ops.")
 
@@ -3873,7 +3875,7 @@ def test_short_backchannel_during_assistant_audio_does_not_cancel_or_request_res
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x11" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -3902,23 +3904,6 @@ def test_short_backchannel_during_assistant_audio_does_not_cancel_or_request_res
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
@@ -4055,7 +4040,7 @@ def test_backchannel_during_assistant_audio_requests_resume_after_cancel(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x11" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -4089,23 +4074,6 @@ def test_backchannel_during_assistant_audio_requests_resume_after_cancel(
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
@@ -4176,7 +4144,7 @@ def test_cancelled_interruption_without_transcript_requests_recovery_response(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x13" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -4205,23 +4173,6 @@ def test_cancelled_interruption_without_transcript_requests_recovery_response(
             await asyncio.sleep(0.05)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             await asyncio.sleep(0)
@@ -4282,7 +4233,7 @@ def test_slow_substantive_transcript_after_cancel_suppresses_recovery_response(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x15" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -4317,23 +4268,6 @@ def test_slow_substantive_transcript_after_cancel_suppresses_recovery_response(
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
@@ -4396,7 +4330,7 @@ def test_late_substantive_transcript_after_recovery_preempts_resume_response(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x16" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -4453,20 +4387,6 @@ def test_late_substantive_transcript_after_recovery_preempts_resume_response(
                     },
                 )
 
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
@@ -4551,7 +4471,7 @@ def test_cancelled_interruption_recovery_is_retired_by_new_response_creation(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x14" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -4583,23 +4503,6 @@ def test_cancelled_interruption_recovery_is_retired_by_new_response_creation(
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
@@ -4655,7 +4558,7 @@ def test_substantive_speech_during_pre_audio_response_cancels_generation(
     record, _ = store.create_call(PhoneCallStartRequest.model_validate(_phone_payload()))
     stop_event = asyncio.Event()
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -4683,23 +4586,6 @@ def test_substantive_speech_during_pre_audio_response_cancels_generation(
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
@@ -4759,7 +4645,7 @@ def test_substantive_speech_during_assistant_audio_sends_one_cancel(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x22" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -4792,23 +4678,6 @@ def test_substantive_speech_during_assistant_audio_sends_one_cancel(
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             self.responses.append(instructions)
@@ -4974,7 +4843,7 @@ def test_substantive_speech_truncates_only_confirmed_rtp_samples_when_send_cance
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x25" * 320).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -5003,23 +4872,6 @@ def test_substantive_speech_truncates_only_confirmed_rtp_samples_when_send_cance
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             raise AssertionError("no bridge response should be requested")
@@ -5074,7 +4926,7 @@ def test_barge_in_after_response_done_skips_cancel_but_truncates_playback(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x27" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -5104,23 +4956,6 @@ def test_barge_in_after_response_done_skips_cancel_but_truncates_playback(
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             raise AssertionError("no bridge response should be requested")
@@ -5239,7 +5074,7 @@ def test_substantive_speech_does_not_truncate_unsent_rtp_audio(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x26" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -5268,23 +5103,6 @@ def test_substantive_speech_does_not_truncate_unsent_rtp_audio(
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             raise AssertionError("no bridge response should be requested")
@@ -5351,7 +5169,7 @@ def test_barge_in_cancel_fades_queued_rtp_audio_before_later_response(
         fade_ms=40,
     )
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -5391,23 +5209,6 @@ def test_barge_in_cancel_fades_queued_rtp_audio_before_later_response(
             await asyncio.sleep(0.01)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             raise AssertionError("no bridge response should be requested")
@@ -5492,7 +5293,7 @@ def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
     pending = b"\x32" * 160
     later = b"\x33" * 160
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -5532,23 +5333,6 @@ def test_barge_in_cancel_clears_pending_rtp_audio_before_later_response(
             await asyncio.sleep(0.01)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             raise AssertionError("no bridge response should be requested")
@@ -5612,7 +5396,7 @@ def test_truncated_assistant_audio_transcript_is_not_recorded_as_spoken(
     stop_event = asyncio.Event()
     audio_delta = base64.b64encode(b"\x41" * 160).decode("ascii")
 
-    class FakeRealtime:
+    class FakeRealtime(RealtimeAudioRecorder):
         def __init__(self) -> None:
             self.events: list[dict[str, Any]] = [
                 {"type": "response.created", "response": {"id": "resp-1"}},
@@ -5646,23 +5430,6 @@ def test_truncated_assistant_audio_transcript_is_not_recorded_as_spoken(
             await asyncio.sleep(0)
             return {}
 
-        async def cancel_response(self, response_id: str | None = None) -> None:
-            self.cancels.append(response_id)
-
-        async def truncate_assistant_audio(
-            self,
-            *,
-            item_id: str,
-            audio_end_ms: int,
-            content_index: int = 0,
-        ) -> None:
-            self.truncates.append(
-                {
-                    "item_id": item_id,
-                    "audio_end_ms": audio_end_ms,
-                    "content_index": content_index,
-                }
-            )
 
         async def request_response(self, instructions: str | None = None) -> None:
             raise AssertionError("no bridge response should be requested")
@@ -6599,7 +6366,7 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
     payload = _phone_payload()
     payload["projection"] = {
         "task_prompt": (
-            "Open with: Hi Jonathan, it's Truman. Then share a concise interesting fact."
+            "Open with: Hi Jonathan, it's Evander. Then share a concise interesting fact."
         ),
         "startup_contract": {"complete_objective": True},
     }
@@ -6626,7 +6393,7 @@ def test_pending_origin_query_suppresses_projected_task_fallback_and_offers_hold
                         "call_id": "tool-call-real",
                         "name": "query_origin_agent",
                         "arguments": json.dumps(
-                            {"question": "Give me one Truman-specific interesting fact."}
+                            {"question": "Give me one Evander-specific interesting fact."}
                         ),
                     },
                 },
@@ -7254,7 +7021,7 @@ def test_script_instruction_question_answers_from_projection_without_origin_quer
     payload = _phone_payload()
     payload["projection"] = {
         "task_prompt": (
-            "Open with: Hi Jonathan, this is Truman calling about turn-taking. "
+            "Open with: Hi Jonathan, this is Evander calling about turn-taking. "
             "Ask whether the greeting sounded natural."
         ),
         "startup_contract": {"complete_objective": True},
@@ -7312,7 +7079,7 @@ def test_script_instruction_question_answers_from_projection_without_origin_quer
         "source": "projection",
         "answer": (
             "The projected calling task is already authoritative: Open with: Hi Jonathan, "
-            "this is Truman calling about turn-taking. Ask whether the greeting sounded natural."
+            "this is Evander calling about turn-taking. Ask whether the greeting sounded natural."
         ),
     }
     assert "projected calling task" in str(realtime.responses[0])
@@ -7325,7 +7092,7 @@ def test_empty_origin_query_during_complete_startup_uses_projection_not_clarific
     payload = _phone_payload()
     payload["projection"] = {
         "task_prompt": (
-            "Open with: Hi Jonathan, this is Truman calling about turn-taking. "
+            "Open with: Hi Jonathan, this is Evander calling about turn-taking. "
             "Ask whether the greeting sounded natural."
         ),
         "startup_contract": {"complete_objective": True},
@@ -7377,7 +7144,7 @@ def test_empty_origin_query_during_complete_startup_uses_projection_not_clarific
         "source": "projection",
         "answer": (
             "The projected calling task is already authoritative: Open with: Hi Jonathan, "
-            "this is Truman calling about turn-taking. Ask whether the greeting sounded natural."
+            "this is Evander calling about turn-taking. Ask whether the greeting sounded natural."
         ),
     }
     assert len(realtime.responses) == 1

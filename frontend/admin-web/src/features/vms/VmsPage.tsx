@@ -3,6 +3,8 @@ import type { Dispatch, SetStateAction } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
+import { readAdminHashQuery } from "../admin/hash";
 import { DestroyIcon, PowerIcon, StartIcon, StopIcon, VmRunningIcon, VmStoppedIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { type VmActionResponse, type VmListResponse, type VmRecord } from "../admin/types";
@@ -36,7 +38,11 @@ const EMPTY_VM_FORM: VmCreateFormState = {
 };
 
 const REFRESH_MS = 5000;
-const VM_SELECTION_STORAGE_KEY = "admin-web:vms:selected-vm";
+
+function vmStateLabel(state: string | null | undefined): string {
+  const normalized = state?.trim().replace(/_/g, " ");
+  return normalized ? normalized[0].toUpperCase() + normalized.slice(1) : "Unknown";
+}
 
 async function loadVmList(directoryPath: string, directOnly: boolean): Promise<VmListResponse> {
   const query = new URLSearchParams({
@@ -58,7 +64,8 @@ function appendLogEntry(
 export function VmsPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [items, setItems] = useState<VmRecord[]>([]);
-  const [selectedVmName, setSelectedVmName] = useState<string | null>(null);
+  const [selectedVmName, setSelectedVmName] = useState<string | null>(() => readAdminHashQuery().get("vm_name"));
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -67,25 +74,6 @@ export function VmsPage() {
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [showCreateVm, setShowCreateVm] = useState(false);
   const [createVmForm, setCreateVmForm] = useState<VmCreateFormState>(EMPTY_VM_FORM);
-  const [selectionHydrated, setSelectionHydrated] = useState(false);
-
-  useEffect(() => {
-    const saved = window.localStorage.getItem(VM_SELECTION_STORAGE_KEY);
-    if (saved) {
-      setSelectedVmName(saved);
-    }
-    setSelectionHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (!selectionHydrated) return;
-    if (selectedVmName) {
-      window.localStorage.setItem(VM_SELECTION_STORAGE_KEY, selectedVmName);
-      return;
-    }
-    window.localStorage.removeItem(VM_SELECTION_STORAGE_KEY);
-  }, [selectedVmName, selectionHydrated]);
-
   const sortedItems = useMemo(
     () =>
       [...items].sort((left, right) =>
@@ -95,7 +83,7 @@ export function VmsPage() {
   );
 
   const selectedVm = useMemo(
-    () => sortedItems.find((item) => item.vm_name === selectedVmName) ?? sortedItems[0] ?? null,
+    () => sortedItems.find((item) => item.vm_name === selectedVmName) ?? null,
     [sortedItems, selectedVmName],
   );
 
@@ -104,7 +92,7 @@ export function VmsPage() {
     setItems(payload.items);
     setSelectedVmName((current) => {
       if (current && payload.items.some((item) => item.vm_name === current)) return current;
-      return payload.items[0]?.vm_name ?? null;
+      return null;
     });
   }, [selectedDirectoryPath]);
 
@@ -229,293 +217,351 @@ export function VmsPage() {
   const showShutdown = selectedVm?.libvirt_state === "running";
   const actionDisabled = busyAction !== null || !privilegedUnlocked;
 
+  const visibleItems = sortedItems.filter((item) =>
+    [item.vm_name, ...item.session_ids].join(" ").toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
+
   return (
-    <div className="feature-page vms-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">VM host lifecycle</div>
-            <h1>VMs</h1>
+    <RecordWorkspace
+      records={sortedItems.map((item) => ({
+        id: item.vm_name,
+        href: `#vms?${new URLSearchParams({ vm_name: item.vm_name })}`,
+      }))}
+      selectedId={selectedVmName}
+      onSelect={(id) => {
+        setSelectedVmName(id);
+        setInlineValidation("");
+      }}
+      recordRouteKeys="vm_name"
+    >
+      <div className="feature-page vms-page">
+        <section className="feature-sidebar">
+          <div className="feature-sidebar-header">
+            <div>
+              <div className="eyebrow">VM host lifecycle</div>
+              <h1>VMs</h1>
+            </div>
+            <div className="inline-actions compact-actions">
+              <button type="button" onClick={() => void handleManualRefresh()} disabled={loading}>
+                Refresh
+              </button>
+              <button
+                type="button"
+                className={showCreateVm ? "" : "primary"}
+                onClick={() => {
+                  setShowCreateVm((current) => !current);
+                  setInlineValidation("");
+                }}
+                disabled={actionDisabled}
+              >
+                {showCreateVm ? "Close new VM" : "New VM"}
+              </button>
+            </div>
           </div>
-          <div className="inline-actions compact-actions">
-            <button type="button" onClick={() => void handleManualRefresh()} disabled={loading}>
-              Refresh
-            </button>
-            <button
-              type="button"
-              className={showCreateVm ? "" : "primary"}
-              onClick={() => {
-                setShowCreateVm((current) => !current);
-                setInlineValidation("");
-              }}
-              disabled={actionDisabled}
-            >
-              {showCreateVm ? "Close new VM" : "New VM"}
-            </button>
-          </div>
-        </div>
-        {!privilegedUnlocked ? (
-          <div className="callout warning-callout">Unlock privileged operations to create VMs or change VM state.</div>
-        ) : null}
-        <div className="feature-list vm-list">
-          {sortedItems.map((item) => (
-            <button
-              key={item.vm_name}
-              type="button"
-              className={`feature-list-item vm-list-item${selectedVm?.vm_name === item.vm_name ? " selected" : ""}`}
-              onClick={() => {
-                setSelectedVmName(item.vm_name);
-                setInlineValidation("");
-              }}
-            >
-              <div className="feature-list-title-row vm-list-item-row">
-                <strong>{item.vm_name}</strong>
-                <Tooltip content={item.libvirt_state === "running" ? "VM is currently running." : "VM is currently stopped."}>
-                  <span
-                    className={`status-pill vm-status-pill state-${item.libvirt_state === "running" ? "running" : "idle"}`}
-                    aria-label={item.libvirt_state === "running" ? "VM running" : "VM stopped"}
+          {!privilegedUnlocked ? (
+            <div className="callout warning-callout">
+              Unlock privileged operations to create VMs or change VM state.
+            </div>
+          ) : null}
+          <label className="field-stack">
+            <span>Find VMs</span>
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
+          </label>
+          <div className="feature-list vm-list">
+            {visibleItems.map((item) => (
+              <button
+                key={item.vm_name}
+                type="button"
+                className={`feature-list-item vm-list-item${selectedVm?.vm_name === item.vm_name ? " selected" : ""}`}
+                onClick={() => {
+                  setSelectedVmName(item.vm_name);
+                  setInlineValidation("");
+                }}
+              >
+                <div className="feature-list-title-row vm-list-item-row">
+                  <strong>{item.vm_name}</strong>
+                  <Tooltip
+                    content={`VM state: ${vmStateLabel(item.libvirt_state)}`}
                   >
-                    {item.libvirt_state === "running" ? <VmRunningIcon /> : <VmStoppedIcon />}
+                    <span
+                      className={`status-pill vm-status-pill state-${item.libvirt_state === "running" ? "running" : "idle"}`}
+                      aria-label={`VM ${vmStateLabel(item.libvirt_state).toLowerCase()}`}
+                    >
+                      {item.libvirt_state === "running" ? <VmRunningIcon /> : <VmStoppedIcon />}
+                      <span>{vmStateLabel(item.libvirt_state)}</span>
+                    </span>
+                  </Tooltip>
+                </div>
+              </button>
+            ))}
+            {loading && items.length === 0 ? <div className="empty-state" role="status">Loading VMs...</div> : null}
+            {!loading && !error && visibleItems.length === 0 ? (
+              <div className="empty-state">
+                {search.trim() ? "No VMs match your search." : "No VMs found for the selected directory scope."}
+                {search.trim() ? <button type="button" onClick={() => setSearch("")}>Clear search</button> : null}
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="feature-content">
+          <div className="feature-toolbar" hidden={!selectedVm}>
+            <div>
+              <h2>{selectedVm?.vm_name ?? "Select a VM"}</h2>
+              <p className="muted-text">
+                {selectedVm
+                  ? "Inspect machine state and manage the VM host lifecycle."
+                  : "Choose a VM from the left to inspect host details and run VM actions."}
+              </p>
+            </div>
+            {selectedVm ? (
+              <div className="feature-toolbar-actions icon-actions">
+                <Tooltip content={`Host libvirt state for ${selectedVm.vm_name}: ${selectedVm.libvirt_state}.`}>
+                  <span className={`status-pill state-${selectedVm.libvirt_state === "running" ? "running" : "idle"}`}>
+                    VM {selectedVm.libvirt_state}
                   </span>
                 </Tooltip>
-              </div>
-            </button>
-          ))}
-          {!loading && items.length === 0 ? <div className="empty-state">No VMs found for the selected directory scope.</div> : null}
-        </div>
-      </section>
-
-      <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>{selectedVm?.vm_name ?? "Select a VM"}</h2>
-            <p className="muted-text">
-              {selectedVm
-                ? "Inspect machine state and manage the VM host lifecycle."
-                : "Choose a VM from the left to inspect host details and run VM actions."}
-            </p>
-          </div>
-          {selectedVm ? (
-            <div className="feature-toolbar-actions icon-actions">
-              <Tooltip content={`Host libvirt state for ${selectedVm.vm_name}: ${selectedVm.libvirt_state}.`}>
-                <span className={`status-pill state-${selectedVm.libvirt_state === "running" ? "running" : "idle"}`}>
-                  VM {selectedVm.libvirt_state}
-                </span>
-              </Tooltip>
-              {showStart ? (
-                <Tooltip content="Start the selected VM through libvirt on the host.">
-                  <button type="button" onClick={() => void runVmAction("start")} disabled={actionDisabled} aria-label="Start VM">
-                    {busyAction === "start" ? "..." : <StartIcon />}
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showShutdown ? (
-                <Tooltip content="Request a graceful guest shutdown for the selected VM.">
+                {showStart ? (
+                  <Tooltip content="Start the selected VM through libvirt on the host.">
+                    <button
+                      type="button"
+                      onClick={() => void runVmAction("start")}
+                      disabled={actionDisabled}
+                      aria-label="Start VM"
+                    >
+                      {busyAction === "start" ? "..." : <StartIcon />}
+                    </button>
+                  </Tooltip>
+                ) : null}
+                {showShutdown ? (
+                  <Tooltip content="Request a graceful guest shutdown for the selected VM.">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`Shut down ${selectedVm.vm_name}?`)) {
+                          void runVmAction("shutdown");
+                        }
+                      }}
+                      disabled={actionDisabled}
+                      aria-label="Shut down VM"
+                    >
+                      {busyAction === "shutdown" ? "..." : <PowerIcon />}
+                    </button>
+                  </Tooltip>
+                ) : null}
+                <Tooltip content="Destroy the VM and remove its associated local host-side state.">
                   <button
                     type="button"
+                    className="danger"
                     onClick={() => {
-                      if (window.confirm(`Shut down ${selectedVm.vm_name}?`)) {
-                        void runVmAction("shutdown");
+                      const message = selectedVm.issue_number
+                        ? `Destroy ${selectedVm.vm_name} and remove its associated issue-VM state?`
+                        : `Destroy ${selectedVm.vm_name} and remove its local session state?`;
+                      if (window.confirm(message)) {
+                        void runVmAction("destroy");
                       }
                     }}
                     disabled={actionDisabled}
-                    aria-label="Shut down VM"
+                    aria-label="Destroy VM"
                   >
-                    {busyAction === "shutdown" ? "..." : <PowerIcon />}
+                    <DestroyIcon />
                   </button>
                 </Tooltip>
-              ) : null}
-              <Tooltip content="Destroy the VM and remove its associated local host-side state.">
-                <button
-                  type="button"
-                  className="danger"
-                  onClick={() => {
-                    const message = selectedVm.issue_number
-                      ? `Destroy ${selectedVm.vm_name} and remove its associated issue-VM state?`
-                      : `Destroy ${selectedVm.vm_name} and remove its local session state?`;
-                    if (window.confirm(message)) {
-                      void runVmAction("destroy");
-                    }
-                  }}
-                  disabled={actionDisabled}
-                  aria-label="Destroy VM"
-                >
-                  <DestroyIcon />
-                </button>
-              </Tooltip>
-            </div>
-          ) : null}
-        </div>
-
-        {status ? <div className="callout success-callout">{status}</div> : null}
-        {error ? <div className="callout error-callout">{error}</div> : null}
-        {inlineValidation ? <div className="callout warning-callout">{inlineValidation}</div> : null}
-
-        {showCreateVm ? (
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Create standalone VM</h3>
-              <span className="panel-meta">Uses the current directory context unless overridden.</span>
-            </div>
-            <div className="panel-body">
-              <div className="config-field-grid">
-                <label className="field-stack">
-                  <span>VM name</span>
-                  <input
-                    value={createVmForm.vmName}
-                    onChange={(event) => setCreateVmForm((current) => ({ ...current, vmName: event.target.value }))}
-                    placeholder="lab-vm-1"
-                  />
-                </label>
-                <label className="field-stack">
-                  <span>Session ID</span>
-                  <input
-                    value={createVmForm.sessionId}
-                    onChange={(event) => setCreateVmForm((current) => ({ ...current, sessionId: event.target.value }))}
-                    placeholder="Optional"
-                  />
-                </label>
-                <label className="field-stack">
-                  <span>Model</span>
-                  <input
-                    value={createVmForm.model}
-                    onChange={(event) => setCreateVmForm((current) => ({ ...current, model: event.target.value }))}
-                    placeholder="Uses directory default when empty"
-                  />
-                </label>
               </div>
+            ) : null}
+          </div>
+
+          {status ? <div className="callout success-callout">{status}</div> : null}
+          {error ? <div className="callout error-callout">{error}</div> : null}
+          {inlineValidation ? <div className="callout warning-callout">{inlineValidation}</div> : null}
+
+          {showCreateVm ? (
+            <article className="panel">
+              <div className="panel-header">
+                <h3>Create standalone VM</h3>
+                <span className="panel-meta">Uses the current directory context unless overridden.</span>
+              </div>
+              <div className="panel-body">
+                <div className="config-field-grid">
+                  <label className="field-stack">
+                    <span>VM name</span>
+                    <input
+                      value={createVmForm.vmName}
+                      onChange={(event) => setCreateVmForm((current) => ({ ...current, vmName: event.target.value }))}
+                      placeholder="lab-vm-1"
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Session ID</span>
+                    <input
+                      value={createVmForm.sessionId}
+                      onChange={(event) =>
+                        setCreateVmForm((current) => ({ ...current, sessionId: event.target.value }))
+                      }
+                      placeholder="Optional"
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Model</span>
+                    <input
+                      value={createVmForm.model}
+                      onChange={(event) => setCreateVmForm((current) => ({ ...current, model: event.target.value }))}
+                      placeholder="Uses directory default when empty"
+                    />
+                  </label>
+                </div>
+                <div className="feature-grid">
+                  <article className="panel">
+                    <div className="panel-header">
+                      <h3>Bootstrap options</h3>
+                    </div>
+                    <div className="panel-body">
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={createVmForm.dotnet}
+                          onChange={(event) =>
+                            setCreateVmForm((current) => ({ ...current, dotnet: event.target.checked }))
+                          }
+                        />
+                        <span>Bootstrap .NET</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={createVmForm.nuget}
+                          onChange={(event) =>
+                            setCreateVmForm((current) => ({ ...current, nuget: event.target.checked }))
+                          }
+                        />
+                        <span>Bootstrap NuGet</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={createVmForm.playwright}
+                          onChange={(event) =>
+                            setCreateVmForm((current) => ({ ...current, playwright: event.target.checked }))
+                          }
+                        />
+                        <span>Bootstrap Playwright</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={createVmForm.mssql}
+                          onChange={(event) =>
+                            setCreateVmForm((current) => ({ ...current, mssql: event.target.checked }))
+                          }
+                        />
+                        <span>Bootstrap MSSQL</span>
+                      </label>
+                      {createVmForm.mssql ? (
+                        <label className="field-stack">
+                          <span>MSSQL init root</span>
+                          <input
+                            value={createVmForm.mssqlInitRoot}
+                            onChange={(event) =>
+                              setCreateVmForm((current) => ({ ...current, mssqlInitRoot: event.target.value }))
+                            }
+                            placeholder="/path/to/mssql-init"
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                  </article>
+                </div>
+                <div className="inline-actions">
+                  <button
+                    className="primary"
+                    type="button"
+                    onClick={() => void handleCreateVm()}
+                    disabled={actionDisabled}
+                  >
+                    {busyAction === "create-vm" ? "Creating..." : "Create VM"}
+                  </button>
+                </div>
+              </div>
+            </article>
+          ) : null}
+
+          {selectedVm ? (
+            <>
               <div className="feature-grid">
                 <article className="panel">
                   <div className="panel-header">
-                    <h3>Bootstrap options</h3>
+                    <h3>Machine status</h3>
+                    <span className="panel-meta">
+                      {selectedVm.issue_number ? `Issue ${selectedVm.issue_number}` : "Standalone VM"}
+                    </span>
                   </div>
-                  <div className="panel-body">
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={createVmForm.dotnet}
-                        onChange={(event) => setCreateVmForm((current) => ({ ...current, dotnet: event.target.checked }))}
-                      />
-                      <span>Bootstrap .NET</span>
-                    </label>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={createVmForm.nuget}
-                        onChange={(event) => setCreateVmForm((current) => ({ ...current, nuget: event.target.checked }))}
-                      />
-                      <span>Bootstrap NuGet</span>
-                    </label>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={createVmForm.playwright}
-                        onChange={(event) => setCreateVmForm((current) => ({ ...current, playwright: event.target.checked }))}
-                      />
-                      <span>Bootstrap Playwright</span>
-                    </label>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={createVmForm.mssql}
-                        onChange={(event) => setCreateVmForm((current) => ({ ...current, mssql: event.target.checked }))}
-                      />
-                      <span>Bootstrap MSSQL</span>
-                    </label>
-                    {createVmForm.mssql ? (
-                      <label className="field-stack">
-                        <span>MSSQL init root</span>
-                        <input
-                          value={createVmForm.mssqlInitRoot}
-                          onChange={(event) => setCreateVmForm((current) => ({ ...current, mssqlInitRoot: event.target.value }))}
-                          placeholder="/path/to/mssql-init"
-                        />
-                      </label>
-                    ) : null}
-                  </div>
-                </article>
-              </div>
-              <div className="inline-actions">
-                <button className="primary" type="button" onClick={() => void handleCreateVm()} disabled={actionDisabled}>
-                  {busyAction === "create-vm" ? "Creating..." : "Create VM"}
-                </button>
-              </div>
-            </div>
-          </article>
-        ) : null}
-
-        {selectedVm ? (
-          <>
-            <div className="feature-grid">
-              <article className="panel">
-                <div className="panel-header">
-                  <h3>Machine status</h3>
-                  <span className="panel-meta">{selectedVm.issue_number ? `Issue ${selectedVm.issue_number}` : "Standalone VM"}</span>
-                </div>
-                <dl className="property-grid">
-                  <div>
-                    <dt>Sessions</dt>
-                    <dd>{selectedVm.session_ids.length > 0 ? selectedVm.session_ids.join(", ") : "None"}</dd>
-                  </div>
-                  <div>
-                    <dt>Directories</dt>
-                    <dd>{selectedVm.directory_paths.length > 0 ? selectedVm.directory_paths.join(", ") : "None"}</dd>
-                  </div>
-                  <div>
-                    <dt>Provider</dt>
-                    <dd>{selectedVm.provider}</dd>
-                  </div>
-                  <div>
-                    <dt>IP address</dt>
-                    <dd>{selectedVm.ip_address ?? "Unknown"}</dd>
-                  </div>
-                  <div>
-                    <dt>Power state</dt>
-                    <dd>{selectedVm.libvirt_state}</dd>
-                  </div>
-                  <div>
-                    <dt>Updated</dt>
-                    <dd>{formatTimestamp(selectedVm.last_state_update_at)}</dd>
-                  </div>
-                </dl>
-              </article>
-
-              {Object.keys(selectedVm.labels).length > 0 ? (
-                <article className="panel compact-panel">
-                  <div className="panel-header">
-                    <h3>Labels</h3>
-                    <span className="panel-meta">{Object.keys(selectedVm.labels).length} entries</span>
-                  </div>
-                  <dl className="property-grid vm-label-grid">
-                    {Object.entries(selectedVm.labels)
-                      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey, undefined, { sensitivity: "base" }))
-                      .map(([key, value]) => (
-                        <div key={key}>
-                          <dt>{key}</dt>
-                          <dd>{value}</dd>
-                        </div>
-                      ))}
+                  <dl className="property-grid">
+                    <div>
+                      <dt>Sessions</dt>
+                      <dd>{selectedVm.session_ids.length > 0 ? selectedVm.session_ids.join(", ") : "None"}</dd>
+                    </div>
+                    <div>
+                      <dt>Directories</dt>
+                      <dd>{selectedVm.directory_paths.length > 0 ? selectedVm.directory_paths.join(", ") : "None"}</dd>
+                    </div>
+                    <div>
+                      <dt>Provider</dt>
+                      <dd>{selectedVm.provider}</dd>
+                    </div>
+                    <div>
+                      <dt>IP address</dt>
+                      <dd>{selectedVm.ip_address ?? "Unknown"}</dd>
+                    </div>
+                    <div>
+                      <dt>Power state</dt>
+                      <dd>{selectedVm.libvirt_state}</dd>
+                    </div>
+                    <div>
+                      <dt>Updated</dt>
+                      <dd>{formatTimestamp(selectedVm.last_state_update_at)}</dd>
+                    </div>
                   </dl>
                 </article>
-              ) : null}
-            </div>
 
-            {actionLog.length > 0 ? (
-              <details className="panel compact-disclosure">
-                <summary className="panel-header compact-disclosure-summary">
-                  <h3>Recent actions</h3>
-                  <span className="panel-meta">{actionLog.length} recent</span>
-                </summary>
-                <pre className="log-view compact-log-view">
-                  {actionLog.map((entry) => `[${formatTimestamp(entry.at)}] ${entry.message}`).join("\n")}
-                </pre>
-              </details>
-            ) : null}
-          </>
-        ) : (
-          <div className="empty-state">Select a VM to inspect host details.</div>
-        )}
-      </section>
-    </div>
+                {Object.keys(selectedVm.labels).length > 0 ? (
+                  <article className="panel compact-panel">
+                    <div className="panel-header">
+                      <h3>Labels</h3>
+                      <span className="panel-meta">{Object.keys(selectedVm.labels).length} entries</span>
+                    </div>
+                    <dl className="property-grid vm-label-grid">
+                      {Object.entries(selectedVm.labels)
+                        .sort(([leftKey], [rightKey]) =>
+                          leftKey.localeCompare(rightKey, undefined, { sensitivity: "base" }),
+                        )
+                        .map(([key, value]) => (
+                          <div key={key}>
+                            <dt>{key}</dt>
+                            <dd>{value}</dd>
+                          </div>
+                        ))}
+                    </dl>
+                  </article>
+                ) : null}
+              </div>
+
+              {actionLog.length > 0 ? (
+                <details className="panel compact-disclosure">
+                  <summary className="panel-header compact-disclosure-summary">
+                    <h3>Recent actions</h3>
+                    <span className="panel-meta">{actionLog.length} recent</span>
+                  </summary>
+                  <pre className="log-view compact-log-view">
+                    {actionLog.map((entry) => `[${formatTimestamp(entry.at)}] ${entry.message}`).join("\n")}
+                  </pre>
+                </details>
+              ) : null}
+            </>
+          ) : (
+            <RecordPlaceholder>Select a VM to view details</RecordPlaceholder>
+          )}
+        </section>
+      </div>
+    </RecordWorkspace>
   );
 }

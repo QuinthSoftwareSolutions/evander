@@ -664,11 +664,13 @@ export function ReportsPage() {
                           onClick={() => setSelectedGraphId(graph.graph_id)}
                         >
                           <td>
-                            <strong>{graph.name}</strong>
+                            <button type="button" className="record-name" onClick={() => setSelectedGraphId(graph.graph_id)}>
+                              {graph.name}
+                            </button>
                             <div className="feature-list-meta">{graph.directory_path || "root"}</div>
                             <div className="activity-bar" aria-hidden="true">
                               <span
-                                style={{ width: `${Math.max(4, (graph.activity_count / maxActivity) * 100)}%` }}
+                                style={{ width: `${(graph.activity_count / maxActivity) * 100}%` }}
                               />
                             </div>
                           </td>
@@ -705,7 +707,7 @@ export function ReportsPage() {
                       <div className="feature-list-meta">{graph.directory_path || "root"}</div>
                       <div className="activity-bar" aria-hidden="true">
                         <span
-                          style={{ width: `${Math.max(4, (graph.activity_count / maxActivity) * 100)}%` }}
+                          style={{ width: `${(graph.activity_count / maxActivity) * 100}%` }}
                         />
                       </div>
                       <div className="mobile-record-row">
@@ -916,7 +918,9 @@ export function ReportsPage() {
                               </span>
                             </td>
                             <td>
-                              <strong>{cluster.graph_name ?? "Unassigned"}</strong>
+                              <button type="button" className="record-name" onClick={() => setSelectedFailureClusterId(cluster.cluster_id)}>
+                                {cluster.graph_name ?? "Unassigned"}
+                              </button>
                               <div className="feature-list-meta">{cluster.directory_path ?? "root"}</div>
                               {cluster.graph_description ? (
                                 <div className="feature-list-meta">{truncateText(cluster.graph_description, 120)}</div>
@@ -1229,7 +1233,9 @@ export function ReportsPage() {
                           onClick={() => setConformanceSelectedKind(item.kind)}
                         >
                           <td>
-                            <strong>{CONFORMANCE_REPORT_TITLES[item.kind]}</strong>
+                            <button type="button" className="record-name" onClick={() => setConformanceSelectedKind(item.kind)}>
+                              {CONFORMANCE_REPORT_TITLES[item.kind]}
+                            </button>
                             <div className="feature-list-meta">{item.artifact_path}</div>
                           </td>
                           <td>
@@ -1567,7 +1573,9 @@ export function ReportsPage() {
                           onClick={() => setSelectedPrIntegrationCheckIndex(check.index)}
                         >
                           <td>
-                            <strong>{humanizeLabel(check.kind)}</strong>
+                            <button type="button" className="record-name" onClick={() => setSelectedPrIntegrationCheckIndex(check.index)}>
+                              {humanizeLabel(check.kind)}
+                            </button>
                             <div className="feature-list-meta">Step {check.index}</div>
                           </td>
                           <td>{check.pr_ids.length > 0 ? check.pr_ids.join(", ") : "None"}</td>

@@ -32,7 +32,7 @@ from evander.storage import JsonStore
 
 MODEL_PROVIDER_MODE_METADATA_KEY = "model_provider_mode"
 MODEL_PROVIDER_MODE_VALUES = frozenset(
-    {"openai_public", "azure_openai", "anthropic", "local_openai"}
+    {"openai_public", "azure_openai", "anthropic", "local_openai", "openrouter"}
 )
 
 
@@ -46,6 +46,55 @@ def normalize_model_provider_mode_override(value: object) -> str | None:
         allowed = ", ".join(sorted(MODEL_PROVIDER_MODE_VALUES))
         raise ValueError(f"{MODEL_PROVIDER_MODE_METADATA_KEY} must be one of: {allowed}")
     return text
+
+
+class OpenRouterSessionError(ValueError):
+    """A session cannot execute under the host's OpenRouter routing policy."""
+
+
+def validate_openrouter_session_model(
+    config: GatewayConfig,
+    model: object,
+    *,
+    session_id: str | None = None,
+) -> str | None:
+    if config.model_provider_mode != "openrouter":
+        return None
+    resolved_model = str(model or "").strip()
+    context = f" for session {session_id!r}" if session_id else ""
+    if not resolved_model:
+        raise OpenRouterSessionError(
+            "model_provider_mode='openrouter' requires an explicit session model" + context
+        )
+    if resolved_model not in config.openrouter_model_routes:
+        raise OpenRouterSessionError(
+            f"OpenRouter model {resolved_model!r}{context} is not present in "
+            "openrouter_model_routes"
+        )
+    return resolved_model
+
+
+def validate_openrouter_session(config: GatewayConfig, session: object) -> None:
+    metadata = getattr(session, "metadata", {}) or {}
+    requested_mode = normalize_model_provider_mode_override(
+        metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+    )
+    agent_provider = str(metadata.get("agent_provider") or "codex").strip().lower()
+    # Creation receives directory config, before the resolver's implicit harness route.
+    mode = requested_mode or (
+        "anthropic" if agent_provider == "claude" else config.model_provider_mode
+    )
+    if mode != "openrouter":
+        return
+    if agent_provider != "codex":
+        raise OpenRouterSessionError("OpenRouter is supported only for Codex sessions")
+    if getattr(session, "codex_auth_mode", None) == "chatgpt_subscription":
+        raise OpenRouterSessionError("OpenRouter requires metered_api authentication")
+    validate_openrouter_session_model(
+        config.model_copy(update={"model_provider_mode": "openrouter"}),
+        getattr(session, "model", None),
+        session_id=getattr(session, "session_id", None),
+    )
 
 
 class TriggerProviderConfig(BaseModel):
@@ -105,6 +154,9 @@ class EffectProviderConfig(BaseModel):
     )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
+    openrouter_api_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_api_key_env: str = "OPENROUTER_API_KEY"
+    openrouter_model_routes: dict[str, str] = Field(default_factory=dict)
     openai_relay_timeout_seconds: float = 300.0
     openai_image_generation_max_request_bytes: int = Field(default=1_048_576, ge=1)
     openai_image_edit_max_request_bytes: int = Field(default=268_435_456, ge=1)
@@ -138,6 +190,9 @@ class QueryProviderConfig(BaseModel):
     )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
+    openrouter_api_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_api_key_env: str = "OPENROUTER_API_KEY"
+    openrouter_model_routes: dict[str, str] = Field(default_factory=dict)
     openai_relay_timeout_seconds: float = 300.0
     openai_image_generation_max_request_bytes: int = Field(default=1_048_576, ge=1)
     openai_image_edit_max_request_bytes: int = Field(default=268_435_456, ge=1)
@@ -161,6 +216,8 @@ class GateProviderConfig(BaseModel):
 
 class ProviderSessionManifest(BaseModel):
     session_id: str
+    model: str | None = None
+    codex_auth_mode: Literal["metered_api", "chatgpt_subscription"] | None = None
     directory_path: str = "root"
     vm_provider: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
@@ -339,7 +396,7 @@ class ProviderConfigResolver:
             resolved = ContainerWorkerAssignmentService(resolved).resolve(
                 session.session_id, session=session, directory_path=normalized_path
             )
-        if isinstance(session, SessionManifest):
+        if isinstance(session, (SessionManifest, ProviderSessionManifest)):
             metadata = session.metadata if isinstance(session.metadata, dict) else {}
             requested_mode = normalize_model_provider_mode_override(
                 metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY)
@@ -347,12 +404,13 @@ class ProviderConfigResolver:
             if requested_mode is not None:
                 payload = resolved.model_dump(mode="json")
                 payload["model_provider_mode"] = requested_mode
-                return GatewayConfig.model_validate(payload)
+                resolved = GatewayConfig.model_validate(payload)
             agent_provider = str(metadata.get("agent_provider") or "").strip().lower()
-            if agent_provider == "claude":
+            if requested_mode is None and agent_provider == "claude":
                 payload = resolved.model_dump(mode="json")
                 payload[MODEL_PROVIDER_MODE_METADATA_KEY] = "anthropic"
-                return GatewayConfig.model_validate(payload)
+                resolved = GatewayConfig.model_validate(payload)
+        validate_openrouter_session(resolved, session)
         return resolved
 
     def resolve_trigger_provider_config(self, directory_path: str | None) -> TriggerProviderConfig:

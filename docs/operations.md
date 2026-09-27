@@ -1,5 +1,23 @@
 # Operations
 
+Use this reference for setup, ongoing administration, and recovery. For a first deployment, begin
+with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
+[systemd services](#systemd-services). For an existing deployment, start with
+[the broad health check](#first-troubleshooting-step) and then the relevant domain:
+
+| Task | Runbook |
+|---|---|
+| Inspect sessions, approvals, configuration, or capacity | [Admin Web](#admin-web-operator-console) and [directory operations](#directory-operations) |
+| Configure or troubleshoot execution | [Execution backends](execution-backends.md) and [container workers](container-worker-backend.md) |
+| Trace a workflow or wake | [Workflow runtime](#workflow-runtime-files-and-troubleshooting) and [wake workers](#wake-workers) |
+| Configure models and package access | [Host-side model access](#host-side-llm-access), [NuGet](#host-side-nuget-access), and [npm audit](#host-side-npm-audit-facade) |
+| Configure communications | [Teams](#microsoft-teams-delegated-auth), [Discord](#host-side-discord-access), and [email](#host-side-email-access) |
+| Register or recover code transport | [Managed Git operations](#managed-git-repository-operations) |
+| Validate a deployment | [Live smoke tests](live-smoke-tests.md) |
+
+For contextual release reintegration, verifier recovery, retained logs and staged worker
+toolchain rollout, see [Release recovery and verifier policy](release-recovery-and-verifier-policy.md).
+
 For the privacy inventory, approved cleanup jobs, holds, reviewer exports, incident references,
 credential upgrade and restore caveats, see [Privacy operations](privacy-operations.md).
 
@@ -107,31 +125,6 @@ If ADO continues to report no PR, publication remains pending for operator inves
 do not blindly clear the guard or recreate the PR. Verify the source/target branches
 and provider result before an operator resolves an unconfirmed attempt.
 
-After CI/CD deploys version 0.25.0 or later on the control plane and compatible worker code,
-preview the operator-owned APP workflow migration:
-
-```bash
-./.venv/bin/python scripts/update_app_ado_attribution_workflow.py --runtime-dir runtime
-```
-
-Add `--apply` to save through the Admin workflow service. The script validates current
-documents, honors revisions and locks, preserves deduplication state, and reads back each
-saved revision. It links the ADO directive to a deterministic intake task, preserves the
-planning handoff's origin, and carries publication context through both PR paths.
-Existing validation warnings are retained; new diagnostics and validation errors block a save.
-It does not backfill tasks or change previously created commits and PRs. Check the trigger
-orchestrator's successful configuration reload after saving.
-
-After deploying 0.28.0 or later, preview the required personal creator policy with:
-
-```bash
-./.venv/bin/python scripts/update_app_ado_attribution_workflow.py --runtime-dir runtime --require-personal
-```
-
-Add `--apply` after reviewing the preview. The flag sets `require_personal` on both the normal
-and artifact-repair PR paths. Without the flag, existing creator policies are preserved.
-Use the configured pack references (normally `team-runtime.v1.json` and
-`app-dev-team-lifecycle.v1.json`), and run as the service user to preserve file ownership.
 
 ## Host Packages
 
@@ -285,6 +278,8 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `model-usage.db`: durable provider-neutral model usage store queried by
   `query:model-usage:list`; it records only usage/provider/correlation metadata
   and does not persist prompt or completion text.
+- `mcp-transport-bindings.db`: MCP connection bindings, last advertised tool snapshots and
+  binding-conflict diagnostics. Individual updates affect only the current connection record.
 - `operator-steering-notes.db`: host-side operator steering notes keyed by
   session and prompt dispatch for legacy relay-delivered steering. Container
   worker steering interrupts the active worker execution and resumes it as a new
@@ -298,6 +293,48 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
+
+### MCP connection-history SQLite cutover
+
+On first startup, the connection repository imports `mcp-transport-bindings.json` into
+`mcp-transport-bindings.db`. Import and its completion marker commit together. Invalid input
+fails startup without committing a partial import. Subsequent startups use SQLite without
+reading or rewriting the legacy JSON file. The original JSON snapshot is retained.
+
+Coordinate the first upgrade across all control-plane processes using this runtime: stop the
+gateway, Admin Web, orchestrators and other old runtime consumers before starting the upgraded
+code. Do not mix old JSON writers and new SQLite writers. Include the new database in runtime
+backups; use SQLite's backup API or stop its writers before copying the database and any WAL.
+
+The retained JSON file is a pre-upgrade snapshot, not a live rollback copy. For a rollback that
+preserves newer connection history, stop all runtime consumers and export the current bindings
+before installing the older code. Run from the deployment directory with its virtual environment:
+
+```python
+import json
+from pathlib import Path
+import sqlite3
+from evander.storage import write_json_atomically
+
+runtime = Path("runtime")  # Use the configured runtime directory.
+connection = sqlite3.connect(
+    (runtime / "mcp-transport-bindings.db").resolve().as_uri() + "?mode=ro", uri=True
+)
+try:
+    bindings = {
+        key: json.loads(payload)
+        for key, payload in connection.execute(
+            "SELECT transport_session_id, payload_json FROM mcp_transport_bindings"
+        )
+    }
+finally:
+    connection.close()
+write_json_atomically(runtime / "mcp-transport-bindings.json", bindings, fsync_directory=True)
+```
+
+Archive the SQLite database and any accompanying `-wal`/`-shm` files outside the active runtime
+before restarting the older code. A later upgrade must import the then-current JSON file into
+a fresh database, rather than reuse the previous import marker.
 
 ### Internal-event SQLite cutover
 
@@ -682,7 +719,7 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   owner/audit metadata only; workflow graph visibility is controlled by Admin Web group assignments
   and direct workflow grants. Saving from a filtered view keeps unchanged graph metadata entries
   intact, so graphs outside the selected directory are not rewritten by the presentation filter.
-- For the live Weekly APP Audit graph, use Admin Web or the workflow API to edit the audit
+- For workflows that run npm audit, use Admin Web or the workflow API to edit the audit
   `effect:agent:create` node and set `npm_registry_url` to the control-plane facade URL,
   `http://<control-plane-private-ip>:11881/`. Keep the other container-worker agent-create nodes
   on Nexus-backed registry defaults so only audit sessions opt into the facade.
@@ -738,7 +775,11 @@ and surfaces:
   SQLite read model when available and falls back to JSONL when needed. Free-text
   searches use a compact trigram index that is backfilled in short background batches
   after an existing audit database is upgraded; the compatible SQLite scan remains
-  available until that backfill finishes.
+  available until that backfill finishes. A required journal read that fails returns HTTP `503`
+  (`Tool-call audit log is unavailable`); inspect path, permissions, encoding, and service logs
+  before treating an empty or failed display as evidence of no activity. Failed index updates
+  retain the appended JSONL entry and log a warning; `evander-cli rebuild-audit-index --config
+  runtime` rebuilds the derived index after the underlying problem is resolved.
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
 - a Host Directories page for revisioned resource configuration, host-only health checks, and
@@ -779,6 +820,28 @@ Dashboard-tagged GET requests use a short-lived backend JSON cache to avoid repe
 systemd, VM inventory, workflow, approval, session, and audit read while an operator is moving in
 and out of the dashboard. The detailed tabs are not opted into that cache, and the dashboard Refresh
 button sends a cache-bypass marker for a fresh read.
+
+Expensive capacity collection additionally shares a 30-second service snapshot across readers,
+including detailed views. Worker health and telemetry probes run concurrently, with at most four
+workers at a time, one connection attempt per probe, and a five-second HTTP timeout (or a shorter
+configured timeout). Rolling workflow graph reports share a 15-second snapshot and scan activity
+once for node totals and distinct run counts. Explicit report periods remain fresh reads. Dashboard
+Refresh and cache-control bypasses refresh these service snapshots too; payload timestamps retain
+the actual collection time/window rather than pretending a cached result was just collected.
+
+Team cost reports maintain a disposable `runtime/team-cost-report.db` projection alongside the
+authoritative model-usage store. Normal reads update only changed request groups, including late
+transcripts, corrections, deletions, and attribution changes. The first build, pricing changes,
+and budget-window changes still rebuild historical usage and can be slower. The UI coalesces
+in-flight cost reads and spaces automatic refreshes by 15 seconds; an explicit budget reset forces
+a new read. Team views use read-only collection projections and never persist partial state.
+
+Slow-request journal entries distinguish response-header, first-body and total elapsed time.
+For `text/event-stream` subscriptions, `duration_ms` is startup latency, not connection lifetime;
+`phase=stream_start` is emitted when a slow first body arrives, and `phase=stream_end` identifies
+failed/incomplete streams. Ordinary responses use `phase=response` and total duration. These are
+wall-clock phases, not separate database/handler/serialization profiles. Failed responses retain
+the actual sent status (possibly 200) and add `failed=True` when an exception escapes.
 
 For machine-readable scripting that matches the GUI data model, use:
 
@@ -915,7 +978,7 @@ Storage layout for directory config:
 ### Codex provider bootstrap
 
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user, seeds `~/bin/rg`, and verifies Codex.
-- The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `EVANDER_LLM_BASE_URL` from `~/.agent/config.env`; it registers the host relay as `[model_providers.evander_openai_relay]` with `supports_websockets = false` so Codex does not run websocket prewarm against the HTTP/SSE relay. It also registers the host MCP gateway as a required `[mcp_servers.evander]` connection using `EVANDER_GATEWAY_URL`, preventing model turns from racing tool discovery, and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
+- The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-6-sol"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `EVANDER_LLM_BASE_URL` from `~/.agent/config.env`; it registers the host relay as `[model_providers.evander_openai_relay]` with `supports_websockets = false` so Codex does not run websocket prewarm against the HTTP/SSE relay. It also registers the host MCP gateway as a required `[mcp_servers.evander]` connection using `EVANDER_GATEWAY_URL`, preventing model turns from racing tool discovery, and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - Runtime start/resume model selection is host-session-bound: `session.model` wins, otherwise effective `issue_setup.default_model` is used. If neither resolves, start/resume fails with a remediation error instead of using an implicit runtime fallback model.
 - The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Codex bootstrap.
 
@@ -1019,6 +1082,28 @@ Storage layout for directory config:
   Graph adapter caps each history scan with `teams_history_page_cap` plus
   `teams_history_deadline_seconds`. Each attempt is separately capped by
   `teams_history_request_timeout_seconds`; transient failures retry inside the overall deadline.
+- Teams history returns compact `metadata` by default: sender/session attribution, content type,
+  reply/link details, attachment identifiers and names, card content, mentions, reactions and edit
+  timestamps. The message body is returned once per message representation. Raw provider payloads
+  remain in host storage; request `include_metadata: true` when those details are needed.
+  Attachment listing and downloads continue to use the stored full records. MCP clients should
+  consume one of the text or structured representations supplied by the protocol.
+
+### Measuring workflow preparation overhead
+
+Run `PYTHONPATH=src ./.venv/bin/python scripts/benchmark_teams_preparation.py --samples 9`
+to measure an eleven-step durable workflow with a large synthetic configuration and message/session
+payloads, plus the size of a five-message Teams MCP response. Use the same script and interpreter
+with each checkout's `src` on `PYTHONPATH`, repeat in both orders, and avoid concurrent benchmarks.
+The script uses temporary databases and immediate fake providers. It excludes external services,
+worker/container startup and model response time, so its measurements are not end-to-end chat latency.
+
+Worker application INFO logs are disabled by default. Temporarily enable the `evander.worker`
+logger at INFO during latency investigations to record `worker_subscription_preflight` and
+`codex_subscription_startup` durations in the journal. The four startup phases remain available in
+job metadata without enabling INFO logging. Restore normal logging after the investigation. See
+[Orchestration latency and recovery](orchestration-latency.md#reading-timings) for execution-storage
+timings, available at DEBUG, that help distinguish workflow persistence from provider work.
 
 ## VM Python Bootstrap
 
@@ -1114,13 +1199,15 @@ and record the backup SHA-256 in the resulting artifact bundle.
 
   ```bash
   ./scripts/prewarm_container_worker_nuget_cache.sh \
-    --worker truman-worker-1 \
-    --target /srv/source/AcmePlatform/Src/App.slnx
+    --worker worker.example.test \
+    --target /srv/sample/SampleApp.slnx
   ```
 
 - The script restores into a temporary global-packages folder, includes the
   worker restore-support package used by the offline smoke test, and extracts
   the archive additively into each worker cache.
+- For a private feed, repeat `--private-package-pattern` for the package ID patterns
+  configured under `provider_state.nuget.private_package_patterns` in the owning directory.
 - When the `.NET` toolchain and checkout are already on the worker, run the
   same script on that worker with `--local --dotnet /var/lib/agent-worker/toolchain-cache/dotnet/dotnet`
   and set `NUGET_RELAY_BASE_URL` to the control-plane relay URL visible from the
@@ -1141,8 +1228,11 @@ and record the backup SHA-256 in the resulting artifact bundle.
   ```
 
 - The guest receives `EVANDER_LLM_BASE_URL`, `OPENAI_BASE_URL`, `EVANDER_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/evander/session.env`.
-- The scaffold includes `evander-openai-relay`, a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
-- The guest still talks to the relay URL and keeps placeholder provider auth values; only host-side provider settings decide whether the relay forwards to public OpenAI, a host-local OpenAI-compatible endpoint, Azure OpenAI, or Anthropic.
+- `evander-openai-relay` is a host-side model proxy that reads real provider API keys only from the host environment. In public OpenAI mode it forwards guest requests to `https://api.openai.com/v1`.
+- For metered model access, the guest talks to the relay URL and keeps placeholder provider auth
+  values. Host-side provider settings select public OpenAI, a local OpenAI-compatible endpoint,
+  Azure OpenAI, Anthropic, or OpenRouter. Container Codex subscription turns use the separate
+  [brokered subscription path](#switching-container-codex-usage-source).
 - For Azure OpenAI Codex routing, set `model_provider_mode: "azure_openai"` in `root` or directory `providers.json` and configure `azure_openai_endpoint`, `azure_openai_api_key_env`, `azure_openai_api_version`, and `azure_openai_model_deployments`.
 - Example directory-scoped `providers.json` overlay:
 
@@ -1153,7 +1243,7 @@ and record the backup SHA-256 in the resulting artifact bundle.
     "azure_openai_api_key_env": "AZURE_OPENAI_API_KEY",
     "azure_openai_api_version": "2024-10-21-preview",
     "azure_openai_model_deployments": {
-      "gpt-5.4": "codex-gpt-5-4"
+      "gpt-6-sol": "codex-gpt-6-sol"
     }
   }
   ```
@@ -1199,6 +1289,11 @@ and record the backup SHA-256 in the resulting artifact bundle.
   `--model-provider-mode local_openai`.
 - Restart `evander-openai-relay.service` after changing provider config that the relay process has already loaded.
 - Public OpenAI remains the default when `model_provider_mode` is omitted.
+- OpenRouter is opt-in through `model_provider_mode: "openrouter"` and
+  `openrouter_model_routes`. Select an explicit approved session model and
+  metered API authentication. Use the [OpenRouter operator guide](openrouter.md)
+  for provider endpoint selection, mandatory ZDR, compaction compatibility,
+  usage evidence, and rollback. No additional service or guest port is needed.
 - For Claude Code routing, set `model_provider_mode: "anthropic"` and configure `anthropic_api_key_env`; optional settings include `anthropic_api_base_url`, `anthropic_api_version`, and `anthropic_relay_timeout_seconds`. The Anthropic mode currently forwards `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens`; Anthropic websocket/realtime requests are rejected.
 - The relay records provider-neutral model usage metadata for HTTP, SSE, and
   WebSocket Responses/Completions traffic that exposes a provider `usage`
@@ -1211,7 +1306,7 @@ and record the backup SHA-256 in the resulting artifact bundle.
 - OpenAI image generation and editing are denied by default. Set the session
   policy flag `image_generation_enabled: true` only for agents that should be
   allowed to call `POST /v1/images/generations`, `POST /v1/images/edits`, or
-  declare Responses `image_generation` tools. The standard APP demo workflows
+  declare Responses `image_generation` tools. The standard App demo workflows
   opt in after provisioning metadata is stored; ordinary sessions remain
   disabled.
 - Direct image requests use host-injected OpenAI authentication. Generation
@@ -1840,7 +1935,7 @@ For verbal ADO approval flows, have the agent read the call transcript, identify
 approved work item IDs, and call:
 
 ```json
-{"session_id":"session-1","id":15446,"project":"Example Industry APP","add_tags":["auto-dev-approved"]}
+{"session_id":"session-1","id":15446,"project":"Example Industry App","add_tags":["auto-dev-approved"]}
 ```
 
 Audit/result behavior:
@@ -2043,6 +2138,100 @@ minutes and cannot be reused with changed filters; omit `cursor` to start a new 
 returns message summaries. Use the separately granted `email_get_message` tool with a returned
 `message_id` when the full message body or attachment metadata is needed.
 
+### Gmail OAuth/token setup
+
+1. Create OAuth credentials in Google Cloud for Gmail API access.
+2. Obtain/refresh an access token for the mailbox scopes you need.
+3. Export the token only in host-side environment context (for example a systemd env file):
+
+```bash
+export GMAIL_OPS_ACCESS_TOKEN=...
+```
+
+4. Reference that env var in mailbox config:
+
+```yaml
+email_mailboxes:
+  - mailbox_id: "ops-gmail"
+    provider: "gmail"
+    account: "me"
+    auth_env_var_names:
+      access_token: "GMAIL_OPS_ACCESS_TOKEN"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+```
+
+### Microsoft Graph OAuth/token setup
+
+1. Register a confidential application in Microsoft Entra ID and grant the least-privileged
+   Microsoft Graph application permissions required by the mailbox workflow (for example,
+   `Mail.Read` for inbox processing), including administrator consent.
+2. Scope application access to the intended mailbox or mailboxes in Exchange Online.
+3. Export the application identity and credential only on the host:
+
+```bash
+export GRAPH_TENANT_ID=...
+export GRAPH_EXEC_CLIENT_ID=...
+export GRAPH_EXEC_CLIENT_SECRET=...
+export GRAPH_FINANCE_CLIENT_ID=...
+export GRAPH_FINANCE_CLIENT_SECRET=...
+```
+
+4. Reference the env vars in mailbox config. Evander lazily exchanges the client credentials at
+   the Microsoft identity platform token endpoint, caches the returned Graph access token, and
+   renews it shortly before expiry:
+
+```yaml
+email_folder_allowlist_by_mailbox:
+  ops-gmail: ["inbox", "drafts"]
+  exec-graph: ["inbox", "drafts"]
+  finance-graph: ["inbox", "drafts"]
+email_mailboxes:
+  - mailbox_id: "exec-graph"
+    provider: "graph"
+    address: "leader@example.com"
+    auth_env_var_names:
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_EXEC_CLIENT_ID"
+      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+  - mailbox_id: "finance-graph"
+    provider: "graph"
+    address: "finance@example.com"
+    auth_env_var_names:
+      tenant_id: "GRAPH_TENANT_ID"
+      client_id: "GRAPH_FINANCE_CLIENT_ID"
+      client_secret: "GRAPH_FINANCE_CLIENT_SECRET"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+```
+
+For compatibility, a Graph mailbox can instead reference `auth_secret_refs.access_token`, but the
+operator must then replace that short-lived token whenever it expires. Do not put a client secret
+in an `access_token` environment variable; client secrets must be exchanged at the token endpoint.
+
+### Multi-mailbox session allowlist example
+
+```bash
+evander-cli directories config-set \
+  --runtime-dir runtime \
+  --domain policy \
+  root \
+  '{"email_mailbox_allowlist":["ops-gmail","exec-graph","finance-graph"],"email_folder_allowlist_by_mailbox":{"ops-gmail":["inbox","drafts"],"exec-graph":["inbox","drafts"],"finance-graph":["inbox","drafts"]}}'
+
+evander-cli create-session real-session --runtime-dir runtime
+```
+
+Admin Web exposes two independent session controls:
+
+- **Email mailbox access** selects mailbox accounts, folders, and `read`, `draft`, or `send`
+  capability. Prefer `read` for agents that only inspect mail.
+- **Communication targets** selects Teams/Discord destinations and outbound email recipients. These
+  targets do not grant mailbox access.
+
+Email send requires both a `send` mailbox grant and a write-capable recipient target bound to the
+same mailbox auth profile. Draft creation requires `draft` access but no recipient target. Existing
+sessions with nullable canonical fields remain on their legacy allowlists until the operator clicks
+**Convert to managed grants**; explicit empty canonical lists mean no access.
+
 ## Operator Approval Notifications
 
 Approval notifications are host-side operator alerts for newly created `ApprovalRequest` records.
@@ -2172,13 +2361,13 @@ Example policy that constrains `create_ado_backlog_item`:
     "create_ado_backlog_item": [
       {
         "id": "app-ado-work-item-constraints",
-        "name": "APP backlog item constraints",
+        "name": "App backlog item constraints",
         "constraints": [
           {
             "id": "project-fixed",
             "path": "project",
             "operator": "fixed",
-            "value": "Example Industry APP"
+            "value": "Example Industry App"
           },
           {
             "id": "type-allowed",
@@ -2420,7 +2609,9 @@ without exposing provider credentials in the VM.
 1. Lightweight pending check:
    - `has_pending_feedback()`
 2. Unread fetch when pending is true:
-   - `list_unread_feedback(last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
+   - `list_unread_feedback(cursor=..., limit=...)` fetches unread items and immediately advances
+     the host's session read cursor to the returned `next_cursor`. An explicit cursor cannot
+     rewind the saved host cursor. Use a small limit when bounded batches are needed.
    - `list_all_feedback(limit)` when you need full PR comment history, including already-read items
    - `list_pr_feedback_attachments(feedback_id)` when an Azure DevOps feedback body references a
      file. Select an `attachment_id`, call
@@ -2452,8 +2643,10 @@ without exposing provider credentials in the VM.
      required.
 3. Post threaded replies (when needed):
    - `post_pr_feedback_reply(provider, repo, pr_id, body_text, thread_id/comment_id, feedback_kind, idempotency_key)`
-4. Cursor advancement:
-   - advance `last_read_cursor` only after local handling and any provider reply posting have completed durably.
+4. Local completion:
+   - persist the returned feedback IDs and bodies before processing; record completion and reply
+     idempotency keys separately. Fetching has already marked the batch read on the host, so
+     local completion is not a host acknowledgement operation.
 
 For session-scoped MCP connections, agents should omit `session_id` on these self-scoped tools. The
 gateway binds the caller session from the MCP connection and rejects conflicting legacy
@@ -2461,9 +2654,12 @@ gateway binds the caller session from the MCP connection and rejects conflicting
 
 ### Guest state model
 
-- Persist `last_read_cursor` per `session_id` in guest-local durable state.
-- Never share cursors across sessions.
-- Advance cursor only after the fetched items are durably handled.
+- Keep a durable local inbox of fetched items and their handling status per session.
+- `has_pending_feedback` checks unread state without consuming it. `list_unread_feedback`
+  consumes the host unread cursor on fetch; `list_all_feedback` ignores read cursors and supports
+  recovery from already-read history.
+- A local checkpoint does not rewind the host cursor. Do not rely on an older `cursor` argument
+  to redeliver a fetched batch.
 - Keep handlers idempotent by feedback ID to tolerate retries/replays.
 
 ### Cron-driven pull request polling
@@ -2726,18 +2922,19 @@ live provider APIs.
 ### Failure handling
 
 - MCP unavailable/timeouts:
-  - Keep cursor unchanged.
-  - Log and retry on next loop (optionally with bounded backoff/jitter).
+  - A fetch may have advanced the host cursor even if its response was lost. Inspect the local
+    inbox and use `list_all_feedback` to reconcile missing items by feedback ID.
+  - Log the failure and retry with bounded backoff as appropriate.
 - Provider API failures during `post_pr_feedback_reply`:
-  - Keep cursor unchanged for unhandled items.
+  - Keep the fetched item pending in the local inbox; the host read cursor has already advanced.
   - Retry with the same `idempotency_key` so duplicates are suppressed if the prior attempt actually succeeded upstream.
   - Validate host-side provider credentials and endpoint reachability before replaying.
-- Stale cursor:
-  - Detect host cursor error.
-  - Reset/recover cursor using a host-supported baseline, then continue.
-- Partial fetch or partial local processing:
-  - Treat as uncommitted.
-  - Do not advance cursor; re-fetch on next loop.
+- Partial local processing or a crash before persisting the fetched response:
+  - Resume locally retained pending items. Recover missing items from `list_all_feedback` and
+    compare feedback IDs before replying again.
+  - Fetching unread feedback is not an acknowledgement-after-processing queue; workflows that
+    need their own checkpoint should use the separate read-only query and workflow-owned state.
+
 ### Audit and log file locations
 
 - Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results), `runtime/host-agent-control-state.json` (durable enabled/disabled state by VM).
@@ -2747,30 +2944,9 @@ live provider APIs.
 
 ### Security boundary reminder
 
-- Guests call MCP only; they do not hold Discord, email, or OpenAI provider credentials.
+- Guests use MCP for provider tools and the dedicated relays for model/package/HTTP access;
+  they do not hold the host's Discord, email, or model provider credentials.
 - Upstream provider access and secret material stay host-side in gateway/relay components.
-
-### Gmail OAuth/token setup
-
-1. Create OAuth credentials in Google Cloud for Gmail API access.
-2. Obtain/refresh an access token for the mailbox scopes you need.
-3. Export the token only in host-side environment context (for example a systemd env file):
-
-```bash
-export GMAIL_OPS_ACCESS_TOKEN=...
-```
-
-4. Reference that env var in mailbox config:
-
-```yaml
-email_mailboxes:
-  - mailbox_id: "ops-gmail"
-    provider: "gmail"
-    account: "me"
-    auth_env_var_names:
-      access_token: "GMAIL_OPS_ACCESS_TOKEN"
-    folder_allowlist_defaults: ["inbox", "drafts"]
-```
 
 ## Review Request Workflow
 
@@ -2886,81 +3062,9 @@ The helper:
   - do not encode the file path and line number in `body_text`; the tool attaches the provider-native line context
   - for Azure DevOps, inline comments are resolved against the latest PR iteration changes and require a matching changed path; if a path cannot be safely anchored, post a top-level comment instead
 
-### Microsoft Graph OAuth/token setup
-
-1. Register a confidential application in Microsoft Entra ID and grant the least-privileged
-   Microsoft Graph application permissions required by the mailbox workflow (for example,
-   `Mail.Read` for inbox processing), including administrator consent.
-2. Scope application access to the intended mailbox or mailboxes in Exchange Online.
-3. Export the application identity and credential only on the host:
-
-```bash
-export GRAPH_TENANT_ID=...
-export GRAPH_EXEC_CLIENT_ID=...
-export GRAPH_EXEC_CLIENT_SECRET=...
-export GRAPH_FINANCE_CLIENT_ID=...
-export GRAPH_FINANCE_CLIENT_SECRET=...
-```
-
-4. Reference the env vars in mailbox config. Evander lazily exchanges the client credentials at
-   the Microsoft identity platform token endpoint, caches the returned Graph access token, and
-   renews it shortly before expiry:
-
-```yaml
-email_folder_allowlist_by_mailbox:
-  ops-gmail: ["inbox", "drafts"]
-  exec-graph: ["inbox", "drafts"]
-  finance-graph: ["inbox", "drafts"]
-email_mailboxes:
-  - mailbox_id: "exec-graph"
-    provider: "graph"
-    address: "leader@example.com"
-    auth_env_var_names:
-      tenant_id: "GRAPH_TENANT_ID"
-      client_id: "GRAPH_EXEC_CLIENT_ID"
-      client_secret: "GRAPH_EXEC_CLIENT_SECRET"
-    folder_allowlist_defaults: ["inbox", "drafts"]
-  - mailbox_id: "finance-graph"
-    provider: "graph"
-    address: "finance@example.com"
-    auth_env_var_names:
-      tenant_id: "GRAPH_TENANT_ID"
-      client_id: "GRAPH_FINANCE_CLIENT_ID"
-      client_secret: "GRAPH_FINANCE_CLIENT_SECRET"
-    folder_allowlist_defaults: ["inbox", "drafts"]
-```
-
-For compatibility, a Graph mailbox can instead reference `auth_secret_refs.access_token`, but the
-operator must then replace that short-lived token whenever it expires. Do not put a client secret
-in an `access_token` environment variable; client secrets must be exchanged at the token endpoint.
-
-### Multi-mailbox session allowlist example
-
-```bash
-evander-cli directories config-set \
-  --runtime-dir runtime \
-  --domain policy \
-  root \
-  '{"email_mailbox_allowlist":["ops-gmail","exec-graph","finance-graph"],"email_folder_allowlist_by_mailbox":{"ops-gmail":["inbox","drafts"],"exec-graph":["inbox","drafts"],"finance-graph":["inbox","drafts"]}}'
-
-evander-cli create-session real-session --runtime-dir runtime
-```
-
-Admin Web exposes two independent session controls:
-
-- **Email mailbox access** selects mailbox accounts, folders, and `read`, `draft`, or `send`
-  capability. Prefer `read` for agents that only inspect mail.
-- **Communication targets** selects Teams/Discord destinations and outbound email recipients. These
-  targets do not grant mailbox access.
-
-Email send requires both a `send` mailbox grant and a write-capable recipient target bound to the
-same mailbox auth profile. Draft creation requires `draft` access but no recipient target. Existing
-sessions with nullable canonical fields remain on their legacy allowlists until the operator clicks
-**Convert to managed grants**; explicit empty canonical lists mean no access.
-
 ## Host-Side NuGet Access
 
-- The scaffold includes `evander-nuget-relay`, a host-side relay that proxies `nuget.org` and private Azure Artifacts feeds.
+- `evander-nuget-relay` proxies `nuget.org` and private Azure Artifacts feeds.
 - The relay reads Azure feed credentials from host environment (`AZURE_ARTIFACTS_PAT`) and does not require guest-side private feed credentials.
 - Configure the relay environment in `config/nuget-relay.env`.
 - After installing units, run `./scripts/bootstrap_nuget_vm.sh <vm-name>` so guest restores target relay URLs on `http://192.168.250.1:11666`.
@@ -3069,7 +3173,7 @@ Workflow work-item intake example:
     "provider": "azure_devops",
     "directory_path": "root/team-a",
     "states": ["Committed"],
-    "tags_any": ["truman"],
+    "tags_any": ["evander"],
     "top": 50
   }
 }
@@ -3096,7 +3200,7 @@ GitHub issue intake example:
     "directory_path": "root/team-a",
     "repo": "owner/repo",
     "state": "open",
-    "labels_any": ["truman"],
+    "labels_any": ["evander"],
     "comment_contains": "@WorkflowBot",
     "top": 50
   }
@@ -3189,56 +3293,6 @@ Renewal runs on the next context request when state is near expiry, including af
 an idle period longer than the site's lifetime. Existing open contexts retain the
 site's expiry. No scheduled job or additional firewall rule is required.
 
-### APP demo provisioning workflow
-
-- `trigger:script-run-request` is wired to accept exactly one host-approved provisioning wrapper:
-  `provision_exampleindustry_app_demo_environment.sh`.
-- The checked-in workflow no longer runs a host-side Bash provisioning script. It queues a typed
-  Azure DevOps pipeline with `effect:ado:pipeline-run`, waits for the terminal result, and then
-  maps the deterministic demo URLs and aliases with `gate:map`.
-- The Azure DevOps pipeline owns Azure resource creation, deployment, and any cloud-side
-  prerequisites. The effect uses the directory-scoped Azure DevOps provider configuration and PAT
-  to queue and poll the pipeline.
-- The first request parameter must be a lowercase alphanumeric resource name. The gate rejects
-  names outside `^[a-z0-9]+$` so `gate:map` can safely derive DNS labels without string
-  normalization helpers.
-- The mapped `session_metadata_patch` object appends two relay targets under
-  `metadata.http_targets.targets`: `<environment-alias>-api` for backend/API traffic and
-  `<environment-alias>-ui` for browser/DOM traffic. It keeps the APP-specific
-  `metadata.example_app.environments.<environment-alias>` record for convenience and refreshes
-  `metadata.example_app_last_provision` with the selected environment alias plus its API alias,
-  UI alias, `app_base_url` (API base URL), and `app_public_url` (public UI URL).
-- The trigger graph writes that metadata patch into the originating session and resumes the same
-  session with the provisioning pipeline run URL in the follow-up prompt.
-- Guests use the API relay alias for programmatic traffic. Seeded browsers navigate to the public
-  UI URL through the session browser proxy, preserving the APP UI origin and its API CORS policy.
-- Container-backed agents receive `HTTP_TARGET_RELAY_BASE_URL` and should treat it as an opaque
-  relay prefix; tokenized sessions may include relay auth in that prefix. Build relay URLs as
-  `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/`. Browser automation uses
-  `EVANDER_PLAYWRIGHT_LAUNCH_HELPER` and the public UI URL.
-
-The older `scripts/provision_exampleindustry_app_demo_environment.sh` wrapper is retained only for
-compatibility with older live workflow packs and should not be used for new provisioning graphs.
-
-For changes after deployment, enable `app-demo-modification.v1-example.json` as an operator-owned
-workflow pack (copy it to the corresponding `.json` name and add that name to the active workflow
-pack list). Its `external.app-demo-change-requested` path is deliberately independent of the
-provisioning graph:
-
-- the authenticated caller supplies a validated resource base name and instructions while the
-  host-facing API derives all target URLs and the deterministic `demo-agent-<resource>` session;
-- `effect:agent:create` with `existing_agent_behavior: upsert` preserves an existing container
-  session and thread metadata, while allowing a minimal demo to gain an agent on its first change;
-- `effect:session:renew-if-expired` uses both `extend_by: 8h` and
-  `renew_if_expires_within: 8h`, so every accepted change gets a fresh eight-hour working window;
-- APP, browser-proxy, and optional Elastic target metadata are refreshed before the session context
-  is read; and
-- `effect:agent:enqueue-prompt` resumes `metadata.agent_thread_id` and serializes overlapping
-  modification requests without queueing an Azure DevOps pipeline.
-
-Treat the workflow event machine token as a host secret. Do not expose it to the DemoPage browser,
-and do not accept caller-selected session IDs or arbitrary URLs in this ingress path.
-
 ### Teams and Discord ingest workers
 
 - `trigger:teams:new-message` and `trigger:teams:direct-message` events are produced by a
@@ -3299,7 +3353,8 @@ Managed Git hook ingestion path:
 - Run `PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py` for the paired
   effect contract regression coverage and the generated effect conformance report.
 - See [conformance-reports.md](conformance-reports.md) for the shared Admin Web conformance report
-  view and the exact runtime artifact names it reads.
+  view, explicit publication commands, and the exact runtime artifact names it reads. Ordinary
+  pytest runs keep their reports in a unique test-cache directory.
 
 ## Systemd Services
 
@@ -3353,7 +3408,7 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    Additional directory-specific key env vars should be supplied through `config/admin-web.env`,
    `secrets.env`, or the service manager environment. The HTTP
    target relay is auth-transparent and exists to enforce destination allowlisting for approved external web
-   endpoints. In the APP demo workflow, guests authenticate to APP interactively or with
+   endpoints. In the App demo workflow, guests authenticate to App interactively or with
    guest-managed bearer tokens/cookies through that relay path.
 5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
    and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
@@ -3747,14 +3802,15 @@ See [Managed Git Repositories](git-remotes.md) for the complete contract.
 
 ## Live Smoke Tests
 
-Use [live-smoke-tests.md](live-smoke-tests.md) for the
-decision-complete runbook covering:
+Use [live-smoke-tests.md](live-smoke-tests.md) to select deployment checks covering:
 
 - host gateway only verification
 - full guest-to-host verification
 - dedicated Discord test channels
 - one Gmail and one Graph mailbox
 - read-only email validation
+- optional classification, subscription egress, and approved attachment-send checks
+- managed Git acceptance across VM and container sessions
 
 ## Operational Guardrails
 
@@ -3820,5 +3876,5 @@ to a one-hour minimum interval and one CPU, with one compiler job across the run
 The interval and CPU allowance are configurable; turn off automatic refresh for a
 manually scheduled baseline. Search changed and dirty files in the agent checkout.
 See
-[Repository indexing](repository-indexing.md) for image preparation, APP configuration,
+[Repository indexing](repository-indexing.md) for image preparation, App configuration,
 the reconciliation workflow, CLI commands, recovery, retention and external queries.

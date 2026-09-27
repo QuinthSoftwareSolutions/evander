@@ -140,9 +140,7 @@ class RepositoryIndexService:
             "managed_repo_id": repo,
             **self.store.settings(repo),
             "builds": [self.public(b) for b in builds],
-            "builds_total": self.store.count(
-                repo, sha=normalized_sha, statuses=build_statuses
-            ),
+            "builds_total": self.store.count(repo, sha=normalized_sha, statuses=build_statuses),
             "builds_limit": builds_limit,
             "builds_offset": builds_offset,
             "status": latest[0]["status"] if latest else "unavailable",
@@ -322,6 +320,8 @@ class RepositoryIndexService:
                 resolved_protected.add((repo, resolved["sha"]))
         protected = resolved_protected
         for build in builds:
+            if len(deleted) >= 20:
+                break
             if build["id"] in worker_cleanup_failed:
                 continue
             if build["status"] in {"ready", "partial"} and build["repo"] not in latest:
@@ -356,12 +356,9 @@ class RepositoryIndexService:
                 except Exception:
                     logger.warning("Deferring index snapshot release for %s", build["id"])
                     continue
-            with self.store.connect(write=True) as db:
-                db.execute("DELETE FROM snapshots WHERE id=?", (build["id"],))
-                db.execute("DELETE FROM content_search WHERE hash NOT IN (SELECT hash FROM chunks)")
-                db.execute("DELETE FROM embeddings WHERE hash NOT IN (SELECT hash FROM chunks)")
-                db.execute("DELETE FROM contents WHERE hash NOT IN (SELECT hash FROM chunks)")
+            self.store.delete_snapshot(build["id"])
             deleted.append(build["id"])
+        self.store.collect_content_garbage()
         return {"deleted": deleted}
 
     def _retire_finished_worker_sessions(self, directory: str, builds: list[dict]) -> set[str]:

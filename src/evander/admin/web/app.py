@@ -16,6 +16,7 @@ from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -37,6 +38,7 @@ from evander.admin.web.frontend_assets import (
     admin_frontend_assets_ready,
     admin_frontend_dist_dir,
 )
+from evander.admin.web.ui_rollout import addon_rollout_routes, decorate_ui_html, selected_ui
 from evander.admin.web.git_repositories import git_repository_routes
 from evander.admin.web.repository_index import repository_index_routes
 from evander.admin.web.agents import agent_routes
@@ -190,10 +192,12 @@ def _script_json(payload: object) -> str:
     )
 
 
-def _index_html(dist_dir: Path, *, branding_payload: dict[str, object]) -> str:
+def _index_html(
+    dist_dir: Path, *, branding_payload: dict[str, object], asset_root: Path | None = None
+) -> str:
     index_path = dist_dir / "index.html"
     page_title = str(branding_payload.get("page_title") or "")
-    if not admin_frontend_assets_ready(dist_dir):
+    if not admin_frontend_assets_ready(dist_dir, asset_root=asset_root, include_rollout=False):
         return _fallback_html(
             dist_dir,
             page_title=page_title,
@@ -272,14 +276,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
         if path.startswith("/api/") or path.startswith("/addons/"):
-            if self._auth.read_session(request) is None:
+            if await run_in_threadpool(self._auth.read_session, request) is None:
                 return json_error("Authentication required", status_code=401)
             return await call_next(request)
         return await call_next(request)
 
 
 class AdminWebRequestTimingMiddleware:
-    """Log slow or failed HTTP requests without recording request contents."""
+    """Log response latency, not successful SSE subscription lifetime."""
 
     def __init__(self, app, *, routes: list[Any], slow_request_threshold_ms: int) -> None:
         self.app = app
@@ -294,29 +298,69 @@ class AdminWebRequestTimingMiddleware:
         started_at = time.perf_counter()
         request_scope = dict(scope)
         status_code: int | None = None
+        response_start_ms: int | None = None
+        first_body_ms: int | None = None
+        event_stream = False
+        startup_logged = False
+        failed = False
+
+        def elapsed_ms() -> int:
+            return max(0, int((time.perf_counter() - started_at) * 1000))
+
+        def log_timing(duration_ms: int, *, phase: str) -> None:
+            route = self._route_template_for_scope(request_scope, self.routes)
+            logger.warning(
+                "admin_web_request_timing method=%s route=%s status=%s duration_ms=%s "
+                "slow=%s response_start_ms=%s first_body_ms=%s total_ms=%s "
+                "event_stream=%s failed=%s phase=%s",
+                scope.get("method", ""),
+                route,
+                status_code if status_code is not None else 500,
+                duration_ms,
+                duration_ms >= self.slow_request_threshold_ms,
+                response_start_ms,
+                first_body_ms,
+                elapsed_ms(),
+                event_stream,
+                failed,
+                phase,
+            )
 
         async def send_with_status(message) -> None:
-            nonlocal status_code
+            nonlocal status_code, response_start_ms, first_body_ms, event_stream, startup_logged
             if message["type"] == "http.response.start":
                 status_code = int(message["status"])
+                response_start_ms = elapsed_ms()
+                event_stream = any(
+                    key.lower() == b"content-type"
+                    and value.lower().split(b";", 1)[0].strip() == b"text/event-stream"
+                    for key, value in message.get("headers", [])
+                )
+            elif message["type"] == "http.response.body" and first_body_ms is None:
+                if message.get("body") or not message.get("more_body", False):
+                    first_body_ms = elapsed_ms()
             await send(message)
+            if (
+                event_stream
+                and first_body_ms is not None
+                and not startup_logged
+                and first_body_ms >= self.slow_request_threshold_ms
+            ):
+                log_timing(first_body_ms, phase="stream_start")
+                startup_logged = True
 
         try:
             await self.app(scope, receive, send_with_status)
+        except Exception:
+            failed = True
+            raise
         finally:
-            duration_ms = max(0, int((time.perf_counter() - started_at) * 1000))
+            total_ms = elapsed_ms()
+            duration_ms = first_body_ms if event_stream and first_body_ms is not None else total_ms
             response_status = status_code if status_code is not None else 500
             is_slow = duration_ms >= self.slow_request_threshold_ms
-            if is_slow or response_status >= 500:
-                route = self._route_template_for_scope(request_scope, self.routes)
-                logger.warning(
-                    "admin_web_request_timing method=%s route=%s status=%s duration_ms=%s slow=%s",
-                    scope.get("method", ""),
-                    route,
-                    response_status,
-                    duration_ms,
-                    is_slow,
-                )
+            if failed or response_status >= 500 or (is_slow and not startup_logged):
+                log_timing(duration_ms, phase="stream_end" if event_stream else "response")
 
     @classmethod
     def _route_template_for_scope(
@@ -420,12 +464,12 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object")
         try:
-            token = auth.login(
-                str(payload.get("username") or ""), str(payload.get("password") or "")
+            token = await run_in_threadpool(
+                auth.login, str(payload.get("username") or ""), str(payload.get("password") or "")
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=401)
-        session = auth.session_from_token(token)
+        session = await run_in_threadpool(auth.session_from_token, token)
         if session is None:
             return json_error("Sign in failed", status_code=401)
         permissions = list(session.get("effective_permissions") or session.get("permissions") or [])
@@ -454,7 +498,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         auth.attach_session_cookie(response, token)
         return response
 
-    async def azure_login_start(request: Request) -> Response:
+    def azure_login_start(request: Request) -> Response:
         try:
             redirect_url, state, code_verifier, next_path = auth.build_azure_login_redirect(
                 request.query_params.get("next")
@@ -494,7 +538,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         auth.clear_pending_azure_login(response)
         return response
 
-    async def get_session(request: Request) -> JSONResponse:
+    def get_session(request: Request) -> JSONResponse:
         payload = auth.authentication_payload(request)
         payload["privileged_operations"] = {
             "unlocked": privileged_operations_unlocked_for_request(request)
@@ -502,7 +546,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         payload["branding"] = branding_payload()
         return JSONResponse(payload)
 
-    async def logout(request: Request) -> JSONResponse:
+    def logout(request: Request) -> JSONResponse:
         auth.logout(request)
         permissions = (
             list(auth.effective_permissions(auth.config.username))
@@ -538,7 +582,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
         auth.clear_pending_azure_login(response)
         return response
 
-    async def get_admin_state(request: Request) -> JSONResponse:
+    def get_admin_state(request: Request) -> JSONResponse:
         session = auth.require(request)
         assistant_settings = service.operations_admin.read_assistant_settings()
         requested_directory_path = (
@@ -579,15 +623,18 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             }
         )
 
-    async def get_deployment_status(_: Request) -> JSONResponse:
+    def build_deployment_status() -> JSONResponse:
         return JSONResponse(
             service.operations_admin.read_deployment_status().model_dump(mode="json")
         )
 
-    async def get_branding(_: Request) -> JSONResponse:
+    async def get_deployment_status(_: Request) -> JSONResponse:
+        return await run_in_threadpool(build_deployment_status)
+
+    def get_branding(_: Request) -> JSONResponse:
         return JSONResponse(branding_payload())
 
-    async def get_branding_asset(request: Request) -> FileResponse | JSONResponse:
+    def get_branding_asset(request: Request) -> FileResponse | JSONResponse:
         asset_root = auth.config.branding_asset_dir
         if asset_root is None:
             return json_error(
@@ -606,7 +653,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             return json_error("Branding asset not found.", status_code=404)
         return FileResponse(candidate)
 
-    async def get_release_info(request: Request) -> JSONResponse:
+    def build_release_info(request: Request) -> JSONResponse:
         try:
             news_index = _non_negative_int_query_param(request, "news_index", default=0)
         except ValueError as exc:
@@ -617,7 +664,10 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             )
         )
 
-    async def get_news_asset(request: Request) -> FileResponse | JSONResponse:
+    async def get_release_info(request: Request) -> JSONResponse:
+        return await run_in_threadpool(build_release_info, request)
+
+    def get_news_asset(request: Request) -> FileResponse | JSONResponse:
         relative_path = str(request.path_params.get("asset_path") or "").strip()
         if not relative_path or "\x00" in relative_path:
             return json_error("News asset not found.", status_code=404)
@@ -631,7 +681,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             return json_error("News asset not found.", status_code=404)
         return FileResponse(candidate)
 
-    async def download_changelog(_: Request) -> FileResponse | JSONResponse:
+    def download_changelog(_: Request) -> FileResponse | JSONResponse:
         try:
             changelog_path = service.operations_admin.release_changelog_file()
         except FileNotFoundError as exc:
@@ -642,7 +692,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             filename="CHANGELOG.md",
         )
 
-    async def unlock_privileged_operations(request: Request) -> JSONResponse:
+    def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
         auth.mark_privileged_for_request(request)
         return JSONResponse(
@@ -654,7 +704,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             }
         )
 
-    async def lock_privileged_operations(request: Request) -> JSONResponse:
+    def lock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
         auth.clear_privileged_for_request(request)
         return JSONResponse(
@@ -664,10 +714,13 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             }
         )
 
-    async def index(_: Request) -> Response:
+    def index(request: Request) -> Response:
+        version = selected_ui(request)
+        selected_dist = dist_dir / "classic" if version == "classic" else dist_dir
+        html = _index_html(selected_dist, branding_payload=branding_payload(), asset_root=dist_dir)
         return HTMLResponse(
-            _index_html(dist_dir, branding_payload=branding_payload()),
-            headers={"Cache-Control": _HTML_CACHE_CONTROL},
+            decorate_ui_html(html, version),
+            headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
         )
 
     routes = [
@@ -753,7 +806,12 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             routes.append(Mount(f"/api/addons/{addon.addon_id}", routes=list(api_routes)))
         ui_routes = resolve_addon_admin_ui_routes(addon, context)
         if ui_routes:
-            routes.append(Mount(f"/addons/{addon.addon_id}", routes=list(ui_routes)))
+            routes.append(
+                Mount(
+                    f"/addons/{addon.addon_id}",
+                    routes=addon_rollout_routes(addon.addon_id, ui_routes, dist_dir, auth),
+                )
+            )
     if dist_dir.exists():
         routes.append(Route("/", index, methods=["GET"]))
         routes.append(Route("/index.html", index, methods=["GET"]))

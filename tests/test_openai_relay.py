@@ -59,11 +59,13 @@ def write_session(
     image_generation_enabled: bool = False,
     expires_at: datetime | None = None,
     metadata: dict[str, object] | None = None,
+    model: str | None = None,
 ) -> None:
     store = JsonSessionManifestRepository(config.session_store_path)
     store.upsert_session(
         SessionManifest(
             session_id=session_id,
+            model=model,
             directory_path=directory_path,
             allowed_tools=[],
             web_search_enabled=web_search_enabled,
@@ -72,6 +74,220 @@ def write_session(
             metadata=metadata or {},
         ),
     )
+
+
+def test_openrouter_relay_pins_provider_zdr_model_and_host_headers(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("authorization")
+        captured["metadata"] = request.headers.get("x-openrouter-metadata")
+        captured["guest_header"] = request.headers.get("x-openrouter-title")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"x-generation-id": "generation-1"},
+            json={
+                "id": "response-1",
+                "model": "openai/gpt-5.4",
+                "provider": "OpenAI",
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 7,
+                    "total_tokens": 18,
+                    "cost": 0.0042,
+                    "cost_details": {"upstream_inference_cost": 0.0039},
+                },
+                "openrouter_metadata": {
+                    "region": "us-east",
+                    "is_byok": False,
+                    "request_id": "router-request-1",
+                    "attempts": [
+                        {
+                            "provider": "OpenAI",
+                            "model": "gpt-5.4",
+                            "status": "success",
+                            "latency_ms": 123,
+                            "prompt": "must-not-be-stored",
+                        }
+                    ],
+                    "response": "must-not-be-stored",
+                },
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openrouter",
+            "openrouter_api_base_url": "https://openrouter.example/api/v1",
+            "openrouter_api_key_env": "OPENROUTER_TEST_KEY",
+            "openrouter_model_routes": {"openai/gpt-5.4": "openai"},
+        },
+    )
+    write_session(config, session_id="session-1", model="openai/gpt-5.4")
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENROUTER_TEST_KEY"] = "host-router-key"
+
+    response = request_asgi(
+        relay.create_app(),
+        "POST",
+        "/v1/session/session-1/responses",
+        headers={
+            "authorization": "Bearer guest-key",
+            "x-openrouter-title": "guest-title",
+        },
+        json={"model": "openai/gpt-5.4", "input": "private request"},
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == "https://openrouter.example/api/v1/responses"
+    assert captured["authorization"] == "Bearer host-router-key"
+    assert captured["metadata"] == "enabled"
+    assert captured["guest_header"] is None
+    assert captured["payload"] == {
+        "model": "openai/gpt-5.4",
+        "input": "private request",
+        "provider": {
+            "order": ["openai"],
+            "only": ["openai"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+            "zdr": True,
+        },
+    }
+    events = relay.model_usage_store.list_events()
+    assert len(events) == 1
+    event = events[0]
+    assert event.provider == "openrouter"
+    assert event.request_id == "generation-1"
+    assert event.raw_usage_metadata["usage"]["cost"] == 0.0042
+    assert event.raw_usage_metadata["usage"]["cost_details"] == {
+        "upstream_inference_cost": 0.0039
+    }
+    assert event.raw_usage_metadata["response_metadata"]["openrouter"] == {
+        "selected_provider": "OpenAI",
+        "region": "us-east",
+        "is_byok": False,
+        "request_id": "router-request-1",
+        "attempts": [
+            {
+                "provider": "OpenAI",
+                "model": "gpt-5.4",
+                "status": "success",
+                "latency_ms": 123,
+            }
+        ],
+    }
+    assert "private request" not in event.model_dump_json()
+    assert "must-not-be-stored" not in event.model_dump_json()
+
+
+@pytest.mark.parametrize("field", ["models", "route", "provider", "plugins"])
+def test_openrouter_relay_rejects_guest_routing_controls(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openrouter",
+            "openrouter_model_routes": {"openai/gpt-5.4": "openai"},
+        },
+    )
+    write_session(config, session_id="session-1", model="openai/gpt-5.4")
+    os.environ["OPENROUTER_API_KEY"] = "host-router-key"
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/responses",
+        json={"model": "openai/gpt-5.4", "input": "hello", field: {}},
+    )
+
+    assert response.status_code == 400
+    assert "relay-controlled fields" in response.text
+    assert called is False
+
+
+def test_openrouter_relay_rejects_unpinned_model_and_server_tools(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openrouter",
+            "openrouter_model_routes": {"openai/gpt-5.4": "openai"},
+        },
+    )
+    write_session(config, session_id="session-1", model="openai/gpt-5.4")
+    os.environ["OPENROUTER_API_KEY"] = "host-router-key"
+    app = create_app(config, transport=httpx.MockTransport(lambda _: httpx.Response(200)))
+
+    wrong_model = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/responses/compact",
+        json={"model": "anthropic/claude-sonnet-4.6", "input": []},
+    )
+    server_tool = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/responses",
+        json={
+            "model": "openai/gpt-5.4",
+            "input": "hello",
+            "tools": [{"type": "openrouter:web"}],
+        },
+    )
+
+    assert wrong_model.status_code == 400
+    assert "does not match session model" in wrong_model.text
+    assert server_tool.status_code == 400
+    assert "server tools are not allowed" in server_tool.text
+
+
+def test_openrouter_models_are_filtered_to_approved_exact_ids(tmp_path: Path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {"id": "openai/gpt-5.4", "object": "model"},
+                    {"id": "anthropic/claude-sonnet-4.6", "object": "model"},
+                ],
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "model_provider_mode": "openrouter",
+            "openrouter_model_routes": {"openai/gpt-5.4": "openai"},
+        },
+    )
+    write_session(config, session_id="session-1", model="openai/gpt-5.4")
+    os.environ["OPENROUTER_API_KEY"] = "host-router-key"
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "GET",
+        "/v1/session/session-1/models",
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["data"]] == ["openai/gpt-5.4"]
 
 
 def request_asgi(app, method: str, path: str, **kwargs) -> httpx.Response:

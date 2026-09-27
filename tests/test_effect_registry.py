@@ -32,6 +32,8 @@ from evander.effects.providers.agent_prepare_reference_repositories import (
 )
 from evander.effects.providers.agent_session import (
     build_container_session_files,
+    _private_nuget_package_patterns,
+    _nuget_config_content,
     _claude_json_log_filter_script,
     _codex_json_log_filter_script,
     container_codex_turn_spec,
@@ -2949,8 +2951,8 @@ def test_agent_clone_repo_libvirt_uses_explicit_git_committer_identity() -> None
         managed_repo_id=_MANAGED_REPO_ID,
         git_author_name="Ada Lovelace",
         git_author_email="ada@example.com",
-        git_committer_name="Truman Bot",
-        git_committer_email="truman@example.com",
+        git_committer_name="Evander Bot",
+        git_committer_email="evander@example.com",
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -2967,8 +2969,8 @@ def test_agent_clone_repo_libvirt_uses_explicit_git_committer_identity() -> None
 
     assert admin_service.clone_repo_into_vm_calls[0]["git_author_name"] == "Ada Lovelace"
     assert admin_service.clone_repo_into_vm_calls[0]["git_author_email"] == "ada@example.com"
-    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_name"] == "Truman Bot"
-    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_email"] == "truman@example.com"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_name"] == "Evander Bot"
+    assert admin_service.clone_repo_into_vm_calls[0]["git_committer_email"] == "evander@example.com"
 
 
 def test_agent_clone_repo_requires_complete_git_author_identity() -> None:
@@ -3007,7 +3009,7 @@ def test_agent_clone_repo_requires_complete_git_committer_identity() -> None:
         type="effect:agent:clone-repo",
         session_id="session-42",
         managed_repo_id=_MANAGED_REPO_ID,
-        git_committer_name="Truman Bot",
+        git_committer_name="Evander Bot",
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -3639,9 +3641,9 @@ def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_sess
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -3677,7 +3679,7 @@ def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_sess
     assert output["queued"] is False
     assert output["output_mode"] == "on_completion"
     assert output["session_id"] == "session-1"
-    assert output["vm_name"] == "truman"
+    assert output["vm_name"] == "evander"
     assert backend.started_specs[0].session_id == "session-1"
     command = str(backend.started_specs[0].command)
     assert "check teams" in command
@@ -3708,9 +3710,9 @@ def test_agent_enqueue_prompt_infers_claude_provider_for_anthropic_container_ses
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model=None,
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -3767,9 +3769,9 @@ def test_agent_enqueue_prompt_provider_rejects_expired_container_session_before_
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) - timedelta(minutes=5),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -4131,11 +4133,11 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model=None,
             metadata={
                 "execution_backend": "container_worker_vm",
-                "target_name": "truman",
+                "target_name": "evander",
             },
         )
     )
@@ -4174,16 +4176,21 @@ def test_container_prompt_uses_claude_default_model_for_claude_session(
     assert "--model gpt-5.4" not in command
 
 
-def test_agent_create_container_infers_claude_provider_for_anthropic_config(
+@pytest.mark.parametrize(
+    "provider_mode,agent_provider", [("anthropic", None), ("openrouter", "claude")]
+)
+def test_agent_create_container_uses_implicit_claude_routing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    provider_mode: str,
+    agent_provider: str | None,
 ) -> None:
     config = GatewayConfig(
         runtime_dir=tmp_path,
         execution_backend="container_worker_vm",
         container_worker_base_url="http://worker.test",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
-        model_provider_mode="anthropic",
+        model_provider_mode=provider_mode,
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     admin_service = SimpleNamespace(
@@ -4209,6 +4216,7 @@ def test_agent_create_container_infers_claude_provider_for_anthropic_config(
             type="effect:agent:create",
             execution_backend="container_worker_vm",
             session_id="claude-session",
+            agent_provider=agent_provider,
         )
     ).execute()
 
@@ -4969,9 +4977,9 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -5069,9 +5077,9 @@ def test_agent_enqueue_prompt_provider_keeps_same_target_capacity_waits_distinct
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="local-model",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -5148,11 +5156,11 @@ def test_agent_enqueue_prompt_provider_keeps_subscription_deferrals_distinct(
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
             codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
             subscription_profile_id="team-a",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     resolver = _ContainerResolverStub(config)
@@ -5225,9 +5233,9 @@ def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -5314,8 +5322,8 @@ def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            vm_provider_id="evander",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -5550,9 +5558,9 @@ def test_agent_enqueue_prompt_provider_queues_when_container_dispatch_fails(
             allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -5808,6 +5816,25 @@ def test_agent_enqueue_prompt_provider_rejects_expired_session_before_resume_age
     assert admin_service.resume_calls == []
 
 
+def test_private_nuget_mapping_requires_directory_patterns() -> None:
+    assert _private_nuget_package_patterns(GatewayConfig()) == []
+    assert '<packageSource key="sandbox-azure">' not in _nuget_config_content(
+        "http://nuget.test:11666", private_package_patterns=[]
+    )
+    configured = GatewayConfig(
+        provider_state={"nuget": {"private_package_patterns": [
+            " Example.Private.* ", "Example.Private.*", "Another.Package"
+        ]}}
+    )
+    assert _private_nuget_package_patterns(configured) == [
+        "Example.Private.*", "Another.Package"
+    ]
+    with pytest.raises(ValueError, match="invalid characters"):
+        _private_nuget_package_patterns(
+            GatewayConfig(provider_state={"nuget": {"private_package_patterns": ['bad"id']}})
+        )
+
+
 def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5823,6 +5850,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
         container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
         container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        provider_state={"nuget": {"private_package_patterns": ["Example.Private.*"]}},
         container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
         container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
     )
@@ -6123,7 +6151,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert '<packageSource key="sandbox-nuget">' in nuget_config
     assert '<package pattern="*" />' in nuget_config
     assert '<packageSource key="sandbox-azure">' in nuget_config
-    assert '<package pattern="ExampleIndustry.*" />' in nuget_config
+    assert '<package pattern="Example.Private.*" />' in nuget_config
     assert backend.written_files[1]["files"][0]["destination_path"].endswith("agent-pr-note")
     assert backend.written_files[1]["files"][1]["destination_path"].endswith("push-agent")
     assert backend.written_files[1]["files"][2]["destination_path"].endswith("sync-base")
@@ -6175,9 +6203,9 @@ def test_agent_prompt_provider_rejects_expired_container_session_before_backend_
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(UTC) - timedelta(minutes=5),
             vm_provider="container_worker_vm",
-            vm_provider_id="truman",
+            vm_provider_id="evander",
             model="gpt-5.4-mini",
-            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+            metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
     admin_service = SimpleNamespace(
@@ -8242,8 +8270,8 @@ def test_agent_clone_container_configures_separate_git_committer_identity() -> N
             email="ada@example.com",
         ),
         git_committer_identity=GitIdentity(
-            name="Truman Bot",
-            email="truman@example.com",
+            name="Evander Bot",
+            email="evander@example.com",
         ),
     )
 
@@ -8251,10 +8279,10 @@ def test_agent_clone_container_configures_separate_git_committer_identity() -> N
     assert "git config user.email ada@example.com" in command
     assert "git config author.name 'Ada Lovelace'" in command
     assert "git config author.email ada@example.com" in command
-    assert "git config committer.name 'Truman Bot'" in command
-    assert "git config committer.email truman@example.com" in command
+    assert "git config committer.name 'Evander Bot'" in command
+    assert "git config committer.email evander@example.com" in command
     assert "git config evander.gitAuthorName 'Ada Lovelace'" in command
-    assert "git config evander.gitCommitterName 'Truman Bot'" in command
+    assert "git config evander.gitCommitterName 'Evander Bot'" in command
 
 
 def test_git_honors_separate_agent_author_and_committer_config(tmp_path: Path) -> None:
@@ -8263,9 +8291,9 @@ def test_git_honors_separate_agent_author_and_committer_config(tmp_path: Path) -
     subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
     for key, value in (
         ("user.name", "Jonathan Quinth"),
-        ("user.email", "operator@example.invalid"),
+        ("user.email", "jonathan.quinth@exampleindustry.com"),
         ("author.name", "Jonathan Quinth"),
-        ("author.email", "operator@example.invalid"),
+        ("author.email", "jonathan.quinth@exampleindustry.com"),
         ("committer.name", "Evander Bot"),
         ("committer.email", "evander@quinth.se"),
     ):
@@ -8283,7 +8311,7 @@ def test_git_honors_separate_agent_author_and_committer_config(tmp_path: Path) -
     ).stdout.splitlines()
     assert identity == [
         "Jonathan Quinth",
-        "operator@example.invalid",
+        "jonathan.quinth@exampleindustry.com",
         "Evander Bot",
         "evander@quinth.se",
     ]

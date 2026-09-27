@@ -75,9 +75,7 @@ class SessionAdminService:
             else set()
         )
         summaries: list[SessionSummary] = []
-        for session_id, manifest in sorted(
-            self._sessions_by_id().items(), key=session_helpers.session_sort_key
-        ):
+        for session_id, manifest in self._sessions_by_id().items():
             if direct_only:
                 if session_id not in owned_session_ids:
                     continue
@@ -99,7 +97,19 @@ class SessionAdminService:
                     is_expired=is_expired,
                 )
             )
+        summaries.sort(key=lambda item: (item.created_at, item.expires_at, item.session_id))
         return summaries
+
+    def get_session_summary(self, session_id: str) -> SessionSummary:
+        manifest = self._session_repository().get_session(session_id)
+        if manifest is None:
+            raise ValueError(f"Unknown session: {session_id}")
+        return SessionSummary(
+            **manifest.model_dump(),
+            issue_number=session_helpers.extract_issue_number(manifest.vm_id)
+            or session_helpers.extract_issue_number(session_id),
+            is_expired=manifest.expires_at <= session_helpers.utc_now(),
+        )
 
     def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
         session_id, manifest = session_helpers.resolve_session_target(

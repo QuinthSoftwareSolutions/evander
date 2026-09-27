@@ -174,31 +174,32 @@ flowchart TD
 
     leased --> lineage{"work_lineage policy?"}
     lineage -->|Yes; bound| bound_thread{"Thread already bound<br/>to this lineage?"}
-    bound_thread -->|Yes| retained_delta
+    bound_thread -->|Yes| retained_current
     bound_thread -->|No| fresh_full
     lineage -->|Yes; unbound| fresh_full
     lineage -->|No| context_mode{"Fresh lifecycle context?<br/>rotation/every_wake, first successful<br/>ordinary-context wake, or explicit new_context"}
     context_mode -->|Yes| fresh_full["Resume new context<br/>context_mode: fresh_full"]
-    context_mode -->|No| retained_delta["Resume retained context<br/>context_mode: retained_delta"]
+    context_mode -->|No| retained_current["Resume retained context<br/>context_mode: retained_current"]
 
     fresh_full --> prompt["Prompt exact dispatch scope"]
-    retained_delta --> prompt
+    retained_current --> prompt
 
     classDef wake fill:#e8fff0,stroke:#208a42,color:#102a16;
     classDef skip fill:#fff1f0,stroke:#b42318,color:#3a0b07;
     classDef process fill:#f5f8ff,stroke:#3867d6,color:#102044;
-    class lease_handoff,fresh_due,leased,fresh_full,retained_delta,prompt wake;
+    class lease_handoff,fresh_due,leased,fresh_full,retained_current,prompt wake;
     class skip_limit,skip_inactive,skip_stood_down,skip_filter,skip_cost,skip_busy,skip_lease,clear_low,skip_throttle,skip_not_due,skip_low,prep_failed skip;
     class gather,isolate,advance_low,reserve,handoff_terminal,lineage,bound_thread process;
 ```
 
-The dispatch scope is immutable membership, not a stale copy of every record.
-On a `retained_delta` wake, stable identity, role, subordinate, project,
-outcome-catalog, and session detail is intentionally omitted. The agent can call
-`team_get_current_dispatch_context` to hydrate current permitted detail for the
-tasks, inbox items, blockers, reviews, projects, and Git contexts named by that
-frozen scope; hydration cannot add a newly created record to the active
-dispatch.
+The dispatch scope fixes record membership while its working set reflects current
+permitted state. Both `fresh_full` and `retained_current` wakes include identity,
+role, work instructions, scope, and current obligations; retained conversation
+history is not required to reconstruct those obligations. Bounded previews expose
+omitted counts and retrieval references. Use individual Team reads for missing
+detail, or `team_get_current_dispatch_context(detail="summary")` to recover the
+working set. Hydration cannot add a newly created record to the active dispatch
+or replace its exact Git binding with a newer context.
 
 ### Stand-Down Lease And Completion Boundary
 

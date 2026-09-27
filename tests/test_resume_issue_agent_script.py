@@ -132,7 +132,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
-printf 'resumed pid=321 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log\\n'
+printf 'resumed pid=321 log=/var/log/evander/agent-runs/agent-SampleApplication.log\\n'
 exit 0
 """,
     )
@@ -153,7 +153,7 @@ exit 0
 
     assert result.stdout == (
         "Agent resumed for vm-14084 "
-        "(resumed pid=321 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log).\n"
+        "(resumed pid=321 log=/var/log/evander/agent-runs/agent-SampleApplication.log).\n"
     )
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("agent-admin@192.168.122.11 true" in call for call in ssh_calls)
@@ -210,7 +210,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
 fi
 if [[ "$*" == *"PROMPT_B64="* ]]; then
   cat > /dev/null
-  printf 'resumed pid=321 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log\\n'
+  printf 'resumed pid=321 log=/var/log/evander/agent-runs/agent-SampleApplication.log\\n'
   exit 0
 fi
 cat > /dev/null
@@ -363,7 +363,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
-printf 'resumed pid=456 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log\\n'
+printf 'resumed pid=456 log=/var/log/evander/agent-runs/agent-SampleApplication.log\\n'
 exit 0
 """,
     )
@@ -384,7 +384,7 @@ exit 0
 
     assert result.stdout == (
         "Agent resumed for vm-14084 "
-        "(resumed pid=456 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log).\n"
+        "(resumed pid=456 log=/var/log/evander/agent-runs/agent-SampleApplication.log).\n"
     )
     run_call = next(
         call for call in ssh_log.read_text(encoding="utf-8").splitlines() if "PROMPT_B64=" in call
@@ -438,7 +438,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
 fi
 cat > /dev/null
 printf 'thread_id=claude-thread-1\\n'
-printf 'resumed pid=456 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log\\n'
+printf 'resumed pid=456 log=/var/log/evander/agent-runs/agent-SampleApplication.log\\n'
 exit 0
 """,
     )
@@ -460,7 +460,7 @@ exit 0
     assert result.stdout == (
         "thread_id=claude-thread-1\n"
         "Agent resumed for vm-14084 "
-        "(resumed pid=456 log=/var/log/evander/agent-runs/agent-ExampleIndustryAPP.log).\n"
+        "(resumed pid=456 log=/var/log/evander/agent-runs/agent-SampleApplication.log).\n"
     )
     run_call = next(
         call for call in ssh_log.read_text(encoding="utf-8").splitlines() if "PROMPT_B64=" in call

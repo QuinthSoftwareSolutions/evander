@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander"
-version = "0.59.0"
+version = "0.65.0"
 description = "Host-side MCP gateway and libvirt orchestration for isolated agent VMs."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -29,7 +29,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "jinja2>=3.1",
   "pytest>=8.3.2",
+  "pytest-xdist>=3.8.0",
   "ruff>=0.6.8",
 ]
 
@@ -94,3 +96,7 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "performance: elapsed-time contracts run without competing test workers by the complete runner",
+  "documentation: documentation and editorial publication contracts; included in complete runs",
+]

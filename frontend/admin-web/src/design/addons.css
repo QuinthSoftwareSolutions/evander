@@ -1,0 +1,130 @@
+/* Alias historical add-on variables onto the same semantic palette. */
+:root[data-admin-design] {
+  --surface: var(--ui-canvas);
+  --bg: var(--ui-canvas);
+  --panel: var(--ui-surface);
+  --panel-alt: var(--ui-subtle);
+  --ink: var(--ui-text);
+  --text: var(--ui-text);
+  --muted: var(--ui-muted);
+  --line: var(--ui-border);
+  --border: var(--ui-border);
+  --control-line: var(--ui-control-border);
+  --soft: var(--ui-subtle);
+  --accent: var(--ui-accent);
+  --accent-strong: var(--ui-accent-hover);
+  --accent-soft: var(--ui-selected);
+  --button: var(--ui-surface);
+  --button-hover: var(--ui-subtle);
+  --button-ink: var(--ui-text);
+  --error: var(--ui-danger);
+  --danger: var(--ui-danger);
+  --danger-soft: var(--ui-danger-surface);
+  --red: var(--ui-danger);
+  --warning: var(--ui-warning);
+  --warning-soft: var(--ui-warning-surface);
+  --amber: var(--ui-warning);
+  --success: var(--ui-success);
+  --success-soft: var(--ui-success-surface);
+  --green: var(--ui-success);
+  --focus: var(--ui-accent);
+  --shadow: transparent;
+}
+
+[data-admin-design] body > :where(.page, main, .team-shell) {
+  max-width: none;
+  margin: 0;
+  padding: 16px 24px;
+  min-width: 0;
+}
+
+[data-admin-design] :where(.content-panel, .forms-panel, .workspace-dashboard-panel, .panel, main > section) {
+  border-radius: var(--ui-radius);
+  border-color: var(--ui-border);
+  box-shadow: none;
+  background: var(--ui-surface);
+  padding: var(--ui-section-padding);
+}
+
+[data-admin-design] :where(main > section, .team-page > .content-panel) {
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 16px 0;
+  background: transparent;
+}
+
+[data-admin-design] :where(.layout, .grid) {
+  gap: 16px;
+}
+[data-admin-design] .layout {
+  margin-top: 16px;
+}
+[data-admin-design] :where(.toolbar, .team-header) {
+  margin-bottom: 12px;
+  gap: 12px;
+}
+[data-admin-design] .team-view-tabs {
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  gap: 12px;
+}
+[data-admin-design] .team-view-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 2px;
+  font-size: 13px;
+  color: var(--ui-muted);
+}
+[data-admin-design] .team-view-tab.active {
+  border-bottom-color: var(--ui-accent);
+  background: transparent;
+  color: var(--ui-accent);
+}
+[data-admin-design] :where(.record-card, .operation, .operation-row, .card) {
+  box-shadow: none;
+  border-radius: 0;
+  padding: var(--ui-row-padding) 8px;
+}
+[data-admin-design] .workspace-dashboard-panel {
+  padding: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+}
+[data-admin-design] .workspace-metric-card {
+  padding: 10px 12px;
+  border-radius: var(--ui-radius);
+  box-shadow: none;
+}
+[data-admin-design] :where(header p, .badge, small) {
+  color: var(--ui-muted);
+}
+[data-admin-design] :where(.snapshot, fieldset) {
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+}
+[data-admin-design] pre {
+  background: var(--ui-canvas);
+  color: var(--ui-text);
+  border-radius: var(--ui-radius);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  [data-admin-design] body > :where(.page, main, .team-shell) {
+    padding: 12px;
+  }
+  [data-admin-design] :where(.content-panel, .forms-panel, .panel) {
+    padding: 12px;
+  }
+  [data-admin-design] .team-view-tabs {
+    gap: 10px;
+  }
+}

@@ -702,7 +702,7 @@ class VoiceProjectionService:
         session_metadata = sanitize_voice_metadata(dict(session.metadata or {}))
         normalized_tool_summary = self._normalize_tool_summary(session, tool_summary)
         instructions = (
-            "You are a live voice projection of an existing Truman text agent session. "
+            "You are a live voice projection of an existing Evander text agent session. "
             "Speak as that originating agent, preserve its current task context, and do not "
             "invent unavailable state. If the caller asks for action that requires live tools, "
             "files, repository state, or memory not present in this projection, use the "
@@ -792,7 +792,7 @@ def query_origin_agent_tool_definition() -> dict[str, Any]:
         "type": "function",
         "name": "query_origin_agent",
         "description": (
-            "Ask the originating Truman agent a live-context question that requires its "
+            "Ask the originating Evander agent a live-context question that requires its "
             "files, tools, repository state, memory, or other live session state and is "
             "not already answered by the projected voice context."
         ),
@@ -1528,7 +1528,7 @@ def build_reconciliation_prompt(
         else ""
     )
     return (
-        "A live voice session that was projected from this Truman agent has ended. "
+        "A live voice session that was projected from this Evander agent has ended. "
         "Incorporate the call or meeting into your current context, honor any explicit "
         "decisions, and continue from the user's latest intent.\n\n"
         f"Voice session id: {record.voice_session_id}\n"
@@ -1546,7 +1546,7 @@ def build_reconciliation_prompt(
 def build_voice_query_prompt(query: VoiceQueryRecord) -> str:
     transcript_excerpt = query.transcript_excerpt or "<none>"
     return (
-        "A live phone/meeting voice projection needs help from this originating Truman agent. "
+        "A live phone/meeting voice projection needs help from this originating Evander agent. "
         "Use your normal context, files, and tools as needed, then answer the caller-facing "
         "`submit_voice_query_response` tool with the query id below.\n\n"
         f"Voice session id: {query.voice_session_id}\n"

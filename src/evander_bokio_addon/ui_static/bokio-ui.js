@@ -152,6 +152,9 @@ function makeStatusPill(status) {
 
 function renderActions() {
   const actions = filteredActions();
+  if (!actions.some((action) => action.action_id === state.selectedActionId)) {
+    state.selectedActionId = actions[0]?.action_id || null;
+  }
   els.actions.replaceChildren();
   if (!actions.length) {
     const empty = document.createElement("div");
@@ -163,6 +166,7 @@ function renderActions() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `action-row${state.selectedActionId === action.action_id ? " selected" : ""}`;
+    button.setAttribute("aria-current", String(state.selectedActionId === action.action_id));
     button.addEventListener("click", () => {
       state.selectedActionId = action.action_id;
       renderActions();
@@ -183,9 +187,6 @@ function renderActions() {
     els.actions.append(button);
   }
 
-  if (!state.actions.some((action) => action.action_id === state.selectedActionId)) {
-    state.selectedActionId = actions[0]?.action_id || null;
-  }
   renderActionDetail();
 }
 

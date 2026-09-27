@@ -1,19 +1,24 @@
 # Evander
 
-`evander` is a host-side control plane for running autonomous AI agents inside disposable libvirt
-VMs while exposing only narrow, audited host-owned surfaces: MCP plus explicitly allowlisted model,
-package, Git, and HTTP relays.
+Evander is a host-side control plane for running AI agents in disposable libvirt VMs or Docker
+containers on dedicated worker VMs. The host owns credentials, policy, workflow state, and managed
+Git. Agents reach external systems through explicitly granted MCP tools and narrow model, package,
+Git, and HTTP surfaces.
 
-## What This Scaffold Includes
+## Start Here
 
-For implemented privacy operator controls, coverage limits, credential migration and the
-remaining roadmap, see [Privacy operations](docs/privacy-operations.md). This staged foundation
-does not establish complete GDPR readiness.
+| Task | Guide |
+|---|---|
+| Install a host or troubleshoot services | [Operations](docs/operations.md) and [Ansible deployment](ansible/README.md) |
+| Use the operator interface | [Admin Web manual](docs/admin-ui-user-manual.md) |
+| Choose VM or container execution | [Execution backends](docs/execution-backends.md) |
+| Configure providers, policies, and inheritance | [Configuration reference](docs/configuration-reference.md) |
+| Set up an agent team | [Team Add-on](docs/addons.md#team-module-guidance), [progress boards](docs/case-progress-boards.md), and [case context](docs/case-context.md) |
+| Review privacy controls, limitations, and credential migration | [Privacy operations](docs/privacy-operations.md) and [managed credentials](docs/credentials.md) |
+| Understand or extend the platform | [Architecture](docs/architecture.md) and [testing](docs/testing.md) |
+| Find a subsystem or read the complete manual | [Documentation map](docs/README.md) |
 
-For Team task-board filtering, progress permalinks and ADO intake setup, see
-[Case progress boards](docs/case-progress-boards.md).
-For decision journals, bounded wake deltas and configurable workflow context, see
-[Case context](docs/case-context.md).
+## Capabilities
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - Optional [Figma collaboration](docs/figma.md) for native mockups, parallel design proposals,
@@ -40,8 +45,8 @@ For decision journals, bounded wake deltas and configurable workflow context, se
   `trigger:teams:direct-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - Optional host-local Qdrant semantic store primitives for workflow-visible health, collection setup, and explicit-ID text point upsert/search/get/delete
-- File-backed session, approval, audit, and draft storage for local development
-- A small CLI for bootstrapping state and creating session manifests
+- Durable JSON and SQLite stores for sessions, approvals, audit, workflow execution, and add-ons
+- Admin Web and CLI surfaces for setup, sessions, policy, approvals, workflows, and recovery
 - Additive directory ownership and directory-scoped configuration support with inherited overrides
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network
 - Systemd service templates and an install script for persistent host services
@@ -52,22 +57,23 @@ For decision journals, bounded wake deltas and configurable workflow context, se
 - An optional [Miro Add-on](docs/miro-addon.md) for editable diagrams, explanations, comment
   collaboration, and workflow-owned board monitoring through host-managed OAuth connections
   that agents can discover using their existing Miro tool grants
-- Configuration templates and implementation notes for evolving the scaffold into a production setup
-- A consolidated configuration parameter reference at `docs/configuration-reference.md`
-- A connector implementation and operations reference at `docs/connectors.md`
+- An optional [Team Add-on](docs/addons.md#team-module-guidance) for persistent agents, task
+  hierarchies, communication, review, cost reporting, and releases pinned to approved commits
+- An asynchronous personal [Alexa-to-agent bridge](docs/alexa-agent-bridge.md)
 - Encrypted, directory-owned Teams and connector credentials, with operator migration,
-  key recovery and restart guidance at [docs/credentials.md](docs/credentials.md)
-- An asynchronous personal Alexa-to-agent bridge at `docs/alexa-agent-bridge.md`
-- A Host Directory security and operations reference at `docs/host-directories.md`
+  key recovery and restart guidance at [Managed credentials](docs/credentials.md)
+- Deployment templates, configuration references, and executable smoke-test procedures
 
 ## Core Security Model
 
 - Guests have no direct access to host secrets.
-- Guests use a private libvirt network and can reach only the host ports explicitly allowed by the
-  firewall policy; those ports expose MCP and the configured host-owned relay surfaces.
+- Libvirt guests use a private network and reach only host ports allowed by the firewall.
+  Worker containers use a separately configured default-deny egress policy on their worker VM.
 - Every tool call is checked against a session manifest.
-- Irreversible actions require a separate approval record and exact payload match.
-- State is append-only where possible and intentionally simple in v1.
+- Session and directory policies determine which tools require approval; mandatory approval tools
+  enforce single-use grants bound to the exact payload.
+- Audit evidence is recorded separately from mutable runtime state; supported services enforce
+  each store's locking, revision, and transaction rules.
 
 ## Directory Model
 
@@ -75,7 +81,6 @@ For decision journals, bounded wake deltas and configurable workflow context, se
 - `root` is hard-coded, immutable, and always present.
 - `root` is the live top-level baseline.
 - Child directories inherit configuration from `root -> ... -> selected`.
-- `root` itself is the live top-level baseline and the top of the directory-scoped inheritance chain.
 - Directory config uses per-domain overlays, with deep-merge for maps, replace semantics for lists, and last-write-wins for scalars.
 - Runtime startup reads only the canonical host bootstrap and directory-scoped configuration.
 
@@ -84,224 +89,95 @@ Live config is now split into:
 - host-global bootstrap config at `runtime/host-config.json`
 - directory-scoped config rooted at `runtime/directory-config/root/...`
 
-Directory-scoped config is rooted at `root`:
-
-- configure `root` directly for top-level defaults and overlays
-- leave `enable_directory_scoped_config` as documented in the configuration reference when editing surfaces are available in your build
+Configure `root` for shared defaults, then add only the overrides each child needs. Inspect raw,
+effective, and provenance views before changing an inherited setting. The
+[configuration reference](docs/configuration-reference.md#directory-config-domains-and-storage)
+describes the domains and merge rules.
 
 ## Quick Start
 
-1. Bootstrap the checkout and start the guided setup:
+Run commands from the repository root. Host deployment scripts target Ubuntu 24.04; the Python
+package requires Python 3.12 or newer. Choose the execution backend before provisioning agents:
+local libvirt VMs are the default, while `container_worker_vm` uses a separately deployed worker VM.
+
+1. Bootstrap the checkout and launch the guided setup:
 
    ```bash
-   ./scripts/setup
+   ./scripts/setup -- --runtime-dir runtime
    ```
 
-   The script installs the minimum Python bootstrap packages on apt-based hosts,
-   creates `.venv`, installs Evander in editable mode, and then transitions into
-   `evander-cli setup`.
-
-   For development-only bootstrap without launching the setup checklist:
+   This creates or reuses `.venv`, installs Evander, and opens the setup checklist. Activate that
+   environment before using the unqualified commands below:
 
    ```bash
-   ./scripts/setup --dev --bootstrap-only
+   source .venv/bin/activate
    ```
 
-2. Manual lower-level setup is still available when needed. Initialize runtime
-   state and host bootstrap config:
+   For development without the interactive checklist, use
+   `./scripts/setup --dev --bootstrap-only`, activate `.venv`, and run
+   `evander-cli init-state --runtime-dir runtime` once. Initialization creates
+   `runtime/host-config.json`, the immutable `root` directory, and the required stores.
+
+2. Configure the host and the integrations you will use. Host bootstrap settings live in
+   `runtime/host-config.json`; inherited provider and policy settings live under
+   `runtime/directory-config/root/`. Use Admin Web or `evander-cli directories config-set`
+   for directory settings. Supply service configuration and host credentials before starting
+   services; the [operations guide](docs/operations.md#bootstrap-flow) explains the manual path.
+
+3. Prepare the execution backend:
+
+   - **Libvirt:** install the [host packages](docs/operations.md#host-packages), then create the
+     isolated network and base image:
+
+     ```bash
+     sudo ./scripts/create_libvirt_network.sh
+     sudo ./scripts/create_base_vm.sh
+     ```
+
+     Keep VM disks under `/var/lib/libvirt/images/evander`, where libvirt can access them.
+   - **Container worker:** follow the [worker deployment guide](docs/container-worker-backend.md)
+     and `ansible/worker.yml`. Configure the worker connection, approved images, and guest relay
+     URLs before selecting `execution_backend: container_worker_vm` in provider configuration.
+
+4. Install the persistent services using the procedure below. Configure and start the services
+   required by your workflows, then check the application view:
 
    ```bash
-   evander-cli init-state --runtime-dir runtime
+   evander-cli status --runtime-dir runtime --json
    ```
 
-   This creates `runtime/host-config.json`, store files, and the immutable `root` directory.
-   Edit host-global settings in `host-config.json`, then configure `root` and child directories
-   through the admin UI or `evander-cli directories config-set`.
+   Admin Web defaults to `http://127.0.0.1:8100`. Follow its
+   [authentication setup](docs/admin-ui-user-manual.md#open-the-admin-ui) before exposing it through
+   a reverse proxy. All control-plane services must use the same runtime directory.
 
-3. Initialize runtime state:
+5. Create an agent through Admin Web or a configured workflow. For manual libvirt setup, the
+   [VM runtime guide](docs/operations.md#vm-agent-runtime-baseline) covers launch and provider
+   bootstrap. Optional toolchain guides cover [Python](docs/operations.md#vm-python-bootstrap),
+   [.NET](docs/operations.md#vm-net-bootstrap), [NuGet](docs/operations.md#vm-nuget-bootstrap),
+   [SQL Server](docs/operations.md#vm-microsoft-sql-server-bootstrap),
+   [Playwright](docs/operations.md#vm-playwright-bootstrap), and
+   [frontend dependencies](docs/operations.md#vm-frontend-dependency-bootstrap).
 
-   ```bash
-   evander-cli init-state --runtime-dir runtime
-   ```
+   Register source repositories through [managed Git](docs/git-remotes.md), then clone using the
+   returned `managed_repo_id`. Agents publish to session-scoped branches; workflows pin and review
+   an exact commit before upstream publication.
 
-   If you are adopting directory ownership on an existing runtime, backfill missing ownership fields without rewriting unrelated records:
-
-   ```bash
-   evander-cli migrate-directory-ownership --runtime-dir runtime
-   ```
-
-4. Start the MCP gateway:
-
-   ```bash
-   evander-gateway --runtime-dir runtime
-   ```
-
-5. Create the libvirt network and firewall policy:
-
-   ```bash
-   sudo ./scripts/create_libvirt_network.sh
-   sudo ./scripts/apply_firewall.sh
-   ```
-
-   The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `11778`,
-   `11881`, `8081`, and `3142`. Port `11778` is the authenticated browser forward proxy: seeded
-   browsers can reach only real origins registered as session HTTP targets while preserving
-   application CORS, cookies, and root-relative assets.
-   [Managed website sessions](docs/managed-website-sessions.md) add explicitly granted
-   browser login and renewal through the existing relay, with passwords held on the host.
-
-6. Start the host-side services:
-
-   ```bash
-   export OPENAI_API_KEY=...
-   export DISCORD_BOT_TOKEN=...
-   evander-gateway --runtime-dir runtime
-   evander-openai-relay --runtime-dir runtime
-   ```
-
-   Optional DIDWW/OpenAI Realtime phone calls require Asterisk with a DIDWW PJSIP
-   trunk plus `evander-didww-sip-bridge --runtime-dir runtime`. The bridge
-   keeps SIP, RTP, and OpenAI credentials on the host and is only reached by the
-   gateway through `phone_call_backend=openai_realtime_didww`.
-   When `DIDWW_SIP_BRIDGE_ENABLE_INBOUND_PHONE_CALLS=true`, the same bridge also
-   listens for inbound `Stasis(evander_didww,inbound:<did-or-route-id>)`
-   events and provisions fixed routes through the gateway using
-   `VOICE_MEDIA_CONTROLLER_TOKEN`. After the inbound call reaches a terminal
-   bridge state, it syncs the sanitized result back to the gateway so the
-   originating Evander session receives the normal voice-session reconciliation.
-
-   Optional Teams meeting voice sessions require the Windows-hosted bridge in
-   `integrations/teams-meeting-media-bridge`. Set `BRIDGE_ADAPTER_MODE=Graph`
-   and choose `BRIDGE_SPEECH_MODE=AzureSpeech` or `OpenAIRealtime`.
-
-7. Download the base image and launch VMs from a libvirt-accessible storage path:
-
-   ```bash
-   sudo ./scripts/create_base_vm.sh
-   sudo ./scripts/launch_agent_vm.sh vm-real real-session
-   ```
-
-   For libvirt VM template selection, alias registration, and backing-image prep, see
-   [docs/libvirt-vm-template-operations.md](docs/libvirt-vm-template-operations.md).
-
-   By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes host-side OpenAI-compatible and Anthropic-compatible relay base URLs on `http://192.168.250.1:11434`. Override with `SSH_PUBLIC_KEY_FILE=...`, `SSH_PRIVATE_KEY_PATH=...`, `LLM_BASE_URL=...`, or `ANTHROPIC_BASE_URL=...` if needed.
-   It also creates a shared host NuGet cache under `/var/lib/libvirt/images/evander/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/evander/nuget-cache-ro` via `virtiofs`.
-   New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
-   New VMs receive provider-neutral baseline config (`/etc/evander/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; provider-specific config is written later by `bootstrap_codex_vm.sh`, `bootstrap_claude_vm.sh`, or `bootstrap_copilot_vm.sh`. The `agent` user is the unprivileged runtime user; `agent-admin` is the host-control SSH user for privileged setup, resume, and root-owned log access. Cloud-init asks Ubuntu to install `ripgrep`, and provider bootstraps also seed a host `rg` binary into `~/bin/rg` so existing VMs can be repaired without guest internet.
-   Host-side guest SSH commands cache guest host keys in `~/.ssh/evander-known_hosts` keyed by VM name, so repeated `list-vms`, bootstrap, and `evander-cli ssh` calls stay quiet while preserving normal SSH host-key warnings.
-   To see all currently running VMs together with live guest agent status, run `evander-cli list-vms`.
-
-8. (Optional) Bootstrap a provider runtime inside the VM:
-
-   ```bash
-   ./scripts/bootstrap_codex_vm.sh vm-real
-   ./scripts/bootstrap_claude_vm.sh vm-real
-   ./scripts/bootstrap_copilot_vm.sh vm-real
-   ```
-
-   By default, orchestration uses provider-neutral agent run state under `/home/agent/.evander` (`agent-*.state`, `agent-*.pid`, and runner helper files). Agent transcripts are written by the privileged host-control path to root-owned logs under `/var/log/evander/agent-runs`, so the unprivileged `agent` user cannot read or edit prior transcripts.
-   Legacy VMs that still rely on `agent` for sudo should be recreated or migrated; for one-off maintenance against an old VM, set `VM_SSH_USER=agent` explicitly.
-   To seed `rg` into a current VM without rerunning a provider bootstrap, run `./scripts/bootstrap_ripgrep_vm.sh <vm-name> [vm-user]`.
-
-   ### Codex provider bootstrap
-
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay through the `evander_openai_relay` provider with bootstrap defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), disables Codex websocket prewarm for that relay provider, registers the host MCP gateway as `evander`, copies the host Codex model cache when available so offline guests see the same model menu, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
-
-   ### Claude Code provider bootstrap
-
-   This copies a host Claude Code CLI command into the guest user's `~/bin`, writes `~/.claude/settings.json` and `~/.claude/mcp-config.json` so Claude can use the host Anthropic relay and MCP gateway, sets `AGENT_PROVIDER=claude`, keeps only placeholder Anthropic auth in the guest, and verifies `claude --version`. Use `model_provider_mode: "anthropic"` in effective provider config so the host relay injects the real Anthropic API key upstream.
-
-   ### GitHub Copilot CLI provider bootstrap
-
-   This copies the host `copilot` binary into the guest user's `~/bin`, writes `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `evander`, installs a guest `gh` shim that serves `gh auth token` from a host gateway endpoint using the active `session_id`, sets `COPILOT_HOME` to `~/.copilot`, and verifies `copilot version`. The long-lived GitHub token stays on the host in the effective `github_token_env` provider setting and is not persisted in the guest. If you intentionally set `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, or run `copilot login`, those methods still take precedence over the host-mediated `gh` fallback.
-
-9. Optionally install the host `.NET` SDK into the VM:
-
-   ```bash
-   ./scripts/bootstrap_dotnet_vm.sh vm-real
-   ```
-
-   This copies the host `.NET` installation into the guest, seeds host dotnet tool state into `~/.dotnet`, appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and tool-aware `PATH` exports to the guest profile, and verifies `dotnet --info`. When host-seeded Entity Framework tooling is available, the bootstrap also exposes `dotnet-ef` in the guest so agents can generate migrations offline.
-
-10. Optionally bootstrap a Python repo into a guest-local virtualenv:
-
-   ```bash
-   ./scripts/bootstrap_python_vm.sh vm-real /path/to/repo /home/agent/$(basename /path/to/repo)
-   ```
-
-   This builds a temporary host wheelhouse from the repo's `pyproject.toml`, copies it into the guest, creates a repo-local `.venv`, and installs the repo with dev dependencies offline.
-
-   For generic guest-side Python tools that are not tied to a cloned repo checkout, use the lower-level package bootstrap instead:
-
-   ```bash
-   ./scripts/bootstrap_python_packages_vm.sh vm-real openai
-   ```
-
-   This builds a temporary host wheelhouse for the requested package specs, copies it into the guest, creates or reuses a guest tools virtualenv under `~/.evander/python-tools-venv`, and installs those packages offline there.
-
-11. Optionally install host-relay NuGet sources into the VM:
-
-   ```bash
-   ./scripts/bootstrap_nuget_vm.sh vm-real
-   ```
-
-   This writes `~/.nuget/NuGet/NuGet.Config` in the guest so package restore can use host relay endpoints for nuget.org and Azure Artifacts, while keeping guest-local writable caches under `~/.nuget` and using the shared host cache as a read-only fallback package folder.
-
-12. Optionally provision a guest-local Microsoft SQL Server instance into the VM:
-
-   ```bash
-   MSSQL_SA_PASSWORD='your-strong-password' ./scripts/bootstrap_mssql_vm.sh vm-real
-   ```
-
-   This bootstraps host-installed SQL Server tooling plus the database engine into the guest, starts a local `mssql-server` service listening on `localhost:1433`, and verifies `sqlcmd` can query the guest-local instance. If you also need schema or data initialization, pass `--init-root /path/to/mssql-init`, where `init.sql` can run arbitrary setup or restore commands against the local instance.
-
-13. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
-
-   ```bash
-   ./scripts/prewarm_nuget_cache.sh /path/to/project-or-solution.slnx
-   ./scripts/inspect_nuget_cache.sh Acme.Product.Core 2026.3.6.1
-   ```
-
-   Prewarming fills the shared host cache explicitly through real host restores, and the inspect script shows cache size or whether a specific package/version is already present.
-
-14. Optionally install Playwright into the VM for frontend debugging:
-
-   ```bash
-   ./scripts/bootstrap_playwright_vm.sh vm-real
-   ```
-
-   This copies a host-seeded Node runtime, Playwright packages, and browser cache into the guest, then configures `PLAYWRIGHT_MCP_EXECUTABLE_PATH` so `playwright-cli` uses the seeded Chromium binary instead of trying to install or launch system Chrome.
-
-15. Optionally install a repo-specific browser-test runtime into the VM for frontend unit tests:
-
-   ```bash
-   ./scripts/bootstrap_frontend_deps_vm.sh vm-real /path/to/repo /path/to/repo/Src/Clients
-   ```
-
-   This copies a host-seeded Node runtime plus one or more frontend install roots from a host checkout into the guest. It is intended to make Angular and other frontend builds work offline from the guest clone, and each selected install root must already contain `package.json` and `node_modules`.
+Use the [live smoke tests](docs/live-smoke-tests.md) to verify the configured path. A plain GET of
+`http://127.0.0.1:8000/mcp` may return `406` and still prove gateway reachability.
 
 ## Persistent Host Services
 
-Install the gateway and relay services:
+Populate the local configuration and secret sources for the services you use, then run:
 
 ```bash
 ./scripts/install_systemd_units.sh --preflight
 sudo ./scripts/install_systemd_units.sh
-$EDITOR config/admin-web.env
-$EDITOR config/firewall.env
-sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
-sudo systemctl start evander-firewall.service
-sudo systemctl start evander-openai-relay.service
-sudo systemctl start evander-codex-egress-proxy.service
-sudo systemctl start evander-didww-sip-bridge.service
-sudo systemctl start evander-nuget-relay.service
-sudo systemctl start evander-npm-audit-facade.service
-sudo systemctl start evander-ado-worker.service
-sudo systemctl start evander-proxy-issue-sync.service
-sudo systemctl start evander-discord-wake.service
-sudo systemctl start evander-scheduled-wake.service
-sudo systemctl start evander-managed-git-refresh.service
 ```
+
+The installer renders and enables units and prints start commands. It does not start the services.
+Use the [service runbook](docs/operations.md#systemd-services) to start the configured subset,
+including the firewall for local VM isolation. Optional phone, Teams, Discord, and provider workers
+need their own configuration. The Team runtime target groups the gateway, Admin Web, and both orchestrators for coordinated restarts.
 
 For fresh-host Ubuntu 24.04 deployment paths that wrap this same repo-native flow with Ansible,
 including the dedicated container-worker VM playbook, see `ansible/README.md`.
@@ -357,6 +233,9 @@ panel surfaces explicit missing reasons instead of inferring or inventing releas
 
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
+
+For pinned release reintegration, restart-safe verification, structured evidence and
+worker SDK rollout, see [Release recovery and verifier policy](docs/release-recovery-and-verifier-policy.md).
 
 For the complete layered technical reference to core Evander and the Team Add-on, including
 architecture, runbooks, diagrams, glossary, and linked subject index, see the
@@ -477,10 +356,6 @@ For private PR feedback polling, the service environment must provide `GITHUB_TO
 `azure_devops_organization_url` is safely migrated when it names a public Azure DevOps organization.
 
 ### Azure DevOps worker and work-item workflows
-
-The opt-in [APP PR testing workflow](docs/app-pr-testing.md) handles
-`!TEST <environment>` comments by waiting for the current PR build, redeploying
-an existing named demo, and asking the same PR reviewer to prepare test data.
 
 `evander-ado-worker` now owns Azure DevOps PR feedback and completion polling only. For
 foreground operation, run:
@@ -877,7 +752,7 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   with its own `message_filter`.
 - The initial supported filter shape is content substring matching:
   - `{"target":"team-id/channel-id"}`
-  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Truman Bot"}}}`
+  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Evander Bot"}}}`
   - optional `case_sensitive: true|false` (default `false`)
 - `trigger:communication:new-message` provides the provider-neutral inbound message path for
   directory-scoped communication targets. It requires explicit `communication_target_ids`, defaults
@@ -886,8 +761,12 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   targets. The host-side Teams and Discord ingest workers feed their host-owned inbox stores; email
   targets are read through the configured mailbox provider during trigger polling. Trigger outputs
   do not expose communication target auth profile references.
-- Direct-message triggers require both chat targets and a sender allowlist:
-  - `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
+- Direct-message triggers support two Admin Web setup modes:
+  - `Direct chats by UPN` accepts `direct_chat_user_upns`; saving resolves each user through
+    Microsoft Graph, ensures the one-to-one chat, and persists the resulting `sender_user_ids`
+    and `chat:<chat-id>` targets alongside the readable UPNs.
+  - `Existing chat IDs` preserves the explicit target and sender form:
+    `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
 - Session manifests opt into Teams access explicitly:
 
@@ -1091,6 +970,16 @@ Response:
   - grant `prompt_agent` only to sessions that need to dispatch work;
   - grant `respond_to_agent` only to sessions that need to answer prompts;
   - avoid broad cross-team sharing by keeping sessions in narrow `directory_path` scopes.
+
+## OpenRouter for Codex
+
+Evander supports opt-in `model_provider_mode: openrouter` for Codex sessions on
+libvirt VMs and container workers. The host relay pins each exact session model
+to one configured provider route, enforces ZDR, and disables provider fallbacks.
+The default route map is empty. Configure an approved model and host credential
+through Admin Web before selecting OpenRouter for a session.
+See [OpenRouter setup and verification](docs/openrouter.md) for the configuration
+contract, compatibility checks, and cost accounting.
 
 ## Request-Scoped Codebase Consultations
 
@@ -1558,13 +1447,33 @@ A conservative policy example is available at
 and image files, leaves outbound send disabled, and preconfigures approval as mandatory before any
 future outbound-send enablement.
 
+## Running Tests
+
+Install development dependencies with `uv sync --extra dev`, then run the complete Python suite:
+
+```bash
+./.venv/bin/python scripts/run_tests.py
+```
+
+The runner uses up to four workers for independent cases, then runs elapsed-time contracts
+without competing test workers. It checks that every collected case ran exactly once and
+keeps execution evidence under `.pytest_cache/test-runs/`. Use `--workers 0` for a serial
+comparison. Both modes include documentation and conformance checks.
+
+For Admin Web, `npm test` runs the unit and browser lanes, and `npm run test:all` also includes
+all smoke journeys. See [testing.md](docs/testing.md) for focused commands, deadlines, isolation,
+and the coverage-preservation rules.
+
 ## Project Layout
 
 - `src/evander/`: gateway, relay, policy, storage, and CLI code
-- `scripts/`: libvirt and firewall automation
+- `scripts/`: setup, VM/bootstrap, firewall, testing, and documentation tools
 - `config/`: sample configuration and cloud-init template
-- `systemd/`: service templates for the host gateway, relay, and firewall policy
-- `docs/`: operating notes and next steps
+- `systemd/`: control-plane services and Team runtime unit templates
+- `docs/`: operator/developer references, manual sources, and published manuals
+- `frontend/admin-web/`: the supported Admin Web UI and browser tests
+- `src/evander_*_addon/`: optional domain add-ons
+- `ansible/`: control-plane and worker deployment playbooks
 - `docs/architecture.md`: design rationale, including when logic belongs in `scripts/*.sh` versus
   `src/evander/*.py`
 

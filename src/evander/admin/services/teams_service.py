@@ -10,6 +10,7 @@ import httpx
 from evander.config import GatewayConfig
 from evander.credentials.teams import teams_credential_store, teams_owner_credential_store
 from evander.directories import DirectoryService
+from evander.integration_services.teams import normalize_teams_user_target
 from evander.messaging.teams_auth import (
     DeviceCodeLoginSession,
     MicrosoftDeviceCodeAuthConfig,
@@ -299,3 +300,103 @@ class TeamsAdminService:
             "match_count": len(matches),
             "channels": matches if normalized_channel_name or include_all else [],
         }
+
+    def resolve_direct_chat_targets(
+        self,
+        *,
+        directory: str = "root",
+        user_refs: list[str],
+    ) -> list[dict[str, str]]:
+        normalized_directory = self._deps.normalize_directory_reference(directory)
+        config = self._deps.runtime.provider_config.resolve_for_directory(normalized_directory)
+        if config.teams_backend not in {"graph_api", "delegated_graph_api"}:
+            raise ValueError(
+                f"Directory '{normalized_directory}' is not configured for Microsoft Graph "
+                f"Teams access (teams_backend={config.teams_backend!r})."
+            )
+
+        normalized_refs: list[str] = []
+        seen_refs: set[str] = set()
+        for raw_ref in user_refs:
+            user_ref = str(raw_ref or "").strip()
+            if not user_ref:
+                continue
+            if "@" not in user_ref:
+                raise ValueError(
+                    f"Teams direct-chat user {user_ref!r} must be a UPN or mail address."
+                )
+            dedupe_key = user_ref.casefold()
+            if dedupe_key in seen_refs:
+                continue
+            seen_refs.add(dedupe_key)
+            normalized_refs.append(user_ref)
+        if not normalized_refs:
+            raise ValueError("At least one Teams direct-chat user UPN is required.")
+
+        allowed_user_targets = [normalize_teams_user_target(ref) for ref in normalized_refs]
+        teams_service = self._deps.runtime.teams_service_for_directory(
+            normalized_directory,
+            allowed_channel_targets=[],
+            allowed_user_targets=allowed_user_targets,
+        )
+        resolve_user_id = getattr(teams_service, "resolve_user_id_for_reference", None)
+        if not callable(resolve_user_id):
+            raise ValueError(
+                f"Directory '{normalized_directory}' does not support Teams direct-chat resolution."
+            )
+
+        resolved_users: list[tuple[str, str]] = []
+        seen_user_ids: set[str] = set()
+        for user_ref in normalized_refs:
+            try:
+                user_id = str(resolve_user_id(user_ref) or "").strip()
+            except Exception as exc:
+                raise ValueError(
+                    f"Microsoft Graph could not resolve Teams user {user_ref!r}: {exc}"
+                ) from exc
+            if not user_id:
+                raise ValueError(
+                    f"Microsoft Graph could not resolve Teams user {user_ref!r}."
+                )
+            user_id_key = user_id.casefold()
+            if user_id_key in seen_user_ids:
+                continue
+            seen_user_ids.add(user_id_key)
+            resolved_users.append((user_ref, user_id))
+
+        chat_service = self._deps.runtime.teams_service_for_directory(
+            normalized_directory,
+            allowed_channel_targets=[],
+            allowed_user_targets=[
+                normalize_teams_user_target(user_id) for _, user_id in resolved_users
+            ],
+        )
+        ensure_chat = getattr(chat_service, "ensure_one_on_one_chat", None)
+        if not callable(ensure_chat):
+            raise ValueError(
+                f"Directory '{normalized_directory}' does not support Teams direct-chat resolution."
+            )
+
+        resolutions: list[dict[str, str]] = []
+        for user_ref, user_id in resolved_users:
+            try:
+                chat_target = str(ensure_chat(user_id) or "").strip()
+            except Exception as exc:
+                raise ValueError(
+                    f"Microsoft Graph could not ensure a one-to-one chat for Teams user "
+                    f"{user_ref!r}: {exc}"
+                ) from exc
+            if not chat_target.startswith("chat:") or not chat_target.removeprefix(
+                "chat:"
+            ).strip():
+                raise ValueError(
+                    f"Microsoft Graph did not return a one-to-one chat for Teams user {user_ref!r}."
+                )
+            resolutions.append(
+                {
+                    "user_principal_name": user_ref,
+                    "user_id": user_id,
+                    "chat_target": chat_target,
+                }
+            )
+        return resolutions

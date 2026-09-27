@@ -1,0 +1,325 @@
+/* Entry, navigation overlays, notifications, and conversations. */
+[data-admin-design] .admin-login-shell {
+  background: var(--ui-canvas);
+  padding: 32px 16px;
+}
+[data-admin-design] .admin-login-background {
+  display: none;
+}
+[data-admin-design] .admin-login-stage {
+  width: min(100%, 560px);
+  gap: 20px;
+}
+[data-admin-design] .admin-login-brandbar {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+[data-admin-design] .admin-login-brandbar {
+  position: static;
+  width: 100%;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 16px;
+}
+[data-admin-design] .admin-login-company-logo {
+  width: 80px;
+  height: 64px;
+  filter: none;
+}
+[data-admin-design] .admin-login-evander-logo {
+  width: 160px;
+  height: 64px;
+  filter: none;
+}
+[data-admin-design] .admin-login-card {
+  width: 100%;
+  padding: 28px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  box-shadow: var(--ui-shadow);
+}
+[data-admin-design] .admin-login-card :is(h1, p, label) {
+  color: var(--ui-text);
+}
+[data-admin-design] .admin-login-card p {
+  color: var(--ui-muted);
+  line-height: 1.6;
+}
+[data-admin-design] .admin-login-form {
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-admin-design] .admin-login-form label {
+  display: grid;
+  gap: 6px;
+}
+[data-admin-design] .admin-login-form input {
+  width: 100%;
+}
+[data-admin-design] .admin-login-error {
+  color: var(--ui-danger);
+  background: var(--ui-danger-surface);
+  border-color: var(--ui-danger);
+  border-radius: var(--ui-radius);
+  padding: 10px 12px;
+}
+[data-admin-design] .admin-login-action {
+  min-height: 40px;
+  justify-self: stretch;
+}
+[data-admin-design] .admin-deployment-banner {
+  padding: 12px 16px;
+  background: var(--ui-warning-surface);
+  border: 1px solid var(--ui-border);
+  color: var(--ui-warning);
+  border-left: 3px solid var(--ui-warning);
+}
+[data-admin-design] .admin-deployment-banner-copy :is(strong, span) {
+  color: inherit;
+}
+[data-admin-design] .admin-shell-alert {
+  padding: 12px 16px;
+  background: var(--ui-danger-surface);
+  color: var(--ui-danger);
+  border-color: var(--ui-danger);
+}
+
+[data-admin-design] .admin-notification-menu {
+  width: min(380px, calc(100vw - 24px));
+  overflow: hidden;
+}
+[data-admin-design] .admin-notification-menu-header {
+  padding: 12px;
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+}
+[data-admin-design] .admin-notification-menu-header strong {
+  color: var(--ui-text);
+}
+[data-admin-design] .admin-notification-menu-header button {
+  color: var(--ui-accent);
+  font-size: 12px;
+}
+[data-admin-design] .admin-notification-item {
+  padding: 12px;
+  gap: 4px;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ui-text);
+}
+[data-admin-design] .admin-notification-item:hover {
+  background: var(--ui-subtle);
+}
+[data-admin-design] .admin-notification-item-title {
+  font-weight: 600;
+}
+[data-admin-design] :is(.admin-notification-item-body, .admin-notification-item time, .admin-notification-empty) {
+  color: var(--ui-muted);
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 1.5;
+}
+[data-admin-design] .admin-notification-badge {
+  background: var(--ui-accent);
+  color: var(--ui-on-accent);
+}
+[data-admin-design] .admin-notification-error {
+  background: var(--ui-danger-surface);
+  color: var(--ui-danger);
+}
+[data-admin-design] .admin-quick-nav {
+  width: min(600px, calc(100vw - 24px));
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+[data-admin-design] .admin-quick-nav-header {
+  padding: 16px;
+  border-color: var(--ui-border);
+}
+[data-admin-design] .admin-quick-nav-header h2 {
+  color: var(--ui-text);
+  font-size: 18px;
+}
+[data-admin-design] .admin-quick-nav-search {
+  margin: 0 16px 12px;
+  padding: 0 10px;
+  background: var(--ui-canvas);
+  border-color: var(--ui-control-border);
+  border-radius: var(--ui-radius);
+}
+[data-admin-design] .admin-quick-nav-search input {
+  border: 0;
+  background: transparent;
+}
+[data-admin-design] .admin-quick-nav-option {
+  min-height: var(--ui-row-height);
+  padding: 8px 12px;
+  gap: 12px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--ui-text);
+  background: transparent;
+}
+[data-admin-design] .admin-quick-nav-option.selected {
+  color: var(--ui-accent);
+  background: var(--ui-selected);
+}
+[data-admin-design] .admin-quick-nav-option-copy strong {
+  color: inherit;
+}
+[data-admin-design] :is(.admin-quick-nav-option-copy small, .admin-quick-nav-option-group, .admin-quick-nav-footer) {
+  color: var(--ui-muted);
+  font-weight: 400;
+}
+[data-admin-design] .admin-quick-nav-footer {
+  padding: 12px 16px;
+  background: var(--ui-navigation);
+  border-color: var(--ui-border);
+}
+
+[data-admin-design] .chat-panel {
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(700px, calc(100dvh - 24px));
+}
+[data-admin-design] .chat-panel-header {
+  padding: 12px 16px;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+[data-admin-design] .chat-panel-header h2 {
+  font-size: 16px;
+  margin: 0 0 4px;
+  color: var(--ui-text);
+}
+[data-admin-design] .chat-mode-badge {
+  min-height: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 0;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--ui-subtle);
+  color: var(--ui-muted);
+}
+[data-admin-design] .chat-mode-badge.is-full {
+  background: var(--ui-warning-surface);
+  color: var(--ui-warning);
+}
+[data-admin-design] .chat-messages {
+  padding: 16px;
+  gap: 16px;
+  background: var(--ui-canvas);
+}
+[data-admin-design] .chat-message {
+  max-width: 92%;
+}
+[data-admin-design] .chat-message-bubble {
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+[data-admin-design] .chat-message.is-user .chat-message-bubble {
+  background: var(--ui-selected);
+  color: var(--ui-text);
+}
+[data-admin-design] .chat-message.is-assistant .chat-message-bubble {
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+  color: var(--ui-text);
+}
+[data-admin-design] :is(.chat-message footer, .chat-empty, .chat-pill small) {
+  color: var(--ui-muted);
+  font-weight: 400;
+}
+[data-admin-design] .chat-error {
+  padding: 10px 12px;
+  margin: 0 12px 12px;
+  font-weight: 400;
+  color: var(--ui-danger);
+  background: var(--ui-danger-surface);
+  border-color: var(--ui-danger);
+  border-radius: var(--ui-radius);
+}
+[data-admin-design] .chat-input-row {
+  padding: 12px;
+  gap: 8px;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+[data-admin-design] .chat-input-row textarea {
+  background: var(--ui-canvas);
+  color: var(--ui-text);
+  border-color: var(--ui-control-border);
+  font: 14px/1.5 var(--ui-font);
+}
+[data-admin-design] .chat-icon-button {
+  width: var(--ui-control-height);
+  height: var(--ui-control-height);
+  padding: 4px;
+}
+[data-admin-design] .modal-header {
+  padding: 16px 20px;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+[data-admin-design] .modal-header :is(h2, h3) {
+  margin: 0;
+}
+[data-admin-design] :is(.modal-body, .modal-content) {
+  padding: 16px 20px;
+}
+[data-admin-design] :is(.modal-actions, .modal-footer) {
+  padding: 12px 20px;
+  background: var(--ui-surface);
+  border-color: var(--ui-border);
+}
+[data-admin-design] .personal-ado-dialog {
+  width: min(720px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  padding: 20px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-dialog-radius);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow);
+}
+[data-admin-design] .personal-ado-dialog::backdrop {
+  background: var(--ui-overlay);
+}
+[data-admin-design] .personal-ado-method {
+  padding: 16px 0;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+}
+[data-admin-design] .personal-ado-dialog :is(label, p, h2, h3) {
+  color: var(--ui-text);
+}
+[data-admin-design] .personal-ado-error {
+  color: var(--ui-danger);
+  background: var(--ui-danger-surface);
+}
+@media (max-width: 720px) {
+  [data-admin-design] .admin-login-shell {
+    padding: 24px 12px;
+  }
+  [data-admin-design] .admin-login-card {
+    padding: 20px;
+  }
+  [data-admin-design] .admin-login-brandbar {
+    grid-template-columns: 1fr 1fr;
+  }
+  [data-admin-design] .admin-login-theme-toggle {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+  [data-admin-design] .chat-launcher {
+    right: 12px;
+    bottom: 12px;
+  }
+}

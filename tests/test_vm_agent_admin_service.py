@@ -103,17 +103,6 @@ def test_admin_service_vm_domain_class_compat_wrappers_are_callable() -> None:
     assert VmAgentAdminService._normalize_agent_backend_filter("libvirt") == "libvirt_vm"
 
 
-def test_admin_service_vm_domain_class_compat_wrappers_are_classmethod_delegates() -> None:
-    wrapper_names = {
-        "_agent_record_matches_directory",
-        "_container_execution_status",
-        "_container_session_status",
-        "_normalize_agent_log_view",
-        "_normalize_agent_backend_filter",
-    }
-    assert all(callable(getattr(VmAgentAdminService, name, None)) for name in wrapper_names)
-
-
 def test_agent_session_policy_reports_effective_codex_auth_mode_and_source() -> None:
     session = SessionManifest(
         session_id="container-session",
@@ -376,6 +365,11 @@ class FakeAdmin:
         self.runtime = SimpleNamespace(
             sessions=session_repository,
             session_repository=session_repository,
+            provider_config=SimpleNamespace(
+                resolve_for_directory=lambda directory_path: SimpleNamespace(
+                    model_provider_mode="openai_public"
+                )
+            ),
             policy_config=SimpleNamespace(
                 resolve_for_directory=lambda directory_path: SimpleNamespace(
                     directory_path=directory_path
@@ -940,7 +934,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert all(call[1] == "agent" for call in vm_copy_calls)
     assert all(
         call[2][0]["destination_path"] == "/home/agent/AGENTS.md"
-        and "evander Control Plane" in str(call[2][0]["content"])
+        and "Evander Control Plane" in str(call[2][0]["content"])
         and "search_documentation" in str(call[2][0]["content"])
         for call in vm_copy_calls
     )
@@ -1162,7 +1156,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert all(
         any(
             file.get("destination_path") == "/home/agent/AGENTS.md"
-            and "evander Control Plane" in str(file.get("content") or "")
+            and "Evander Control Plane" in str(file.get("content") or "")
             and "search_documentation" in str(file.get("content") or "")
             for file in files
         )
@@ -1223,8 +1217,9 @@ def test_chat_assistant_libvirt_bootstraps_codex_when_missing(
     assert bootstrap_env["AGENT_MODEL"] == "gpt-test"
 
 
+@pytest.mark.parametrize("provider_mode", ["openai_public", "openrouter"])
 def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_mode: str
 ) -> None:
     existing = SessionManifest(
         session_id="assistant-shared",
@@ -1235,6 +1230,11 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
     sessions = FakeSessionsStore({"assistant-shared": existing})
     admin = FakeAdmin(sessions=sessions)
     admin.config.runtime_dir = tmp_path
+    if provider_mode == "openrouter":
+        existing.metadata["agent_provider"] = "claude"
+    admin.runtime.provider_config = SimpleNamespace(
+        resolve_for_directory=lambda _: SimpleNamespace(model_provider_mode=provider_mode)
+    )
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
 
     class Completed:
@@ -1260,6 +1260,31 @@ def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_sessi
     assert updated.vm_id == "assistant-shared"
     assert updated.vm_provider == "libvirt"
     assert updated.metadata["assistant_scope"] == "admin_chat"
+
+
+@pytest.mark.parametrize("model", [None, "unapproved/model"])
+def test_create_vm_rejects_unapproved_openrouter_model_before_provisioning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str | None
+) -> None:
+    admin = FakeAdmin()
+    config = GatewayConfig(runtime_dir=tmp_path, model_provider_mode="openrouter",
+                           openrouter_model_routes={"openai/gpt-5.4": "azure/eu"})
+    admin.runtime.provider_config = SimpleNamespace(resolve_for_directory=lambda _: config)
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    monkeypatch.setattr(
+        session_helpers,
+        "build_issue_session_manifest",
+        lambda **kwargs: SessionManifest(
+            session_id="router", allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    monkeypatch.setattr(vm_helpers, "dominfo_field", lambda *args: None)
+    monkeypatch.setattr(process_helpers, "run_subprocess",
+                        lambda *args, **kwargs: pytest.fail("unapproved session provisioned"))
+    with pytest.raises(ValueError, match="openrouter_model_routes"):
+        service.create_vm(provider="libvirt", vm_name="router", session_id="router", model=model)
+    assert admin.runtime.session_repository.get_session("router") is None
 
 
 def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:

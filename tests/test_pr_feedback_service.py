@@ -406,7 +406,7 @@ def test_list_all_feedback_includes_items_regardless_of_read_cursor(tmp_path: Pa
 def test_list_all_feedback_resolves_ado_short_repo_through_pr_map(tmp_path: Path) -> None:
     store_path = tmp_path / "pr-feedback-store.json"
     pr_map_path = tmp_path / "pr-map.json"
-    canonical_repo = "exampleindustry/Example Industry APP/ExampleIndustryAPP"
+    canonical_repo = "exampleindustry/Example Industry App/SampleApplication"
     _write_ado_feedback_store(
         store_path,
         [("azure_devops:comment:1", canonical_repo, "2099-01-01T00:00:00Z")],
@@ -415,7 +415,7 @@ def test_list_all_feedback_resolves_ado_short_repo_through_pr_map(tmp_path: Path
     service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
 
     response = service.list_all_feedback(
-        streams=[{"provider": "azure_devops", "repo": "ExampleIndustryAPP", "pr_id": "9463"}]
+        streams=[{"provider": "azure_devops", "repo": "SampleApplication", "pr_id": "9463"}]
     )
 
     assert [item.feedback_id for item in response.feedback] == ["azure_devops:comment:1"]
@@ -424,8 +424,8 @@ def test_list_all_feedback_resolves_ado_short_repo_through_pr_map(tmp_path: Path
 def test_list_unread_feedback_shares_cursor_across_ado_repo_aliases(tmp_path: Path) -> None:
     store_path = tmp_path / "pr-feedback-store.json"
     pr_map_path = tmp_path / "pr-map.json"
-    canonical_repo = "exampleindustry/Example Industry APP/ExampleIndustryAPP"
-    short_repo = "ExampleIndustryAPP"
+    canonical_repo = "exampleindustry/Example Industry App/SampleApplication"
+    short_repo = "SampleApplication"
     _write_ado_feedback_store(
         store_path,
         [
@@ -433,7 +433,7 @@ def test_list_unread_feedback_shares_cursor_across_ado_repo_aliases(tmp_path: Pa
             ("azure_devops:comment:read", short_repo, "2099-01-02T00:00:00Z"),
             ("azure_devops:comment:new", canonical_repo, "2099-01-03T00:00:00Z"),
         ],
-        session_reads={"session-1": {"azure_devops:ExampleIndustryAPP:9463": "2099-01-02T00:00:00Z"}},
+        session_reads={"session-1": {"azure_devops:SampleApplication:9463": "2099-01-02T00:00:00Z"}},
     )
     _write_ado_pr_map(pr_map_path, canonical_repo)
     service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
@@ -445,9 +445,9 @@ def test_list_unread_feedback_shares_cursor_across_ado_repo_aliases(tmp_path: Pa
     assert [item.feedback_id for item in first.feedback] == ["azure_devops:comment:new"]
     assert second.feedback == []
     session_reads = service.store.read_raw()["session_reads"]["session-1"]
-    assert session_reads["azure_devops:ExampleIndustryAPP:9463"] == "2099-01-03T00:00:00Z"
+    assert session_reads["azure_devops:SampleApplication:9463"] == "2099-01-03T00:00:00Z"
     assert (
-        session_reads["azure_devops:exampleindustry/Example Industry APP/ExampleIndustryAPP:9463"]
+        session_reads["azure_devops:exampleindustry/Example Industry App/SampleApplication:9463"]
         == "2099-01-03T00:00:00Z"
     )
 
@@ -460,25 +460,25 @@ def test_ado_short_repo_alias_resolution_fails_closed_when_ambiguous(tmp_path: P
         [
             (
                 "azure_devops:comment:one",
-                "organization-one/project/ExampleIndustryAPP",
+                "organization-one/project/SampleApplication",
                 "2099-01-01T00:00:00Z",
             ),
             (
                 "azure_devops:comment:two",
-                "organization-two/project/ExampleIndustryAPP",
+                "organization-two/project/SampleApplication",
                 "2099-01-02T00:00:00Z",
             ),
         ],
     )
     _write_ado_pr_map(
         pr_map_path,
-        "organization-one/project/ExampleIndustryAPP",
-        "organization-two/project/ExampleIndustryAPP",
+        "organization-one/project/SampleApplication",
+        "organization-two/project/SampleApplication",
     )
     service = PrFeedbackService(store_path, pr_map_path=pr_map_path)
 
     response = service.list_all_feedback(
-        streams=[{"provider": "azure_devops", "repo": "ExampleIndustryAPP", "pr_id": "9463"}]
+        streams=[{"provider": "azure_devops", "repo": "SampleApplication", "pr_id": "9463"}]
     )
 
     assert response.feedback == []
@@ -487,7 +487,7 @@ def test_ado_short_repo_alias_resolution_fails_closed_when_ambiguous(tmp_path: P
 def test_ado_ssh_repo_alias_resolves_only_within_its_scoped_repository(tmp_path: Path) -> None:
     store_path = tmp_path / "pr-feedback-store.json"
     pr_map_path = tmp_path / "pr-map.json"
-    canonical_repo = "organization-one/project/ExampleIndustryAPP"
+    canonical_repo = "organization-one/project/SampleApplication"
     _write_ado_feedback_store(
         store_path,
         [("azure_devops:comment:one", canonical_repo, "2099-01-01T00:00:00Z")],
@@ -499,7 +499,7 @@ def test_ado_ssh_repo_alias_resolves_only_within_its_scoped_repository(tmp_path:
         streams=[
             {
                 "provider": "azure_devops",
-                "repo": "ssh://git@ssh.dev.azure.com/v3/organization-one/project/ExampleIndustryAPP",
+                "repo": "ssh://git@ssh.dev.azure.com/v3/organization-one/project/SampleApplication",
                 "pr_id": "9463",
             }
         ]
@@ -511,7 +511,7 @@ def test_ado_ssh_repo_alias_resolves_only_within_its_scoped_repository(tmp_path:
 def test_ado_unparsed_scoped_repo_does_not_use_short_name_fallback(tmp_path: Path) -> None:
     store_path = tmp_path / "pr-feedback-store.json"
     pr_map_path = tmp_path / "pr-map.json"
-    mapped_repo = "organization-two/project/ExampleIndustryAPP"
+    mapped_repo = "organization-two/project/SampleApplication"
     _write_ado_feedback_store(
         store_path,
         [("azure_devops:comment:two", mapped_repo, "2099-01-01T00:00:00Z")],
@@ -523,7 +523,7 @@ def test_ado_unparsed_scoped_repo_does_not_use_short_name_fallback(tmp_path: Pat
         streams=[
             {
                 "provider": "azure_devops",
-                "repo": "ssh://git@example.invalid/v3/organization-one/project/ExampleIndustryAPP",
+                "repo": "ssh://git@example.invalid/v3/organization-one/project/SampleApplication",
                 "pr_id": "9463",
             }
         ]

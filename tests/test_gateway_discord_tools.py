@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from gateway_tool_support import call_tool
+
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
@@ -151,16 +153,6 @@ def _seed_discord_messages(path: Path, messages: list[DiscordMessageEnvelope]) -
 def read_audit_events(path: Path) -> list[dict[str, object]]:
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     return [json.loads(line) for line in lines]
-
-
-def call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
 
 
 def call_tool_with_context(
@@ -1150,7 +1142,36 @@ def test_discord_post_file_routes_thread_through_parent_identity_webhook(
     assert isinstance(call["identity"], OutboundIdentity)
 
 
-def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        pytest.param(
+            "create_local_issue", {"session_id": "session-1", "title": "Denied"},
+            id="create_local_issue",
+        ),
+        pytest.param("list_issues", {"session_id": "session-1"}, id="list_issues"),
+        pytest.param(
+            "get_issue", {"session_id": "session-1", "issue_id": "42"}, id="get_issue",
+        ),
+        pytest.param(
+            "commit_issue", {"session_id": "session-1", "issue_id": "42"}, id="commit_issue",
+        ),
+        pytest.param(
+            "approve_issue", {"session_id": "session-1", "issue_id": "42"}, id="approve_issue",
+        ),
+        pytest.param(
+            "reject_issue", {"session_id": "session-1", "issue_id": "42"}, id="reject_issue",
+        ),
+        pytest.param("claim_next_issue", {"session_id": "session-1"}, id="claim_next_issue"),
+        pytest.param(
+            "complete_issue", {"session_id": "session-1", "issue_id": "42", "summary": "done"},
+            id="complete_issue",
+        ),
+    ],
+)
+def test_issue_tools_require_tool_permission(
+    tmp_path: Path, tool_name: str, arguments: dict[str, object]
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1162,58 +1183,7 @@ def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:
     server = create_server(context)
 
     with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "create_local_issue",
-                {
-                    "session_id": "session-1",
-                    "title": "Denied",
-                },
-            )
-        )
-
-
-def test_list_issues_requires_tool_permission(tmp_path: Path) -> None:
-    context = make_context(tmp_path)
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-1",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "list_issues",
-                {"session_id": "session-1"},
-            )
-        )
-
-
-def test_get_issue_requires_tool_permission(tmp_path: Path) -> None:
-    context = make_context(tmp_path)
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-1",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "get_issue",
-                {
-                    "session_id": "session-1",
-                    "issue_id": "42",
-                },
-            )
-        )
+        asyncio.run(server.call_tool(tool_name, arguments))
 
 
 def test_approve_issue_sets_approved_state_and_reason(
@@ -1458,29 +1428,6 @@ def test_commit_issue_reuses_mapped_transport_session(
     assert "session_id is required" not in context.config.audit_log_path.read_text(encoding="utf-8")
 
 
-def test_commit_issue_requires_tool_permission(tmp_path: Path) -> None:
-    context = make_context(tmp_path)
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-1",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "commit_issue",
-                {
-                    "session_id": "session-1",
-                    "issue_id": "42",
-                },
-            )
-        )
-
-
 def test_claim_next_issue_passes_through_backend_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1576,96 +1523,6 @@ def test_complete_issue_passes_through_backend_payload(
     }
     assert result["issue_number"] == "42"
     assert result["updated"] is True
-
-
-def test_approve_issue_requires_tool_permission(tmp_path: Path) -> None:
-    context = make_context(tmp_path)
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-1",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "approve_issue",
-                {
-                    "session_id": "session-1",
-                    "issue_id": "42",
-                },
-            )
-        )
-
-
-def test_reject_issue_requires_tool_permission(tmp_path: Path) -> None:
-    context = make_context(tmp_path)
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-1",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "reject_issue",
-                {
-                    "session_id": "session-1",
-                    "issue_id": "42",
-                },
-            )
-        )
-
-
-def test_claim_next_issue_requires_tool_permission(tmp_path: Path) -> None:
-    context = make_context(tmp_path)
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-1",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "claim_next_issue",
-                {"session_id": "session-1"},
-            )
-        )
-
-
-def test_complete_issue_requires_tool_permission(tmp_path: Path) -> None:
-    context = make_context(tmp_path)
-    context.session_repository.upsert_session(
-        SessionManifest(
-            session_id="session-1",
-            allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-    )
-    server = create_server(context)
-
-    with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "complete_issue",
-                {
-                    "session_id": "session-1",
-                    "issue_id": "42",
-                    "summary": "done",
-                },
-            )
-        )
 
 
 def test_get_agent_status_maps_backend_state(
@@ -4107,7 +3964,7 @@ def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path:
                 "pr_feedback_streams": [
                     {
                         "provider": "azure_devops",
-                        "repo": "exampleindustry/Example Industry APP/ExampleIndustryAPP",
+                        "repo": "exampleindustry/Example Industry App/SampleApplication",
                         "pr_id": "5857",
                     }
                 ]
@@ -4124,7 +3981,7 @@ def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path:
         {
             "session_id": "session-1",
             "provider": "azure-devops",
-            "repo": "exampleindustry/Example Industry APP/ExampleIndustryAPP",
+            "repo": "exampleindustry/Example Industry App/SampleApplication",
             "pr_id": "5857",
             "thread_id": "29797",
             "comment_id": "1",

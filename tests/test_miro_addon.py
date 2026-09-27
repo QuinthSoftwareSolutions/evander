@@ -1849,7 +1849,7 @@ def test_create_board_miro_url_through_mcp_and_workflow(
             params = payload["params"]
             calls.append(params["name"])
             if params["name"] == "board_create":
-                assert params["arguments"] == {"name": "Truman Test"}
+                assert params["arguments"] == {"name": "Evander Test"}
                 data = {
                     "miro_url": board_url.replace("=", "%3D")
                     if response_format == "json_text"
@@ -1947,8 +1947,8 @@ def test_create_board_miro_url_through_mcp_and_workflow(
 
     arguments = {
         "connection_id": "architecture",
-        "title": "Truman Test",
-        "operation_key": "create-truman-test",
+        "title": "Evander Test",
+        "operation_key": "create-evander-test",
     }
     created = invoke("create_board", arguments)
     assert created["status"] == "applied"
@@ -1957,7 +1957,7 @@ def test_create_board_miro_url_through_mcp_and_workflow(
     assert store.get("snapshot", created["result_snapshot_id"])["board_id"] == board_id
     boards = invoke("list_boards", {"connection_id": "architecture"})["boards"]
     assert [board for board in boards if board["board_id"] == board_id] == [
-        {"board_id": board_id, "name": "Truman Test", "writable": True, "url": board_url}
+        {"board_id": board_id, "name": "Evander Test", "writable": True, "url": board_url}
     ]
     observed = invoke(
         "read_canvas", {"connection_id": "architecture", "board_id": board_id, "canvas_scope": AREA}

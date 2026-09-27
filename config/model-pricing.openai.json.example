@@ -1,9 +1,11 @@
 {
-  "version": "openai-anthropic-2026-07-30",
+  "version": "openai-anthropic-2026-09-22+gpt-6-sol-luna",
   "currency": "usd",
-  "description": "OpenAI and Anthropic text token pricing seed for query-time operational cost estimates. Prices are per 1M tokens.",
+  "description": "OpenAI and Anthropic text token pricing seed for query-time operational cost estimates. Prices are per 1M tokens. Astra rates verified 2026-09-09; no effective-from limit so all recorded Astra usage is priced retrospectively. Includes GPT-6 Sol and Luna pricing effective September 22, 2026.",
   "sources": [
     "https://developers.openai.com/api/docs/pricing",
+    "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+    "https://openai.com/api-fast-mode/",
     "https://developers.openai.com/api/docs/models/gpt-5.5/",
     "https://developers.openai.com/api/docs/models/gpt-5.4",
     "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
@@ -15,7 +17,9 @@
     "https://developers.openai.com/api/docs/models/gpt-5",
     "https://developers.openai.com/api/docs/models/gpt-4.1-mini",
     "https://platform.claude.com/docs/en/about-claude/pricing",
-    "https://platform.claude.com/docs/en/about-claude/models/overview"
+    "https://platform.claude.com/docs/en/about-claude/models/overview",
+    "https://developers.openai.com/api/docs/models/gpt-6-astra",
+    "https://developers.openai.com/api/docs/changelog"
   ],
   "rules": [
     {
@@ -86,7 +90,29 @@
         "input_multiplier": "2",
         "output_multiplier": "1.5"
       },
-      "batch_multiplier": "0.5"
+      "batch_multiplier": "0.5",
+      "effective_to": "2026-08-21T00:00:00Z"
+    },
+    {
+      "id": "openai:gpt-5.6-sol:text:2026-08-21",
+      "provider": "openai",
+      "models": [
+        "gpt-5.6",
+        "gpt-5.6-sol"
+      ],
+      "effective_from": "2026-08-21T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "cache_write_5m": "5.00",
+        "cached_input": "0.40",
+        "input": "4.00",
+        "output": "20.00"
+      },
+      "batch_multiplier": "0.5",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
     },
     {
       "id": "openai:gpt-5.6-terra:text:2026-07-30",
@@ -142,6 +168,28 @@
         "cached_input": "1.00",
         "cache_write_5m": "12.50",
         "output": "60.00"
+      },
+      "effective_to": "2026-08-21T00:00:00Z"
+    },
+    {
+      "id": "openai:gpt-5.6-sol:fast:2026-08-21",
+      "provider": "openai",
+      "models": [
+        "gpt-5.6",
+        "gpt-5.6-sol"
+      ],
+      "effective_from": "2026-08-21T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "cache_write_5m": "10.00",
+        "cached_input": "0.80",
+        "input": "8.00",
+        "output": "40.00"
+      },
+      "service_tier": "fast",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
       }
     },
     {
@@ -188,6 +236,28 @@
         "cached_input": "1.00",
         "cache_write_5m": "12.50",
         "output": "60.00"
+      },
+      "effective_to": "2026-08-21T00:00:00Z"
+    },
+    {
+      "id": "openai:gpt-5.6-sol:priority:2026-08-21",
+      "provider": "openai",
+      "models": [
+        "gpt-5.6",
+        "gpt-5.6-sol"
+      ],
+      "effective_from": "2026-08-21T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "cache_write_5m": "10.00",
+        "cached_input": "0.80",
+        "input": "8.00",
+        "output": "40.00"
+      },
+      "service_tier": "priority",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
       }
     },
     {
@@ -481,6 +551,242 @@
         "output": "5.00",
         "cache_write_5m": "1.25",
         "cache_write_1h": "2.00"
+      }
+    },
+    {
+      "id": "openai:gpt-6-astra:text:2026-09-09",
+      "provider": "openai",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "rates_per_1m_tokens": {
+        "cache_write_5m": "12.50",
+        "cached_input": "1.00",
+        "input": "10.00",
+        "output": "50.00"
+      },
+      "batch_multiplier": "0.5",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-astra:fast:2026-09-09",
+      "provider": "openai",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "rates_per_1m_tokens": {
+        "cache_write_5m": "25.00",
+        "cached_input": "2.00",
+        "input": "20.00",
+        "output": "100.00"
+      },
+      "service_tier": "fast",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-astra:priority:2026-09-09",
+      "provider": "openai",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "rates_per_1m_tokens": {
+        "cache_write_5m": "25.00",
+        "cached_input": "2.00",
+        "input": "20.00",
+        "output": "100.00"
+      },
+      "service_tier": "priority",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-astra:flex:2026-09-09",
+      "provider": "openai",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "rates_per_1m_tokens": {
+        "cache_write_5m": "6.25",
+        "cached_input": "0.50",
+        "input": "5.00",
+        "output": "25.00"
+      },
+      "service_tier": "flex",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-sol:text:2026-09-22",
+      "provider": "openai",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "effective_from": "2026-09-22T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "2.00",
+        "cached_input": "0.20",
+        "cache_write_5m": "2.50",
+        "output": "10.00"
+      },
+      "batch_multiplier": "0.5",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-sol:fast:2026-09-22",
+      "provider": "openai",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "effective_from": "2026-09-22T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "4.00",
+        "cached_input": "0.40",
+        "cache_write_5m": "5.00",
+        "output": "20.00"
+      },
+      "service_tier": "fast",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-sol:priority:2026-09-22",
+      "provider": "openai",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "effective_from": "2026-09-22T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "4.00",
+        "cached_input": "0.40",
+        "cache_write_5m": "5.00",
+        "output": "20.00"
+      },
+      "service_tier": "priority",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-sol:flex:2026-09-22",
+      "provider": "openai",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "effective_from": "2026-09-22T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "1.000",
+        "cached_input": "0.100",
+        "cache_write_5m": "1.250",
+        "output": "5.000"
+      },
+      "service_tier": "flex",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-luna:text:2026-09-22",
+      "provider": "openai",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "effective_from": "2026-09-22T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.10",
+        "cached_input": "0.01",
+        "cache_write_5m": "0.125",
+        "output": "0.50"
+      },
+      "batch_multiplier": "0.5",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-luna:fast:2026-09-22",
+      "provider": "openai",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "effective_from": "2026-09-22T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.20",
+        "cached_input": "0.02",
+        "cache_write_5m": "0.250",
+        "output": "1.00"
+      },
+      "service_tier": "fast",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-luna:priority:2026-09-22",
+      "provider": "openai",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "effective_from": "2026-09-22T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.20",
+        "cached_input": "0.02",
+        "cache_write_5m": "0.250",
+        "output": "1.00"
+      },
+      "service_tier": "priority",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
+      }
+    },
+    {
+      "id": "openai:gpt-6-luna:flex:2026-09-22",
+      "provider": "openai",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "effective_from": "2026-09-22T00:00:00Z",
+      "rates_per_1m_tokens": {
+        "input": "0.050",
+        "cached_input": "0.005",
+        "cache_write_5m": "0.0625",
+        "output": "0.250"
+      },
+      "service_tier": "flex",
+      "long_context": {
+        "input_multiplier": "2",
+        "input_tokens_over": 272000,
+        "output_multiplier": "1.5"
       }
     }
   ]

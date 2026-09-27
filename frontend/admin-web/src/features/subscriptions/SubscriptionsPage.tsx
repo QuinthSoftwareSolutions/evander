@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
@@ -17,6 +17,8 @@ type DeviceLogin = {
 
 export function SubscriptionsPage() {
   const { selectedDirectoryPath, privilegedUnlocked } = useAdminUi();
+  const refreshGeneration = useRef(0);
+  const [loading, setLoading] = useState(true);
   const [profiles, setProfiles] = useState<CodexSubscriptionProfile[]>([]);
   const [workerUrl, setWorkerUrl] = useState<string | null>(null);
   const [profileId, setProfileId] = useState("");
@@ -31,20 +33,29 @@ export function SubscriptionsPage() {
   }, [selectedDirectoryPath]);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
+    setLoading(true);
     try {
       const payload = await fetchJson<CodexSubscriptionProfilesResponse>(
         `/api/admin/codex-subscriptions${query()}`,
       );
+      if (generation !== refreshGeneration.current) return;
       setProfiles(payload.profiles);
       setWorkerUrl(payload.worker_url);
       setError(null);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (generation === refreshGeneration.current) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (generation === refreshGeneration.current) setLoading(false);
     }
   }, [query]);
 
   useEffect(() => {
+    setProfiles([]);
+    setWorkerUrl(null);
+    setPendingLogins({});
     void refresh();
+    return () => { refreshGeneration.current += 1; };
   }, [refresh]);
 
   useEffect(() => {
@@ -69,7 +80,7 @@ export function SubscriptionsPage() {
       await fetchJson(`/api/admin/codex-subscriptions${query()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile_id: profileId, display_name: displayName }),
+        body: JSON.stringify({ profile_id: profileId.trim(), display_name: displayName.trim() }),
       });
       setProfileId("");
       setDisplayName("");
@@ -139,25 +150,25 @@ export function SubscriptionsPage() {
   }
 
   return (
-    <div className="feature-page">
+    <div className="feature-page subscriptions-page">
       <section className="feature-content">
         <div className="panel-header">
           <div>
-            <div className="eyebrow">Worker-owned authentication</div>
-            <h2>Subscriptions</h2>
-            <p className="muted-text">{workerUrl ?? "No container worker configured"}</p>
+            <h1>Subscriptions</h1>
+            <p className="muted-text">{loading && !workerUrl ? "Loading subscription profiles…" : error && !workerUrl ? "Subscription profiles unavailable" : workerUrl ?? "No container worker configured"}</p>
           </div>
-          <button className="admin-action-button compact" type="button" onClick={() => void refresh()}>
-            Refresh
+          <button className="admin-action-button compact" type="button" disabled={loading || busy !== null} onClick={() => void refresh()}>
+            {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
         {error ? <div className="callout error-callout">{error}</div> : null}
+        {!privilegedUnlocked ? <p className="callout warning-callout">Unlock privileged operations to create profiles or change account connections.</p> : null}
 
-        <article className="panel">
-          <div className="panel-header"><h3>Create profile</h3></div>
+        <details className="subscription-create">
+          <summary>Create profile</summary>
           <div className="config-field-grid">
             <label className="field-stack">
-              <span>Immutable profile id</span>
+              <span>Profile ID (cannot be changed later)</span>
               <input value={profileId} onChange={(event) => setProfileId(event.target.value)} placeholder="team-plus" />
             </label>
             <label className="field-stack">
@@ -168,59 +179,128 @@ export function SubscriptionsPage() {
           <button
             className="admin-action-button primary compact"
             type="button"
-            disabled={!privilegedUnlocked || !profileId.trim() || !displayName.trim() || busy === "create"}
+            disabled={!privilegedUnlocked || !profileId.trim() || !displayName.trim() || busy !== null || loading}
             onClick={() => void createProfile()}
           >
-            Create
+            {busy === "create" ? "Creating…" : "Create profile"}
           </button>
-        </article>
+        </details>
 
-        <div className="detail-stack">
+        <div className="subscription-profiles">
+          <div className="subscription-columns" aria-hidden="true"><span>Profile</span><span>Account</span><span>Plan</span><span>Activity</span></div>
           {profiles.map((profile) => {
             const login = pendingLogins[profile.profile_id];
             return (
-              <article className="panel" key={profile.profile_id}>
-                <div className="panel-header">
-                  <div>
-                    <h3>{profile.display_name}</h3>
-                    <span className="panel-meta">{profile.profile_id}</span>
-                  </div>
-                  <span className={`status-pill ${profile.enabled && profile.signed_in ? "state-running" : "state-idle"}`}>
-                    {!profile.enabled ? "Disabled" : profile.signed_in ? "Signed in" : "Signed out"}
+              <details className="subscription-profile" key={profile.profile_id}>
+                <summary className="subscription-profile-summary">
+                  <span>
+                    <strong>{profile.display_name}</strong>
+                    <small>{profile.profile_id}</small>
+                    <span
+                      className={`status-pill ${profile.enabled && profile.signed_in ? "state-running" : "state-idle"}`}
+                    >
+                      {!profile.enabled ? "Disabled" : profile.signed_in ? "Signed in" : "Signed out"}
+                    </span>
                   </span>
-                </div>
-                <dl className="property-grid">
-                  <div><dt>Account</dt><dd>{profile.email ?? profile.account_id ?? "Not signed in"}</dd></div>
-                  <div><dt>Pinned account id</dt><dd>{profile.pinned_account_id ?? "Unpinned"}</dd></div>
-                  <div><dt>Plan</dt><dd>{profile.plan_type ?? profile.account_type ?? "Unknown"}</dd></div>
-                  <div><dt>Active jobs</dt><dd>{profile.active_job_count ?? 0}</dd></div>
-                  <div><dt>Queued prompts</dt><dd>{profile.queued_prompt_count ?? 0}</dd></div>
-                  <div><dt>Last refresh</dt><dd>{formatTimestamp(profile.last_refresh)}</dd></div>
-                </dl>
-                {profile.error ? <div className="callout error-callout">{profile.error}</div> : null}
-                {login ? (
-                  <div className="callout">
-                    Login: {login.status}. {login.user_code ? `Code ${login.user_code}.` : ""}
-                    {login.verification_url ? <a href={login.verification_url} target="_blank" rel="noreferrer"> Open login</a> : null}
-                    {login.error ? ` ${login.error}` : ""}
+                  <span>{profile.email ?? profile.account_id ?? "Not signed in"}</span>
+                  <span>{profile.plan_type ?? profile.account_type ?? "Unknown"}</span>
+                  <span>
+                    {profile.active_job_count ?? 0} active · {profile.queued_prompt_count ?? 0} queued
+                    {profile.error || login?.error ? <small className="error-text">Needs attention</small> : null}
+                  </span>
+                </summary>
+                <div className="subscription-profile-body">
+                  <dl className="property-grid">
+                    <div>
+                      <dt>Account</dt>
+                      <dd>{profile.email ?? profile.account_id ?? "Not signed in"}</dd>
+                    </div>
+                    <div>
+                      <dt>Pinned account id</dt>
+                      <dd>{profile.pinned_account_id ?? "Unpinned"}</dd>
+                    </div>
+                    <div>
+                      <dt>Plan</dt>
+                      <dd>{profile.plan_type ?? profile.account_type ?? "Unknown"}</dd>
+                    </div>
+                    <div>
+                      <dt>Active jobs</dt>
+                      <dd>{profile.active_job_count ?? 0}</dd>
+                    </div>
+                    <div>
+                      <dt>Queued prompts</dt>
+                      <dd>{profile.queued_prompt_count ?? 0}</dd>
+                    </div>
+                    <div>
+                      <dt>Last refresh</dt>
+                      <dd>{formatTimestamp(profile.last_refresh)}</dd>
+                    </div>
+                  </dl>
+                  {profile.error ? <div className="callout error-callout">{profile.error}</div> : null}
+                  {login ? (
+                    <div className="callout">
+                      Login: {login.status}. {login.user_code ? `Code ${login.user_code}.` : ""}
+                      {login.verification_url ? (
+                        <a href={login.verification_url} target="_blank" rel="noreferrer">
+                          {" "}
+                          Open login
+                        </a>
+                      ) : null}
+                      {login.error ? ` ${login.error}` : ""}
+                    </div>
+                  ) : null}
+                  {profile.rate_limits ? (
+                    <details className="compact-disclosure">
+                      <summary>Rate limits</summary>
+                      <pre className="log-view compact-log-view">{JSON.stringify(profile.rate_limits, null, 2)}</pre>
+                    </details>
+                  ) : null}
+                  {profile.usage ? (
+                    <details className="compact-disclosure">
+                      <summary>Usage</summary>
+                      <pre className="log-view compact-log-view">{JSON.stringify(profile.usage, null, 2)}</pre>
+                    </details>
+                  ) : null}
+                  <div className="inline-actions compact-actions">
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || busy !== null}
+                      onClick={() => void renameProfile(profile)}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || busy !== null}
+                      onClick={() => void patchProfile(profile, { enabled: !profile.enabled })}
+                    >
+                      {profile.enabled ? "Disable" : "Enable"}
+                    </button>
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || !profile.enabled || busy !== null}
+                      onClick={() => void startLogin(profile)}
+                    >
+                      Login
+                    </button>
+                    <button
+                      className="admin-action-button compact danger"
+                      type="button"
+                      disabled={!privilegedUnlocked || !profile.signed_in || busy !== null}
+                      onClick={() => void logout(profile)}
+                    >
+                      Logout
+                    </button>
                   </div>
-                ) : null}
-                {profile.rate_limits ? (
-                  <details className="compact-disclosure"><summary>Rate limits</summary><pre className="log-view compact-log-view">{JSON.stringify(profile.rate_limits, null, 2)}</pre></details>
-                ) : null}
-                {profile.usage ? (
-                  <details className="compact-disclosure"><summary>Usage</summary><pre className="log-view compact-log-view">{JSON.stringify(profile.usage, null, 2)}</pre></details>
-                ) : null}
-                <div className="inline-actions compact-actions">
-                  <button className="admin-action-button compact" type="button" disabled={!privilegedUnlocked || busy !== null} onClick={() => void renameProfile(profile)}>Rename</button>
-                  <button className="admin-action-button compact" type="button" disabled={!privilegedUnlocked || busy !== null} onClick={() => void patchProfile(profile, { enabled: !profile.enabled })}>{profile.enabled ? "Disable" : "Enable"}</button>
-                  <button className="admin-action-button compact" type="button" disabled={!privilegedUnlocked || !profile.enabled || busy !== null} onClick={() => void startLogin(profile)}>Login</button>
-                  <button className="admin-action-button compact danger" type="button" disabled={!privilegedUnlocked || !profile.signed_in || busy !== null} onClick={() => void logout(profile)}>Logout</button>
                 </div>
-              </article>
+              </details>
             );
           })}
-          {!profiles.length ? <div className="empty-state">No subscription profiles are available.</div> : null}
+          {loading && !profiles.length ? <div className="empty-state" role="status">Loading subscription profiles…</div> : null}
+          {!loading && !error && !profiles.length ? <div className="empty-state">No subscription profiles are available. Create a profile to connect an account.</div> : null}
         </div>
       </section>
     </div>

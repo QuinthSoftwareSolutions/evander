@@ -374,84 +374,6 @@ def test_ansible_host_prereqs_can_install_azure_cli_for_control_plane() -> None:
     assert "when: evander_install_azure_cli | bool" in tasks
 
 
-def test_ansible_nexus_package_cache_tasks_are_not_ignored_by_git() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    role_task_path = "ansible/roles/package_cache_nexus/tasks/main.yml"
-
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", "--", role_task_path],
-        cwd=repo,
-        check=False,
-    )
-
-    assert result.returncode == 1
-
-
-def test_ansible_apt_cache_role_tasks_are_not_ignored_by_git() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    role_task_path = "ansible/roles/apt_cache_relay/tasks/main.yml"
-
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", "--", role_task_path],
-        cwd=repo,
-        check=False,
-    )
-
-    assert result.returncode == 1
-
-
-def test_ansible_qdrant_semantic_store_tasks_are_not_ignored_by_git() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    role_task_path = "ansible/roles/semantic_store_qdrant/tasks/main.yml"
-
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", "--", role_task_path],
-        cwd=repo,
-        check=False,
-    )
-
-    assert result.returncode == 1
-
-
-def test_ansible_admin_web_caddy_role_tasks_are_not_ignored_by_git() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    role_task_path = "ansible/roles/admin_web_caddy/tasks/main.yml"
-
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", "--", role_task_path],
-        cwd=repo,
-        check=False,
-    )
-
-    assert result.returncode == 1
-
-
-def test_ansible_worker_apt_proxy_tasks_are_not_ignored_by_git() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    role_task_path = "ansible/roles/worker_apt_proxy/tasks/main.yml"
-
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", "--", role_task_path],
-        cwd=repo,
-        check=False,
-    )
-
-    assert result.returncode == 1
-
-
-def test_ansible_worker_git_access_tasks_are_not_ignored_by_git() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    role_task_path = "ansible/roles/worker_git_access/tasks/main.yml"
-
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", "--", role_task_path],
-        cwd=repo,
-        check=False,
-    )
-
-    assert result.returncode == 1
-
-
 def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
@@ -681,7 +603,6 @@ def test_ansible_codex_egress_proxy_runtime_and_verification_contract() -> None:
         repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
     site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
-    azure = (repo / "azure" / "main.bicep").read_text(encoding="utf-8")
 
     assert "codex_egress_proxy: true" in defaults
     assert "evander_codex_egress_proxy_port: 11889" in defaults
@@ -694,7 +615,6 @@ def test_ansible_codex_egress_proxy_runtime_and_verification_contract() -> None:
     assert 'host: "{{ evander_codex_egress_proxy_bind_host }}"' in verification
     assert "evander_codex_egress_proxy_port }}/healthz" in verification
     assert "Assert the restricted Codex egress proxy configuration is complete" in site
-    assert "'11889'" in azure
 
 
 def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:
@@ -909,12 +829,12 @@ def test_ansible_worker_global_config_render_only_creates_missing_files() -> Non
         assert f"  - {path}" not in defaults
 
 
-def test_truman_deployment_enables_teams_notifications_without_changing_local_defaults() -> None:
+def test_host_vars_example_enables_teams_notifications_without_changing_local_defaults() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    truman = (repo / "ansible" / "host_vars" / "truman-control-plane.yml").read_text(
+    example = (repo / "ansible" / "host_vars" / "control-plane.yml.example").read_text(
         encoding="utf-8"
     )
     service_config = (
@@ -924,9 +844,9 @@ def test_truman_deployment_enables_teams_notifications_without_changing_local_de
     assert "change_notifications_enabled: false" in defaults
     assert "change_notification_public_base_url: null" in defaults
     assert "evander_manage_teams_ingest_config: false" in defaults
-    assert "change_notifications_enabled: true" in truman
-    assert "https://truman-admin.northeurope.cloudapp.azure.com" in truman
-    assert "evander_manage_teams_ingest_config: true" in truman
+    assert "change_notifications_enabled: true" in example
+    assert "https://control-plane.example.test" in example
+    assert "evander_manage_teams_ingest_config: true" in example
     assert "Reconcile CI managed Teams ingest config" in service_config
 
 

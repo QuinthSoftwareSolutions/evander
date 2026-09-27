@@ -113,41 +113,6 @@ def test_bundled_skatteverket_addon_packaging_contract_is_declared() -> None:
     assert (PROJECT_ROOT / "src/evander_skatteverket_addon/ui_static/index.html").is_file()
 
 
-def test_skatteverket_static_ui_exposes_connection_editor() -> None:
-    static_dir = PROJECT_ROOT / "src" / "evander_skatteverket_addon" / "ui_static"
-    index_html = (static_dir / "index.html").read_text(encoding="utf-8")
-    ui_js = (static_dir / "skatteverket-ui.js").read_text(encoding="utf-8")
-    ui_css = (static_dir / "skatteverket-ui.css").read_text(encoding="utf-8")
-
-    assert 'id="connection-form"' in index_html
-    for field_name in (
-        "connection_id",
-        "display_name",
-        "environment",
-        "base_url",
-        "token_url",
-        "submission_endpoint",
-        "client_id_env",
-        "client_secret_env",
-        "apigw_client_id_env",
-        "apigw_client_secret_env",
-        "api_key_env",
-        "certificate_subject",
-        "redirect_uri",
-    ):
-        assert f'name="{field_name}"' in index_html
-    assert 'id="api-picker"' in index_html
-    assert 'class="skv-help"' in index_html
-    assert "OAuth2 Client secret env help" in index_html
-    assert "APIgw Client secret env help" in index_html
-    assert "Skatteverket access tokens" in index_html
-    assert "fetch(`${apiBase}/connections`" in ui_js
-    assert 'method: "POST"' in ui_js
-    assert "enabled_api_names" in ui_js
-    assert ".skv-api-picker" in ui_css
-    assert ".skv-help::after" in ui_css
-
-
 def test_skatteverket_admin_api_upserts_connection(tmp_path: Path) -> None:
     context = AddonContext(
         addon_id=ADDON_ID,

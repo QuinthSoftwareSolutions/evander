@@ -105,7 +105,7 @@ session_manifest = {
     "vm_id": "vm-detail",
     "vm_provider": "libvirt",
     "vm_provider_id": "vm-detail",
-    "model": "gpt-5.2-codex",
+    "model": "gpt-6-sol",
     "directory_path": "root",
     "allowed_tools": ["prompt_agent", "get_agent_logs", "approval_submit"],
     "approval_required_tools": ["approval_submit"],

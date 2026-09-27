@@ -27,9 +27,8 @@ from evander_team_addon.services.domain.release_gates import (
     materialize_release_review_rejection_correction,
 )
 from test_effect_pr_create_provider import _build_context
-from test_app_ado_attribution_workflow import app_document, migration
 from test_pr_publication_policy import publisher
-from test_team_addon_repository import _seed_hierarchy, _team_admin_service
+from team_repository_support import _seed_hierarchy, _team_admin_service
 from test_team_task_authorship import _create
 
 
@@ -128,10 +127,8 @@ def test_attributed_intake_and_release_correction_reach_both_pr_paths(
     lost_context,
 ):
     service, remote, args = publisher(tmp_path, monkeypatch)
-    m = migration()
-    config, graphs = app_document()
-    config, _ = m.upgrade_app_document(config, graphs, require_personal=True)
-    effects = {node["id"]: node for node in config["effects"]}
+    intake_node_id = "effect-create-intake-task"
+    trigger_node_id = "trigger-ado-work-item"
     team_dir = tmp_path / "team-state"
     repo = _seed_hierarchy(team_dir)
 
@@ -150,18 +147,31 @@ def test_attributed_intake_and_release_correction_reach_both_pr_paths(
         },
     )
     intake_config = bind(
-        effects[m.INTAKE]["config"],
-        m.TRIGGER,
+        {
+            "task_id": "app-ado-intake-${{trigger-ado-work-item.work_item_id}}",
+            "team_id": "team",
+            "project_id": "project",
+            "owner_agent_id": "lead",
+            "priority": 0,
+            "title": "Coordinate ADO #${{trigger-ado-work-item.work_item_id}}: ${{trigger-ado-work-item.work_item.title}}",
+            "description": "Coordinate work",
+            "ado_work_item_id": "${{trigger-ado-work-item.work_item_id}}",
+            "ado_project": "${{trigger-ado-work-item.project}}",
+            "integration_boundary": False,
+            "state": "pending",
+            "created_by": "workflow:sample-intake",
+        },
+        trigger_node_id,
         {
             "work_item_id": "17015",
             "work_item": {"title": "Alarms"},
-            "project": "APP",
+            "project": "App",
         },
     )
     intake = TeamCreateTaskEffectProvider()
     intake.initialize(
         TeamCreateTaskEffectDefinition(
-            id=m.INTAKE,
+            id=intake_node_id,
             type="effect:team:create-task",
             display_name="Intake",
             **intake_config,
@@ -247,21 +257,9 @@ def test_attributed_intake_and_release_correction_reach_both_pr_paths(
         state, release_package_id=successor.id, managed_git_admin=service
     )
 
-    # Resolve every actual publication-context binding introduced by the two pack migrations.
-    team_config, _ = m.upgrade_team_runtime(
-        {
-            "effects": [
-                {
-                    "id": "team-emit-release-published",
-                    "type": "effect:event:emit",
-                    "config": {"payload": {}},
-                }
-            ]
-        },
-        [],
-    )
+    # Resolve publication context across the release, packaging, and PR workflow boundaries.
     release_payload = bind(
-        team_config["effects"][0]["config"]["payload"],
+        {"publication_context_id": "${{team-mark-release-published.publication_context_id ?? null}}"},
         "team-mark-release-published",
         {
             "publication_context_id": context_id,
@@ -270,7 +268,7 @@ def test_attributed_intake_and_release_correction_reach_both_pr_paths(
     if lost_context == "release_event":
         release_payload.pop("publication_context_id")
     packaging_payload = bind(
-        effects["main-effect-request-true-app-release-pr-packaging"]["config"]["payload"],
+        {"publication_context_id": "${{main-trigger-team-release-published.payload.publication_context_id ?? null}}"},
         "main-trigger-team-release-published",
         {"payload": release_payload},
     )
@@ -281,7 +279,9 @@ def test_attributed_intake_and_release_correction_reach_both_pr_paths(
     )
     pr_config = {
         **{k: v for k, v in args.items() if k != "directory_path"},
-        **effects[node_id]["config"],
+        "publication_context_id": "${{main-trigger-app-release-pr-packaging-requested.payload.publication_context_id ?? null}}",
+        "publication_policy": "require_personal",
+        "draft": True,
     }
     resolved = bind(
         pr_config, "main-trigger-app-release-pr-packaging-requested", {"payload": packaging_payload}

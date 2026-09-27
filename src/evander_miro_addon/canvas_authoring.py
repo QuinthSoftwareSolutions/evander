@@ -20,17 +20,29 @@ AUTHORING_CHECKS = (
     "Use attached line/path connectors with local widget IDs in "
     "data-start/data-end, data-arrow=end for forward flow, and explicit attachment sides. "
     "Top-down links normally leave bottom and enter top; left-to-right links leave right "
-    "and enter left. Route deliberate return loops separately. Do not draw polygon arrowheads.",
+    "and enter left. Decision branches to different destinations should use distinct exit sides. "
+    "Keep the main path below; route a bypass from a side through an empty lane and into the "
+    "later destination from the side. Move nodes to reserve space rather than crossing skipped "
+    "nodes. Route deliberate return loops separately. Do not draw polygon arrowheads or fake anchors.",
     "Use data-content on a connector for its label instead of independent text beside a line. "
     "Reserve room for return loops and labels outside cards. Use shape data-content for centered "
     "node labels and textArea for multiline explanatory text.",
     "Select a canvas_scope covering the full composition, including connectors and labels. "
     "The empty board's initial 1000-by-1000 area does not cover a larger diagram automatically.",
-    "Inspect the returned result_snapshot_id with miro_get_snapshot and read any uncovered area. "
+    "After EVERY create or update, inspect result_snapshot_id with "
+    "miro_get_snapshot(include_preview=true), review its layout_review warnings and coverage, "
+    "and read any uncovered area. The PNG is a reconstructed layout, not a Miro screenshot: "
+    "check an actual rendering too when available, especially routes marked unknown. "
     "Check that nodes and connectors survived as separate Miro items with stable IDs, "
     "arrow directions match the intended flow, "
     "and labels are readable. A write's applied status confirms delivery, not visual correctness. "
     "A generic SVG preview does not prove Miro rendered the same result.",
+    "Treat diagram authoring as create, read, view, repair, and read/view again. Fix overlapping "
+    "Yes/No branches, routes crossing unrelated nodes, hidden labels, and unreadable spacing. "
+    "Use a fresh operation key for each changed repair and the latest snapshot/IDs; retain the "
+    "key only for an identical retry. Normally allow up to three repair passes, then explain "
+    "remaining limitations rather than claim completion. Stop on uncertain writes. A report with "
+    "no detected issues is not visual approval, especially when geometry or routes were unreviewed.",
     "Before revising a collaborative diagram, read its current state and preserve human edits. "
     "Update only the intended items using their stable data-miro-id values; do not replace the "
     "whole composition. Converting an existing Mermaid widget requires recreating its nodes and "

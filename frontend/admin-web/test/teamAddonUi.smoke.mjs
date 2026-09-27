@@ -5,9 +5,14 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 
-import { chromium } from "playwright";
 import { createServer as createViteServer } from "vite";
 import { fulfillAdminShellBackgroundApiRequest } from "./adminShellHelpers.mjs";
+import {
+  browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout,
+} from "./support/browserHarness.mjs";
+import { waitForCondition } from "./support/polling.mjs";
+
+const browser = suiteBrowser();
 
 const staticRoot = path.resolve(
   fileURLToPath(new URL("../../../src/evander_team_addon/ui_static", import.meta.url)),
@@ -23,6 +28,7 @@ const teamViewIds = [
   "people",
   "chat",
   "mail",
+  "activity",
   "governance",
   "planning",
   "timeline",
@@ -32,12 +38,15 @@ const teamViewIds = [
 test("team add-on static UI exposes runtime control hooks", async () => {
   const markup = await readFile(path.join(staticRoot, "index.html"), "utf8");
   const script = await readFile(path.join(staticRoot, "team-ui.js"), "utf8");
+  const stateScript = await readFile(path.join(staticRoot, "team-ui-state.js"), "utf8");
   const mailScript = await readFile(path.join(staticRoot, "team-mail.js"), "utf8");
   const stylesheet = await readFile(path.join(staticRoot, "team-ui.css"), "utf8");
   const orgFlowScript = await readFile(path.join(staticRoot, "team-org-flow.js"), "utf8");
   const orgFlowStylesheet = await readFile(path.join(staticRoot, "team-org-flow.css"), "utf8");
+  const designStylesheet = await readFile(path.join(staticRoot, "admin-design.css"), "utf8");
 
-  assert.match(markup, /team-org-flow\.css/);
+  assert.match(markup, /admin-design\.css/);
+  assert.match(designStylesheet, /team-org-flow\.css/);
   assert.match(markup, /team-org-flow\.js/);
   assert.match(script, /context_clearing_policy/);
   assert.match(script, /contextClearingPolicies/);
@@ -49,7 +58,6 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /data-stand-down-scope="agent">Stand down</);
   assert.match(script, />Stand down subtree</);
   assert.match(script, /and every subordinate in that agent's subtree/);
-  assert.match(script, /data-stand-down-revoke-agent-id/);
   assert.match(script, /data-resume-release-recovery-blocker-id/);
   assert.match(script, /Resume release recovery/);
   assert.match(script, /admin_ui_release_recovery/);
@@ -63,7 +71,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /stand-down/);
   assert.match(script, /Handoff summary/);
   assert.match(script, /data-team-view/);
-  assert.match(script, /team-addon:active-view/);
+  assert.match(stateScript, /team-addon:active-view/);
   assert.doesNotMatch(markup, /data-team-view="setup"/);
   assert.doesNotMatch(markup, /team-setup-page/);
   assert.doesNotMatch(markup, /data-team-view="overview"/);
@@ -176,6 +184,8 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-view-tab-badge/);
   assert.match(script, /chatNotificationSoundStorageKey/);
   assert.match(script, /data-chat-notification-sound/);
+  assert.match(script, /data-open-chat-agent-id/);
+  assert.match(script, /openChatForAgent/);
   assert.match(script, /data-chat-attachment-input/);
   assert.match(script, /pendingChatAttachments/);
   assert.match(script, /chat\/attachment-policy/);
@@ -226,6 +236,7 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(script, /team-org-flow:edit-agent/);
   assert.match(script, /team-org-flow:canvas-menu/);
   assert.match(script, /data-org-context-action/);
+  assert.match(script, /action: "open-chat"/);
   assert.match(script, /action: "open-session"/);
   assert.match(script, /governance-add-team/);
   assert.match(script, /data-core-agent-session-create/);
@@ -1572,12 +1583,32 @@ async function createTeamAddonServer(
         await serveStatic(response, "team-ui.js", "application/javascript; charset=utf-8");
         return;
       }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-ui-state.js") {
+        await serveStatic(response, "team-ui-state.js", "application/javascript; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-identifiers.js") {
+        await serveStatic(response, "team-identifiers.js", "application/javascript; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/admin-design.css") {
+        await serveStatic(response, "admin-design.css", "text/css; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/admin-design.js") {
+        await serveStatic(response, "admin-design.js", "application/javascript; charset=utf-8");
+        return;
+      }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-mail.js") {
         await serveStatic(response, "team-mail.js", "application/javascript; charset=utf-8");
         return;
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-case-board.js") {
         await serveStatic(response, "team-case-board.js", "application/javascript; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && pathname === "/addons/team-addon/team-case-context.js") {
+        await serveStatic(response, "team-case-context.js", "application/javascript; charset=utf-8");
         return;
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-activity.js") {
@@ -2259,6 +2290,19 @@ async function createTeamAddonServer(
         && /^\/api\/addons\/team-addon\/teams\/[^/]+\/copy$/.test(pathname)
         && payload.expected_revision !== state.revision
       ) {
+        const sourceTeamId = decodeURIComponent(pathname.split("/").at(-2) || "");
+        const currentConfigurationToken = state.teams[sourceTeamId]?.copy_configuration_token;
+        if (
+          payload.source_configuration_token
+          && payload.source_configuration_token === currentConfigurationToken
+        ) {
+          applyMutation(state, pathname, payload);
+          jsonResponse(response, {
+            ...state,
+            rebased_from_revision: payload.expected_revision,
+          }, 201);
+          return;
+        }
         jsonResponse(
           response,
           {
@@ -2282,8 +2326,7 @@ async function createTeamAddonServer(
     }
   });
 
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  await t.after(async () => {
+  t.after(async () => {
     for (const stream of openStateStreams) {
       clearInterval(stream.interval);
       stream.response.end();
@@ -2296,8 +2339,13 @@ async function createTeamAddonServer(
       stream.response.destroy?.();
     }
     openChatStreams.clear();
-    await new Promise((resolve) => server.close(resolve));
-  });
+    server.closeAllConnections();
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }, { timeout: browserHookTimeout });
+  await withTimeout(new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  }), 10_000, "Team fixture server did not start within 10 seconds");
   const address = server.address();
   assert.ok(address && typeof address === "object" && "port" in address);
   const emitChatSnapshots = (conversationId = null) => {
@@ -3012,14 +3060,8 @@ async function openBrowserPage(
   contextOptions = {},
   path = "/addons/team-addon/?privileged_unlocked=true",
 ) {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext(contextOptions);
+  const context = await browser.newContext(t, contextOptions);
   const page = await context.newPage();
-  await t.after(async () => {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
-  });
   await page.goto(`http://127.0.0.1:${port}${path}`, {
     waitUntil: "domcontentloaded",
   });
@@ -3033,14 +3075,10 @@ async function openCaseBoardAdminShell(t, fixturePort, { hash = "#addon:team-add
     server: { host: "127.0.0.1", port: 0, proxy: { "/addons/": target, "/api/addons/": target } },
     logLevel: "error",
   });
-  await server.listen();
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
-  page.setDefaultTimeout(10000);
-  t.after(async () => {
-    await browser.close();
-    await server.close();
-  });
+  t.after(() => server.close(), { timeout: browserHookTimeout });
+  await withTimeout(server.listen(), 15_000, "Vite did not start within 15 seconds");
+  const context = await browser.newContext(t);
+  const page = await context.newPage();
   let authenticated = authMode === "none";
   const loginTargets = [];
   const errors = [];
@@ -3286,20 +3324,6 @@ async function rightClickBareOrgCanvas(page) {
   await page.mouse.click(point.x, point.y, { button: "right" });
 }
 
-async function waitForCondition(predicate, message, { timeoutMs = 2000, intervalMs = 25 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  if (predicate()) {
-    return;
-  }
-  throw new Error(message);
-}
-
 async function waitForStatusText(page, textValue, requests = [], { timeout = 5000 } = {}) {
   try {
     await page.getByText(textValue).waitFor({ state: "visible", timeout });
@@ -3340,7 +3364,7 @@ async function openOrgChart(page) {
   await page.locator("#team-org-page").waitFor({ state: "visible" });
 }
 
-test("team add-on remembers the selected top-level view across refresh", async (t) => {
+test("team add-on remembers the selected top-level view across refresh", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
@@ -3357,7 +3381,7 @@ test("team add-on remembers the selected top-level view across refresh", async (
   await page.locator("#team-workspace-page").waitFor({ state: "hidden" });
 });
 
-test("team add-on normalizes deprecated Setup view storage to Teams", async (t) => {
+test("team add-on normalizes deprecated Setup view storage to Teams", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
@@ -3374,7 +3398,7 @@ test("team add-on normalizes deprecated Setup view storage to Teams", async (t) 
   );
 });
 
-test("team add-on Teams tab creates teams from the top-level action", async (t) => {
+test("team add-on Teams tab creates teams from the top-level action", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
@@ -3400,7 +3424,7 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   await page.locator("#team-people-page").waitFor({ state: "visible" });
   await page.locator("#teams-create-team-panel").waitFor({ state: "hidden" });
   await page
-    .locator('#team-people-page [data-team-record-group-id="team-launch-team"]')
+    .locator('#team-people-page .team-record-group[data-team-record-group-id="team-launch-team"]')
     .getByText("Launch Team")
     .waitFor({ state: "visible" });
 
@@ -3416,7 +3440,7 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   assert.equal(teamRequest.payload.operator_communication_target_id, "ops-launch");
 });
 
-test("team add-on copies a clean team configuration with existing and new core sessions", async (t) => {
+test("team add-on copies a clean team configuration with existing and new core sessions", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.projects.project.directory_path = "root/team-project";
   initialState.projects.project.git.directory_path = "root/team-project";
@@ -3467,6 +3491,7 @@ test("team add-on copies a clean team configuration with existing and new core s
 
   await waitForRevision(page, 8);
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
 
   const dialog = page.locator("#org-action-modal");
@@ -3545,13 +3570,14 @@ test("team add-on copies a clean team configuration with existing and new core s
   );
 });
 
-test("team add-on copies all source sessions by default without individual setup", async (t) => {
+test("team add-on copies all source sessions by default without individual setup", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests, state: serverState } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
   const page = await openBrowserPage(t, port);
   await waitForRevision(page, 8);
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
   const form = page.locator("form[data-team-copy-form]");
   const selects = form.locator("[data-team-copy-session-select]");
@@ -3575,7 +3601,7 @@ test("team add-on copies all source sessions by default without individual setup
   assert.equal(requests.some((request) => request.pathname === "/api/admin/agents/create-operations"), false);
 });
 
-test("team add-on retains completed session copies when another session fails", async (t) => {
+test("team add-on retains completed session copies when another session fails", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, { initialState: seededOrgChartState() });
   const page = await openBrowserPage(t, port);
   let attempts = 0;
@@ -3589,6 +3615,7 @@ test("team add-on retains completed session copies when another session fails", 
   });
   await waitForRevision(page, 8);
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
   const form = page.locator("form[data-team-copy-form]");
   await form.getByRole("button", { name: "Copy team" }).click();
@@ -3603,7 +3630,60 @@ test("team add-on retains completed session copies when another session fails", 
   assert.equal(new Set(copies.map((request) => request.payload.source_session_id)).size, 4);
 });
 
-test("team add-on submits the source revision shown by the copy preview", async (t) => {
+test("team add-on rebases a copy when only live Team state changed", { timeout: browserTestTimeout }, async (t) => {
+  const initialState = seededOrgChartState();
+  const {
+    port,
+    requests,
+    state: serverState,
+    emitStateSnapshot,
+    stateStreamCount,
+  } = await createTeamAddonServer(t, {
+    initialState,
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before testing the copy preview",
+  );
+  await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
+  await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
+  const copyForm = page.locator("form[data-team-copy-form]");
+  await copyForm.waitFor({ state: "visible" });
+  assert.equal(await copyForm.getAttribute("data-source-revision"), "8");
+  assert.equal(
+    await copyForm.getAttribute("data-source-configuration-token"),
+    "source-config-team-v1",
+  );
+
+  serverState.revision = 9;
+  serverState.tasks.task_open.state = "completed";
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: 9 }) > 0,
+    "expected the concurrent revision to reach the Team client",
+  );
+  await waitForRevision(page, 9);
+  await copyForm.getByRole("button", { name: "Copy team" }).click();
+
+  await waitForRevision(page, 10);
+  assert.equal(
+    requests.filter((request) => request.pathname === "/api/admin/agents/copy-operations").length,
+    4,
+  );
+  const copyRequest = requests.find(
+    (request) => request.method === "POST"
+      && request.pathname === "/api/addons/team-addon/teams/team/copy",
+  );
+  assert.ok(copyRequest);
+  assert.equal(copyRequest.payload.expected_revision, 8);
+  assert.equal(copyRequest.payload.source_configuration_token, "source-config-team-v1");
+  assert.equal(Object.keys(serverState.teams).length, 2);
+});
+
+test("team add-on rejects a copy when the stable source configuration changed", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const destinationSessions = ["manager", "lead", "backend", "worker"].map((agentId) => ({
     agent_id: `core-copy-${agentId}`,
@@ -3634,13 +3714,14 @@ test("team add-on submits the source revision shown by the copy preview", async 
     "expected Team state stream to be open before testing the copy preview",
   );
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-team-copy-open="team"]').click();
   const copyForm = page.locator("form[data-team-copy-form]");
   await copyForm.waitFor({ state: "visible" });
-  assert.equal(await copyForm.getAttribute("data-source-revision"), "8");
 
   serverState.revision = 9;
   serverState.teams.team.name = "Concurrently changed Team";
+  serverState.teams.team.copy_configuration_token = "source-config-team-v2";
   assert.ok(
     emitStateSnapshot({ response_scope: "revision", revision: 9 }) > 0,
     "expected the concurrent revision to reach the Team client",
@@ -3654,7 +3735,7 @@ test("team add-on submits the source revision shown by the copy preview", async 
   await copyForm.getByRole("button", { name: "Copy team" }).click();
 
   await page.locator("#status-message", {
-    hasText: "The source Team changed after this copy preview was opened.",
+    hasText: "The source Team configuration changed after this copy preview was opened.",
   }).waitFor({ state: "visible" });
   const copyRequest = requests.find(
     (request) => request.method === "POST"
@@ -3665,7 +3746,7 @@ test("team add-on submits the source revision shown by the copy preview", async 
   assert.deepEqual(Object.keys(serverState.teams), ["team"]);
 });
 
-test("team add-on hides copy for archived teams", async (t) => {
+test("team add-on hides copy for archived teams", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.archived = true;
   Object.values(initialState.agents).forEach((agent) => {
@@ -3677,6 +3758,7 @@ test("team add-on hides copy for archived teams", async (t) => {
   await waitForRevision(page, 8);
   await page.locator("#show-archived-toggle").check();
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator("#people-agent-detail-view").getByText("archived", { exact: true }).waitFor({
     state: "visible",
   });
@@ -3686,7 +3768,7 @@ test("team add-on hides copy for archived teams", async (t) => {
   );
 });
 
-test("team add-on team editor selects from all registered communication targets", async (t) => {
+test("team add-on team editor selects from all registered communication targets", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.operator_communication_target_id = "team-alerts";
   const { port, requests } = await createTeamAddonServer(t, {
@@ -3705,6 +3787,7 @@ test("team add-on team editor selects from all registered communication targets"
   const page = await openBrowserPage(t, port);
 
   await openTeams(page);
+  await page.locator('[data-team-record-toggle="team"]').click();
   await page.locator('#people-agent-detail-view [data-edit-type="team"][data-edit-id="team"]').click();
 
   const form = page.locator("#edit-record-form");
@@ -3729,7 +3812,7 @@ test("team add-on team editor selects from all registered communication targets"
   assert.equal(update.payload.operator_communication_target_id, "ops-notify-only");
 });
 
-test("team add-on UI imports Git repo config into project forms", async (t) => {
+test("team add-on UI imports Git repo config into project forms", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
 
@@ -3764,7 +3847,7 @@ test("team add-on UI imports Git repo config into project forms", async (t) => {
   });
 });
 
-test("team add-on UI creates review profile criteria with structured rows", async (t) => {
+test("team add-on UI creates review profile criteria with structured rows", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -3816,7 +3899,7 @@ test("team add-on UI creates review profile criteria with structured rows", asyn
   ]);
 });
 
-test("team add-on Projects tab reveals project and review profile forms on demand", async (t) => {
+test("team add-on Projects tab reveals project and review profile forms on demand", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -3825,6 +3908,7 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   await waitForRevision(page, 8);
   await openProjects(page);
   const panel = page.locator("#team-projects-page");
+  await panel.locator("summary", { hasText: "Add outcome kind" }).click();
   const teamWideOutcomeLabel = panel.locator(
     'form[data-form-id="create-outcome-kind-form"] label.checkbox-label',
     { hasText: "Team-wide definition" },
@@ -3880,6 +3964,7 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   assert.equal(projectRequest.payload.name, "Follow-up project");
   assert.deepEqual(projectRequest.payload.git, {
     managed_repo_id: "mr_primary_project",
+    directory_path: "root",
     agent_author_identity: {
       name: "Project Author",
       email: "author@example.test",
@@ -3891,7 +3976,7 @@ test("team add-on Projects tab reveals project and review profile forms on deman
   });
 });
 
-test("team add-on Projects tab collapses, filters, sorts, and pages delivery records", async (t) => {
+test("team add-on Projects tab collapses, filters, sorts, and pages delivery records", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.tasks.task_open.deliverable_ids = [];
   initialState.deliverables = {};
@@ -4153,15 +4238,15 @@ async function checkReleaseHistoryFilters(t, { windowed = false } = {}) {
   assert.match(await historySummary.innerText(), unfilteredSummary);
 }
 
-test("team add-on release history filters by state and activity date", async (t) => {
+test("team add-on release history filters by state and activity date", { timeout: browserTestTimeout }, async (t) => {
   await checkReleaseHistoryFilters(t);
 });
 
-test("team add-on release history filters explain partial history counts", async (t) => {
+test("team add-on release history filters explain partial history counts", { timeout: browserTestTimeout }, async (t) => {
   await checkReleaseHistoryFilters(t, { windowed: true });
 });
 
-test("team add-on delivery records lead with human subjects and progressive technical detail", async (t) => {
+test("team add-on delivery records lead with human subjects and progressive technical detail", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const deliverableId = "deliverable-rich-internal-42";
   const releaseId = "release-rich-internal-84";
@@ -4472,7 +4557,7 @@ test("team add-on delivery records lead with human subjects and progressive tech
   );
 });
 
-test("team add-on live verification logs follow the tail without overriding manual scrolling", async (t) => {
+test("team add-on live verification logs follow the tail without overriding manual scrolling", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const releaseId = "release-live-verification";
   const verificationRunId = "verification-live-1";
@@ -4610,7 +4695,7 @@ test("team add-on live verification logs follow the tail without overriding manu
   );
 });
 
-test("team add-on Cases defaults to active work and pages durable case history", async (t) => {
+test("team add-on Cases defaults to active work and pages durable case history", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const activeStatuses = ["open", "triage", "in_progress", "waiting"];
   initialState.cases = {};
@@ -4761,7 +4846,7 @@ test("team add-on Cases defaults to active work and pages durable case history",
   assert.equal(await casesPage.locator('[data-case-id="case-closed-01"]').count(), 0);
 });
 
-test("team add-on UI retries verification failures with an operator comment", async (t) => {
+test("team add-on UI retries verification failures with an operator comment", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.release_packages["release-transient"] = {
     id: "release-transient",
@@ -4866,7 +4951,7 @@ test("team add-on UI retries verification failures with an operator comment", as
     .waitFor({ state: "visible" });
 });
 
-test("team add-on UI submits an explicit rejected-review exception", async (t) => {
+test("team add-on UI submits an explicit rejected-review exception", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.release_packages = {
     "release-review-exception": {
@@ -4926,7 +5011,7 @@ test("team add-on UI submits an explicit rejected-review exception", async (t) =
   });
 });
 
-test("team add-on focused tabs submit retained create forms with revisions", async (t) => {
+test("team add-on focused tabs submit retained create forms with revisions", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t);
   const page = await openBrowserPage(t, port);
   const teamId = "team-team";
@@ -4983,7 +5068,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   );
 
   await openTeams(page);
-  const teamGroup = page.locator(`#team-people-page [data-team-record-group-id="${teamId}"]`);
+  const teamGroup = page.locator(`#team-people-page .team-record-group[data-team-record-group-id="${teamId}"]`);
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5036,6 +5121,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   assert.equal(mutationRequests[1].payload.lead_agent_id, managerId);
   assert.deepEqual(mutationRequests[1].payload.git, {
     managed_repo_id: "mr_0123456789abcdef0123",
+    directory_path: "root",
     base_branch: "main",
   });
   assert.equal(mutationRequests[2].payload.team_id, teamId);
@@ -5049,7 +5135,7 @@ test("team add-on focused tabs submit retained create forms with revisions", asy
   assert.equal(mutationRequests[3].payload.ephemeral_policy.max_concurrent, 2);
 });
 
-test("team add-on agent registration can select an existing core session", async (t) => {
+test("team add-on agent registration can select an existing core session", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5057,7 +5143,7 @@ test("team add-on agent registration can select an existing core session", async
 
   await waitForRevision(page, 8);
   await openTeams(page);
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5097,7 +5183,7 @@ test("team add-on agent registration can select an existing core session", async
   );
 });
 
-test("team add-on agent registration can create and auto-register a core session", async (t) => {
+test("team add-on agent registration can create and auto-register a core session", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5105,7 +5191,7 @@ test("team add-on agent registration can create and auto-register a core session
 
   await waitForRevision(page, 8);
   await openTeams(page);
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5183,7 +5269,7 @@ test("team add-on agent registration can create and auto-register a core session
   assert.equal(registerRequest.payload.display_name, "Created Core Agent");
 });
 
-test("team add-on agent registration blocks core creation until Team fields are valid", async (t) => {
+test("team add-on agent registration blocks core creation until Team fields are valid", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5191,7 +5277,7 @@ test("team add-on agent registration blocks core creation until Team fields are 
 
   await waitForRevision(page, 8);
   await openTeams(page);
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5216,7 +5302,7 @@ test("team add-on agent registration blocks core creation until Team fields are 
   );
 });
 
-test("team add-on agent auto-registration preserves conflict retry after core creation", async (t) => {
+test("team add-on agent auto-registration preserves conflict retry after core creation", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
     conflictOnFirstAgentRegistration: true,
@@ -5225,7 +5311,7 @@ test("team add-on agent auto-registration preserves conflict retry after core cr
 
   await waitForRevision(page, 8);
   await openTeams(page);
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5267,7 +5353,7 @@ test("team add-on agent auto-registration preserves conflict retry after core cr
   assert.equal(registrationRequests[1].payload.expected_revision, 9);
 });
 
-test("team add-on agent registration keeps core creation locked with privileges locked", async (t) => {
+test("team add-on agent registration keeps core creation locked with privileges locked", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5275,7 +5361,7 @@ test("team add-on agent registration keeps core creation locked with privileges 
 
   await waitForRevision(page, 8);
   await openTeams(page);
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5308,7 +5394,7 @@ test("team add-on agent registration keeps core creation locked with privileges 
   );
 });
 
-test("team add-on locked mode disables mutation entry points", async (t) => {
+test("team add-on locked mode disables mutation entry points", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5325,6 +5411,7 @@ test("team add-on locked mode disables mutation entry points", async (t) => {
   await page.waitForTimeout(100);
   await page.locator("#teams-create-team-panel").waitFor({ state: "hidden" });
 
+  await page.locator('[data-team-record-toggle="team"]').click();
   const copyTeamButton = page.locator('#people-agent-detail-view [data-team-copy-open="team"]');
   await copyTeamButton.waitFor({ state: "visible" });
   assert.equal(await copyTeamButton.isDisabled(), true);
@@ -5333,7 +5420,7 @@ test("team add-on locked mode disables mutation entry points", async (t) => {
   await page.waitForTimeout(100);
   assert.equal(await page.locator("#org-action-modal").isVisible().catch(() => false), false);
 
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5379,7 +5466,7 @@ test("team add-on locked mode disables mutation entry points", async (t) => {
   assert.deepEqual(mutationRequests, []);
 });
 
-test("team add-on opens linked sessions from Teams and Org chart agents", async (t) => {
+test("team add-on opens linked sessions from Teams and Org chart agents", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5396,7 +5483,7 @@ test("team add-on opens linked sessions from Teams and Org chart agents", async 
 
   await waitForRevision(page, 8);
   await openTeams(page);
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5421,7 +5508,56 @@ test("team add-on opens linked sessions from Teams and Org chart agents", async 
   );
 });
 
-test("team add-on privilege messages update controls without losing selected manager", async (t) => {
+test("team add-on opens chats from Teams and Org chart agents", { timeout: browserTestTimeout }, async (t) => {
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 8);
+  await openTeams(page);
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
+  await teamGroup.waitFor({ state: "visible" });
+  if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
+    await teamGroup.locator(".team-record-group-header").click();
+  }
+  await teamGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  await teamGroup.locator('[data-select-agent-id="manager"]').click();
+  const managerDetail = page.locator("#team-people-page .agent-detail", { hasText: "Ops Manager" });
+  await managerDetail.getByRole("button", { name: "Chat" }).click();
+  await page.locator("#team-chat-page").waitFor({ state: "visible" });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations" &&
+          request.payload?.agent_id === "manager",
+      ),
+    "expected the Teams chat action to open the selected agent conversation",
+  );
+
+  await openOrgChart(page);
+  const backendCard = page.locator(".org-focus-node-card").filter({
+    has: page.locator(".hierarchy-node-title strong", { hasText: /^Backend Worker$/ }),
+  });
+  await backendCard.waitFor({ state: "visible" });
+  await backendCard.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Open chat" }).click();
+  await page.locator("#team-chat-page").waitFor({ state: "visible" });
+  await waitForCondition(
+    () =>
+      requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/api/addons/team-addon/conversations" &&
+          request.payload?.agent_id === "backend",
+      ),
+    "expected the Org chart chat action to open the selected agent conversation",
+  );
+});
+
+test("team add-on privilege messages update controls without losing selected manager", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   const standDown = {
     id: "stand-down-manager",
@@ -5446,7 +5582,7 @@ test("team add-on privilege messages update controls without losing selected man
 
   await waitForRevision(page, 8);
   await openTeams(page);
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5495,7 +5631,7 @@ test("team add-on privilege messages update controls without losing selected man
   });
 });
 
-test("team add-on lets operators revoke direct agent-issued stand-downs and explains inherited holds", async (t) => {
+test("team add-on lets operators revoke direct agent-issued stand-downs and explains inherited holds", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.lead.display_name = "Project Lead";
   const standDown = {
@@ -5529,7 +5665,7 @@ test("team add-on lets operators revoke direct agent-issued stand-downs and expl
 
   await waitForRevision(page, 8);
   await openTeams(page);
-  const teamGroup = page.locator('#team-people-page [data-team-record-group-id="team"]');
+  const teamGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]');
   await teamGroup.waitFor({ state: "visible" });
   if (!(await teamGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await teamGroup.locator(".team-record-group-header").click();
@@ -5580,7 +5716,7 @@ test("team add-on lets operators revoke direct agent-issued stand-downs and expl
   );
 });
 
-test("team add-on project catalog uses growing cards with concise project metadata", async (t) => {
+test("team add-on project list keeps names and metadata readable in compact rows", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.name = "Accounting Department";
   initialState.projects.project.name = "Bookkeeping Operations";
@@ -5629,17 +5765,20 @@ test("team add-on project catalog uses growing cards with concise project metada
       const title = element.querySelector(".projects-focus-row-primary strong");
       const titleRange = document.createRange();
       titleRange.selectNodeContents(title);
+      const row = element.getBoundingClientRect();
+      const titleBounds = titleRange.getBoundingClientRect();
       return {
-        width: element.getBoundingClientRect().width,
-        titleLineCount: titleRange.getClientRects().length,
+        width: row.width,
+        textFits: titleBounds.left >= row.left && titleBounds.right <= row.right
+          && titleBounds.top >= row.top && titleBounds.bottom <= row.bottom,
       };
     }),
   );
-  assert.ok(layout.every(({ width }) => width > 250), `expected growing cards: ${JSON.stringify(layout)}`);
-  assert.equal(layout[0].titleLineCount, 1, `expected Bookkeeping Operations to stay intact: ${JSON.stringify(layout[0])}`);
+  assert.ok(layout.every(({ width, textFits }) => width > 0 && textFits), `expected fully visible names: ${JSON.stringify(layout)}`);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 });
 
-test("team add-on review profiles and task descendants prioritize display names", async (t) => {
+test("team add-on review profiles and task descendants prioritize display names", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.name = "Accounting Department";
   initialState.projects.project.name = "Bookkeeping Operations";
@@ -5817,7 +5956,7 @@ test("team add-on review profiles and task descendants prioritize display names"
   });
 });
 
-test("team add-on project controls follow privilege changes and partial rerenders", async (t) => {
+test("team add-on project controls follow privilege changes and partial rerenders", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -5826,6 +5965,7 @@ test("team add-on project controls follow privilege changes and partial rerender
   await waitForRevision(page, 8);
   await openProjects(page);
   const projectsPage = page.locator("#team-projects-page");
+  await projectsPage.locator("summary", { hasText: "Add outcome kind" }).click();
   const createProjectButton = projectsPage.getByRole("button", { name: "Create project" }).first();
   const addOutcomeButton = projectsPage.getByRole("button", { name: "Add outcome kind" });
   const addReviewProfileButton = projectsPage.getByRole("button", { name: "Add review profile" });
@@ -5890,7 +6030,7 @@ test("team add-on project controls follow privilege changes and partial rerender
   assert.equal(await projectsPage.getByRole("button", { name: "Add review profile" }).isDisabled(), true);
 });
 
-test("team add-on state refresh preserves scoped no-id form and unsubmitted search drafts", async (t) => {
+test("team add-on state refresh preserves scoped no-id form and unsubmitted search drafts", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.cases ||= {};
   initialState.cases["case-draft-preservation"] = {
@@ -5927,6 +6067,7 @@ test("team add-on state refresh preserves scoped no-id form and unsubmitted sear
     "expected Team state stream to be open before testing form drafts",
   );
   await openProjects(page);
+  await page.locator("#team-projects-page summary", { hasText: "Add outcome kind" }).click();
   const alphaOutcomeForm = page.locator(
     '#team-projects-page form[data-form-id="create-outcome-kind-form"][data-form-draft-scope="alpha-project"]',
   );
@@ -5982,7 +6123,7 @@ test("team add-on state refresh preserves scoped no-id form and unsubmitted sear
   assert.equal(await taskQuery.inputValue(), "unsent task query");
 });
 
-test("team add-on admin context overrides the browser color scheme", async (t) => {
+test("team add-on admin context overrides the browser color scheme", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -6006,7 +6147,7 @@ test("team add-on admin context overrides the browser color scheme", async (t) =
         .getPropertyValue("--surface")
         .trim(),
     ),
-    "#121817",
+    "#151b22",
   );
 
   await page.emulateMedia({ colorScheme: "dark" });
@@ -6027,11 +6168,11 @@ test("team add-on admin context overrides the browser color scheme", async (t) =
         .getPropertyValue("--surface")
         .trim(),
     ),
-    "#f7f9f7",
+    "#f7f8fa",
   );
 });
 
-test("team add-on UI renders org charts, details, and hierarchy warnings", async (t) => {
+test("team add-on UI renders org charts, details, and hierarchy warnings", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.project_ids.push("other-project");
   initialState.projects["other-project"] = {
@@ -6163,7 +6304,7 @@ test("team add-on UI renders org charts, details, and hierarchy warnings", async
   );
 });
 
-test("team add-on Org chart animates only newly observed activity without refitting", async (t) => {
+test("team add-on Org chart animates only newly observed activity without refitting", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.backend.activity_summary = {
     headline: "Working on Build API",
@@ -6273,7 +6414,7 @@ test("team add-on Org chart animates only newly observed activity without refitt
   await backendCard.locator(".org-flow-activity-bubble").waitFor({ state: "detached", timeout: 7000 });
 });
 
-test("team add-on Org chart respects reduced-motion preferences", async (t) => {
+test("team add-on Org chart respects reduced-motion preferences", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.agents.backend.activity_summary = {
     headline: "Working on Build API",
@@ -6332,7 +6473,7 @@ test("team add-on Org chart respects reduced-motion preferences", async (t) => {
   assert.equal(await page.locator(".org-flow-message-pulse").count(), 0);
 });
 
-test("team add-on Org chart draws edges and separates sibling agents", async (t) => {
+test("team add-on Org chart draws edges and separates sibling agents", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.revision = 9;
   initialState.agents.lead.subordinate_agent_ids.push("frontend");
@@ -6380,7 +6521,7 @@ test("team add-on Org chart draws edges and separates sibling agents", async (t)
   assert.ok(lateralOverlap <= 0.5, `same-level agents should not overlap laterally: ${lateralOverlap}`);
 });
 
-test("team add-on Org chart keeps governance groups above related team filters", async (t) => {
+test("team add-on Org chart keeps governance groups above related team filters", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
@@ -6417,7 +6558,7 @@ test("team add-on Org chart keeps governance groups above related team filters",
   assert.equal(await page.locator("#team-org-page").getByRole("heading", { name: "Alpha Team" }).count(), 0);
 });
 
-test("team add-on Org chart context menu creates teams from the bare canvas", async (t) => {
+test("team add-on Org chart context menu creates teams from the bare canvas", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -6454,7 +6595,7 @@ test("team add-on Org chart context menu creates teams from the bare canvas", as
   assert.equal(request.payload.manager_display_name, "Context Manager");
 });
 
-test("team add-on Org chart context menu edits governance team oversight", async (t) => {
+test("team add-on Org chart context menu edits governance team oversight", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.governance_groups["platform-oversight"].member_team_ids = ["team-alpha"];
   const { port, requests } = await createTeamAddonServer(t, { initialState });
@@ -6504,7 +6645,7 @@ test("team add-on Org chart context menu edits governance team oversight", async
   assert.deepEqual(patchRequests[1].payload.member_team_ids, ["team-alpha"]);
 });
 
-test("team add-on Org chart governance context menu retries after revision conflict", async (t) => {
+test("team add-on Org chart governance context menu retries after revision conflict", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.governance_groups["platform-oversight"].member_team_ids = ["team-alpha"];
   const { port, requests } = await createTeamAddonServer(t, {
@@ -6548,7 +6689,7 @@ test("team add-on Org chart governance context menu retries after revision confl
   assert.equal(patchRequests[1].payload.expected_revision, 5);
 });
 
-test("team add-on Org chart context menu adds subordinate agents", async (t) => {
+test("team add-on Org chart context menu adds subordinate agents", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededOrgChartState(),
   });
@@ -6613,7 +6754,38 @@ test("team add-on Org chart context menu adds subordinate agents", async (t) => 
   assert.equal(request.payload.ephemeral_policy.max_concurrent, 1);
 });
 
-test("team add-on cost refresh ignores avatar file input drafts", async (t) => {
+test("team add-on displays reported and estimated costs without double counting", { timeout: browserTestTimeout }, async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededOrgChartState(),
+    costsPayload: {
+      coverage_status: "complete",
+      coverage_reasons: [],
+      team_costs: {
+        team: {
+          team_id: "team",
+          estimated_cost: 0.8,
+          reported_cost: 3.25,
+          total_cost: 4.05,
+          coverage_status: "complete",
+          events_count: 2,
+          unpriced_events_count: 0,
+          max_cost_usd: null,
+          cost_limit_reached: false,
+        },
+      },
+      project_costs: {},
+      governance_group_costs: {},
+    },
+  });
+  const page = await openBrowserPage(t, port);
+  await waitForRevision(page, 8);
+  await page.getByRole("tab", { name: "Org chart" }).click();
+  const counter = page.locator(".cost-counter:visible", { hasText: "$4.05" }).first();
+  await counter.waitFor({ state: "visible" });
+  assert.match(await counter.innerText(), /\$3\.25\d* provider reported, \$0\.80\d* estimated/);
+});
+
+test("team add-on cost refresh ignores avatar file input drafts", { timeout: browserTestTimeout }, async (t) => {
   let releaseCosts = () => {};
   const costsGate = new Promise((resolve) => {
     releaseCosts = resolve;
@@ -6696,7 +6868,7 @@ test("team add-on cost refresh ignores avatar file input drafts", async (t) => {
   );
 });
 
-test("team add-on distinguishes governance portfolio roll-ups from individual spend", async (t) => {
+test("team add-on distinguishes governance portfolio roll-ups from individual spend", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.teams["team-alpha"].name = "Starship Team";
   initialState.teams["team-beta"].name = "Accounting Department";
@@ -6710,7 +6882,7 @@ test("team add-on distinguishes governance portfolio roll-ups from individual sp
   };
   initialState.teams["team-delta"] = {
     id: "team-delta",
-    name: "APP Dev Team",
+    name: "App Dev Team",
     manager_agent_id: null,
     operator_communication_target_id: null,
     project_ids: [],
@@ -6815,7 +6987,7 @@ test("team add-on distinguishes governance portfolio roll-ups from individual sp
   assert.equal(await page.locator("#team-org-page .org-flow-team-node .cost-counter--aggregate").count(), 0);
 });
 
-test("team add-on UI hides archived entities by default and reveals them on request", async (t) => {
+test("team add-on UI hides archived entities by default and reveals them on request", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededOrgChartState();
   initialState.teams.team.archived = true;
   initialState.projects.project.status = "archived";
@@ -6871,7 +7043,7 @@ test("team add-on UI hides archived entities by default and reveals them on requ
   });
 
   await openTeams(page);
-  await page.locator('#team-people-page [data-team-record-group-id="team"]', { hasText: "Team" }).waitFor({
+  await page.locator('#team-people-page .team-record-group[data-team-record-group-id="team"]', { hasText: "Team" }).waitFor({
     state: "visible",
   });
 
@@ -6895,7 +7067,7 @@ test("team add-on UI hides archived entities by default and reveals them on requ
   });
 });
 
-test("team add-on UI renders hierarchy warnings for missing and cyclical references", async (t) => {
+test("team add-on UI renders hierarchy warnings for missing and cyclical references", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededMalformedHierarchyState(),
   });
@@ -6910,7 +7082,7 @@ test("team add-on UI renders hierarchy warnings for missing and cyclical referen
   assert.ok(await page.locator("#team-org-page .hierarchy-node-card--warning").count() >= 2);
 });
 
-test("team add-on UI reloads state and preserves form values on revision conflict", async (t) => {
+test("team add-on UI reloads state and preserves form values on revision conflict", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, { conflictOnFirstTeamCreate: true });
   const page = await openBrowserPage(t, port);
 
@@ -6926,7 +7098,7 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   assert.equal(await teamForm.locator('[name="name"]').inputValue(), "Team");
   assert.equal(await teamForm.locator('[name="manager_session_id"]').inputValue(), "session-manager");
   await page
-    .locator('#team-people-page [data-team-record-group-id="existing"] .team-record-group-title strong', {
+    .locator('#team-people-page .team-record-group[data-team-record-group-id="existing"] .team-record-group-title strong', {
       hasText: "Existing",
     })
     .waitFor({ state: "visible" });
@@ -6934,7 +7106,7 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   await page.getByRole("button", { name: "Retry save" }).click();
   await waitForRevision(page, 2);
   await page
-    .locator('#team-people-page [data-team-record-group-id="team-team"] .team-record-group-title strong', {
+    .locator('#team-people-page .team-record-group[data-team-record-group-id="team-team"] .team-record-group-title strong', {
       hasText: "Team",
     })
     .waitFor({ state: "visible" });
@@ -6946,7 +7118,7 @@ test("team add-on UI reloads state and preserves form values on revision conflic
   assert.equal(createRequests[1].payload.conflict_policy, "target_unchanged");
 });
 
-test("team add-on Governance tab creates governance groups from the top-level button", async (t) => {
+test("team add-on Governance tab creates governance groups from the top-level button", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
@@ -7050,7 +7222,7 @@ test("team add-on Governance tab creates governance groups from the top-level bu
   ]);
 });
 
-test("team add-on Governance tab hides handled agenda by default and emphasizes goals", async (t) => {
+test("team add-on Governance tab hides handled agenda by default and emphasizes goals", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.governance_groups["platform-oversight"].goals = [
     {
@@ -7109,7 +7281,7 @@ test("team add-on Governance tab hides handled agenda by default and emphasizes 
   });
 });
 
-test("team add-on governance editor uses named controls and preserves structured changes across retry", async (t) => {
+test("team add-on governance editor uses named controls and preserves structured changes across retry", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["beta-manager"].display_name = "Bea Manager";
@@ -8019,7 +8191,7 @@ function seededGitState() {
   };
 }
 
-test("team add-on Teams tab groups records and opens detail panes", async (t) => {
+test("team add-on Teams tab groups records and opens detail panes", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -8075,11 +8247,11 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
   assert.equal(await page.locator("#team-people-page .team-record-group").count(), 2);
   assert.equal(await page.locator("#team-people-page .team-record-group.is-collapsed").count(), 2);
   assert.equal(await page.locator("#team-people-page .team-record-section").count(), 0);
-  assert.equal(await page.locator('#team-people-page [data-team-record-group-id="team-archived"]').count(), 0);
+  assert.equal(await page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-archived"]').count(), 0);
   assert.equal(await page.locator('#team-people-page [data-project-id="archived-project"]').count(), 0);
   assert.equal(await page.locator('#team-people-page [data-role-id="archived-project__project-lead"]').count(), 0);
-  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
-  const betaGroup = page.locator('#team-people-page [data-team-record-group-id="team-beta"]');
+  const alphaGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-alpha"]');
+  const betaGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-beta"]');
   const alphaCounts = await alphaGroup.locator(".team-record-group-counts").innerText();
   assert.match(alphaCounts, /2 agents/);
   assert.match(alphaCounts, /1 project/);
@@ -8167,7 +8339,7 @@ test("team add-on Teams tab groups records and opens detail panes", async (t) =>
   assert.equal((await alphaLeadCard.innerText()).includes("alpha-lead"), false);
 });
 
-test("team add-on Teams tab creates records inside the selected team", async (t) => {
+test("team add-on Teams tab creates records inside the selected team", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["beta-candidate"] = {
     id: "beta-candidate",
@@ -8191,7 +8363,7 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
 
-  const betaGroup = page.locator('#team-people-page [data-team-record-group-id="team-beta"]');
+  const betaGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-beta"]');
   await betaGroup.waitFor({ state: "visible" });
   await betaGroup.locator(".team-record-group-header").click();
   await betaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
@@ -8282,11 +8454,12 @@ test("team add-on Teams tab creates records inside the selected team", async (t)
   assert.deepEqual(mutationRequests[2].payload.goals, [{ description: "Ship beta follow-up" }]);
   assert.deepEqual(mutationRequests[2].payload.git, {
     managed_repo_id: "mr_0123456789abcdef0123",
+    directory_path: "root",
     base_branch: "main",
   });
 });
 
-test("team add-on agent edit scopes project, role, and superior choices to the selected team", async (t) => {
+test("team add-on agent edit scopes project, role, and superior choices to the selected team", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.teams["team-alpha"].project_ids.push("alpha-second-project");
   initialState.projects["alpha-second-project"] = {
@@ -8307,7 +8480,7 @@ test("team add-on agent edit scopes project, role, and superior choices to the s
   await page.getByRole("tab", { name: "Teams" }).click();
   await page.locator("#team-people-page").waitFor({ state: "visible" });
 
-  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
+  const alphaGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-alpha"]');
   await alphaGroup.waitFor({ state: "visible" });
   if (!(await alphaGroup.locator(".team-record-group-body").isVisible().catch(() => false))) {
     await alphaGroup.locator(".team-record-group-header").click();
@@ -8487,7 +8660,7 @@ function seededLongConversationListState(conversationCount = 30) {
   return state;
 }
 
-test("team add-on Chat keeps recent conversations in an internal scroll region", async (t) => {
+test("team add-on Chat keeps recent conversations in an internal scroll region", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededLongConversationListState(),
   });
@@ -8545,14 +8718,14 @@ test("team add-on Chat keeps recent conversations in an internal scroll region",
   );
 });
 
-test("team add-on Chat uses a usable mobile conversation and thread flow", async (t) => {
+test("team add-on Chat uses a usable mobile conversation and thread flow", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
   const page = await openBrowserPage(t, port, { viewport: { width: 390, height: 844 } });
 
   await waitForRevision(page, 9);
-  await page.locator("#team-view-chat-tab").click();
+  await page.locator("#team-view-select").selectOption("chat");
   await page.locator('[data-chat-conversation-id="conversation-alpha-lead"]').waitFor({
     state: "visible",
   });
@@ -8560,13 +8733,9 @@ test("team add-on Chat uses a usable mobile conversation and thread flow", async
   const chatPage = page.locator("#team-chat-page");
   const sidebar = page.locator(".chat-sidebar");
   const main = page.locator(".chat-main");
-  const tabMetrics = await page.locator(".team-view-tabs").evaluate((element) => ({
-    clientWidth: element.clientWidth,
-    scrollWidth: element.scrollWidth,
-    height: element.getBoundingClientRect().height,
-  }));
-  assert.ok(tabMetrics.scrollWidth > tabMetrics.clientWidth, "expected mobile tabs to scroll horizontally");
-  assert.ok(tabMetrics.height < 60, `expected a single-row mobile tab strip: ${JSON.stringify(tabMetrics)}`);
+  assert.equal(await page.locator(".team-view-tabs").isVisible(), false);
+  assert.equal(await page.locator("#team-view-select").isVisible(), true);
+  assert.equal(await page.locator("#team-view-select").inputValue(), "chat");
   assert.equal(await sidebar.isVisible(), true);
   assert.equal(await main.isVisible(), false);
   assert.equal(await chatPage.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
@@ -8611,7 +8780,48 @@ test("team add-on Chat uses a usable mobile conversation and thread flow", async
   assert.equal(await main.isVisible(), false);
 });
 
-test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", async (t) => {
+test("team add-on Chat compacts narrative identifiers and copies complete values without interpreting markup", { timeout: browserTestTimeout }, async (t) => {
+  const initialState = seededLongChatState(2);
+  const identifiers = [
+    "0123456789abcdef0123456789abcdef01234567",
+    "4fb122a3-5b64-4fa5-b5fb-3c4969ef415d",
+    "task-0123456789abcdef0123456789abcdef",
+  ];
+  initialState.conversation_messages["msg-001"].body =
+    `The reviewed commit ${identifiers[0]} completes request ${identifiers[1]} for ${identifiers[2]}. `
+    + '<img src=x onerror="window.identifierMarkupRan=true">';
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+  await page.evaluate(() => {
+    window.identifierCopies = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (value) => { window.identifierCopies.push(value); } },
+    });
+  });
+  await waitForRevision(page, 9);
+  await page.getByRole("tab", { name: /^Chat/ }).click();
+  await page.locator('[data-chat-conversation-id="conversation-alpha-lead"]').click();
+  const body = page.locator(".chat-message--agent .chat-message-bubble > p").last();
+  await body.waitFor({ state: "visible" });
+  assert.equal(await body.locator(".identifier-badge").count(), 3);
+  for (const [index, identifier] of identifiers.entries()) {
+    const badge = body.locator(`[data-identifier-value="${identifier}"]`);
+    assert.ok((await badge.innerText()).length < identifier.length, "opaque values should be compact in prose");
+    assert.ok((await badge.getAttribute("title")).includes(identifier), "hover exposes the full value");
+    assert.ok(await badge.getAttribute("aria-label"), "copy action has an accessible name");
+    await badge.click();
+    await page.waitForFunction(count => window.identifierCopies.length === count, index + 1);
+  }
+  assert.deepEqual(await page.evaluate(() => window.identifierCopies), identifiers);
+  assert.match(await body.innerText(), /<img src=x onerror=/);
+  assert.equal(await body.locator("img, script").count(), 0);
+  assert.equal(await page.evaluate(() => window.identifierMarkupRan), undefined);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await body.evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
+});
+
+test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -8776,7 +8986,7 @@ test("team add-on Chat panel fast-loads the selected thread, stays bounded, and 
   );
 });
 
-test("team add-on Chat opens the conversation from a deep link", async (t) => {
+test("team add-on Chat opens the conversation from a deep link", { timeout: browserTestTimeout }, async (t) => {
   const { port, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededTwoConversationChatState(),
   });
@@ -8806,7 +9016,7 @@ test("team add-on Chat opens the conversation from a deep link", async (t) => {
   );
 });
 
-test("team add-on Chat preserves a reader position across a state-stream refresh", async (t) => {
+test("team add-on Chat preserves a reader position across a state-stream refresh", { timeout: browserTestTimeout }, async (t) => {
   const { port, state, chatRequests, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -8819,6 +9029,14 @@ test("team add-on Chat preserves a reader position across a state-stream refresh
   await waitForCondition(
     () => stateStreamCount() > 0,
     "expected Team state stream to be open before forcing a refresh",
+  );
+  await page.waitForFunction(() => {
+    const list = document.querySelector(".chat-message-list");
+    return list && list.scrollHeight - list.clientHeight - list.scrollTop <= 1;
+  });
+  // Let the initial two-frame bottom anchoring finish before simulating a reader.
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
 
   const before = await messageList.evaluate((element) => {
@@ -8855,7 +9073,50 @@ test("team add-on Chat preserves a reader position across a state-stream refresh
   assert.ok(after.maxTop - after.scrollTop > 96, "expected reader to remain away from the newest message");
 });
 
-test("team add-on Chat send keeps the selected message list anchored during send refreshes", async (t) => {
+test("team add-on Chat preserves the new-agent picker position across a state-stream refresh", { timeout: browserTestTimeout }, async (t) => {
+  const { port, state, emitStateSnapshot, stateStreamCount } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.getByRole("button", { name: "New chat" }).click();
+  const picker = page.locator(".chat-agent-picker");
+  await picker.locator('[data-chat-agent-id="scroll-agent-30"]').waitFor({ state: "attached" });
+  await waitForCondition(
+    () => stateStreamCount() > 0,
+    "expected Team state stream to be open before refreshing the new-chat picker",
+  );
+
+  const before = await picker.evaluate((element) => {
+    element.scrollTop = Math.max(64, Math.floor((element.scrollHeight - element.clientHeight) / 2));
+    element.dispatchEvent(new Event("scroll"));
+    return {
+      scrollTop: element.scrollTop,
+      maxTop: Math.max(0, element.scrollHeight - element.clientHeight),
+    };
+  });
+  assert.ok(before.maxTop > before.scrollTop, "expected a non-terminal new-chat picker position");
+
+  state.revision += 1;
+  assert.ok(
+    emitStateSnapshot({ response_scope: "revision", revision: state.revision }) > 0,
+    "expected the test state revision to reach the Team client",
+  );
+  await waitForRevision(page, state.revision);
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+
+  const after = await picker.evaluate((element) => element.scrollTop);
+  assert.ok(
+    Math.abs(after - before.scrollTop) <= 4,
+    `expected the new-chat picker to retain its position, got ${after}, expected ${before.scrollTop}`,
+  );
+});
+
+test("team add-on Chat send keeps the selected message list anchored during send refreshes", { timeout: browserTestTimeout }, async (t) => {
   let releaseMessageResponse = null;
   let messageRequestStarted = null;
   const messageStarted = new Promise((resolve) => {
@@ -8960,7 +9221,7 @@ test("team add-on Chat send keeps the selected message list anchored during send
   );
 });
 
-test("team add-on Chat sends on Enter and keeps Shift+Enter as a newline", async (t) => {
+test("team add-on Chat sends on Enter and keeps Shift+Enter as a newline", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -8998,7 +9259,7 @@ test("team add-on Chat sends on Enter and keeps Shift+Enter as a newline", async
   );
 });
 
-test("team add-on Chat sends selected files as multipart attachments", async (t) => {
+test("team add-on Chat sends selected files as multipart attachments", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededLongChatState(4);
   const { port } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 720 } });
@@ -9086,7 +9347,7 @@ test("team add-on Chat sends selected files as multipart attachments", async (t)
   await page.getByRole("link", { name: /notes\.txt/ }).waitFor({ state: "visible" });
 });
 
-test("team add-on Chat remains usable while privileged operations are locked", async (t) => {
+test("team add-on Chat remains usable while privileged operations are locked", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -9138,7 +9399,7 @@ test("team add-on Chat remains usable while privileged operations are locked", a
   assert.equal(sendRequest?.payload?.expected_revision, undefined);
 });
 
-test("team add-on Chat shows mutation-enabled server authority", async (t) => {
+test("team add-on Chat shows mutation-enabled server authority", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededLongChatState();
   initialState.conversations["conversation-alpha-lead"].mutation_mode = "project_scoped";
   const { port } = await createTeamAddonServer(t, { initialState });
@@ -9151,7 +9412,7 @@ test("team add-on Chat shows mutation-enabled server authority", async (t) => {
     .waitFor({ state: "visible" });
 });
 
-test("team add-on Chat notification sound is gated by focus and sender", async (t) => {
+test("team add-on Chat notification sound is gated by focus and sender", { timeout: browserTestTimeout }, async (t) => {
   const { port, emitChatSnapshots, requests, state } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),
   });
@@ -9270,7 +9531,7 @@ test("team add-on Chat notification sound is gated by focus and sender", async (
   );
 });
 
-test("team add-on Chat refresh preserves a conversation selected while the list response is in flight", async (t) => {
+test("team add-on Chat refresh preserves a conversation selected while the list response is in flight", { timeout: browserTestTimeout }, async (t) => {
   let holdConversationList = false;
   let releaseRefreshResponse = null;
   let refreshRequestStarted = null;
@@ -9316,7 +9577,7 @@ test("team add-on Chat refresh preserves a conversation selected while the list 
   );
 });
 
-test("team add-on Chat preserves unsent composer drafts per conversation and clears a sent draft", async (t) => {
+test("team add-on Chat preserves unsent composer drafts per conversation and clears a sent draft", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededTwoConversationChatState(),
   });
@@ -9419,6 +9680,7 @@ function seededOrgChartState() {
       team: {
         id: "team",
         name: "Team",
+        copy_configuration_token: "source-config-team-v1",
         manager_agent_id: "manager",
         operator_communication_target_id: "ops-channel",
         project_ids: ["project"],
@@ -9716,7 +9978,7 @@ function seededMalformedHierarchyState() {
   };
 }
 
-test("team add-on Mail reads historical agent correspondence", async (t) => {
+test("team add-on Mail reads historical agent correspondence", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -9782,7 +10044,7 @@ test("team add-on Mail reads historical agent correspondence", async (t) => {
   );
 });
 
-test("team add-on Mail creates a manager-routed operator directive", async (t) => {
+test("team add-on Mail creates a manager-routed operator directive", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests, state } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
@@ -9885,8 +10147,9 @@ test("team add-on Mail creates a manager-routed operator directive", async (t) =
   assert.equal(await form.locator("[data-mail-directive-project]").inputValue(), "");
 });
 
-test("team add-on Mail renders body, error, and generic historical payloads", async (t) => {
+test("team add-on Mail renders body, error, and generic historical payloads", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
+  const commit = "0123456789abcdef0123456789abcdef01234567";
   initialState.inbox = {
     "body-report": {
       id: "body-report",
@@ -9898,7 +10161,7 @@ test("team add-on Mail renders body, error, and generic historical payloads", as
       state: "handled",
       payload: {
         summary: "Body-only historical report",
-        body: "This report stored its substantive update in payload.body.",
+        body: `This report stored its substantive update in payload.body. Verified commit ${commit}.`,
       },
       created_at: "2026-06-12T09:00:00Z",
       updated_at: "2026-06-12T10:00:00Z",
@@ -9928,7 +10191,7 @@ test("team add-on Mail renders body, error, and generic historical payloads", as
       state: "handled",
       payload: {
         title: "Structured diagnostic",
-        diagnostic: { code: "stale_ref", retryable: true },
+        diagnostic: { code: "stale_ref", retryable: true, commit_sha: commit },
       },
       created_at: "2026-06-11T09:00:00Z",
       updated_at: "2026-06-11T10:00:00Z",
@@ -9948,14 +10211,52 @@ test("team add-on Mail renders body, error, and generic historical payloads", as
   await mailPage.locator(".mail-reader-body").getByText("This report stored its substantive update in payload.body.").waitFor({
     state: "visible",
   });
+  const commitBadge = mailPage.locator(".mail-reader-body").getByRole("button", { name: `Copy SHA: ${commit}`, exact: true });
+  await commitBadge.waitFor({ state: "visible" });
+  assert.match(await commitBadge.getAttribute("title"), new RegExp(commit));
 
   await mailPage.locator('[data-mail-item-id="generic-notice"]').click();
   const genericBody = await mailPage.locator(".mail-reader-body").innerText();
   assert.match(genericBody, /Diagnostic:/);
   assert.match(genericBody, /"code": "stale_ref"/);
+  assert.match(genericBody, new RegExp(`"commit_sha": "${commit}"`));
+  assert.equal(await mailPage.locator(".mail-reader-body .identifier-badge").count(), 0);
 });
 
-test("team add-on Workspace deduplicates runtime-backed tasks without crowding attention", async (t) => {
+test("team add-on Activity copies identifiers from event and correction prose", { timeout: browserTestTimeout }, async (t) => {
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const taskId = "task-3f706adc8d414f2ab93c2d57c832eb64";
+  const { port } = await createTeamAddonServer(t, { initialState: seededGitState() });
+  const page = await openBrowserPage(t, port, { permissions: ["clipboard-read", "clipboard-write"] });
+  await waitForRevision(page, 4);
+  let eventsRead = 0;
+  await page.route("**/api/addons/team-addon/dispatch-events?*", (route) => {
+    eventsRead += 1;
+    return route.fulfill({
+      json: { total_count: 1, retention_days: 30, events: [{
+        status: "failure", agent_display_name: "Avery Reviewer", tool_name: "team_submit_deliverable",
+        summary: `Verification failed for commit ${commit}.`, error_code: "verification_failed",
+        correction_context_summary: `Continue with correction task ${taskId}.`,
+        occurred_at: "2026-09-26T12:00:00Z", dispatch_id: "dispatch-fixture",
+      }] },
+    });
+  });
+  await page.getByRole("tab", { name: "Activity", exact: true }).click();
+  const activity = page.locator("#team-activity-page");
+  const shaBadge = activity.getByRole("button", { name: `Copy SHA: ${commit}`, exact: true });
+  await shaBadge.click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), commit);
+  const taskBadge = activity.getByRole("button", { name: `Copy ID: ${taskId}`, exact: true });
+  await taskBadge.click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), taskId);
+  assert.equal(await activity.locator("code").filter({ hasText: "team_submit_deliverable" }).count(), 1);
+  const readsBeforeRevisit = eventsRead;
+  await page.getByRole("tab", { name: "Mail", exact: true }).click();
+  await page.getByRole("tab", { name: "Activity", exact: true }).click();
+  await waitForCondition(() => eventsRead > readsBeforeRevisit);
+});
+
+test("team add-on Workspace deduplicates runtime-backed tasks without crowding attention", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.tasks = {
     "task-blocked": {
@@ -10043,7 +10344,7 @@ test("team add-on Workspace deduplicates runtime-backed tasks without crowding a
     .waitFor({ state: "visible" });
 });
 
-test("team add-on Operations describes passive mail and failed recovery paths honestly", async (t) => {
+test("team add-on Operations describes passive mail and failed recovery paths honestly", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   initialState.action_records = {
@@ -10192,7 +10493,7 @@ test("team add-on Operations describes passive mail and failed recovery paths ho
   );
 });
 
-test("team add-on Operations separates actionable attention from durable history", async (t) => {
+test("team add-on Operations separates actionable attention from durable history", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   initialState.agents["beta-lead"].display_name = "Beta Lead";
@@ -10526,7 +10827,7 @@ test("team add-on Operations separates actionable attention from durable history
   );
 });
 
-test("team add-on runtime attention escapes state and error text exactly once", async (t) => {
+test("team add-on runtime attention escapes state and error text exactly once", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.runtime_operations.attention.push({
     id: "failed-action-special-characters",
@@ -10560,7 +10861,7 @@ test("team add-on runtime attention escapes state and error text exactly once", 
   assert.equal(bodyText.match(/invalid \{'key': '<value>&'\}/g)?.length, 1);
 });
 
-test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", async (t) => {
+test("team add-on UI exposes focused workspace tabs without duplicate hidden rows", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -10635,6 +10936,8 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   await page.locator("#team-delivery-page").getByRole("heading", { name: "Alpha Team", exact: true }).waitFor({
     state: "visible",
   });
+  assert.equal(await page.locator(".delivery-row").count(), 4);
+  await page.locator("#team-delivery-page").getByRole("button", { name: "All records", exact: true }).click();
   assert.equal(await page.locator(".delivery-row").count(), 5);
   assert.equal(await page.locator("#team-delivery-page .delivery-row[open]").count(), 0);
   assert.equal(await page.locator("#team-workspace-page .delivery-row").count(), 0);
@@ -10698,8 +11001,8 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   assert.equal(await page.locator("#team-people-page .team-record-group.is-collapsed").count(), 2);
   assert.equal(await page.locator("#team-people-page .team-record-section").count(), 0);
   assert.equal(await page.locator("#team-people-page [data-agent-id]").count(), 0);
-  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
-  const betaGroup = page.locator('#team-people-page [data-team-record-group-id="team-beta"]');
+  const alphaGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-alpha"]');
+  const betaGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-beta"]');
   await alphaGroup.locator(".team-record-group-title strong", { hasText: "Alpha Team" }).waitFor({
     state: "visible",
   });
@@ -10713,10 +11016,11 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     await page.locator("#team-people-page .people-layout").evaluate((element) => {
       return getComputedStyle(element).gridTemplateColumns.split(" ").length;
     }),
-    2,
+    1,
   );
   await alphaGroup.locator(".team-record-group-header").click();
   await alphaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#team-people-page .people-layout.has-inspector").count(), 1);
   assert.equal(await page.locator("#team-people-page .team-record-group.is-expanded").count(), 1);
   assert.equal(await alphaGroup.locator("[data-agent-id]").count(), 2);
   assert.equal(await betaGroup.locator("[data-agent-id]").count(), 0);
@@ -10859,7 +11163,7 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
     0,
   );
   await page.locator("#planning-status-accepted").check();
-  await alphaProjectCard.locator(":scope > details > summary").click();
+  assert.equal(await alphaProjectCard.locator(":scope > details").evaluate(element => element.open), true);
   await page
     .locator('#team-planning-page [data-planning-task-id="task-accepted"]')
     .getByText("Ship accepted delivery", { exact: true })
@@ -10929,10 +11233,11 @@ test("team add-on UI exposes focused workspace tabs without duplicate hidden row
   assert.equal(await page.locator("#team-setup-page").count(), 0);
   await page.locator("#team-workspace-page .workspace-dashboard-actions").getByRole("button", { name: "Delivery" }).click();
   await page.locator("#team-delivery-page").waitFor({ state: "visible" });
+  await page.locator("#team-delivery-page .delivery-project-title").first().click();
   await page.locator("#team-delivery-page .delivery-row").first().waitFor({ state: "visible" });
 });
 
-test("team add-on Task board keeps space between panels, cards, and view tabs", async (t) => {
+test("team add-on Task board keeps space between panels, cards, and view tabs", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, { initialState: seededGitState() });
   const page = await openBrowserPage(t, port, { viewport: { width: 1280, height: 1600 } });
 
@@ -10988,7 +11293,7 @@ test("team add-on Task board keeps space between panels, cards, and view tabs", 
   assert.ok(hierarchyGap >= 12, `expected space before the hierarchy panel, received ${hierarchyGap}px`);
 });
 
-test("team add-on Teams agent detail inbox popover stays reachable and scrollable", async (t) => {
+test("team add-on Teams agent detail inbox popover stays reachable and scrollable", { timeout: browserTestTimeout }, async (t) => {
   const { port } = await createTeamAddonServer(t, {
     initialState: seededScrollablePeopleTooltipState(),
   });
@@ -10997,9 +11302,9 @@ test("team add-on Teams agent detail inbox popover stays reachable and scrollabl
   });
 
   await waitForRevision(page, 4);
-  await page.getByRole("tab", { name: "Teams" }).click();
+  await page.locator("#team-view-select").selectOption("people");
   await page.locator("#team-people-page").waitFor({ state: "visible" });
-  const alphaGroup = page.locator('#team-people-page [data-team-record-group-id="team-alpha"]');
+  const alphaGroup = page.locator('#team-people-page .team-record-group[data-team-record-group-id="team-alpha"]');
   await alphaGroup.locator(".team-record-group-header").click();
   await alphaGroup.locator(".team-record-group-body").waitFor({ state: "visible" });
   await alphaGroup.locator('[data-team-record-tab="agent"]').click();
@@ -11053,7 +11358,7 @@ test("team add-on Teams agent detail inbox popover stays reachable and scrollabl
   assert.equal(await peopleStatusPopover.isVisible(), true);
 });
 
-test("team add-on UI renders git refs and releases and submits a review decision", async (t) => {
+test("team add-on UI renders git refs and releases and submits a review decision", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const acceptedRelease = initialState.release_packages["release-accepted"];
   acceptedRelease.detail = {
@@ -11444,11 +11749,13 @@ test("team add-on UI renders git refs and releases and submits a review decision
       criterion_id: "tests",
       state: "passed",
       finding: "Added acceptance notes",
+      evidence_refs: [],
     },
     {
       criterion_id: "docs",
       state: "passed",
       finding: "README updated",
+      evidence_refs: [],
     },
   ]);
   assert.deepEqual(decisionRequest.payload.finding_resolutions, [
@@ -11465,11 +11772,13 @@ test("team add-on UI renders git refs and releases and submits a review decision
       criterion_id: "tests",
       state: "passed",
       finding: "Added acceptance notes",
+      evidence_refs: [],
     },
     {
       criterion_id: "docs",
       state: "passed",
       finding: "README updated",
+      evidence_refs: [],
     },
   ]);
   await openDeliveryRow(waitingRow);
@@ -11503,7 +11812,7 @@ test("team add-on UI renders git refs and releases and submits a review decision
   });
 });
 
-test("team add-on timeline filter options use full-history facets", async (t) => {
+test("team add-on timeline filter options use full-history facets", { timeout: browserTestTimeout }, async (t) => {
   const timelinePayload = {
     revision: 1,
     derived: true,
@@ -11554,7 +11863,7 @@ test("team add-on timeline filter options use full-history facets", async (t) =>
   );
 });
 
-test("team add-on Activity timeline renders snapshot-only updates without a state flow", async (t) => {
+test("team add-on Activity timeline renders snapshot-only updates without a state flow", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const timelinePayload = {
     revision: 4,
@@ -11624,7 +11933,7 @@ test("team add-on Activity timeline renders snapshot-only updates without a stat
   );
 });
 
-test("team add-on activity timeline leads with human context and explains retained-history limits", async (t) => {
+test("team add-on activity timeline leads with human context and explains retained-history limits", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -11656,7 +11965,7 @@ test("team add-on activity timeline leads with human context and explains retain
                 after: "Blocked",
                 before_known: false,
               },
-              reason: "Upstream schema verification failed.",
+              reason: "Upstream schema verification failed for commit 0123456789abcdef0123456789abcdef01234567.",
               summary: "Task entered blocked: Restore customer export",
             }
           : entry,
@@ -11785,9 +12094,12 @@ test("team add-on activity timeline leads with human context and explains retain
   await entry.getByText("Blocked", { exact: true }).last().waitFor({
     state: "visible",
   });
-  await entry.getByText("Reason: Upstream schema verification failed.", { exact: true }).waitFor({
-    state: "visible",
-  });
+  const reason = entry.locator(".timeline-reason");
+  assert.match(await reason.innerText(), /Reason: Upstream schema verification failed for commit/);
+  const reasonCommit = reason.getByRole("button", { name: "Copy SHA: 0123456789abcdef0123456789abcdef01234567", exact: true });
+  await reasonCommit.click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "0123456789abcdef0123456789abcdef01234567");
+  assert.equal(await entry.locator(":scope > details").evaluate(element => element.open), true, "copying a reference keeps the event open");
   assert.equal(await technicalDetails.evaluate((element) => element.open), false);
 
   await technicalDetails.locator("summary").click();
@@ -11801,7 +12113,7 @@ test("team add-on activity timeline leads with human context and explains retain
   assert.equal(expandedText.match(/task-pending/g)?.length, 1);
 });
 
-test("team add-on timeline keeps naive timestamps in server UTC order", async (t) => {
+test("team add-on timeline keeps naive timestamps in server UTC order", { timeout: browserTestTimeout }, async (t) => {
   const timelinePayload = {
     revision: 1,
     derived: true,
@@ -11849,7 +12161,7 @@ test("team add-on timeline keeps naive timestamps in server UTC order", async (t
   assert.deepEqual(summaries.slice(0, 2), ["Aware UTC event", "Naive UTC event"]);
 });
 
-test("team add-on task board coordinates hierarchy focus and bounds completed history", async (t) => {
+test("team add-on task board coordinates hierarchy focus and bounds completed history", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-manager"].display_name = "Ada Manager";
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
@@ -12207,7 +12519,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   await createTaskForm.locator('[name="task_author_email"]').fill("alice@example.test");
   await createTaskForm.locator('[name="git_base_branch"]').fill("feature/demo");
   await createTaskForm.locator('[name="parent_task_id"]').selectOption("task-planned");
-  await createTaskForm.locator('[name="originating_task_id"]').selectOption("task-open");
+  await createTaskForm.locator('[name="originating_task_id"]').selectOption("task-waiting");
   await createTaskForm.locator('[name="require_git_provenance"]').check();
   await createTaskForm.getByRole("button", { name: "Create task" }).click();
   await waitForCondition(
@@ -12227,7 +12539,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   assert.equal(createRequest.payload.task_kind, "support");
   assert.deepEqual(createRequest.payload.authored_by, { name: "Alice Example", email: "alice@example.test" });
   assert.equal(createRequest.payload.parent_task_id, "task-planned");
-  assert.equal(createRequest.payload.originating_task_id, "task-open");
+  assert.equal(createRequest.payload.originating_task_id, "task-waiting");
   assert.equal(createRequest.payload.integration_boundary, false);
   assert.deepEqual(createRequest.payload.deliverable_contract, {
     require_git_provenance: true,
@@ -12235,7 +12547,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   });
 });
 
-test("team add-on renders TaskAssessment resolution reasons as operator prose", async (t) => {
+test("team add-on renders TaskAssessment resolution reasons as operator prose", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const reasonFixtures = [
     {
@@ -12326,7 +12638,7 @@ test("team add-on renders TaskAssessment resolution reasons as operator prose", 
 
   await page.getByRole("tab", { name: "Teams" }).click();
   const alphaGroup = page.locator(
-    '#team-people-page [data-team-record-group-id="team-alpha"]',
+    '#team-people-page .team-record-group[data-team-record-group-id="team-alpha"]',
   );
   await alphaGroup.locator(".team-record-group-header").click();
   await alphaGroup.locator('[data-team-record-tab="project"]').click();
@@ -12346,7 +12658,7 @@ test("team add-on renders TaskAssessment resolution reasons as operator prose", 
   assert.equal((await taskGraphItem.textContent()).includes("task_actionable"), false);
 });
 
-test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and worktree identity", async (t) => {
+test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and worktree identity", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const parent = initialState.tasks["task-planned"];
   const child = initialState.tasks["task-pending"];
@@ -12478,7 +12790,7 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   await waitForRevision(page, 4);
   await page.getByRole("tab", { name: "Teams" }).click();
   const alphaGroup = page.locator(
-    '#team-people-page [data-team-record-group-id="team-alpha"]',
+    '#team-people-page .team-record-group[data-team-record-group-id="team-alpha"]',
   );
   await alphaGroup.locator(".team-record-group-header").click();
   await alphaGroup.locator('[data-team-record-tab="project"]').click();
@@ -12558,11 +12870,11 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   await childCard
     .getByText("Worktree: /home/agent/worktrees/task-pending")
     .waitFor({ state: "visible" });
-  await childCard.getByText("Waiting on 1 blocked dependency", { exact: true }).waitFor({
+  await childCard.getByText("Waiting on 1 dependency; at least one blocked", { exact: true }).waitFor({
     state: "visible",
   });
   const childBlockers = childCard.locator(".task-board-card-blockers");
-  await childBlockers.getByText("Waiting on blocked dependencies:", { exact: true }).waitFor({
+  await childBlockers.getByText("Waiting on dependencies:", { exact: true }).waitFor({
     state: "visible",
   });
   await childBlockers.getByText("Assigned blocker:", { exact: true }).waitFor({
@@ -12578,7 +12890,7 @@ test("team add-on task surfaces preserve hierarchy, lifecycle, blockers, and wor
   assert.equal(await childCard.evaluate((element) => element.classList.contains("task-board-card-blocked")), true);
 });
 
-test("team add-on My Human Reviews renders pinned release evidence and submits identity-free decisions", async (t) => {
+test("team add-on My Human Reviews renders pinned release evidence and submits identity-free decisions", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const requirement = {
     reviewer_group_ids: ["release-approvers"],
@@ -12687,8 +12999,8 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     published_commit_sha: null,
     published_at: null,
     candidate_checkout: {
-      canonical_repository_identity: "azure-devops:example/app/ExampleIndustryAPP",
-      repository_display_name: "ExampleIndustryAPP",
+      canonical_repository_identity: "azure-devops:example/app/SampleApplication",
+      repository_display_name: "SampleApplication",
       managed_repo_id: "mr_0123456789abcdef0123",
       release_ref: "refs/heads/team/alpha/releases/human",
       candidate_commit_sha: "candidate111",
@@ -12876,7 +13188,7 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await candidateCheckout.getByRole("heading", { name: "Test this candidate" }).waitFor({
     state: "visible",
   });
-  await candidateCheckout.getByText("ExampleIndustryAPP", { exact: true }).waitFor({
+  await candidateCheckout.getByText("SampleApplication", { exact: true }).waitFor({
     state: "visible",
   });
   await candidateCheckout
@@ -12933,7 +13245,12 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await detail.getByRole("heading", { name: "Automated verification" }).waitFor({
     state: "visible",
   });
-  await detail.getByText(/release-smoke: passed - All release checks passed\./).waitFor({
+  const verificationCommand = detail.locator(".release-verification-command-result").filter({
+    has: page.getByText("Command: release-smoke", { exact: true }),
+  });
+  await verificationCommand.getByText("Passed", { exact: true }).waitFor({ state: "visible" });
+  await verificationCommand.locator("summary", { hasText: "Show captured command log" }).click();
+  await verificationCommand.getByText("All release checks passed.", { exact: true }).waitFor({
     state: "visible",
   });
   await detail.getByRole("heading", { name: "Agent review decisions" }).waitFor({
@@ -12941,7 +13258,8 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   });
   await detail
     .getByText(
-      /Sealed cohort:\s*Accepted · 1 of 1 resolved\. Correction work starts only after every cohort slot is accepted or rejected\./,
+      "Sealed cohort: Accepted · 1 of 1 resolved. Correction work starts only after every cohort slot is accepted or rejected.",
+      { exact: true },
     )
     .waitFor({ state: "visible" });
   await detail.getByText("Release scope: passed - Scope matches the candidate.").waitFor({
@@ -13063,10 +13381,11 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   await waitForRevision(page, state.revision);
   await findingEditor.getByRole("button", { name: "Add finding" }).click();
   assert.equal(
-    await findingRows.nth(0).locator('[role="group"][aria-label="Affected work"]').count(),
-    0,
-    "a sole candidate deliverable should be inferred rather than shown as a selector",
+    await findingRows.nth(0).locator('input[name="human_finding_target_deliverable_ids"]').count(),
+    1,
+    "a sole deliverable still needs an explicit choice between its work and the entire release",
   );
+  assert.equal(await findingRows.nth(0).getByLabel("Entire release candidate").isChecked(), false);
   await findingRows.nth(0).getByRole("button", { name: "Remove finding 1" }).click();
   state.human_review_requests[humanRequest.id].target_deliverable_options =
     allTargetOptions;
@@ -13131,6 +13450,13 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     .nth(0)
     .locator('textarea[name="human_finding_evidence_refs"]')
     .fill("artifact-space:finding-one");
+  await decisionForm.getByRole("button", { name: "Request changes" }).click();
+  assert.equal(findingsDecisionPayload, null, "findings must identify their affected work");
+  assert.equal(
+    await findingRows.nth(0).getByLabel("Entire release candidate").evaluate((field) => field.validationMessage),
+    "Select the entire release candidate or at least one affected deliverable.",
+  );
+  await findingRows.nth(0).getByLabel("Entire release candidate").check();
   await findingEditor.getByRole("button", { name: "Add finding" }).click();
   await decisionForm.getByRole("button", { name: "Request changes" }).click();
   assert.equal(
@@ -13169,11 +13495,13 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     [
       {
         text: "[P1] Keep this finding intact, including its explanatory comma.",
+        target_scope: "release_candidate",
         target_deliverable_ids: [],
         evidence_refs: ["artifact-space:finding-one"],
       },
       {
         text: "[P2] Keep a second finding intact, too.",
+        target_scope: "deliverables",
         target_deliverable_ids: ["deliverable-child-a"],
         evidence_refs: ["artifact-space:finding-two"],
       },
@@ -13189,12 +13517,14 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
   const carriedFindingConfirmation = decisionForm.locator(
     '[data-confirm-finding-id="human-finding-carried-accessibility"]',
   );
-  const carriedFindingConfirmationBox = await carriedFindingConfirmation.boundingBox();
+  const carriedFindingConfirmationLabel = carriedFindingConfirmation.locator("..");
+  const carriedFindingConfirmationBox = await carriedFindingConfirmationLabel.boundingBox();
   assert.ok(
     carriedFindingConfirmationBox?.width >= 20 && carriedFindingConfirmationBox?.height >= 20,
-    "carried-finding confirmation checkbox should have a visible 20px target",
+    "carried-finding confirmation should retain a visible clickable label target",
   );
-  await carriedFindingConfirmation.check();
+  await carriedFindingConfirmationLabel.click();
+  assert.equal(await carriedFindingConfirmation.isChecked(), true);
   await decisionForm
     .locator('textarea[name="summary"]')
     .fill("Smoke test passed against the pinned preview.");
@@ -13389,7 +13719,7 @@ test("team add-on My Human Reviews renders pinned release evidence and submits i
     .waitFor({ state: "visible" });
 });
 
-test("team add-on reports published release regressions without implying rollback or successor creation", async (t) => {
+test("team add-on reports published release regressions without implying rollback or successor creation", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.release_packages["release-timestamp-only"] = {
     ...initialState.release_packages["release-accepted"],
@@ -13517,7 +13847,7 @@ test("team add-on reports published release regressions without implying rollbac
   assert.equal(state.tasks["post-release-triage-5"].case_id, "post-release-case-5");
 });
 
-test("team add-on project editor keeps human release policy in bounded controls", async (t) => {
+test("team add-on project editor keeps human release policy in bounded controls", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.projects["alpha-project"].release_policy = {
     schema_version: 2,
@@ -13548,7 +13878,7 @@ test("team add-on project editor keeps human release policy in bounded controls"
   await waitForRevision(page, 4);
   await page.getByRole("tab", { name: "Teams" }).click();
   const alphaGroup = page.locator(
-    '#team-people-page [data-team-record-group-id="team-alpha"]',
+    '#team-people-page .team-record-group[data-team-record-group-id="team-alpha"]',
   );
   await alphaGroup.locator(".team-record-group-header").click();
   await alphaGroup.locator('[data-team-record-tab="project"]').click();
@@ -13719,7 +14049,7 @@ test("team add-on project editor keeps human release policy in bounded controls"
   );
 });
 
-test("team add-on Task board exposes the existing task editor", async (t) => {
+test("team add-on Task board exposes the existing task editor", { timeout: browserTestTimeout }, async (t) => {
   const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
@@ -13756,7 +14086,7 @@ test("team add-on Task board exposes the existing task editor", async (t) => {
   assert.equal(updates().at(-1).payload.authored_by, null);
 });
 
-test("team add-on task cancellation is explicit audited and lifecycle-aware", async (t) => {
+test("team add-on task cancellation is explicit audited and lifecycle-aware", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
   const taskBase = {
@@ -13984,7 +14314,7 @@ test("team add-on task cancellation is explicit audited and lifecycle-aware", as
   assert.match(await terminalCancel.getAttribute("title"), /already Accepted/);
 });
 
-test("team add-on planning tasks separate overview hierarchy contribution brief and technical detail", async (t) => {
+test("team add-on planning tasks separate overview hierarchy contribution brief and technical detail", { timeout: browserTestTimeout }, async (t) => {
   let releaseCosts = () => {};
   const costsGate = new Promise((resolve) => {
     releaseCosts = resolve;
@@ -14024,7 +14354,20 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
       "1. Review the composed delivery",
       "2. Publish the operator handoff",
       "",
+      "Reference `task-0123456789abcdef0123456789abcdef` at **0123456789abcdef0123456789abcdef01234567**.",
+      "Keep `git show 0123456789abcdef0123456789abcdef01234567` as a command.",
+      "Keep ``echo `0123456789abcdef0123456789abcdef01234567` `` as a literal command too.",
+      "```sh",
+      "git show 0123456789abcdef0123456789abcdef01234567",
+      'echo "<script>window.__unsafePlanningFence = true</script>"',
+      "```",
+      "~~~text",
+      "4fb122a3-5b64-4fa5-b5fb-3c4969ef415d",
+      "~~~",
+      "",
       "<script>window.__unsafePlanningBrief = true</script>",
+      "```text",
+      "0123456789abcdef0123456789abcdef01234567",
     ].join("\n"),
     created_by_agent_id: "alpha-manager",
     child_task_ids: [
@@ -14327,6 +14670,19 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
   assert.equal(await briefDetails.locator("ul > li").count(), 2);
   assert.equal(await briefDetails.locator("ol > li").count(), 2);
   assert.equal(await briefDetails.locator("script").count(), 0);
+  assert.equal(await briefDetails.locator("pre code").count(), 3);
+  assert.equal(await briefDetails.locator("pre .identifier-badge").count(), 0, "fenced examples preserve complete literal identifiers");
+  assert.equal(await briefDetails.locator("pre code").first().innerText(),
+    'git show 0123456789abcdef0123456789abcdef01234567\necho "<script>window.__unsafePlanningFence = true</script>"');
+  assert.equal(await briefDetails.locator("pre code").nth(1).innerText(), "4fb122a3-5b64-4fa5-b5fb-3c4969ef415d");
+  assert.equal(await briefDetails.locator("pre code").last().innerText(), "0123456789abcdef0123456789abcdef01234567", "an unfinished fence also stays literal");
+  await briefDetails.locator("p > code", { hasText: "git show 0123456789abcdef0123456789abcdef01234567" }).waitFor({ state: "visible" });
+  const nestedBacktickCommand = briefDetails.locator("p > code", { hasText: "echo `0123456789abcdef0123456789abcdef01234567` " });
+  assert.equal(await nestedBacktickCommand.count(), 1, "double-backtick commands preserve embedded single backticks");
+  assert.equal(await nestedBacktickCommand.locator(".identifier-badge").count(), 0);
+  assert.equal(await briefDetails.locator(".identifier-badge").count(), 2, "standalone narrative references are compact");
+  assert.equal(await briefDetails.locator(".identifier-badge").evaluateAll(buttons => buttons.some(button => button.parentElement.closest("button, a, label"))), false, "copy badges must not nest in interactive controls");
+  assert.equal(await page.evaluate(() => window.__unsafePlanningFence), undefined);
   assert.equal(
     await briefDetails.getByText("=== THE GAME ===", { exact: true }).count(),
     0,
@@ -14462,7 +14818,7 @@ test("team add-on planning tasks separate overview hierarchy contribution brief 
     .waitFor({ state: "visible" });
 });
 
-test("team add-on Planning skips review for resolved support tasks", async (t) => {
+test("team add-on Planning skips review for resolved support tasks", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   initialState.tasks = {
     "task-support-finished": {
@@ -14535,7 +14891,7 @@ test("team add-on Planning skips review for resolved support tasks", async (t) =
   );
 });
 
-test("team add-on task board shows and filters queued role assignments", async (t) => {
+test("team add-on task board shows and filters queued role assignments", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
   const task = initialState.tasks["task-pending"];
   Object.assign(task, {

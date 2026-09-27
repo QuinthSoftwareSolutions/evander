@@ -160,6 +160,9 @@ class OperationsAdminService:
             direct_only=direct_only,
         )
 
+    def get_session_summary(self, session_id: str):
+        return self._session_admin.get_session_summary(session_id)
+
     def list_wake_schedules(
         self,
         *,

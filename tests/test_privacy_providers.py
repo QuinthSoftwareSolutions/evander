@@ -425,7 +425,7 @@ def test_idle_sse_revocation_cancels_pending_upstream_read(tmp_path):
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
-    context = RelayRequestContext("s", relay.config, False, False, "root")
+    context = RelayRequestContext(model=None, session_id="s", config=relay.config, web_search_enabled=False, image_generation_enabled=False, directory_path="root")
     closed = []
 
     async def chunks():
@@ -466,7 +466,7 @@ def test_sse_policy_resolution_is_bounded_and_runs_off_event_loop(tmp_path, monk
         session_id="stream", directory_path="root", allowed_tools=[],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     ))
-    context = RelayRequestContext("stream", config, False, False, "root")
+    context = RelayRequestContext(model=None, session_id="stream", config=config, web_search_enabled=False, image_generation_enabled=False, directory_path="root")
     checks = []
     require = relay._require_privacy
     loop_thread = threading.get_ident()
@@ -506,7 +506,7 @@ def test_sse_blocked_policy_check_does_not_block_another_stream(tmp_path, monkey
             yield b"fixture"
 
         async def consume(name):
-            context = RelayRequestContext(name, relay.config, False, False, "root")
+            context = RelayRequestContext(model=None, session_id=name, config=relay.config, web_search_enabled=False, image_generation_enabled=False, directory_path="root")
             return [chunk async for chunk in relay._privacy_stream_chunks(chunks(), context)]
 
         slow = asyncio.create_task(consume("slow"))
@@ -540,7 +540,7 @@ def test_sse_refresh_rejects_revoked_context_before_delivering_next_chunk(tmp_pa
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     sessions.upsert_session(session)
-    context = RelayRequestContext("stream", config, False, False, "root")
+    context = RelayRequestContext(model=None, session_id="stream", config=config, web_search_enabled=False, image_generation_enabled=False, directory_path="root")
     closed = []
 
     async def exercise():
@@ -584,7 +584,7 @@ def test_relay_persistent_context_rejects_changed_provider_and_session(tmp_path)
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     sessions.upsert_session(session)
-    context = RelayRequestContext("s", relay.config, False, False, "root")
+    context = RelayRequestContext(model=None, session_id="s", config=relay.config, web_search_enabled=False, image_generation_enabled=False, directory_path="root")
     relay._require_privacy(context)
     directory_store = DirectoryStore(relay.config.directories_store_path)
     DirectoryConfigStore(directory_store, runtime_dir=tmp_path).write(
@@ -645,7 +645,7 @@ def test_idle_websocket_revocation_closes_both_sides(tmp_path):
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
-    context = RelayRequestContext("s", relay.config, False, False, "root")
+    context = RelayRequestContext(model=None, session_id="s", config=relay.config, web_search_enabled=False, image_generation_enabled=False, directory_path="root")
     closed = []
 
     class Client:

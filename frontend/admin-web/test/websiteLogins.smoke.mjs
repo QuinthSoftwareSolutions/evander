@@ -15,7 +15,14 @@ test("website login UI edits profiles, keeps failed inputs, rotates secrets, tes
           import {WebsiteLoginsConfiguration} from '/src/features/configuration/WebsiteLoginsConfiguration.tsx';
           import {HttpTargetsEditor} from '/src/features/httpTargets/HttpTargetsEditor.tsx';
           import {httpTargetsPayload} from '/src/features/httpTargets/httpTargetDraft.ts';
-          import '/src/styles.css';
+          import '/src/design/baseline.css';
+          import '/src/design/tokens.css';
+          import '/src/design/controls.css';
+          import '/src/design/layout.css';
+          import '/src/design/collections.css';
+          import '/src/design/workspaces.css';
+          import '/src/design/surfaces.css';
+          document.documentElement.dataset.adminDesign = '';
           function Fixture() {
             const [mode,setMode] = React.useState('profiles');
             const [scope,setScope] = React.useState('root');
@@ -110,6 +117,11 @@ test("website login UI edits profiles, keeps failed inputs, rotates secrets, tes
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
   await page.setViewportSize({width:1440,height:1000});
   await page.screenshot({path:"/tmp/website-logins-desktop.png",fullPage:true});
+  const checkbox = await page.getByRole("checkbox", {name: "Enabled", exact: true}).boundingBox();
+  const input = await page.getByRole("textbox", {name: "Login endpoint", exact: true}).boundingBox();
+  assert.ok(checkbox && input);
+  assert.ok(Math.abs((checkbox.y + checkbox.height / 2) - (input.y + input.height / 2)) <= 2,
+    "standalone checkboxes should align with the adjacent text input");
   page.on("dialog", dialog => dialog.accept());
   await page.getByRole("button",{name:"Remove saved credentials",exact:true}).click();
   await page.getByText("Credentials missing",{exact:true}).waitFor();

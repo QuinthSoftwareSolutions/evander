@@ -47,6 +47,12 @@ Key selection, in order:
 There is no fallback after a selected key is missing or incorrect. Metadata and diagnostics
 remain accessible when the key is missing; credential-dependent operations fail closed.
 Existing installations continue using legacy credentials until explicitly migrated.
+Legacy Teams JSON storage is still changed on upgrade: the first read of nonempty plaintext
+credentials atomically encrypts the file and creates `secrets/<credential-JSON-filename>.key`
+beside it. This uses a separate per-file key and does not require managed-store initialization.
+Upgrade all consumers of that file together; old binaries cannot read the encrypted envelope.
+The service user needs write access to the file and its parent directory. Back up the encrypted
+file with its matching key, and plan controlled recovery or reauthentication before rollback.
 The setup wizard retains legacy bootstrap secrets; credential-store initialization uses the
 command above. Ansible can initialize the store before rendering services with
 `evander_initialize_credential_store: true`; its default is `false`. It preserves existing keys

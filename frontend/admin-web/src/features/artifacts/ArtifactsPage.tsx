@@ -1,9 +1,10 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { DownloadIcon, RefreshIcon, UploadIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
+import { RecordInspector } from "../admin/RecordInspector";
 
 type PublishedArtifact = {
   key: string;
@@ -103,7 +104,11 @@ function formatBytes(value: number | null | undefined): string {
 
 function shortSha(value: string | null | undefined): string {
   const text = value?.trim() ?? "";
-  return text.length > 16 ? `${text.slice(0, 16)}...` : text || "n/a";
+  return text.length > 12 ? `${text.slice(0, 12)}…` : text || "n/a";
+}
+
+function compactArtifactKey(key: string): string {
+  return key.length > 100 ? `${key.slice(0, 56)}…${key.slice(-40)}` : key;
 }
 
 function artifactSpaceLabel(space: ArtifactSpace): string {
@@ -223,6 +228,8 @@ export function ArtifactsPage() {
   const [selectedSpacePath, setSelectedSpacePath] = useState<string | null>(null);
   const [expandedSpacePaths, setExpandedSpacePaths] = useState<Set<string>>(() => new Set());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const inspectorTriggerRef = useRef<HTMLElement | null>(null);
   const [resolvedArtifact, setResolvedArtifact] = useState<PublishedArtifact | null>(null);
   const [loading, setLoading] = useState(false);
   const [artifactSpacesLoading, setArtifactSpacesLoading] = useState(false);
@@ -286,6 +293,7 @@ export function ArtifactsPage() {
       const payload = await fetchJson<PublishedArtifact>(artifactUrl(key));
       setResolvedArtifact(payload);
       setSelectedKey(payload.key);
+      setInspectorOpen(true);
     } catch (reason) {
       setResolvedArtifact(null);
       setLookupError(reason instanceof Error ? reason.message : String(reason));
@@ -396,6 +404,7 @@ export function ArtifactsPage() {
       setUploadDialogOpen(false);
       await loadArtifacts(null);
       setSelectedKey(payload.key);
+      setInspectorOpen(true);
       setResolvedArtifact(payload);
     } catch (reason) {
       setUploadError(reason instanceof Error ? reason.message : String(reason));
@@ -409,18 +418,37 @@ export function ArtifactsPage() {
 
   return (
     <div className="feature-page artifacts-page">
-      <section className="feature-sidebar">
-        <div className="feature-sidebar-header">
-          <div>
-            <div className="eyebrow">Artifact store</div>
-            <h1>Artifacts</h1>
-          </div>
-          <button className="admin-action-button compact" type="button" onClick={refreshArtifacts}>
+      <div className="feature-toolbar">
+        <div>
+          <h1>Artifacts</h1>
+        </div>
+        <div className="feature-toolbar-actions">
+          <span className="panel-meta">
+            {response?.total ?? 0} matched - {selectedSpaceLabel}
+          </span>
+          <Tooltip content="Upload a local file as a published artifact.">
+            <button
+              type="button"
+              className="admin-icon-button toolbar-icon-button"
+              aria-label="Upload artifact"
+              onClick={openUploadDialog}
+            >
+              <UploadIcon />
+            </button>
+          </Tooltip>
+          <button
+            className="admin-action-button compact"
+            type="button"
+            onClick={refreshArtifacts}
+            disabled={loading || artifactSpacesLoading}
+          >
             <RefreshIcon />
             Refresh
           </button>
         </div>
+      </div>
 
+      <section className="feature-sidebar">
         <div className="artifact-space-filter">
           <div className="artifact-space-filter-heading">
             <span>Artifact spaces</span>
@@ -436,7 +464,9 @@ export function ArtifactsPage() {
             <span className="artifact-space-tree-path">Unfiltered</span>
           </button>
           {artifactSpacesError ? <div className="callout error-callout">{artifactSpacesError}</div> : null}
-          {artifactSpacesLoading && !artifactSpaces ? <div className="empty-state artifact-space-empty">Loading spaces...</div> : null}
+          {artifactSpacesLoading && !artifactSpaces ? (
+            <div className="empty-state artifact-space-empty">Loading spaces...</div>
+          ) : null}
           {!artifactSpacesLoading && !artifactSpacesError && (artifactSpaces?.spaces.length ?? 0) === 0 ? (
             <div className="empty-state artifact-space-empty">No artifact spaces.</div>
           ) : null}
@@ -463,7 +493,12 @@ export function ArtifactsPage() {
           />
         </label>
         <div className="inline-actions artifact-lookup-actions">
-          <button className="admin-action-button compact" type="button" onClick={() => void resolveKey()} disabled={lookupLoading}>
+          <button
+            className="admin-action-button compact"
+            type="button"
+            onClick={() => void resolveKey()}
+            disabled={lookupLoading}
+          >
             {lookupLoading ? "Resolving..." : "Resolve key"}
           </button>
           <button className="admin-action-button compact" type="button" onClick={applyFilters} disabled={loading}>
@@ -502,28 +537,12 @@ export function ArtifactsPage() {
       </section>
 
       <section className="feature-content">
-        <div className="feature-toolbar">
-          <div>
-            <h2>Published artifacts</h2>
-          </div>
-          <div className="feature-toolbar-actions">
-            <span className="panel-meta">{response?.total ?? 0} matched - {selectedSpaceLabel}</span>
-            <Tooltip content="Upload a local file as a published artifact.">
-              <button type="button" className="admin-icon-button toolbar-icon-button" aria-label="Upload artifact" onClick={openUploadDialog}>
-                <UploadIcon />
-              </button>
-            </Tooltip>
-            <button className="admin-action-button compact" type="button" onClick={refreshArtifacts} disabled={loading || artifactSpacesLoading}>
-              <RefreshIcon />
-              Refresh
-            </button>
-          </div>
-        </div>
-
         {error ? <div className="callout error-callout">{error}</div> : null}
         {uploadMessage ? <div className="callout success-callout">{uploadMessage}</div> : null}
 
-        <div className="admin-grid two-column artifacts-grid">
+        <div
+          className={`admin-grid two-column artifacts-grid${inspectorOpen && selectedArtifact ? " has-inspector" : ""}`}
+        >
           <article className="panel section-panel">
             <div className="panel-header">
               <div>
@@ -533,10 +552,20 @@ export function ArtifactsPage() {
                 </p>
               </div>
               <div className="feature-toolbar-actions">
-                <button className="admin-action-button compact" type="button" onClick={previousPage} disabled={previousCursors.length === 0 || loading}>
+                <button
+                  className="admin-action-button compact"
+                  type="button"
+                  onClick={previousPage}
+                  disabled={previousCursors.length === 0 || loading}
+                >
                   Previous
                 </button>
-                <button className="admin-action-button compact" type="button" onClick={nextPage} disabled={!response?.next_cursor || loading}>
+                <button
+                  className="admin-action-button compact"
+                  type="button"
+                  onClick={nextPage}
+                  disabled={!response?.next_cursor || loading}
+                >
                   Next
                 </button>
               </div>
@@ -559,17 +588,23 @@ export function ArtifactsPage() {
                     <tr
                       key={item.key}
                       className={item.key === selectedArtifact?.key ? "selected" : ""}
-                      onClick={() => {
+                      onClick={(event) => {
                         setSelectedKey(item.key);
+                        setInspectorOpen(true);
+                        inspectorTriggerRef.current = event.currentTarget.querySelector("button");
                         setResolvedArtifact(null);
                       }}
                     >
-                      <td><strong>{item.key}</strong></td>
-                      <td>{formatTimestamp(item.published_at)}</td>
+                      <td className="artifact-key-cell">
+                        <button type="button" className="record-name" title={item.key} aria-label={item.key}>
+                          {compactArtifactKey(item.key)}
+                        </button>
+                      </td>
+                      <td className="artifact-fixed-cell">{formatTimestamp(item.published_at)}</td>
                       <td>{item.session_id}</td>
-                      <td>{formatBytes(item.byte_count)}</td>
-                      <td>{item.source_file_count}</td>
-                      <td>{shortSha(item.sha256)}</td>
+                      <td className="artifact-fixed-cell">{formatBytes(item.byte_count)}</td>
+                      <td className="artifact-fixed-cell">{item.source_file_count}</td>
+                      <td className="artifact-fixed-cell" title={item.sha256 ?? undefined}>{shortSha(item.sha256)}</td>
                       <td>
                         <div className="feature-toolbar-actions icon-actions artifacts-download-cell">
                           <button
@@ -589,12 +624,16 @@ export function ArtifactsPage() {
                   ))}
                   {loading && items.length === 0 ? (
                     <tr>
-                      <td className="empty-state-cell" colSpan={7}>Loading artifacts...</td>
+                      <td className="empty-state-cell" colSpan={7}>
+                        Loading artifacts...
+                      </td>
                     </tr>
                   ) : null}
                   {!loading && items.length === 0 ? (
                     <tr>
-                      <td className="empty-state-cell" colSpan={7}>No artifacts matched the current filters.</td>
+                      <td className="empty-state-cell" colSpan={7}>
+                        No artifacts matched the current filters.
+                      </td>
                     </tr>
                   ) : null}
                 </tbody>
@@ -609,13 +648,16 @@ export function ArtifactsPage() {
                   <button
                     type="button"
                     className="mobile-record-card-main"
-                    onClick={() => {
+                    aria-label={item.key}
+                    onClick={(event) => {
                       setSelectedKey(item.key);
+                      setInspectorOpen(true);
+                      inspectorTriggerRef.current = event.currentTarget;
                       setResolvedArtifact(null);
                     }}
                   >
                     <div className="mobile-record-title-row">
-                      <strong>{item.key}</strong>
+                      <strong title={item.key}>{compactArtifactKey(item.key)}</strong>
                     </div>
                     <div className="mobile-record-row">
                       <span>Published</span>
@@ -659,67 +701,69 @@ export function ArtifactsPage() {
             </div>
           </article>
 
-          <article className="panel detail-panel artifacts-detail-panel">
-            <div className="panel-header">
-              <div>
-                <h3>{selectedArtifact?.key ?? "Select an artifact"}</h3>
-                <p className="muted-text">
-                  {selectedArtifact ? selectedArtifact.filename : "No archive selected."}
-                </p>
-              </div>
+          {inspectorOpen && selectedArtifact ? (
+            <RecordInspector
+              key={selectedArtifact.key}
+              className="artifacts-detail-panel"
+              title={selectedArtifact.key}
+              subtitle={selectedArtifact.filename}
+              returnFocus={() => inspectorTriggerRef.current}
+              onClose={() => setInspectorOpen(false)}
+            >
+              <button
+                type="button"
+                className="primary"
+                aria-label="Download selected artifact"
+                onClick={() => downloadArtifact(selectedArtifact.key)}
+              >
+                Download archive
+              </button>
               {selectedArtifact ? (
-                <div className="feature-toolbar-actions icon-actions">
-                  <button className="admin-icon-button" type="button" aria-label="Download selected artifact" onClick={() => downloadArtifact(selectedArtifact.key)}>
-                    <DownloadIcon />
-                  </button>
+                <div className="artifact-detail-stack">
+                  <dl className="detail-list">
+                    <div>
+                      <dt>Published</dt>
+                      <dd>{formatTimestamp(selectedArtifact.published_at)}</dd>
+                    </div>
+                    <div>
+                      <dt>Session</dt>
+                      <dd>{selectedArtifact.session_id}</dd>
+                    </div>
+                    <div>
+                      <dt>Backend</dt>
+                      <dd>{selectedArtifact.execution_backend ?? "n/a"}</dd>
+                    </div>
+                    <div>
+                      <dt>Archive size</dt>
+                      <dd>{formatBytes(selectedArtifact.byte_count)}</dd>
+                    </div>
+                    <div>
+                      <dt>Source files</dt>
+                      <dd>{selectedArtifact.source_file_count}</dd>
+                    </div>
+                    <div>
+                      <dt>Source bytes</dt>
+                      <dd>{formatBytes(selectedArtifact.source_byte_count)}</dd>
+                    </div>
+                    <div>
+                      <dt>Artifacts root</dt>
+                      <dd>{selectedArtifact.source_artifacts_root ?? "n/a"}</dd>
+                    </div>
+                    <div>
+                      <dt>SHA-256</dt>
+                      <dd className="artifact-sha">{selectedArtifact.sha256}</dd>
+                    </div>
+                  </dl>
+                  <label className="field-stack artifact-metadata-field">
+                    <span>Metadata</span>
+                    <textarea readOnly value={JSON.stringify(selectedArtifact.metadata ?? {}, null, 2)} />
+                  </label>
                 </div>
-              ) : null}
-            </div>
-            {selectedArtifact ? (
-              <div className="artifact-detail-stack">
-                <dl className="detail-list">
-                  <div>
-                    <dt>Published</dt>
-                    <dd>{formatTimestamp(selectedArtifact.published_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Session</dt>
-                    <dd>{selectedArtifact.session_id}</dd>
-                  </div>
-                  <div>
-                    <dt>Backend</dt>
-                    <dd>{selectedArtifact.execution_backend ?? "n/a"}</dd>
-                  </div>
-                  <div>
-                    <dt>Archive size</dt>
-                    <dd>{formatBytes(selectedArtifact.byte_count)}</dd>
-                  </div>
-                  <div>
-                    <dt>Source files</dt>
-                    <dd>{selectedArtifact.source_file_count}</dd>
-                  </div>
-                  <div>
-                    <dt>Source bytes</dt>
-                    <dd>{formatBytes(selectedArtifact.source_byte_count)}</dd>
-                  </div>
-                  <div>
-                    <dt>Artifacts root</dt>
-                    <dd>{selectedArtifact.source_artifacts_root ?? "n/a"}</dd>
-                  </div>
-                  <div>
-                    <dt>SHA-256</dt>
-                    <dd className="artifact-sha">{selectedArtifact.sha256}</dd>
-                  </div>
-                </dl>
-                <label className="field-stack artifact-metadata-field">
-                  <span>Metadata</span>
-                  <textarea readOnly value={JSON.stringify(selectedArtifact.metadata ?? {}, null, 2)} />
-                </label>
-              </div>
-            ) : (
-              <div className="empty-state">No artifact selected.</div>
-            )}
-          </article>
+              ) : (
+                <div className="empty-state">No artifact selected.</div>
+              )}
+            </RecordInspector>
+          ) : null}
         </div>
       </section>
       {uploadDialogOpen ? (
@@ -736,7 +780,12 @@ export function ArtifactsPage() {
                 <div className="eyebrow">Artifact store</div>
                 <h2 id="artifact-upload-modal-title">Upload artifact</h2>
               </div>
-              <button className="admin-action-button compact" type="button" onClick={closeUploadDialog} disabled={uploading}>
+              <button
+                className="admin-action-button compact"
+                type="button"
+                onClick={closeUploadDialog}
+                disabled={uploading}
+              >
                 Close
               </button>
             </div>
@@ -763,7 +812,12 @@ export function ArtifactsPage() {
                 </label>
                 {uploadError ? <div className="callout error-callout field-span-2">{uploadError}</div> : null}
                 <div className="inline-actions artifact-upload-actions field-span-2">
-                  <button className="admin-action-button compact" type="button" onClick={closeUploadDialog} disabled={uploading}>
+                  <button
+                    className="admin-action-button compact"
+                    type="button"
+                    onClick={closeUploadDialog}
+                    disabled={uploading}
+                  >
                     Cancel
                   </button>
                   <button type="submit" className="admin-action-button primary compact" disabled={uploading}>

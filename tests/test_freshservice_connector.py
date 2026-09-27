@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -203,25 +203,6 @@ def test_managed_freshservice_dummy_password_does_not_reject_ticket_content(cust
             invoke()
     else:
         assert "XML export request" in json.dumps(invoke().value)
-
-
-def test_freshservice_example_config_is_valid() -> None:
-    project_dir = Path(__file__).resolve().parents[1]
-    payload = json.loads(
-        (project_dir / "config/connectors/freshservice-readonly.json.example").read_text(
-            encoding="utf-8"
-        )
-    )
-    config = ConnectorDirectoryConfig.model_validate(payload)
-
-    driver = FreshserviceConnectorDriver()
-    driver.validate_definition(config.connectors["freshservice"])
-    assert set(config.connectors["freshservice"].operations) == {
-        "download_ticket_attachment",
-        "get_ticket",
-        "list_ticket_conversations",
-        "search_tickets_by_subject",
-    }
 
 
 def test_freshservice_search_scans_recent_tickets_and_returns_exact_subject_matches(

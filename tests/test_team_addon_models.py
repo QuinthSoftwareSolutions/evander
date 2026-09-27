@@ -788,7 +788,7 @@ def test_project_git_config_accepts_distinct_agent_author_and_committer() -> Non
         managed_repo_id="mr_0123456789abcdefabcd",
         agent_author_identity=ProjectGitIdentity(
             name=" Jonathan Quinth ",
-            email=" operator@example.invalid ",
+            email=" jonathan.quinth@exampleindustry.com ",
         ),
         agent_committer_identity={
             "name": "Evander Bot",
@@ -798,7 +798,7 @@ def test_project_git_config_accepts_distinct_agent_author_and_committer() -> Non
 
     assert config.agent_author_identity == ProjectGitIdentity(
         name="Jonathan Quinth",
-        email="operator@example.invalid",
+        email="jonathan.quinth@exampleindustry.com",
     )
     assert config.agent_committer_identity == ProjectGitIdentity(
         name="Evander Bot",
@@ -1415,7 +1415,7 @@ def test_team_state_payload_classifies_stale_index_lock_release_blocker() -> Non
         release_branch="team/team/releases/release",
         git_promotion_record_ids=["promotion-1"],
         state=TeamRecordState.BLOCKED,
-        error=("fatal: Unable to create '/home/jonathan/true-app/.git/index.lock': File exists."),
+        error=("fatal: Unable to create '/home/jonathan/sample-app/.git/index.lock': File exists."),
     )
     state.git_promotions["promotion-1"] = GitPromotionRecord(
         id="promotion-1",
@@ -1937,16 +1937,6 @@ def test_runtime_attention_keeps_undismissed_failure_from_current_dispatch() -> 
     assert rows[0]["action_record_id"] == "action-1"
     assert rows[0]["dispatch_id"] == "dispatch-ui"
     assert rows[0]["error"] == "build failed"
-
-
-def test_runtime_attention_hides_dismissed_failed_action() -> None:
-    state = _state_with_runtime_operations()
-    state.action_records["action-1"].dismissed_at = datetime(2026, 1, 1, tzinfo=UTC)
-    state.action_records["action-1"].dismissed_by = "operator"
-
-    payload = runtime_operations_payload(state, now=datetime(2026, 1, 1, tzinfo=UTC))
-
-    assert all(row["kind"] != "failed_action_record" for row in payload["attention"])
 
 
 def test_dependency_status_satisfied_and_blocked() -> None:

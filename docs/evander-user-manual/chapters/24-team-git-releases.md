@@ -1,6 +1,6 @@
 # 24. Team Git Promotion and Release Gates
 
-> **At a glance.** A safe release must publish the exact code that passed review, not whatever a branch happens to contain later. Team carries that exact version through its internal preparation and verification steps, then gives the final publication a narrow, time-bounded authority. If the code itself fails verification, it must change and be reviewed again; a retry is reserved for failures in the surrounding infrastructure or process.
+> **At a glance.** A safe release publishes the exact code that passed its required gates. Team carries that version through preparation, verification, and review, then authorizes publication under a Git lease. Candidate failures normally create correction work; process failures can permit a retry. Operators also have explicit, audited exception controls described below. Every retry preserves the earlier evidence and pinned candidate.
 >
 > An operator can follow the release with four questions: What exact code was approved? What evidence and policy apply? Did each required gate pass? What exact version reached the canonical branch? The internal branch names, worktrees, leases, and record fields later in the chapter explain how Evander makes those answers reliable.
 
@@ -15,7 +15,7 @@ accepted work -> fixed candidate -> enabled gates in configured order
               -> canonical publication of that same candidate
 ```
 
-Internal review, feature, and release branches are preparation areas. The release package's canonical branch and published commit are the final publication evidence. If content fails, it must be corrected and reviewed as new content. If the candidate is sound but a test worker times out or a reviewer cannot access evidence, a linked retry may run against the unchanged candidate.
+Internal review, feature, and release branches are preparation areas. The release package's canonical branch and published commit are the final publication evidence. Candidate defects normally require corrected, reviewed content. A worker timeout or inaccessible review evidence may justify a linked retry against the unchanged candidate; neither a retry request nor an internal branch proves publication.
 
 ## Cancelling an unwanted release
 
@@ -38,9 +38,9 @@ under the Team add-on API prefix. Send the current `expected_revision` and an op
 preserves the original audit record. A subsequent release must be explicitly requested;
 the cancelled attempt cannot be retried or used as a successor's predecessor.
 
-SQLite schema 77 adds nullable `team_release_packages.cancellation_json`. Old rows retain
-their existing behavior. Upgrade all Team processes together before using cancellation;
-older binaries do not understand the new `cancelled` release/review states.
+Cancellation is persisted in `team_release_packages.cancellation_json`. Upgrade
+all Team processes together before using it; older binaries may not understand
+the `cancelled` release/review states.
 
 ## The repository boundary
 
@@ -234,7 +234,9 @@ The project policy says how the fixed candidate will be checked and who must rev
 >   positive CPU count, and positive integer <code>pids_limit</code>;
 > - <code>gate_sequence</code>, containing each gate exactly once with an
 >   <code>enabled</code> flag, in execution order;
-> - ordered commands, each with name, working directory, argv, and timeout;
+> - ordered commands, each with name, working directory, argv, timeout, optional
+>   result protocol, and failure action;
+> - workspace recovery-generation and retained-log limits;
 > - required reviewer/profile pairs;
 > - optional human-review requirement with Admin reviewer groups, checklist,
 >   manual or workflow-prepared test instructions, and directory scope.
@@ -267,15 +269,47 @@ retain their legacy eager-rejection behavior.
 If <code>resource_limits</code> is omitted, a Team release verifier uses the
 worker/host CPU and memory defaults plus a 2,048 process/thread limit. A
 configured field overrides its corresponding default, and only an explicitly
-configured CPU value creates a Docker CPU quota. These limits are read from the
-live project policy for each disposable verifier session, including a retry;
-unlike candidate commands and review requirements, they are not frozen candidate
-evidence.
+configured CPU value creates a Docker CPU quota. The image and resource limits
+are snapshotted from current project policy when a verification attempt is
+created. Restart recovery preserves that attempt's settings; an authorized
+retry creates another attempt with the then-current settings. Older nonterminal
+attempts without a settings snapshot capture it once before resuming. Candidate
+commands and review requirements remain frozen in the release manifest.
 
 Worker inspection reports <code>pids_limit_exhausted</code> from cgroup
 <code>pids.events</code> and <code>memory_limit_exhausted</code> from Docker's
 OOM-killed state. Those structured causes are infrastructure failures, not
 strings inferred from test output, and enter the evidence-gated retry path.
+
+### Command outcomes, restart recovery, and logs
+
+Commands default to <code>result_protocol: "exit_code"</code> and
+<code>command_failure_action: "correction"</code>. Set the failure action to
+<code>"block"</code> when a failed command should wait for operator assessment
+instead of opening candidate correction work. Only an operator can retry such
+a command-blocked gate.
+
+The opt-in <code>json-v1</code> protocol lets a project-owned evaluator report
+<code>passed</code>, <code>baseline_exception</code>, <code>failed</code>, or
+<code>infrastructure</code> for the frozen candidate and base. Baseline exceptions
+also require explicit policy permission and evidence references. A timeout,
+nonzero evaluator exit, malformed report, or mismatched identity cannot be
+turned into success by a positive report. The UI distinguishes a permitted
+baseline exception from a clean pass. See the
+[verifier protocol and evidence contract](../../release-recovery-and-verifier-policy.md#structured-evidence-opt-in)
+before configuring an evaluator.
+
+An interrupted command sequence restarts in a new disposable workspace and
+reruns every prerequisite. Earlier command passes cannot skip setup in a fresh
+checkout. The frozen <code>verification_max_generations</code> defaults to 3;
+exhaustion or failed cleanup blocks on infrastructure. Completed evidence and
+earlier generation results remain inspectable.
+
+Command output and local structured evidence are retained before cleanup in
+<code>runtime/release-verification-logs</code>, available through release details
+and the <code>execution logs</code> CLI. The manifest freezes retention, defaulting
+to 30 days, with bounded logs and best-effort secret redaction. Logs are not a
+complete live heartbeat or a permanent archive.
 
 ## Scope validation
 
@@ -293,7 +327,14 @@ The practical distinction is **content failure versus process failure**. Content
 
 ### Terminal candidate failures
 
-A verification command returning nonzero means the candidate failed. The release is rejected. A release-review decision of <code>rejected</code> also means the candidate is defective. For a sealed review cohort, Team records each decision but waits for every slot to reach <code>accepted</code> or <code>rejected</code>, then creates one candidate-pinned correction containing all rejected findings. Repair the content and complete its accepted, reviewed Git deliverables; Team then creates one deterministic successor with the new reviewed tree. The project lead does not make a second release request.
+Under the default exit-code protocol and correction failure action, a nonzero
+verification command rejects the candidate. A release-review decision of
+<code>rejected</code> also records a candidate defect. For a sealed review cohort,
+Team waits for every slot to reach <code>accepted</code> or <code>rejected</code>,
+then creates one candidate-pinned correction containing all rejected findings.
+Repair the content and complete its accepted, reviewed Git deliverables; Team
+then creates one deterministic successor with the new reviewed tree. The project
+lead does not make a second release request.
 
 The review acceptance and successor intent are persisted atomically. Scheduled
 maintenance applies the same idempotent reconciliation to interrupted or older
@@ -305,12 +346,12 @@ the release.
 That blocker is a downstream release-recovery incident, not a reason to reopen
 the completed correction task. It therefore does not invalidate the correction
 or tasks that depend on it. In Admin Web, **Retry packaging** re-evaluates the
-current evidence, **Create verified replacement** creates dependency-free work
-pinned to the accepted correction branch and exact commit, and **Authorize
-waiver** records the operator and reason before packaging. Generic blocker
-resolution cannot bypass these actions. Reconciliation continues while the
-incident remains open, accepts a passed downstream recovery deliverable, and
-resolves the incident immediately when a direct successor already exists.
+current evidence, and **Create verified replacement** creates dependency-free work
+pinned to the accepted correction branch and exact commit. Verification-waiver
+recovery is retired: corrected reviewed content must pass candidate verification.
+Generic blocker resolution cannot bypass these actions. Reconciliation continues
+while the incident remains open, prefers a current accepted downstream recovery
+deliverable, and resolves the incident immediately when a direct successor exists.
 
 The system refuses a cosmetic new release of the same failed deliverables and tree.
 
@@ -327,6 +368,27 @@ may decide whether another typed recovery is justified. This agent bound does
 not change the separate blocked release-review retry rules.
 
 Use <code>blocked</code> only when the review process cannot complete. Use <code>rejected</code> for an actual candidate defect.
+
+### Operator-authorized retries
+
+In **Projects → Releases** or **Delivery → Release history**, an operator can
+choose **Retry verification gate** on an eligible rejected verification run.
+Use **Show rejected** if the project list hides it. The action requires unlocked
+privileged operations and a comment. It creates an immutable replacement run
+against the same candidate and frozen commands, preserves the failed result, and
+cancels unused generated verification correction work. It refuses a release with
+a successor or correction work that already has submitted deliverables, linked
+tasks, or active execution. Agents cannot invoke this exception.
+
+The API sends <code>allow_rejected_verification_retry: true</code> with the current
+gate ID and Team revision. The separate **Retry rejected review by exception**
+action uses <code>allow_rejected_review_exception: true</code>; it replaces the
+selected immutable review slot under operator authority and preserves other
+rejections and their correction obligations. Neither action accepts the release
+or skips remaining gates. A rejected-review exception instructs the replacement
+reviewer to treat the previous rejected finding as explicitly excepted, reevaluate
+every other required criterion, and report new defects. Use ordinary correction
+for a confirmed content defect.
 
 ### Git recovery
 
@@ -354,6 +416,7 @@ is preparing, pending, blocked, or changes-requested.
 | Gate result | What happens to the pinned release attempt |
 |---|---|
 | Verification candidate failure | Terminal rejection; generated correction work requires changed, reviewed content, then Team creates its successor automatically. |
+| Verification command failure with <code>command_failure_action="block"</code> | Candidate remains blocked for operator assessment; only an operator may retry. |
 | Verification infrastructure failure or timeout | Same attempt is blocked and may retry the unchanged candidate only after concrete recovery evidence; a failed agent-requested retry requires operator escalation. |
 | Agent review rejection | Candidate failure is recorded immediately. A sealed cohort waits for all other slots, then generates one correction from every rejection; legacy uncohorted reviews keep their eager behavior. |
 | Agent review blocked | Same candidate stays blocked until the typed review recovery runs. |
@@ -364,9 +427,10 @@ is preparing, pending, blocked, or changes-requested.
 
 ## Authenticated human release review
 
-The human request is created only after verification and all required agent
-release reviews have accepted. It freezes the release ID, candidate SHA and
-tree, Admin directory, reviewer groups, initially eligible users, checklist,
+The human request is created when the sequencer reaches the enabled human-review
+stage, after every preceding enabled gate in the frozen order has passed. Human
+review may therefore precede verification or agent review. It freezes the release
+ID, candidate SHA and tree, Admin directory, reviewer groups, initially eligible users, checklist,
 test instructions, and preparation mode.
 
 Manual mode creates a <code>pending</code> request. Workflow mode creates a
@@ -562,10 +626,11 @@ from resolved tasks in that case may extend the predecessor candidate.
 If integration verification times out, Riley may request one evidence-backed
 audited retry against the same SHA after the worker recovers. If that
 agent-requested attempt also fails for infrastructure reasons, Riley must
-escalate it rather than retry again. If a command exits nonzero, Imani must
-change and re-review the content; no one can retry it into approval.
+escalate it rather than retry again. If a command identifies a content defect,
+Imani completes the generated correction with reviewed changes. An exceptional
+operator retry preserves the failed evidence and must still pass all gates.
 
-## Complete APP walkthrough: guarded line-speed control
+## Complete App walkthrough: guarded line-speed control
 
 The following representative manufacturing flow combines task hierarchy,
 composition, durable dispatch, human testing, correction lineage, exact-SHA
@@ -574,8 +639,8 @@ to the supported records described in Chapters 18–24.
 
 1. A plant engineer reports that Packaging Line 4 can accept a line-speed
    setpoint above the commissioned limit. Team creates case
-   <code>APP-482</code> and an outcome root
-   <code>guard-line-speed</code>, owned by the APP project lead. The contract
+   <code>App-482</code> and an outcome root
+   <code>guard-line-speed</code>, owned by the App project lead. The contract
    requires a reviewed software change and operator-verification evidence.
 2. The lead decomposes three levels: PLC/domain validation, API enforcement,
    operator UI, automated tests, operating instructions, and a self-owned
@@ -630,7 +695,7 @@ to the supported records described in Chapters 18–24.
     calibration note remains <code>recovery_required</code> with its exact
     path and failed safety check; no broad delete discards it.
 14. A later operator report that the warning should be localized creates a
-    post-release case and triage root only. The published APP release stays
+    post-release case and triage root only. The published App release stays
     immutable, and rollback or a further successor requires a separate
     controlled decision.
 
@@ -643,7 +708,7 @@ to the supported records described in Chapters 18–24.
 | Compare-and-swap target mismatch | Another operation advanced the target. Re-read promotion truth and decide whether a new intent is valid. |
 | Missing release policy | Git publication is blocked unless explicitly ungated. Configure policy; do not bypass the gate. |
 | Unreviewed changed path | Hard scope failure, never waiver-eligible. Rebuild from reviewed content. |
-| Verification command nonzero | Terminal candidate defect. Complete the generated candidate-pinned correction with accepted, reviewed Git content; Team creates one successor automatically. |
+| Verification command nonzero | Under the default correction policy, the candidate is rejected. Complete the generated correction with accepted, reviewed content, or use an eligible operator-authorized retry. A command configured to block instead waits for operator assessment. |
 | Verification infrastructure error, including structured PID or memory exhaustion | Potentially retryable immutable successor run only after concrete recovery evidence. After an agent-requested retry fails, further agent retry is blocked and operator recovery is required. |
 | Release review rejected | Terminal candidate defect. For a sealed cohort, wait until all slots decide, then complete the single correction containing every rejection; Team creates the successor automatically without a manager release request. |
 | Resolved generated correction has no successor | Reconciliation must either create or recognize one direct successor. Inspect the durable <code>candidate_correction_successor_failed</code> blocker; do not ask the manager to submit a release request. |
@@ -667,7 +732,10 @@ correct recovery differs for each.
 
 If the package says accepted but the upstream result looks wrong, do not test or advertise the internal release branch. Hand the package's <code>canonical_branch</code> and <code>published_commit_sha</code>, the canonical-push promotion, and the visible remote mismatch to a release administrator.
 
-Never turn a failed test or rejected review into a retry merely to preserve the same package. Complete the generated candidate-pinned correction with new reviewed content and let Team create its successor.
+For confirmed content defects, complete the generated correction with reviewed
+changes and let Team create its successor. Use the explicit operator retry
+controls only when another attempt against unchanged content is justified;
+preserve the reason and inspect every resulting gate.
 
 ## Release runbook
 

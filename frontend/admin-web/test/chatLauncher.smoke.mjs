@@ -70,7 +70,7 @@ async function withChatLauncherHarness(run) {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const harnessHtml = `
     <!doctype html>
-    <html>
+    <html data-admin-design>
       <head><title>Chat launcher smoke</title></head>
       <body>
         <div id="root"></div>
@@ -78,7 +78,11 @@ async function withChatLauncherHarness(run) {
           import React from "react";
           import { createRoot } from "react-dom/client";
           import { ChatLauncher } from "/src/features/chat/ChatLauncher.tsx";
-          import "/src/styles.css";
+          import "/src/design/baseline.css";
+          import "/src/design/tokens.css";
+          import "/src/design/controls.css";
+          import "/src/design/layout.css";
+          import "/src/design/surfaces.css";
 
           createRoot(document.getElementById("root")).render(
             React.createElement(ChatLauncher, {

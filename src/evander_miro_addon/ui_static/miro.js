@@ -1,3 +1,5 @@
+import { onAddonPrivileges } from "./admin-design.js";
+
 function applyTheme(theme) {
   if (theme !== "light" && theme !== "dark") return;
   document.documentElement.dataset.theme = theme;
@@ -27,10 +29,27 @@ if (window.parent !== window) {
 
 const $ = (id) => document.getElementById(id);
 const state = { connections: [], selected: null, directory: new URLSearchParams(location.search).get("directory_path") || "root" };
+let privilegedUnlocked = false;
+const lockedMessage = "Unlock privileged operations in Admin Web to edit settings or change Miro state.";
+function applyPrivileges() {
+  const inherited = Boolean(state.selected && state.selected.config.directory_path !== state.directory);
+  document.querySelectorAll('[data-privileged-action], #new').forEach(control => {
+    control.disabled = !privilegedUnlocked;
+    control.title = !privilegedUnlocked ? lockedMessage : '';
+  });
+  document.querySelectorAll('#settings input, #settings button').forEach(control => {
+    control.disabled = !privilegedUnlocked || inherited;
+    control.title = !privilegedUnlocked ? lockedMessage : inherited ? `Load ${state.selected.config.directory_path} to edit this connection.` : '';
+  });
+  $('connection-id').disabled = Boolean(state.selected) || !privilegedUnlocked;
+  for (const id of ['connect','disconnect','health']) $(id).disabled = !state.selected || inherited || !privilegedUnlocked;
+  $('privilege-notice').hidden = privilegedUnlocked;
+}
 $("directory").value = state.directory;
 const notice = (message, error = false) => { $("notice").textContent = message; $("notice").className = error ? "error" : ""; };
 const run = (fn) => async (event) => { event?.preventDefault(); try { await fn(event); } catch (error) { notice(error.message, true); } };
 async function request(path, payload) {
+  if (payload !== undefined && !privilegedUnlocked) throw new Error(lockedMessage);
   const response = await fetch(`/api/addons/miro-addon${path}?directory_path=${encodeURIComponent(state.directory)}`, {
     credentials: "same-origin", method: payload === undefined ? "GET" : "POST",
     headers: { "content-type": "application/json" }, body: payload === undefined ? undefined : JSON.stringify(payload),
@@ -39,18 +58,22 @@ async function request(path, payload) {
   if (!response.ok) throw new Error(result.error || "Miro request failed");
   return result;
 }
-function button(label, handler) { const element = document.createElement("button"); element.type = "button"; element.textContent = label; element.addEventListener("click", run(handler)); return element; }
+function button(label, handler, mutation = false) { const element = document.createElement("button"); element.type = "button"; element.textContent = label; if(mutation) element.dataset.privilegedAction=''; element.addEventListener("click", run(async event => { if(mutation && !privilegedUnlocked) throw new Error(lockedMessage); await handler(event); })); return element; }
 function addBoard(board = {}) {
   const row = document.createElement("div"); row.className = "board";
   const id = document.createElement("input"); id.type = "text"; id.placeholder = "Board ID"; id.setAttribute("aria-label", "Board ID"); id.value = board.board_id || ""; id.required = true;
   const name = document.createElement("input"); name.type = "text"; name.placeholder = "Board name"; name.setAttribute("aria-label", "Board name"); name.value = board.name || "";
   const write = document.createElement("input"); write.type = "checkbox"; write.checked = Boolean(board.writable);
   const label = document.createElement("label"); label.append(write, "Allow writes");
-  row.append(id, name, label, button("Remove", () => row.remove())); $("boards").append(row);
+  row.append(id, name, label, button("Remove", () => row.remove(), true)); $("boards").append(row);
 }
 function edit(connection = null) {
   state.selected = connection;
   const config = connection?.config || {};
+  $("editor-title").textContent = connection ? config.name : "New connection";
+  $("connections").querySelectorAll("button").forEach(control => {
+    control.setAttribute("aria-current", String(control.dataset.connectionId === config.id));
+  });
   $("connection-id").value = config.id || ""; $("connection-id").disabled = Boolean(connection);
   $("name").value = config.name || "";
   $("callback").value = config.redirect_uri || `${location.origin}/api/addons/miro-addon/oauth/callback`;
@@ -61,6 +84,7 @@ function edit(connection = null) {
   $("authorize").hidden = true;
   for (const id of ["connect", "disconnect", "health"]) $(id).disabled = !connection || config.directory_path !== state.directory;
   $("activity").replaceChildren(); $("details").textContent = "";
+  applyPrivileges();
 }
 async function refresh() {
   const selectedId = state.selected?.config.id;
@@ -68,11 +92,17 @@ async function refresh() {
   $("connections").replaceChildren();
   for (const connection of state.connections) {
     const config = connection.config;
-    $("connections").append(button(`${config.name} · ${connection.connected ? "Connected" : "Not connected"}\n${connection.calls_today}/${config.daily_call_budget} calls today · ${config.directory_path}`, async () => { edit(connection); await activity(); }));
+    const control = button("", async () => { edit(connection); await activity(); });
+    control.dataset.connectionId = config.id;
+    const title = document.createElement("strong"); title.textContent = config.name;
+    const status = document.createElement("span"); status.textContent = connection.connected ? "Connected" : "Not connected";
+    const detail = document.createElement("small"); detail.textContent = `${connection.calls_today}/${config.daily_call_budget} calls today · ${config.directory_path}`;
+    control.append(title, status, detail);
+    $("connections").append(control);
   }
-  const selected = state.connections.find((item) => item.config.id === selectedId);
+  const selected = state.connections.find((item) => item.config.id === selectedId) || state.connections[0];
   if (selected) { edit(selected); await activity(); }
-  else if (!state.selected) edit();
+  else edit();
   if (!state.connections.length) notice("No connections in this directory. Create one to get started.");
 }
 function connectionPath() { if (!state.selected) throw new Error("Save or select a connection first"); return `/connections/${encodeURIComponent(state.selected.config.id)}`; }
@@ -92,18 +122,19 @@ async function activity() {
     row.append(button("Details", () => { $("details").textContent = JSON.stringify(operation, null, 2); }));
     if (operation.status === "uncertain" || operation.status === "running") {
       const path = `${connectionPath()}/operations/${encodeURIComponent(operation.operation_id)}`;
-      row.append(button("Read back", async () => { $("details").textContent = JSON.stringify(await request(`${path}/reconcile`, {}), null, 2); await activity(); }));
+      row.append(button("Read back", async () => { $("details").textContent = JSON.stringify(await request(`${path}/reconcile`, {}), null, 2); await activity(); }, true));
       for (const [label, outcome] of [["Mark applied", "applied"], ["Mark not applied", "not_applied"]]) {
         row.append(button(label, async () => {
           const evidence = window.prompt("Describe the Miro readback evidence for this outcome. This does not replay the operation.");
           if (!evidence) return;
           await request(`${path}/resolve`, { outcome, evidence }); await activity();
-        }));
+        }, true));
       }
     }
     $("activity").append(row);
   }
   if (!result.operations.length && !result.subscriptions.length) $("activity").textContent = "No operations or polling subscriptions yet.";
+  applyPrivileges();
 }
 $("settings").addEventListener("submit", run(async () => {
   if (state.selected && state.selected.config.directory_path !== state.directory) throw new Error(`Load ${state.selected.config.directory_path} to edit this inherited connection.`);
@@ -124,8 +155,9 @@ $("connect").addEventListener("click", run(async () => {
 }));
 $("disconnect").addEventListener("click", run(async () => { await request(`${connectionPath()}/disconnect`, {}); await refresh(); notice("Host connection disconnected."); }));
 $("health").addEventListener("click", run(async () => { const result = await request(`${connectionPath()}/health`, {}); $("details").textContent = JSON.stringify(result, null, 2); notice("Miro connection checked."); }));
-$("add-board").addEventListener("click", () => addBoard());
+$("add-board").addEventListener("click", () => { if(privilegedUnlocked) { addBoard(); applyPrivileges(); } });
 $("new").addEventListener("click", () => edit());
 $("refresh").addEventListener("click", run(refresh));
 $("load-directory").addEventListener("click", run(async () => { state.directory = $("directory").value.trim(); edit(); await refresh(); }));
+onAddonPrivileges(unlocked => { privilegedUnlocked=unlocked;applyPrivileges(); });
 run(refresh)();

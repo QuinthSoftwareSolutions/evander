@@ -8,15 +8,86 @@ import json
 import os
 from pathlib import Path
 import stat
-import tempfile
 from threading import RLock
 from typing import Any, Generic, TypeVar
+from uuid import uuid4
 
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 R = TypeVar("R")
 U = TypeVar("U")
+
+
+def write_json_atomically(
+    path: Path,
+    payload: object,
+    *,
+    file_mode: int | None = None,
+    new_file_mode: int | None = None,
+    fsync_directory: bool = False,
+) -> None:
+    """Replace a JSON file through a unique same-directory temporary file.
+
+    Existing permissions are retained unless ``file_mode`` is specified. New
+    files follow the process umask unless an exact mode is specified.
+    This only protects the write itself. Read/modify/write callers still need
+    their own coordination lock.
+    """
+    serialized = json.dumps(payload, indent=2, sort_keys=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        previous_stat = path.stat()
+    except FileNotFoundError:
+        previous_stat = None
+    if file_mode is not None:
+        exact_mode = file_mode
+    elif previous_stat is not None:
+        exact_mode = stat.S_IMODE(previous_stat.st_mode)
+    else:
+        exact_mode = new_file_mode
+    for _ in range(10):
+        temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            fd = os.open(
+                temp_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o666 if exact_mode is None else 0o600,
+            )
+        except FileExistsError:
+            continue
+        break
+    else:
+        raise FileExistsError(f"Unable to create a unique temporary file beside {path}")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            target_mode = (
+                exact_mode
+                if exact_mode is not None
+                else stat.S_IMODE(os.fstat(handle.fileno()).st_mode)
+            )
+            # Restrict the temporary before writing; a new file's final mode
+            # was captured at creation so it still follows the process umask.
+            os.fchmod(handle.fileno(), 0o600)
+            if previous_stat is not None and os.geteuid() == 0:
+                os.fchown(handle.fileno(), previous_stat.st_uid, previous_stat.st_gid)
+            handle.write(serialized)
+            handle.flush()
+            os.fchmod(handle.fileno(), target_mode)
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        if fsync_directory:
+            _fsync_parent_dir(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _fsync_parent_dir(path: Path) -> None:
+    fd = os.open(path.parent, getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 @dataclass(frozen=True)
@@ -58,18 +129,13 @@ class _JsonFileStoreBase:
         return self.path.read_text(encoding="utf-8")
 
     def _write_json_payload(self, payload: object) -> None:
-        serialized = json.dumps(payload, indent=2, sort_keys=True)
-        temp_path = self._temp_path()
-        try:
-            with self._open_temp_file(temp_path) as handle:
-                handle.write(serialized)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, self.path)
-            self._fsync_parent_dir()
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
+        write_json_atomically(
+            self.path,
+            payload,
+            file_mode=self.file_mode,
+            new_file_mode=0o666,
+            fsync_directory=True,
+        )
 
     def _write_initial_file(self, content: str) -> None:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -82,37 +148,8 @@ class _JsonFileStoreBase:
             os.fsync(handle.fileno())
         self._fsync_parent_dir()
 
-    def _open_temp_file(self, temp_path: Path):
-        mode = self._write_mode()
-        fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-        os.chmod(temp_path, mode)
-        return os.fdopen(fd, "w", encoding="utf-8")
-
-    def _temp_path(self) -> Path:
-        fd, name = tempfile.mkstemp(
-            prefix=f".{self.path.name}.",
-            suffix=".tmp",
-            dir=self.path.parent,
-        )
-        os.close(fd)
-        temp_path = Path(name)
-        temp_path.unlink()
-        return temp_path
-
-    def _write_mode(self) -> int:
-        if self.file_mode is not None:
-            return self.file_mode
-        if self.path.exists():
-            return stat.S_IMODE(self.path.stat().st_mode)
-        return 0o666
-
     def _fsync_parent_dir(self) -> None:
-        flags = getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY
-        fd = os.open(self.path.parent, flags)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        _fsync_parent_dir(self.path)
 
 
 class JsonStore(_JsonFileStoreBase, Generic[T]):

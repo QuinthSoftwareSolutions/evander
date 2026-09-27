@@ -70,7 +70,7 @@ and npm installation run there; the control plane only verifies and imports data
 
 ## Configure and operate
 
-Open **Managed Git → repository → Repository indexing** in Admin Web. Directory
+Open **Git Repositories → repository → Repository indexing** in Admin Web. Directory
 owners can view coverage and export published snapshots. Unlock privileged operations
 to change settings, build, rebuild or cancel. Settings saves require the revision
 shown by the last load; concurrent edits return HTTP 409.
@@ -84,21 +84,19 @@ dependencies on the worker. Text and semantic search work independently of SCIP.
 The standard indexing image bundles both language toolchains even when SCIP is off.
 
 Existing settings that omit `scip` also default to off. Set `scip=true` explicitly to
-continue compiler navigation. Changing this setting changes snapshot identity; build
-a new snapshot before querying or exporting under the new policy. Pre-upgrade snapshots
-also need rebuilding because their policy fingerprint predates this setting. Rebuild
-and deploy the indexing worker image together with this product update.
+enable compiler navigation. Changing this setting changes snapshot identity; build
+a new snapshot before querying or exporting under the new policy. Snapshots created
+before the `scip` setting was introduced need rebuilding because their policy
+fingerprint predates it. When upgrading the indexing toolchain, rebuild and deploy
+the corresponding worker image before requesting new indexes.
 
-`config/repository-indexing/app.json.example` is an opt-in APP profile. Set its worker
-ID if the directory has no appropriate default. The profile explicitly enables SCIP,
-indexes the tracked `Src/App.slnx` workspace in one Roslyn invocation and lists the APP
-frontend configurations explicitly. Its timeout is one hour. APP's frontend lockfiles
-are currently untracked, so the profile explicitly
-allows npm to resolve dependencies when a lock is missing. Resulting lock hashes are
-recorded per project. Retain those worker lockfiles to reproduce that resolution.
-The general default requires a package lock. A repository containing only an unrelated
-root lockfile does not satisfy a nested package's dependencies. npm workspace members
-share their owning root's restore and lockfile; membership is resolved by npm.
+`config/repository-indexing/app.json.example` is an opt-in sample profile. Set its worker
+ID if the directory has no appropriate default. The profile enables SCIP and shows how to
+index a solution as one Roslyn workspace alongside a frontend TypeScript project. Its timeout
+is one hour. Adapt the sample paths to the repository being indexed. The default requires
+package locks. A repository containing only an unrelated root lockfile does not satisfy a
+nested package's dependencies. npm workspace members share their owning root's restore and
+lockfile; membership is resolved by npm.
 
 Semantic indexing uses the owning directory's existing semantic provider settings:
 `semantic_embedding_provider`, `semantic_embedding_model`,
@@ -182,7 +180,7 @@ Baseline navigation is bounded to 1,000 candidates before filtering/pagination.
 Agents search new, changed and dirty code using local `rg` and the Git diff. This is
 baseline reuse, not a branch overlay or incremental compiler analysis. After a local
 commit, an agent's assigned snapshot remains its query scope; its own edits require
-local inspection. Team guidance version 43 explains this behavior and is refreshed
+local inspection. Current Team guidance explains this behavior and is refreshed
 on the next applicable wake after deployment. Read relevant checkout files before
 editing or issuing review findings.
 
@@ -288,5 +286,5 @@ No live deployment is required for tests. Run the focused indexing tests and use
 commit. Report query relevance, navigation coverage, index size and measured latency
 separately from future token/cost savings.
 
-See [the APP validation report](repository-indexing-validation.md) for measured
-coverage, retrieval results, portability checks and remaining validation limits.
+See [repository index validation](repository-indexing-validation.md) for a repeatable
+coverage, retrieval, latency, and portable-export verification procedure.

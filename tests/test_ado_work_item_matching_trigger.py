@@ -32,7 +32,7 @@ def _provider(tmp_path: Path) -> AdoWorkItemMatchingTriggerProvider:
         type="trigger:ado:work-item-matching",
         directory_path="root/team-a",
         states=["Committed"],
-        tags_any=["truman"],
+        tags_any=["evander"],
     )
     provider = AdoWorkItemMatchingTriggerProvider()
     provider.initialize(
@@ -72,7 +72,7 @@ def test_ado_work_item_matching_trigger_fires_first_match_then_changed_date(
     assert events[0].payload["work_item_id"] == "101"
     assert events[0].payload["directory_path"] == "root/team-a"
     assert _IssueServiceStub.calls[0]["states"] == ["Committed"]
-    assert _IssueServiceStub.calls[0]["tags_any"] == ["truman"]
+    assert _IssueServiceStub.calls[0]["tags_any"] == ["evander"]
 
     provider.acknowledge_published_event(events[0])
     assert provider.poll() == []

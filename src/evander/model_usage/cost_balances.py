@@ -167,6 +167,7 @@ def _request_attribution_rank(
 @dataclass
 class UsageCostSummary:
     estimated_cost_usd: Decimal = Decimal("0")
+    reported_cost_usd: Decimal = Decimal("0")
     events_count: int = 0
     priced_events_count: int = 0
     unpriced_events_count: int = 0
@@ -177,6 +178,10 @@ class UsageCostSummary:
     total_tokens: int = 0
     cost_status_counts: dict[str, int] = field(default_factory=dict)
 
+    @property
+    def total_cost_usd(self) -> Decimal:
+        return self.estimated_cost_usd + self.reported_cost_usd
+
     def add_event(
         self,
         event: ModelInferenceUsageEvent,
@@ -184,10 +189,13 @@ class UsageCostSummary:
     ) -> None:
         estimate = estimate_model_usage_cost(event, catalog, currency="usd")
         self.events_count += 1
-        if estimate.estimated_total is None:
+        if estimate.total is None:
             self.unpriced_events_count += 1
         else:
-            self.estimated_cost_usd += estimate.estimated_total
+            if estimate.reported_total is not None:
+                self.reported_cost_usd += estimate.reported_total
+            elif estimate.estimated_total is not None:
+                self.estimated_cost_usd += estimate.estimated_total
             self.priced_events_count += 1
         self.input_tokens += int(event.input_tokens or 0)
         self.cached_input_tokens += int(extract_cached_input_tokens(event) or 0)
@@ -204,6 +212,7 @@ class UsageCostSummary:
 
     def apply(self, other: "UsageCostSummary", *, sign: int = 1) -> None:
         self.estimated_cost_usd += Decimal(sign) * other.estimated_cost_usd
+        self.reported_cost_usd += Decimal(sign) * other.reported_cost_usd
         for field_name in (
             "events_count",
             "priced_events_count",
@@ -230,6 +239,8 @@ class UsageCostSummary:
     def _normalize_non_negative(self) -> None:
         if abs(self.estimated_cost_usd) < Decimal("1e-24"):
             self.estimated_cost_usd = Decimal("0")
+        if abs(self.reported_cost_usd) < Decimal("1e-24"):
+            self.reported_cost_usd = Decimal("0")
         for field_name in (
             "events_count",
             "priced_events_count",
@@ -244,12 +255,15 @@ class UsageCostSummary:
                 raise ValueError(f"incremental cost balance {field_name} became negative")
         if self.estimated_cost_usd < 0:
             raise ValueError("incremental estimated cost balance became negative")
+        if self.reported_cost_usd < 0:
+            raise ValueError("incremental reported cost balance became negative")
         if any(count < 0 for count in self.cost_status_counts.values()):
             raise ValueError("incremental cost status count became negative")
 
     def storage_payload(self) -> dict[str, Any]:
         return {
             "estimated_cost_usd": str(self.estimated_cost_usd),
+            "reported_cost_usd": str(self.reported_cost_usd),
             "events_count": self.events_count,
             "priced_events_count": self.priced_events_count,
             "unpriced_events_count": self.unpriced_events_count,
@@ -265,11 +279,13 @@ class UsageCostSummary:
         coverage_reasons = sorted(
             status
             for status, count in self.cost_status_counts.items()
-            if status != "estimated" and count
+            if status not in {"estimated", "reported"} and count
         )
         return {
             "currency": "usd",
             "estimated_cost": float(self.estimated_cost_usd),
+            "reported_cost": float(self.reported_cost_usd),
+            "total_cost": float(self.total_cost_usd),
             "events_count": self.events_count,
             "priced_events_count": self.priced_events_count,
             "unpriced_events_count": self.unpriced_events_count,
@@ -288,6 +304,7 @@ class UsageCostSummary:
         raw = payload or {}
         return cls(
             estimated_cost_usd=Decimal(str(raw.get("estimated_cost_usd") or "0")),
+            reported_cost_usd=Decimal(str(raw.get("reported_cost_usd") or "0")),
             events_count=int(raw.get("events_count") or 0),
             priced_events_count=int(raw.get("priced_events_count") or 0),
             unpriced_events_count=int(raw.get("unpriced_events_count") or 0),

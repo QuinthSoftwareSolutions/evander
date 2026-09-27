@@ -5,9 +5,6 @@ from pathlib import Path
 import pytest
 
 from evander.admin.services.documentation_service import DocumentationService
-from evander.admin.tool_visibility import _tool_category, _tool_provider
-from evander.admin.web.sessions_approvals import _tool_option
-from evander.models import ToolName
 
 
 def _write(path: Path, content: str) -> None:
@@ -170,17 +167,3 @@ def test_documentation_catalog_fails_on_invalid_utf8(tmp_path: Path) -> None:
 
     with pytest.raises(UnicodeDecodeError):
         DocumentationService(project).list_documentation()
-
-
-def test_documentation_tools_have_a_distinct_admin_catalog_group() -> None:
-    for tool in (
-        ToolName.DOCUMENTATION_LIST,
-        ToolName.DOCUMENTATION_SEARCH,
-        ToolName.DOCUMENTATION_READ,
-    ):
-        option = _tool_option(tool)
-        assert _tool_category(tool) == "Documentation"
-        assert _tool_provider(tool, "Documentation") == "documentation"
-        assert option["group"] == "Documentation"
-        assert option["provider"] == "documentation"
-        assert option["description"]

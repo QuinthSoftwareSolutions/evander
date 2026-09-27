@@ -89,9 +89,9 @@ def test_build_ado_daily_status_report_data_returns_template_block() -> None:
 def test_elapsed_percent_ignores_override_without_manual_mode() -> None:
     payload = build_ado_daily_status_report_data(
         items=[],
-        project="Example Industry APP",
+        project="Example Industry App",
         team="TechForce",
-        iteration_path="Example Industry APP\\2026w25",
+        iteration_path="Example Industry App\\2026w25",
         iteration_start_date="2026-06-15T00:00:00Z",
         iteration_finish_date="2026-06-26T00:00:00Z",
         elapsed_sprint_percent=100,

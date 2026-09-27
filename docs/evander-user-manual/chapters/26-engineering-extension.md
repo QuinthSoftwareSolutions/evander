@@ -173,6 +173,15 @@ Bind management-only services to loopback. If a guest-reachable port is needed, 
 
 Choose storage based on concurrency and query needs. JSON repositories are suitable for small, low-contention records when atomic replacement/locking is explicit. SQLite is preferred for concurrent claims, leases, histories, and relational invariants. Enable foreign keys and define busy timeout/transaction boundaries consciously.
 
+Use `evander.storage.write_json_atomically` for JSON file replacement. It writes a
+unique temporary file beside the destination, flushes it, replaces the destination
+atomically, and preserves existing permissions unless an explicit mode is supplied.
+New files can specify their mode, and durable stores can request a parent-directory
+fsync. Atomic replacement protects the write; it does not protect a read-modify-write
+sequence. Use the store's mutation methods and stable sidecar file lock across that
+whole sequence, rather than reading a snapshot and writing it back after another
+process may have changed it.
+
 For operator-edited documents, expose a deterministic revision and require `expected_revision`. For workflow packs, use the existing editor lock/revision path. For remote publication, use provider leases or compare-and-swap. These are the same concurrency principle at different layers.
 
 A migration changes which representation is authoritative. State that transition explicitly and avoid leaving old and new stores as indefinite co-owners.
@@ -193,14 +202,19 @@ Avoid indefinite dual authority. The managed Git migration deliberately replaced
 
 Test the narrow contract while developing, then run the complete Python suite before treating the extension as ready. Add failure, replay, authorization, cleanup, and deployment coverage in proportion to the seam you changed.
 
-Run focused tests while developing, then the Python suite:
+Run focused tests while developing, then the complete runner when validating the extension:
 
 ```bash
-./.venv/bin/pytest -q tests/test_workflow_plugins.py tests/test_workflow_validation.py
-./.venv/bin/pytest -q
+timeout --kill-after=5s 120s ./.venv/bin/pytest -q tests/test_workflow_plugins.py tests/test_workflow_validation.py
+./.venv/bin/python scripts/run_tests.py
 ```
 
 For a new node, include registry and runtime-contract tests plus provider-specific failure/retry tests. For a service, include install/preflight and docs assertions. For UI/browser tests, apply explicit command timeouts; stop a hung process and report its last useful output rather than leaving it running.
+
+Every new test should protect an observable behavior against a realistic regression.
+Prefer stable service, API, persistence, or rendered behavior over source-text and
+incidental wording assertions. See [Testing](../../testing.md) for test-value rules,
+the complete runner, and frontend verification.
 
 Before committing in a dirty tree:
 
@@ -210,7 +224,11 @@ git diff --check
 git diff --cached --name-only
 ```
 
-Preserve unrelated user changes. Record every feature and bug fix in `CHANGELOG.md`.
+Preserve unrelated user changes. Each feature or bugfix branch includes exactly one
+version bump and matching `CHANGELOG.md` entry: patch for fixes and maintenance,
+minor for a new user-visible capability. Keep `pyproject.toml` and
+`src/evander/__init__.py` synchronized and recheck the target branch's version before
+merge. A major bump requires explicit direction.
 
 ## Troubleshooting an extension
 

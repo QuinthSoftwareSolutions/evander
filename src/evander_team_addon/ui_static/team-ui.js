@@ -1,14 +1,29 @@
 import { createTeamMailController } from "./team-mail.js";
 import { createTeamActivityController } from "./team-activity.js";
 import { createCaseContextController } from "./team-case-context.js";
+import { attachIdentifierCopy, isOpaqueIdentifier, renderIdentifierText } from "./team-identifiers.js";
 import {
   caseTaskIds,
   caseBoardPermalink,
   replaceCaseBoardLocation,
   taskBoardViewSearchParams,
 } from "./team-case-board.js";
+import {
+  defaultTeamView,
+  emptyChatState,
+  emptyCostState,
+  emptyState,
+  emptyTimelineState,
+  normalizedTeamView,
+  readAddonDeepLinkParams,
+  readChatDeepLink,
+  readHumanReviewDeepLink,
+  readStoredTeamView,
+  storeTeamView,
+} from "./team-ui-state.js";
 
 const API_BASE = "/api/addons/team-addon";
+attachIdentifierCopy(document);
 
 const taskStates = [
   "pending",
@@ -137,29 +152,10 @@ const defaultPlanningTaskStates = new Set([
   "blocked",
   "waiting_for_review",
 ]);
-const defaultTeamView = "people";
-const teamViewStorageKey = "team-addon:active-view";
 const chatReadStorageKey = "team-addon:chat:read-markers";
 const chatNotificationSoundStorageKey = "team-addon:chat:notification-sound-muted";
 const noTeamRecordId = "__teamless__";
 const noTeamRecordName = "No team";
-const teamViewIds = new Set([
-  "workspace",
-  "operations",
-  "delivery",
-  "memory",
-  "projects",
-  "task-board",
-  "cases",
-  "people",
-  "chat",
-  "mail",
-  "activity",
-  "governance",
-  "planning",
-  "timeline",
-  "org",
-]);
 const teamStateCollectionKeys = [
   "teams",
   "governance_groups",
@@ -225,8 +221,15 @@ let timelineLoading = false;
 let timelineRequestId = 0;
 let timelinePage = 1;
 let costsRequestId = 0;
+let costsInFlight = null;
+let costsForcedRefresh = null;
+let costsLastLoadedAt = 0;
+let costsRefreshTimer = null;
+let costsRefreshPending = false;
+const COSTS_REFRESH_INTERVAL_MS = 15000;
 let costBackfillRequestId = 0;
 let costBackfillLoading = false;
+let costBackfillFinished = null;
 let showArchived = false;
 let showHandledGovernanceAgenda = false;
 const initialHumanReviewDeepLink = readHumanReviewDeepLink();
@@ -249,6 +252,7 @@ let selectedPlanningTaskStates = new Set(defaultPlanningTaskStates);
 // separately whenever a view renderer replaces that DOM. Rendered keys include
 // their Team view so shared renderers cannot couple hidden view copies.
 const openTeamDisclosures = new Set();
+const defaultedTeamDisclosures = new Set();
 let selectedOrgTeamId = "all";
 let selectedProjectFocusId = null;
 let projectCreateFormOpen = false;
@@ -257,6 +261,7 @@ const projectRecordSectionPages = {};
 const projectRecordShowRejected = new Set();
 let selectedTeamRecordKind = "agent";
 let selectedTeamRecordId = null;
+let teamRecordReturnFocus = null;
 const expandedTeamRecordGroupIds = new Set();
 const teamRecordGroupTabs = {};
 const teamRecordGroupPages = {};
@@ -748,102 +753,6 @@ document.addEventListener("DOMContentLoaded", () => {
   void bootTeamAddon();
 });
 
-function emptyState() {
-  return {
-    revision: 0,
-    teams: {},
-    governance_groups: {},
-    governance_agenda: {},
-    governance_runtimes: {},
-    projects: {},
-    roles: {},
-    agents: {},
-    project_assignments: {},
-    agent_runtimes: {},
-    cases: {},
-    tasks: {},
-    deliverables: {},
-    review_requests: {},
-    outcome_kind_definitions: {},
-    review_profiles: {},
-    inbox: {},
-    blockers: {},
-    blocker_events: {},
-    dependency_composition_recoveries: {},
-    action_records: {},
-    release_packages: {},
-    dispatches: {},
-    worktree_cleanup_candidates: {},
-    git_work_contexts: {},
-    ephemeral_assignments: {},
-    git_promotions: {},
-    stand_downs: {},
-    runtime_operations: {
-      generated_at: null,
-      agents: [],
-      attention: [],
-    },
-    resource_tokens: {},
-    available_role_permissions: [],
-  };
-}
-
-function emptyTimelineState() {
-  return {
-    revision: 0,
-    derived: true,
-    audit_log: false,
-    source: "derived_from_current_team_state",
-    description:
-      "Activity reconstructed from records retained in the current Team snapshot; this is not an audit log.",
-    filters: {},
-    timestampless_count: 0,
-    total_count: 0,
-    limit: 10,
-    offset: 0,
-    has_more: false,
-    facets: {
-      types: [],
-      statuses: [],
-    },
-    entries: [],
-  };
-}
-
-function emptyCostState() {
-  return {
-    generated_at: null,
-    coverage_status: "partial",
-    coverage_reasons: ["costs_not_loaded"],
-    team_costs: {},
-    governance_group_costs: {},
-    project_costs: {},
-    unattributed_costs: null,
-    source_counts: {},
-    events_count: 0,
-    priced_events_count: 0,
-    unpriced_events_count: 0,
-    backfill: null,
-    error: null,
-  };
-}
-
-function emptyChatState() {
-  return {
-    revision: 0,
-    selected_conversation_id: null,
-    current_operator: null,
-    selected_operator: null,
-    can_view_all_operators: false,
-    read_only: false,
-    operator_options: [],
-    eligible_agents: [],
-    conversations: [],
-    loading: false,
-    error: null,
-  };
-}
-
 const decisionStates = ["accepted", "rejected", "blocked"];
 const inboxItemLabels = {
   operator_directive: "Operator directive",
@@ -917,6 +826,30 @@ const timelineTypeOrder = [
 ];
 
 function bindTopLevelTabs() {
+  const tabs = Array.from(document.querySelectorAll(".team-view-tabs [data-team-view]"));
+  const viewSelect = document.getElementById("team-view-select");
+  if (viewSelect) {
+    tabs.forEach((tab) => viewSelect.add(new Option(tab.textContent.trim(), tab.dataset.teamView)));
+    viewSelect.addEventListener("change", () => setTeamView(viewSelect.value));
+  }
+  document.querySelector(".team-view-tabs")?.addEventListener("keydown", (event) => {
+    const index = tabs.indexOf(event.target);
+    if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    const next = tabs[nextIndex];
+    setTeamView(next.dataset.teamView);
+    next.focus({ preventScroll: true });
+    next.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+  document.querySelector("[data-team-detail-close]")?.addEventListener("click", closeTeamRecordInspector);
+  document.querySelector(".people-agent-detail-panel")?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeTeamRecordInspector();
+    }
+  });
   document.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-team-view], [data-team-link-view]");
     if (!button) {
@@ -942,68 +875,6 @@ function bindWorkspaceAttentionPagination() {
       behavior: "auto",
     });
   });
-}
-
-function normalizedTeamView(view) {
-  return teamViewIds.has(view) ? view : defaultTeamView;
-}
-
-function readStoredTeamView() {
-  try {
-    const storedView = window.localStorage.getItem(teamViewStorageKey);
-    const normalizedView = normalizedTeamView(storedView);
-    if (storedView && storedView !== normalizedView) {
-      window.localStorage.setItem(teamViewStorageKey, normalizedView);
-    }
-    return normalizedView;
-  } catch {
-    return defaultTeamView;
-  }
-}
-
-function readAddonDeepLinkParams() {
-  const params = new URLSearchParams(window.location.search);
-  const hash = String(window.location.hash || "");
-  const hashQueryIndex = hash.indexOf("?");
-  if (hashQueryIndex >= 0) {
-    const hashParams = new URLSearchParams(hash.slice(hashQueryIndex + 1));
-    hashParams.forEach((value, key) => {
-      if (!params.has(key)) {
-        params.set(key, value);
-      }
-    });
-  }
-  return params;
-}
-
-function readHumanReviewDeepLink() {
-  const params = readAddonDeepLinkParams();
-  const enabled = params.get("view") === "my-human-reviews";
-  return {
-    enabled,
-    requestId: enabled
-      ? String(params.get("human_review_request_id") || "").trim()
-      : "",
-  };
-}
-
-function readChatDeepLink() {
-  const params = readAddonDeepLinkParams();
-  const enabled = params.get("view") === "chat";
-  return {
-    enabled,
-    conversationId: enabled
-      ? String(params.get("conversation_id") || "").trim()
-      : "",
-  };
-}
-
-function storeTeamView(view) {
-  try {
-    window.localStorage.setItem(teamViewStorageKey, normalizedTeamView(view));
-  } catch {
-    // Storage can be unavailable in hardened browser contexts.
-  }
 }
 
 function bindPageLifecycle() {
@@ -1056,11 +927,19 @@ function setTeamView(view) {
     void loadView(activeTeamView, { force: true });
   } else if (enteringChat) {
     syncChatStreamForActiveView({ refresh: true });
+  } else if (activeTeamView === "activity") {
+    scheduleAuxiliaryLoadsForView(activeTeamView);
   }
 }
 
 function updateTeamViewTabs() {
   const unreadChatCount = unreadChatConversationCount();
+  const viewSelect = document.getElementById("team-view-select");
+  if (viewSelect) {
+    viewSelect.value = activeTeamView;
+    const chatOption = viewSelect.querySelector('option[value="chat"]');
+    if (chatOption) chatOption.textContent = unreadChatCount ? `Chat (${unreadChatCount} unread)` : "Chat";
+  }
   document.querySelectorAll("[data-team-view]").forEach((button) => {
     const active = (button.dataset.teamView || defaultTeamView) === activeTeamView;
     if (!button.dataset.teamViewBaseLabel) {
@@ -1273,6 +1152,14 @@ function openOrgAgentContextMenu(detail) {
     agentId,
     items: [
       {
+        action: "open-chat",
+        label: "Open chat",
+        disabled: chatState.read_only || !agent,
+        disabledReason: chatState.read_only
+          ? "This chat history is read-only."
+          : "Agent is no longer available.",
+      },
+      {
         action: "open-session",
         label: "Open session",
         disabled: !text(agent?.session_id),
@@ -1396,6 +1283,10 @@ function closeOrgContextMenu() {
 }
 
 function handleOrgContextAction(action, context) {
+  if (action === "open-chat") {
+    void openChatForAgent(context.agentId);
+    return;
+  }
   if (action === "open-session") {
     navigateToAgentSession(state.agents?.[context.agentId]?.session_id);
     return;
@@ -1592,7 +1483,12 @@ function renderTeamCopySessionOptions(selectedValue = "") {
   });
 }
 
-function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
+function renderTeamCopyDialogBody(
+  team,
+  configuration,
+  sourceRevision,
+  sourceConfigurationToken,
+) {
   const excludedProjects = values(state.projects).filter((project) =>
     text(project.team_id) === text(team.id)
     && !["active", "blocked"].includes(text(project.status)),
@@ -1615,6 +1511,7 @@ function renderTeamCopyDialogBody(team, configuration, sourceRevision) {
       data-form-id="team-copy-form"
       data-source-team-id="${escapeAttr(team.id)}"
       data-source-revision="${escapeAttr(sourceRevision)}"
+      data-source-configuration-token="${escapeAttr(sourceConfigurationToken)}"
     >
       <label>New team name <input name="name" required value="${escapeAttr(`${team.name || team.id} Copy`)}" /></label>
       <div class="team-copy-summary" role="note">
@@ -1679,9 +1576,19 @@ async function openTeamCopyDialog(teamId) {
   }
   configuration = teamCopyConfiguration(team.id);
   const sourceRevision = state.revision;
+  const sourceConfigurationToken = text(team.copy_configuration_token);
+  if (!sourceConfigurationToken) {
+    setStatus("The Team copy preview is unavailable. Reload the page and try again.", "error");
+    return;
+  }
   showOrgActionDialog({
     title: `Copy ${team.name || team.id}`,
-    bodyHtml: renderTeamCopyDialogBody(team, configuration, sourceRevision),
+    bodyHtml: renderTeamCopyDialogBody(
+      team,
+      configuration,
+      sourceRevision,
+      sourceConfigurationToken,
+    ),
   });
   syncTeamCopySessionSelections(document.querySelector("#team-copy-form"));
 }
@@ -1797,8 +1704,14 @@ async function submitTeamCopyForm(form) {
   const sourceTeamId = text(form.dataset.sourceTeamId);
   const sessionSelects = Array.from(form.querySelectorAll("[data-team-copy-session-select]"));
   if (sessionSelects.some((select) => !text(select.value))) {
-    if (Number(form.dataset.sourceRevision) !== state.revision) {
-      setStatus("The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.", "warning");
+    const currentConfigurationToken = text(
+      state.teams?.[sourceTeamId]?.copy_configuration_token,
+    );
+    if (
+      currentConfigurationToken
+      && currentConfigurationToken !== text(form.dataset.sourceConfigurationToken)
+    ) {
+      setStatus("The source Team configuration changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.", "warning");
       return false;
     }
     form.dataset.copyingSessions = "true";
@@ -1839,6 +1752,7 @@ async function submitTeamCopyForm(form) {
       name: text(form.elements.name?.value),
       agent_session_ids: agentSessionIds,
       expected_revision: Number(form.dataset.sourceRevision),
+      source_configuration_token: text(form.dataset.sourceConfigurationToken),
     },
     { resetOnSuccess: false, detailedResult: true },
   );
@@ -1846,7 +1760,7 @@ async function submitTeamCopyForm(form) {
     if (result.failureReason === "conflict") {
       pendingConflictRetry = null;
       setStatus(
-        "The source Team changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
+        "The source Team configuration changed after this copy preview was opened. Close and reopen the copy wizard to review the current configuration.",
         "warning",
       );
     }
@@ -2685,6 +2599,13 @@ function bindRecordEditing() {
       return;
     }
 
+    const openChatButton = event.target.closest("[data-open-chat-agent-id]");
+    if (openChatButton) {
+      event.preventDefault();
+      void openChatForAgent(openChatButton.dataset.openChatAgentId);
+      return;
+    }
+
     const selectProjectButton = event.target.closest("[data-select-project-id]");
     if (selectProjectButton) {
       event.preventDefault();
@@ -2789,6 +2710,24 @@ function bindRecordEditing() {
       return;
     }
 
+    const reintegrationButton = event.target.closest("[data-reintegrate-release-id]");
+    if (reintegrationButton) {
+      event.preventDefault();
+      void previewReleaseReintegration(reintegrationButton.dataset.reintegrateReleaseId);
+      return;
+    }
+    const caseReintegrationButton = event.target.closest("[data-reintegrate-case-id]");
+    if (caseReintegrationButton) {
+      event.preventDefault();
+      void previewCaseReintegration(caseReintegrationButton.dataset.reintegrateCaseId);
+      return;
+    }
+    const retainedLogButton = event.target.closest("[data-retained-verifier-job]");
+    if (retainedLogButton) {
+      event.preventDefault();
+      void showRetainedVerificationLog(retainedLogButton);
+      return;
+    }
     const contextRotationButton = event.target.closest("[data-context-rotation-agent-id]");
     if (contextRotationButton) {
       event.preventDefault();
@@ -4932,7 +4871,63 @@ function closeStateStream() {
   stateStreamErrorRefreshPending = false;
 }
 
-async function loadCosts() {
+function scheduleCostsRefresh(delay) {
+  if (costsRefreshTimer !== null) {
+    return;
+  }
+  costsRefreshTimer = window.setTimeout(() => {
+    costsRefreshTimer = null;
+    if (teamViewUsesCostState(activeTeamView)) {
+      void loadCosts({ force: true });
+    }
+  }, delay);
+}
+
+function queueForcedCostsRefresh(completion) {
+  if (!costsForcedRefresh) {
+    costsForcedRefresh = completion.then(() => {
+      costsForcedRefresh = null;
+      return loadCosts({ force: true });
+    });
+  }
+  return costsForcedRefresh;
+}
+
+function loadCosts({ force = false } = {}) {
+  if (costBackfillLoading) {
+    return force ? queueForcedCostsRefresh(costBackfillFinished) : Promise.resolve();
+  }
+  if (costsInFlight) {
+    if (force) {
+      // A successful budget reset must observe a read started after the reset,
+      // including when an older transcript backfill is also running.
+      return queueForcedCostsRefresh(costsInFlight);
+    }
+    costsRefreshPending = true;
+    return costsInFlight;
+  }
+  const remaining = costsLastLoadedAt + COSTS_REFRESH_INTERVAL_MS - Date.now();
+  if (!force && remaining > 0) {
+    // Keep the last state event during the interval; it must not be lost just
+    // because no further events arrive after this refresh is deferred.
+    scheduleCostsRefresh(remaining);
+    return Promise.resolve();
+  }
+  if (costsRefreshTimer !== null) {
+    window.clearTimeout(costsRefreshTimer);
+    costsRefreshTimer = null;
+  }
+  costsRefreshPending = false;
+  costsInFlight = fetchCosts().finally(() => {
+    costsInFlight = null;
+    if (costsRefreshPending) {
+      scheduleCostsRefresh(COSTS_REFRESH_INTERVAL_MS);
+    }
+  });
+  return costsInFlight;
+}
+
+async function fetchCosts() {
   const requestId = ++costsRequestId;
   try {
     const response = await teamFetch(`${API_BASE}/costs?backfill=false`, {
@@ -4946,6 +4941,7 @@ async function loadCosts() {
       return;
     }
     costState = normalizeCosts(payload);
+    costsLastLoadedAt = Date.now();
     if (teamViewUsesCostState(activeTeamView)) {
       const drafts = captureFormDrafts();
       render();
@@ -4972,8 +4968,17 @@ async function refreshCostBackfill() {
     return;
   }
   const requestId = ++costBackfillRequestId;
+  // Ignore a GET already in flight if it completes after the newer backfill.
+  costsRequestId += 1;
+  costsRefreshPending = false;
+  if (costsRefreshTimer !== null) {
+    window.clearTimeout(costsRefreshTimer);
+    costsRefreshTimer = null;
+  }
   let drafts = captureFormDrafts();
   costBackfillLoading = true;
+  let finishBackfill;
+  costBackfillFinished = new Promise((resolve) => { finishBackfill = resolve; });
   setStatus("Refreshing transcript costs.", "loading");
   render();
   restoreFormDrafts(drafts);
@@ -4992,6 +4997,7 @@ async function refreshCostBackfill() {
     drafts = captureFormDrafts();
     costBackfillLoading = false;
     costState = normalizeCosts(payload);
+    costsLastLoadedAt = Date.now();
     render();
     restoreFormDrafts(drafts);
     setStatus("", "");
@@ -5008,6 +5014,10 @@ async function refreshCostBackfill() {
     render();
     restoreFormDrafts(drafts);
     setStatus(error instanceof Error ? error.message : "Cost transcript refresh failed.", "error");
+  } finally {
+    costBackfillLoading = false;
+    costBackfillFinished = null;
+    finishBackfill();
   }
 }
 
@@ -5211,6 +5221,7 @@ function applyChatCollectionPayload(
     scheduleChatScrollToBottom(selectedChatConversationId);
   }
   if (activeTeamView === "chat") {
+    renderShell();
     renderChat();
   }
   if (selectedChatConversationId) {
@@ -5525,6 +5536,29 @@ async function createOrFocusChat(agentId) {
   }
 }
 
+async function openChatForAgent(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return;
+  }
+  if (chatState.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
+  setTeamView("chat");
+  try {
+    await loadView("chat");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Chat view failed to load.", "error");
+    return;
+  }
+  if (chatState.read_only) {
+    setStatus("This chat history is read-only.", "error");
+    return;
+  }
+  await createOrFocusChat(normalizedAgentId);
+}
+
 async function submitChatMessage(form) {
   const conversation = selectedChatConversation();
   if (!conversation || chatSending) {
@@ -5743,6 +5777,10 @@ function renderActiveView(view = activeTeamView) {
       break;
     case "mail":
       mailController.render();
+      decorateActiveViewTooltips();
+      break;
+    case "activity":
+      activityController.render();
       decorateActiveViewTooltips();
       break;
     case "governance":
@@ -6060,10 +6098,10 @@ function renderMemoryItem(memory) {
         </div>
       </div>
       <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
-      ${memory.summary ? `<div class="meta-line">${escapeHtml(memory.summary)}</div>` : ""}
+      ${memory.summary ? `<div class="meta-line">${renderIdentifierText(memory.summary)}</div>` : ""}
       ${renderMemoryTags(memory)}
       ${refs.length ? `<div class="meta-line">${escapeHtml(refs.join(" - "))}</div>` : ""}
-      ${memory.updated_at ? `<div class="meta-line">Updated ${escapeHtml(memory.updated_at)}</div>` : ""}
+      ${memory.updated_at ? `<div class="meta-line">Updated ${escapeHtml(formatTimelineTimestamp(memory.updated_at))}</div>` : ""}
     </li>
   `;
 }
@@ -6327,7 +6365,7 @@ function renderWorkspaceAttentionPanel(model) {
         ${workspaceViewButton("operations", "Open operations")}
       </div>
       ${body}
-      ${model.generatedAt ? `<div class="meta-line">Runtime generated ${escapeHtml(model.generatedAt)}</div>` : ""}
+      ${model.generatedAt ? `<div class="meta-line">Updated ${escapeHtml(formatTimelineTimestamp(model.generatedAt))}</div>` : ""}
     </section>
   `;
 }
@@ -6571,7 +6609,7 @@ function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
       const team = state.teams[text(teamId)];
       rows.push({
         title: `${team?.name || teamId} cost cap reached`,
-        meta: `${formatUsd(cost.estimated_cost)} estimated`,
+        meta: `${formatUsd(cost.total_cost ?? cost.estimated_cost)} cost`,
         severity: "warning",
         view: "operations",
         action: "Open operations",
@@ -6583,7 +6621,7 @@ function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
       const project = state.projects[text(projectId)];
       rows.push({
         title: `${project?.name || projectId} cost cap reached`,
-        meta: `${formatUsd(cost.estimated_cost)} estimated`,
+        meta: `${formatUsd(cost.total_cost ?? cost.estimated_cost)} cost`,
         severity: "warning",
         view: "projects",
         action: "Open projects",
@@ -6600,7 +6638,7 @@ function workspaceCostAttentionRows(visibleTeamIds, visibleProjectIds) {
       rows.push({
         title: `${group.name || groupId} portfolio cost attention`,
         meta: cost?.cost_limit_reached
-          ? `${formatUsd(cost.estimated_cost)} governed roll-up across ${memberTeamCount} member team${memberTeamCount === 1 ? "" : "s"}`
+          ? `${formatUsd(cost.total_cost ?? cost.estimated_cost)} governed roll-up across ${memberTeamCount} member team${memberTeamCount === 1 ? "" : "s"}`
           : `${(cost.member_team_cap_reached_ids || []).length} member cap${(cost.member_team_cap_reached_ids || []).length === 1 ? "" : "s"} reached`,
         severity: "warning",
         view: "governance",
@@ -6789,8 +6827,8 @@ function renderTeamCostBlockedNotice(teamId) {
   const coverageNote = coverage && coverage !== "complete" ? " Cost coverage is partial." : "";
   return `
     <div class="team-cost-blocked-notice" role="status">
-      <strong>Blocked: estimated cost cap reached</strong>
-      <span>Team wakes are suspended until this budget is reset, renewed, raised, or cleared. ${escapeHtml(formatUsd(cost.budget_window_estimated_cost ?? cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} ${escapeHtml(text(cost.cost_limit_basis) === "budget_window" ? "budget window" : "lifetime cap")}.${escapeHtml(coverageNote)}</span>
+      <strong>Blocked: cost cap reached</strong>
+      <span>Team wakes are suspended until this budget is reset, renewed, raised, or cleared. ${escapeHtml(formatUsd(cost.budget_window_total_cost ?? cost.budget_window_estimated_cost ?? cost.total_cost ?? cost.estimated_cost))} used of ${escapeHtml(capLabel)} ${escapeHtml(text(cost.cost_limit_basis) === "budget_window" ? "budget window" : "lifetime cap")}.${escapeHtml(coverageNote)}</span>
     </div>
   `;
 }
@@ -6863,7 +6901,7 @@ function renderGovernanceMemberTeams(memberTeams, cost) {
         ${memberTeams
           .map((team) => {
             const teamCost = cost?.member_team_costs?.[team.id] || teamCostForTeam(team.id);
-            const costLabel = teamCost ? ` - ${formatUsd(teamCost.estimated_cost)}` : "";
+            const costLabel = teamCost ? ` - ${formatUsd(teamCost.total_cost ?? teamCost.estimated_cost)}` : "";
             const cap = teamCost?.cost_limit_reached ? " - cap reached" : "";
             return `<li><strong>${escapeHtml(team.name)}</strong> <span>${escapeHtml(`${costLabel}${cap}`.replace(/^ - /, ""))}</span></li>`;
           })
@@ -7008,12 +7046,12 @@ function renderCostCounter(
       : "cost-counter cost-counter--warning";
   const parts = [];
   const maxCost = numberOrNull(cost.max_cost_usd);
-  const budgetWindowCost = numberOrNull(cost.budget_window_estimated_cost);
-  const displayedCost = budgetWindowCost === null ? numberOrZero(cost.estimated_cost) : budgetWindowCost;
+  const budgetWindowCost = numberOrNull(cost.budget_window_total_cost ?? cost.budget_window_estimated_cost);
+  const displayedCost = budgetWindowCost === null ? (numberOrNull(cost.total_cost ?? cost.estimated_cost) ?? 0) : budgetWindowCost;
   if (maxCost !== null) {
     parts.push(
       limitReached
-        ? `estimated limit reached ${formatUsd(maxCost)}`
+        ? `limit reached ${formatUsd(maxCost)}`
         : `${formatUsd(cost.remaining_cost_usd)} remaining`,
     );
   }
@@ -7021,7 +7059,10 @@ function renderCostCounter(
     parts.push(`${formatCount(events)} event${events === 1 ? "" : "s"}`);
   }
   if (budgetWindowCost !== null && numberOrNull(cost.estimated_cost) !== null) {
-    parts.push(`lifetime ${formatUsd(cost.estimated_cost)}`);
+    parts.push(`lifetime ${formatUsd(cost.total_cost ?? cost.estimated_cost)}`);
+  }
+  if ((numberOrNull(cost.reported_cost) ?? 0) > 0) {
+    parts.push(`${formatUsd(cost.reported_cost)} provider reported, ${formatUsd(cost.estimated_cost)} estimated (lifetime)`);
   }
   if (unpriced) {
     parts.push(`${formatCount(unpriced)} unpriced`);
@@ -8271,7 +8312,7 @@ function renderRuntimeOperations() {
     ${sections.join("")}
     ${
       runtime.generated_at
-        ? `<div class="meta-line runtime-generated-at">Runtime generated ${escapeHtml(runtime.generated_at)}</div>`
+        ? `<div class="meta-line runtime-generated-at">Updated ${escapeHtml(formatTimelineTimestamp(runtime.generated_at))}</div>`
         : ""
     }
   `);
@@ -9022,6 +9063,7 @@ function renderAgents() {
                     <div class="record-actions">
                       ${renderAgentRosterStatusPill(details)}
                       ${renderAgentStandDownControls(details.id, details)}
+                      ${renderOpenAgentChatButton(details.id)}
                       ${renderOpenAgentSessionButton(details.sessionId)}
                       ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
                       ${editButton("agent", details.id)}
@@ -9060,13 +9102,6 @@ function renderPeopleAgents(allAgents, agents) {
     return;
   }
 
-  if (!selectedTeamRecordId) {
-    const firstTeam = visibleTeams.find((team) => text(team.id) !== noTeamRecordId);
-    if (firstTeam) {
-      selectTeamRecord("team", firstTeam.id, { rerender: false });
-    }
-  }
-
   const scopedTeams = visibleTeams;
   const scopedTeamIds = visibleTeamIds;
   const scopedRecords = {
@@ -9075,24 +9110,15 @@ function renderPeopleAgents(allAgents, agents) {
     roles: roles.filter((role) => scopedTeamIds.has(text(role.team_id))).sort(compareTeamRoles),
   };
   const selectedRecord = selectedTeamRecordFrom(scopedRecords);
-  const hasRecords = scopedRecords.agents.length || scopedRecords.projects.length || scopedRecords.roles.length;
-
-  if (!hasRecords && selectedRecord?.kind !== "team") {
-    clearSelectedTeamRecord();
-    renderIntoActiveTargets(
-      "[data-teams-records-view]",
-      "<p class=\"empty-state\">No visible records.</p>",
-    );
-    renderIntoActiveTargets("[data-agent-detail-view]", renderTeamRecordDetail(null));
-    return;
-  }
-
   renderIntoActiveTargets("[data-teams-records-view]", `
     <div class="team-record-groups">
       ${scopedTeams.map((team) => renderTeamRecordGroup(team, scopedRecords)).join("")}
     </div>
   `);
   renderIntoActiveTargets("[data-agent-detail-view]", renderTeamRecordDetail(selectedRecord));
+  const detailPanel = document.querySelector(".people-agent-detail-panel");
+  if (detailPanel) detailPanel.hidden = !selectedRecord;
+  document.querySelector(".people-layout")?.classList.toggle("has-inspector", Boolean(selectedRecord));
 }
 
 function renderTeamRecordGroup(team, scopedRecords) {
@@ -9673,6 +9699,15 @@ function teamRecordCollection(records, kind) {
 function clearSelectedTeamRecord() {
   selectedTeamRecordKind = "agent";
   selectedTeamRecordId = null;
+  const panel = document.querySelector(".people-agent-detail-panel");
+  if (panel) panel.hidden = true;
+  document.querySelector(".people-layout")?.classList.remove("has-inspector");
+}
+
+function closeTeamRecordInspector() {
+  clearSelectedTeamRecord();
+  renderAgents();
+  if (teamRecordReturnFocus) document.querySelector(teamRecordReturnFocus)?.focus({ preventScroll: true });
 }
 
 function comparePeopleTeams(left, right) {
@@ -9738,8 +9773,11 @@ function selectTeamRecord(kind, recordId, { rerender = true } = {}) {
   }
   selectedTeamRecordKind = kind;
   selectedTeamRecordId = normalizedRecordId;
+  const attribute = kind === "team" ? "data-team-record-toggle" : `data-select-${kind}-id`;
+  teamRecordReturnFocus = `[${attribute}="${CSS.escape(normalizedRecordId)}"]`;
   if (rerender) {
     renderAgents();
+    document.querySelector("[data-team-detail-close]")?.focus({ preventScroll: true });
   }
 }
 
@@ -10275,6 +10313,7 @@ function renderChatNewPicker() {
   if (!elements.chatNewPicker) {
     return;
   }
+  const previousScrollTop = chatAgentPickerScrollTop();
   if (chatState.read_only) {
     elements.chatNewPicker.hidden = true;
     elements.chatNewPicker.innerHTML = "";
@@ -10295,6 +10334,22 @@ function renderChatNewPicker() {
       </div>
     `
     : `<p class="empty-state">No available agents.</p>`;
+  restoreChatAgentPickerScrollTop(previousScrollTop);
+}
+
+function chatAgentPickerScrollTop() {
+  const picker = elements.chatNewPicker?.querySelector(".chat-agent-picker");
+  return picker instanceof HTMLElement ? picker.scrollTop : null;
+}
+
+function restoreChatAgentPickerScrollTop(scrollTop) {
+  if (scrollTop === null) {
+    return;
+  }
+  const picker = elements.chatNewPicker?.querySelector(".chat-agent-picker");
+  if (picker instanceof HTMLElement) {
+    picker.scrollTop = scrollTop;
+  }
 }
 
 function renderChatConversationRow(conversation) {
@@ -10673,7 +10728,7 @@ function renderChatMessage(message) {
   return `
     <article class="chat-message chat-message--${escapeAttr(sender)} chat-message--${escapeAttr(type)}">
       <div class="chat-message-bubble">
-        ${message.body ? `<p>${escapeHtml(message.body)}</p>` : ""}
+        ${message.body ? `<p>${renderIdentifierText(message.body)}</p>` : ""}
         ${attachments.length ? `<div class="chat-message-attachments">${attachments.map(renderChatAttachment).join("")}</div>` : ""}
         ${attachmentImportWarning(attachmentImport)}
         <div class="chat-message-meta">
@@ -10683,7 +10738,7 @@ function renderChatMessage(message) {
           ${mutationModeLabel ? `<span class="chat-mutation-mode ${mutationMode === "project_scoped" ? "is-enabled" : "is-reply-only"}">${escapeHtml(mutationModeLabel)}</span>` : ""}
           ${externalDelivery ? `<span title="${escapeAttr(externalChatDeliveryTitle(externalDelivery))}">${escapeHtml(externalChatDeliveryLabel(externalDelivery))}</span>` : ""}
         </div>
-        ${message.error ? `<div class="chat-message-error">${escapeHtml(message.error)}</div>` : ""}
+        ${message.error ? `<div class="chat-message-error">${renderIdentifierText(message.error)}</div>` : ""}
       </div>
     </article>
   `;
@@ -11096,6 +11151,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       </div>
       <div class="record-actions agent-detail-actions">
         ${renderAgentStandDownControls(details.id, details)}
+        ${renderOpenAgentChatButton(details.id)}
         ${renderOpenAgentSessionButton(details.sessionId)}
         ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
         ${editButton("agent", details.id)}
@@ -11241,6 +11297,14 @@ function renderOpenAgentSessionButton(sessionId) {
     return "";
   }
   return `<button class="record-action" type="button" data-open-session-id="${escapeAttr(normalizedSessionId)}">Open session</button>`;
+}
+
+function renderOpenAgentChatButton(agentId) {
+  const normalizedAgentId = text(agentId);
+  if (!normalizedAgentId) {
+    return "";
+  }
+  return `<button class="record-action" type="button" data-open-chat-agent-id="${escapeAttr(normalizedAgentId)}" ${chatState.read_only ? 'disabled title="This chat history is read-only."' : ""}>Chat</button>`;
 }
 
 function navigateToAgentSession(sessionId) {
@@ -12667,6 +12731,8 @@ function renderProjectOutcomeKinds(definitions) {
 
 function renderProjectOutcomeKindCreateForm(project) {
   return `
+    <details class="project-outcome-create" ${teamDisclosureAttributes(teamDisclosureKey("projects", project.id, "create-outcome-kind"))}>
+    <summary>Add outcome kind</summary>
     <form
       class="project-review-profile-form"
       data-form-id="create-outcome-kind-form"
@@ -12687,6 +12753,7 @@ function renderProjectOutcomeKindCreateForm(project) {
       </div>
       <button type="submit">Add outcome kind</button>
     </form>
+    </details>
   `;
 }
 
@@ -13156,13 +13223,14 @@ function renderCaseItem(item) {
           ${editButton("case", item.id)}
           <button type="button" class="record-action secondary" data-open-case-context="${escapeAttr(item.id)}">Context</button>
           ${item.project_id ? `<button type="button" class="record-action secondary" data-open-case-board="${escapeAttr(item.id)}">View task board</button>` : ""}
+          ${project?.git && project.release_policy?.reintegration?.enabled !== false ? `<button type="button" class="record-action secondary" data-reintegrate-case-id="${escapeAttr(item.id)}">Reintegrate accepted work</button>` : ""}
         </div>
       </div>
-      <div class="meta-line">${escapeHtml(metaParts.join(" - "))}</div>
-      ${source ? `<div class="meta-line">Source ${escapeHtml(source)}</div>` : ""}
+      <div class="meta-line">${renderIdentifierText(metaParts.join(" - "))}</div>
+      ${source ? `<div class="meta-line">Source ${renderIdentifierText(source)}</div>` : ""}
       ${renderCaseTags(item)}
       ${renderCaseTaskLinks(item)}
-      ${item.description ? `<div class="meta-line">${escapeHtml(item.description)}</div>` : ""}
+      ${item.description ? `<div class="meta-line">${renderIdentifierText(item.description)}</div>` : ""}
     </li>
   `;
 }
@@ -13586,6 +13654,8 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
           : `<span class="task-board-history-note">${terminalCount} completed task${terminalCount === 1 ? "" : "s"} included in hierarchy</span>`
       }
     </div>
+    <details class="task-board-filter-disclosure" ${teamDisclosureAttributes("task-board-filters", { defaultOpen: window.matchMedia("(min-width: 801px)").matches })}>
+    <summary>Filters${[taskBoardCaseId, taskBoardQuery, taskBoardAssigneeId, taskBoardStateFilter, taskBoardReadinessFilter, taskBoardRootTaskId, taskBoardCompletedSince, taskBoardCompletedThrough].filter(Boolean).length ? " · active" : ""}</summary>
     <form class="task-board-filters" data-task-board-search-form data-form-id="task-board-search-form" data-form-draft-scope="${escapeAttr(`${selectedTaskBoardTeamId}:${selectedTaskBoardProjectId}`)}" role="search">
       <label>Case<select data-task-board-filter="case">${renderSelectOptions(caseOptions, { selectedValue: taskBoardCaseId, placeholder: "All cases" })}</select></label>
       <label class="task-board-search-filter">
@@ -13658,6 +13728,7 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
         Clear filters
       </button>
     </form>
+    </details>
   `;
 }
 
@@ -15151,10 +15222,14 @@ function teamDisclosureStateKey(key, view = activeTeamView) {
   return teamDisclosureKey(normalizedTeamView(view), normalizedKey);
 }
 
-function teamDisclosureAttributes(key) {
+function teamDisclosureAttributes(key, { defaultOpen = false } = {}) {
   const normalizedKey = teamDisclosureStateKey(key);
   if (!normalizedKey) {
     return "";
+  }
+  if (defaultOpen && !defaultedTeamDisclosures.has(normalizedKey)) {
+    defaultedTeamDisclosures.add(normalizedKey);
+    openTeamDisclosures.add(normalizedKey);
   }
   return `data-team-disclosure-key="${escapeAttr(normalizedKey)}"${openTeamDisclosures.has(normalizedKey) ? " open" : ""}`;
 }
@@ -15342,7 +15417,7 @@ function renderTaskHierarchyRow(
     </div>
     <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(taskAssignmentLabel(task))}</div>
     ${renderTaskGraph(task)}
-    <div class="meta-line">${escapeHtml(task.description)}</div>
+    <div class="meta-line">${renderIdentifierText(task.description)}</div>
   `;
   if (compact) {
     return `
@@ -15372,7 +15447,7 @@ function renderTaskHierarchyRow(
       </div>
       <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(taskAssignmentLabel(task))}</div>
       ${renderTaskGraph(task)}
-      <div class="meta-line">${escapeHtml(task.description)}</div>
+      <div class="meta-line">${renderIdentifierText(task.description)}</div>
     </li>
   `;
 }
@@ -15674,16 +15749,29 @@ function renderPlanningTaskBlockers(task) {
     <ul class="planning-task-blockers">
       ${rows.map((row) => {
         const owner = row.ownerId ? state.agents?.[row.ownerId] : null;
-        return `<li><strong>${escapeHtml(row.summary)}</strong><span>Owner: ${escapeHtml(owner ? agentLabel(owner) : "Operator")}</span><span>Next: ${escapeHtml(row.next)}</span></li>`;
+        return `<li><strong>${renderIdentifierText(row.summary)}</strong><span>Owner: ${escapeHtml(owner ? agentLabel(owner) : "Operator")}</span><span>Next: ${renderIdentifierText(row.next)}</span></li>`;
       }).join("")}
     </ul>
   `;
 }
 
 function renderPlanningInlineMarkdown(value) {
-  return escapeHtml(value)
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  const source = String(value ?? "");
+  const output = [];
+  let offset = 0;
+  for (const match of source.matchAll(/(`+)([^\n]+?)\1(?!`)|\*\*([^*\n]+)\*\*/g)) {
+    output.push(renderIdentifierText(source.slice(offset, match.index)));
+    if (match[1]) {
+      output.push(isOpaqueIdentifier(match[2], { explicit: true })
+        ? renderIdentifierText(match[0])
+        : `<code>${escapeHtml(match[2])}</code>`);
+    } else {
+      output.push(`<strong>${renderPlanningInlineMarkdown(match[3])}</strong>`);
+    }
+    offset = match.index + match[0].length;
+  }
+  output.push(renderIdentifierText(source.slice(offset)));
+  return output.join("");
 }
 
 function planningBriefHeading(line) {
@@ -15714,6 +15802,8 @@ function renderPlanningBriefMarkdown(value) {
   let paragraph = [];
   let listType = "";
   let listItems = [];
+  let codeFence = "";
+  let codeLines = [];
   const flushParagraph = () => {
     if (!paragraph.length) return;
     output.push(`<p>${renderPlanningInlineMarkdown(paragraph.join(" "))}</p>`);
@@ -15725,8 +15815,32 @@ function renderPlanningBriefMarkdown(value) {
     listType = "";
     listItems = [];
   };
+  const flushCode = () => {
+    output.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+    codeFence = "";
+    codeLines = [];
+  };
   lines.forEach((rawLine) => {
     const line = rawLine.trim();
+    if (codeFence) {
+      const closing = line.match(/^(`{3,}|~{3,})\s*$/);
+      if (closing && closing[1][0] === codeFence[0] && closing[1].length >= codeFence.length) flushCode();
+      else codeLines.push(rawLine);
+      return;
+    }
+    const fence = line.match(/^(`{3,}|~{3,})/);
+    if (fence) {
+      flushParagraph();
+      flushList();
+      const inline = line.match(/^(`{3,}|~{3,})(.*?)\1\s*$/);
+      if (inline) {
+        codeLines = [inline[2]];
+        flushCode();
+      } else {
+        codeFence = fence[1];
+      }
+      return;
+    }
     const heading = planningBriefHeading(line);
     const unordered = line.match(/^[-*•]\s+(.+)$/);
     const ordered = line.match(/^\d+[.)]\s+(.+)$/);
@@ -15756,6 +15870,7 @@ function renderPlanningBriefMarkdown(value) {
   });
   flushParagraph();
   flushList();
+  if (codeFence) flushCode();
   return output.join("");
 }
 
@@ -15945,7 +16060,7 @@ function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" }
               <div><span>State age</span><strong>${escapeHtml(taskRelativeAge(stateSince))}</strong></div>
               <div><span>Priority</span><strong>${Number(task.priority ?? 0)}</strong></div>
             </div>
-            <p class="planning-lifecycle-reason"><strong>Lifecycle reason:</strong> ${escapeHtml(reason)}</p>
+            <p class="planning-lifecycle-reason"><strong>Lifecycle reason:</strong> ${renderIdentifierText(reason)}</p>
             ${renderPlanningExecutionStatus(task)}
             ${renderPlanningTaskBlockers(task)}
           </section>
@@ -16550,10 +16665,10 @@ function renderDeliverableAcceptanceVerification(deliverable) {
         ${verification.run_id ? `<div><div class="delivery-detail-label">Run</div><div class="delivery-detail-value">${renderIdentifierCopy(verification.run_id, { label: "Copy ID" })}</div></div>` : ""}
         ${verification.candidate_commit_sha ? `<div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value"><code>${escapeHtml(verification.candidate_commit_sha)}</code></div></div>` : ""}
       </div>
-      ${verification.summary ? `<p class="meta-line">${escapeHtml(verification.summary)}</p>` : ""}
+      ${verification.summary ? `<p class="meta-line">${renderIdentifierText(verification.summary)}</p>` : ""}
       ${commands.length ? `<ul>${commands.map((command) => `<li><strong>${escapeHtml(command.name)}</strong> - ${escapeHtml(humanizeToken(command.state || "pending"))}${command.failure_kind ? ` (${escapeHtml(humanizeToken(command.failure_kind))})` : ""}</li>`).join("")}</ul>` : ""}
       ${(verification.evidence_refs || []).length ? `<p class="meta-line"><strong>Evidence:</strong> ${(verification.evidence_refs || []).map((ref) => `<code>${escapeHtml(ref)}</code>`).join(" ")}</p>` : ""}
-      ${waiver ? `<p class="meta-line"><strong>Waived by ${escapeHtml(waiver.actor_id)}:</strong> ${escapeHtml(waiver.reason)}</p>` : ""}
+      ${waiver ? `<p class="meta-line"><strong>Waived by ${escapeHtml(waiver.actor_id)}:</strong> ${renderIdentifierText(waiver.reason)}</p>` : ""}
     </section>
   `;
 }
@@ -16603,8 +16718,8 @@ function renderInitialReleaseDisposition(deliverable) {
         ${disposition.decided_at ? `<div><div class="delivery-detail-label">Decided</div><div class="delivery-detail-value">${renderRecordDate(disposition.decided_at)}</div></div>` : ""}
         ${disposition.release_package_id ? `<div><div class="delivery-detail-label">Release package</div><div class="delivery-detail-value">${renderIdentifierCopy(disposition.release_package_id, { label: "Copy ID" })}</div></div>` : ""}
       </div>
-      ${disposition.reason ? `<p class="meta-line"><strong>Reason:</strong> ${escapeHtml(disposition.reason)}</p>` : ""}
-      ${disposition.reopen_reason ? `<p class="meta-line"><strong>Last reopened:</strong> ${escapeHtml(disposition.reopen_reason)}${disposition.reopened_by_actor ? ` · ${escapeHtml(disposition.reopened_by_actor)}` : ""}${disposition.reopened_at ? ` · ${renderRecordDate(disposition.reopened_at)}` : ""}</p>` : ""}
+      ${disposition.reason ? `<p class="meta-line"><strong>Reason:</strong> ${renderIdentifierText(disposition.reason)}</p>` : ""}
+      ${disposition.reopen_reason ? `<p class="meta-line"><strong>Last reopened:</strong> ${renderIdentifierText(disposition.reopen_reason)}${disposition.reopened_by_actor ? ` · ${escapeHtml(disposition.reopened_by_actor)}` : ""}${disposition.reopened_at ? ` · ${renderRecordDate(disposition.reopened_at)}` : ""}</p>` : ""}
     </section>
   `;
 }
@@ -16629,7 +16744,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
         <div class="compact-record-body deliverable-card-body">
           <section class="deliverable-detail-group">
             <h4>Summary / outcome</h4>
-            <p class="deliverable-full-summary">${escapeHtml(deliverable.summary)}</p>
+            <p class="deliverable-full-summary">${renderIdentifierText(deliverable.summary)}</p>
             ${renderDeliverableOutcomes(deliverable)}
           </section>
           <section class="deliverable-detail-group">
@@ -16701,8 +16816,8 @@ function renderReviewSummary(reviewIds, { interactive = false } = {}) {
                 <span class="state-pill ${escapeHtml(review.state)}">${escapeHtml(review.state)}</span>
               </div>
               <div class="meta-line">${profile?.name ? `Profile ${escapeHtml(profile.name)}` : "No review profile"}${review.decision_at ? ` · decided ${renderRecordDate(review.decision_at)}` : review.created_at ? ` · requested ${renderRecordDate(review.created_at)}` : ""}</div>
-              ${review.instructions ? `<div class="meta-line">Instructions: ${escapeHtml(review.instructions)}</div>` : ""}
-              ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => escapeHtml(finding)).join("; ")}</div>` : ""}
+              ${review.instructions ? `<div class="meta-line">Instructions: ${renderIdentifierText(review.instructions)}</div>` : ""}
+              ${(review.findings || []).length ? `<div class="meta-line">Findings: ${review.findings.map((finding) => renderIdentifierText(finding)).join("; ")}</div>` : ""}
               ${renderRecordBlockers("review_request", review.id)}
               ${renderCriterionResults(review.criteria || [])}
               ${renderCarriedFindings(carriedFindings)}
@@ -16792,7 +16907,7 @@ function renderReviewCriterionInputs(criteria) {
 function renderCarriedFindings(findings) {
   if (!findings.length) return "";
   return `<div class="meta-line"><strong>Open carried findings:</strong><ul>${findings
-    .map((finding) => `<li>${escapeHtml(finding.id)} - ${escapeHtml(finding.text)}</li>`)
+    .map((finding) => `<li>${escapeHtml(finding.id)} - ${renderIdentifierText(finding.text)}</li>`)
     .join("")}</ul></div>`;
 }
 
@@ -17871,7 +17986,7 @@ function renderReleaseNotes(release) {
   if (!summary) {
     return `<p class="empty-state release-notes-empty">No release notes were recorded for this package.</p>`;
   }
-  return `<div class="release-notes">${escapeHtml(summary)}</div>`;
+  return `<div class="release-notes">${renderIdentifierText(summary)}</div>`;
 }
 
 function renderReleaseTechnicalDetails(
@@ -18526,6 +18641,7 @@ function renderReleaseDetail(release) {
         <div><div class="delivery-detail-label">Policy</div><div class="delivery-detail-value">Version ${Number(release.policy_version || 1)}</div></div>
       </div>
       ${renderReleaseCandidateCheckout(release)}
+      ${project.git && ["active", "blocked"].includes(project.status) && project.release_policy?.reintegration?.enabled !== false ? `<button type="button" data-reintegrate-release-id="${escapeAttr(release.id)}">Reintegrate onto updated base</button>` : ""}
       ${renderReleaseDeliverableEvidence(deliverableRows, release)}
       ${renderReleaseContributionGraph(contributionGraph, release.id)}
       ${renderReleaseVerificationRuns(verificationRuns, manifest.verification_commands || [], release.id)}
@@ -18656,9 +18772,12 @@ function renderReleaseVerificationCommandResult(
     <li class="release-verification-command-result${failed ? " release-verification-command-failed" : ""}">
       <div class="release-verification-command-heading">
         <strong>${failed ? "Failed command" : "Command"}: ${escapeHtml(result.name || "Unnamed command")}</strong>
-        <span class="state-pill ${escapeAttr(result.state)}">${escapeHtml(humanizeToken(result.state))}</span>
+        <span class="state-pill ${escapeAttr(result.state)}">${escapeHtml(result.policy_outcome === "baseline_exception" ? "Accepted with baseline exceptions" : humanizeToken(result.state))}</span>
       </div>
       ${metadata.length ? `<div class="meta-line">${escapeHtml(metadata.join(" · "))}</div>` : ""}
+      ${result.evidence?.explanation ? `<p>${escapeHtml(result.evidence.explanation)}</p>` : ""}
+      ${result.toolchain_mounts?.length ? `<details ${teamDisclosureAttributes(teamDisclosureKey(disclosureKey, "toolchain"))}><summary>Verifier toolchain identity</summary><ul>${result.toolchain_mounts.map(mount => `<li>${escapeHtml(mount.target)} ← ${escapeHtml(mount.source)}</li>`).join("")}</ul></details>` : ""}
+      ${result.log_artifact && result.job_id ? `<button type="button" data-retained-verifier-job="${escapeAttr(result.job_id)}" data-release-id="${escapeAttr(run.release_package_id)}">Read retained log</button>` : ""}
       ${decisiveError ? `<div class="release-verification-decisive-error"><strong>Decisive error:</strong> ${escapeHtml(decisiveError)}</div>` : ""}
       ${
         logExcerpt
@@ -18691,7 +18810,7 @@ function renderReleaseVerificationLiveOutput(run, result, index, releaseId) {
   const logText = text(log?.text);
   return `
     <li class="release-verification-live-output">
-      <details class="release-verification-log" open>
+      <details class="release-verification-log" ${teamDisclosureAttributes(teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "live", String(index)), { defaultOpen: true })}>
         <summary>Live verifier output · updates every 2 seconds</summary>
         ${log?.has_more_before ? `<p class="meta-line">Earlier log lines are omitted from this bounded tail.</p>` : ""}
         ${logText ? `<pre
@@ -18733,10 +18852,12 @@ function renderReleaseVerificationRuns(runs, commands, releaseId) {
         runs.length
           ? `<ul class="delivery-detail-list">${runs.map((run) => `<li>
               <strong>Verification attempt ${Number(run.attempt_number || 1)}</strong> <span class="state-pill ${escapeAttr(run.state)}">${escapeHtml(humanizeToken(run.state))}</span>
+              <div class="meta-line">Workspace generation ${Number(run.execution_generation || 0)} · Last recorded progress: ${escapeHtml(run.updated_at || "Unavailable")}${run.state === "running" ? " · Running status does not confirm continuing progress." : ""}</div>
               ${run.failure_kind ? `<div class="meta-line">Failure type: ${escapeHtml(humanizeToken(run.failure_kind))}</div>` : ""}
-              ${run.retry_reason ? `<div class="meta-line"><strong>Retry comment:</strong> ${escapeHtml(run.retry_reason)}</div>` : ""}
+              ${run.retry_reason ? `<div class="meta-line"><strong>Retry comment:</strong> ${renderIdentifierText(run.retry_reason)}</div>` : ""}
               ${run.retry_requested_by ? `<div class="meta-line">Requested by ${escapeHtml(run.retry_requested_by)}</div>` : ""}
               ${renderReleaseVerificationCommandResults(run, `release-detail:${releaseId}:verification`, releaseId)}
+              ${(run.generation_history || []).map(generation => `<details ${teamDisclosureAttributes(teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "generation", String(generation.generation)))}><summary>Interrupted workspace generation ${Number(generation.generation)}</summary>${renderReleaseVerificationCommandResults({ ...run, state: "interrupted", command_results: generation.command_results }, `release-detail:${releaseId}:verification:g${generation.generation}`, releaseId)}</details>`).join("")}
               ${renderTechnicalDetails([["Verification run ID", run.id], ["Candidate commit", run.candidate_commit_sha]], {
                 disclosureKey: teamDisclosureKey("release-detail", releaseId, "verification-run", run.id, "technical"),
               })}
@@ -18767,9 +18888,9 @@ function renderReleaseAgentReviews(reviews, releaseId, cohort = null) {
           const reviewer = state.agents?.[review.reviewer_agent_id];
           return `<li>
           <strong>Review by ${escapeHtml(reviewer ? agentLabel(reviewer) : "Assigned reviewer")}</strong> <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(humanizeToken(review.state))}</span>
-          ${review.instructions ? `<div class="meta-line">${escapeHtml(review.instructions)}</div>` : ""}
+          ${review.instructions ? `<div class="meta-line">${renderIdentifierText(review.instructions)}</div>` : ""}
           ${renderReleaseReviewCriteria(review)}
-          ${(review.findings || []).length ? `<div class="meta-line">Findings: ${escapeHtml(review.findings.join(", "))}</div>` : ""}
+          ${(review.findings || []).length ? `<div class="meta-line">Findings: ${renderIdentifierText(review.findings.join(", "))}</div>` : ""}
           ${renderTechnicalDetails([["Review ID", review.id], ["Review cohort ID", review.review_cohort_id], ["Reviewer ID", review.reviewer_agent_id], ["Reviewed commit", review.reviewed_commit_sha]], {
             disclosureKey: teamDisclosureKey("release-detail", releaseId, "agent-review", review.id, "technical"),
           })}
@@ -18842,7 +18963,7 @@ function renderHumanReviewRequest(request, carriedFindings, releaseId = "") {
       <div class="meta-line">${request.ready_at ? `Ready ${renderRecordDate(request.ready_at)}` : "Preparation pending"} · request revision ${Number(request.revision || 0)}</div>
       <div class="meta-line">Assigned reviewers: ${escapeHtml([...(assignment.explicitly_assigned_user_ids || []), ...(assignment.eligible_user_ids || [])].filter((value, index, values_) => values_.indexOf(value) === index).length || "none")}</div>
       <div class="meta-line">Preparation mode ${escapeHtml(humanizeToken(request.requirement_snapshot?.preparation_mode || "manual"))} · ${checklist.length} checklist item${checklist.length === 1 ? "" : "s"}</div>
-      ${request.requirement_snapshot?.test_instructions ? `<div class="human-test-instructions"><strong>Test instructions:</strong> ${escapeHtml(request.requirement_snapshot.test_instructions)}</div>` : ""}
+      ${request.requirement_snapshot?.test_instructions ? `<div class="human-test-instructions"><strong>Test instructions:</strong> ${renderIdentifierText(request.requirement_snapshot.test_instructions)}</div>` : ""}
       ${renderHumanReviewBundleDownload(request)}
       ${renderHumanReviewTarget(target)}
       ${renderHumanChecklistHistory(checklist)}
@@ -18890,7 +19011,7 @@ function renderHumanReviewTarget(target) {
     <div class="human-review-target">
       <strong>Prepared test target:</strong> <code>${escapeHtml(targetName)}</code>
       ${target.expires_at ? `<div class="meta-line">Expires ${escapeHtml(target.expires_at)}</div>` : ""}
-      ${target.instructions ? `<div>${escapeHtml(target.instructions)}</div>` : ""}
+      ${target.instructions ? `<div>${renderIdentifierText(target.instructions)}</div>` : ""}
       ${(target.evidence_refs || []).length ? `<div class="meta-line">Target evidence: ${escapeHtml(target.evidence_refs.join(", "))}</div>` : ""}
     </div>
   `;
@@ -18900,7 +19021,7 @@ function renderHumanChecklistHistory(checklist) {
   if (!checklist.length) {
     return `<div class="meta-line">Human checklist: no configured items.</div>`;
   }
-  return `<ul class="human-review-checklist">${checklist.map((item) => `<li><strong>${escapeHtml(item.label)}</strong> (${item.required === false ? "optional" : "required"})${item.description ? ` - ${escapeHtml(item.description)}` : ""}</li>`).join("")}</ul>`;
+  return `<ul class="human-review-checklist">${checklist.map((item) => `<li><strong>${escapeHtml(item.label)}</strong> (${item.required === false ? "optional" : "required"})${item.description ? ` - ${renderIdentifierText(item.description)}` : ""}</li>`).join("")}</ul>`;
 }
 
 function renderHumanDecisionHistory(decisions) {
@@ -18909,7 +19030,7 @@ function renderHumanDecisionHistory(decisions) {
   }
   return `<ul class="delivery-detail-list">${decisions.map((decision) => `<li>
     <strong>${escapeHtml(decision.decision)}</strong> by ${escapeHtml(decision.reviewer_display_name_snapshot || decision.reviewer_user_id)} at ${escapeHtml(decision.decided_at || "")}
-    ${decision.summary ? `<div>${escapeHtml(decision.summary)}</div>` : ""}
+    ${decision.summary ? `<div>${renderIdentifierText(decision.summary)}</div>` : ""}
     ${(decision.evidence_refs || []).length ? `<div class="meta-line">Evidence: ${escapeHtml(decision.evidence_refs.join(", "))}</div>` : ""}
   </li>`).join("")}</ul>`;
 }
@@ -18952,9 +19073,9 @@ function renderHumanFindingHistory(findings, correctionTasks, targetOptions = []
       <strong>Findings and correction work</strong>
       <ul class="delivery-detail-list">
         ${findings.map((finding) => `<li>
-          <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${escapeHtml(finding.text)}
+          <strong>${escapeHtml(finding.id)}</strong> <span class="state-pill ${escapeAttr(finding.state)}">${escapeHtml(finding.state)}</span> - ${renderIdentifierText(finding.text)}
           <div class="meta-line">Correction task ${escapeHtml(finding.correction_task_id)}${text(finding.target_scope) === "release_candidate" ? " · affected work: Entire release candidate" : finding.target_deliverable_ids?.length ? ` · affected work: ${escapeHtml(humanReviewTargetLabels(finding.target_deliverable_ids, targetOptions).join(", "))}` : ""}</div>
-          ${finding.proposed_resolution ? `<div>Resolution proposal: ${escapeHtml(finding.proposed_resolution)}</div>` : ""}
+          ${finding.proposed_resolution ? `<div>Resolution proposal: ${renderIdentifierText(finding.proposed_resolution)}</div>` : ""}
           ${(finding.resolution_evidence_refs || []).length ? `<div class="meta-line">Resolution evidence: ${escapeHtml(finding.resolution_evidence_refs.join(", "))}</div>` : ""}
         </li>`).join("")}
         ${correctionTasks.map((task) => `<li><strong>${escapeHtml(task.id)}</strong> - ${escapeHtml(task.title)} <span class="state-pill ${escapeAttr(task.state)}">${escapeHtml(task.state)}</span>${task.originating_task_id ? ` - origin ${escapeHtml(task.originating_task_id)}` : ""}</li>`).join("")}
@@ -19551,13 +19672,13 @@ function renderReleasePolicyDetails(release) {
   const scope = release.scope_validation || null;
   const waiverMarkup = waivers.length
     ? `<div class="meta-line"><strong>Verification waivers:</strong><ul>${waivers
-        .map((waiver) => `<li>${escapeHtml(waiver.deliverable_id)} (${escapeHtml(waiver.verification_status)}): ${escapeHtml(waiver.reason)} - ${escapeHtml(waiver.actor_kind)} ${escapeHtml(waiver.actor_id)}</li>`)
+        .map((waiver) => `<li>${escapeHtml(waiver.deliverable_id)} (${escapeHtml(waiver.verification_status)}): ${renderIdentifierText(waiver.reason)} - ${escapeHtml(waiver.actor_kind)} ${escapeHtml(waiver.actor_id)}</li>`)
         .join("")}</ul></div>`
     : "";
   const gateWaivers = release.gate_obligation_waivers || [];
   const gateWaiverMarkup = gateWaivers.length
     ? `<div class="meta-line"><strong>Gate obligation waivers:</strong><ul>${gateWaivers
-        .map((waiver) => `<li>${escapeHtml(humanizeToken(waiver.gate_kind))}: ${escapeHtml(waiver.reason)} - ${escapeHtml(waiver.authorized_by)}</li>`)
+        .map((waiver) => `<li>${escapeHtml(humanizeToken(waiver.gate_kind))}: ${renderIdentifierText(waiver.reason)} - ${escapeHtml(waiver.authorized_by)}</li>`)
         .join("")}</ul></div>`
     : "";
   const scopeMarkup = scope
@@ -19639,7 +19760,7 @@ function renderReleaseGateAction(release) {
   const retryableVerification =
     release.state === "blocked" &&
     failure?.stage === "verification" &&
-    ["infrastructure", "timeout"].includes(failure?.kind);
+    ["infrastructure", "timeout", "blocked"].includes(failure?.kind);
   const retryableReview =
     release.state === "blocked" &&
     failure?.stage === "review" &&
@@ -19959,7 +20080,7 @@ function renderTemplatePreview() {
                 </div>
                 <div class="meta-line">${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_role_key)} - creator ${escapeHtml(task.created_by_role_key)} - priority ${task.priority}</div>
                 ${dependencyLine}
-                <div class="meta-line">${escapeHtml(task.description)}</div>
+                <div class="meta-line">${renderIdentifierText(task.description)}</div>
               </li>
             `;
           })
@@ -20592,7 +20713,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
     ${renderDeliverablePipeline(row)}
     <section class="deliverable-detail-group">
       <h4>Summary / outcome</h4>
-      <p class="deliverable-full-summary">${escapeHtml(deliverable.summary)}</p>
+      <p class="deliverable-full-summary">${renderIdentifierText(deliverable.summary)}</p>
       ${renderDeliverableOutcomes(deliverable)}
     </section>
     <section class="deliverable-detail-group">
@@ -21387,14 +21508,14 @@ function renderTimelineEntryDetails(entry) {
         change.before !== undefined
           ? `
             <div class="timeline-change-flow">
-              <div><span>Before</span><strong>${escapeHtml(change.before)}</strong></div>
+              <div><span>Before</span><strong>${renderIdentifierText(change.before)}</strong></div>
               <span aria-hidden="true">→</span>
-              <div><span>After</span><strong>${escapeHtml(change.after)}</strong></div>
+              <div><span>After</span><strong>${renderIdentifierText(change.after)}</strong></div>
             </div>
           `
-          : `<p><strong>${escapeHtml(change.label)}:</strong> ${escapeHtml(change.value)}</p>`
+          : `<p><strong>${escapeHtml(change.label)}:</strong> ${renderIdentifierText(change.value)}</p>`
       }
-      ${reason ? `<p class="timeline-reason"><strong>Reason:</strong> ${escapeHtml(reason)}</p>` : ""}
+      ${reason ? `<p class="timeline-reason"><strong>Reason:</strong> ${renderIdentifierText(reason)}</p>` : ""}
       ${
         !entry.before &&
         !entry.change &&
@@ -22066,7 +22187,7 @@ async function resetTeamCostBudget(button, teamId, reason) {
       throw new Error(await responseText(response));
     }
     await applyMutationResultPayload(await response.json());
-    await loadCosts();
+    await loadCosts({ force: true });
     setStatus("Started a new team cost budget window.", "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Budget reset failed.", "error");
@@ -23458,6 +23579,116 @@ async function resolveTerminalBlocker(button, blockerId, note) {
       button.disabled = false;
     }
   }
+}
+
+async function showRetainedVerificationLog(button) {
+  button.disabled = true;
+  try {
+    const response = await teamFetch(`${API_BASE}/release-packages/${encodeURIComponent(button.dataset.releaseId)}/verification-live?job_id=${encodeURIComponent(button.dataset.retainedVerifierJob)}`);
+    if (!response.ok) throw new Error(await responseText(response));
+    const body = await response.json();
+    const pre = document.createElement("pre");
+    pre.textContent = body.log.text;
+    button.replaceWith(pre);
+  } catch (error) {
+    setStatus(error.message, "error");
+    button.disabled = false;
+  }
+}
+
+async function previewCaseReintegration(caseId) {
+  if (!guardTeamMutation("reintegrate accepted work")) return;
+  try {
+    const response = await teamFetch(`${API_BASE}/cases/${encodeURIComponent(caseId)}/reintegration-candidates`);
+    if (!response.ok) throw new Error(await responseText(response));
+    const { candidates } = await response.json();
+    if (!candidates.length) throw new Error("This case has no current accepted release contributions to reintegrate.");
+    if (candidates.length === 1) return previewReleaseReintegration(candidates[0].release_package_id);
+    const dialog = document.createElement("dialog");
+    dialog.className = "team-reintegration-dialog";
+    dialog.innerHTML = `<h3>Choose accepted work from this case</h3><p>Each option shows the full release scope, including any contributions from other cases.</p><ul>${candidates.map((row, index) => `<li><button type="button" data-choose-reintegration-release="${index}">${escapeHtml(row.contribution_titles.join(", "))} — ${escapeHtml(humanizeToken(row.state))}, ${escapeHtml(row.created_at)}</button></li>`).join("")}</ul><button type="button" data-close-preview>Close</button>`;
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    dialog.querySelector("[data-close-preview]").onclick = () => dialog.close();
+    dialog.querySelectorAll("[data-choose-reintegration-release]").forEach(button => {
+      button.onclick = () => {
+        dialog.close();
+        void previewReleaseReintegration(candidates[Number(button.dataset.chooseReintegrationRelease)].release_package_id);
+      };
+    });
+    dialog.showModal();
+  } catch (error) { setStatus(error.message, "error"); }
+}
+
+async function previewReleaseReintegration(releaseId) {
+  if (!guardTeamMutation("reintegrate accepted work")) return;
+  const endpoint = `${API_BASE}/release-packages/${encodeURIComponent(releaseId)}/reintegration`;
+  const dialog = document.createElement("dialog");
+  dialog.className = "team-reintegration-dialog";
+  dialog.innerHTML = `<h3>Reintegrate accepted work</h3><div data-preview-content>Refreshing the configured base…</div><p role="status" data-preview-status></p><div class="actions"><button type="button" data-submit-preview disabled>Create integration task</button><button type="button" data-refresh-preview>Refresh preview</button><button type="button" data-close-preview>Close</button></div>`;
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.querySelector("[data-close-preview]").onclick = () => dialog.close();
+  dialog.showModal();
+  let preview = null;
+  let previewSequence = 0;
+  let submitting = false;
+  let requestId = crypto.randomUUID();
+  const submit = dialog.querySelector("[data-submit-preview]");
+  const status = dialog.querySelector("[data-preview-status]");
+  const refresh = dialog.querySelector("[data-refresh-preview]");
+  refresh.onclick = () => void load(preview?.owner_agent_id || null);
+  async function load(ownerId = null) {
+    if (submitting) return;
+    const sequence = ++previewSequence;
+    submit.disabled = true;
+    status.textContent = "Refreshing preview…";
+    try {
+      const response = await teamFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "preview", owner_agent_id: ownerId }) });
+      if (!response.ok) throw new Error(await responseText(response));
+      const nextPreview = (await response.json()).preview;
+      if (sequence !== previewSequence || !dialog.open) return;
+      preview = nextPreview;
+      requestId = crypto.randomUUID();
+      dialog.querySelector("[data-preview-content]").innerHTML = `
+        <p>Base: <strong>${escapeHtml(preview.base_branch)}</strong> at ${escapeHtml(preview.base_commit_sha.slice(0, 12))}</p>
+        <ul>${preview.contributions.map(row => `<li>${escapeHtml(row.title)}</li>`).join("")}</ul>
+        <label>Integration owner <select data-preview-owner><option value="">Select an owner</option>${preview.eligible_owners.map(owner => `<option value="${escapeAttr(owner.id)}" ${owner.id === preview.owner_agent_id ? "selected" : ""}>${escapeHtml(owner.name)}</option>`).join("")}</select></label>
+        <p>${escapeHtml(preview.instructions)}</p>
+        <p>${preview.retire_source_release ? "The source release will be retired with its exclusively owned pending correction work." : "The source release and existing work will be retained."}</p>
+        ${preview.retiring_task_ids.length ? `<ul>${preview.retiring_task_ids.map(id => `<li>${escapeHtml(state.tasks?.[id]?.title || "Source release correction")}</li>`).join("")}</ul>` : ""}
+        <p>Existing review and release policies apply to the new integration.</p>`;
+      dialog.querySelector("[data-preview-owner]").onchange = event => void load(event.target.value || null);
+      submit.disabled = !preview.owner_agent_id;
+      status.textContent = "Ready to create the integration task.";
+    } catch (error) {
+      if (sequence === previewSequence && dialog.open) status.textContent = error.message;
+    }
+  }
+  submit.onclick = async () => {
+    if (submitting || !preview?.owner_agent_id) return;
+    submitting = true;
+    submit.disabled = true;
+    refresh.disabled = true;
+    dialog.querySelector("[data-preview-owner]").disabled = true;
+    status.textContent = "Creating integration task…";
+    try {
+      const response = await teamFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "X-Team-Addon-Response-Scope": "view" }, body: JSON.stringify({ action: "submit", preview, request_id: requestId }) });
+      if (!response.ok) throw new Error(await responseText(response));
+      await applyMutationResultPayload(await response.json());
+      dialog.close();
+      setStatus("Integration task created. Progress appears with the project's work.", "ok");
+    } catch (error) {
+      status.textContent = `${error.message} Retry this request, or refresh to review a new preview.`;
+      submit.disabled = false;
+    } finally {
+      submitting = false;
+      refresh.disabled = false;
+      const owner = dialog.querySelector("[data-preview-owner]");
+      if (owner) owner.disabled = false;
+    }
+  };
+  await load();
 }
 
 async function startDependencyCompositionRecovery(button, blockerId, resolverAgentId) {

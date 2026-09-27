@@ -346,6 +346,76 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
   };
 }
 
+test("sessions open in a sidebar with an empty detail state and one-click selection", { timeout: 30000 }, async t => {
+  const { address, page, sessionListResponse, pageErrors } = await createSessionsSmokeHarness(t, makeSessionRecord());
+  page.setDefaultTimeout(5000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  sessionListResponse.items.push(
+    makeSessionRecord({ session_id: "session-10", expires_at: "2026-06-01T01:00:00+02:00", model: "model-10" }),
+    makeSessionRecord({ session_id: "session-2", expires_at: "2026-05-31T23:30:00Z", model: "model-2" }),
+  );
+  sessionListResponse.counts = { total: 3, active: 3, expired: 0 };
+  sessionListResponse.status_ids.active = sessionListResponse.items.map(item => item.session_id);
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Select a session to view details", exact: true }).waitFor();
+  assert.equal(await page.locator(".session-list-item.selected").count(), 0);
+  assert.equal(await page.locator(".record-inspector, .sessions-inventory").count(), 0);
+  await page.locator(".session-list-item").filter({ hasText: /^session-1Active/ }).click();
+  await page.getByRole("heading", { name: "session-1", exact: true }).waitFor();
+  await page.waitForURL("**/#sessions?session_id=session-1");
+  await page.getByLabel("Find session", { exact: true }).fill("session-2");
+  assert.equal(await page.locator(".session-list-item").count(), 1);
+  await page.getByRole("heading", { name: "session-1", exact: true }).waitFor();
+  await page.getByLabel("Find session", { exact: true }).fill("");
+  await page.evaluate(() => { location.hash = "#sessions"; });
+  await page.getByRole("heading", { name: "Select a session to view details", exact: true }).waitFor();
+  assert.deepEqual(pageErrors, []);
+});
+
+test("session deep links open expired sessions and records outside the current list", { timeout: 30000 }, async t => {
+  const { address, page, sessionListResponse, pageErrors } = await createSessionsSmokeHarness(t, makeSessionRecord());
+  page.setDefaultTimeout(5000);
+  sessionListResponse.status_ids = { active: [], expired: ["session-1"] };
+  sessionListResponse.counts = { total: 1, active: 0, expired: 1 };
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`);
+  await page.locator(".session-list-item.selected").waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "State", exact: true }).inputValue(), "expired");
+  sessionListResponse.items = [];
+  sessionListResponse.status_ids = { active: [], expired: [] };
+  sessionListResponse.counts = { total: 0, active: 0, expired: 0 };
+  await page.reload();
+  await page.getByRole("heading", { name: "session-1", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).hash, "#sessions?session_id=session-1");
+  assert.equal(await page.locator(".session-list-item").count(), 0);
+  assert.deepEqual(pageErrors, []);
+});
+
+test("direct session selection protects unsaved settings and restores cancelled links", { timeout: 30000 }, async t => {
+  const { address, page, sessionListResponse, sessionDetailResponse, pageErrors } = await createSessionsSmokeHarness(t, makeSessionRecord());
+  page.setDefaultTimeout(5000);
+  const second = makeSessionRecord({ session_id: "session-2", model: "second-model" });
+  sessionListResponse.items.push(second);
+  sessionListResponse.status_ids.active.push(second.session_id);
+  await page.route("**/api/admin/sessions/session-2", route => route.fulfill(jsonResponse({ ...sessionDetailResponse, session: second })));
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`);
+  const model = page.locator('input[list="session-model-suggestions"]');
+  await model.fill("unsaved-model");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.locator(".session-list-item").filter({ hasText: "session-2" }).click();
+  assert.equal(await model.inputValue(), "unsaved-model");
+  assert.equal(new URL(page.url()).hash, "#sessions?session_id=session-1");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.evaluate(() => { location.hash = "#sessions?session_id=session-2"; });
+  await page.waitForURL("**/#sessions?session_id=session-1");
+  assert.equal(await model.inputValue(), "unsaved-model");
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator(".session-list-item").filter({ hasText: "session-2" }).click();
+  await page.getByRole("heading", { name: "session-2", exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('input[list="session-model-suggestions"]')?.value === "second-model");
+  await page.waitForURL("**/#sessions?session_id=session-2");
+  assert.deepEqual(pageErrors, []);
+});
+
 test("admin shell sessions page identifies repository grants with repository metadata", async (t) => {
   const {
     address,
@@ -393,7 +463,7 @@ test("admin shell sessions page identifies repository grants with repository met
   assert.equal(await repositoryAccess.evaluate((element) => element.open), false);
   await repositoryAccess.locator("summary").click();
 
-  const grant = page.locator(".session-git-grant-table tbody tr");
+  const grant = page.locator(".session-git-grant-table tbody tr").filter({ hasText: "mr_286e7730d5c3c49f5f89" });
   await grant.getByText("exampleindustry/Casat/Casat", { exact: true }).waitFor({ state: "visible" });
   assert.match(await grant.innerText(), /https:\/\/dev\.azure\.com\/exampleindustry\/Casat\/_git\/Casat/);
   assert.match(await grant.innerText(), /mr_286e7730d5c3c49f5f89/);
@@ -519,8 +589,8 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await ensureSectionsExpanded(page);
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByLabel("Find session").waitFor({ state: "visible" }));
-  assert.equal(await page.getByLabel("Find session").inputValue(), "session-1");
+  await assert.doesNotReject(() => page.getByRole("searchbox", { name: "Find session", exact: true }).waitFor({ state: "visible" }));
+  assert.equal(await page.getByRole("searchbox", { name: "Find session", exact: true }).inputValue(), "");
   assert.equal(await page.getByRole("combobox", { name: "State" }).inputValue(), "active");
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").getByText("session-1").waitFor({ state: "visible" }));
@@ -1572,7 +1642,7 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);
 
-  await page.getByLabel("Find session").fill("");
+  await page.getByRole("searchbox", { name: "Find session", exact: true }).fill("");
   await page.locator(".session-list-item").filter({ hasText: "libvirt-legacy" }).click();
   await assert.match(await page.locator(".feature-content").innerText(), /Legacy session: VM template metadata unavailable/);
 
@@ -1586,10 +1656,10 @@ test("admin shell sessions page shows runtime image details for libvirt, legacy,
   assert.ok(cleanupButtonBox, "expected cleanup toolbar button to have a bounding box");
   assert.ok(cleanupButtonBox.width <= 40, `expected cleanup toolbar button to stay icon-sized, got ${cleanupButtonBox.width}`);
 
-  await page.getByPlaceholder("session, VM, issue, model").fill("container");
+  await page.getByRole("searchbox", { name: "Find session", exact: true }).fill("container");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 1);
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 0);
-  await page.getByPlaceholder("session, VM, issue, model").fill("libvirt-explicit");
+  await page.getByRole("searchbox", { name: "Find session", exact: true }).fill("libvirt-explicit");
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "libvirt-explicit" }).count(), 1);
   await assert.equal(await page.locator(".session-list-item").filter({ hasText: "container-session" }).count(), 0);
 

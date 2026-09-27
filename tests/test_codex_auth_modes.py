@@ -62,7 +62,7 @@ def test_invalid_codex_auth_mode_is_rejected() -> None:
         GatewayConfig(container_worker_codex_auth_mode="free_magic")
 
 
-@pytest.mark.parametrize("model_provider_mode", ["local_openai", "azure_openai"])
+@pytest.mark.parametrize("model_provider_mode", ["local_openai", "azure_openai", "openrouter"])
 def test_private_model_routes_fall_back_to_metered_api_mode(
     model_provider_mode: str,
 ) -> None:
@@ -89,7 +89,10 @@ def test_private_model_routes_fall_back_to_metered_api_mode(
     assert turn.auth_mode is CodexAuthMode.METERED_API
 
 
-def test_session_private_route_override_also_prevents_subscription_dispatch(tmp_path: Path) -> None:
+@pytest.mark.parametrize("model_provider_mode", ["local_openai", "openrouter"])
+def test_session_private_route_override_also_prevents_subscription_dispatch(
+    tmp_path: Path, model_provider_mode: str
+) -> None:
     config = GatewayConfig(
         runtime_dir=tmp_path,
         container_worker_codex_auth_mode="chatgpt_subscription",
@@ -99,7 +102,7 @@ def test_session_private_route_override_also_prevents_subscription_dispatch(tmp_
         session_id="codex-private",
         allowed_tools=[],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
-        metadata={"model_provider_mode": "local_openai"},
+        metadata={"model_provider_mode": model_provider_mode},
     )
 
     turn = container_codex_turn_spec(

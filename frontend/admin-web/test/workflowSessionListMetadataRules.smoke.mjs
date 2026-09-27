@@ -66,19 +66,21 @@ function createWorkflowDocument() {
           id: "query-1",
           display_name: "Find sessions",
           type: "query:session:list",
-          metadata_equals: {
-            "task.pr.id": 42,
-            "task.code": "42",
-            user: {
-              name: "Jesper",
-              age: 42,
+          config: {
+            metadata_equals: {
+              "task.pr.id": 42,
+              "task.code": "42",
+              user: {
+                name: "Jesper",
+                age: 42,
+              },
             },
+            metadata_exists: ["user.name"],
+            metadata_prefix: {
+              "task.branch": "feature/",
+            },
+            state: "active",
           },
-          metadata_exists: ["user.name"],
-          metadata_prefix: {
-            "task.branch": "feature/",
-          },
-          state: "active",
         },
       ],
       edges: [],
@@ -377,15 +379,15 @@ test("workflow editor exposes query session metadata filters as metadata rules",
   await page.getByRole("button", { name: "Save workflow" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
   assert.equal(saveRequests.length, 1);
-  assert.deepEqual(saveRequests[0].config.queries[0].metadata_equals, {
+  assert.deepEqual(saveRequests[0].config.queries[0].config.metadata_equals, {
     "task.pr.id": 42,
     "task.code": "42",
     "user.name": "Jesper",
     "user.age": 42,
     "task.owner": "Jesper",
   });
-  assert.deepEqual(saveRequests[0].config.queries[0].metadata_exists, ["user.name"]);
-  assert.deepEqual(saveRequests[0].config.queries[0].metadata_prefix, {
+  assert.deepEqual(saveRequests[0].config.queries[0].config.metadata_exists, ["user.name"]);
+  assert.deepEqual(saveRequests[0].config.queries[0].config.metadata_prefix, {
     "task.branch": "feature/",
   });
 
@@ -404,10 +406,10 @@ test("workflow editor exposes query session metadata filters as metadata rules",
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
   assert.equal(saveRequests.length, 2);
   assert.equal(
-    saveRequests[1].config.queries[0].metadata_prefix,
+    saveRequests[1].config.queries[0].config.metadata_prefix,
     "${{trigger-1.feedback.metadata.prefix_filter}}",
   );
-  assert.equal(saveRequests[1].config.queries[0].state, "${{trigger-1.session_state}}");
+  assert.equal(saveRequests[1].config.queries[0].config.state, "${{trigger-1.session_state}}");
 
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);

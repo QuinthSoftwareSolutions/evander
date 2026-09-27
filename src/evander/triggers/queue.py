@@ -208,6 +208,39 @@ class SqliteTriggerEventQueue:
             ).fetchall()
         return [self._record_from_row(row) for row in rows]
 
+    def list_active_summaries(self) -> list[dict[str, Any]]:
+        """Read queue display metadata without materializing event payloads."""
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT event_id, trigger_id, trigger_type, trace_id, delivery_state,
+                       occurred_at, inflight_at, delivered_at, error
+                FROM trigger_events
+                WHERE delivery_state != 'delivered'
+                ORDER BY occurred_at ASC, event_id ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_activity_summaries_between(
+        self, *, start_at: datetime, end_at: datetime
+    ) -> list[dict[str, Any]]:
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT event_id, trigger_id, trigger_type, trace_id, delivery_state,
+                       occurred_at, inflight_at, delivered_at, error,
+                       json_extract(payload_json, '$.started_at') AS started_at,
+                       json_extract(payload_json, '$.finished_at') AS finished_at,
+                       json_extract(payload_json, '$.dismissed_at') AS dismissed_at
+                FROM trigger_events
+                WHERE COALESCE(delivered_at, inflight_at, occurred_at) BETWEEN ? AND ?
+                ORDER BY COALESCE(delivered_at, inflight_at, occurred_at) ASC, event_id ASC
+                """,
+                (datetime_to_storage(start_at), datetime_to_storage(end_at)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_activity_between(
         self, *, start_at: datetime, end_at: datetime
     ) -> list[TriggerQueueRecord]:

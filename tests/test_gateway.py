@@ -1,3 +1,5 @@
+
+from gateway_tool_support import call_tool as _call_tool
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import importlib
@@ -60,16 +62,6 @@ from evander.worker.models import (
     WorkerMssqlDatabaseState,
 )
 from config_helpers import canonical_workflow_payload, canonicalize_workflow_files
-
-
-def _call_tool(server, name: str, arguments: dict[str, object]):
-    result = asyncio.run(server.call_tool(name, arguments))
-    if isinstance(result, tuple) and len(result) == 2:
-        structured = result[1]
-        if isinstance(structured, dict) and set(structured) == {"result"}:
-            return structured["result"]
-        return structured
-    return result
 
 
 def _call_tool_with_context(
@@ -4124,14 +4116,3 @@ def test_gateway_app_runs_mounted_mcp_lifespan_on_startup(tmp_path: Path) -> Non
         assert mcp_session_manager._task_group is not None
 
     assert mcp_session_manager._task_group is None
-
-
-def test_gateway_package_exports_entry_points() -> None:
-    import evander.gateway as gateway_package
-    from evander.gateway.app import create_app as canonical_create_app
-    from evander.gateway.cli import main as canonical_main
-    from evander.gateway.server import create_server as canonical_create_server
-
-    assert gateway_package.create_app is canonical_create_app
-    assert gateway_package.create_server is canonical_create_server
-    assert gateway_package.main is canonical_main

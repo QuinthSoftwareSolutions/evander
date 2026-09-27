@@ -215,7 +215,10 @@ class AgentConsultationProfile(BaseModel):
     agent_provider: str = Field(default="codex", min_length=1)
     model: str = Field(min_length=1)
     model_provider_mode: (
-        Literal["openai_public", "azure_openai", "anthropic", "local_openai"] | None
+        Literal[
+            "openai_public", "azure_openai", "anthropic", "local_openai", "openrouter"
+        ]
+        | None
     ) = None
     container_image: str | None = None
     timeout_seconds: int = Field(default=180, ge=15, le=3600)
@@ -405,14 +408,17 @@ class GatewayConfig(BaseModel):
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
-    model_provider_mode: Literal["openai_public", "azure_openai", "anthropic", "local_openai"] = (
-        Field(
-            default="openai_public",
-            validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
-        )
+    model_provider_mode: Literal[
+        "openai_public", "azure_openai", "anthropic", "local_openai", "openrouter"
+    ] = Field(
+        default="openai_public",
+        validation_alias=AliasChoices("model_provider_mode", "openai_provider_mode"),
     )
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
+    openrouter_api_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_api_key_env: str = "OPENROUTER_API_KEY"
+    openrouter_model_routes: dict[str, str] = Field(default_factory=dict)
     local_openai_api_base_url: str = "http://127.0.0.1:11434/v1"
     local_openai_api_key: str = "ollama"
     local_openai_provider_name: str = "local_openai"
@@ -611,6 +617,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_npm_registry_url",
         "azure_openai_endpoint",
         "openai_api_base_url",
+        "openrouter_api_base_url",
         "local_openai_api_base_url",
         "anthropic_api_base_url",
         "qdrant_base_url",
@@ -672,6 +679,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_npm_registry_url",
         "azure_openai_endpoint",
         "openai_api_base_url",
+        "openrouter_api_base_url",
         "local_openai_api_base_url",
         "anthropic_api_base_url",
         "qdrant_base_url",
@@ -725,6 +733,43 @@ class GatewayConfig(BaseModel):
             return value
         text = str(value).strip()
         return text or None
+
+    @field_validator("openrouter_api_key_env", mode="before")
+    @classmethod
+    def normalize_openrouter_api_key_env(cls, value: object) -> object:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("openrouter_api_key_env cannot be empty")
+        return text
+
+    @field_validator("openrouter_model_routes", mode="before")
+    @classmethod
+    def normalize_openrouter_model_routes(cls, value: object) -> dict[str, str]:
+        if value is None or not isinstance(value, dict):
+            raise ValueError("openrouter_model_routes must be a JSON object")
+        normalized: dict[str, str] = {}
+        for raw_model, raw_provider in value.items():
+            if not isinstance(raw_model, str) or not isinstance(raw_provider, str):
+                raise ValueError("openrouter_model_routes keys and values must be strings")
+            model = str(raw_model or "").strip()
+            provider = str(raw_provider or "").strip()
+            if not model:
+                raise ValueError("openrouter_model_routes keys cannot be empty")
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", model):
+                raise ValueError(
+                    "openrouter_model_routes keys must be exact model IDs without "
+                    "aliases, variants, presets, or patterns"
+                )
+            if model.casefold().startswith("openrouter/"):
+                raise ValueError("openrouter_model_routes cannot approve OpenRouter routers")
+            if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", provider):
+                raise ValueError(
+                    f"openrouter_model_routes[{model!r}] requires one provider endpoint slug"
+                )
+            if model in normalized:
+                raise ValueError(f"duplicate openrouter_model_routes key: {model!r}")
+            normalized[model] = provider
+        return normalized
 
     @field_validator("container_worker_codex_auth_mode", mode="before")
     @classmethod
@@ -1106,7 +1151,9 @@ class GatewayConfig(BaseModel):
     @property
     def openai_provider_mode(
         self,
-    ) -> Literal["openai_public", "azure_openai", "anthropic", "local_openai"]:
+    ) -> Literal[
+        "openai_public", "azure_openai", "anthropic", "local_openai", "openrouter"
+    ]:
         return self.model_provider_mode
 
 

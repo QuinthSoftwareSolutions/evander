@@ -205,7 +205,7 @@
       "all_detail_read_bytes_including_summary": 24495
     },
     {
-      "fixture": "Truman-management",
+      "fixture": "Evander-management",
       "mode": "fresh",
       "wake_before": {
         "characters": 29360,
@@ -251,7 +251,7 @@
       "all_detail_read_bytes_including_summary": 28826
     },
     {
-      "fixture": "Truman-management",
+      "fixture": "Evander-management",
       "mode": "retained",
       "wake_before": {
         "characters": 27837,

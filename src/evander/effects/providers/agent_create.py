@@ -19,6 +19,7 @@ from evander.messaging.targets import load_communication_targets_config
 from evander.provider_config import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
     normalize_model_provider_mode_override,
+    validate_openrouter_session,
 )
 from evander.services import parse_teams_target
 from evander.session_auth import ensure_session_mcp_auth_token
@@ -617,6 +618,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             image_generation_enabled=effective_image_generation_enabled,
             metadata=metadata,
         )
+        validate_openrouter_session(config, manifest)
         manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,

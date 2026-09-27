@@ -1,10 +1,25 @@
-# Architecture Notes
+# Architecture
+
+Evander separates the host control plane from disposable agent execution. CLI, Admin Web, the MCP
+gateway, workflows, and add-ons share domain services and durable stores. Execution backends run
+agent work in libvirt VMs or containers on dedicated worker VMs.
+
+For source ownership and compatibility entry points, see
+[control-plane implementation boundaries](maintainability-boundaries.md).
 
 ## Components
 
 
-Guest and worker-container networking is default-deny. Reachability is limited to host ports explicitly allowlisted for the deployment, such as SSH/Git (`22`), MCP (`8000`), enabled model/package/HTTP relays and caches (`11434`, `11666`, `11777`, `11881`, `8081`, and `3142`), plus any deliberately configured provider-specific endpoint. MCP is the tool-capability boundary, not the sole host service on that allowlist.
-- Host orchestrator: creates session manifests, launches VMs, and destroys them at the end of a run.
+Guest and worker-container networking is default-deny. Reachability is limited to host ports
+explicitly allowed by the deployment: SSH/Git (`22`), MCP (`8000`), model/package/HTTP relays
+and caches (`11434`, `11666`, `11777`, `11778`, `11881`, `8081`, and `3142`). MCP enforces tool
+capabilities; the other services enforce their own scoped access contracts.
+
+- Admin runtime: `build_admin_runtime` in `src/evander/admin/composition.py` assembles the shared
+  repositories and domain services used by the CLI, gateway, and Admin Web.
+- Workflow runtime: trigger workers record durable events; effect workers evaluate graphs and
+  dispatch actions through the selected execution backend. Session/workspace teardown is an
+  explicit lifecycle action, not an automatic consequence of every completed agent turn.
 - MCP gateway: the MCP capability boundary reachable from guests; it is not the only guest-reachable host service.
 - Connector service: directory-scoped named operations implemented by fixed REST, approved-root
   filesystem, or add-on drivers such as Freshservice; sessions see only their granted operation
@@ -12,7 +27,9 @@ Guest and worker-container networking is default-deny. Reachability is limited t
 - Host Directory service: dedicated directory-scoped filesystem resources with per-session
   list/import/delete grants, descriptor-relative traversal, artifact-backed imports, and
   recoverable quarantine deletes. Agent and trigger payloads never expose configured roots.
-- OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
+- Model relay: the `evander-openai-relay` service supports public OpenAI, Azure OpenAI, Anthropic,
+  local OpenAI-compatible endpoints, and the bounded OpenRouter Codex route. Provider credentials
+  remain on the host; session metadata can override the inherited provider mode.
 - Managed website sessions: the existing HTTP target relay issues temporary browser
   state only for explicitly bound session targets. Admin Web manages directory-scoped
   login profiles, encrypted host credentials, and sanitized login tests through a
@@ -27,8 +44,14 @@ Guest and worker-container networking is default-deny. Reachability is limited t
   directories select a worker but never own its profiles or credentials.
 - NuGet relay: a separate host service that exposes guest-reachable feed endpoints for nuget.org and private Azure Artifacts while keeping private feed credentials on the host.
 - Managed Git service: directory-scoped bare repositories, capability-limited guest intake, pinned ref transactions, publication, and ephemeral worktree ownership.
-- Disposable guests: run agent code and call the MCP gateway over the isolated libvirt network.
-- Audit store: append-only JSONL log for every privileged tool attempt.
+- Execution backends: disposable libvirt VMs or worker containers run agent code. Container
+  sessions retain their assigned worker connection across default-worker changes; a configured
+  `container_workers` catalog permits explicit selection without providing an autoscheduler.
+- Repository index: opt-in, permission-scoped source search and navigation over managed Git,
+  with isolated worker jobs, reusable baselines, and SQLite/SCIP exports. See
+  [repository indexing](repository-indexing.md).
+- Audit store: canonical JSONL evidence plus a rebuildable SQLite query index. A required journal
+  read failure is reported to the operator rather than represented as an empty Tool Calls history.
 
 ## Why This Shape
 
@@ -37,7 +60,7 @@ Guest and worker-container networking is default-deny. Reachability is limited t
 - Guests use the host relay for model inference instead of holding cloud API credentials directly.
 - Guests use host relays for package and model access instead of holding upstream credentials directly.
 - Git handles code transport; MCP remains the control and policy path.
-- Session manifests are the smallest useful policy primitive for v1.
+- Session manifests bind an agent to its directory, tools, resources, expiry, and selected runtime.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
 
 ## Named Subscription Profile Boundary
@@ -118,7 +141,7 @@ Issue workflows now use one host-side abstraction (`local-issues.json`) regardle
   - remote identity and routing data in `metadata.remote`
   - locally cached remote snapshot data in `metadata.proxy_cache`
 
-This keeps Desktop and CLI behavior consistent: listing, selecting, and VM setup always target a
+This keeps Admin Web and CLI behavior consistent: listing, selecting, and VM setup target a
 local issue record first, then optionally forward provider operations.
 
 ### Forwarding path for proxy issues
@@ -216,7 +239,7 @@ bridging, and runtime storage namespacing; add-ons own their domain concepts.
 For example, a hierarchical agent-team module belongs in an add-on package, not
 in core session, workflow, or Admin Web models. See [add-ons](addons.md).
 
-## Host-Driven Feedback Heartbeat (Design)
+## Host-Driven Feedback and Scheduled Wakes
 
 This model keeps feedback polling on the host while preserving host-side policy and secret
 boundaries.
@@ -224,9 +247,9 @@ boundaries.
 ### Poll cadence and latency target
 
 - Azure DevOps PR feedback is polled by `evander-ado-worker`; there is no current host-heartbeat service.
-- `config/ado-worker/config.json` controls cadence with `poll_interval_seconds`. The checked-in example uses `5` seconds, while the daemon fallback is `30` seconds.
+- `config/ado-worker/config.json` controls cadence with `poll_interval_seconds`. Both the
+  checked-in example and `AdoWorkerGlobalConfig` default to `5` seconds.
 - Feedback visibility latency is configuration and workload dependent: approximately one polling interval plus provider and request processing time. A 2-5 minute interval is an optional scaling choice, not the runtime default.
-- Expected operator-to-guest feedback visibility: typically within one poll interval
 - Faster cadences are possible but increase gateway/provider load; slower cadences reduce load but
   increase human feedback latency.
 
@@ -242,7 +265,8 @@ feedback attachments are a separate, policy-controlled path:
 and `communication_copy_artifact_to_workspace` copies the resulting opaque artifact into the guest.
 Provider URLs and credentials are not returned to the agent.
 
-This sequence minimizes payload volume when there is no new feedback and supports explicit at-least-once processing semantics.
+Use `has_pending_feedback` for a non-consuming check. Fetching unread feedback updates the host's
+session read cursor as part of the read; it is not an acknowledgement after the agent finishes work.
 
 ### State model (unread cursor per session)
 
@@ -250,9 +274,13 @@ This sequence minimizes payload volume when there is no new feedback and support
 - `list_unread_feedback` returns:
   - ordered feedback items after the provided cursor
   - a `next_cursor` watermark
-- Cursor advancement rule:
-  - advance only after feedback is successfully persisted/processed
-  - optionally coupled with explicit host acknowledgment/update call
+- Provider ingestion and session consumption have separate cursors. The worker persists fetched
+  feedback before advancing its ingestion cursor.
+- `list_unread_feedback` advances the calling session's read watermark to the returned
+  `next_cursor`. A lost response or failed agent turn does not roll that watermark back.
+- `list_all_feedback` reads the authorized stored history without changing the session cursor;
+  use it to recover already-read items. Keep application-level progress separately if processing
+  must survive a failed turn.
 - Sessions are isolated: cursor `A` for session `X` is never reused for session `Y`.
 - Azure DevOps short and organization/project/repository stream names are treated as aliases only
   when the host PR map binds the PR to one unambiguous scoped repository. Session cursors advance
@@ -275,19 +303,20 @@ This sequence minimizes payload volume when there is no new feedback and support
 
 ### Failure behavior
 
-- **Provider API unavailable:** keep current cursor, log failure, retry next cadence with bounded backoff/jitter; do not skip forward.
-- **Stale/invalid cursor:** host returns cursor error; guest falls back to a safe recovery mode
-  (for example reset to latest checkpoint or request replay from a host-defined baseline), then
-  resumes normal polling.
-- **Partial fetch/processing failure:** treat batch as uncommitted; retain prior cursor and
-  re-fetch on next poll so unread entries are not lost.
-- **Duplicate delivery tolerance:** guest handlers should be idempotent by feedback ID because
-  at-least-once replay can occur during failures.
+- **Provider API unavailable:** inspect the worker error and its next poll; a failed fetch does
+  not establish a new ingestion watermark. A missing ADO PR (`404`) is skipped with a warning.
+- **Partial ingestion:** already-persisted feedback can remain committed. Feedback IDs deduplicate
+  repeated provider results; do not assume a whole poll is one transaction.
+- **Agent failure after an unread fetch:** recover from stored history with `list_all_feedback`.
+  Unread state alone does not prove that the agent completed the requested work.
+- **Repeated processing:** keep replies and other application actions idempotent by feedback ID
+  when recovering or explicitly replaying stored items.
 
 ### Security boundary
 
 - Provider credentials (Discord, email, OpenAI, etc.) remain **host-side only**.
-- Guest has access only to MCP tool interfaces over the private VM network.
+- Guests use MCP for feedback and wake control; model, package, Git, and approved HTTP traffic
+  use their separately restricted host surfaces.
 - The host wake loops exchange only policy-filtered feedback records and cursor metadata, never upstream provider secrets.
 
 ## Trigger Orchestrator Ownership Boundary

@@ -16,7 +16,7 @@ from evander_team_addon.services.domain.dependency_composition_recovery import (
 )
 from evander_team_addon.services.domain.preparation_failures import task_preparation_generation
 from evander_team_addon.services.runtime_service import TeamRuntimeService
-from test_team_addon_repository import (
+from team_repository_support import (
     _command_service,
     _lease_agent_dispatch,
     _register_backend_peer,

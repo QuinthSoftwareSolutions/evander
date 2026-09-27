@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from evander.model_usage.models import ModelInferenceUsageEvent
+from evander.model_usage.cost_balances import UsageCostSummary
 from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
@@ -77,6 +78,31 @@ def _seed_catalog():
     return load_model_pricing_catalog(default_model_pricing_catalog_seed_path())
 
 
+@pytest.mark.parametrize(
+    ("model", "rule_id", "expected_total"),
+    [
+        ("gpt-6-sol", "openai:gpt-6-sol:text:2026-09-22", Decimal("0.012")),
+        ("gpt-6-luna", "openai:gpt-6-luna:text:2026-09-22", Decimal("0.0006")),
+    ],
+)
+def test_seed_catalog_prices_current_gpt6_models(
+    model: str, rule_id: str, expected_total: Decimal
+) -> None:
+    event = _event(
+        model=model,
+        input_tokens=1000,
+        output_tokens=1000,
+        total_tokens=2000,
+        occurred_at=datetime(2026, 9, 22, 12, 0, tzinfo=UTC),
+    )
+
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == rule_id
+    assert estimate.estimated_total == expected_total
+
+
 def test_openai_pricing_estimates_cached_input_costs() -> None:
     catalog = _seed_catalog()
     event = _event(
@@ -101,6 +127,62 @@ def test_openai_pricing_estimates_cached_input_costs() -> None:
     assert estimate.output_cost == Decimal("0.007")
     assert estimate.estimated_total == Decimal("0.008435")
     assert extract_cached_input_tokens(event) == 200
+
+
+def test_openrouter_provider_reported_cost_is_authoritative_and_distinct() -> None:
+    event = _event(
+        provider="openrouter",
+        model="openai/gpt-5.4",
+        raw_usage_metadata={
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "total_tokens": 1500,
+                "cost": "0.01234",
+                "cost_details": {"upstream_inference_cost": 0.011},
+            }
+        },
+    )
+
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+
+    assert estimate.status == "reported"
+    assert estimate.reported_total == Decimal("0.01234")
+    assert estimate.estimated_total is None
+    assert estimate.total == Decimal("0.01234")
+    assert estimate.model_dump()["cost_source"] == "provider_reported"
+
+    summary = UsageCostSummary()
+    summary.add_event(event, _seed_catalog())
+    assert summary.reported_cost_usd == Decimal("0.01234")
+    assert summary.estimated_cost_usd == Decimal("0")
+    assert summary.total_cost_usd == Decimal("0.01234")
+    assert summary.public_payload()["coverage_status"] == "complete"
+
+
+@pytest.mark.parametrize("cost", [0, "0.1234"])
+@pytest.mark.parametrize("usage_status", ["available", "usage_unavailable"])
+def test_openrouter_reported_cost_needs_no_catalog(cost, usage_status):
+    event = _event(provider="openrouter", raw_usage_metadata={"usage": {"cost": cost}},
+                   normalized_usage_status=usage_status)
+    estimate = estimate_model_usage_cost(event, None)
+    assert estimate.reported_total == Decimal(str(cost))
+    assert estimate.estimated_total is None
+    summary = UsageCostSummary()
+    summary.add_event(event, None)
+    restored = UsageCostSummary.from_storage_payload(summary.storage_payload())
+    assert restored.total_cost_usd == Decimal(str(cost))
+    restored.apply(summary, sign=-1)
+    assert restored.total_cost_usd == 0
+    assert restored.events_count == 0
+
+
+@pytest.mark.parametrize("cost", [None, -1, "NaN", "Infinity", True, [], "invalid"])
+def test_invalid_openrouter_cost_is_unavailable(cost):
+    event = _event(provider="openrouter", raw_usage_metadata={"usage": {"cost": cost}})
+    estimate = estimate_model_usage_cost(event, _seed_catalog())
+    assert estimate.total is None
+    assert estimate.status == "pricing_unavailable"
 
 
 def test_openai_pricing_applies_long_context_and_batch_multipliers() -> None:
@@ -365,7 +447,7 @@ def test_seed_default_model_pricing_catalog_preserves_operator_edits(tmp_path, m
     monkeypatch.delenv("EVANDER_MODEL_PRICING_PATH", raising=False)
     catalog_path = seed_default_model_pricing_catalog(tmp_path)
     seeded_payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert seeded_payload["version"] == "openai-anthropic-2026-07-30"
+    assert seeded_payload["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
 
     operator_payload = _pricing_catalog_payload(
         version="operator-pricing",
@@ -416,7 +498,7 @@ def test_seed_default_model_pricing_catalog_ignores_pristine_legacy_seed(
     )
 
     payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert payload["version"] == "openai-anthropic-2026-07-30"
+    assert payload["version"] == "openai-anthropic-2026-09-22+gpt-6-sol-luna"
 
 
 def test_openai_pricing_prefers_service_tier_specific_rules() -> None:

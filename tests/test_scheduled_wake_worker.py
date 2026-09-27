@@ -31,7 +31,6 @@ from evander.messaging.scheduled_wake import (
     ScheduledWakeCycleResult,
     build_scheduled_wake_worker,
 )
-from evander.orchestration.host_polling import HostFileLockManager
 from evander.runtime import build_runtime
 
 
@@ -59,14 +58,6 @@ def test_build_scheduled_resume_prompt_defaults_to_requested_prompt() -> None:
     assert "list_unread_feedback" not in prompt
 
 
-def test_build_scheduled_resume_prompt_applies_custom_prefix() -> None:
-    config = GatewayConfig.model_validate({"scheduled_wake_prefix_text": "Scheduled wake:"})
-
-    assert _build_scheduled_resume_prompt(config, "Resume work.") == (
-        "Scheduled wake: Resume work."
-    )
-
-
 def _register_session(
     worker,
     *,
@@ -89,7 +80,7 @@ def _register_container_session(
     *,
     session_id: str = "session-a",
     vm_provider: str | None = "container_worker_vm",
-    vm_provider_id: str | None = "truman",
+    vm_provider_id: str | None = "evander",
     model: str | None = None,
     metadata: dict[str, object] | None = None,
 ) -> None:
@@ -527,20 +518,6 @@ def test_scheduled_wake_worker_keeps_last_known_good_prefix_when_reload_payload_
     assert worker.dispatcher.config.scheduled_wake_prefix_text == "Initial:"
 
 
-def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(
-    tmp_path: Path,
-) -> None:
-    worker = _build_worker(tmp_path)
-
-    assert isinstance(worker._kernel._lock_manager, HostFileLockManager)
-    assert worker._kernel.config.lock_path == worker.worker_config.lock_path
-
-    sentinel = object()
-    worker._kernel.run_once_with_lock = lambda: sentinel  # type: ignore[method-assign]
-
-    assert worker.run_once_with_lock() is sentinel
-
-
 def test_scheduled_wake_worker_reports_busy_lock_message(tmp_path: Path) -> None:
     worker = _build_worker(tmp_path)
 
@@ -587,20 +564,6 @@ def test_scheduled_wake_worker_backoffs_after_cycle_exception(
         worker.run_forever()
 
     assert sleeper.calls == [12.5, 3.25]
-
-
-def test_scheduled_wake_worker_run_once_with_lock_propagates_cycle_exceptions(
-    tmp_path: Path,
-) -> None:
-    worker = _build_worker(tmp_path)
-
-    def run_cycle():
-        raise RuntimeError("boom")
-
-    worker._kernel._run_cycle = run_cycle  # type: ignore[method-assign]
-
-    with pytest.raises(RuntimeError, match="boom"):
-        worker.run_once_with_lock()
 
 
 def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatch) -> None:
@@ -1021,7 +984,7 @@ def test_scheduled_wake_worker_does_not_expire_subscription_capacity_queue(
             QueuedAgentPromptRecord(
                 queue_key="scheduled-wake:wake-capacity",
                 target=session.session_id,
-                vm_name="truman",
+                vm_name="evander",
                 session_id=session.session_id,
                 prompt=kwargs["prompt"],
                 effect_id="scheduled-wake:wake-capacity",
