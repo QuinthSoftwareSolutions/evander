@@ -586,6 +586,15 @@ and receives only the new in-memory snapshot. Auth and refresh responses are red
 logs. This integration uses Codex app-server's experimental external-auth API and should be
 revalidated when upgrading Codex.
 
+Startup emits `codex_subscription_startup` timing records and stores a
+`codex_subscription_startup_ms` map in job metadata. Its `process_start`, `account_login`,
+`thread_open` and `turn_start` durations isolate app-server initialization, authentication,
+thread creation/resumption and turn submission. Completed or failed phases retain their timings.
+These durations exclude container creation and do not measure time to the first model response.
+Turn preflight checks authentication and rate limits without fetching display-only account-usage
+totals; `worker_subscription_preflight` logs its duration separately, before job creation.
+Operator status requests continue to include usage telemetry.
+
 Subscription containers retain the session's normal `CODEX_HOME` thread and skill directories,
 but the worker overlays its metered relay `config.toml` and legacy `/home/agent/.codex/config.toml`
 with worker-owned read-only subscription configuration. The overlay forces ChatGPT authentication,

@@ -40,13 +40,19 @@ def create_teams_tools(
         since_cursor: str | None = None,
         before_cursor: str | None = None,
         limit: int | None = None,
+        include_metadata: bool = False,
     ) -> dict[str, Any]:
+        """Read messages with compact sender, reply and attachment details.
+
+        Set include_metadata only when the full provider payload is needed.
+        """
         args = {
             "session_id": session_id,
             "since_cursor": since_cursor,
             "before_cursor": before_cursor,
             "limit": limit,
             "channel_target": channel_target,
+            "include_metadata": include_metadata,
         }
         try:
             if limit is not None and limit < 1:

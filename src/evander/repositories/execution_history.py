@@ -460,13 +460,20 @@ def _snapshot_directory_path(
     if not config_revision:
         return None
     row = connection.execute(
-        "SELECT payload_json FROM workflow_config_snapshots WHERE revision = ?",
+        """
+        SELECT CASE WHEN json_valid(payload_json) THEN
+            CASE WHEN json_type(payload_json, '$.workflow_graphs') = 'array'
+                THEN json_extract(payload_json, '$.workflow_graphs') END
+            END AS graphs_json
+        FROM workflow_config_snapshots WHERE revision = ?
+        """,
         (config_revision,),
     ).fetchone()
-    if row is None:
+    if row is None or row["graphs_json"] is None:
         return None
-    snapshot = json_loads_object(row["payload_json"])
-    graphs = snapshot.get("workflow_graphs")
+    # The rest of a snapshot can contain megabytes of prompts and provider
+    # config. Only graph membership is needed to preserve historical scope.
+    graphs = json.loads(row["graphs_json"])
     if not isinstance(graphs, list):
         return None
     paths: set[str] = set()

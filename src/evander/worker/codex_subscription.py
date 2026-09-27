@@ -5,7 +5,9 @@ import os
 import shutil
 import stat
 import threading
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -61,6 +63,7 @@ class CodexSubscriptionTurnRunner:
         self._thread_id: str | None = None
         self._turn_id: str | None = None
         self._deferral: CodexSubscriptionDeferral | None = None
+        self._startup_timings_ms: dict[str, float] = {}
         self._process: CodexAppServerProcess | None = None
         self._thread: threading.Thread | None = None
         self._log_lock = threading.Lock()
@@ -125,22 +128,26 @@ class CodexSubscriptionTurnRunner:
                     raise CodexAppServerError(
                         "Codex subscription turn was cancelled before startup"
                     )
-                process.start()
+                with self._startup_phase("process_start"):
+                    process.start()
             if self._cancelled.is_set():
                 raise CodexAppServerError("Codex subscription turn was cancelled")
-            process.request("account/login/start", self._tokens.app_server_login_params())
-            self._thread_id = self._open_thread(process)
+            with self._startup_phase("account_login"):
+                process.request("account/login/start", self._tokens.app_server_login_params())
+            with self._startup_phase("thread_open"):
+                self._thread_id = self._open_thread(process)
             self._append_log(f"session id: {self._thread_id}\n")
-            turn_result = process.request(
-                "turn/start",
-                {
-                    "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": self.turn.prompt}],
-                    "cwd": self.cwd,
-                    "model": self.turn.model,
-                    "approvalPolicy": "never",
-                },
-            )
+            with self._startup_phase("turn_start"):
+                turn_result = process.request(
+                    "turn/start",
+                    {
+                        "threadId": self._thread_id,
+                        "input": [{"type": "text", "text": self.turn.prompt}],
+                        "cwd": self.cwd,
+                        "model": self.turn.model,
+                        "approvalPolicy": "never",
+                    },
+                )
             turn_value = turn_result.get("turn")
             if isinstance(turn_value, dict):
                 self._turn_id = str(turn_value.get("id") or "").strip() or None
@@ -210,6 +217,20 @@ class CodexSubscriptionTurnRunner:
                         "codex_subscription_completion_marker_failed exception_class=%s",
                         exc.__class__.__name__,
                     )
+
+    @contextmanager
+    def _startup_phase(self, phase: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            self._startup_timings_ms[phase] = elapsed_ms
+            logger.info(
+                "codex_subscription_startup phase=%s duration_ms=%.3f",
+                phase,
+                elapsed_ms,
+            )
 
     def _open_thread(self, process: CodexAppServerProcess) -> str:
         thread_id = self.turn.resume_thread_id
@@ -325,6 +346,7 @@ class CodexSubscriptionTurnRunner:
             return
         metadata: dict[str, Any] = {
             "codex_auth_mode": "chatgpt_subscription",
+            "codex_subscription_startup_ms": dict(self._startup_timings_ms),
             "subscription_profile_id": (
                 self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
             ),
