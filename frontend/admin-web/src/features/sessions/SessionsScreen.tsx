@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { ReasoningEffortSelect } from "../admin/ReasoningEffortSelect";
+import type { ReasoningEffortCatalog } from "../admin/reasoningEffort";
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { JsonObjectKeyValueEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
@@ -63,6 +65,9 @@ type SessionRecord = {
   vm_provider?: string | null;
   vm_provider_id?: string | null;
   model: string | null;
+  reasoning_effort?: string | null;
+  agent_harness?: string;
+  effective_model_provider_mode?: string;
   model_provider_mode?: string | null;
   directory_path: string;
   allowed_tools?: string[];
@@ -229,6 +234,7 @@ type CatalogOption = {
 };
 
 type SessionCatalogResponse = {
+  reasoning_effort_catalog?: ReasoningEffortCatalog;
   tool_options: CatalogOption[];
   model_options?: CatalogOption[];
   model_provider_modes?: CatalogOption[];
@@ -805,6 +811,7 @@ export function SessionsScreen() {
   const [renewExtension, setRenewExtension] = useState("1d");
   const [showRenewModal, setShowRenewModal] = useState(false);
   const [modelDraft, setModelDraft] = useState("");
+  const [reasoningEffortDraft, setReasoningEffortDraft] = useState("");
   const [modelDirty, setModelDirty] = useState(false);
   const [modelBoundSessionId, setModelBoundSessionId] = useState("");
   const [toolsDraft, setToolsDraft] = useState<string[]>([]);
@@ -1003,10 +1010,12 @@ export function SessionsScreen() {
         const sessionId = payload.session.session_id;
         if (modelBoundSessionId !== sessionId) {
           setModelDraft(payload.session.model ?? "");
+          setReasoningEffortDraft(payload.session.reasoning_effort ?? "");
           setModelDirty(false);
           setModelBoundSessionId(sessionId);
         } else if (!modelDirty) {
           setModelDraft(payload.session.model ?? "");
+          setReasoningEffortDraft(payload.session.reasoning_effort ?? "");
         }
         if (toolsBoundSessionId !== sessionId) {
           setToolsDraft(sortTools(payload.session.allowed_tools ?? []));
@@ -1573,7 +1582,7 @@ export function SessionsScreen() {
 
   async function saveSessionSettings() {
     if (!selectedSession || (!modelDirty && !toolsDirty && !policyDirty)) return;
-    if (modelDirty && !modelDraft.trim()) {
+    if (modelDirty && modelDraft !== (selectedSession.model ?? "") && !modelDraft.trim()) {
       setError("Model is required.");
       setStatus(null);
       return;
@@ -1595,7 +1604,10 @@ export function SessionsScreen() {
           `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/model`,
           {
             method: "PUT",
-            body: JSON.stringify({ model: modelDraft.trim() }),
+            body: JSON.stringify({
+              ...(modelDraft.trim() ? { model: modelDraft.trim() } : {}),
+              reasoning_effort: reasoningEffortDraft || null,
+            }),
           },
         );
         setModelDirty(false);
@@ -1990,6 +2002,8 @@ export function SessionsScreen() {
                     <div>
                       <dt>Model</dt>
                       <dd>{selectedSession.model ?? "Unset"}</dd>
+                      <dt>Reasoning effort</dt>
+                      <dd>{selectedSession.reasoning_effort ?? (selectedSession.agent_harness === "codex" ? "Default (high)" : "Provider default")}</dd>
                     </div>
                     {selectedSession.runtime_image ? (
                       selectedSession.runtime_image.backend === "container_worker_vm" ? (
@@ -2229,6 +2243,11 @@ export function SessionsScreen() {
                           ))}
                         </datalist>
                       </label>
+                      <ReasoningEffortSelect catalog={catalog?.reasoning_effort_catalog}
+                        harness={selectedSession.agent_harness || "codex"} model={modelDraft}
+                        route={selectedSession.effective_model_provider_mode}
+                        value={reasoningEffortDraft} disabled={mutationLocked}
+                        onChange={(value) => { setReasoningEffortDraft(value); setModelDirty(true); setStatus(null); }} />
                       <label className="field-stack">
                         <span>Model relay</span>
                         <p className="field-description">

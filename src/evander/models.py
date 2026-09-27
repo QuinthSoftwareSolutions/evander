@@ -20,6 +20,7 @@ from pydantic import (
     model_validator,
 )
 
+from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 from evander.ado_query_mode import AdoQueryMode, normalize_ado_query_mode, validate_ado_query_mode
 from evander.approval_notification_targets import (
     normalize_approval_notification_target_ids,
@@ -597,6 +598,7 @@ class SessionManifest(BaseModel):
     vm_provider: str | None = None
     vm_provider_id: str | None = None
     model: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
     codex_auth_mode: CodexAuthMode | None = None
     subscription_profile_id: str | None = None
     directory_path: str = "root"
@@ -1066,6 +1068,8 @@ class VmActionResult(BaseModel):
     dispatch_id: str | None = None
     session_id: str | None = None
     model: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    reasoning_effort_source: ReasoningEffortSource | None = None
     model_provider_mode: str | None = None
     local_inference_capacity_enabled: bool = False
     local_inference_active_count: int = 0
@@ -1077,6 +1081,8 @@ class VmActionResult(BaseModel):
 
 
 class AgentPromptQueueRecord(BaseModel):
+    reasoning_effort: ReasoningEffort | None = None
+    reasoning_effort_source: ReasoningEffortSource | None = None
     queue_key: str
     effect_id: str
     dispatch_id: str | None = None

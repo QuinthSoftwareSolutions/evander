@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { ReasoningEffortSelect } from "../admin/ReasoningEffortSelect";
+import type { ReasoningEffortCatalog } from "../admin/reasoningEffort";
 import { fetchJson, formatTimestamp, isApiAuthError } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
@@ -703,6 +705,9 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
   return {
     session_id: sessionId,
     model: hostString(rawPolicy, "model"),
+    reasoning_effort: hostString(rawPolicy, "reasoning_effort"),
+    agent_harness: hostString(rawPolicy, "agent_harness") || undefined,
+    effective_model_provider_mode: hostString(rawPolicy, "effective_model_provider_mode") || undefined,
     expires_at: hostString(rawPolicy, "expires_at"),
     allowed_tools: hostStringList(rawPolicy, "allowed_tools"),
     connector_grants: Object.fromEntries(
@@ -915,6 +920,8 @@ export function AgentsPage() {
   const [logView, setLogView] = useState<AgentLogView>("executions");
   const [logReloadNonce, setLogReloadNonce] = useState(0);
   const [agentPrompt, setAgentPrompt] = useState("");
+  const [promptReasoningEffort, setPromptReasoningEffort] = useState("");
+  const [reasoningCatalog, setReasoningCatalog] = useState<ReasoningEffortCatalog | null>(null);
   const [agentPromptResumeThreadId, setAgentPromptResumeThreadId] = useState("");
   const [showPromptForm, setShowPromptForm] = useState(false);
   const [showOperatorSteeringDialog, setShowOperatorSteeringDialog] = useState(false);
@@ -1762,6 +1769,11 @@ export function AgentsPage() {
   function openPromptForm() {
     if (!selectedAgent) return;
     setAgentPromptResumeThreadId(promptThreadIdForAgent(selectedAgent));
+    setPromptReasoningEffort("");
+    setReasoningCatalog(null);
+    void loadAgentCreateOptions(selectedAgent.directory_path, "", selectedAgent.backend === "container_worker_vm" ? selectedAgent.session_id ?? "" : "")
+      .then((options) => setReasoningCatalog(options.reasoning_effort_catalog ?? null))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Could not load reasoning levels."));
     setShowPromptForm(true);
     setShowEditForm(false);
     setShowSkillInstallForm(false);
@@ -2615,6 +2627,16 @@ export function AgentsPage() {
                           onChange={(event) => setAgentPrompt(event.target.value)}
                         />
                       </label>
+                      <ReasoningEffortSelect
+                        catalog={reasoningCatalog}
+                        prompt
+                        harness={String(selectedAgentPolicy?.agent_harness || selectedAgentPolicy?.metadata.agent_provider || selectedAgentPolicy?.metadata.agent_harness || "codex")}
+                        model={selectedAgentPolicy?.model}
+                        route={String(selectedAgentPolicy?.effective_model_provider_mode || selectedAgentPolicy?.metadata.model_provider_mode || "")}
+                        inheritedEffort={selectedAgentPolicy?.reasoning_effort}
+                        value={promptReasoningEffort}
+                        onChange={setPromptReasoningEffort}
+                      />
                       <label className="field-stack">
                         <span>Resume thread ID</span>
                         <input
@@ -2632,6 +2654,7 @@ export function AgentsPage() {
                         onClick={() =>
                           void runAgentAction("prompt-agent", {
                             prompt: agentPrompt.trim(),
+                            reasoning_effort: promptReasoningEffort || null,
                             resume_thread_id: agentPromptResumeThreadId.trim() || null,
                           })
                         }
@@ -2884,6 +2907,9 @@ export function AgentsPage() {
                                 </span>
                                 {record.subscription_profile_id ? (
                                   <span>Profile: {record.subscription_profile_id}</span>
+                                ) : null}
+                                {record.reasoning_effort_source ? (
+                                  <span>Effort: {record.reasoning_effort ?? "Provider default"} ({record.reasoning_effort_source})</span>
                                 ) : null}
                                 {record.queue_reason ? <span>Reason: {record.queue_reason}</span> : null}
                                 {record.retry_not_before ? (

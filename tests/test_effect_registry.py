@@ -475,6 +475,8 @@ class _AdminServiceStub:
         target: str,
         prompt: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -487,6 +489,8 @@ class _AdminServiceStub:
                 "target": target,
                 "prompt": prompt,
                 "model": model,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_effort_source": reasoning_effort_source,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -4641,6 +4645,7 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
             vm_provider="container_worker_vm",
             vm_provider_id="target-1",
             model="gpt-5.4-mini",
+            reasoning_effort="high",
             metadata={"execution_backend": "container_worker_vm", "agent_provider": "codex"},
         )
     )
@@ -4683,9 +4688,12 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
             "prompt": "Important task instructions\n" + ("history\n" * 800) + "Final action",
             "model": "gpt-5.4-mini",
             "directory_path": "root",
+            "reasoning_effort": None,
         },
         input_payload={},
         outputs={
+            "reasoning_effort": "low",
+            "reasoning_effort_source": "prompt",
             "dispatch_id": "dispatch-1",
             "thread_id": "thread-1",
             "execution_backend": "container_worker_vm",
@@ -4724,6 +4732,8 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
     assert started.session_id == "session-1"
     assert started.metadata["context_retry_attempt"] == 1
     assert started.codex_turn is not None
+    assert started.codex_turn.reasoning_effort == "low"
+    assert started.codex_turn.reasoning_effort_source == "prompt"
     assert started.codex_turn.auth_mode is CodexAuthMode.METERED_API
     assert started.metadata["context_retry_of_execution_id"] == "agent-old-1"
     assert "Previous agent run hit the model context limit" in started.command
@@ -4755,6 +4765,7 @@ def test_context_exhausted_subscription_retry_is_durably_queued_on_preflight_def
             vm_provider="container_worker_vm",
             vm_provider_id="target-1",
             model="gpt-5.4-mini",
+            reasoning_effort="high",
             codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
             subscription_profile_id="team-a",
             metadata={"execution_backend": "container_worker_vm", "agent_provider": "codex"},
@@ -4814,12 +4825,15 @@ def test_context_exhausted_subscription_retry_is_durably_queued_on_preflight_def
             "prompt": "Important task instructions\n" + ("history\n" * 800) + "Final action",
             "model": "gpt-5.4-mini",
             "directory_path": "root",
+            "reasoning_effort": None,
         },
         input_payload={
             "__node_outputs": {"source": {"value": "kept"}},
             "__for_execution_ids": {"gate": "source-execution"},
         },
         outputs={
+            "reasoning_effort": "low",
+            "reasoning_effort_source": "prompt",
             "dispatch_id": "dispatch-1",
             "execution_backend": "container_worker_vm",
             "execution_id": "agent-old-1",
@@ -4979,6 +4993,7 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
             vm_provider="container_worker_vm",
             vm_provider_id="evander",
             model="gpt-5.4-mini",
+            reasoning_effort="medium",
             metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
@@ -5050,6 +5065,8 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
         "chat:thread-1:msg-1"
     )
     assert queued is not None
+    assert queued.reasoning_effort == "medium"
+    assert queued.reasoning_effort_source == "session"
     assert queued.dispatch_id == "caller-dispatch-1"
     assert queued.metadata["reduced_context_prompt"] == "continue from the compact handoff"
     assert queued.metadata["agent_context_retry_enabled"] == "False"
@@ -7795,6 +7812,7 @@ def test_agent_create_container_upserts_when_session_exists(
             session_id="session-1",
             vm_provider="container_worker_vm",
             model="gpt-5.4",
+            reasoning_effort="medium",
             codex_auth_mode=CodexAuthMode.METERED_API,
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             connector_grants={"manually-assigned": ["read"]},
@@ -7867,6 +7885,7 @@ def test_agent_create_container_upserts_when_session_exists(
     updated = session_repository.get_session("session-1")
     assert updated is not None
     assert updated.model == "gpt-5.5"
+    assert updated.reasoning_effort == "medium"
     assert updated.codex_auth_mode is CodexAuthMode.METERED_API
     assert updated.allowed_tools == [
         ToolName.SET_ISSUE_PLAN,

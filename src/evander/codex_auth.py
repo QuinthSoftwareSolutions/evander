@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
+
 from datetime import datetime
 from enum import Enum
 import re
@@ -72,6 +74,8 @@ class CodexTurnSpec(BaseModel):
     subscription_profile_id: str | None = None
     prompt: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    reasoning_effort: ReasoningEffort | None = None
+    reasoning_effort_source: ReasoningEffortSource | None = None
     resume_thread_id: str | None = None
     resume_mode: Literal["new_context", "same_context"] = "new_context"
     mcp_gateway_url: AnyHttpUrl | None = None

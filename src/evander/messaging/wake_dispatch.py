@@ -56,6 +56,7 @@ from evander.messaging.scheduled_wake_queue import scheduled_wake_queue_key
 from evander.models import WakeDispatchRecord, WakeResumePromptPayload
 from evander.orchestration.host_polling import single_instance_lock
 from evander.provider_config import EffectProviderConfig
+from evander.reasoning_effort import resolve_reasoning_effort
 from evander.runtime import RuntimeContext
 from evander.session_auth import session_mcp_auth_token
 from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
@@ -522,6 +523,14 @@ class HostWakeDispatcher:
             agent_provider,
             worker_config,
         )
+        reasoning = resolve_reasoning_effort(
+            {},
+            session=session,
+            harness=agent_provider or default_agent_provider_for_config(worker_config),
+            model=resolved_model,
+            route=worker_config.model_provider_mode,
+        )
+        wake_metadata = {**(wake_metadata or {}), **reasoning.fields()}
         capacity_admission = self._claim_local_inference_capacity(
             config=worker_config,
             dispatch_id=dispatch_id,
@@ -554,6 +563,7 @@ class HostWakeDispatcher:
                     session_id=binding.session_id,
                     prompt=prompt,
                     model=resolved_model,
+                    **reasoning.fields(),
                     model_provider_mode=worker_config.model_provider_mode,
                     queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
                     vm_user=worker_config.wake_vm_user,
@@ -614,7 +624,11 @@ class HostWakeDispatcher:
             if wake_store is not None:
                 wake_store.record_dispatch(dispatch_record)
             return dispatch_record
-        agent_env = {"AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id)}
+        agent_env = {
+            "AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id),
+            "AGENT_REASONING_EFFORT": reasoning.value or "",
+            "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
+        }
         if agent_provider:
             agent_env["AGENT_PROVIDER"] = agent_provider
         if agent_model:
@@ -844,6 +858,14 @@ class HostWakeDispatcher:
         if not resolved_model:
             resolved_model = default_agent_model_for_provider(agent_provider, base_config)
         try:
+            reasoning = resolve_reasoning_effort(
+                {},
+                session=session,
+                harness=agent_provider or default_agent_provider_for_config(base_config),
+                model=resolved_model,
+                route=base_config.model_provider_mode,
+            )
+            wake_metadata = {**(wake_metadata or {}), **reasoning.fields()}
             backend = build_execution_backend(
                 base_config,
                 admin_service=getattr(self.runtime, "admin_service", None),
@@ -917,6 +939,7 @@ class HostWakeDispatcher:
                     session_id=session_id,
                     prompt=prompt,
                     model=resolved_model,
+                    **reasoning.fields(),
                     model_provider_mode=base_config.model_provider_mode,
                     queue_reason=queue_reason,
                     vm_user=base_config.wake_vm_user,
@@ -985,6 +1008,7 @@ class HostWakeDispatcher:
         command = container_prompt_command(
             prompt=prompt,
             model=resolved_model,
+            **reasoning.fields(),
             resume_thread_id=None,
             session=session,
             agent_provider=agent_provider,
@@ -995,6 +1019,7 @@ class HostWakeDispatcher:
         codex_turn = container_codex_turn_spec(
             prompt=prompt,
             model=resolved_model,
+            **reasoning.fields(),
             resume_thread_id=None,
             session=session,
             config=base_config,
@@ -1025,6 +1050,7 @@ class HostWakeDispatcher:
                                 "resume_mode": effective_resume_mode,
                                 "agent_provider": agent_provider,
                                 "model": resolved_model,
+                                **reasoning.fields(),
                                 "model_provider_mode": base_config.model_provider_mode,
                                 **(
                                     {"codex_auth_mode": codex_turn.auth_mode.value}
@@ -1070,6 +1096,7 @@ class HostWakeDispatcher:
                     session_id=session_id,
                     prompt=prompt,
                     model=resolved_model,
+                    **reasoning.fields(),
                     model_provider_mode=base_config.model_provider_mode,
                     queue_reason=exc.deferral.queue_reason,
                     subscription_profile_id=exc.deferral.profile_id,
@@ -1172,6 +1199,7 @@ class HostWakeDispatcher:
             "vm_user": base_config.wake_vm_user,
             "prompt": prompt,
             "model": resolved_model,
+            **reasoning.fields(),
             "model_provider_mode": base_config.model_provider_mode,
             "request_id": request_id,
             "resume_mode": effective_resume_mode,
@@ -1254,6 +1282,8 @@ class HostWakeDispatcher:
         vm_user: str,
         prompt: str = "",
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         model_provider_mode: str | None = None,
         request_id: str | None = None,
         resume_mode: str = "same_context",
@@ -1275,6 +1305,8 @@ class HostWakeDispatcher:
                 "vm_user": vm_user,
                 "prompt": prompt,
                 "model": model,
+                "reasoning_effort": reasoning_effort,
+                "reasoning_effort_source": reasoning_effort_source,
                 "model_provider_mode": model_provider_mode,
                 "request_id": request_id,
                 "resume_mode": resume_mode,
@@ -1301,6 +1333,8 @@ class HostWakeDispatcher:
         vm_user: str,
         prompt: str = "",
         model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
         model_provider_mode: str | None = None,
         request_id: str | None = None,
         resume_mode: str = "same_context",
@@ -1375,6 +1409,8 @@ class HostWakeDispatcher:
                         session_id=session_id,
                         prompt=prompt,
                         model=model,
+                        reasoning_effort=reasoning_effort,
+                        reasoning_effort_source=reasoning_effort_source,
                         model_provider_mode=(
                             model_provider_mode or self.config.model_provider_mode
                         ),

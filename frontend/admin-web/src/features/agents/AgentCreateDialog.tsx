@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
+import { ReasoningEffortSelect } from "../admin/ReasoningEffortSelect";
 import { Tooltip } from "../admin/Tooltip";
 import { StringListEditor, StringMapEditor } from "../admin/StructuredPolicyInputs";
 import type {
@@ -496,6 +497,11 @@ export function AgentCreateDialog({
                 placeholder={createForm.agentProvider === "claude" ? "claude-sonnet-4-6" : "Directory default"}
               />
             </label>
+            <ReasoningEffortSelect catalog={createOptions?.reasoning_effort_catalog}
+              harness={createForm.agentProvider || (effectiveCreateModelProviderMode === "anthropic" ? "claude" : "codex")}
+              model={createForm.model} route={effectiveCreateModelProviderMode}
+              value={createForm.reasoningEffort}
+              onChange={(value) => setCreateForm((current) => ({ ...current, reasoningEffort: value }))} />
             {createForm.backend === "libvirt_vm" ? (
               <>
                 <label className="field-stack">

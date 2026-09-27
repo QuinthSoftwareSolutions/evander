@@ -4,6 +4,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+from evander.reasoning_effort import normalize_reasoning_effort
 from evander.container_worker_images import resolve_container_worker_image_selector
 from evander.codex_auth import (
     CodexAuthMode,
@@ -111,6 +112,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "directory_path": effect.directory_path,
             "metadata": effect.metadata,
         }
+        if "reasoning_effort" in effect_fields_set:
+            payload["reasoning_effort"] = effect.reasoning_effort
         if codex_auth_mode_provided:
             payload["codex_auth_mode"] = effect.codex_auth_mode
         if subscription_profile_id_provided:
@@ -279,6 +282,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             labels=as_string_mapping(payload.get("labels")),
             model=normalize_optional_string(payload.get("model")),
+            reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
             vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=as_string_list(payload.get("allowed_tools")),
@@ -585,6 +589,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             directory_path=directory_path,
             model=model,
+            reasoning_effort=normalize_reasoning_effort(
+                payload.get("reasoning_effort", getattr(existing_session, "reasoning_effort", None))
+            ),
             codex_auth_mode=codex_auth_mode,
             subscription_profile_id=subscription_profile_id,
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),

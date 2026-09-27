@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
 from evander.host_directories.grants import host_directory_tool_names_for_grants
 from evander.models import SessionManifest, VmActionResult, VmSummary
@@ -891,6 +892,7 @@ def _libvirt_create_vm(
     session_id: str | None = None,
     labels: dict[str, str] | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     vm_user: str = "agent",
     ttl_seconds: int | None = None,
     ttl_hours: int | None = None,
@@ -1074,6 +1076,11 @@ def _libvirt_create_vm(
             manifest.model = None
     from evander.provider_config import validate_openrouter_session
 
+    if reasoning_effort is not None:
+        manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    validate_session_reasoning_effort(
+        manifest, deps.runtime.provider_config.resolve_for_directory(manifest.directory_path)
+    )
     validate_openrouter_session(
         deps.runtime.provider_config.resolve_for_directory(normalized_directory_path),
         manifest,

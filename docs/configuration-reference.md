@@ -857,12 +857,12 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:session:set-image-generation-enabled` | one of `target`, `session_id`, `vm_name`; `enabled` | `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
 | `effect:agent:prepare-reference-repositories` | one of `target`, `session_id`, `vm_name`; `directory_path`; `repositories` | `outputs` |
-| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
-| `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
+| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `reasoning_effort`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
+| `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `reasoning_effort`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:install-skills` | `target`, `codex_skills` | `vm_user`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:agent:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `allowed_source_roots`, `outputs` |
@@ -1006,6 +1006,69 @@ while CPU and memory use the worker/host defaults unless explicitly configured.
 The Team project's `release_policy.resource_limits` editor is the normal
 project-wide control for those disposable verifiers and is separate from an
 ordinary persistent agent's session metadata.
+
+### Agent reasoning effort
+
+Sessions have an optional `reasoning_effort` default. Set it when creating an
+agent, or in **Sessions → Settings → Reasoning effort** after unlocking privileged
+operations. **Agents → Prompt** and the `effect:agent:prompt` and
+`effect:agent:enqueue-prompt` workflow nodes can override it for one prompt.
+`effect:agent:create.reasoning_effort` sets the session default.
+
+Resolution is: non-null prompt override, then the session default, then the harness
+fallback. The existing fallback remains `high` for Codex; Claude Code and Copilot
+omit the flag and use their own defaults. Null or an omitted prompt field inherits
+the session. The native level `none`, where supported, is distinct from null.
+A prompt override does not change the session default. Resumed turns explicitly
+receive the newly resolved value. Queues and retries retain the resolved value
+and `reasoning_effort_source` (`prompt`, `session`, or `default`); changing the
+session affects newly submitted prompts, not captured queue entries. Older queue
+entries without a captured source resolve the current session on dispatch.
+
+| Agent harness | Native control | Execution backends |
+|---|---|---|
+| Codex | `model_reasoning_effort`; subscription app-server `turn/start.effort` | Libvirt and container workers |
+| Claude Code | `--effort` | Libvirt and container workers |
+| Copilot | `--reasoning-effort` | Libvirt |
+
+Codex forwards the setting through public OpenAI, Azure OpenAI, local
+OpenAI-compatible providers (including compatible Ollama models), OpenRouter, and
+ChatGPT subscription runs. The allowed native vocabulary is `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, `max`, and `ultra` for Codex, and `low`, `medium`,
+`high`, `xhigh`, and `max` for Claude Code and Copilot. Each model supports a subset;
+OpenRouter does not accept `ultra`. Evander rejects known unsupported combinations
+before dispatch and filters the session/creation/prompt selectors accordingly.
+Custom model names and deployment aliases show unverified support and forward
+exact native values. Local endpoints may use familiar names for different models,
+so Evander leaves their model support unverified. Upstream providers or organization
+policies can still constrain or map the value; Evander does not emulate effort
+with prompt instructions or token budgets.
+
+The capability hints are centralized in `src/evander/reasoning_effort.py` and
+published in the session and agent-create catalogs. They follow the
+[Codex configuration reference](https://developers.openai.com/codex/config-reference/),
+[OpenAI model catalog](https://developers.openai.com/api/docs/models),
+[Claude Code effort documentation](https://code.claude.com/docs/en/model-config#adjust-effort-level),
+and [Copilot CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference).
+Keep these hints current when adding model families; unknown names remain usable.
+
+```bash
+evander-cli set-session-reasoning-effort example-session --effort medium
+evander-cli resume-agent example-session --message "Review the patch" --reasoning-effort high
+evander-cli set-session-reasoning-effort example-session --clear
+```
+
+`create-session`, `create-vm`, and `create-issue-vm` also accept `--reasoning-effort`. The existing
+`PUT /api/admin/sessions/{session_id}/model` endpoint accepts `model`,
+`reasoning_effort`, or both; it validates and persists the pair atomically.
+An omitted field remains unchanged and `"reasoning_effort": null` clears the
+default. An invalid model/effort pair leaves both stored fields unchanged. These
+updates retain the endpoint's directory ownership and privileged-unlock checks.
+
+Upgrade container workers and their CLI/runtime assets before enabling effort
+settings in the control plane. VM start/resume ships the current runner libraries
+with each dispatch; keep guest CLIs current enough to support their native effort
+flags. Older workers do not understand the new turn fields.
 
 `effect:agent:create.codex_auth_mode` accepts `metered_api` or
 `chatgpt_subscription` for container-worker sessions. Omitting it on an

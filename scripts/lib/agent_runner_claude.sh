@@ -263,6 +263,11 @@ _agent_runner_claude_common_args() {
   if [[ -n "${model}" ]]; then
     dest_ref+=(--model "${model}")
   fi
+  case "${AGENT_REASONING_EFFORT:-}" in
+    "") ;;
+    low|medium|high|xhigh|max) dest_ref+=(--effort "${AGENT_REASONING_EFFORT}") ;;
+    *) echo "Unsupported AGENT_REASONING_EFFORT '${AGENT_REASONING_EFFORT}'." >&2; return 1 ;;
+  esac
   local mcp_config_path
   mcp_config_path="$(_agent_runner_claude_mcp_config_path)" || return 1
   if [[ -n "${mcp_config_path}" ]]; then
