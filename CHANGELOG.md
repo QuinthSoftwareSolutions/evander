@@ -7,6 +7,32 @@
 - Validate known model capabilities, preserve provider defaults, and retain the resolved effort and its source across queues, subscription deferrals, and context retries.
 - Apply session effort to scheduled and Discord wakes, retain it through wake and steering replays, and validate local-model effort against the effective provider route.
 
+## 2026-09-27 - Reduce gateway connection and workflow history write overhead (0.64.3)
+
+- Store MCP connection bindings in SQLite and transactionally update one connection at a time,
+  preserving binding identity, tool snapshots, conflict diagnostics and creation timestamps.
+- Import existing JSON connection history once in a transaction; retain the original snapshot
+  and keep gateway, Admin Web and Team review readers on the same authoritative database.
+- Reuse existing compressed execution-history payloads and scalar indexes when only lifecycle
+  metadata changes, while continuing to update status, scope and source provenance.
+- Keep reused history payloads in a write transaction so concurrent retention cannot remove
+  them before backfill commits their references.
+- Add opt-in DEBUG execution-persistence logs with trace IDs and separate record/history
+  durations, preserving the existing application logging defaults.
+
+## 2026-09-27 - Reduce Teams context and workflow preparation overhead (0.64.2)
+
+- Return compact Teams history metadata by default, retaining message content, sender/session
+  attribution, reply and attachment references, card content, mentions, reactions and edits.
+  Full provider metadata remains available with `include_metadata: true`.
+- Reuse the execution graph for an unchanged configuration revision and read only graph membership
+  from configuration snapshots when recording historical execution scope.
+- Skip display-only account-usage telemetry during subscription turn preflight, retaining fresh
+  authentication, account pinning and capacity checks. Operator status still includes usage.
+- Record subscription startup phase durations in worker logs and job metadata to distinguish
+  process initialization, login, thread opening and turn submission.
+- Add a repeatable synthetic workflow and Teams response-size benchmark.
+
 ## 2026-09-26 - Keep request storage off the event loop (0.64.1)
 
 - Offload MCP authentication, transport persistence, discovery, approval checks and dispatch

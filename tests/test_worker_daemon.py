@@ -5648,7 +5648,7 @@ def test_subscription_job_uses_worker_owned_read_only_completion_signal(
             return ["codex-app-server"]
 
     class SubscriptionBroker:
-        def status(self):
+        def status(self, *, include_usage=True):
             return {
                 "signed_in": True,
                 "available": True,

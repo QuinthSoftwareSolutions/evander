@@ -313,7 +313,9 @@ class CodexAuthBrokerRegistry:
             ) from exc
         broker = self.broker(record.profile_id)
         try:
-            status = broker.status()
+            # Usage totals are dashboard telemetry, not a prerequisite for a
+            # turn. Keep fresh account/capacity checks without that extra RPC.
+            status = broker.status(include_usage=False)
         except CodexAuthBrokerError as exc:
             raise CodexSubscriptionDeferredError(
                 CodexSubscriptionDeferral(

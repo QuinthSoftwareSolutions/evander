@@ -274,6 +274,8 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `model-usage.db`: durable provider-neutral model usage store queried by
   `query:model-usage:list`; it records only usage/provider/correlation metadata
   and does not persist prompt or completion text.
+- `mcp-transport-bindings.db`: MCP connection bindings, last advertised tool snapshots and
+  binding-conflict diagnostics. Individual updates affect only the current connection record.
 - `operator-steering-notes.db`: host-side operator steering notes keyed by
   session and prompt dispatch for legacy relay-delivered steering. Container
   worker steering interrupts the active worker execution and resumes it as a new
@@ -287,6 +289,48 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
+
+### MCP connection-history SQLite cutover
+
+On first startup, the connection repository imports `mcp-transport-bindings.json` into
+`mcp-transport-bindings.db`. Import and its completion marker commit together. Invalid input
+fails startup without committing a partial import. Subsequent startups use SQLite without
+reading or rewriting the legacy JSON file. The original JSON snapshot is retained.
+
+Coordinate the first upgrade across all control-plane processes using this runtime: stop the
+gateway, Admin Web, orchestrators and other old runtime consumers before starting the upgraded
+code. Do not mix old JSON writers and new SQLite writers. Include the new database in runtime
+backups; use SQLite's backup API or stop its writers before copying the database and any WAL.
+
+The retained JSON file is a pre-upgrade snapshot, not a live rollback copy. For a rollback that
+preserves newer connection history, stop all runtime consumers and export the current bindings
+before installing the older code. Run from the deployment directory with its virtual environment:
+
+```python
+import json
+from pathlib import Path
+import sqlite3
+from evander.storage import write_json_atomically
+
+runtime = Path("runtime")  # Use the configured runtime directory.
+connection = sqlite3.connect(
+    (runtime / "mcp-transport-bindings.db").resolve().as_uri() + "?mode=ro", uri=True
+)
+try:
+    bindings = {
+        key: json.loads(payload)
+        for key, payload in connection.execute(
+            "SELECT transport_session_id, payload_json FROM mcp_transport_bindings"
+        )
+    }
+finally:
+    connection.close()
+write_json_atomically(runtime / "mcp-transport-bindings.json", bindings, fsync_directory=True)
+```
+
+Archive the SQLite database and any accompanying `-wal`/`-shm` files outside the active runtime
+before restarting the older code. A later upgrade must import the then-current JSON file into
+a fresh database, rather than reuse the previous import marker.
 
 ### Internal-event SQLite cutover
 
@@ -1035,6 +1079,28 @@ for native levels, CLI/API examples, provider support, and worker upgrade order.
   Graph adapter caps each history scan with `teams_history_page_cap` plus
   `teams_history_deadline_seconds`. Each attempt is separately capped by
   `teams_history_request_timeout_seconds`; transient failures retry inside the overall deadline.
+- Teams history returns compact `metadata` by default: sender/session attribution, content type,
+  reply/link details, attachment identifiers and names, card content, mentions, reactions and edit
+  timestamps. The message body is returned once per message representation. Raw provider payloads
+  remain in host storage; request `include_metadata: true` when those details are needed.
+  Attachment listing and downloads continue to use the stored full records. MCP clients should
+  consume one of the text or structured representations supplied by the protocol.
+
+### Measuring workflow preparation overhead
+
+Run `PYTHONPATH=src ./.venv/bin/python scripts/benchmark_teams_preparation.py --samples 9`
+to measure an eleven-step durable workflow with a large synthetic configuration and message/session
+payloads, plus the size of a five-message Teams MCP response. Use the same script and interpreter
+with each checkout's `src` on `PYTHONPATH`, repeat in both orders, and avoid concurrent benchmarks.
+The script uses temporary databases and immediate fake providers. It excludes external services,
+worker/container startup and model response time, so its measurements are not end-to-end chat latency.
+
+Worker application INFO logs are disabled by default. Temporarily enable the `evander.worker`
+logger at INFO during latency investigations to record `worker_subscription_preflight` and
+`codex_subscription_startup` durations in the journal. The four startup phases remain available in
+job metadata without enabling INFO logging. Restore normal logging after the investigation. See
+[Orchestration latency and recovery](orchestration-latency.md#reading-timings) for execution-storage
+timings, available at DEBUG, that help distinguish workflow persistence from provider work.
 
 ## VM Python Bootstrap
 

@@ -31,8 +31,10 @@ class FakeProfileBroker:
         self.logged_out = False
         self.barrier: threading.Barrier | None = None
         self.status_error: str | None = None
+        self.usage_requests: list[bool] = []
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, include_usage: bool = True) -> dict[str, Any]:
+        self.usage_requests.append(include_usage)
         if self.status_error is not None:
             raise CodexAuthBrokerError(self.status_error)
         if self.barrier is not None:
@@ -157,6 +159,7 @@ def test_refresh_tokens_rejects_and_logs_out_a_different_pinned_account(
         )
         broker.tokens = CodexExternalAuthTokens("access-a", "account-a", "plus")
         assert registry.preflight("team-a").account_id == "account-a"
+        assert broker.usage_requests[-1] is False
 
         broker.tokens = CodexExternalAuthTokens("access-b", "account-b", "business")
         with pytest.raises(CodexSubscriptionDeferredError) as mismatch:
