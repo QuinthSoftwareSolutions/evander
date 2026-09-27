@@ -70,6 +70,19 @@ trace ID and UTC dispatch timestamp for downstream correlation. Cross-process ti
 require synchronized clocks. No prompt text, message contents or credentials are included in the
 new timing instrumentation.
 
+`workflow_execution_storage` logs separate the full persistence operation from `record_write`
+and `history` phases. `record_write` includes serialization and the SQL upsert, including any
+writer wait there; `history` covers compact history maintenance. Total duration also includes
+repository locks, connection setup, commit/close and journal publication. Gate-completion totals
+include atomic successor publication. The phase durations are inside the total and must not be
+added to it. These diagnostic logs use DEBUG and are disabled under the usual INFO configuration.
+Temporarily enable DEBUG for `evander.repositories.orchestration` to capture them. These measurements
+identify storage work but do not independently measure SQLite lock wait.
+
+Lifecycle-only history updates reuse already stored compressed payloads and leave unchanged
+scalar-index rows in place. Changed input/output payloads rebuild their indexes in the same
+transaction; status, directory scope and source provenance continue to be refreshed.
+
 Recovery phase logs name each underlying hook and report elapsed time, records examined, changes,
 whether work remains, and budget overruns. Examined count is unavailable for legacy hooks.
 `Isolated maintenance completed` logs report actual background duration and outcome, separately

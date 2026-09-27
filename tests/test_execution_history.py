@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import fcntl
 from multiprocessing import get_context
+import sqlite3
 import zlib
 
 import pytest
@@ -783,6 +784,66 @@ def test_execution_history_backfill_is_bounded_resumable_and_copy_only(tmp_path)
     assert second_batch["last_source_key"] == "effect:legacy-2"
     assert final_batch["completed"] is True
     assert run_execution_history_backfill(path, batch_size=1) == final_batch
+
+
+def test_backfill_keeps_reused_payloads_alive_during_retention(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "orchestration.db"
+    store = SqliteExecutionStore(path, retention_days=None)
+    now = datetime.now(UTC)
+    store.put(
+        _effect_record(
+            execution_id="expired",
+            started_at=now - timedelta(days=400),
+            input_payload={"value": 1},
+            outputs={"answer": "ok"},
+        )
+    )
+    _insert_legacy_effect(
+        path,
+        _effect_record(
+            execution_id="legacy-recent",
+            started_at=now - timedelta(days=1),
+            input_payload={"value": 1},
+            outputs={"answer": "ok"},
+        ),
+    )
+    original_store = execution_history._store_payload_blob
+    blob_lookups = 0
+    retention_deferred = False
+
+    def store_and_attempt_retention(connection, payload):
+        nonlocal blob_lookups, retention_deferred
+        digest = original_store(connection, payload)
+        blob_lookups += 1
+        if blob_lookups == 2:
+            # A separate connection tries to collect the expired blobs after
+            # backfill has reused them but before it publishes their references.
+            try:
+                run_orchestration_retention(
+                    path, retention_days=30, compact_history_retention_days=365
+                )
+            except sqlite3.OperationalError as exc:
+                assert exc.sqlite_errorcode & 0xFF == sqlite3.SQLITE_BUSY
+                retention_deferred = True
+        return digest
+
+    # Fail contention immediately so the interleaving needs no threads or sleeps.
+    monkeypatch.setattr(orchestration_db, "SQLITE_BUSY_TIMEOUT_MS", 0)
+    monkeypatch.setattr(execution_history, "_store_payload_blob", store_and_attempt_retention)
+    backfill = run_execution_history_backfill(path)
+    assert backfill["completed"] is True
+    assert backfill["last_batch_size"] == 1
+    assert retention_deferred
+
+    retained = run_orchestration_retention(
+        path, retention_days=30, compact_history_retention_days=365
+    )
+    assert retained.effect_executions_deleted == 1
+    assert retained.compact_executions_deleted == 1
+    assert retained.compact_payload_blobs_deleted == 0
+    detail = read_node_execution_detail(path, execution_key="effect:legacy-recent")
+    assert detail["input"] == {"value": 1}
+    assert detail["output"] == {"answer": "ok"}
 
 
 def test_retention_archives_before_full_record_delete(tmp_path) -> None:

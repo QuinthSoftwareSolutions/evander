@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-27 - Reduce gateway connection and workflow history write overhead (0.64.3)
+
+- Store MCP connection bindings in SQLite and transactionally update one connection at a time,
+  preserving binding identity, tool snapshots, conflict diagnostics and creation timestamps.
+- Import existing JSON connection history once in a transaction; retain the original snapshot
+  and keep gateway, Admin Web and Team review readers on the same authoritative database.
+- Reuse existing compressed execution-history payloads and scalar indexes when only lifecycle
+  metadata changes, while continuing to update status, scope and source provenance.
+- Keep reused history payloads in a write transaction so concurrent retention cannot remove
+  them before backfill commits their references.
+- Add opt-in DEBUG execution-persistence logs with trace IDs and separate record/history
+  durations, preserving the existing application logging defaults.
+
 ## 2026-09-27 - Reduce Teams context and workflow preparation overhead (0.64.2)
 
 - Return compact Teams history metadata by default, retaining message content, sender/session
