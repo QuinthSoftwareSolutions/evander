@@ -322,6 +322,10 @@ def archive_execution_record(
         config_revision=_optional_text(config_revision),
         record=record,
     )
+    # Backfill and retention may arrive without an existing write transaction.
+    # Keep reused blobs alive until the history row commits its references.
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
     input_digest = _store_payload_blob(connection, input_payload)
     output_digest = _store_payload_blob(connection, output_payload)
     previous_payloads = connection.execute(
