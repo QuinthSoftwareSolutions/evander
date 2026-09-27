@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-26 - Keep request storage off the event loop (0.64.1)
+
+- Offload MCP authentication, transport persistence, discovery, approval checks and dispatch
+  audit writes through the bounded worker pool while preserving request context and ordering.
+- Recheck transport ownership after asynchronous authentication so concurrent requests cannot
+  bind the same connection to different sessions.
+- Preserve final tool-call audits when an MCP request is cancelled during tool execution, and
+  atomically create or renew approvals so concurrent duplicate calls notify only once.
+- Offload Admin Web authentication, session and bootstrap responses, and blocking Azure sign-in
+  operations so storage and identity-provider waits leave unrelated requests responsive.
+- Reuse a bounded session-manifest snapshot keyed by file identity and revision; observe external
+  writes and revocations on the next lookup and return detached session models.
+- Add a repeatable concurrent MCP/Admin/workflow benchmark and regression coverage for blocked
+  storage, concurrent approval consumption and session-cache invalidation.
+
 ## 2026-09-26 - Improve Admin Web readability and usability (0.64.0)
 
 - Refresh the documentation map and first-run path; align operator, configuration, execution,

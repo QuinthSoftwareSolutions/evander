@@ -1937,93 +1937,102 @@ class PolicyEngine:
         approval_settings: ApprovalGrantSettings | None = None,
     ) -> ApprovalRequest:
         request_id = f"apr_{digest_payload({'session_id': session_id, **payload})[:16]}"
-        now = datetime.now(UTC)
-        existing = self.approval_store.get(request_id)
-        if existing is not None:
-            session = self.session_store.get_session(existing.session_id)
-            if session is not None:
-                effective_policy = self.effective_policy_for_session(session)
-                redacted_payload = _redact_nested_payload(
-                    effective_policy.redacted_keys, existing.payload
-                )
-                if redacted_payload != existing.payload:
-                    existing.payload = redacted_payload
-                    self.approval_store.put(existing.request_id, existing)
-            if _approval_request_is_reusable(existing, now):
-                return existing
 
-        session = self.get_session(session_id)
-        effective_policy = self.effective_policy_for_session(session)
-        if tool_name:
-            tool_enum = ToolName._value2member_map_.get(str(tool_name).strip())
-            if tool_enum is not None:
-                self.require_tool_not_denied(session, tool_enum)
-        redacted_payload = _redact_nested_payload(effective_policy.redacted_keys, payload)
-        notification_target_ids = self._approval_notification_target_ids_for_session(
-            session=session,
-            effective_policy=effective_policy,
-            now=now,
-        )
-        notification_status = (
-            ApprovalNotificationStatus.QUEUED
-            if notification_target_ids
-            else ApprovalNotificationStatus.DISABLED
-        )
-        if existing is None:
-            ttl_seconds = (
-                approval_settings.ttl_seconds
-                if approval_settings is not None
-                else effective_policy.approval_ttl_seconds
+        def create_or_reuse(
+            items: dict[str, ApprovalRequest],
+        ) -> tuple[ApprovalRequest, bool]:
+            now = datetime.now(UTC)
+            existing = items.get(request_id)
+            if existing is not None:
+                session = self.session_store.get_session(existing.session_id)
+                if session is not None:
+                    effective_policy = self.effective_policy_for_session(session)
+                    redacted_payload = _redact_nested_payload(
+                        effective_policy.redacted_keys, existing.payload
+                    )
+                    if redacted_payload != existing.payload:
+                        existing.payload = redacted_payload
+                if _approval_request_is_reusable(existing, now):
+                    return existing, False
+
+            session = self.get_session(session_id)
+            effective_policy = self.effective_policy_for_session(session)
+            if tool_name:
+                tool_enum = ToolName._value2member_map_.get(str(tool_name).strip())
+                if tool_enum is not None:
+                    self.require_tool_not_denied(session, tool_enum)
+            redacted_payload = _redact_nested_payload(effective_policy.redacted_keys, payload)
+            notification_target_ids = self._approval_notification_target_ids_for_session(
+                session=session,
+                effective_policy=effective_policy,
+                now=now,
             )
-            request = ApprovalRequest(
-                request_id=request_id,
-                session_id=session_id,
-                action_type=action_type,
-                payload_digest=digest_payload(payload),
-                human_summary=human_summary,
-                payload=redacted_payload,
-                directory_path=session.directory_path,
-                vm_id=session.vm_id,
-                tool_name=tool_name or action_type,
-                intended_effect=intended_effect,
-                approval_settings=approval_settings,
-                notification_status=notification_status,
-                notification_target_ids=notification_target_ids,
-                notification_attempted_at=now if notification_target_ids else None,
-                expires_at=now + timedelta(seconds=ttl_seconds),
+            notification_status = (
+                ApprovalNotificationStatus.QUEUED
+                if notification_target_ids
+                else ApprovalNotificationStatus.DISABLED
             )
-        else:
-            ttl_seconds = (
-                approval_settings.ttl_seconds
-                if approval_settings is not None
-                else effective_policy.approval_ttl_seconds
-            )
-            request = existing
-            request.session_id = session_id
-            request.action_type = action_type
-            request.payload_digest = digest_payload(payload)
-            request.human_summary = human_summary
-            request.payload = redacted_payload
-            request.directory_path = session.directory_path
-            request.vm_id = session.vm_id
-            request.tool_name = tool_name or action_type
-            request.intended_effect = intended_effect
-            request.approval_settings = approval_settings
-            request.used_count = 0
-            request.last_used_at = None
-            request.status = ApprovalStatus.PENDING
-            request.notification_status = notification_status
-            request.notification_target_ids = notification_target_ids
-            request.notification_attempted_at = now if notification_target_ids else None
-            request.notification_error = None
-            request.notification_deliveries = []
-            request.created_at = now
-            request.expires_at = now + timedelta(seconds=ttl_seconds)
-            request.approver = None
-            request.decision_at = None
-            request.decision_reason = None
-        self.approval_store.put(request.request_id, request)
-        if self.approval_notification_dispatcher is not None:
+            if existing is None:
+                ttl_seconds = (
+                    approval_settings.ttl_seconds
+                    if approval_settings is not None
+                    else effective_policy.approval_ttl_seconds
+                )
+                request = ApprovalRequest(
+                    request_id=request_id,
+                    session_id=session_id,
+                    action_type=action_type,
+                    payload_digest=digest_payload(payload),
+                    human_summary=human_summary,
+                    payload=redacted_payload,
+                    directory_path=session.directory_path,
+                    vm_id=session.vm_id,
+                    tool_name=tool_name or action_type,
+                    intended_effect=intended_effect,
+                    approval_settings=approval_settings,
+                    notification_status=notification_status,
+                    notification_target_ids=notification_target_ids,
+                    notification_attempted_at=now if notification_target_ids else None,
+                    expires_at=now + timedelta(seconds=ttl_seconds),
+                )
+            else:
+                ttl_seconds = (
+                    approval_settings.ttl_seconds
+                    if approval_settings is not None
+                    else effective_policy.approval_ttl_seconds
+                )
+                request = existing
+                request.session_id = session_id
+                request.action_type = action_type
+                request.payload_digest = digest_payload(payload)
+                request.human_summary = human_summary
+                request.payload = redacted_payload
+                request.directory_path = session.directory_path
+                request.vm_id = session.vm_id
+                request.tool_name = tool_name or action_type
+                request.intended_effect = intended_effect
+                request.approval_settings = approval_settings
+                request.used_count = 0
+                request.last_used_at = None
+                request.status = ApprovalStatus.PENDING
+                request.notification_status = notification_status
+                request.notification_target_ids = notification_target_ids
+                request.notification_attempted_at = now if notification_target_ids else None
+                request.notification_error = None
+                request.notification_deliveries = []
+                request.created_at = now
+                request.expires_at = now + timedelta(seconds=ttl_seconds)
+                request.approver = None
+                request.decision_at = None
+                request.decision_reason = None
+            items[request_id] = request
+            return request, True
+
+        # Serialize lookup and creation across both threads and independent processes.
+        request, created = self.approval_store.update_all(create_or_reuse)
+        # Notification delivery can perform I/O and re-enter the store; keep it outside
+        # the transaction, and let only the caller that created this request dispatch.
+        if created and self.approval_notification_dispatcher is not None:
             self.approval_notification_dispatcher.dispatch(request)
         return request
 

@@ -1,0 +1,1570 @@
+{
+  "baseline_commit": "2faa1686",
+  "implementation_version": "0.64.1",
+  "workload": "Synthetic in-process MCP/Admin ASGI requests with real temporary JSON and SQLite state; no concurrent test or benchmark runs",
+  "environment": {
+    "python": "3.12.13",
+    "sqlite": "3.50.4",
+    "platform": "Linux",
+    "architecture": "x86_64",
+    "anyio": "4.13.0",
+    "starlette": "1.0.0",
+    "mcp": "1.27.0"
+  },
+  "mixed_baseline": [
+    {
+      "concurrency": 10,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 7.711,
+      "completed_sessions": 10,
+      "completed_workflow_writes": 30,
+      "peak_workers": 10,
+      "peak_queued": 10,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 95,
+          "p50_ms": 1.414,
+          "p95_ms": 349.55,
+          "max_ms": 966.707
+        },
+        "tools/list": {
+          "count": 10,
+          "p50_ms": 896.133,
+          "p95_ms": 1039.875,
+          "max_ms": 1039.875
+        },
+        "sqlite_execute": {
+          "count": 3852,
+          "p50_ms": 0.105,
+          "p95_ms": 5.185,
+          "max_ms": 100.073
+        },
+        "admin_poll": {
+          "count": 30,
+          "p50_ms": 36.164,
+          "p95_ms": 474.846,
+          "max_ms": 813.858
+        },
+        "worker_queue": {
+          "count": 80,
+          "p50_ms": 1.835,
+          "p95_ms": 380.345,
+          "max_ms": 512.34
+        },
+        "worker_execution": {
+          "count": 80,
+          "p50_ms": 238.009,
+          "p95_ms": 1052.614,
+          "max_ms": 1058.708
+        },
+        "workflow_write": {
+          "count": 30,
+          "p50_ms": 73.637,
+          "p95_ms": 513.905,
+          "max_ms": 800.439
+        },
+        "workflow_poll": {
+          "count": 30,
+          "p50_ms": 535.144,
+          "p95_ms": 1474.255,
+          "max_ms": 1651.711
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.012,
+          "p95_ms": 0.012,
+          "max_ms": 0.012
+        },
+        "tools/call": {
+          "count": 20,
+          "p50_ms": 1941.609,
+          "p95_ms": 2444.901,
+          "max_ms": 2444.901
+        }
+      },
+      "repeat": 1
+    },
+    {
+      "concurrency": 50,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 45.706,
+      "completed_sessions": 50,
+      "completed_workflow_writes": 150,
+      "peak_workers": 40,
+      "peak_queued": 50,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 165,
+          "p50_ms": 1.056,
+          "p95_ms": 2110.649,
+          "max_ms": 2656.132
+        },
+        "tools/list": {
+          "count": 50,
+          "p50_ms": 6049.837,
+          "p95_ms": 7148.544,
+          "max_ms": 7305.726
+        },
+        "sqlite_execute": {
+          "count": 19004,
+          "p50_ms": 0.159,
+          "p95_ms": 5.339,
+          "max_ms": 534.255
+        },
+        "admin_poll": {
+          "count": 150,
+          "p50_ms": 160.583,
+          "p95_ms": 2936.437,
+          "max_ms": 5539.142
+        },
+        "worker_queue": {
+          "count": 400,
+          "p50_ms": 144.898,
+          "p95_ms": 1646.23,
+          "max_ms": 2818.304
+        },
+        "worker_execution": {
+          "count": 400,
+          "p50_ms": 537.854,
+          "p95_ms": 2135.226,
+          "max_ms": 2690.196
+        },
+        "workflow_write": {
+          "count": 150,
+          "p50_ms": 504.411,
+          "p95_ms": 2596.26,
+          "max_ms": 4893.107
+        },
+        "workflow_poll": {
+          "count": 150,
+          "p50_ms": 1868.612,
+          "p95_ms": 6186.36,
+          "max_ms": 7355.523
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.427,
+          "p95_ms": 0.427,
+          "max_ms": 0.427
+        },
+        "tools/call": {
+          "count": 100,
+          "p50_ms": 13158.542,
+          "p95_ms": 16657.35,
+          "max_ms": 16801.631
+        }
+      },
+      "repeat": 1
+    },
+    {
+      "concurrency": 100,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 110.249,
+      "completed_sessions": 100,
+      "completed_workflow_writes": 300,
+      "peak_workers": 40,
+      "peak_queued": 100,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 370,
+          "p50_ms": 0.557,
+          "p95_ms": 1772.228,
+          "max_ms": 12089.768
+        },
+        "tools/list": {
+          "count": 100,
+          "p50_ms": 14772.954,
+          "p95_ms": 17126.301,
+          "max_ms": 17306.068
+        },
+        "sqlite_execute": {
+          "count": 36747,
+          "p50_ms": 0.218,
+          "p95_ms": 9.99,
+          "max_ms": 833.872
+        },
+        "admin_poll": {
+          "count": 300,
+          "p50_ms": 197.649,
+          "p95_ms": 6576.08,
+          "max_ms": 7746.737
+        },
+        "worker_queue": {
+          "count": 800,
+          "p50_ms": 833.529,
+          "p95_ms": 5126.338,
+          "max_ms": 8563.49
+        },
+        "worker_execution": {
+          "count": 800,
+          "p50_ms": 1608.255,
+          "p95_ms": 6054.757,
+          "max_ms": 7774.196
+        },
+        "workflow_write": {
+          "count": 300,
+          "p50_ms": 1112.82,
+          "p95_ms": 6109.088,
+          "max_ms": 11091.032
+        },
+        "workflow_poll": {
+          "count": 300,
+          "p50_ms": 5760.602,
+          "p95_ms": 19850.743,
+          "max_ms": 21934.762
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.031,
+          "p95_ms": 0.031,
+          "max_ms": 0.031
+        },
+        "tools/call": {
+          "count": 200,
+          "p50_ms": 28936.261,
+          "p95_ms": 40443.569,
+          "max_ms": 42774.24
+        }
+      },
+      "repeat": 1
+    },
+    {
+      "concurrency": 10,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 9.574,
+      "completed_sessions": 10,
+      "completed_workflow_writes": 30,
+      "peak_workers": 10,
+      "peak_queued": 10,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 109,
+          "p50_ms": 3.561,
+          "p95_ms": 553.313,
+          "max_ms": 1393.53
+        },
+        "tools/list": {
+          "count": 10,
+          "p50_ms": 1172.541,
+          "p95_ms": 1367.146,
+          "max_ms": 1367.146
+        },
+        "sqlite_execute": {
+          "count": 3832,
+          "p50_ms": 0.127,
+          "p95_ms": 5.159,
+          "max_ms": 134.46
+        },
+        "admin_poll": {
+          "count": 30,
+          "p50_ms": 45.298,
+          "p95_ms": 383.565,
+          "max_ms": 599.956
+        },
+        "worker_queue": {
+          "count": 80,
+          "p50_ms": 1.94,
+          "p95_ms": 208.462,
+          "max_ms": 434.197
+        },
+        "worker_execution": {
+          "count": 80,
+          "p50_ms": 328.212,
+          "p95_ms": 1144.166,
+          "max_ms": 1160.426
+        },
+        "workflow_write": {
+          "count": 30,
+          "p50_ms": 100.624,
+          "p95_ms": 687.168,
+          "max_ms": 689.901
+        },
+        "workflow_poll": {
+          "count": 30,
+          "p50_ms": 506.918,
+          "p95_ms": 1670.781,
+          "max_ms": 1817.383
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.013,
+          "p95_ms": 0.013,
+          "max_ms": 0.013
+        },
+        "tools/call": {
+          "count": 20,
+          "p50_ms": 2678.789,
+          "p95_ms": 3255.622,
+          "max_ms": 3255.622
+        }
+      },
+      "repeat": 2
+    },
+    {
+      "concurrency": 50,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 44.734,
+      "completed_sessions": 50,
+      "completed_workflow_writes": 150,
+      "peak_workers": 40,
+      "peak_queued": 50,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 197,
+          "p50_ms": 0.312,
+          "p95_ms": 1658.01,
+          "max_ms": 3755.23
+        },
+        "tools/list": {
+          "count": 50,
+          "p50_ms": 6622.301,
+          "p95_ms": 7548.29,
+          "max_ms": 7662.221
+        },
+        "sqlite_execute": {
+          "count": 18450,
+          "p50_ms": 0.165,
+          "p95_ms": 6.766,
+          "max_ms": 545.259
+        },
+        "admin_poll": {
+          "count": 150,
+          "p50_ms": 113.634,
+          "p95_ms": 2302.792,
+          "max_ms": 4008.757
+        },
+        "worker_queue": {
+          "count": 400,
+          "p50_ms": 121.175,
+          "p95_ms": 1377.552,
+          "max_ms": 2391.475
+        },
+        "worker_execution": {
+          "count": 400,
+          "p50_ms": 728.844,
+          "p95_ms": 3541.146,
+          "max_ms": 3877.335
+        },
+        "workflow_write": {
+          "count": 150,
+          "p50_ms": 582.081,
+          "p95_ms": 3441.517,
+          "max_ms": 3756.993
+        },
+        "workflow_poll": {
+          "count": 150,
+          "p50_ms": 1879.118,
+          "p95_ms": 7274.854,
+          "max_ms": 8250.094
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 8.487,
+          "p95_ms": 8.487,
+          "max_ms": 8.487
+        },
+        "tools/call": {
+          "count": 100,
+          "p50_ms": 12750.6,
+          "p95_ms": 15506.157,
+          "max_ms": 15728.067
+        }
+      },
+      "repeat": 2
+    },
+    {
+      "concurrency": 100,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 102.923,
+      "completed_sessions": 100,
+      "completed_workflow_writes": 300,
+      "peak_workers": 40,
+      "peak_queued": 100,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 314,
+          "p50_ms": 0.484,
+          "p95_ms": 2442.816,
+          "max_ms": 10462.924
+        },
+        "tools/list": {
+          "count": 100,
+          "p50_ms": 12950.193,
+          "p95_ms": 15018.203,
+          "max_ms": 15180.645
+        },
+        "sqlite_execute": {
+          "count": 37006,
+          "p50_ms": 0.197,
+          "p95_ms": 7.374,
+          "max_ms": 1035.149
+        },
+        "admin_poll": {
+          "count": 300,
+          "p50_ms": 175.886,
+          "p95_ms": 9134.968,
+          "max_ms": 9856.291
+        },
+        "worker_queue": {
+          "count": 800,
+          "p50_ms": 642.51,
+          "p95_ms": 5946.188,
+          "max_ms": 7903.312
+        },
+        "worker_execution": {
+          "count": 800,
+          "p50_ms": 1290.614,
+          "p95_ms": 5453.921,
+          "max_ms": 7020.973
+        },
+        "workflow_write": {
+          "count": 300,
+          "p50_ms": 625.086,
+          "p95_ms": 9050.381,
+          "max_ms": 10347.09
+        },
+        "workflow_poll": {
+          "count": 300,
+          "p50_ms": 5107.192,
+          "p95_ms": 15655.91,
+          "max_ms": 20766.891
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.664,
+          "p95_ms": 0.664,
+          "max_ms": 0.664
+        },
+        "tools/call": {
+          "count": 200,
+          "p50_ms": 27372.763,
+          "p95_ms": 35636.322,
+          "max_ms": 40970.604
+        }
+      },
+      "repeat": 2
+    },
+    {
+      "concurrency": 10,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 9.829,
+      "completed_sessions": 10,
+      "completed_workflow_writes": 30,
+      "peak_workers": 10,
+      "peak_queued": 10,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 106,
+          "p50_ms": 2.252,
+          "p95_ms": 583.262,
+          "max_ms": 1443.495
+        },
+        "tools/list": {
+          "count": 10,
+          "p50_ms": 1306.085,
+          "p95_ms": 1527.163,
+          "max_ms": 1527.163
+        },
+        "sqlite_execute": {
+          "count": 3823,
+          "p50_ms": 0.108,
+          "p95_ms": 5.324,
+          "max_ms": 118.017
+        },
+        "admin_poll": {
+          "count": 30,
+          "p50_ms": 28.705,
+          "p95_ms": 568.675,
+          "max_ms": 577.35
+        },
+        "worker_queue": {
+          "count": 80,
+          "p50_ms": 1.652,
+          "p95_ms": 215.529,
+          "max_ms": 495.726
+        },
+        "worker_execution": {
+          "count": 80,
+          "p50_ms": 329.81,
+          "p95_ms": 1095.296,
+          "max_ms": 1132.68
+        },
+        "workflow_write": {
+          "count": 30,
+          "p50_ms": 86.13,
+          "p95_ms": 478.032,
+          "max_ms": 548.478
+        },
+        "workflow_poll": {
+          "count": 30,
+          "p50_ms": 552.267,
+          "p95_ms": 1422.178,
+          "max_ms": 1482.755
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.036,
+          "p95_ms": 0.036,
+          "max_ms": 0.036
+        },
+        "tools/call": {
+          "count": 20,
+          "p50_ms": 2676.576,
+          "p95_ms": 3169.212,
+          "max_ms": 3169.212
+        }
+      },
+      "repeat": 3
+    },
+    {
+      "concurrency": 50,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 45.401,
+      "completed_sessions": 50,
+      "completed_workflow_writes": 150,
+      "peak_workers": 41,
+      "peak_queued": 50,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 173,
+          "p50_ms": 0.686,
+          "p95_ms": 1993.695,
+          "max_ms": 4569.427
+        },
+        "tools/list": {
+          "count": 50,
+          "p50_ms": 7312.037,
+          "p95_ms": 8341.867,
+          "max_ms": 8499.921
+        },
+        "sqlite_execute": {
+          "count": 18670,
+          "p50_ms": 0.189,
+          "p95_ms": 5.54,
+          "max_ms": 1630.542
+        },
+        "admin_poll": {
+          "count": 150,
+          "p50_ms": 89.991,
+          "p95_ms": 3533.102,
+          "max_ms": 5071.203
+        },
+        "worker_queue": {
+          "count": 400,
+          "p50_ms": 192.071,
+          "p95_ms": 1545.815,
+          "max_ms": 2426.468
+        },
+        "worker_execution": {
+          "count": 400,
+          "p50_ms": 567.057,
+          "p95_ms": 2996.85,
+          "max_ms": 4198.231
+        },
+        "workflow_write": {
+          "count": 150,
+          "p50_ms": 510.656,
+          "p95_ms": 3315.979,
+          "max_ms": 4281.143
+        },
+        "workflow_poll": {
+          "count": 150,
+          "p50_ms": 2804.294,
+          "p95_ms": 6161.381,
+          "max_ms": 6440.533
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.222,
+          "p95_ms": 0.222,
+          "max_ms": 0.222
+        },
+        "tools/call": {
+          "count": 100,
+          "p50_ms": 12315.246,
+          "p95_ms": 15869.841,
+          "max_ms": 16044.957
+        }
+      },
+      "repeat": 3
+    },
+    {
+      "concurrency": 100,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 98.687,
+      "completed_sessions": 100,
+      "completed_workflow_writes": 300,
+      "peak_workers": 41,
+      "peak_queued": 100,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "event_loop_lag": {
+          "count": 330,
+          "p50_ms": 0.422,
+          "p95_ms": 2117.582,
+          "max_ms": 10245.155
+        },
+        "tools/list": {
+          "count": 100,
+          "p50_ms": 12719.074,
+          "p95_ms": 14918.516,
+          "max_ms": 15110.293
+        },
+        "sqlite_execute": {
+          "count": 36884,
+          "p50_ms": 0.185,
+          "p95_ms": 8.349,
+          "max_ms": 1831.102
+        },
+        "admin_poll": {
+          "count": 300,
+          "p50_ms": 163.473,
+          "p95_ms": 6006.753,
+          "max_ms": 7583.101
+        },
+        "worker_queue": {
+          "count": 800,
+          "p50_ms": 728.278,
+          "p95_ms": 5118.114,
+          "max_ms": 7503.002
+        },
+        "worker_execution": {
+          "count": 800,
+          "p50_ms": 1395.495,
+          "p95_ms": 4934.786,
+          "max_ms": 6506.427
+        },
+        "workflow_write": {
+          "count": 300,
+          "p50_ms": 841.242,
+          "p95_ms": 7605.886,
+          "max_ms": 7758.574
+        },
+        "workflow_poll": {
+          "count": 300,
+          "p50_ms": 4656.437,
+          "p95_ms": 19728.621,
+          "max_ms": 20321.375
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.014,
+          "p95_ms": 0.014,
+          "max_ms": 0.014
+        },
+        "tools/call": {
+          "count": 200,
+          "p50_ms": 23693.238,
+          "p95_ms": 41930.199,
+          "max_ms": 42516.952
+        }
+      },
+      "repeat": 3
+    }
+  ],
+  "mixed_after": [
+    {
+      "concurrency": 10,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 0.859,
+      "completed_sessions": 10,
+      "completed_workflow_writes": 30,
+      "peak_workers": 14,
+      "peak_queued": 10,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 290,
+          "p50_ms": 0.082,
+          "p95_ms": 1.153,
+          "max_ms": 8.478
+        },
+        "worker_execution": {
+          "count": 290,
+          "p50_ms": 11.948,
+          "p95_ms": 123.306,
+          "max_ms": 161.468
+        },
+        "event_loop_lag": {
+          "count": 151,
+          "p50_ms": 0.491,
+          "p95_ms": 1.558,
+          "max_ms": 7.158
+        },
+        "tools/list": {
+          "count": 10,
+          "p50_ms": 67.457,
+          "p95_ms": 91.556,
+          "max_ms": 91.556
+        },
+        "sqlite_execute": {
+          "count": 3822,
+          "p50_ms": 0.198,
+          "p95_ms": 1.384,
+          "max_ms": 19.738
+        },
+        "admin_poll": {
+          "count": 30,
+          "p50_ms": 12.201,
+          "p95_ms": 35.587,
+          "max_ms": 40.928
+        },
+        "workflow_write": {
+          "count": 30,
+          "p50_ms": 29.769,
+          "p95_ms": 75.335,
+          "max_ms": 78.395
+        },
+        "workflow_poll": {
+          "count": 30,
+          "p50_ms": 134.189,
+          "p95_ms": 163.736,
+          "max_ms": 169.357
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.013,
+          "p95_ms": 0.013,
+          "max_ms": 0.013
+        },
+        "tools/call": {
+          "count": 20,
+          "p50_ms": 104.21,
+          "p95_ms": 163.003,
+          "max_ms": 163.003
+        }
+      },
+      "repeat": 1
+    },
+    {
+      "concurrency": 50,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 5.342,
+      "completed_sessions": 50,
+      "completed_workflow_writes": 150,
+      "peak_workers": 40,
+      "peak_queued": 50,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 1450,
+          "p50_ms": 30.257,
+          "p95_ms": 72.85,
+          "max_ms": 144.74
+        },
+        "worker_execution": {
+          "count": 1450,
+          "p50_ms": 19.131,
+          "p95_ms": 607.12,
+          "max_ms": 1359.068
+        },
+        "event_loop_lag": {
+          "count": 902,
+          "p50_ms": 0.546,
+          "p95_ms": 1.487,
+          "max_ms": 85.523
+        },
+        "tools/list": {
+          "count": 50,
+          "p50_ms": 494.197,
+          "p95_ms": 624.505,
+          "max_ms": 642.451
+        },
+        "sqlite_execute": {
+          "count": 19185,
+          "p50_ms": 0.304,
+          "p95_ms": 1.761,
+          "max_ms": 333.93
+        },
+        "admin_poll": {
+          "count": 150,
+          "p50_ms": 45.335,
+          "p95_ms": 99.631,
+          "max_ms": 142.429
+        },
+        "workflow_write": {
+          "count": 150,
+          "p50_ms": 92.351,
+          "p95_ms": 615.411,
+          "max_ms": 994.064
+        },
+        "workflow_poll": {
+          "count": 150,
+          "p50_ms": 288.297,
+          "p95_ms": 501.238,
+          "max_ms": 607.754
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.532,
+          "p95_ms": 0.532,
+          "max_ms": 0.532
+        },
+        "tools/call": {
+          "count": 100,
+          "p50_ms": 1249.371,
+          "p95_ms": 1668.424,
+          "max_ms": 1876.776
+        }
+      },
+      "repeat": 1
+    },
+    {
+      "concurrency": 100,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 13.177,
+      "completed_sessions": 100,
+      "completed_workflow_writes": 300,
+      "peak_workers": 40,
+      "peak_queued": 124,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 2900,
+          "p50_ms": 237.25,
+          "p95_ms": 519.062,
+          "max_ms": 790.049
+        },
+        "worker_execution": {
+          "count": 2900,
+          "p50_ms": 41.727,
+          "p95_ms": 756.693,
+          "max_ms": 1851.9
+        },
+        "event_loop_lag": {
+          "count": 2170,
+          "p50_ms": 0.553,
+          "p95_ms": 1.881,
+          "max_ms": 107.835
+        },
+        "tools/list": {
+          "count": 100,
+          "p50_ms": 1026.27,
+          "p95_ms": 1322.209,
+          "max_ms": 1338.263
+        },
+        "sqlite_execute": {
+          "count": 37477,
+          "p50_ms": 0.48,
+          "p95_ms": 2.597,
+          "max_ms": 630.092
+        },
+        "admin_poll": {
+          "count": 300,
+          "p50_ms": 236.138,
+          "p95_ms": 540.564,
+          "max_ms": 667.194
+        },
+        "workflow_write": {
+          "count": 300,
+          "p50_ms": 379.572,
+          "p95_ms": 1156.117,
+          "max_ms": 2006.786
+        },
+        "workflow_poll": {
+          "count": 300,
+          "p50_ms": 1303.486,
+          "p95_ms": 1810.273,
+          "max_ms": 2353.145
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.016,
+          "p95_ms": 0.016,
+          "max_ms": 0.016
+        },
+        "tools/call": {
+          "count": 200,
+          "p50_ms": 2370.883,
+          "p95_ms": 3092.162,
+          "max_ms": 3343.858
+        }
+      },
+      "repeat": 1
+    },
+    {
+      "concurrency": 10,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 0.683,
+      "completed_sessions": 10,
+      "completed_workflow_writes": 30,
+      "peak_workers": 12,
+      "peak_queued": 10,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 290,
+          "p50_ms": 0.074,
+          "p95_ms": 1.214,
+          "max_ms": 5.687
+        },
+        "worker_execution": {
+          "count": 290,
+          "p50_ms": 7.115,
+          "p95_ms": 88.414,
+          "max_ms": 129.6
+        },
+        "event_loop_lag": {
+          "count": 124,
+          "p50_ms": 0.491,
+          "p95_ms": 1.071,
+          "max_ms": 1.341
+        },
+        "tools/list": {
+          "count": 10,
+          "p50_ms": 61.72,
+          "p95_ms": 77.582,
+          "max_ms": 77.582
+        },
+        "sqlite_execute": {
+          "count": 3955,
+          "p50_ms": 0.135,
+          "p95_ms": 0.964,
+          "max_ms": 9.145
+        },
+        "admin_poll": {
+          "count": 30,
+          "p50_ms": 8.836,
+          "p95_ms": 18.974,
+          "max_ms": 25.444
+        },
+        "workflow_write": {
+          "count": 30,
+          "p50_ms": 21.071,
+          "p95_ms": 49.116,
+          "max_ms": 55.32
+        },
+        "workflow_poll": {
+          "count": 30,
+          "p50_ms": 90.01,
+          "p95_ms": 137.064,
+          "max_ms": 137.851
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.233,
+          "p95_ms": 0.233,
+          "max_ms": 0.233
+        },
+        "tools/call": {
+          "count": 20,
+          "p50_ms": 87.349,
+          "p95_ms": 145.268,
+          "max_ms": 145.268
+        }
+      },
+      "repeat": 2
+    },
+    {
+      "concurrency": 50,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 5.375,
+      "completed_sessions": 50,
+      "completed_workflow_writes": 150,
+      "peak_workers": 45,
+      "peak_queued": 50,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 1450,
+          "p50_ms": 32.624,
+          "p95_ms": 78.699,
+          "max_ms": 175.467
+        },
+        "worker_execution": {
+          "count": 1450,
+          "p50_ms": 19.383,
+          "p95_ms": 666.144,
+          "max_ms": 1459.32
+        },
+        "event_loop_lag": {
+          "count": 928,
+          "p50_ms": 0.521,
+          "p95_ms": 1.475,
+          "max_ms": 78.827
+        },
+        "tools/list": {
+          "count": 50,
+          "p50_ms": 480.307,
+          "p95_ms": 604.26,
+          "max_ms": 631.159
+        },
+        "sqlite_execute": {
+          "count": 19266,
+          "p50_ms": 0.354,
+          "p95_ms": 1.768,
+          "max_ms": 629.118
+        },
+        "admin_poll": {
+          "count": 150,
+          "p50_ms": 48.39,
+          "p95_ms": 86.48,
+          "max_ms": 168.859
+        },
+        "workflow_write": {
+          "count": 150,
+          "p50_ms": 68.898,
+          "p95_ms": 587.483,
+          "max_ms": 1200.224
+        },
+        "workflow_poll": {
+          "count": 150,
+          "p50_ms": 347.679,
+          "p95_ms": 534.996,
+          "max_ms": 819.138
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.014,
+          "p95_ms": 0.014,
+          "max_ms": 0.014
+        },
+        "tools/call": {
+          "count": 100,
+          "p50_ms": 1289.252,
+          "p95_ms": 1781.02,
+          "max_ms": 2114.669
+        }
+      },
+      "repeat": 2
+    },
+    {
+      "concurrency": 100,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 16.05,
+      "completed_sessions": 100,
+      "completed_workflow_writes": 300,
+      "peak_workers": 40,
+      "peak_queued": 124,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 2900,
+          "p50_ms": 267.268,
+          "p95_ms": 621.131,
+          "max_ms": 951.515
+        },
+        "worker_execution": {
+          "count": 2900,
+          "p50_ms": 40.898,
+          "p95_ms": 887.117,
+          "max_ms": 3779.531
+        },
+        "event_loop_lag": {
+          "count": 2286,
+          "p50_ms": 0.748,
+          "p95_ms": 7.011,
+          "max_ms": 160.457
+        },
+        "tools/list": {
+          "count": 100,
+          "p50_ms": 1061.001,
+          "p95_ms": 1343.304,
+          "max_ms": 1385.624
+        },
+        "sqlite_execute": {
+          "count": 37465,
+          "p50_ms": 0.348,
+          "p95_ms": 3.785,
+          "max_ms": 630.178
+        },
+        "admin_poll": {
+          "count": 300,
+          "p50_ms": 250.713,
+          "p95_ms": 714.155,
+          "max_ms": 969.846
+        },
+        "workflow_write": {
+          "count": 300,
+          "p50_ms": 439.58,
+          "p95_ms": 1491.345,
+          "max_ms": 1947.544
+        },
+        "workflow_poll": {
+          "count": 300,
+          "p50_ms": 1502.492,
+          "p95_ms": 2292.818,
+          "max_ms": 2842.545
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.025,
+          "p95_ms": 0.025,
+          "max_ms": 0.025
+        },
+        "tools/call": {
+          "count": 200,
+          "p50_ms": 2652.928,
+          "p95_ms": 5530.642,
+          "max_ms": 5828.146
+        }
+      },
+      "repeat": 2
+    },
+    {
+      "concurrency": 10,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 0.752,
+      "completed_sessions": 10,
+      "completed_workflow_writes": 30,
+      "peak_workers": 13,
+      "peak_queued": 10,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 290,
+          "p50_ms": 0.085,
+          "p95_ms": 0.976,
+          "max_ms": 3.301
+        },
+        "worker_execution": {
+          "count": 290,
+          "p50_ms": 7.834,
+          "p95_ms": 97.201,
+          "max_ms": 141.697
+        },
+        "event_loop_lag": {
+          "count": 136,
+          "p50_ms": 0.436,
+          "p95_ms": 1.228,
+          "max_ms": 2.357
+        },
+        "tools/list": {
+          "count": 10,
+          "p50_ms": 66.612,
+          "p95_ms": 76.065,
+          "max_ms": 76.065
+        },
+        "sqlite_execute": {
+          "count": 3906,
+          "p50_ms": 0.132,
+          "p95_ms": 1.02,
+          "max_ms": 78.599
+        },
+        "admin_poll": {
+          "count": 30,
+          "p50_ms": 5.564,
+          "p95_ms": 19.959,
+          "max_ms": 28.299
+        },
+        "workflow_write": {
+          "count": 30,
+          "p50_ms": 23.363,
+          "p95_ms": 68.712,
+          "max_ms": 106.633
+        },
+        "workflow_poll": {
+          "count": 30,
+          "p50_ms": 96.846,
+          "p95_ms": 130.298,
+          "max_ms": 145.557
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.027,
+          "p95_ms": 0.027,
+          "max_ms": 0.027
+        },
+        "tools/call": {
+          "count": 20,
+          "p50_ms": 118.358,
+          "p95_ms": 165.751,
+          "max_ms": 165.751
+        }
+      },
+      "repeat": 3
+    },
+    {
+      "concurrency": 50,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 6.003,
+      "completed_sessions": 50,
+      "completed_workflow_writes": 150,
+      "peak_workers": 40,
+      "peak_queued": 50,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 1450,
+          "p50_ms": 33.269,
+          "p95_ms": 78.798,
+          "max_ms": 169.911
+        },
+        "worker_execution": {
+          "count": 1450,
+          "p50_ms": 21.053,
+          "p95_ms": 746.716,
+          "max_ms": 1612.301
+        },
+        "event_loop_lag": {
+          "count": 1021,
+          "p50_ms": 0.54,
+          "p95_ms": 1.669,
+          "max_ms": 107.738
+        },
+        "tools/list": {
+          "count": 50,
+          "p50_ms": 390.258,
+          "p95_ms": 518.767,
+          "max_ms": 531.075
+        },
+        "sqlite_execute": {
+          "count": 19246,
+          "p50_ms": 0.389,
+          "p95_ms": 2.094,
+          "max_ms": 430.041
+        },
+        "admin_poll": {
+          "count": 150,
+          "p50_ms": 56.437,
+          "p95_ms": 101.949,
+          "max_ms": 191.524
+        },
+        "workflow_write": {
+          "count": 150,
+          "p50_ms": 85.978,
+          "p95_ms": 757.836,
+          "max_ms": 1276.828
+        },
+        "workflow_poll": {
+          "count": 150,
+          "p50_ms": 411.815,
+          "p95_ms": 628.848,
+          "max_ms": 776.465
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.284,
+          "p95_ms": 0.284,
+          "max_ms": 0.284
+        },
+        "tools/call": {
+          "count": 100,
+          "p50_ms": 1528.593,
+          "p95_ms": 2021.793,
+          "max_ms": 2323.323
+        }
+      },
+      "repeat": 3
+    },
+    {
+      "concurrency": 100,
+      "rounds": 3,
+      "history": 1000,
+      "seconds": 12.943,
+      "completed_sessions": 100,
+      "completed_workflow_writes": 300,
+      "peak_workers": 40,
+      "peak_queued": 124,
+      "sqlite_busy_errors": 0,
+      "timings": {
+        "worker_queue": {
+          "count": 2900,
+          "p50_ms": 224.997,
+          "p95_ms": 544.42,
+          "max_ms": 905.261
+        },
+        "worker_execution": {
+          "count": 2900,
+          "p50_ms": 40.773,
+          "p95_ms": 740.955,
+          "max_ms": 1822.209
+        },
+        "event_loop_lag": {
+          "count": 2132,
+          "p50_ms": 0.532,
+          "p95_ms": 1.851,
+          "max_ms": 113.973
+        },
+        "tools/list": {
+          "count": 100,
+          "p50_ms": 1072.422,
+          "p95_ms": 1308.603,
+          "max_ms": 1320.118
+        },
+        "sqlite_execute": {
+          "count": 37305,
+          "p50_ms": 0.447,
+          "p95_ms": 2.552,
+          "max_ms": 931.365
+        },
+        "admin_poll": {
+          "count": 300,
+          "p50_ms": 252.543,
+          "p95_ms": 614.331,
+          "max_ms": 727.486
+        },
+        "workflow_write": {
+          "count": 300,
+          "p50_ms": 345.541,
+          "p95_ms": 1110.345,
+          "max_ms": 1965.929
+        },
+        "workflow_poll": {
+          "count": 300,
+          "p50_ms": 1231.132,
+          "p95_ms": 1930.367,
+          "max_ms": 2248.482
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.012,
+          "p95_ms": 0.012,
+          "max_ms": 0.012
+        },
+        "tools/call": {
+          "count": 200,
+          "p50_ms": 2369.979,
+          "p95_ms": 3212.056,
+          "max_ms": 3695.836
+        }
+      },
+      "repeat": 3
+    }
+  ],
+  "lock_baseline": [
+    {
+      "lock_held_after_writer_attempt_ms": 200,
+      "timings": {
+        "sqlite_execute": {
+          "count": 1,
+          "p50_ms": 0.053,
+          "p95_ms": 0.053,
+          "max_ms": 0.053
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.056,
+          "p95_ms": 0.056,
+          "max_ms": 0.056
+        },
+        "sqlite_writer_lock_wait": {
+          "count": 1,
+          "p50_ms": 228.795,
+          "p95_ms": 228.795,
+          "max_ms": 228.795
+        },
+        "event_loop_lag": {
+          "count": 2,
+          "p50_ms": 131.206,
+          "p95_ms": 261.9,
+          "max_ms": 261.9
+        }
+      },
+      "repeat": 1
+    },
+    {
+      "lock_held_after_writer_attempt_ms": 200,
+      "timings": {
+        "sqlite_execute": {
+          "count": 1,
+          "p50_ms": 0.167,
+          "p95_ms": 0.167,
+          "max_ms": 0.167
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.17,
+          "p95_ms": 0.17,
+          "max_ms": 0.17
+        },
+        "sqlite_writer_lock_wait": {
+          "count": 1,
+          "p50_ms": 228.797,
+          "p95_ms": 228.797,
+          "max_ms": 228.797
+        },
+        "event_loop_lag": {
+          "count": 2,
+          "p50_ms": 122.799,
+          "p95_ms": 245.272,
+          "max_ms": 245.272
+        }
+      },
+      "repeat": 2
+    },
+    {
+      "lock_held_after_writer_attempt_ms": 200,
+      "timings": {
+        "sqlite_execute": {
+          "count": 1,
+          "p50_ms": 0.033,
+          "p95_ms": 0.033,
+          "max_ms": 0.033
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.034,
+          "p95_ms": 0.034,
+          "max_ms": 0.034
+        },
+        "sqlite_writer_lock_wait": {
+          "count": 1,
+          "p50_ms": 228.771,
+          "p95_ms": 228.771,
+          "max_ms": 228.771
+        },
+        "event_loop_lag": {
+          "count": 2,
+          "p50_ms": 130.727,
+          "p95_ms": 261.148,
+          "max_ms": 261.148
+        }
+      },
+      "repeat": 3
+    }
+  ],
+  "lock_after": [
+    {
+      "lock_held_after_writer_attempt_ms": 200,
+      "timings": {
+        "sqlite_execute": {
+          "count": 1,
+          "p50_ms": 0.145,
+          "p95_ms": 0.145,
+          "max_ms": 0.145
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.149,
+          "p95_ms": 0.149,
+          "max_ms": 0.149
+        },
+        "worker_queue": {
+          "count": 2,
+          "p50_ms": 0.163,
+          "p95_ms": 0.26,
+          "max_ms": 0.26
+        },
+        "event_loop_lag": {
+          "count": 54,
+          "p50_ms": 0.096,
+          "p95_ms": 0.3,
+          "max_ms": 0.591
+        },
+        "sqlite_writer_lock_wait": {
+          "count": 1,
+          "p50_ms": 228.756,
+          "p95_ms": 228.756,
+          "max_ms": 228.756
+        },
+        "worker_execution": {
+          "count": 2,
+          "p50_ms": 134.346,
+          "p95_ms": 268.66,
+          "max_ms": 268.66
+        }
+      },
+      "repeat": 1
+    },
+    {
+      "lock_held_after_writer_attempt_ms": 200,
+      "timings": {
+        "sqlite_execute": {
+          "count": 1,
+          "p50_ms": 0.138,
+          "p95_ms": 0.138,
+          "max_ms": 0.138
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.14,
+          "p95_ms": 0.14,
+          "max_ms": 0.14
+        },
+        "worker_queue": {
+          "count": 2,
+          "p50_ms": 0.141,
+          "p95_ms": 0.209,
+          "max_ms": 0.209
+        },
+        "event_loop_lag": {
+          "count": 54,
+          "p50_ms": 0.085,
+          "p95_ms": 0.104,
+          "max_ms": 0.891
+        },
+        "sqlite_writer_lock_wait": {
+          "count": 1,
+          "p50_ms": 228.779,
+          "p95_ms": 228.779,
+          "max_ms": 228.779
+        },
+        "worker_execution": {
+          "count": 2,
+          "p50_ms": 134.914,
+          "p95_ms": 269.785,
+          "max_ms": 269.785
+        }
+      },
+      "repeat": 2
+    },
+    {
+      "lock_held_after_writer_attempt_ms": 200,
+      "timings": {
+        "sqlite_execute": {
+          "count": 1,
+          "p50_ms": 0.133,
+          "p95_ms": 0.133,
+          "max_ms": 0.133
+        },
+        "sqlite_begin": {
+          "count": 1,
+          "p50_ms": 0.134,
+          "p95_ms": 0.134,
+          "max_ms": 0.134
+        },
+        "worker_queue": {
+          "count": 2,
+          "p50_ms": 0.132,
+          "p95_ms": 0.187,
+          "max_ms": 0.187
+        },
+        "event_loop_lag": {
+          "count": 50,
+          "p50_ms": 0.092,
+          "p95_ms": 0.1,
+          "max_ms": 0.8
+        },
+        "sqlite_writer_lock_wait": {
+          "count": 1,
+          "p50_ms": 228.79,
+          "p95_ms": 228.79,
+          "max_ms": 228.79
+        },
+        "worker_execution": {
+          "count": 2,
+          "p50_ms": 124.638,
+          "p95_ms": 249.257,
+          "max_ms": 249.257
+        }
+      },
+      "repeat": 3
+    }
+  ]
+}

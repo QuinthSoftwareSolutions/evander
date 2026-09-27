@@ -10,6 +10,7 @@ from hashlib import sha256
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -118,6 +119,23 @@ def _install_mcp_http_logging(
                 request.headers.get("mcp-session-id", ""),
                 request.headers.get("mcp-protocol-version", ""),
             )
+
+            async def conflict_response(bound_session_id: str) -> JSONResponse:
+                if transport_binding_store is not None:
+                    await run_in_threadpool(
+                        transport_binding_store.record_conflict,
+                        transport_session_id=request_transport_session_id,
+                        declared_session_id=declared_session_id,
+                        reason=_SESSION_ID_CONTEXT_CONFLICT_MESSAGE,
+                        bound_session_id=bound_session_id,
+                        last_protocol_version=protocol_version,
+                        last_workflow_run_id=workflow_run_id,
+                        last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                    )
+                return JSONResponse(
+                    {"error": _SESSION_ID_CONTEXT_CONFLICT_MESSAGE}, status_code=409
+                )
+
             try:
                 bound_session_id = ""
                 if transport_session_map is not None and request_transport_session_id:
@@ -126,23 +144,12 @@ def _install_mcp_http_logging(
                     ).strip()
                     if bound_session_id and declared_session_id:
                         if bound_session_id != declared_session_id:
-                            if transport_binding_store is not None:
-                                transport_binding_store.record_conflict(
-                                    transport_session_id=request_transport_session_id,
-                                    declared_session_id=declared_session_id,
-                                    reason=_SESSION_ID_CONTEXT_CONFLICT_MESSAGE,
-                                    bound_session_id=bound_session_id,
-                                    last_protocol_version=protocol_version,
-                                    last_workflow_run_id=workflow_run_id,
-                                    last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-                                )
-                            return JSONResponse(
-                                {"error": _SESSION_ID_CONTEXT_CONFLICT_MESSAGE},
-                                status_code=409,
-                            )
+                            return await conflict_response(bound_session_id)
                 auth_session_id = (declared_session_id or bound_session_id or "").strip()
                 if auth_session_id:
-                    session = runtime_context.session_repository.get_session(auth_session_id)
+                    session = await run_in_threadpool(
+                        runtime_context.session_repository.get_session, auth_session_id
+                    )
                     if session is not None and not verify_mcp_session_proof_token(
                         session,
                         _mcp_session_token_from_request(request),
@@ -152,20 +159,29 @@ def _install_mcp_http_logging(
                             status_code=401,
                         )
                 if transport_session_map is not None and request_transport_session_id:
+                    # Authentication yielded to storage workers. Recheck and
+                    # reserve the identity on the event loop before yielding
+                    # again, so simultaneous first requests cannot rebind it.
+                    current_binding = transport_session_map.get(request_transport_session_id)
+                    if (
+                        current_binding
+                        and declared_session_id
+                        and current_binding != declared_session_id
+                    ):
+                        return await conflict_response(current_binding)
+                    if declared_session_id:
+                        transport_session_map[request_transport_session_id] = declared_session_id
                     if transport_binding_store is not None:
                         effective_bound_session_id = declared_session_id or bound_session_id or None
                         if effective_bound_session_id:
-                            transport_binding_store.bind_transport_session(
+                            await run_in_threadpool(
+                                transport_binding_store.bind_transport_session,
                                 transport_session_id=request_transport_session_id,
                                 bound_session_id=effective_bound_session_id,
                                 last_protocol_version=protocol_version,
                                 last_workflow_run_id=workflow_run_id,
                                 last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                             )
-                    if declared_session_id:
-                        transport_session_map[request_transport_session_id] = declared_session_id
-                    elif bound_session_id:
-                        transport_session_map[request_transport_session_id] = bound_session_id
                 response = await call_next(request)
                 response_transport_session_id = str(
                     response.headers.get("mcp-session-id") or ""
@@ -181,7 +197,8 @@ def _install_mcp_http_logging(
                     if not bound_session_id:
                         transport_session_map[response_transport_session_id] = declared_session_id
                     if transport_binding_store is not None:
-                        transport_binding_store.bind_transport_session(
+                        await run_in_threadpool(
+                            transport_binding_store.bind_transport_session,
                             transport_session_id=response_transport_session_id,
                             bound_session_id=declared_session_id,
                             last_protocol_version=protocol_version,
@@ -200,32 +217,34 @@ def _install_mcp_http_logging(
                         ).strip()
                     )
                     if resolved_session_id:
-                        try:
-                            session = runtime_context.policy.get_session(resolved_session_id)
-                        except PolicyError:
-                            session = None
-                        if session is not None:
-                            visible_tool_names = sorted(
-                                {
-                                    tool_name_value(visibility.tool)
-                                    for visibility in runtime_context.policy.visible_tools_for_session(
-                                        session,
-                                        workflow_run_id=workflow_run_id,
-                                        mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-                                    )
-                                }
-                            )
-                            transport_binding_store.record_visible_tools(
-                                transport_session_id=request_transport_session_id,
-                                bound_session_id=resolved_session_id,
-                                visible_tool_names=visible_tool_names,
-                                last_protocol_version=protocol_version,
-                                last_workflow_run_id=workflow_run_id,
-                                last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-                            )
-                            transport_session_map[request_transport_session_id] = (
-                                resolved_session_id
-                            )
+
+                        def record_visible_tools():
+                            try:
+                                session = runtime_context.policy.get_session(resolved_session_id)
+                            except PolicyError:
+                                session = None
+                            if session is not None:
+                                visible_tool_names = sorted(
+                                    {
+                                        tool_name_value(visibility.tool)
+                                        for visibility in runtime_context.policy.visible_tools_for_session(
+                                            session,
+                                            workflow_run_id=workflow_run_id,
+                                            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                                        )
+                                    }
+                                )
+                                transport_binding_store.record_visible_tools(
+                                    transport_session_id=request_transport_session_id,
+                                    bound_session_id=resolved_session_id,
+                                    visible_tool_names=visible_tool_names,
+                                    last_protocol_version=protocol_version,
+                                    last_workflow_run_id=workflow_run_id,
+                                    last_mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                                )
+
+                        await run_in_threadpool(record_visible_tools)
+                        transport_session_map[request_transport_session_id] = resolved_session_id
                 logger.info(
                     "gateway_mcp_response method=%s path=%s status=%s content_type=%s mcp_session_id=%s duration_ms=%d",
                     request.method,

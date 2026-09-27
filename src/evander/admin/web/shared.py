@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 import jwt
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -821,7 +822,7 @@ class AdminWebAuth:
             raise ValueError("Azure sign-in tenant is not allowed")
         login = self._extract_azure_login(claims)
         display_name = str(claims.get("name") or login)
-        user = self._require_azure_user(login, display_name=display_name)
+        user = await run_in_threadpool(self._require_azure_user, login, display_name=display_name)
         token = self._encode_session(
             subject=str(claims.get("sub") or ""),
             login=user.login,
@@ -872,7 +873,7 @@ class AdminWebAuth:
         azure = self._require_azure_sso_config()
         metadata = await self._azure_metadata()
         jwks_client = jwt.PyJWKClient(str(metadata["jwks_uri"]))
-        signing_key = jwks_client.get_signing_key_from_jwt(id_token)
+        signing_key = await run_in_threadpool(jwks_client.get_signing_key_from_jwt, id_token)
         claims = jwt.decode(
             id_token,
             signing_key.key,
