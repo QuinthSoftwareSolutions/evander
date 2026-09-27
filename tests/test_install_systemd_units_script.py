@@ -72,10 +72,12 @@ def test_install_systemd_units_uses_only_canonical_evander_names() -> None:
 
     assert 'LOCAL_SECRETS_FILE="/etc/evander/local-secrets.env"' in text
     assert "Environment=EVANDER_SECRETS_ENV_FILE=%s" in text
-    assert "grant_local_secrets_git_access" in text
+    assert "restrict_local_secrets_git_access" in text
     assert 'local git_user="${EVANDER_GIT_USER:-${RUN_USER}}"' in text
-    assert 'setfacl -m "u:${git_user}:--x" "${secrets_dir}"' in text
-    assert 'setfacl -m "u:${git_user}:r--" "${secrets_file}"' in text
+    assert 'setfacl -m "u:${git_user}:--x" "${secrets_dir}"' not in text
+    assert 'setfacl -m "u:${git_user}:r--" "${secrets_file}"' not in text
+    assert 'setfacl -x "u:${git_user}" "${secrets_file}"' in text
+    assert "ImportCredential=evander-credentials-key" in text
     assert "configure_local_secrets" in text
     assert "agent-sandbox" not in text
     assert 'systemctl enable "${EVANDER_UNITS[@]}"' in text
@@ -311,3 +313,33 @@ def test_wake_service_templates_run_as_operator_user_and_load_shared_secrets() -
     assert "Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO" in scheduled_wake
     assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-scheduled-wake" in scheduled_wake
+
+
+def test_credential_delivery_renders_only_the_explicit_host_consumers(tmp_path):
+    import os
+    import subprocess
+    script = _script_text()
+    function = script.split("configure_credential_delivery() {", 1)[1].split("\n}\n", 1)[0]
+    # Exercise the installer function with temporary directories and no key source.
+    invocation = "set -euo pipefail\nconfigure_credential_delivery() {" + function + "\n}\nconfigure_credential_delivery\n"
+    unit_dir = tmp_path / "units"
+    key = tmp_path / "missing.key"
+    credstore = tmp_path / "credstore"
+    environment = {**os.environ, "SYSTEMD_DIR": str(unit_dir),
+                   "EVANDER_CREDENTIALS_KEY_SOURCE": str(key),
+                   "EVANDER_CREDENTIALS_CREDSTORE_DIR": str(credstore)}
+    subprocess.run(["bash", "-c", invocation], env=environment, check=True, timeout=10,
+                   capture_output=True, text=True)
+    assert not credstore.exists() and not key.exists()
+    assert {path.parent.name.removesuffix(".d") for path in unit_dir.glob("*/30-credential-store.conf")} == {
+        "evander-gateway.service", "evander-admin-web.service", "evander-effect-orchestrator.service",
+        "evander-trigger-orchestrator.service", "evander-teams-ingest.service",
+        "evander-teams-notifications.service", "evander-teams-meeting-ingest.service",
+    }
+    for path in unit_dir.glob("*/30-credential-store.conf"):
+        assert path.read_text() == "[Service]\nImportCredential=evander-credentials-key\n"
+    key.write_bytes(b"x" * 32)
+    key.chmod(0o644)
+    rejected = subprocess.run(["bash", "-c", invocation], env=environment, timeout=10,
+                              capture_output=True, text=True)
+    assert rejected.returncode != 0 and not credstore.exists()

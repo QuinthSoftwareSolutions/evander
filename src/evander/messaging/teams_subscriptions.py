@@ -44,6 +44,9 @@ def teams_subscription_provider_identity_key(config: GatewayConfig) -> str:
                 ),
             }
         )
+        if config.teams_delegated_credential_ref:
+            payload.pop("delegated_credential_store_path")
+            payload["credential_ref"] = config.teams_delegated_credential_ref
     else:
         payload["graph_access_token_env"] = config.teams_graph_access_token_env.strip()
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

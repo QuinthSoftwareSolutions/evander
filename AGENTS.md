@@ -170,6 +170,7 @@ The current install script renders and enables:
 - `evander-teams-ingest.service`
 - `evander-teams-notifications.service`
 - `evander-teams-meeting-ingest.service`
+- `evander-privacy-maintenance.service`
 - `evander-effect-orchestrator.service`
 - `evander-trigger-orchestrator.service`
 

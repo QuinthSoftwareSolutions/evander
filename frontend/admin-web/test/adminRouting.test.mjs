@@ -157,7 +157,7 @@ test("built-in tabs belong to one ordered navigation group", () => {
       automation: ["workflow", "skills"],
       extensions: ["addons", "connectors", "host-directories"],
       infrastructure: ["subscriptions", "git-repositories", "vms", "workers"],
-      governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "users"],
+      governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "privacy", "users"],
     },
   );
 });

@@ -24,6 +24,7 @@ export type ConfigurationTab = {
 };
 
 export type ConfigurationUtilityKey =
+  | "credentials"
   | "website-logins"
   | "teams-auth"
   | "model-pricing"
@@ -90,6 +91,7 @@ const COMMON_UTILITIES: ReadonlyArray<ConfigurationUtility> = [
 export function configurationUtilitiesForTab(tabKey: string): ReadonlyArray<ConfigurationUtility> {
   const specialized: ConfigurationUtility[] = [];
   if (tabKey === "access_approvals_audit") {
+    specialized.push({key:"credentials",label:"Credentials",description:"Manage encrypted Teams and connector credentials, ownership and expiry."});
     specialized.push({key: "website-logins", label: "Website logins", description: "Manage website profiles, encrypted credentials and login tests."});
   }
   if (tabKey === "people_communications") {

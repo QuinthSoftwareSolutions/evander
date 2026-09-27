@@ -66,7 +66,7 @@ def test_failed_credential_replacement_preserves_prior_file(
 
     store.save(_credentials("new"))
     assert store.load().access_token == "new"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_identity_stores_serialize_read_modify_write_across_processes(
@@ -82,7 +82,7 @@ def test_identity_stores_serialize_read_modify_write_across_processes(
     second_started = process_context.Event()
     second_finished = process_context.Event()
     errors: list[Exception] = []
-    write_payload = first._write_raw_payload
+    write_payload = first._write_object_unlocked
 
     def paused_write(payload: dict[str, object]) -> None:
         first_is_writing.set()
@@ -96,7 +96,7 @@ def test_identity_stores_serialize_read_modify_write_across_processes(
         except Exception as exc:
             errors.append(exc)
 
-    monkeypatch.setattr(first, "_write_raw_payload", paused_write)
+    monkeypatch.setattr(first, "_write_object_unlocked", paused_write)
     first_thread = Thread(target=save_first)
     second_process = process_context.Process(
         target=_save_second_identity,
@@ -127,4 +127,5 @@ def test_identity_stores_serialize_read_modify_write_across_processes(
     first.clear()
     assert second.load().access_token == "two"
     second.clear()
-    assert not path.exists()
+    assert second.load() is None
+    assert first.list_all() == {}

@@ -2664,7 +2664,7 @@ def test_teams_ingest_worker_keeps_delegated_auth_failure_to_its_directory(
 
     patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
 
-    def delegated_token_provider(provider_config: GatewayConfig):
+    def delegated_token_provider(provider_config: GatewayConfig, directory_path: str):
         def resolve() -> str:
             if provider_config.teams_delegated_identity_id == "identity-broken":
                 raise TeamsAuthenticationError("delegated credential was revoked")
@@ -2729,7 +2729,7 @@ def test_teams_ingest_worker_uses_delegated_token_provider(
     patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
     monkeypatch.setattr(
         "evander.messaging.teams_ingest._build_delegated_teams_token_provider",
-        lambda config: lambda: "delegated-token",
+        lambda config, directory_path: lambda: "delegated-token",
     )
     config = GatewayConfig.model_validate(
         {

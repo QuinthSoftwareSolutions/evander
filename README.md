@@ -14,6 +14,7 @@ Git, and HTTP surfaces.
 | Choose VM or container execution | [Execution backends](docs/execution-backends.md) |
 | Configure providers, policies, and inheritance | [Configuration reference](docs/configuration-reference.md) |
 | Set up an agent team | [Team Add-on](docs/addons.md#team-module-guidance), [progress boards](docs/case-progress-boards.md), and [case context](docs/case-context.md) |
+| Review privacy controls, limitations, and credential migration | [Privacy operations](docs/privacy-operations.md) and [managed credentials](docs/credentials.md) |
 | Understand or extend the platform | [Architecture](docs/architecture.md) and [testing](docs/testing.md) |
 | Find a subsystem or read the complete manual | [Documentation map](docs/README.md) |
 
@@ -59,6 +60,8 @@ Git, and HTTP surfaces.
 - An optional [Team Add-on](docs/addons.md#team-module-guidance) for persistent agents, task
   hierarchies, communication, review, cost reporting, and releases pinned to approved commits
 - An asynchronous personal [Alexa-to-agent bridge](docs/alexa-agent-bridge.md)
+- Encrypted, directory-owned Teams and connector credentials, with operator migration,
+  key recovery and restart guidance at [Managed credentials](docs/credentials.md)
 - Deployment templates, configuration references, and executable smoke-test procedures
 
 ## Core Security Model

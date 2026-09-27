@@ -19,6 +19,18 @@ from evander.setup.engine import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def isolate_host_secret_reads(monkeypatch):
+    read = setup_engine._read_env_for_update
+
+    def isolated_read(path, *, root_owned):
+        if path == Path("/etc/evander/local-secrets.env"):
+            return {}
+        return read(path, root_owned=root_owned)
+
+    monkeypatch.setattr(setup_engine, "_read_env_for_update", isolated_read)
+
+
 def test_setup_checklist_requires_provider_secret_without_storing_value(tmp_path: Path) -> None:
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
     state = manager.load_state()
@@ -100,7 +112,7 @@ def test_setup_secret_status_uses_sudo_aware_read_for_default_secret_file(
     assert status["required"]["openai"]["set"] is True
 
 
-def test_setup_root_owned_secret_grants_git_ssh_user_acl(tmp_path: Path, monkeypatch) -> None:
+def test_setup_root_owned_secret_removes_git_ssh_user_acl(tmp_path: Path, monkeypatch) -> None:
     calls: list[list[str]] = []
     tmp_dir = tmp_path / "tmp"
     tmp_dir.mkdir()
@@ -109,6 +121,8 @@ def test_setup_root_owned_secret_grants_git_ssh_user_acl(tmp_path: Path, monkeyp
     monkeypatch.setenv("EVANDER_GIT_USER", "git-user")
     monkeypatch.setattr(setup_engine.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(setup_engine.shutil, "which", lambda command: "/usr/bin/setfacl")
+    from types import SimpleNamespace
+    monkeypatch.setattr(setup_engine.pwd, "getpwnam", lambda user: SimpleNamespace(pw_uid=1001 if user == "git-user" else 1000))
 
     def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(args)
@@ -122,8 +136,9 @@ def test_setup_root_owned_secret_grants_git_ssh_user_acl(tmp_path: Path, monkeyp
         root_owned=True,
     )
 
-    assert ["sudo", "setfacl", "-m", "u:git-user:--x", "/etc/evander"] in calls
-    assert ["sudo", "setfacl", "-m", "u:git-user:r--", "/etc/evander/local-secrets.env"] in calls
+    assert ["sudo", "setfacl", "-x", "u:git-user", "/etc/evander"] in calls
+    assert ["sudo", "setfacl", "-x", "u:git-user", "/etc/evander/local-secrets.env"] in calls
+    assert ["sudo", "setfacl", "-m", "g::---,o::---", "/etc/evander/local-secrets.env"] in calls
 
 
 def test_setup_admin_web_can_use_no_auth_without_password(tmp_path: Path) -> None:
@@ -774,7 +789,7 @@ def test_setup_secret_dropins_include_managed_git_refresh_broker(
     run_calls: list[list[str]] = []
 
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    monkeypatch.setattr(setup_engine, "_grant_secret_file_git_access", lambda *_args: None)
+    monkeypatch.setattr(setup_engine, "_restrict_secret_file_git_access", lambda *_args: None)
 
     def fake_run(args, **_kwargs):
         run_calls.append(args)
@@ -1046,3 +1061,13 @@ def test_setup_admin_assistant_verification_queues_smoke_message(
     assert service.published[0]["assistant_capability_mode"] == "read-only"
     assert state.assistant_session_id == "assistant-operator"
     assert state.assistant_smoke_event_id.startswith("chat:setup-smoke-")
+
+
+def test_setup_does_not_claim_isolation_for_two_names_with_same_uid(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setenv("SUDO_USER", "operator")
+    monkeypatch.setattr(setup_engine.pwd, "getpwnam", lambda user: SimpleNamespace(pw_uid=1000))
+    def unexpected(*args, **kwargs):
+        pytest.fail("shared UID must not trigger ACL mutation")
+    monkeypatch.setattr(setup_engine.subprocess, "run", unexpected)
+    setup_engine._restrict_secret_file_git_access(Path("/etc/evander/local-secrets.env"), "git-alias")

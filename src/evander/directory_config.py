@@ -33,6 +33,7 @@ DIRECTORY_CONFIG_METADATA_DOMAINS_KEY = "domains"
 DIRECTORY_CONFIG_ROOT_DIRNAME = "directory-config"
 
 DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
+    "privacy": "privacy.json",
     "policy": "policy.json",
     "providers": "providers.json",
     "contacts": "contacts.json",
@@ -71,6 +72,7 @@ LEGACY_ADO_WORKER_BOOTSTRAP_FIELDS = frozenset(
 )
 
 DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
+    "privacy": frozenset({"privacy"}),
     "policy": frozenset(
         {
             "approval_ttl_seconds",
@@ -216,6 +218,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "teams_delegated_authority_base_url",
             "teams_delegated_client_id",
             "teams_delegated_credential_store_path",
+            "teams_delegated_credential_ref",
             "teams_delegated_identity_id",
             "teams_delegated_scopes",
             "teams_delegated_tenant_id",
@@ -651,6 +654,11 @@ class DirectoryConfigStore:
     def read(self, reference: str, *, domain: str) -> dict[str, Any] | None:
         domain = self._normalize_domain_name(domain)
         directory = self._service.show(reference).directory
+        return self.read_for_directory(directory, domain=domain)
+
+    def read_for_directory(self, directory: DirectoryInfo, *, domain: str) -> dict[str, Any] | None:
+        """Read an already resolved directory without rescanning its registry."""
+        domain = self._normalize_domain_name(domain)
         if domain not in self._domains_for_directory_info(directory, root_path=self._root_path):
             return None
         path = self._domain_file_path(directory.path, domain=domain)
@@ -754,6 +762,15 @@ class DirectoryConfigStore:
                 if key not in LEGACY_ADO_WORKER_BOOTSTRAP_FIELDS
             }
         allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
+        if domain == "privacy":
+            from evander.privacy.models import PrivacySettings
+
+            if set(payload) - {"privacy"}:
+                raise ValueError("privacy domain accepts only privacy settings")
+            if "privacy" not in payload:
+                return {}
+            validated_privacy = PrivacySettings.model_validate(payload["privacy"])
+            return {"privacy": validated_privacy.model_dump(mode="json", exclude_unset=True)}
         if domain != "providers":
             unknown_fields = sorted(set(payload) - allowed_fields)
             if unknown_fields:
@@ -1013,7 +1030,7 @@ class DirectoryConfigResolver:
     ) -> GatewayConfig:
         root_bootstrap = base_gateway_config or build_runtime_gateway_config(host_config)
         payload = root_bootstrap.model_dump(mode="json")
-        for domain in ("policy", "providers", "email", "wake", "vm"):
+        for domain in ("policy", "providers", "email", "wake", "vm", "privacy"):
             resolution = self.resolve_domain(
                 "root",
                 domain=domain,
@@ -1035,6 +1052,12 @@ class DirectoryConfigResolver:
     ) -> DirectoryConfigResolution:
         details = self._service.show(reference)
         effective = deepcopy(base_config) if base_config is not None else {}
+        if domain == "privacy":
+            # A cached resolved GatewayConfig is not a source of grants. Removing
+            # an approval must not resurrect it from yesterday's root settings.
+            from evander.privacy.models import PrivacySettings
+
+            effective = {"privacy": PrivacySettings().model_dump(mode="json")}
         if domain == "providers" and "classification" in effective:
             # Classification is directory-owned. Do not resurrect removed profiles or
             # enablement from the process's cached root configuration.
@@ -1110,13 +1133,44 @@ class DirectoryConfigResolver:
             validation_errors=validation_errors,
         )
 
+    def resolve_privacy_tree(self) -> dict[str, dict[str, Any]]:
+        """Resolve each privacy overlay once, parent first, from one directory tree.
+
+        The caller supplies a read-only registry snapshot. Reusing inherited
+        settings avoids resolving every ancestor and copying the entire registry
+        separately for every directory on subscription proxy dispatch.
+        """
+        from evander.privacy.models import PrivacySettings, merge_privacy_settings
+
+        directories = [
+            self._service.show("root").directory,
+            *self._service.list_descendants("root"),
+        ]
+        resolved: dict[str, dict[str, Any]] = {}
+        defaults = PrivacySettings().model_dump(mode="json")
+        for directory in directories:
+            inherited = (
+                defaults if directory.path == "root"
+                else resolved[directory.path.rsplit("/", 1)[0]]
+            )
+            overlay = self._overlay_for_directory(directory, domain="privacy")
+            if overlay is None:
+                resolved[directory.path] = inherited
+                continue
+            # Use the same overlay validation and merge semantics as resolve_domain.
+            normalized = DirectoryConfigStore.validate_domain_payload("privacy", overlay)
+            resolved[directory.path] = PrivacySettings.model_validate(
+                merge_privacy_settings(inherited, normalized.get("privacy", {}))
+            ).model_dump(mode="json")
+        return resolved
+
     def _overlay_for_directory(
         self, directory: DirectoryInfo, *, domain: str
     ) -> dict[str, Any] | None:
-        if self._config_store is not None and domain in self._config_store.list_domains(
-            directory.path
-        ):
-            return self._config_store.read(directory.path, domain=domain)
+        if self._config_store is not None:
+            stored = self._config_store.read_for_directory(directory, domain=domain)
+            if stored is not None:
+                return stored
         overlays = directory.metadata.get(DIRECTORY_CONFIG_OVERLAYS_KEY)
         if not isinstance(overlays, dict):
             return None

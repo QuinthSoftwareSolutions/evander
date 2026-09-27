@@ -3,6 +3,12 @@
 This bundle bootstraps a fresh Ubuntu 24.04 host for `evander` by orchestrating the repo's
 existing scripts and CLI entrypoints.
 
+Set `evander_initialize_credential_store: true` to provision the first-release local Teams and
+connector store before installing services. The task creates a protected key outside runtime,
+preserves an existing key, and grants the store directory to `evander_run_user`. It fails if an
+existing database has lost its key. Initialization does not migrate credentials or restart
+consumers by itself. See [credential migration and recovery](../docs/credentials.md).
+
 It does not replace the repo's operational model. Ansible installs host prerequisites, checks out
 the repo, creates `.venv`, initializes `runtime/`, renders managed config files, installs systemd
 units, applies the firewall when enabled, and starts the enabled services. In the default `full`

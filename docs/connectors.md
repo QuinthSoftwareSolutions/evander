@@ -191,8 +191,14 @@ including symlinks, must remain below that root. Results are always staged as ar
 
 ## Authentication
 
-Authentication profiles reference host environment variables; connector JSON never stores secret
-values. Supported profile types are:
+Authentication profiles can reference the [managed credential store](credentials.md), or explicit
+legacy host environment variables. Connector JSON never stores secret values. Managed types are
+`bearer`, `api_key_header` (also requires `header_name`), `basic`, and
+`oauth2_client_credentials`, each with `credential_ref`. Managed OAuth retains `token_url`, scopes,
+audience and client-auth-method configuration. A managed reference cannot also name environment
+sources and never falls back when its key, binding or value is unavailable.
+
+Environment compatibility types are:
 
 - `none`;
 - `bearer_env` with `token_env`;
@@ -205,7 +211,10 @@ values. Supported profile types are:
 OAuth tokens are cached per directory and profile, refreshed before expiry, and fetched under a
 per-profile async lock so concurrent connector calls do not stampede the token endpoint. One 401
 retry is allowed only for read operations using OAuth client credentials; write operations are
-never replayed automatically. Auth errors returned to agents are deliberately generic.
+never replayed automatically. Managed tokens additionally check current status and revision
+before use. Bindings cover destinations, auth protocol and operations; changing them requires
+the credential owner's explicit approval in Credentials. Descendants can inherit approved
+credentials but cannot redeclare or retarget them. Auth errors returned to agents are deliberately generic.
 
 This first implementation models application/service identities. User-delegated OAuth belongs in
 a separate credential-binding design because user consent, refresh-token custody, revocation, and

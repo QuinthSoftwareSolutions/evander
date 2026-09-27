@@ -22,6 +22,9 @@ from evander.classification.models import (
 )
 from evander.model_usage.models import ModelInferenceUsageEvent
 from evander.model_usage.runtime import model_usage_store
+from evander.privacy.providers import (
+    ProviderDispatchGuard, provider_dispatch_scope, runtime_provider_guard,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ class ClassificationService:
         *,
         providers: Mapping[str, ClassificationProvider] | None = None,
         secret_resolver: Callable[[str], str | None] | None = None,
+        privacy_guard: ProviderDispatchGuard | None = None,
     ):
         if providers is None:
             from evander.classification.jev import JevProvider
@@ -64,6 +68,9 @@ class ClassificationService:
         self.providers = dict(providers)
         self.runtime_dir = runtime_dir
         self.secret_resolver = secret_resolver or os.environ.get
+        self.privacy_guard = privacy_guard or (
+            runtime_provider_guard(runtime_dir) if runtime_dir is not None else None
+        )
 
     def _provider(self, settings: ClassificationSettings, name: str):
         if not settings.enabled:
@@ -126,13 +133,25 @@ class ClassificationService:
         api_key = self.secret_resolver(config.api_key_env)
         if not api_key:
             raise ClassificationError("Classification provider credential is not configured")
+        def check_privacy() -> None:
+            if self.privacy_guard is not None:
+                self.privacy_guard.require(
+                    provider=prepared.provider,
+                    endpoint=getattr(provider, "endpoint", ""),
+                    connection_id=f"classifier:{prepared.provider}:{config.api_key_env}",
+                    directory_path=(attribution or {}).get("directory_path"),
+                    capability="classification",
+                )
+
+        check_privacy()
         started = time.monotonic()
-        response = provider.evaluate(
-            prepared,
-            config,
-            api_key,
-            lambda **attempt: self._record_attempt(prepared, attribution or {}, **attempt),
-        )
+        with provider_dispatch_scope(check_privacy):
+            response = provider.evaluate(
+                prepared,
+                config,
+                api_key,
+                lambda **attempt: self._record_attempt(prepared, attribution or {}, **attempt),
+            )
         answers = validate_answers(prepared.questions, response.get("answers"))
         return {
             "success": True,

@@ -1,5 +1,6 @@
 """OpenRouter policy and wire-contract regressions; no live provider requests."""
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -17,9 +18,11 @@ from evander.provider_config import (
     ProviderSessionManifest,
     validate_openrouter_session,
 )
+from evander.privacy.providers import ProviderDispatchGuard
 from evander.relays.openai import OpenAIRelay
 from evander.session_auth import session_mcp_auth_metadata
 from test_openai_relay import make_config, request_asgi, write_provider_overlay, write_session
+from test_privacy_providers import policy
 
 
 MODEL = "openai/gpt-5.4"
@@ -38,6 +41,79 @@ def router_config(tmp_path, monkeypatch):
     write_session(config, session_id="router", model=MODEL)
     monkeypatch.setenv("OPENROUTER_API_KEY", "host-only-router-key")
     return config
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_router_rechecks_revocation_after_reading_request_body(router_config, stream):
+    settings = policy(
+        provider="openrouter",
+        endpoint=router_config.openrouter_api_base_url,
+        connection_id=f"model:{router_config.openrouter_api_key_env}",
+    )
+    sent = []
+
+    def upstream(request):
+        sent.append(request)
+        return httpx.Response(200, json={"id": "must-not-be-delivered"})
+
+    async def request_body():
+        settings["provider_policy"]["approvals"][0]["status"] = "revoked"
+        yield json.dumps({"model": MODEL, "input": "fixture", "stream": stream}).encode()
+
+    relay = OpenAIRelay(
+        router_config,
+        transport=httpx.MockTransport(upstream),
+        privacy_guard=ProviderDispatchGuard(lambda _: [settings]),
+    )
+    response = request_asgi(
+        relay.create_app(), "POST", "/v1/session/router/responses",
+        content=request_body(), headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 403
+    assert sent == []
+
+
+def test_router_idle_stream_closes_when_approval_is_revoked(router_config):
+    settings = policy(
+        provider="openrouter",
+        endpoint=router_config.openrouter_api_base_url,
+        connection_id=f"model:{router_config.openrouter_api_key_env}",
+    )
+    first_chunk = b'data: {"type":"response.output_text.delta","delta":"fixture"}\n\n'
+
+    class Stream(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield first_chunk
+            settings["provider_policy"]["approvals"][0]["status"] = "revoked"
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = Stream()
+    relay = OpenAIRelay(
+        router_config,
+        transport=httpx.MockTransport(lambda _: httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=stream,
+        )),
+        privacy_guard=ProviderDispatchGuard(lambda _: [settings]),
+    )
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(relay.create_app()), base_url="http://relay.test",
+        ) as client:
+            return await asyncio.wait_for(client.post(
+                "/v1/session/router/responses",
+                json={"model": MODEL, "input": "fixture", "stream": True},
+            ), timeout=3)
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 200
+    assert response.content == first_chunk
+    assert stream.closed
 
 
 @pytest.mark.parametrize("endpoint", ["responses", "responses/compact"])

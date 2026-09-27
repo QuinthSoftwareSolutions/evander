@@ -143,7 +143,7 @@ or environment scope.
 
 Changing directory affects pages that filter or edit directory-owned state, including Agents,
 Approvals, VMs, Issues, Sessions, Git Repositories, MCP Tools, Tool Calls, Connectors, Host
-Directories, Configuration, Users, Workflow, and dashboard panels.
+Directories, Privacy, Configuration, Users, Workflow, and dashboard panels.
 
 ### Unlock Privileged Operations
 
@@ -682,6 +682,25 @@ Treat this as missing access to evidence, not an empty history. Check Admin Web 
 configured audit path, file permissions, and storage availability before retrying. Preserve
 the source log when repairing or rebuilding its index.
 
+## Privacy
+
+The Privacy tab is the scoped operator surface for privacy policy, coverage, retention previews,
+holds, data-subject cases and jobs, review exports, incidents, and external follow-ups. It reports
+unsupported sources and incomplete coverage explicitly; it is not a compliance certification or
+proof that every provider and backup has been erased.
+
+Choose the affected directory before opening the page. Privacy access always requires an
+authenticated operator and the corresponding `privacy.*` permission; root administration is
+reserved for the installation owner. Unlock privileged operations before any mutation. Review the
+current revision and exact record list before approving retention work or releasing an export,
+because stale revisions and changed source records fail closed. See `docs/privacy-operations.md`
+for the operational boundaries, review sequence, and recovery guidance.
+
+Use **Inspect evidence** on a case, incident, external follow-up or hold to reopen its saved
+references and selected records. **Inspect stored evidence** also accepts a known record ID.
+Case, incident and follow-up detail requires `privacy.cases`; hold detail requires `privacy.approve`
+in the selected scope. Reading remains available while privileged mutations are locked.
+
 ## Configuration
 
 The Configuration tab edits directory-scoped policy and runtime-global admin settings.
@@ -750,9 +769,11 @@ Specialized configuration areas:
 - **Code, Issues & Pull Requests**: configure Azure DevOps, GitHub, ADO worker filters, Git
   transport, PR feedback approval, and PR templates.
 - **Access, Approvals & Audit**: keep approval-required tools, core approval timing, MCP tool
-  policies, tool argument guardrails, and audit redaction together. Email policy controls use
-  configured mailbox selectors and folder rows rather than raw JSON; outbound email targets select
-  their sending mailbox independently from session mailbox-account access.
+  policies, tool argument guardrails, audit redaction, and managed credentials together. The
+  Credentials utility manages opaque Teams and connector credential references without returning
+  secret values to the browser. Email policy controls use configured mailbox selectors and folder
+  rows rather than raw JSON; outbound email targets select their sending mailbox independently from
+  session mailbox-account access.
 - **Network, Relays & Package Access**: configure VM provider defaults, libvirt templates, VM
   network, gateway, relay endpoints, NuGet, and npm audit facade settings.
 - **Automation & Assignment**: set issue intake capacity and assignment roles.

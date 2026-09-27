@@ -174,14 +174,24 @@ def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> li
     login_sessions: dict[str, DeviceCodeLoginSession | Mapping[str, Any] | Any] = {}
     lock = RLock()
 
+    def operation(request, directory, name, legacy_name):
+        ref = request.query_params.get("credential_ref")
+        if ref is None:
+            return getattr(service.operations_admin, legacy_name), {}
+        auth.require_permission(request, ADMIN_OWNER_PERMISSION, directory_path=directory)
+        return getattr(service.teams_admin, name), {"credential_ref": ref}
+
     async def status(request: Request) -> JSONResponse:
         auth.require(request)
         directory_path = _directory_path_from_request(service, request)
         try:
+            method, options = operation(request, directory_path, "status", "teams_auth_status")
             result = await run_in_threadpool(
-                service.operations_admin.teams_auth_status, directory=directory_path
+                method, directory=directory_path, **options
             )
-        except ValueError as exc:
+        except PermissionError:
+            return json_error("Teams credential management requires directory owner access", status_code=403)
+        except (ValueError, TeamsAuthError) as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse(
             _sanitized_result_payload(
@@ -202,18 +212,22 @@ def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> li
 
     async def login(request: Request) -> JSONResponse:
         auth.require(request)
+        directory_path = _directory_path_from_request(service, request)
         if not request_has_privileged_operations(
             auth=auth,
             service=service,
             request=request,
             required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
         ):
             return json_error("Privileged operations are locked.", status_code=403)
-        directory_path = _directory_path_from_request(service, request)
         try:
+            method, options = operation(request, directory_path, "login", "teams_auth_login")
             session = await run_in_threadpool(
-                service.operations_admin.teams_auth_login, directory=directory_path
+                method, directory=directory_path, **options
             )
+        except PermissionError:
+            return json_error("Teams credential management requires directory owner access", status_code=403)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         except TeamsAuthError as exc:
@@ -229,11 +243,13 @@ def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> li
 
     async def complete(request: Request) -> JSONResponse:
         auth.require(request)
+        directory_path = _directory_path_from_request(service, request)
         if not request_has_privileged_operations(
             auth=auth,
             service=service,
             request=request,
             required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
         ):
             return json_error("Privileged operations are locked.", status_code=403)
         try:
@@ -256,18 +272,23 @@ def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> li
                 return json_error("timeout_seconds must be a number")
             if timeout_seconds <= 0:
                 return json_error("timeout_seconds must be positive")
-        directory_path = _directory_path_from_request(service, request)
         with lock:
             login_session = login_sessions.get(login_session_id)
         if login_session is None:
             return json_error("Unknown login_session_id", status_code=404)
         try:
+            method, options = operation(
+                request, directory_path, "complete_login", "teams_auth_complete_login"
+            )
             result = await run_in_threadpool(
-                service.operations_admin.teams_auth_complete_login,
+                method,
                 login_session,
                 directory=directory_path,
                 timeout_seconds=timeout_seconds,
+                **options,
             )
+        except PermissionError:
+            return json_error("Teams credential management requires directory owner access", status_code=403)
         except (AuthorizationPendingError, SlowDownError, DeviceCodePollingTimeoutError) as exc:
             return JSONResponse(
                 _teams_auth_polling_payload(
@@ -308,19 +329,23 @@ def teams_auth_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> li
 
     async def logout(request: Request) -> JSONResponse:
         auth.require(request)
+        directory_path = _directory_path_from_request(service, request)
         if not request_has_privileged_operations(
             auth=auth,
             service=service,
             request=request,
             required_permission=ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
         ):
             return json_error("Privileged operations are locked.", status_code=403)
-        directory_path = _directory_path_from_request(service, request)
         try:
+            method, options = operation(request, directory_path, "logout", "teams_auth_logout")
             result = await run_in_threadpool(
-                service.operations_admin.teams_auth_logout, directory=directory_path
+                method, directory=directory_path, **options
             )
-        except ValueError as exc:
+        except PermissionError:
+            return json_error("Teams credential management requires directory owner access", status_code=403)
+        except (ValueError, TeamsAuthError) as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse(
             _sanitized_result_payload(

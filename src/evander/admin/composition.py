@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from evander.admin.services.website_session_admin_service import WebsiteSessionAdminService
 from evander.admin.services.classification_admin_service import ClassificationAdminService
+from evander.admin.services.privacy_service import PrivacyAdminService
 from evander.classification.service import ClassificationService
+from evander.admin.services.credential_admin_service import CredentialAdminService
 from evander.admin.services.repository_index_service import RepositoryIndexService
 
 import os
@@ -250,9 +252,11 @@ class AdminRuntimeComponents:
     addon_admin: AddonAdminService
     skill_admin: SkillAdminService
     capacity_health_admin: CapacityHealthAdminService
+    credential_admin: CredentialAdminService
     connector_admin: ConnectorAdminService
     website_session_admin: WebsiteSessionAdminService
     classification_admin: ClassificationAdminService
+    privacy_admin: PrivacyAdminService
     host_directory_admin: HostDirectoryAdminService
     codex_auth_admin: CodexAuthAdminService
     documentation_admin: DocumentationService
@@ -832,6 +836,9 @@ def _build_admin_runtime_components(
         addon_admin=addon_admin,
         skill_admin=skill_admin,
         capacity_health_admin=capacity_health_admin,
+        credential_admin=CredentialAdminService(store=connector_service.credentials,
+            provider_config=runtime.provider_config, operations_admin=operations_admin,
+            connector_admin=connector_admin, audit=runtime.audit, directories=runtime.directories),
         connector_admin=connector_admin,
         website_session_admin=WebsiteSessionAdminService(
             operations_admin, runtime.provider_config, runtime.audit
@@ -840,6 +847,7 @@ def _build_admin_runtime_components(
             operations_admin, runtime.provider_config, runtime.audit,
             ClassificationService(config.runtime_dir),
         ),
+        privacy_admin=PrivacyAdminService(operations_admin, runtime.provider_config, config),
         host_directory_admin=host_directory_admin,
         codex_auth_admin=codex_auth_admin,
         documentation_admin=documentation_admin,

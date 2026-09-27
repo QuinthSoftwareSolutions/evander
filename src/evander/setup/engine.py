@@ -3,6 +3,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import pwd
 import secrets
 import shutil
 import subprocess
@@ -261,8 +262,8 @@ def _upsert_env_file(path: Path, updates: dict[str, str], *, root_owned: bool = 
     )
     if root_owned and os.geteuid() != 0:
         tmp = Path(os.environ.get("TMPDIR", "/tmp")) / f"evander-secrets-{secrets.token_hex(8)}.env"
-        tmp.write_text(content, encoding="utf-8")
-        tmp.chmod(0o600)
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as stream:
+            stream.write(content)
         try:
             subprocess.run(
                 [
@@ -283,33 +284,37 @@ def _upsert_env_file(path: Path, updates: dict[str, str], *, root_owned: bool = 
                 ["sudo", "install", "-o", "root", "-g", "root", "-m", "0600", str(tmp), str(path)],
                 check=True,
             )
-            _grant_secret_file_git_access(path, _setup_git_user())
+            _restrict_secret_file_git_access(path, _setup_git_user())
         finally:
             tmp.unlink(missing_ok=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o600)
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(content)
     if root_owned:
-        _grant_secret_file_git_access(path, _setup_git_user())
+        _restrict_secret_file_git_access(path, _setup_git_user())
 
 
-def _grant_secret_file_git_access(path: Path, git_user: str) -> None:
-    if not git_user:
-        return
-    path_text = str(path)
-    if not path.is_absolute() or not path_text.startswith("/etc/"):
-        return
-    if not _sudo_path_exists(path):
+def _restrict_secret_file_git_access(path: Path, git_user: str) -> None:
+    if not git_user or git_user == _setup_run_user():
+        return  # Shared UIDs cannot provide account-level isolation.
+    try:
+        if pwd.getpwnam(git_user).pw_uid == pwd.getpwnam(_setup_run_user()).pw_uid:
+            return
+    except KeyError:
+        return  # There is no such Git account to revoke.
+    if not path.is_absolute() or not str(path).startswith("/etc/") or not _sudo_path_exists(path):
         return
     if shutil.which("setfacl"):
-        subprocess.run(["sudo", "setfacl", "-m", f"u:{git_user}:--x", str(path.parent)], check=True)
-        subprocess.run(["sudo", "setfacl", "-m", f"u:{git_user}:r--", str(path)], check=True)
-        return
-    git_group = _primary_group_for_user(git_user)
-    subprocess.run(["sudo", "chgrp", git_group, str(path.parent), str(path)], check=True)
-    subprocess.run(["sudo", "chmod", "0710", str(path.parent)], check=True)
-    subprocess.run(["sudo", "chmod", "0640", str(path)], check=True)
+        subprocess.run(["sudo", "setfacl", "-x", f"u:{git_user}", str(path)], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["sudo", "setfacl", "-x", f"u:{git_user}", str(path.parent)], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Preserve unrelated named ACL entries while removing the old group grant.
+        subprocess.run(["sudo", "setfacl", "-m", "g::---,o::---", str(path)], check=True)
+    else:
+        subprocess.run(["sudo", "chmod", "0600", str(path)], check=True)
 
 
 def _sudo_path_exists(path: Path) -> bool:
@@ -955,7 +960,7 @@ class SetupManager:
 
     def _install_secret_dropins(self, state: SetupState) -> None:
         secret_file = str(self.secret_file_path(state))
-        _grant_secret_file_git_access(Path(secret_file), _setup_git_user())
+        _restrict_secret_file_git_access(Path(secret_file), _setup_git_user())
         content = (
             "[Service]\n"
             f"Environment=EVANDER_SECRETS_ENV_FILE={secret_file}\n"

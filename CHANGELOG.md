@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-09-28 - Add privacy controls and managed credentials (0.66.0)
+
+- Add scoped privacy inventory, revisioned policies, cases, holds, reviewed local jobs,
+  encrypted reviewer exports, external follow-ups, and incident records through Admin Web
+  and the trusted-host CLI. Explicitly report unsupported lifecycle operations and incomplete
+  coverage; installation-wide readiness and enforcement are not claimed.
+- Schedule bounded, opt-in attachment-staging retention and honor holds in existing
+  opportunistic artifact expiry, with durable retry evidence and stale-selection checks.
+- Serialize voice, meeting, and DIDWW JSON transactions across processes. Move Teams and
+  connector credentials into a shared encrypted, revisioned store with explicit ownership,
+  consumer bindings, maintenance migration, recovery snapshots, and protected key delivery.
+- Add fresh, endpoint-bound provider approval checks to model relay, classifier, and Codex
+  subscription egress paths, including retries and persistent-connection revocation. Other
+  outbound paths remain explicit coverage gaps; report-only remains the upgrade default.
+- Apply the same dispatch and streaming checks to OpenRouter model routes.
+- Add metadata-only credential administration, managed Teams sign-in, safe refresh locking,
+  connector credential references, key rotation, and fail-closed migration/recovery behavior.
+- Read proxy privacy policy without filesystem writes and allow empty legacy Teams stores
+  during first-time managed setup. Resume retention beyond held records, count deletion
+  failures independently of successful batches, and prevent schedules from duplicating
+  unresolved selections. Expose scoped, audited detail reads for saved privacy evidence.
+- Preserve ordinary connector content after credential migration, validate child privacy
+  overrides against inherited policy, and keep unavailable Teams identities visible to
+  administrators. Resolve subscription policy once per bounded shared snapshot instead of
+  repeatedly walking the directory registry for every tunnel read.
+- Preflight descendant connector profiles before parent credential conversion and report
+  actionable UI/CLI conflicts without changing independent child credentials. Move SSE
+  policy/session checks off the relay event loop and bound them to one check per stream
+  interval while preserving idle-stream revocation and upstream cleanup.
+- Include technical privacy review drafts and deployment/restore caveats. No production
+  policies, provider contracts, legal approvals, or customer-data cleanup are applied.
+
 ## 2026-09-27 - Configure agent reasoning effort (0.65.0)
 
 - Add session reasoning defaults and per-prompt overrides in Admin Web, the CLI, and agent creation, prompt, and enqueue-prompt workflow effects.

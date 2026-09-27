@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
-from typing import Any, ContextManager, Protocol
+from typing import Any, Callable, ContextManager, Protocol
 
 from evander.admin.directory import (
     AdminResult,
@@ -87,7 +87,7 @@ class ConnectorAdminService:
                 {
                     "connector_id": connector_id,
                     **connector.model_dump(mode="json", exclude_none=True),
-                    "auth_status": self._deps.connector_service.auth_status(effective, connector),
+                    "auth_status": self._deps.connector_service.auth_status(effective, connector, directory_path=directory_path),
                 }
             )
         return {
@@ -109,6 +109,7 @@ class ConnectorAdminService:
         *,
         expected_revision: str,
         config_payload: object,
+        preflight: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if not expected_revision:
             raise ValueError("expected_revision is required")
@@ -135,7 +136,19 @@ class ConnectorAdminService:
             candidate = ConnectorDirectoryConfig.model_validate(
                 _deep_merge(parent_effective, config_payload)
             )
+            # A child may inherit a reference, but must not redeclare another
+            # directory's credential as its own. Changed consumer bindings remain
+            # unavailable until the credential owner explicitly approves them.
+            for profile_id, raw in config_payload.get("auth_profiles", {}).items():
+                if isinstance(raw, dict) and raw.get("credential_ref"):
+                    metadata = self._deps.connector_service.credentials.metadata(raw["credential_ref"])
+                    if metadata["owner_directory"] != directory_path or metadata["kind"] != "connector":
+                        raise ValueError("Credential reference must be declared in its owning directory")
             self._deps.connector_service.validate_config(candidate)
+            if preflight is not None:
+                # Credential conversion must recheck descendants under the same
+                # mutation lock as publication, after the parent revision check.
+                preflight()
             result = self._deps.operations_admin.write_directory_domain_config(
                 directory_path, "connectors", config_payload
             )

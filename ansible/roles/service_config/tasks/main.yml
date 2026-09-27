@@ -1,4 +1,7 @@
 ---
+- name: Configure optional encrypted credential store
+  ansible.builtin.import_tasks: credentials.yml
+
 - name: Render managed env files
   ansible.builtin.template:
     src: env_file.j2

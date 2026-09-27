@@ -58,6 +58,45 @@ def test_local_openai_max_concurrency_is_root_only(tmp_path: Path) -> None:
     assert config_store.read(child.path, domain="email") == {"email_provider_timeout_seconds": 15.0}
 
 
+def test_privacy_tree_snapshot_matches_individual_resolution_for_files_and_metadata(tmp_path):
+    from evander.privacy.models import PrivacySettings
+    from evander.repositories.directories import ReadOnlyJsonDirectoryRepository
+
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directories = DirectoryStore(config.directories_store_path)
+    service = DirectoryService(directories)
+    service.create(parent="root", name="parent")
+    child = service.create(parent="root/parent", name="child")
+    service.create(parent="root", name="empty")
+    store = DirectoryConfigStore(directories, runtime_dir=tmp_path)
+    store.write("root", domain="privacy", payload={"privacy": {
+        "enabled_categories": ["code", "contact"], "export_ttl_days": 9,
+        "retention": {"communication_artifacts": {
+            "approved": True, "approval_reference": "root-review",
+        }},
+    }})
+    store.write("root/parent", domain="privacy", payload={"privacy": {
+        "enabled_categories": ["code"], "export_ttl_days": 5,
+    }})
+    raw = directories.get(child.id)
+    directories.put(raw.model_copy(update={"metadata": {"config_overlays": {
+        "privacy": {"privacy": {"retention": {"communication_artifacts": {"trigger": "source_expiry"}}}},
+    }}}))
+    snapshot = DirectoryStore(config.directories_store_path, repository=ReadOnlyJsonDirectoryRepository(config.directories_store_path))
+    resolver = DirectoryConfigResolver(
+        DirectoryService(snapshot), config_store=DirectoryConfigStore(snapshot, runtime_dir=tmp_path),
+    )
+    tree = resolver.resolve_privacy_tree()
+    for path, settings in tree.items():
+        individual = resolver.resolve_domain(
+            path, domain="privacy", validator=lambda value: validate_effective_domain_payload("privacy", value),
+        )
+        assert not individual.validation_errors
+        assert settings == PrivacySettings.model_validate(individual.effective_config["privacy"]).model_dump(mode="json")
+    assert tree["root/empty"] is tree["root"]
+    assert tree["root/parent/child"]["export_ttl_days"] == 5
+
+
 def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenance(
     tmp_path: Path,
 ) -> None:
