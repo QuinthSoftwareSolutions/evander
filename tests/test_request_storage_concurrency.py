@@ -6,6 +6,7 @@ import json
 import threading
 from types import SimpleNamespace
 
+import anyio
 import httpx
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -18,6 +19,7 @@ from evander.admin.web.app import AuthMiddleware
 from evander.config import GatewayConfig
 from evander.gateway import _MCP_REQUEST_CONTEXT, create_app, create_server
 from evander.gateway.app import _install_mcp_http_logging
+import evander.gateway.server as gateway_server
 from evander.models import ApprovalStatus, SessionManifest
 from evander.runtime import build_runtime
 from evander.session_auth import ensure_session_mcp_auth_token
@@ -227,6 +229,65 @@ def test_concurrent_calls_consume_one_use_approval_once(runtime):
             _MCP_REQUEST_CONTEXT.reset(token)
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_cancelled_sync_tool_keeps_its_final_audit(runtime, monkeypatch, fails):
+    request = session(runtime)
+    entered, release = threading.Event(), threading.Event()
+    effects = []
+    register = gateway_server.register_connector_tools
+
+    def register_probe(server, context, service):
+        register(server, context, service)
+
+        @server.tool()
+        def probe(session_id: str) -> dict:
+            effects.append(session_id)
+            entered.set()
+            assert release.wait(3), "tool was not released after cancellation"
+            if fails:
+                raise ValueError("failure after mutation")
+            return {"ok": True}
+
+    # Register before gateway setup so the real synchronous-tool wrapper is used.
+    monkeypatch.setattr(gateway_server, "register_connector_tools", register_probe)
+    server = create_server(runtime)
+    runtime.policy.set_extra_mcp_tool_names({"probe"})
+
+    async def exercise():
+        scopes = []
+
+        async def invoke():
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                token = _MCP_REQUEST_CONTEXT.set(request)
+                try:
+                    if fails:
+                        with pytest.raises(ToolError, match="failure after mutation"):
+                            await call_probe(server, {}, request)
+                    else:
+                        await call_probe(server, {}, request)
+                finally:
+                    _MCP_REQUEST_CONTEXT.reset(token)
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(invoke)
+            try:
+                with anyio.fail_after(2):
+                    while not entered.is_set():
+                        await anyio.sleep(0.005)
+                scopes[0].cancel()
+            finally:
+                release.set()
+
+    anyio.run(exercise)
+    assert effects == ["session-1"]
+    events = [json.loads(line) for line in runtime.audit.path.read_text().splitlines()]
+    calls = [event for event in events if event.get("tool_name") == "probe"]
+    assert len(calls) == 1
+    assert calls[0]["session_id"] == "session-1"
+    assert calls[0]["decision"] == ("error" if fails else "allowed")
 
 
 def test_offloaded_calls_keep_each_sessions_identity_and_audit(runtime):

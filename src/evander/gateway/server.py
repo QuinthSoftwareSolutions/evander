@@ -18,6 +18,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
+from anyio import CancelScope
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -1584,23 +1585,27 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 result = await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
 
                 if not call_context.audit_emitted:
-                    await run_request_storage(
-                        audit_dispatch_result, raw_tool_name, raw_arguments, call_context, result
-                    )
+                    # A cancelled request can still finish its shielded tool worker.
+                    # Preserve the audit even if cancellation is pending at this await.
+                    with CancelScope(shield=True):
+                        await run_request_storage(
+                            audit_dispatch_result, raw_tool_name, raw_arguments, call_context, result
+                        )
                 return result
             finally:
                 for approval_context_token in reversed(approval_context_tokens):
                     reset_tool_approval_context(approval_context_token)
         except Exception as exc:
             if not call_context.audit_emitted:
-                await run_request_storage(
-                    audit_dispatch_result,
-                    raw_tool_name,
-                    raw_arguments,
-                    call_context,
-                    {"status": "error", "error": str(exc), "error_class": "tool_dispatch_error"},
-                    error=str(exc),
-                )
+                with CancelScope(shield=True):
+                    await run_request_storage(
+                        audit_dispatch_result,
+                        raw_tool_name,
+                        raw_arguments,
+                        call_context,
+                        {"status": "error", "error": str(exc), "error_class": "tool_dispatch_error"},
+                        error=str(exc),
+                    )
             raise
         finally:
             _TOOL_CALL_AUDIT_CONTEXT.reset(token)

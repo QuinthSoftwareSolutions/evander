@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -1831,6 +1833,57 @@ def test_build_payload_diagnostic_truncates_deep_array_diffs() -> None:
     ]
     assert diagnostic["differences"]["changed"]["truncated"] is True
     assert diagnostic["differences"]["truncated"] is True
+
+
+@pytest.mark.parametrize("recreate", [False, True])
+def test_concurrent_approval_creation_notifies_once(tmp_path: Path, monkeypatch, recreate):
+    engines = [make_engine(tmp_path), make_engine(tmp_path)]
+    engines[0].session_store.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    arguments = ("session-1", "probe", {"operation": "probe"}, "Approve probe")
+    if recreate:
+        stale = engines[0].create_approval(*arguments)
+        stale.status = ApprovalStatus.DENIED
+        engines[0].approval_store.put(stale.request_id, stale)
+
+    notifications = []
+    callers = threading.Barrier(2)
+    reads = threading.Barrier(2)
+
+    def synchronize_read(read):
+        def get(request_id):
+            result = read(request_id)
+            # Expose a read-then-write race if creation uses separate store calls.
+            reads.wait(timeout=3)
+            return result
+
+        return get
+
+    for engine in engines:
+        engine.approval_notification_dispatcher = SimpleNamespace(
+            dispatch=lambda request: notifications.append(request.request_id)
+        )
+        monkeypatch.setattr(
+            engine.approval_store, "get", synchronize_read(engine.approval_store.get)
+        )
+
+    def create(engine):
+        callers.wait(timeout=3)
+        return engine.create_approval(*arguments)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(create, engines))
+
+    assert results[0].request_id == results[1].request_id
+    assert notifications == [results[0].request_id]
+    stored = engines[0].approval_store.read_all()
+    assert len(stored) == 1
+    assert stored[results[0].request_id].status == ApprovalStatus.PENDING
 
 
 def test_create_approval_persists_redacted_payload(tmp_path: Path) -> None:
