@@ -601,6 +601,52 @@ def test_execution_history_records_snapshot_directory_and_legacy_scope_is_root(t
     )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "invalid-json",
+        "{}",
+        '{"workflow_graphs":null}',
+        '{"workflow_graphs":42}',
+        '{"workflow_graphs":"not a graph list"}',
+        '{"workflow_graphs":{}}',
+        '{"workflow_graphs":[null,42,{"node_ids":"effect-1"}]}',
+        '{"workflow_graphs":[{"node_ids":["effect-1"],"directory_path":"root/a"},'
+        '{"node_ids":["effect-1"],"directory_path":"root/b"}]}',
+    ],
+)
+def test_history_keeps_legacy_scope_for_unusable_snapshot_graphs(tmp_path, payload) -> None:
+    path = tmp_path / "orchestration.db"
+    store = SqliteExecutionStore(path, retention_days=None)
+    with connect_orchestration_db(path) as connection:
+        connection.execute(
+            "INSERT INTO workflow_config_snapshots(revision, captured_at, payload_json) VALUES (?, ?, ?)",
+            ("revision-1", "2026-08-20T09:59:00Z", payload),
+        )
+    store.put(_effect_record(execution_id="legacy"))
+    assert read_node_execution_authorization_path(path, execution_key="effect:legacy") == "root"
+
+
+def test_history_scope_observes_replaced_snapshot_without_rewriting_old_history(tmp_path) -> None:
+    from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
+
+    path = tmp_path / "orchestration.db"
+    store = SqliteExecutionStore(path, retention_days=None)
+    snapshots = SqliteWorkflowConfigSnapshotRepository(path)
+    for suffix in ("old", "new"):
+        snapshots.put_snapshot(
+            {
+                "revision": "revision-1",
+                "captured_at": "2026-08-20T09:59:00Z",
+                "effects": [{"config": {"prompt": "unrelated " * 1000}}],
+                "workflow_graphs": [{"directory_path": f"root/{suffix}", "node_ids": ["effect-1"]}],
+            }
+        )
+        store.put(_effect_record(execution_id=suffix))
+    assert read_node_execution_authorization_path(path, execution_key="effect:old") == "root/old"
+    assert read_node_execution_authorization_path(path, execution_key="effect:new") == "root/new"
+
+
 def test_retention_configuration_requires_compact_retention_when_enabled(tmp_path) -> None:
     with pytest.raises(ValueError, match="compact_history_retention_days is required"):
         SqliteWorkflowEventJournal(tmp_path / "orchestration.db", retention_days=30)

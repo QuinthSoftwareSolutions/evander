@@ -255,8 +255,10 @@ def test_login_notification_never_blocks_reader_behind_cancel_request(tmp_path: 
         broker.close()
 
 
-def test_status_reports_safe_account_limits_and_usage_without_token_material(
+@pytest.mark.parametrize("include_usage", [False, True])
+def test_status_reports_safe_account_limits_and_optional_usage_without_token_material(
     tmp_path: Path,
+    include_usage: bool,
 ) -> None:
     auth_home = tmp_path / "codex-auth"
     auth_home.mkdir()
@@ -264,12 +266,10 @@ def test_status_reports_safe_account_limits_and_usage_without_token_material(
         auth_home / "auth.json",
         access_token=_jwt(plan="plus", expiration=int(time.time()) + 3600, marker="status"),
     )
-    broker = CodexAuthBroker(
-        auth_home=auth_home,
-        client_factory=lambda *args, **kwargs: FakeManagedClient(auth_home / "auth.json", **kwargs),
-    )
+    client = FakeManagedClient(auth_home / "auth.json")
+    broker = CodexAuthBroker(auth_home=auth_home, client_factory=lambda *args, **kwargs: client)
     try:
-        status = broker.status()
+        status = broker.status(include_usage=include_usage)
     finally:
         broker.close()
 
@@ -278,7 +278,15 @@ def test_status_reports_safe_account_limits_and_usage_without_token_material(
     assert status["email"] == "owner@example.test"
     assert status["plan_type"] == "plus"
     assert status["rate_limits"]["default"]["primary"]["used_percent"] == 73.5
-    assert status["usage"]["summary"]["lifetime_tokens"] == 1234
+    assert [method for method, _params in client.requests] == [
+        "account/read",
+        "account/rateLimits/read",
+        *(["account/usage/read"] if include_usage else []),
+    ]
+    if include_usage:
+        assert status["usage"]["summary"]["lifetime_tokens"] == 1234
+    else:
+        assert status["usage"] is None
     serialized = json.dumps(status).casefold()
     assert "must-not-leak" not in serialized
     assert "refresh_token" not in serialized

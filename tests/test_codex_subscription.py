@@ -164,7 +164,11 @@ class DiskQuotaTurnProcess(FakeTurnProcess):
         raise CodexAppServerError("Codex app-server request failed: Disk quota exceeded")
 
 
-def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(tmp_path: Path) -> None:
+def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = iter([0.0, 0.1, 1.0, 1.2, 2.0, 2.3, 3.0, 3.4])
+    monkeypatch.setattr("evander.worker.codex_subscription.time.perf_counter", lambda: next(ticks))
     FakeTurnProcess.instances.clear()
     broker = FakeBroker()
     metadata: list[dict[str, Any]] = []
@@ -209,6 +213,14 @@ def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(tmp_pat
     turn_start = next(params for method, params in process.requests if method == "turn/start")
     assert "dynamicTools" not in turn_start
     assert metadata[-1]["codex_subscription_exit_code"] == 0
+    assert metadata[-1]["codex_subscription_startup_ms"] == pytest.approx(
+        {
+            "process_start": 100,
+            "account_login": 200,
+            "thread_open": 300,
+            "turn_start": 400,
+        }
+    )
     assert all("access" not in str(entry).casefold() for entry in metadata)
 
 
@@ -447,6 +459,12 @@ def test_subscription_runner_classifies_rate_limit_request_error_for_durable_rep
     runner.run()
 
     assert (tmp_path / "turn.exit").read_text(encoding="utf-8") == "1"
+    assert set(metadata[-1]["codex_subscription_startup_ms"]) == {
+        "process_start",
+        "account_login",
+        "thread_open",
+        "turn_start",
+    }
     assert metadata[-1]["codex_subscription_deferral"] == {
         "profile_id": "team-a",
         "reason": "rate_limited",

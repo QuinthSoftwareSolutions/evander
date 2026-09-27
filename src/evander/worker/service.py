@@ -499,7 +499,15 @@ class WorkerDaemon(GitWorkspaceOperations):
             subscription_profile_id = (
                 request.codex_turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
             )
-            subscription_tokens = self.codex_auth_profiles.preflight(subscription_profile_id)
+            preflight_started = time.perf_counter()
+            try:
+                subscription_tokens = self.codex_auth_profiles.preflight(subscription_profile_id)
+            finally:
+                logger.info(
+                    "worker_subscription_preflight session_id=%s duration_ms=%.3f",
+                    request.session_id,
+                    (time.perf_counter() - preflight_started) * 1000,
+                )
             subscription_broker = self.codex_auth_profiles.broker(subscription_profile_id)
         if request.repo_source:
             self._ensure_allowed_git_source(request.repo_source)

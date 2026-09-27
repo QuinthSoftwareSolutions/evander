@@ -1027,6 +1027,21 @@ Storage layout for directory config:
   Graph adapter caps each history scan with `teams_history_page_cap` plus
   `teams_history_deadline_seconds`. Each attempt is separately capped by
   `teams_history_request_timeout_seconds`; transient failures retry inside the overall deadline.
+- Teams history returns compact `metadata` by default: sender/session attribution, content type,
+  reply/link details, attachment identifiers and names, card content, mentions, reactions and edit
+  timestamps. The message body is returned once per message representation. Raw provider payloads
+  remain in host storage; request `include_metadata: true` when those details are needed.
+  Attachment listing and downloads continue to use the stored full records. MCP clients should
+  consume one of the text or structured representations supplied by the protocol.
+
+### Measuring workflow preparation overhead
+
+Run `PYTHONPATH=src ./.venv/bin/python scripts/benchmark_teams_preparation.py --samples 9`
+to measure an eleven-step durable workflow with a large synthetic configuration and message/session
+payloads, plus the size of a five-message Teams MCP response. Use the same script and interpreter
+with each checkout's `src` on `PYTHONPATH`, repeat in both orders, and avoid concurrent benchmarks.
+The script uses temporary databases and immediate fake providers. It excludes external services,
+worker/container startup and model response time, so its measurements are not end-to-end chat latency.
 
 ## VM Python Bootstrap
 

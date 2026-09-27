@@ -553,6 +553,7 @@ class EffectOrchestratorWorker:
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
         self._last_snapshot_revision: str | None = None
+        self._execution_graph_cache: tuple[str, ExecutionGraph] | None = None
         self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
         self._scheduled_internal_event_store_cache: _ScheduledInternalEventStoreCache = None
         self.provider_factory = resolved_wiring.provider_factory
@@ -860,7 +861,7 @@ class EffectOrchestratorWorker:
         effect_executions_completed = 0
         completion_events_published = early_completion_events_published
 
-        graph = _build_execution_graph(active_config)
+        graph = self._build_execution_graph(config_revision=config_revision)
         if self._last_snapshot_revision != config_revision:
             snapshot_captured_at = datetime.now(UTC)
             phase_started = time.perf_counter()
@@ -1190,8 +1191,15 @@ class EffectOrchestratorWorker:
 
         return execution_count
 
-    def _build_execution_graph(self) -> ExecutionGraph:
-        return _build_execution_graph(self.worker_config)
+    def _build_execution_graph(self, *, config_revision: str | None = None) -> ExecutionGraph:
+        config = self.worker_config
+        revision = config_revision or _config_revision_hash(config)
+        cached = self._execution_graph_cache
+        if cached is not None and cached[0] == revision:
+            return cached[1]
+        graph = _build_execution_graph(config)
+        self._execution_graph_cache = (revision, graph)
+        return graph
 
     def _get_gate_provider(self, gate_type: str) -> Any | None:
         if id(self.gate_provider_factory) != self._gate_provider_factory_cache_id:

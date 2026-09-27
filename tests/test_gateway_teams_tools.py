@@ -527,6 +527,94 @@ def test_teams_get_messages_allows_chat_allowlist_entries(tmp_path: Path) -> Non
     assert result["next_cursor"] == "chat:chat-1/msg-1"
 
 
+def test_teams_history_is_compact_by_default_and_full_metadata_is_opt_in(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    target = "team-a/channel-1"
+    content = "<p>Please check the attached report.</p>"
+    attachment = {
+        "id": "attachment-1",
+        "name": "report.pdf",
+        "contentType": "application/pdf",
+        "contentUrl": "https://example.test/files/report.pdf",
+        "size": 42,
+    }
+    card = {
+        "id": "card-1",
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "content": '{"type":"AdaptiveCard","body":[{"type":"TextBlock","text":"Ready"}]}',
+    }
+    message = TeamsMessageEnvelope(
+        cursor=f"{target}/msg-1",
+        message_id="msg-1",
+        author_id="user-1",
+        team_id="team-a",
+        channel_id="channel-1",
+        thread_id="parent-1",
+        content=content,
+        metadata={
+            "source": "teams_graph_api",
+            "target": target,
+            "content_type": "html",
+            "reply_to_id": "parent-1",
+            "attachments": [attachment, card],
+            "message": {
+                "body": {"contentType": "html", "content": content},
+                "from": {"user": {"id": "user-1", "displayName": "Alex"}},
+                "attachments": [attachment, card],
+                "reactions": [{"reactionType": "like"}],
+                "lastEditedDateTime": "2026-01-02T03:04:05Z",
+                "provider_diagnostics": "irrelevant " * 1000,
+            },
+        },
+    )
+    original = message.model_dump(mode="json")
+    context.teams_service = FakeTeamsService([message])
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=[target],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    server = create_server(context)
+    args = {"session_id": "session-1", "channel_target": target}
+    compact = call_tool(server, "teams_get_messages", args)
+    item = compact["messages"][0]
+    assert item["content"] == content
+    assert (item["message_id"], item["thread_id"], item["author_id"]) == (
+        "msg-1",
+        "parent-1",
+        "user-1",
+    )
+    assert compact["next_cursor"] == f"{target}/msg-1"
+    assert item["metadata"] == {
+        "source": "teams_graph_api",
+        "author_name": "Alex",
+        "content_type": "html",
+        "reply_to_id": "parent-1",
+        "reactions": [{"reactionType": "like"}],
+        "lastEditedDateTime": "2026-01-02T03:04:05Z",
+        "attachments": [
+            {
+                "id": "attachment-1",
+                "name": "report.pdf",
+                "contentType": "application/pdf",
+                "size": 42,
+            },
+            card,
+        ],
+    }
+    full = call_tool(server, "teams_get_messages", {**args, "include_metadata": True})
+    assert full == {"messages": [original], "next_cursor": f"{target}/msg-1"}
+    assert message.model_dump(mode="json") == original
+    schema = next(
+        t.inputSchema for t in asyncio.run(server.list_tools()) if t.name == "teams_get_messages"
+    )
+    assert schema["properties"]["include_metadata"]["type"] == "boolean"
+    assert schema["properties"]["include_metadata"]["default"] is False
+
+
 def test_teams_get_messages_supports_limit_and_includes_session_authored_messages(
     tmp_path: Path,
 ) -> None:
@@ -604,6 +692,8 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
     assert result["next_cursor"] == "team-a/channel-1/msg-3"
     assert context.teams_service.last_limit is None
     assert context.teams_service.reaction_calls == []
+    assert result["messages"][0]["metadata"]["source"] == "teams_graph_api_status"
+    assert result["messages"][0]["metadata"]["session_id"] == "session-1"
 
 
 def test_teams_get_messages_defaults_cursorless_reads_to_configured_poll_limit(
@@ -680,8 +770,10 @@ def test_teams_get_messages_defaults_cursorless_reads_to_configured_poll_limit(
     assert result["next_cursor"] == "team-a/channel-1/msg-3"
 
 
+@pytest.mark.parametrize("include_metadata", [False, True])
 def test_teams_get_messages_applies_default_limit_after_session_filtering(
     tmp_path: Path,
+    include_metadata: bool,
 ) -> None:
     context = make_context(tmp_path, teams_poll_limit=1)
     context.session_repository.upsert_session(
@@ -729,7 +821,11 @@ def test_teams_get_messages_applies_default_limit_after_session_filtering(
     result = call_tool(
         server,
         "teams_get_messages",
-        {"session_id": "session-1", "channel_target": "team-a/channel-1"},
+        {
+            "session_id": "session-1",
+            "channel_target": "team-a/channel-1",
+            "include_metadata": include_metadata,
+        },
     )
 
     assert context.teams_service.last_limit is None

@@ -96,7 +96,7 @@ class CodexAuthBroker:
                 f"another Codex auth broker already owns {self.auth_home}"
             ) from exc
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, include_usage: bool = True) -> dict[str, Any]:
         with self._lock:
             self._drain_login_notifications_locked()
             account: dict[str, Any] | None = None
@@ -124,7 +124,7 @@ class CodexAuthBroker:
                     )
                 except (CodexAppServerError, CodexAuthBrokerError) as exc:
                     error = str(exc)
-                if error is None:
+                if error is None and include_usage:
                     try:
                         usage = _safe_usage_payload(
                             self._ensure_client().request(

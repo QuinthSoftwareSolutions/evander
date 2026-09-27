@@ -87,8 +87,70 @@ def _filter_teams_messages_for_session(
                 str(exc),
             )
             continue
-        messages.append(message.model_dump(mode="json"))
+        messages.append(
+            _teams_message_response(message, include_metadata=bool(args.get("include_metadata")))
+        )
     return messages, denied_count, next_cursor
+
+
+def _teams_message_response(
+    message: TeamsMessageEnvelope, *, include_metadata: bool = False
+) -> dict[str, Any]:
+    if include_metadata:
+        return message.model_dump(mode="json")
+
+    # Authorize against the original envelope above. Raw Graph payloads remain
+    # in storage for attachment resolution and explicit full-metadata reads.
+    result = message.model_dump(mode="json", exclude={"metadata"})
+    source = message.metadata
+    raw = source.get("message")
+    raw = raw if isinstance(raw, dict) else {}
+    metadata = {
+        key: source[key]
+        for key in ("source", "session_id", "author_name", "reply_to_id", "web_url", "content_type")
+        if source.get(key) is not None
+    }
+    for key, graph_key in (("reply_to_id", "replyToId"), ("web_url", "webUrl")):
+        if key not in metadata and raw.get(graph_key):
+            metadata[key] = raw[graph_key]
+    body = raw.get("body")
+    if "content_type" not in metadata and isinstance(body, dict) and body.get("contentType"):
+        metadata["content_type"] = body["contentType"]
+    sender = raw.get("from")
+    if "author_name" not in metadata and isinstance(sender, dict):
+        for kind in ("user", "application", "device"):
+            identity = sender.get(kind)
+            if isinstance(identity, dict) and identity.get("displayName"):
+                metadata["author_name"] = identity["displayName"]
+                break
+    for key in ("subject", "mentions", "reactions", "lastEditedDateTime", "deletedDateTime"):
+        if raw.get(key):
+            metadata[key] = raw[key]
+    attachments = source.get("attachments", raw.get("attachments"))
+    if isinstance(attachments, list) and attachments:
+        metadata["attachments"] = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            summary = {
+                key: attachment[key]
+                for key in ("id", "name", "contentType", "size", "attachment_kind")
+                if attachment.get(key) is not None
+            }
+            for key, alias in (
+                ("id", "attachment_id"),
+                ("name", "filename"),
+                ("contentType", "mime_type"),
+            ):
+                if key not in summary and attachment.get(alias) is not None:
+                    summary[key] = attachment[alias]
+            # A card's content is the message itself, unlike a file's binary data.
+            if str(summary.get("contentType", "")).startswith("application/vnd.microsoft.card."):
+                if attachment.get("content") is not None:
+                    summary["content"] = attachment["content"]
+            metadata["attachments"].append(summary)
+    result["metadata"] = metadata
+    return result
 
 
 def _teams_cursor_for_target(

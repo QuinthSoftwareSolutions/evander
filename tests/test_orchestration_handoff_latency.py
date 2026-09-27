@@ -102,6 +102,52 @@ def test_ready_successors_drain_without_repeated_slow_recovery(tmp_path):
     assert 0 < result.next_sleep_seconds <= 5
 
 
+def test_graph_is_reused_until_reloaded_routes_change(tmp_path, monkeypatch):
+    import evander.daemons.effect_orchestrator as orchestrator
+
+    worker = _worker(tmp_path, chain_length=2)
+    worker._executor.shutdown(wait=True)
+    worker._executor = _ImmediateExecutor()
+    worker._completion_dispatch_hooks = ()
+    worker._lifecycle_reconciliation_hooks = ()
+    builds = []
+    build_graph = orchestrator._build_execution_graph
+
+    def build(config):
+        builds.append(config)
+        return build_graph(config)
+
+    monkeypatch.setattr(orchestrator, "_build_execution_graph", build)
+
+    def drain(event_id):
+        _publish(worker, event_id)
+        for _ in range(10):
+            if worker.run_once().next_sleep_seconds:
+                break
+
+    try:
+        drain("first")
+        drain("second")
+        assert len(builds) == 1
+        assert sorted(r.effect_id for r in worker.execution_store.list_executions()) == [
+            "step-0",
+            "step-0",
+            "step-1",
+            "step-1",
+        ]
+        payload = worker.worker_config.model_dump(mode="json")
+        payload["edges"] = [_edge("start", "step-1")]
+        updated = canonical_worker_config(payload)
+        worker._config_reloader = SimpleNamespace(get_latest=lambda: (updated, True))
+        drain("third")
+        assert len(builds) == 2
+        records = worker.execution_store.list_executions()
+        assert [r.effect_id for r in records if r.event_id == "third"] == ["step-1"]
+        assert len(records) == 5
+    finally:
+        worker.close()
+
+
 def test_recovery_continuations_and_due_leases_preempt_long_pass():
     clock = Clock()
     schedule = RecoverySchedule(clock=clock)

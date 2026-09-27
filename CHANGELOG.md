@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-27 - Reduce Teams context and workflow preparation overhead (0.64.2)
+
+- Return compact Teams history metadata by default, retaining message content, sender/session
+  attribution, reply and attachment references, card content, mentions, reactions and edits.
+  Full provider metadata remains available with `include_metadata: true`.
+- Reuse the execution graph for an unchanged configuration revision and read only graph membership
+  from configuration snapshots when recording historical execution scope.
+- Skip display-only account-usage telemetry during subscription turn preflight, retaining fresh
+  authentication, account pinning and capacity checks. Operator status still includes usage.
+- Record subscription startup phase durations in worker logs and job metadata to distinguish
+  process initialization, login, thread opening and turn submission.
+- Add a repeatable synthetic workflow and Teams response-size benchmark.
+
 ## 2026-09-26 - Keep request storage off the event loop (0.64.1)
 
 - Offload MCP authentication, transport persistence, discovery, approval checks and dispatch
