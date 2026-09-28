@@ -86,6 +86,9 @@ from .model_tasks import (
 )
 
 
+from .model_git_recovery import GitRecoveryIncident
+
+
 class TeamState(TeamModel):
     schema_version: int = SCHEMA_VERSION
     revision: int = Field(default=0, ge=0)
@@ -131,6 +134,7 @@ class TeamState(TeamModel):
     human_review_decisions: dict[str, HumanReviewDecision] = Field(default_factory=dict)
     human_review_findings: dict[str, HumanReviewFinding] = Field(default_factory=dict)
     dispatches: dict[str, TeamDispatch] = Field(default_factory=dict)
+    git_recovery_incidents: dict[str, GitRecoveryIncident] = Field(default_factory=dict)
     git_preparation_attempts: dict[str, TeamGitPreparationAttempt] = Field(default_factory=dict)
     worktree_cleanup_candidates: dict[str, WorktreeCleanupCandidate] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
@@ -366,6 +370,7 @@ class TeamState(TeamModel):
             "inbox",
             "blockers",
             "dependency_composition_recoveries",
+            "git_recovery_incidents",
             "blocker_events",
             "action_records",
             "notes",
@@ -2294,6 +2299,17 @@ class TeamState(TeamModel):
                 )
 
     def _validate_git_preparation_attempts(self, errors: list[str]) -> None:
+        for incident in self.git_recovery_incidents.values():
+            task = self.tasks.get(incident.task_id)
+            blocker = self.blockers.get(incident.blocker_id)
+            if task is None or task.project_id != incident.project_id:
+                errors.append(f"Git recovery {incident.id} has an invalid task/project scope")
+            if blocker is None or blocker.project_id != incident.project_id:
+                errors.append(f"Git recovery {incident.id} has an invalid blocker scope")
+            for task_id in incident.recovery_task_ids:
+                successor = self.tasks.get(task_id)
+                if successor is None or successor.project_id != incident.project_id:
+                    errors.append(f"Git recovery {incident.id} has an invalid successor {task_id}")
         for attempt in self.git_preparation_attempts.values():
             if attempt.agent_id not in self.agents:
                 errors.append(

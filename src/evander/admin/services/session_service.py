@@ -161,6 +161,8 @@ class SessionAdminService:
         session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
+        from evander.execution.preservation import require_session_data_disposable
+        require_session_data_disposable(self._deps.config.runtime_dir, session_id)
         git_access_revoked = _revoke_managed_git_access_for_session(manifest)
         managed_git = self._deps.managed_git_admin
         if managed_git is not None:

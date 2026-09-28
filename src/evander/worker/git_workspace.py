@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.git_recovery import GitPreparationFailure
+
 import json
 import os
 import re
@@ -536,9 +538,8 @@ class GitWorkspaceOperations:
         )
         if preparation_receipt is not None:
             if preparation_receipt.get("request_fingerprint") != preparation_fingerprint:
-                raise ValueError(
-                    "task worktree preparation attempt was already used with a different request"
-                )
+                raise GitPreparationFailure(
+                    "task worktree preparation attempt was already used with a different request", cause="workspace_receipt_mismatch")
             for field_name, expected in (
                 ("repo_name", request.repo_name),
                 ("worktree_name", request.worktree_name),
@@ -549,27 +550,23 @@ class GitWorkspaceOperations:
                 ),
             ):
                 if preparation_receipt.get(field_name) != expected:
-                    raise ValueError(
-                        f"task worktree preparation receipt {field_name} does not match request"
-                    )
+                    raise GitPreparationFailure(
+                        f"task worktree preparation receipt {field_name} does not match request", cause="workspace_receipt_mismatch")
             if not target_exists:
-                raise ValueError(
+                raise GitPreparationFailure(
                     "task worktree preparation receipt exists but its checkout is missing; "
-                    "use a new preparation generation"
-                )
+                    "use a new preparation generation", cause="workspace_missing")
             receipt_base = str(preparation_receipt.get("base_commit_sha") or "").strip()
             if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", receipt_base) is None:
-                raise ValueError("task worktree preparation receipt has no authoritative base")
+                raise GitPreparationFailure("task worktree preparation receipt has no authoritative base", cause="workspace_receipt_mismatch")
             requested_base = preparation_receipt.get("requested_expected_base_commit_sha")
             if request.expected_base_commit_sha not in {None, requested_base, receipt_base}:
-                raise ValueError(
-                    "task worktree preparation request conflicts with its receipted base"
-                )
+                raise GitPreparationFailure(
+                    "task worktree preparation request conflicts with its receipted base", cause="workspace_receipt_mismatch")
             requested_tree = preparation_receipt.get("requested_expected_base_tree_hash")
             if request.expected_base_tree_hash not in {None, requested_tree}:
-                raise ValueError(
-                    "task worktree preparation request conflicts with its receipted base tree"
-                )
+                raise GitPreparationFailure(
+                    "task worktree preparation request conflicts with its receipted base tree", cause="workspace_receipt_mismatch")
             # The first call already verified any pinned composition root and
             # tree. Replay validates the resulting host-owned receipt and the
             # live checkout against its final base.
@@ -580,20 +577,18 @@ class GitWorkspaceOperations:
                 }
             )
         if target_exists and request.expected_base_commit_sha is None:
-            raise ValueError(
+            raise GitPreparationFailure(
                 "existing task worktree has no authoritative server-recorded "
                 "base; preserve the checkout and use an audited provenance "
-                "recovery"
-            )
+                "recovery", cause="workspace_receipt_mismatch")
         env = _git_subprocess_env(paths.agent_home)
         if preparation_receipt is not None and self._task_worktree_has_user_changes(
             target_dir,
             git_env=env,
         ):
-            raise ValueError(
+            raise GitPreparationFailure(
                 "task worktree preparation receipt cannot be replayed because the checkout "
-                "contains user changes; preserve it for operator recovery"
-            )
+                "contains user changes; preserve it for reviewed recovery", cause="workspace_dirty")
         self._validate_git_branch(repo_dir, request.branch, env=env)
         subprocess.run(
             ["git", "config", "extensions.worktreeConfig", "true"],
@@ -657,11 +652,10 @@ class GitWorkspaceOperations:
             args = ["git", "worktree", "add"]
             if local_branch.returncode == 0:
                 if request.expected_base_commit_sha is None:
-                    raise ValueError(
+                    raise GitPreparationFailure(
                         "reused task branch has no authoritative server-recorded "
                         "base; preserve the branch and use an audited provenance "
-                        "recovery"
-                    )
+                        "recovery", cause="workspace_receipt_mismatch")
                 args.extend([str(target_dir), request.branch])
             else:
                 if base_commit_sha is None:
@@ -720,22 +714,20 @@ class GitWorkspaceOperations:
                     request.expected_base_commit_sha is not None
                     and candidate != request.expected_base_commit_sha
                 ):
-                    raise ValueError(
+                    raise GitPreparationFailure(
                         "task worktree base commit does not match authoritative "
                         f"prior Team provenance: found {candidate}, expected "
-                        f"{request.expected_base_commit_sha}"
-                    )
+                        f"{request.expected_base_commit_sha}", cause="workspace_receipt_mismatch")
                 base_commit_sha = candidate
         if (
             request.expected_base_commit_sha is not None
             and base_commit_sha is not None
             and base_commit_sha != request.expected_base_commit_sha
         ):
-            raise ValueError(
+            raise GitPreparationFailure(
                 "task worktree base commit does not match authoritative prior "
                 f"Team provenance: found {base_commit_sha}, expected "
-                f"{request.expected_base_commit_sha}"
-            )
+                f"{request.expected_base_commit_sha}", cause="workspace_receipt_mismatch")
         if request.expected_base_commit_sha is not None:
             expected_base_is_ancestor = subprocess.run(
                 [
@@ -752,19 +744,17 @@ class GitWorkspaceOperations:
                 text=True,
             )
             if expected_base_is_ancestor.returncode != 0:
-                raise ValueError(
+                raise GitPreparationFailure(
                     "authoritative prior Team base commit is not an ancestor of "
                     "the retained task worktree; preserve the checkout for "
-                    "operator recovery"
-                )
+                    "operator recovery", cause="workspace_receipt_mismatch")
             if base_commit_sha is None:
                 base_commit_sha = request.expected_base_commit_sha
         if request.expected_base_tree_hash is not None:
             if base_commit_sha is None:
-                raise ValueError(
+                raise GitPreparationFailure(
                     "task worktree base tree cannot be verified without an "
-                    "authoritative base commit"
-                )
+                    "authoritative base commit", cause="workspace_receipt_mismatch")
             self._verify_task_base_provenance(
                 repo_dir=repo_dir,
                 base_ref=request.base_ref,

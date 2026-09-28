@@ -18,6 +18,10 @@ with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 For contextual release reintegration, verifier recovery, retained logs and staged worker
 toolchain rollout, see [Release recovery and verifier policy](release-recovery-and-verifier-policy.md).
 
+For agent recovery of Git provenance, composition, workspace, and publication incidents,
+see [Autonomous Git recovery](autonomous-git-recovery.md). Deploy compatible workers first;
+recovery preservation holds also protect session and VM teardown.
+
 For the privacy inventory, approved cleanup jobs, holds, reviewer exports, incident references,
 credential upgrade and restore caveats, see [Privacy operations](privacy-operations.md).
 

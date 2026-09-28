@@ -457,6 +457,10 @@ def _create_project_repo_git_work_contexts(
                     agent_branch=agent_branch,
                     base_ref=worktree_base_ref or "HEAD",
                     worktree_name=worktree_name,
+                    **({"required_git_recovery_protocol": 1} if any(
+                        row.task_id == task_id and row.preparation_retries or task_id in row.recovery_task_ids
+                        or task_id in row.evidence.get("consumer_successor_ids", {}).values()
+                        for row in state.git_recovery_incidents.values()) else {}),
                     preparation_attempt_id=(
                         preparation_attempt_id if use_preparation_receipt else None
                     ),
@@ -511,6 +515,10 @@ def _create_project_repo_git_work_contexts(
                 recorded_work_context_base_commit = pinned_base_commit
             if task_base_commit_pin is not None:
                 recorded_work_context_base_commit = task_base_commit_pin
+            if resolved_dependency_commit_sha is not None:
+                # The task pin remains its required root; this context starts
+                # at the separately reviewed merge and must reuse that identity.
+                recorded_work_context_base_commit = resolved_dependency_commit_sha
             prepared_head_commit = (
                 _optional_text(preparation_receipt_result.get("head_commit_sha"))
                 or composed_head_commit
@@ -740,6 +748,13 @@ def _create_project_repo_git_work_contexts(
             else:
                 assert last_conflict is not None
                 raise last_conflict
+            from .services.domain.git_recovery import mark_preparation_resumed
+            if any(row.task_id == task_id and row.state in {"preparing", "awaiting_review"} for row in state.git_recovery_incidents.values()):
+                def _resumed(current):
+                    _validate_prepared_dependency_provenance(current)
+                    mark_preparation_resumed(current, task_id, context_id=context_id)
+                    return current
+                state = repo.update(_resumed)
             context_model = state.git_work_contexts[context_id]
             rows.append(_git_work_context_prompt_payload(context_model))
     return (

@@ -66,6 +66,7 @@ _TASK_PREPARATION_GENERATION_FIELDS = (
     "parent_task_id",
     "originating_task_id",
     "git_base_branch",
+    "git_constraints",
     "dependency_task_ids",
     "cancellation",
 )
@@ -141,6 +142,12 @@ def _task_generation_payload(task: object) -> dict[str, object]:
         task,
         fields=_TASK_PREPARATION_GENERATION_FIELDS,
     )
+    if payload.get("git_constraints") == {
+        "intent": "unknown", "required_base_commit_sha": None, "excluded_ancestor_shas": [],
+    }:
+        # An additive legacy default must not re-key existing worktrees or
+        # silently release historical preparation blockers during upgrade.
+        payload.pop("git_constraints")
     payload["dependency_task_ids"] = sorted(
         str(item) for item in payload.get("dependency_task_ids") or []
     )
@@ -207,7 +214,7 @@ def task_preparation_generation(state: TeamState, task_id: str) -> str:
         "preparation_contract_version": TASK_PREPARATION_CONTRACT_VERSION,
         "task": _task_generation_payload(task),
         "project_git": (
-            _semantic_generation_payload(project.git)
+            _semantic_generation_payload(project.git.model_dump(mode="json", exclude={"recovery"}))
             if (project := state.projects.get(task.project_id)) is not None
             and project.git is not None
             else None
@@ -291,7 +298,10 @@ def task_git_work_context_generation(state: TeamState, task_id: str) -> str:
         update={"tasks": {**state.tasks, task_id: normalized_task}},
         deep=False,
     )
-    return task_preparation_generation(normalized_state, task_id)
+    from .git_recovery import preparation_epoch, digest
+    generation = task_preparation_generation(normalized_state, task_id)
+    epoch = preparation_epoch(state, task_id)
+    return digest([generation, epoch])[:20] if epoch else generation
 
 
 def _human_correction_generation_payload(
@@ -494,6 +504,7 @@ def record_task_preparation_failure(
     reporter_agent_id: str,
     error: str,
     reason_code: str = "task_execution_preparation_failed",
+    diagnostic_cause: str | None = None,
     result: dict[str, Any],
     now: datetime | None = None,
 ) -> TeamBlocker | None:
@@ -506,14 +517,15 @@ def record_task_preparation_failure(
     if task.state not in _NON_TERMINAL_TASK_STATES:
         return None
     generation = task_preparation_generation(state, task.id)
-    cause = preparation_cause_fingerprint(error)
+    semantic_error = f"git:{diagnostic_cause}" if diagnostic_cause and diagnostic_cause != "unknown" else error
+    cause = preparation_cause_fingerprint(semantic_error)
     blocker, _created = open_or_get_blocker(
         state,
         source_kind=TeamBlockerSourceKind.EXPLICIT,
         source_id=task_preparation_source_id(
             state,
             task_id=task.id,
-            error=error,
+            error=semantic_error,
         ),
         reason_code=reason_code,
         summary=f"Execution preparation failed for task {task.id}",

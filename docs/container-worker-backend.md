@@ -20,6 +20,13 @@ for migration, drain, retention, and rollback precautions.
 
 ## Control-Plane Configuration
 
+Workers advertise `git_recovery: 1` and `git_salvage: 1` in `/healthz` capabilities.
+Recovery preparation uses an explicit protocol requirement; incompatible workers are
+rejected without dropping preparation identity. The authenticated
+`POST /v1/sessions/{session_id}/worktrees/salvage` endpoint publishes immutable snapshots
+through scoped Git transport while retaining original files. See
+[autonomous Git recovery](autonomous-git-recovery.md) for policy, limits, and rollout.
+
 `container_worker_vm` selects a default worker for new sessions. Existing sessions retain
 their assigned worker when that default changes. Configure the host gateway with the worker
 URL and the environment variable that contains the bearer token through the directory's

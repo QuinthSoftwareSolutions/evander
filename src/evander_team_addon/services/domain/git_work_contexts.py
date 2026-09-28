@@ -629,6 +629,7 @@ def reconcile_git_work_context_lifecycle(
             for context in state.git_work_contexts.values()
             if context.state == GitWorkContextState.ABANDONED
             and context.id not in referenced_context_ids
+            and not any(context.id in incident.preserved_context_ids for incident in state.git_recovery_incidents.values())
             and context.updated_at <= prune_before
             and (
                 context.worktree_path is None
@@ -1035,6 +1036,10 @@ def _resolve_git_context_branch_commit(
                     for source in context.dependency_git_sources
                 ],
             )
+        if task.git_constraints.required_base_commit_sha and task.git_constraints.required_base_commit_sha != (contribution_base or context.base_commit):
+            raise ValueError("prepared context violates the task's required baseline")
+        if task.git_constraints.excluded_ancestor_shas:
+            resolver_kwargs["excluded_ancestor_shas"] = list(task.git_constraints.excluded_ancestor_shas)
         authoritative_commit_sha = candidate_commit_resolver(
             **resolver_kwargs,
         )

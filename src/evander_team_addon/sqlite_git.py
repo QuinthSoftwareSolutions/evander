@@ -169,6 +169,19 @@ class GitStoreMixin:
                 )
 
     @staticmethod
+    def _read_git_recovery_incidents(connection, payload):
+        for row in connection.execute("SELECT id, payload_json FROM team_git_recovery_incidents ORDER BY id"):
+            payload["git_recovery_incidents"][row["id"]] = _json_loads(row["payload_json"])
+
+    @staticmethod
+    def _write_git_recovery_incidents(connection, incidents):
+        for incident in incidents.values():
+            connection.execute(
+                "INSERT INTO team_git_recovery_incidents(id, blocker_id, task_id, state, payload_json) VALUES (?, ?, ?, ?, ?)",
+                (incident["id"], incident["blocker_id"], incident["task_id"], incident["state"], _json_dumps(incident)),
+            )
+
+    @staticmethod
     def _read_git_preparation_attempts(
         connection: sqlite3.Connection,
         payload: dict[str, Any],

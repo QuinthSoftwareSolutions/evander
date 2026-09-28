@@ -88,6 +88,10 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
             state.tasks["task"].owner_agent_id = None
         if pinned_first_attempt:
             state.tasks["task"].git_base_commit_sha = base_commit
+            from evander_team_addon.models import GitBaselineConstraints
+            state.tasks["task"].git_constraints = GitBaselineConstraints(
+                intent="required", required_base_commit_sha=base_commit,
+            )
         if assignment_mode == "agent":
             state.agent_runtimes["backend"].active_dispatch_id = "dispatch-first"
 
@@ -219,6 +223,8 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
         )
 
     repo.update(accept_recovery)
+    if pinned_first_attempt:
+        assert repo.read().tasks["task"].git_base_commit_sha == base_commit
     recovery_dispatch = (
         claim_role_task() if assignment_mode == "role" else "dispatch-recovery"
     )

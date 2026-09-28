@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .domain.git_recovery import inherited_constraints
+
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -185,6 +187,7 @@ class TeamTaskAdministration:
         set_authored_by: bool = False,
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
+        git_constraints: Mapping[str, Any] | None = None,
         set_git_base_branch: bool = False,
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
@@ -215,6 +218,7 @@ class TeamTaskAdministration:
             set_authored_by=set_authored_by,
             git_base_branch=git_base_branch,
             git_base_commit_sha=git_base_commit_sha,
+            git_constraints=git_constraints,
             set_git_base_branch=set_git_base_branch,
             set_parent_task_id=set_parent_task_id,
             set_case_id=set_case_id,
@@ -249,6 +253,7 @@ class TeamTaskAdministration:
         set_authored_by: bool = False,
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
+        git_constraints: Mapping[str, Any] | None = None,
         set_git_base_branch: bool = False,
         set_parent_task_id: bool = False,
         set_case_id: bool = False,
@@ -338,6 +343,10 @@ class TeamTaskAdministration:
             )
             if normalized_task_id is not None and normalized_task_id in state_model.tasks:
                 task = state_model.tasks[normalized_task_id]
+                if git_constraints is not None:
+                    from ..model_git_recovery import GitBaselineConstraints
+                    if GitBaselineConstraints.model_validate(git_constraints) != task.git_constraints:
+                        raise ValueError("Git baseline constraints are immutable; create reviewed successor work")
                 if task.project_id != normalized_project_id:
                     raise ValueError(
                         f"task {task.id} belongs to project {task.project_id}, "
@@ -725,6 +734,7 @@ class TeamTaskAdministration:
                 ),
                 git_base_branch=resolved_git_base_branch,
                 git_base_commit_sha=effective_git_base_commit_sha,
+                git_constraints=inherited_constraints(state_model, parent_task_id=normalized_parent_task_id, supplied_commit=git_base_commit_sha, requested=git_constraints),
                 dependency_task_ids=normalized_dependency_task_ids or [],
                 task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
                 outcome_contract=effective_outcome_contract,

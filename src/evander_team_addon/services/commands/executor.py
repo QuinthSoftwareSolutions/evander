@@ -1090,7 +1090,7 @@ _DELIVERABLE_SUBMISSION_TOOLS = frozenset(
     }
 )
 _BLOCKER_SCOPE_TOOLS = frozenset(
-    {"team_update_blocker", "team_start_dependency_composition_recovery"}
+    {"team_update_blocker", "team_start_dependency_composition_recovery", "team_apply_git_recovery"}
 )
 _REVIEW_SCOPE_TOOLS = frozenset({"team_decide_review"})
 _STAND_DOWN_DISPATCH_COMPLETION_TOOLS = frozenset(

@@ -32,6 +32,8 @@ from .codex_auth_profiles import CodexAuthBrokerRegistry
 from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
+from evander.git_recovery import GitPreparationFailure, GIT_RECOVERY_PROTOCOL_VERSION
+
 from .security import list_relative_files, safe_subprocess_error
 from .service import (
     WorkerDaemon,
@@ -58,7 +60,12 @@ class WorkerAuthMiddleware(BaseHTTPMiddleware):
 
 def build_worker_app(daemon: WorkerDaemon) -> Starlette:
     async def health(_: Request) -> JSONResponse:
-        return JSONResponse({"status": "ok"})
+        return JSONResponse(
+            {
+                "status": "ok",
+                "capabilities": {"git_recovery": GIT_RECOVERY_PROTOCOL_VERSION, "git_salvage": 1},
+            }
+        )
 
     async def telemetry(request: Request) -> JSONResponse:
         refresh = str(request.query_params.get("refresh") or "").strip().casefold() in {
@@ -279,11 +286,27 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                 },
                 status_code=409,
             )
+        except GitPreparationFailure as exc:
+            return JSONResponse({"error": str(exc), "git_preparation_failure": exc.diagnostic()}, status_code=409)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except subprocess.CalledProcessError as exc:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse(record.model_dump(mode="json"))
+
+    async def capture_git_salvage(request: Request) -> JSONResponse:
+        from .models import WorkerGitSalvageRequest
+
+        try:
+            payload = WorkerGitSalvageRequest.model_validate(await request.json())
+            result = await run_in_threadpool(
+                daemon.capture_git_salvage, request.path_params["session_id"], payload
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(result)
 
     async def cleanup_task_worktree(request: Request) -> JSONResponse:
         try:
@@ -522,6 +545,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         lifespan=lifespan,
         routes=[
             Route("/healthz", health, methods=["GET"]),
+            Route("/v1/sessions/{session_id}/worktrees/salvage", capture_git_salvage, methods=["POST"]),
             Route("/v1/telemetry", telemetry, methods=["GET"]),
             Route("/v1/codex-auth", codex_auth_status, methods=["GET"]),
             Route("/v1/codex-auth/profiles", list_codex_auth_profiles, methods=["GET"]),

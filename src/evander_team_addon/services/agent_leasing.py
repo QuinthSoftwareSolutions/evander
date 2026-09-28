@@ -144,6 +144,10 @@ def _reconcile_leasing_state(
         now=effective_now,
         prune_before=effective_now - timedelta(days=GIT_WORK_CONTEXT_RETENTION_DAYS),
     )
+    from .domain.git_recovery_continuation import reconcile_git_recovery_successors
+    recovery_result: dict[str, Any] = {"events": []}
+    reconcile_git_recovery_successors(state_model, result=recovery_result, now=effective_now)
+    blocker_routing_events.extend(recovery_result["events"])
     stale_preparation_result: dict[str, Any] = {
         "events": [],
         "errors": [],

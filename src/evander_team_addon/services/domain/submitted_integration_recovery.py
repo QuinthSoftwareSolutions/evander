@@ -404,6 +404,7 @@ def apply_submitted_integration_boundary_recovery(
         work_item_attributions=[item.model_copy(deep=True) for item in integration.work_item_attributions] if integration.work_item_attributions else None,
         git_base_branch=plan.git_base_branch,
         git_base_commit_sha=plan.git_base_commit_sha,
+        git_constraints=integration.git_constraints.model_copy(deep=True),
         mutation_policy=(
             integration.mutation_policy.model_copy(deep=True)
             if integration.mutation_policy is not None
@@ -582,6 +583,12 @@ def _normalized_recovery_git_pin(
             "boundary has no pinned branch",
             code="submitted_integration_recovery_git_branch_required",
         )
+    required_base = integration.git_constraints.required_base_commit_sha
+    if required_base and normalized_commit != required_base:
+        raise SubmittedIntegrationBoundaryRecoveryError(
+            "replacement integration cannot change its required baseline",
+            code="submitted_integration_recovery_required_baseline",
+        )
     return normalized_branch, normalized_commit
 
 
@@ -707,6 +714,7 @@ def _require_replay_lineage_matches(
         == replacement_contributions
         and replacement.git_base_branch == git_base_branch
         and replacement.git_base_commit_sha == git_base_commit_sha
+        and replacement.git_constraints == integration.git_constraints
         and replacement.source_evidence_snapshot_ids
         == integration.source_evidence_snapshot_ids
         and replacement.mutation_policy == integration.mutation_policy

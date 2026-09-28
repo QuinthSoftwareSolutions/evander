@@ -196,6 +196,7 @@ class TaskStoreMixin:
                 "work_lineage_id": row["work_lineage_id"],
                 "git_base_branch": row["git_base_branch"],
                 "git_base_commit_sha": row["git_base_commit_sha"],
+                "git_constraints": _json_loads(row["git_constraints_json"] or "{}"),
                 "mutation_policy": (
                     _json_loads(row["mutation_policy_json"])
                     if row["mutation_policy_json"] is not None
@@ -225,13 +226,13 @@ class TaskStoreMixin:
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
                     authored_by_json, work_item_attributions_json, originating_task_id, release_base_package_id,
                     work_lineage_id,
-                    git_base_branch, git_base_commit_sha,
+                    git_base_branch, git_base_commit_sha, git_constraints_json,
                     mutation_policy_json, cancellation_json, task_kind,
                     outcome_contract_json, integration_boundary,
                     deliverable_contract_json, completion_json, created_at, updated_at,
                     source_evidence_snapshot_ids_json, assignment_mode, assignment_role_id, assignment_started_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -257,6 +258,7 @@ class TaskStoreMixin:
                     task.get("work_lineage_id"),
                     task.get("git_base_branch"),
                     task.get("git_base_commit_sha"),
+                    _json_dumps(task.get("git_constraints", {})),
                     (
                         _json_dumps(task.get("mutation_policy"))
                         if task.get("mutation_policy") is not None

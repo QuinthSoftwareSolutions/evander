@@ -2710,6 +2710,12 @@ function bindRecordEditing() {
       return;
     }
 
+    const gitRecoveryButton = event.target.closest("[data-git-recovery-blocker]");
+    if (gitRecoveryButton) {
+      event.preventDefault();
+      void previewGitRecovery(gitRecoveryButton.dataset.gitRecoveryBlocker);
+      return;
+    }
     const reintegrationButton = event.target.closest("[data-reintegrate-release-id]");
     if (reintegrationButton) {
       event.preventDefault();
@@ -8257,6 +8263,23 @@ function renderRuntimeOperations() {
   const visibleAttentionCount = attention.length;
 
   const sections = [];
+  const recoveries = values(state.git_recovery_incidents);
+  if (recoveries.length && ["all", "needs_attention", "blocked_waiting_work"].includes(runtimeFilter)) {
+    const causes = new Map();
+    for (const incident of recoveries) {
+      const row = causes.get(incident.cause) || {total: 0, resumed: 0, retries: 0, candidates: 0, operator: 0, elapsed: []};
+      row.total += 1;
+      row.resumed += incident.state === "resumed" ? 1 : 0;
+      row.retries += incident.preparation_retries || 0;
+      row.candidates += incident.candidate_generations || 0;
+      row.operator += state.blockers?.[incident.blocker_id]?.route === "operator" ? 1 : 0;
+      if (incident.resumed_at) row.elapsed.push(Math.max(0, (Date.parse(incident.resumed_at) - Date.parse(incident.created_at)) / 60000));
+      causes.set(incident.cause, row);
+    }
+    sections.push(renderRuntimeSection({title: "Git recovery", count: `${recoveries.length} in loaded history`,
+      body: `<table><thead><tr><th>Cause</th><th>Resumed / incidents</th><th>Preparation retries</th><th>Reviewed generations</th><th>At operator</th><th>Mean minutes to resume</th></tr></thead><tbody>${[...causes].sort(([a], [b]) => a.localeCompare(b)).map(([cause, row]) => `<tr><td>${escapeHtml(text(cause).replaceAll("_", " "))}</td><td>${row.resumed} / ${row.total}</td><td>${row.retries}</td><td>${row.candidates}</td><td>${row.operator}</td><td>${row.elapsed.length ? (row.elapsed.reduce((a, b) => a + b, 0) / row.elapsed.length).toFixed(1) : "—"}</td></tr>`).join("")}</tbody></table>`,
+    }));
+  }
 
   if (runtimeFilter === "all") {
     sections.push(
@@ -14544,6 +14567,8 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Commit author", task.authored_by ? `${task.authored_by.name} <${task.authored_by.email}>` : "Project default"],
     ["Git base branch", text(task.git_base_branch)],
     ["Git base commit pin", text(task.git_base_commit_sha)],
+    ["Baseline intent", text(task.git_constraints?.intent || "unknown")],
+    ["Excluded ancestry", (task.git_constraints?.excluded_ancestor_shas || []).join(", ")],
     ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
     ["Integration boundary", task.integration_boundary ? "Yes" : ""],
     ["Requires Git provenance", task.deliverable_contract?.require_git_provenance ? "Yes" : ""],
@@ -14711,7 +14736,7 @@ function renderTaskBoardBlockerLine(task) {
     const owner = state.agents[text(blocker.owner_agent_id)] || null;
     const ownerLabel = owner ? agentLabel(owner) : "";
     blockers.push(
-      `<span><strong>Assigned blocker:</strong> ${escapeHtml(summary)}${ownerLabel ? ` - owner ${escapeHtml(ownerLabel)}` : ""}</span>`,
+      `${renderGitRecoveryAction(blocker)}<span><strong>Assigned blocker:</strong> ${escapeHtml(summary)}${ownerLabel ? ` - owner ${escapeHtml(ownerLabel)}` : ""}</span>`,
     );
   });
   inheritedTaskBlockers(task).forEach((blocker) => {
@@ -15077,6 +15102,68 @@ function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
   `;
 }
 
+function renderGitRecoveryAction(blocker) {
+  const incident = values(state.git_recovery_incidents).find((row) => row.blocker_id === blocker.id);
+  if (!incident) return "";
+  const label = `${text(incident.cause).replaceAll("_", " ")} · ${text(incident.state).replaceAll("_", " ")}`;
+  return `<span>${escapeHtml(label)}</span><button type="button" data-git-recovery-blocker="${escapeHtml(blocker.id)}">Review recovery</button>`;
+}
+
+async function previewGitRecovery(blockerId) {
+  if (!guardTeamMutation("recover Git preparation")) return;
+  const endpoint = `${API_BASE}/blockers/${encodeURIComponent(blockerId)}/git-recovery`;
+  const dialog = document.createElement("dialog");
+  dialog.className = "team-reintegration-dialog";
+  dialog.innerHTML = `<h3>Git recovery</h3><div data-recovery-content></div><p role="status"></p><div class="actions"><button type="button" data-recovery-apply disabled>Start recovery</button><button type="button" data-recovery-refresh>Refresh</button><button type="button" data-recovery-close>Close</button></div>`;
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove(), {once: true});
+  dialog.querySelector("[data-recovery-close]").onclick = () => dialog.close();
+  const content = dialog.querySelector("[data-recovery-content]");
+  const status = dialog.querySelector('[role="status"]');
+  const apply = dialog.querySelector("[data-recovery-apply]");
+  const refresh = dialog.querySelector("[data-recovery-refresh]");
+  let preview = null, sequence = 0, busy = false, requestId = crypto.randomUUID();
+  async function load() {
+    if (busy) return;
+    const current = ++sequence;
+    apply.disabled = true;
+    status.textContent = "Checking recovery evidence…";
+    try {
+      const response = await teamFetch(endpoint, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({action: "preview"})});
+      if (!response.ok) throw new Error(await responseText(response));
+      const body = await response.json();
+      if (!dialog.open || current !== sequence) return;
+      preview = body.preview;
+      requestId = crypto.randomUUID();
+      const base = preview.inputs?.base_commit_sha || "Unresolved";
+      const candidate = preview.renewed_base_commit_sha;
+      const points = preview.git_points || {};
+      const additionalPoints = [["Composed starting commit", points.composed_start], ["Candidate commit", points.candidate], ["Observed publication destination", points.observed_destination]].filter(([, sha]) => sha).map(([label, sha]) => `<dt>${label}</dt><dd>${escapeHtml(sha)}</dd>`).join("");
+      const sources = preview.reintegration?.contributions || preview.inputs?.sources || [];
+      content.innerHTML = `<p>${escapeHtml(text(preview.cause).replaceAll("_", " "))}</p><dl><dt>Original baseline</dt><dd>${escapeHtml(base)}</dd>${candidate ? `<dt>Proposed baseline</dt><dd>${escapeHtml(candidate)}</dd>` : ""}${additionalPoints}<dt>Required contributions</dt><dd>${escapeHtml(sources.map((row) => `${row.id || row.deliverable_id}: ${row.git_refs?.commit_sha || "unresolved"}`).join(", ") || "None")}</dd><dt>Retained preparation attempts</dt><dd>${(preview.preserved_attempt_ids || []).length}</dd><dt>Preparation retries / reviewed generations</dt><dd>${preview.preparation_retries} / ${preview.candidate_generations}</dd></dl>`;
+      const action = preview.actions?.[0];
+      apply.textContent = action ? text(action.id).replaceAll("_", " ") : "Waiting";
+      apply.disabled = !action;
+      status.textContent = preview.waiting_reason || preview.continuation_waiting_reason || (action?.requires_review ? "Creates new work requiring the configured review and verification." : action?.id === "reprepare" ? "Recreates preparation from the same verified inputs. Existing work remains retained." : "Continues recovery with the assigned project agent.");
+    } catch (error) { if (dialog.open && current === sequence) status.textContent = error.message; }
+  }
+  refresh.onclick = () => void load();
+  apply.onclick = async () => {
+    if (busy || !preview?.actions?.length) return;
+    busy = true; apply.disabled = true; refresh.disabled = true;
+    try {
+      const response = await teamFetch(endpoint, {method: "POST", headers: {"Content-Type": "application/json", "X-Team-Addon-Response-Scope": "view"}, body: JSON.stringify({action: "apply", action_id: preview.actions[0].id, preview_token: preview.preview_token, request_id: requestId})});
+      if (!response.ok) throw new Error(await responseText(response));
+      await applyMutationResultPayload(await response.json());
+      dialog.close();
+      setStatus("Recovery started. Completion is recorded when the affected work resumes.", "ok");
+    } catch (error) { status.textContent = `${error.message} Retry the same request, or refresh changed evidence.`; }
+    finally { busy = false; apply.disabled = false; refresh.disabled = false; }
+  };
+  dialog.showModal();
+  await load();
+}
+
 function renderRecordBlockers(sourceKind, sourceId, taskId = null) {
   const blockers = activeBlockersForRecord(sourceKind, sourceId, taskId);
   if (!blockers.length) {
@@ -15086,6 +15173,7 @@ function renderRecordBlockers(sourceKind, sourceId, taskId = null) {
     .map((blocker) => `
       <div class="meta-line team-blocker-line">
         <span>${escapeHtml(blockerRoutingLabel(blocker))}</span>
+        ${renderGitRecoveryAction(blocker)}
         ${renderTerminalBlockerResolveAction(blocker)}
       </div>
     `)
@@ -24301,6 +24389,14 @@ function gitConfigForForm(data) {
     return null;
   }
   const git = { managed_repo_id: managedRepoId };
+  if (data.git_recovery_configuration === "1") {
+    git.recovery = {
+      enabled: Boolean(data.git_recovery_enabled),
+      automatic_same_branch_renewal: Boolean(data.git_recovery_renewal),
+      preparation_retry_limit: Number(data.git_recovery_retry_limit),
+      candidate_generation_limit: Number(data.git_recovery_candidate_limit),
+    };
+  }
   const directoryPath = text(data.directory_path) || "root";
   git.directory_path = directoryPath;
   const optionalFields = [
@@ -25142,6 +25238,11 @@ function renderEditFields(type, record) {
       })}
       ${textField("Default base branch for new tasks", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
+      <input type="hidden" name="git_recovery_configuration" value="1" />
+      ${checkboxField("Allow agents to recover Git incidents", "git_recovery_enabled", record.git?.recovery?.enabled !== false)}
+      ${checkboxField("Allow reviewed renewal on the same base branch", "git_recovery_renewal", record.git?.recovery?.automatic_same_branch_renewal !== false)}
+      ${numberField("Preparation retries per work lineage", "git_recovery_retry_limit", record.git?.recovery?.preparation_retry_limit ?? 3, { min: 0, max: 10, required: true })}
+      ${numberField("Reviewed recovery generations per work lineage", "git_recovery_candidate_limit", record.git?.recovery?.candidate_generation_limit ?? 3, { min: 0, max: 10, required: true })}
       ${textField("Agent commit author name", "agent_author_name", record.git?.agent_author_identity?.name || "", { placeholder: "Evander Bot" })}
       ${textField("Agent commit author email", "agent_author_email", record.git?.agent_author_identity?.email || "", { placeholder: "evander@quinth.se" })}
       ${textField("Agent commit committer name", "agent_committer_name", record.git?.agent_committer_identity?.name || "", { placeholder: "Evander Bot" })}

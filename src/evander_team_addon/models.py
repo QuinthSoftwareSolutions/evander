@@ -33,6 +33,8 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
+from .model_git_recovery import GitRecoveryCause, GitRecoveryPolicy, GitBaselineConstraints, GitRecoveryIncident
+
 from .activity_projections import (
     _activity_active_stand_down_for_agent,
     _activity_agent_reports_under,

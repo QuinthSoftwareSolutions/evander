@@ -285,7 +285,7 @@ def start_dependency_composition_recovery(
         existing = state.tasks.get(recovery.recovery_task_id or "")
         if existing is None:
             raise ValueError(f"recovery {recovery.id} references a missing recovery task")
-        if existing.state != TeamTaskState.CANCELLED:
+        if existing.state not in {TeamTaskState.CANCELLED, TeamTaskState.REJECTED}:
             return existing
         release_dependency_composition_recovery_after_task_cancellation(
             state,
@@ -318,7 +318,7 @@ def start_dependency_composition_recovery(
     if existing is not None:
         if existing.created_by_actor != DEPENDENCY_COMPOSITION_RECOVERY_ACTOR:
             raise ValueError(f"reserved recovery task id {recovery_task_id} is already in use")
-        if existing.state != TeamTaskState.CANCELLED:
+        if existing.state not in {TeamTaskState.CANCELLED, TeamTaskState.REJECTED}:
             recovery.recovery_task_id = existing.id
             recovery.state = DependencyCompositionRecoveryState.IN_PROGRESS
             recovery.updated_at = now
@@ -367,6 +367,7 @@ def start_dependency_composition_recovery(
         work_item_attributions=[item.model_copy(deep=True) for item in target.work_item_attributions] if target.work_item_attributions else None,
         git_base_branch=recovery.base_branch,
         git_base_commit_sha=recovery.base_commit_sha,
+        git_constraints=target.git_constraints.model_copy(deep=True),
         dependency_task_ids=contribution_task_ids,
         created_at=now,
         updated_at=now,
@@ -524,7 +525,11 @@ def accept_dependency_composition_recovery(
         # The reviewed recovery commit is now the target's authoritative
         # composed starting point. Preserve the original base separately on
         # the recovery record for ancestry verification and audit.
-        target.git_base_commit_sha = commit_sha
+        # New tasks distinguish the required/snapshot root from the composed
+        # starting commit. Keep that root; the recovery record and work context
+        # carry the accepted merge. Preserve the legacy representation otherwise.
+        if target.git_constraints.intent == "unknown":
+            target.git_base_commit_sha = commit_sha
         target.updated_at = now
         _mark_agent_work_due(state, agent_id=target.owner_agent_id, now=now)
     return recovery
@@ -560,6 +565,7 @@ def release_dependency_composition_recovery_after_task_cancellation(
     if blocker is not None and blocker.state == TeamBlockerState.OPEN:
         blocker.last_progress_at = now
         blocker.updated_at = now
+        ended_state = state.tasks[task_id].state.value
         append_blocker_event(
             state,
             blocker=blocker,
@@ -567,14 +573,14 @@ def release_dependency_composition_recovery_after_task_cancellation(
             actor_agent_id=actor_agent_id,
             dispatch_id=dispatch_id,
             note=(
-                f"Cancelled dependency merge recovery task {task_id}; "
+                f"{ended_state.capitalize()} dependency merge recovery task {task_id}; "
                 "the pinned recovery is available for reassignment."
             ),
             reference_ids=[recovery.id, task_id],
             metadata={
                 "kind": "dependency_composition_recovery_released",
                 "recovery_id": recovery.id,
-                "cancelled_recovery_task_id": task_id,
+                f"{ended_state}_recovery_task_id": task_id,
                 "operator_actor_id": _optional_text(operator_actor_id),
             },
             now=now,

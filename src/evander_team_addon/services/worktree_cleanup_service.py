@@ -41,6 +41,9 @@ from .domain.preparation_failures import task_git_work_context_generation
 from .domain.task_assessment import TaskAssessmentService
 
 
+from .domain.git_recovery import preservation_hold
+
+
 DEFAULT_CLEANUP_GRACE_SECONDS = 300
 DEFAULT_CLEANUP_RETRY_SECONDS = 300
 DEFAULT_CLEANUP_RECOVERY_SECONDS = 900
@@ -940,6 +943,8 @@ class TeamWorktreeCleanupService:
                     if candidate.state == WorktreeCleanupState.PENDING
                     and candidate.eligible_at <= now
                     and candidate.id not in excluded_ids
+                    and not preservation_hold(state, context_id=candidate.git_work_context_id,
+                        attempt_id=candidate.git_work_context_id.removeprefix("preparation:"))
                 ),
                 key=lambda item: (item.eligible_at, item.id),
             )
@@ -1216,6 +1221,11 @@ def _team_state_safety_failure(
     state: TeamState,
     candidate: WorktreeCleanupCandidate,
 ) -> WorktreeCleanupSafetyFailure | None:
+    hold = preservation_hold(state, context_id=candidate.git_work_context_id,
+                             attempt_id=candidate.git_work_context_id.removeprefix("preparation:"))
+    if hold:
+        return WorktreeCleanupSafetyFailure(check="git_recovery_preservation_hold",
+            message=f"Work retained by Git recovery {hold}; no complete archive is recorded", retryable=True)
     current = state.worktree_cleanup_candidates.get(candidate.id)
     if current is None:
         return WorktreeCleanupSafetyFailure(
@@ -1466,11 +1476,13 @@ def _prune_cleaned_git_context_metadata(
         if attempt.git_work_context_id in cleaned_lineage_context_ids
     ]
     for attempt_id in bound_attempt_ids:
-        state.git_preparation_attempts.pop(attempt_id, None)
+        if not preservation_hold(state, attempt_id=attempt_id):
+            state.git_preparation_attempts.pop(attempt_id, None)
     prunable = [
         context.id
         for context in state.git_work_contexts.values()
         if context.id not in referenced
+        and not preservation_hold(state, context_id=context.id)
         and context.state != GitWorkContextState.ACTIVE
         and context.id == candidate.git_work_context_id
     ]

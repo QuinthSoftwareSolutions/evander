@@ -1682,6 +1682,41 @@ class WorkerDaemon(GitWorkspaceOperations):
         with task_worktree_repository_lock(self._task_worktree_lock_path(paths, request.repo_name)):
             return self._prepare_task_worktree_locked(paths, request)
 
+    def capture_git_salvage(self, session_id, request):
+        from evander.execution.git_salvage import capture_git_salvage
+        from .git_workspace import _git_subprocess_env
+        from .models import ensure_resolved_path_within
+
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        if not all(
+            branch.startswith(f"agents/{paths.session_id}/")
+            for branch in (request.recovery_branch, request.expected_branch)
+        ):
+            raise ValueError("salvage branch is outside its session namespace")
+        repository = paths.repo_root / request.repo_name
+        target = paths.agent_home / "worktrees" / request.repo_name / request.worktree_name
+        ensure_resolved_path_within(
+            base=paths.repo_root, candidate=repository, description="salvage repository"
+        )
+        ensure_resolved_path_within(
+            base=paths.agent_home, candidate=target, description="salvage worktree"
+        )
+        receipt = self._read_preparation_receipt(
+            paths, kind="reference-repo", name=request.repo_name
+        )
+        if receipt and receipt.get("repo_source") != request.repo_source:
+            raise ValueError("salvage transport disagrees with the host-owned repository receipt")
+        self._ensure_allowed_git_source(request.repo_source)
+        with task_worktree_repository_lock(self._task_worktree_lock_path(paths, request.repo_name)):
+            return capture_git_salvage(
+                repository=repository,
+                worktree=target,
+                expected_branch=request.expected_branch,
+                recovery_branch=request.recovery_branch,
+                destination=request.repo_source,
+                env=_git_subprocess_env(paths.agent_home),
+            )
+
     @staticmethod
     def _task_worktree_preparation_fingerprint(
         request: WorkerTaskWorktreeRequest,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SQLITE_SCHEMA_VERSION = 78
+SQLITE_SCHEMA_VERSION = 79
 
 _LIFECYCLE_INDEX_SQL = """
 DROP INDEX IF EXISTS idx_team_dispatches_pending_mirror;
@@ -1067,6 +1067,14 @@ CREATE TABLE IF NOT EXISTS team_worktree_cleanup_candidates (
 CREATE INDEX IF NOT EXISTS idx_team_worktree_cleanup_state_eligible
     ON team_worktree_cleanup_candidates(state, eligible_at, id);
 
+CREATE TABLE IF NOT EXISTS team_git_recovery_incidents (
+    id TEXT PRIMARY KEY,
+    blocker_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_git_recovery_task_state ON team_git_recovery_incidents(task_id, state);
 CREATE TABLE IF NOT EXISTS team_git_preparation_attempts (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,

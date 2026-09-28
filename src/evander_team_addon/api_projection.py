@@ -866,6 +866,7 @@ def _task_board_selected_ids_by_collection(
         "blockers": blocker_ids,
         "blocker_events": blocker_event_ids,
         "dependency_composition_recoveries": recovery_ids,
+        "git_recovery_incidents": {row.id for row in state.git_recovery_incidents.values() if row.blocker_id in blocker_ids or row.task_id in board_task_ids},
         "dispatches": dispatch_ids,
         "git_preparation_attempts": git_preparation_attempt_ids,
         "worktree_cleanup_candidates": cleanup_candidate_ids,
@@ -1075,6 +1076,8 @@ def _state_collection_slice_payload(
             )
         elif collection == "memories":
             rows[item_id] = memory_record_payload(item, include_body=False)
+        elif collection == "git_recovery_incidents":
+            rows[item_id] = item.model_dump(mode="json", exclude={"applied_requests"})
         elif collection == "external_source_evidence_snapshots":
             rows[item_id] = external_source_evidence_snapshot_payload(item)
         elif hasattr(item, "model_dump"):
@@ -1241,6 +1244,8 @@ def _state_history_item_is_current(collection: str, item: Any) -> bool:
         }
     if collection == "blockers":
         return _record_state_value(item) == "open"
+    if collection == "git_recovery_incidents":
+        return _record_state_value(item) not in {"resumed", "superseded"}
     if collection == "dependency_composition_recoveries":
         return _record_state_value(item) in {"awaiting_assignment", "in_progress"}
     if collection == "ephemeral_assignments":

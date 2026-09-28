@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.git_recovery import GitPreparationFailure
+
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
@@ -954,17 +956,34 @@ class ManagedGitAdminService:
                 self._require_commit(bare_path, commit)
                 self._require_commit(bare_path, source_base)
                 if not self._is_ancestor(bare_path, source_base, commit):
-                    raise ValueError(
+                    raise GitPreparationFailure(
                         f"contribution {source_id} commit {commit} does not contain "
-                        f"its recorded base {source_base}"
+                        f"its recorded base {source_base}", cause="contradictory_provenance",
+                        evidence={"source_id": source_id, "source_commit": commit, "source_base": source_base},
                     )
                 if not self._is_ancestor(bare_path, source_base, base_commit):
-                    raise ValueError(
+                    raise GitPreparationFailure(
                         f"contribution {source_id} was prepared from {source_base}, "
                         f"which is outside pinned integration base {base_commit}; "
                         "create a reviewed replacement on the pinned base or a new "
-                        "explicit integration boundary"
+                        "explicit integration boundary", cause="incompatible_source_base",
+                        evidence={"source_id": source_id, "source_base": source_base, "expected_base": base_commit},
                     )
+
+    def verify_excluded_ancestors(self, managed_repo_id: str, *, directory_path: str,
+                                  commit_shas: Sequence[str], excluded_ancestor_shas: Sequence[str]) -> None:
+        commits = [_normalize_object_id(value, field_name="commit_shas") for value in commit_shas]
+        excluded = [_normalize_object_id(value, field_name="excluded_ancestor_shas") for value in excluded_ancestor_shas]
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            for commit in commits:
+                self._require_commit(bare_path, commit)
+                for ancestor in excluded:
+                    self._require_commit(bare_path, ancestor)
+                    if self._is_ancestor(bare_path, ancestor, commit):
+                        raise GitPreparationFailure(f"Candidate {commit} contains excluded ancestor {ancestor}",
+                                                    cause="policy_conflict", evidence={"candidate": commit, "excluded_ancestor": ancestor})
 
     def verify_branch_commit_ancestry(
         self,

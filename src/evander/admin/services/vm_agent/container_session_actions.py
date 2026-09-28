@@ -60,6 +60,8 @@ class VmAgentContainerSessionActionMixin:
             for session in self.runtime.session_repository.list_sessions()
         }
         session_id, manifest = _resolve_session_target(target, sessions)
+        from evander.execution.preservation import require_session_data_disposable
+        require_session_data_disposable(self._deps.config.runtime_dir, session_id)
         associated_agent = self._session_associated_agent_description(session_id, manifest)
         if associated_agent:
             raise ValueError(

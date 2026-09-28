@@ -1734,10 +1734,10 @@ class TeamRuntimeService:
         now: datetime | None = None,
         prune_before: datetime | None = None,
         expected_revision: int | None = None,
-    ) -> tuple[TeamState, dict[str, int]]:
+    ) -> tuple[TeamState, dict[str, Any]]:
         effective_now = _ensure_utc(now or utc_now())
         effective_prune_before = _ensure_utc(prune_before) if prune_before is not None else None
-        result: dict[str, int] = {}
+        result: dict[str, Any] = {}
 
         def _mutate(state: TeamState) -> TeamState:
             result.update(
@@ -1747,10 +1747,14 @@ class TeamRuntimeService:
                     prune_before=effective_prune_before,
                 )
             )
+            from .domain.git_recovery_continuation import reconcile_git_recovery_successors
+            reconcile_git_recovery_successors(state, result=result, now=effective_now)
             return state
 
-        state = self._repository.update(
+        from .commands.outbox import _team_event_outbox_records
+        state = self._repository.update_with_outbox(
             _mutate,
+            outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
             expected_revision=expected_revision,
         )
         return state, result
