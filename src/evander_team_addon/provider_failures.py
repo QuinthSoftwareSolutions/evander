@@ -95,6 +95,8 @@ def _record_dependency_git_preparation_blocker(
     task_id: str,
     error: str,
     conflict: Mapping[str, object] | None = None,
+    cause: str = "unknown",
+    evidence: Mapping[str, object] | None = None,
 ) -> Any:
     agent_id = _required_text(lease["agent"].get("id"), "agent_id")
     result: dict[str, Any] = {"events": []}
@@ -117,6 +119,7 @@ def _record_dependency_git_preparation_blocker(
             task_id=task.id,
             reporter_agent_id=agent.id,
             error=error,
+            diagnostic_cause="merge_conflict" if conflict is not None else cause,
             reason_code=(
                 "dependency_git_composition_conflict"
                 if conflict is not None
@@ -125,6 +128,16 @@ def _record_dependency_git_preparation_blocker(
             result=result,
             now=effective_now,
         )
+        if blocker is not None:
+            from .services.domain.git_recovery import record_incident
+            diagnostic_evidence = dict(evidence or {})
+            attempts = [row for row in state.git_preparation_attempts.values()
+                        if row.task_id == task.id and row.latest_dispatch_id == (lease.get("dispatch") or {}).get("id")]
+            if len(attempts) == 1:
+                diagnostic_evidence["attempt_id"] = attempts[0].id
+            record_incident(state, blocker=blocker,
+                            cause="merge_conflict" if conflict is not None else cause,
+                            evidence=diagnostic_evidence)
         if conflict is not None and blocker is not None:
             record_dependency_composition_conflict(
                 state,
@@ -146,6 +159,8 @@ def _record_project_git_preparation_blockers(
     lease: Mapping[str, Any],
     project_id: str,
     error: str,
+    cause: str = "unknown",
+    evidence: Mapping[str, object] | None = None,
 ) -> tuple[TeamState, list[str]]:
     agent_id = _required_text(lease["agent"].get("id"), "agent_id")
     dispatch = lease.get("dispatch") if isinstance(lease.get("dispatch"), Mapping) else {}
@@ -165,13 +180,17 @@ def _record_project_git_preparation_blockers(
                 result=result,
             )
         for task_id in task_ids:
-            record_task_preparation_failure(
+            blocker = record_task_preparation_failure(
                 state,
                 task_id=task_id,
                 reporter_agent_id=agent_id,
                 error=error,
+                diagnostic_cause=cause,
                 result=result,
             )
+            if blocker is not None:
+                from .services.domain.git_recovery import record_incident
+                record_incident(state, blocker=blocker, cause=cause, evidence=evidence)
         for inbox_id in inbox_ids:
             record_inbox_preparation_failure(
                 state,

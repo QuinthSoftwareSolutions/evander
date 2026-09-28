@@ -1291,6 +1291,8 @@ def _attach_promotion_failure(
             ),
             result=result,
         )
+        from .git_recovery_publication import record_publication_incident
+        record_publication_incident(state, release=release, blocker=blocker, outputs=promotion.outputs)
         if merge_recovery_assignment is not None:
             _materialize_merge_recovery_task(
                 state,

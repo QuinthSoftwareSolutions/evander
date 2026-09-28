@@ -230,6 +230,13 @@ class ContainerWorkerClient:
         session_id: str,
         request: WorkerTaskWorktreeRequest,
     ) -> WorkerTaskWorktreeRecord:
+        if request.required_git_recovery_protocol is not None:
+            capabilities = self.health().get("capabilities") or {}
+            if capabilities.get("git_recovery", 0) < request.required_git_recovery_protocol:
+                raise ContainerWorkerClientError("Worker does not support the required Git recovery protocol",
+                    status_code=409, payload={"git_preparation_failure": {"cause": "policy_conflict",
+                        "evidence": {"required_protocol": request.required_git_recovery_protocol,
+                                     "available_protocol": capabilities.get("git_recovery", 0)}}})
         path = f"/v1/sessions/{session_id}/worktrees"
         try:
             response = self._request(
@@ -238,7 +245,7 @@ class ContainerWorkerClient:
                 json=request.model_dump(mode="json", exclude_none=True),
             )
         except ContainerWorkerClientError as exc:
-            if not _worker_rejected_preparation_attempt_id(request, exc):
+            if request.required_git_recovery_protocol is not None or not _worker_rejected_preparation_attempt_id(request, exc):
                 raise
             response = self._request(
                 "POST",
@@ -250,6 +257,12 @@ class ContainerWorkerClient:
         return WorkerTaskWorktreeRecord.model_validate(
             self._json_dict(response, operation="prepare task worktree")
         )
+
+    def capture_git_salvage(self, session_id, request):
+        if (self.health().get("capabilities") or {}).get("git_salvage", 0) < 1:
+            raise ContainerWorkerClientError("Worker does not support Git salvage; retained data was not changed", status_code=409)
+        response = self._request("POST", f"/v1/sessions/{session_id}/worktrees/salvage", json=request.model_dump(mode="json"))
+        return self._json_dict(response, operation="capture Git salvage")
 
     def cleanup_task_worktree(
         self,
@@ -519,7 +532,8 @@ class ContainerWorkerClient:
                     raise ContainerWorkerClientError(
                         f"container worker {method_normalized} {path} failed after connect "
                         f"retries attempts={attempt}/{self.max_connect_attempts}: "
-                        f"{sanitize_text(str(exc))}"
+                        f"{sanitize_text(str(exc))}",
+                        payload={"git_preparation_failure": {"cause": "transport_unavailable"}},
                     ) from exc
                 sleep_seconds = self._connect_retry_sleep_seconds(attempt)
                 logger.warning(
@@ -535,7 +549,8 @@ class ContainerWorkerClient:
                 self._sleep(sleep_seconds)
             except httpx.HTTPError as exc:
                 raise ContainerWorkerClientError(
-                    f"container worker {method_normalized} {path} failed: {sanitize_text(str(exc))}"
+                    f"container worker {method_normalized} {path} failed: {sanitize_text(str(exc))}",
+                    payload={"git_preparation_failure": {"cause": "transport_unavailable"}},
                 ) from exc
         else:  # pragma: no cover - loop always returns or raises.
             raise ContainerWorkerClientError(

@@ -261,6 +261,9 @@ def build_routes(dependencies: TeamApiDependencies) -> Sequence[Route]:
             "/blockers/{blocker_id}/resolve", handlers["resolve_terminal_blocker"], methods=["POST"]
         ),
         route(
+            "/blockers/{blocker_id}/git-recovery", handlers["git_recovery"], methods=["POST"]
+        ),
+        route(
             "/blockers/{blocker_id}/dependency-composition-recovery",
             handlers["start_dependency_composition_recovery"],
             methods=["POST"],

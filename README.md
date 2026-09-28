@@ -14,6 +14,7 @@ Git, and HTTP surfaces.
 | Choose VM or container execution | [Execution backends](docs/execution-backends.md) |
 | Configure providers, policies, and inheritance | [Configuration reference](docs/configuration-reference.md) |
 | Set up an agent team | [Team Add-on](docs/addons.md#team-module-guidance), [progress boards](docs/case-progress-boards.md), and [case context](docs/case-context.md) |
+| Recover Team Git preparation or publication | [Autonomous Git recovery](docs/autonomous-git-recovery.md) |
 | Review privacy controls, limitations, and credential migration | [Privacy operations](docs/privacy-operations.md) and [managed credentials](docs/credentials.md) |
 | Understand or extend the platform | [Architecture](docs/architecture.md) and [testing](docs/testing.md) |
 | Find a subsystem or read the complete manual | [Documentation map](docs/README.md) |

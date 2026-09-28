@@ -406,6 +406,7 @@ class ContainerWorkerVmExecutionBackend:
         repo_name: str,
         worktree_name: str,
         preparation_attempt_id: str | None = None,
+        required_git_recovery_protocol: int | None = None,
         branch: str,
         base_ref: str,
         expected_base_commit_sha: str | None = None,
@@ -427,6 +428,7 @@ class ContainerWorkerVmExecutionBackend:
                 repo_name=repo_name,
                 worktree_name=worktree_name,
                 preparation_attempt_id=preparation_attempt_id,
+                required_git_recovery_protocol=required_git_recovery_protocol,
                 branch=branch,
                 base_ref=base_ref,
                 expected_base_commit_sha=expected_base_commit_sha,
@@ -446,6 +448,9 @@ class ContainerWorkerVmExecutionBackend:
                 dependency_composition_commit_message=(dependency_composition_commit_message),
             ),
         )
+
+    def capture_git_salvage(self, session_id, request):
+        return self._client_for_session(session_id).capture_git_salvage(session_id, request)
 
     def cleanup_task_worktree(
         self,
@@ -565,6 +570,8 @@ class ContainerWorkerVmExecutionBackend:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             raise ValueError("session_id is required")
+        from .preservation import require_session_data_disposable
+        require_session_data_disposable(self.config.runtime_dir, normalized_session_id)
         list_by_session = getattr(self.repository, "list_by_session", None)
         if callable(list_by_session):
             mappings = list(list_by_session(normalized_session_id))

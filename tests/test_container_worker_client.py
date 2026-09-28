@@ -699,6 +699,7 @@ def test_container_worker_client_exhausts_connect_retries_with_capped_backoff(
     message = str(exc.value)
     assert "attempts=5/5" in message
     assert "connection refused" in message
+    assert exc.value.payload["git_preparation_failure"]["cause"] == "transport_unavailable"
 
 
 def test_container_worker_client_does_not_retry_http_503(
@@ -842,6 +843,24 @@ def test_container_worker_client_retries_without_receipt_id_for_older_worker(
     assert "preparation_attempt_id" not in requests[1]
     assert record.created is True
     assert record.preparation_attempt_id is None
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_recovery_never_downgrades_preparation_identity_for_older_worker(monkeypatch, available):
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    paths = []
+    def handler(request):
+        paths.append(request.url.path)
+        if request.method == "GET":
+            return httpx.Response(200, json={"status": "ok", "capabilities": {"git_recovery": 1 if available else 0}})
+        return httpx.Response(409, json={"error": "preparation_attempt_id Extra inputs are not permitted [type=extra_forbidden]"})
+    worker = ContainerWorkerClient(base_url="http://worker.test", token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ContainerWorkerClientError):
+        worker.prepare_task_worktree("session-1", WorkerTaskWorktreeRequest(repo_name="repo", worktree_name="recovery",
+            branch="agents/session-1/recovery", base_ref="main", preparation_attempt_id="new-physical-attempt",
+            required_git_recovery_protocol=1))
+    assert len(paths) == (2 if available else 1)
 
 
 def test_container_worker_client_cleanup_retries_without_receipt_id_for_older_worker(

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-28 - Recover Team Git incidents autonomously (0.67.0)
+
+- Add durable typed Git incidents, blocker-scoped preview/apply tools, project recovery
+  policy, baseline intent and excluded ancestry, and bounded retry budgets across successors.
+- Verify pinned inputs before workspace preparation, preserve failed attempts, prepare new
+  physical identities, and route reviewed replacement or same-branch renewal to project agents.
+- Capture staged and working content through scoped Git refs on VM and container backends,
+  retain original work against cleanup and teardown, and require compatible worker capabilities.
+- Adopt reviewed successors through task lifecycle rules, preserve submitted consumer history,
+  and recover publication destination races through fresh release reintegration and gates.
+- Expose recovery evidence, policy controls, retained work, and cause/latency counts in Admin Web
+  and agent reads. Legacy ambiguous pins remain conservative; historical incidents are not replayed.
+
 ## 2026-09-28 - Add privacy controls and managed credentials (0.66.0)
 
 - Add scoped privacy inventory, revisioned policies, cases, holds, reviewed local jobs,

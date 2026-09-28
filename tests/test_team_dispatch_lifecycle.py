@@ -2249,6 +2249,7 @@ def _seed_submitted_integration_boundary_recovery(
         created_by_agent_id="lead",
         dependency_task_ids=["task"],
         git_base_commit_sha="a" * 40,
+        git_constraints={"intent": "snapshot"},
         integration_boundary=True,
         deliverable_contract={
             "require_git_provenance": require_git_provenance,
@@ -2515,6 +2516,35 @@ def test_git_submitted_integration_recovery_requires_full_pinned_base(
     assert rejected["success"] is False
     assert rejected["errors"][0]["code"] == expected_error_code
     assert "integration-recovery" not in state.tasks
+
+
+def test_submitted_integration_recovery_preserves_required_baseline_and_exclusions(tmp_path):
+    from evander_team_addon.models import GitBaselineConstraints
+
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+
+    def constrain(state):
+        state.tasks["integration"].git_constraints = GitBaselineConstraints(
+            intent="required", required_base_commit_sha="a" * 40,
+            excluded_ancestor_shas=["e" * 40],
+        )
+        return state
+
+    repository.update(constrain)
+    _begin_project_lead_chat_dispatch(repository, body="Preserve the required integration baseline.")
+    state, rejected = _recover_submitted_integration_as_lead(repository)
+    assert not rejected["success"]
+    assert rejected["errors"][0]["code"] == "submitted_integration_recovery_required_baseline"
+    assert "integration-recovery" not in state.tasks
+    state, accepted = _recover_submitted_integration_as_lead(
+        repository, git_base_commit_sha="a" * 40, request_id="preserve-required-baseline"
+    )
+    assert accepted["success"], accepted
+    assert state.tasks["integration-recovery"].git_constraints == GitBaselineConstraints(
+        intent="required", required_base_commit_sha="a" * 40,
+        excluded_ancestor_shas=["e" * 40],
+    )
 
 
 def test_project_lead_recovers_submitted_integration_and_replays_without_mutating_history(

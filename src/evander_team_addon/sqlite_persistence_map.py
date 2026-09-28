@@ -50,6 +50,7 @@ _STATE_TABLES = (
     "team_dependency_composition_recoveries",
     "team_git_work_contexts",
     "team_git_preparation_attempts",
+    "team_git_recovery_incidents",
     "team_git_promotions",
     "team_worktree_cleanup_candidates",
     "team_external_source_evidence_snapshots",
@@ -89,6 +90,7 @@ _STATE_TABLES = (
 )
 
 _PERSISTENCE_GROUPS = (
+    (("git_recovery_incidents",), (("team_git_recovery_incidents", "id", "git_recovery_incidents"),), "_write_git_recovery_incidents"),
     (("notes",), (("team_notes", "id", "notes"),), "_write_notes"),
     (
         ("case_context_views",),

@@ -1024,6 +1024,7 @@ class TeamStateSqliteStore(
             "human_review_findings": {},
             "dispatches": {},
             "git_preparation_attempts": {},
+            "git_recovery_incidents": {},
             "worktree_cleanup_candidates": {},
             "ephemeral_assignments": {},
             "git_promotions": {},
@@ -1098,6 +1099,7 @@ class TeamStateSqliteStore(
             findings=payload["human_review_findings"],
         )
         self._write_dispatches(connection, payload["dispatches"])
+        self._write_git_recovery_incidents(connection, payload["git_recovery_incidents"])
         self._write_git_preparation_attempts(
             connection,
             payload["git_preparation_attempts"],

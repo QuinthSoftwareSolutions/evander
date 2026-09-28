@@ -96,6 +96,18 @@ class TeamReadService:
         )
         if git_contexts:
             payload["git_work_contexts"] = git_contexts
+        recoveries = [row for row in self._state.git_recovery_incidents.values()
+                      if row.task_id == task.id or task.id in row.recovery_task_ids]
+        if recoveries:
+            payload["git_recovery"] = [
+                {"incident_id": row.id, "cause": row.cause, "state": row.state,
+                 "retained_work": [{"session_id": attempt.session_id, "worktree_path": attempt.worktree_path,
+                                    "branch": attempt.branch}
+                                   for key in row.preserved_attempt_ids
+                                   if (attempt := self._state.git_preparation_attempts.get(key))],
+                 "salvage": row.evidence.get("salvage"),
+                 "instruction": "Inspect retained work before replacing implementation; retained snapshots require ordinary review."}
+                for row in sorted(recoveries, key=lambda row: row.id)]
         return _without_none(payload)
 
     def list_inbox(
@@ -174,6 +186,10 @@ class TeamReadService:
             ),
             key=lambda recovery: (recovery.created_at, recovery.id),
         )
+        incidents = [row for row in self._state.git_recovery_incidents.values() if row.blocker_id == blocker.id]
+        if incidents:
+            payload["git_recovery"] = incidents[-1].model_dump(mode="json", exclude={"applied_requests"})
+            payload["recommended_tool"] = "team_preview_git_recovery"
         if recoveries:
             payload["dependency_composition_recovery"] = recoveries[-1].model_dump(mode="json")
         return _without_none(payload)

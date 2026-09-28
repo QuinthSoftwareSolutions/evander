@@ -370,6 +370,47 @@ def build_reviews_handlers(
             extra={"candidate_correction_recovery": result},
         )
 
+    async def git_recovery(request: Request) -> JSONResponse:
+        from .services.git_recovery_service import TeamGitRecoveryService
+        from .api_requests import _auth_can
+        from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION
+
+        payload = await _read_payload(request)
+        blocker_id = request.path_params["blocker_id"]
+        state = await run_in_threadpool(repository.read)
+        blocker = state.blockers.get(blocker_id)
+        project = state.projects.get(blocker.project_id) if blocker else None
+        if project is None:
+            return JSONResponse({"error": "Git recovery blocker not found"}, status_code=404)
+        if not _auth_can(
+            context.auth, request, ADMIN_OWNER_PERMISSION, directory_path=project.directory_path
+        ):
+            return JSONResponse({"error": "Directory owner permission required"}, status_code=403)
+        from .services.git_recovery_backend import capture_retained_attempt
+
+        service = TeamGitRecoveryService(
+            admin_service,
+            salvage_backend=lambda state, incident: capture_retained_attempt(
+                context, state, incident
+            ),
+        )
+        if payload.get("action", "preview") == "preview":
+            return JSONResponse({"preview": await run_in_threadpool(service.preview, blocker_id)})
+        if payload.get("action") != "apply":
+            raise ValueError("invalid Git recovery action")
+        state, result = await run_in_threadpool(
+            service.apply_as_operator,
+            blocker_id=blocker_id,
+            preview_token=_required(payload, "preview_token"),
+            action_id=_required(payload, "action_id"),
+            request_id=_required(payload, "request_id"),
+            actor_id=_operator_actor_from_request(context.auth, request),
+        )
+        result["outbox_publication_wake"] = _request_team_outbox_publication(
+            context, correlation_key=f"git-recovery:{blocker_id}:{state.revision}"
+        )
+        return _state_response(request, state, extra={"git_recovery": result})
+
     async def start_dependency_composition_recovery(
         request: Request,
     ) -> JSONResponse:
@@ -590,6 +631,7 @@ def build_reviews_handlers(
         "resolve_terminal_blocker": resolve_terminal_blocker,
         "authorize_deliverable_acceptance_verification_waiver": authorize_deliverable_acceptance_verification_waiver,
         "recover_candidate_correction_successor": recover_candidate_correction_successor,
+        "git_recovery": git_recovery,
         "start_dependency_composition_recovery": start_dependency_composition_recovery,
         "create_outcome_kind_definition": create_outcome_kind_definition,
         "patch_outcome_kind_definition": patch_outcome_kind_definition,

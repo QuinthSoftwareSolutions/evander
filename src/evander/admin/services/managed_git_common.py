@@ -20,6 +20,11 @@ _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 class ManagedGitNotFoundError(LookupError):
     status_code = 404
 
+    def __init__(self, message: str, *, cause: str = "unknown", evidence: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.cause = cause
+        self.evidence = dict(evidence or {})
+
 
 class ManagedGitConflictError(RuntimeError):
     status_code = 409
@@ -93,7 +98,10 @@ def _require_commit(run_git: _RunGit, bare_path: Path, object_id: str) -> None:
         check=False,
     )
     if result.returncode != 0:
-        raise ManagedGitNotFoundError(f"Unknown commit: {object_id}")
+        raise ManagedGitNotFoundError(
+            f"Unknown commit: {object_id}", cause="reviewed_object_unavailable",
+            evidence={"commit_sha": object_id},
+        )
 
 
 def _run_update_ref_transaction(

@@ -58,6 +58,7 @@ def _prepare_project_repo_task_worktree(
     base_ref: str,
     worktree_name: str | None = None,
     preparation_attempt_id: str | None = None,
+    required_git_recovery_protocol: int | None = None,
     worktree_identity_commit: str | None = None,
     preparation_generation: str | None = None,
     prior_base_commit: str | None = None,
@@ -102,6 +103,7 @@ def _prepare_project_repo_task_worktree(
             pinned_base_commit=pinned_base_commit,
             pinned_base_tree=pinned_base_tree,
             preparation_attempt_id=preparation_attempt_id,
+            required_git_recovery_protocol=required_git_recovery_protocol,
             preparation_receipt_result=preparation_receipt_result,
             prior_base_commit=prior_base_commit,
             repo_name=repo_name,
@@ -178,6 +180,7 @@ def _prepare_container_task_worktree(
     pinned_base_commit: str | None,
     pinned_base_tree: str | None,
     preparation_attempt_id: str | None,
+    required_git_recovery_protocol: int | None,
     preparation_receipt_result: dict[str, Any] | None,
     prior_base_commit: str | None,
     repo_name: str,
@@ -232,6 +235,7 @@ def _prepare_container_task_worktree(
                 if preparation_attempt_id is not None
                 else {}
             ),
+            **({"required_git_recovery_protocol": required_git_recovery_protocol} if required_git_recovery_protocol else {}),
             **dependency_composition_kwargs,
             **(
                 {
@@ -249,6 +253,8 @@ def _prepare_container_task_worktree(
             task_id=task_id,
             message=str(exc),
             conflict=conflict if isinstance(conflict, Mapping) else None,
+            cause=(payload.get("git_preparation_failure") or {}).get("cause", "transport_unavailable" if exc.status_code in {502, 503, 504} else "unknown"),
+            evidence=(payload.get("git_preparation_failure") or {}).get("evidence", {}),
         ) from None
     except Exception as exc:
         if dependency_git_sources or pinned_base_commit is not None:
@@ -413,6 +419,10 @@ def _read_vm_task_worktree_result(
             or _optional_text(result.get("message"))
             or f"failed to prepare task worktree {worktree_path}"
         )
+        diagnosed = {line.partition("=")[2].strip() for line in failure_evidence.splitlines()
+                     if line.startswith("EVANDER_GIT_FAILURE_CAUSE=")}
+        if len(diagnosed) == 1 and diagnosed <= {"workspace_dirty", "workspace_receipt_mismatch", "workspace_missing"}:
+            raise DependencyGitPreparationError(task_id=task_id, message=error, cause=diagnosed.pop())
         if dependency_git_sources or pinned_base_commit is not None:
             conflict: dict[str, object] | None = None
             failure_lines = failure_evidence.splitlines()

@@ -105,6 +105,8 @@ TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = "team_propose_human_finding_resolut
 TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL = "team_route_human_finding_correction"
 TEAM_CLOSE_POST_RELEASE_CASE_TOOL = "team_close_post_release_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
+TEAM_PREVIEW_GIT_RECOVERY_TOOL = "team_preview_git_recovery"
+TEAM_APPLY_GIT_RECOVERY_TOOL = "team_apply_git_recovery"
 TEAM_REINTEGRATE_RELEASE_TOOL = "team_reintegrate_release"
 TEAM_CREATE_TASK_FOR_ROLE_TOOL = "team_create_task_for_role"
 TEAM_CREATE_TASKS_TOOL = "team_create_tasks"
@@ -171,6 +173,8 @@ TEAM_SEARCH_MEMORY_TOOL = "team_search_memory"
 TEAM_LIST_CONVERSATION_MESSAGES_TOOL = "team_list_conversation_messages"
 
 ORDINARY_TEAM_MCP_TOOL_NAMES = (
+    TEAM_PREVIEW_GIT_RECOVERY_TOOL,
+    TEAM_APPLY_GIT_RECOVERY_TOOL,
     TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
@@ -263,6 +267,8 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
 )
 IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
+    TEAM_PREVIEW_GIT_RECOVERY_TOOL,
+    TEAM_APPLY_GIT_RECOVERY_TOOL,
     TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_MEMORY_TOOL,
@@ -325,6 +331,8 @@ IMPLEMENTED_CHAT_TEAM_MCP_TOOL_NAMES = (
 IMPLEMENTED_EPHEMERAL_WORKER_MCP_TOOL_NAMES = (TEAM_REPORT_EPHEMERAL_RESULT_TOOL,)
 
 MCP_TOOL_NAMES = (
+    TEAM_PREVIEW_GIT_RECOVERY_TOOL,
+    TEAM_APPLY_GIT_RECOVERY_TOOL,
     TEAM_REINTEGRATE_RELEASE_TOOL,
     TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
     TEAM_RECORD_NOTE_TOOL,
@@ -1581,6 +1589,7 @@ def _register_work_management_tools(
         authored_by: dict[str, str] | None = None,
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
+        git_constraints: dict[str, Any] | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: Literal["support", "outcome", "coordination"] = "support",
         outcome_contract: dict[str, Any] | None = None,
@@ -1611,6 +1620,7 @@ def _register_work_management_tools(
                 authored_by=authored_by,
                 git_base_branch=git_base_branch,
                 git_base_commit_sha=git_base_commit_sha,
+                git_constraints=git_constraints,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -1666,6 +1676,7 @@ def _register_work_management_tools(
         authored_by: dict[str, str] | None = None,
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
+        git_constraints: dict[str, Any] | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: Literal["support", "outcome", "coordination"] = "support",
         outcome_contract: dict[str, Any] | None = None,
@@ -1697,6 +1708,7 @@ def _register_work_management_tools(
                 authored_by=authored_by,
                 git_base_branch=git_base_branch,
                 git_base_commit_sha=git_base_commit_sha,
+                git_constraints=git_constraints,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
                 outcome_contract=outcome_contract,
@@ -2271,6 +2283,66 @@ def _register_work_management_tools(
             "or escalate one reporting level. Manual resolution is limited to active "
             "agents on the blocker's reporter-to-manager escalation line."
         ),
+    )
+
+    def team_preview_git_recovery(blocker_id: str, session_id: str | None = None) -> dict[str, Any]:
+        from .services.git_recovery_service import TeamGitRecoveryService
+        from .services.git_recovery_backend import capture_retained_attempt
+
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id, tool_name=TEAM_PREVIEW_GIT_RECOVERY_TOOL
+        )
+        try:
+            return {
+                "preview": TeamGitRecoveryService(
+                    reintegration.admin,
+                    salvage_backend=lambda state, incident: capture_retained_attempt(
+                        context, state, incident
+                    ),
+                ).preview(blocker_id, session_id=caller.session_id)
+            }
+        except (ValueError, KeyError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    def team_apply_git_recovery(
+        blocker_id: str,
+        preview_token: str,
+        action_id: str,
+        request_id: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        from .services.git_recovery_service import TeamGitRecoveryService
+        from .services.git_recovery_backend import capture_retained_attempt
+
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id, tool_name=TEAM_APPLY_GIT_RECOVERY_TOOL
+        )
+        try:
+            _state, result = TeamGitRecoveryService(
+                reintegration.admin,
+                salvage_backend=lambda state, incident: capture_retained_attempt(
+                    context, state, incident
+                ),
+            ).apply_from_agent(
+                blocker_id=blocker_id,
+                preview_token=preview_token,
+                action_id=action_id,
+                request_id=request_id,
+                session_id=caller.session_id,
+            )
+            return _team_command_mcp_result(result, caller=caller, context=context)
+        except (ValueError, KeyError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    server.add_tool(
+        team_preview_git_recovery,
+        name=TEAM_PREVIEW_GIT_RECOVERY_TOOL,
+        description="Diagnose a Git preparation blocker and preview its narrowly authorized recovery. Runs without the failed checkout. Inspect actions and waiting_reason; never guess missing provenance.",
+    )
+    server.add_tool(
+        team_apply_git_recovery,
+        name=TEAM_APPLY_GIT_RECOVERY_TOOL,
+        description="Apply one unchanged Git recovery preview from your blocker dispatch. Preserves prior work and requires fresh review for changed code or baseline. Reuse request_id on transport retries; refresh stale previews.",
     )
 
     def team_reintegrate_release(
@@ -3214,6 +3286,7 @@ def _team_mcp_git_candidate_commit_resolver(
         required_ancestor_shas: Sequence[str] | None = None,
         contribution_base_commit_sha: str | None = None,
         contribution_sources: Sequence[Mapping[str, str]] = (),
+        excluded_ancestor_shas: Sequence[str] = (),
     ) -> str | None:
         if contribution_base_commit_sha is not None:
             verify_bases = getattr(managed_git, "verify_contribution_bases", None)
@@ -3233,6 +3306,9 @@ def _team_mcp_git_candidate_commit_resolver(
             directory_path=directory_path,
             branch=agent_branch,
         )
+        if excluded_ancestor_shas and commit_sha is not None:
+            managed_git.verify_excluded_ancestors(managed_repo_id, directory_path=directory_path,
+                commit_shas=[commit_sha], excluded_ancestor_shas=excluded_ancestor_shas)
         if required_ancestor_shas and commit_sha is not None:
             verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
             if not callable(verify_ancestry):

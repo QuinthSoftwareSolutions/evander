@@ -8,6 +8,7 @@ import re
 
 from ..models import (
     AgentTask,
+    GitBaselineConstraints,
     ReintegrationPolicy,
     TaskDeliverableContract,
     TeamTaskKind,
@@ -132,6 +133,9 @@ class TeamReintegrationService:
             task = state.tasks[source.task_id]
             if task.project_id != project.id:
                 raise ValueError("release contribution belongs to another project")
+            from .domain.git_recovery import verify_baseline_constraints
+            verify_baseline_constraints(self.admin._managed_git_admin, project_git=project.git,
+                constraints=task.git_constraints, base_commit_sha=commit)
             commits = {
                 value.casefold()
                 for value in (
@@ -249,6 +253,11 @@ class TeamReintegrationService:
                 work_item_attributions=combined_deliverable_attributions(state, source_ids),
                 git_base_branch=current["base_branch"],
                 git_base_commit_sha=current["base_commit_sha"],
+                git_constraints=GitBaselineConstraints(
+                    intent="required" if any(state.tasks[key].git_constraints.intent == "required" for key in task_ids) else "snapshot",
+                    required_base_commit_sha=next((state.tasks[key].git_constraints.required_base_commit_sha for key in task_ids
+                        if state.tasks[key].git_constraints.required_base_commit_sha), None),
+                    excluded_ancestor_shas=sorted({sha for key in task_ids for sha in state.tasks[key].git_constraints.excluded_ancestor_shas})),
                 created_by_actor=actor_id,
                 created_at=now,
                 updated_at=now,

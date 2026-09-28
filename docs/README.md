@@ -33,6 +33,7 @@ documentation. Start with the task below, then use the subsystem references for 
 - [`execution-backends.md`](execution-backends.md): backend selection and shared contracts
 - [`container-worker-backend.md`](container-worker-backend.md): worker VM/container deployment
 - [`git-remotes.md`](git-remotes.md): managed repository and restricted Git flow
+- [`autonomous-git-recovery.md`](autonomous-git-recovery.md): typed Team Git incidents, bounded agent recovery, preservation, and rollout
 - [`live-smoke-tests.md`](live-smoke-tests.md): executable live verification procedures
 
 ## Focused References

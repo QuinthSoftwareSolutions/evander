@@ -294,6 +294,7 @@ def _upgrade_work_and_review_columns(connection: sqlite3.Connection) -> None:
         ("cancellation_json", "TEXT"),
         ("git_base_branch", "TEXT"),
         ("git_base_commit_sha", "TEXT"),
+        ("git_constraints_json", "TEXT"),
         ("mutation_policy_json", "TEXT"),
     ):
         _ensure_column(

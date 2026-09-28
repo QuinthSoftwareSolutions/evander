@@ -41,6 +41,7 @@ export function emptyState() {
     blockers: {},
     blocker_events: {},
     dependency_composition_recoveries: {},
+    git_recovery_incidents: {},
     action_records: {},
     release_packages: {},
     dispatches: {},

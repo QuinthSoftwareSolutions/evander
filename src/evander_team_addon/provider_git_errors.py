@@ -15,16 +15,22 @@ class DependencyGitPreparationError(RuntimeError):
         task_id: str,
         message: str,
         conflict: Mapping[str, object] | None = None,
+        cause: str = "unknown",
+        evidence: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(message)
         self.task_id = task_id
+        self.cause = "merge_conflict" if conflict is not None else cause
+        self.evidence = dict(evidence or {})
         self.conflict = dict(conflict) if conflict is not None else None
 
 
 class ProjectGitPreparationError(RuntimeError):
-    def __init__(self, *, project_id: str, message: str) -> None:
+    def __init__(self, *, project_id: str, message: str, cause: str = "unknown", evidence: Mapping[str, object] | None = None) -> None:
         super().__init__(message)
         self.project_id = project_id
+        self.cause = cause
+        self.evidence = dict(evidence or {})
 
 
 class ReviewRepositoryPreparationError(RuntimeError):

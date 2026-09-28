@@ -2771,6 +2771,16 @@ reads `anthropic_api_key_env`, `openrouter` reads `openrouter_api_key_env`, and
 `local_openai` uses `local_openai_api_key`. Guests retain only a
 placeholder API key and never receive these host credentials.
 
+## Team Git recovery
+
+Team project `git.recovery` controls incident recovery: `enabled` and
+`automatic_same_branch_renewal` default to `true`; `preparation_retry_limit` and
+`candidate_generation_limit` default to `3` and accept 0–10. These are project Git
+settings, separate from repository indexing and host provider configuration.
+Task `git_constraints` records baseline intent, a required full base commit, and
+excluded ancestor commits. See [Autonomous Git recovery](autonomous-git-recovery.md)
+for inheritance, legacy defaults, and capability requirements.
+
 ## Repository indexing configuration
 
 Repository index settings are revision-checked records managed through Admin Web or

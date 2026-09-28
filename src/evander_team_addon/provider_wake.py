@@ -878,6 +878,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             task_id=exc.task_id,
                             error=error,
                             conflict=exc.conflict,
+                            cause=exc.cause,
+                            evidence=exc.evidence,
                         )
                         preparation_blocker_ids.extend(
                             _new_preparation_blocker_ids(
@@ -891,6 +893,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                             lease=lease,
                             project_id=exc.project_id,
                             error=error,
+                            cause=exc.cause,
+                            evidence=exc.evidence,
                         )
                         preparation_blocker_ids.extend(created_blocker_ids)
                 except Exception as release_exc:  # pragma: no cover - defensive diagnostics

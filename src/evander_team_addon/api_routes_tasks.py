@@ -170,6 +170,7 @@ def build_tasks_handlers(
                 set_authored_by="authored_by" in payload,
                 git_base_branch=_optional(payload, "git_base_branch"),
                 git_base_commit_sha=_optional(payload, "git_base_commit_sha"),
+                git_constraints=payload.get("git_constraints"),
                 set_git_base_branch="git_base_branch" in payload,
                 set_parent_task_id="parent_task_id" in payload,
                 dependency_task_ids=_optional_string_list(payload, "dependency_task_ids"),

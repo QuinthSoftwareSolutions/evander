@@ -82,9 +82,12 @@ def _prepare_project_repos(
         except (DependencyGitPreparationError, TeamStateConflictError):
             raise
         except Exception as exc:
+            diagnostic = (getattr(exc, "payload", None) or {}).get("git_preparation_failure") or {}
             raise ProjectGitPreparationError(
                 project_id=project_id,
                 message=str(exc) or exc.__class__.__name__,
+                cause=getattr(exc, "cause", diagnostic.get("cause", "unknown")),
+                evidence=getattr(exc, "evidence", diagnostic.get("evidence", {})),
             ) from exc
         if project_repo is not None:
             project_repos.append(project_repo)
@@ -162,6 +165,14 @@ def _prepare_project_repo(
             directory_path=(_optional_text(_value(git, "directory_path")) or "root"),
         )
     directory_path = _optional_text(_value(git, "directory_path")) or "root"
+    # Diagnose incompatible frozen sources before cloning/bootstrap allocates any
+    # new workspace. Preparation repeats this proof immediately before composing.
+    from .provider_git_sources import _project_repo_task_dependency_git_sources
+    for task in _project_repo_context_tasks(tasks, project_id=project_id, agent_id=agent_id):
+        task_id = _required_text(task.get("id"), "task.id")
+        if state.tasks[task_id].git_base_commit_sha is not None:
+            _project_repo_task_dependency_git_sources(context, state=state,
+                task_id=task_id, managed_repo_id=managed_repo_id)
     review_snapshots = _review_repository_snapshots_for_project(
         state,
         project_id=project_id,

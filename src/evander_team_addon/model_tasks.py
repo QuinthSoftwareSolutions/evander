@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from evander.models import utc_now
 from evander_team_addon.git_naming import validate_branch_name
 
+from .model_git_recovery import GitBaselineConstraints
+
 from .model_common import (
     ExternalSourceEvidenceFreshnessStatus,
     TaskAssessmentReadiness,
@@ -581,7 +583,10 @@ class AdoWorkItemAttribution(TeamModel):
     email: str | None = None
 
 
+
+
 class AgentTask(TeamModel):
+    git_constraints: GitBaselineConstraints = Field(default_factory=GitBaselineConstraints)
     id: str
     owner_agent_id: str | None
     assignment_mode: Literal["agent", "role"] = "agent"
@@ -712,6 +717,8 @@ class AgentTask(TeamModel):
             raise ValueError("task cannot depend on itself")
         if self.git_base_commit_sha is not None and self.git_base_branch is None:
             raise ValueError("git_base_commit_sha requires git_base_branch")
+        if self.git_constraints.required_base_commit_sha and self.git_base_commit_sha != self.git_constraints.required_base_commit_sha:
+            raise ValueError("task Git base must equal its required baseline")
         if self.task_kind == TeamTaskKind.OUTCOME and self.outcome_contract is None:
             raise ValueError("outcome task requires outcome_contract")
         if self.task_kind != TeamTaskKind.OUTCOME and self.outcome_contract is not None:

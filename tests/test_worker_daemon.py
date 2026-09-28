@@ -1912,8 +1912,9 @@ def test_worker_receipt_replay_preserves_dirty_task_worktree(
         / "user-change.txt"
     ).write_text("keep\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="contains user changes"):
+    with pytest.raises(ValueError, match="contains user changes") as failure:
         daemon.prepare_task_worktree("session-1", request)
+    assert failure.value.cause == "workspace_dirty"
 
 
 def test_worker_composes_exact_dependency_git_source_before_task_work(

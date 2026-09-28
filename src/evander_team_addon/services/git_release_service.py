@@ -498,7 +498,7 @@ class TeamGitReleaseService:
                 release.state = TeamRecordState.BLOCKED
                 release.error = normalized_error or "release publication failed"
                 result["error"] = release.error
-                open_release_blocker(
+                publication_blocker, _ = open_release_blocker(
                     state_model,
                     release_package_id=release.id,
                     summary=f"Release publication blocked: {release.id}",
@@ -506,10 +506,14 @@ class TeamGitReleaseService:
                     result=result,
                     now=now,
                 )
+                from .domain.git_recovery_publication import record_publication_incident
+                record_publication_incident(state_model, release=release, blocker=publication_blocker, outputs=outputs or {})
             release.updated_at = now
             _recalculate_project_status(state_model, release.project_id)
             result["state"] = release.state.value
             result["success"] = True
+            from .domain.git_recovery_continuation import reconcile_git_recovery_successors
+            reconcile_git_recovery_successors(state_model, result=result, now=now)
             return state_model
 
         state = self._repository.update(_mutate, expected_revision=expected_revision)

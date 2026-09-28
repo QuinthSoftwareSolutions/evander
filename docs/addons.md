@@ -1627,6 +1627,8 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_cancel_task`
 - `team_repair_cancelled_task_dependencies`
 - `team_recover_submitted_integration_boundary`
+- `team_preview_git_recovery`
+- `team_apply_git_recovery`
 - `team_reopen_task_for_rework`
 - `team_report_blocker`
 - `team_update_blocker`
@@ -2734,6 +2736,15 @@ scoped to the release's project. Submission requires the matching `preview` and
 a `request_id`; a changed preview must be refreshed and reviewed again. Project
 reintegration policy controls ownership and source-release retirement, and the
 existing review and release workflows apply to the resulting work.
+
+`team_preview_git_recovery` and `team_apply_git_recovery` let a resolver diagnose
+and recover one typed Git incident from a blocker-only dispatch. Recovery can
+retry verified unchanged inputs, preserve dirty work for reviewed replacement,
+or create a successor integration on the configured branch. Preview tokens and
+stable request IDs fence changed evidence and duplicate requests. Baseline
+constraints, immutable acceptance, fresh gates, and lineage budgets still apply.
+See [autonomous Git recovery](autonomous-git-recovery.md) for policy, preservation,
+worker capabilities, and the conditions requiring further diagnosis.
 
 Use an explicit policy with every `gate_sequence` entry disabled for an
 intentionally ungated project; a missing policy blocks a new Git release rather

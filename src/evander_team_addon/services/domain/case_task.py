@@ -49,6 +49,8 @@ from .common import (
 )
 from .task_authorship import inherited_task_author, task_author_identity, inherited_work_item_attributions
 from .work_due import _mark_agent_work_due
+from .git_recovery import inherited_constraints
+from ...model_git_recovery import GitBaselineConstraints
 from .task_assessment import assess_task
 from .case_events import append_case_closed_event
 from .work_lineage import ensure_task_work_lineage
@@ -84,6 +86,8 @@ class _TaskCreationPlan:
     outcome_contract: TaskOutcomeContract | None
     integration_boundary: bool
     deliverable_contract: TaskDeliverableContract | None
+    git_constraints: GitBaselineConstraints | None = None
+    git_constraints_explicit: bool = False
     authored_by: ProjectGitIdentity | None = None
     work_item_attributions: list[AdoWorkItemAttribution] | None = None
 
@@ -519,6 +523,12 @@ def _resolve_task_creation_plan_git_bases(
         pinning.add(plan.task_id)
         project = _require_present(state.projects, plan.project_id, "project")
         supplied_commit = _normalized_task_git_base_commit(plan.git_base_commit_sha)
+        if batch_parent := resolved_plans_by_id.get(plan.parent_task_id):
+            batch_parent = _pin(batch_parent)
+            plan = replace(plan, git_constraints=inherited_constraints(state,
+                parent_constraints=batch_parent.git_constraints,
+                supplied_commit=supplied_commit,
+                requested=plan.git_constraints if plan.git_constraints_explicit else None))
         if supplied_commit is None and plan.parent_task_id is not None:
             if parent := resolved_plans_by_id.get(plan.parent_task_id):
                 parent = _pin(parent)
@@ -535,7 +545,8 @@ def _resolve_task_creation_plan_git_bases(
                 )
             if inherited_commit is not None:
                 pinned_plans[plan.task_id] = replace(
-                    plan, git_base_commit_sha=inherited_commit
+                    plan, git_base_commit_sha=inherited_commit,
+                    git_constraints=plan.git_constraints,
                 )
                 pinning.remove(plan.task_id)
                 return pinned_plans[plan.task_id]
@@ -1218,6 +1229,8 @@ def _plan_task_creation(
         git_base_commit_sha = _normalized_task_git_base_commit(
             creation.get("git_base_commit_sha")
         )
+        git_constraints = inherited_constraints(state, parent_task_id=parent_task_id,
+            supplied_commit=git_base_commit_sha, requested=creation.get("git_constraints"))
     except ValueError as exc:
         result["errors"].append(f"task creation has invalid Git base: {exc}")
         return None
@@ -1343,6 +1356,8 @@ def _plan_task_creation(
         originating_task_id=originating_task_id,
         git_base_branch=git_base_branch,
         git_base_commit_sha=git_base_commit_sha,
+        git_constraints=git_constraints,
+        git_constraints_explicit=creation.get("git_constraints") is not None,
         dependency_task_ids=dependency_task_ids,
         priority=int(priority) if priority is not None else 0,
         title=_required_text(creation.get("title"), "title"),
@@ -1424,6 +1439,7 @@ def _apply_task_creation_plan(
         work_item_attributions=plan.work_item_attributions,
         git_base_branch=plan.git_base_branch,
         git_base_commit_sha=plan.git_base_commit_sha,
+        git_constraints=plan.git_constraints or inherited_constraints(state, parent_task_id=plan.parent_task_id),
         dependency_task_ids=plan.dependency_task_ids,
         created_at=now,
         updated_at=now,

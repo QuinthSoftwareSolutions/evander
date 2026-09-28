@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from evander.git_recovery import GitPreparationFailure
+
 import hashlib
 import re
 from collections.abc import (
@@ -362,10 +364,12 @@ def _project_repo_task_dependency_git_sources(
         )
     except DependencyGitPreparationError:
         raise
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, LookupError) as exc:
         raise DependencyGitPreparationError(
             task_id=task_id,
             message=str(exc),
+            cause=getattr(exc, "cause", "unknown"),
+            evidence=getattr(exc, "evidence", {}),
         ) from None
 
 
@@ -408,9 +412,8 @@ def _project_repo_task_dependency_git_sources_unchecked(
         else set()
     )
     if pinned_sources and not pinned_sources.issubset(required_source_ids):
-        raise RuntimeError(
-            "pinned integration contributions changed; create a new recovery preview"
-        )
+        raise GitPreparationFailure(
+            "pinned integration contributions changed; create a new recovery preview", cause="inputs_changed")
     required_task_ids = {
         state.deliverables[deliverable_id].task_id
         for deliverable_id in required_source_ids
@@ -488,15 +491,13 @@ def _project_repo_task_dependency_git_sources_unchecked(
                 if commit is not None
             }
             if len(commit_candidates) != 1:
-                raise RuntimeError(
+                raise GitPreparationFailure(
                     f"accepted Git deliverable {deliverable.id} must record one "
-                    "consistent submitted/reviewed commit"
-                )
+                    "consistent submitted/reviewed commit", cause="contradictory_provenance")
             commit_sha = next(iter(commit_candidates))
             if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit_sha) is None:
-                raise RuntimeError(
-                    f"accepted Git deliverable {deliverable.id} records an invalid commit ID"
-                )
+                raise GitPreparationFailure(
+                    f"accepted Git deliverable {deliverable.id} records an invalid commit ID", cause="contradictory_provenance")
             pinned_ref = _accepted_deliverable_pinned_ref(
                 context,
                 state,
@@ -512,10 +513,9 @@ def _project_repo_task_dependency_git_sources_unchecked(
                 else None
             )
             if branch_context is not None and branch_context.task_id != dependency_task_id:
-                raise RuntimeError(
+                raise GitPreparationFailure(
                     f"accepted Git deliverable {deliverable.id} has an invalid "
-                    f"branch context {branch_context_id}"
-                )
+                    f"branch context {branch_context_id}", cause="contradictory_provenance")
             branch = _optional_text(git_refs.agent_branch) or _optional_text(
                 getattr(branch_context, "agent_branch", None)
             )
@@ -524,19 +524,17 @@ def _project_repo_task_dependency_git_sources_unchecked(
                     f"accepted Git deliverable {deliverable.id} has no source branch label"
                 )
             if branch_context is not None and branch != branch_context.agent_branch:
-                raise RuntimeError(
+                raise GitPreparationFailure(
                     f"accepted Git deliverable {deliverable.id} records ambiguous "
-                    "agent branch provenance"
-                )
+                    "agent branch provenance", cause="contradictory_provenance")
             if (
                 pinned_ref is None
                 and branch_context is None
                 and deliverable.acceptance_policy_version >= 2
             ):
-                raise RuntimeError(
+                raise GitPreparationFailure(
                     f"policy-v{deliverable.acceptance_policy_version} accepted Git "
-                    f"deliverable {deliverable.id} has no retained ref or branch context"
-                )
+                    f"deliverable {deliverable.id} has no retained ref or branch context", cause="reviewed_object_unavailable")
             try:
                 authoritative_commit = (
                     resolve_team_review_commit(
@@ -553,29 +551,27 @@ def _project_repo_task_dependency_git_sources_unchecked(
                 )
             except Exception as exc:
                 source_label = pinned_ref or branch
-                raise RuntimeError(
+                raise GitPreparationFailure(
                     f"could not resolve dependency source {source_label!r} for accepted "
-                    f"deliverable {deliverable.id}: {exc}"
+                    f"deliverable {deliverable.id}: {exc}",
+                    cause=getattr(exc, "cause", "unknown"), evidence=getattr(exc, "evidence", {}),
                 ) from None
             normalized_authoritative = _optional_text(authoritative_commit)
             if normalized_authoritative is None:
-                raise RuntimeError(
+                raise GitPreparationFailure(
                     f"dependency branch {branch!r} for accepted deliverable "
-                    f"{deliverable.id} does not exist in managed Git"
-                )
+                    f"{deliverable.id} does not exist in managed Git", cause="reviewed_object_unavailable")
             normalized_authoritative = normalized_authoritative.casefold()
             if normalized_authoritative != commit_sha:
                 if pinned_ref is not None:
-                    raise RuntimeError(
+                    raise GitPreparationFailure(
                         f"immutable dependency ref {pinned_ref!r} for accepted deliverable "
                         f"{deliverable.id} does not match reviewed commit {commit_sha}: found "
-                        f"{normalized_authoritative}"
-                    )
-                raise RuntimeError(
+                        f"{normalized_authoritative}", cause="contradictory_provenance")
+                raise GitPreparationFailure(
                     f"dependency branch {branch!r} moved after acceptance for "
                     f"deliverable {deliverable.id}: expected {commit_sha}, found "
-                    f"{normalized_authoritative}"
-                )
+                    f"{normalized_authoritative}", cause="source_ref_moved")
             rows.append(
                 {
                     "dependency_task_id": dependency_task_id,
@@ -601,6 +597,10 @@ def _project_repo_task_dependency_git_sources_unchecked(
             base_commit_sha=task.git_base_commit_sha,
             sources=dependency_source_base_requirements(state, sources=rows),
         )
+    from .services.domain.git_recovery import verify_baseline_constraints
+    verify_baseline_constraints(managed_git, project_git=state.projects[task.project_id].git,
+        constraints=task.git_constraints, base_commit_sha=task.git_base_commit_sha,
+        candidate_shas=[row["commit_sha"] for row in rows])
     return rows
 
 
@@ -633,10 +633,9 @@ def _accepted_deliverable_pinned_ref(
     snapshots = [snapshot for _review_id, snapshot in snapshot_rows]
     if recorded is not None:
         if snapshots and all(snapshot.pinned_ref != recorded for snapshot in snapshots):
-            raise RuntimeError(
+            raise GitPreparationFailure(
                 f"accepted Git deliverable {deliverable_id} records pinned ref {recorded!r} "
-                "outside its accepted review evidence"
-            )
+                "outside its accepted review evidence", cause="contradictory_provenance")
         selected_ref = recorded
     else:
         selected_ref = snapshots[0].pinned_ref if snapshots else None
@@ -673,9 +672,10 @@ def _accepted_deliverable_pinned_ref(
         )
         if _optional_text(resolved_before) is not None:
             if str(resolved_before).casefold() != commit_sha.casefold():
-                raise RuntimeError(
+                raise GitPreparationFailure(
                     f"immutable dependency ref {selected_ref!r} points to "
-                    f"{resolved_before}, not accepted commit {commit_sha}"
+                    f"{resolved_before}, not accepted commit {commit_sha}",
+                    cause="contradictory_provenance",
                 )
             return selected_ref
         if not callable(pin_snapshot):
@@ -715,10 +715,11 @@ def _accepted_deliverable_pinned_ref(
     except Exception as exc:
         if deliverable.acceptance_policy_version < 2:
             return None
-        raise RuntimeError(
+        raise GitPreparationFailure(
             f"could not materialize immutable dependency ref {selected_ref!r} for "
             f"policy-v{deliverable.acceptance_policy_version} deliverable "
-            f"{deliverable_id}: {exc}"
+            f"{deliverable_id}: {exc}",
+            cause=getattr(exc, "cause", "unknown"), evidence=getattr(exc, "evidence", {}),
         ) from exc
 
 

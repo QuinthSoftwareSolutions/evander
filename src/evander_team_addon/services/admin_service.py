@@ -3028,10 +3028,43 @@ class TeamAdminService(TeamTaskAdministration):
                         f"base commit {task.git_base_commit_sha}"
                     )
                 if normalized_base_commit.casefold() != task.git_base_commit_sha:
-                    raise ValueError(
-                        f"Git work context base commit {normalized_base_commit} does "
-                        f"not match task {task.id} pin {task.git_base_commit_sha}"
+                    recovery = state.dependency_composition_recoveries.get(
+                        normalized_dependency_composition_recovery_id or ""
                     )
+                    reviewed = (
+                        state.deliverables.get(recovery.accepted_deliverable_id or "")
+                        if recovery
+                        else None
+                    )
+                    reviewed_composition = bool(
+                        recovery is not None
+                        and recovery.state == "accepted"
+                        and recovery.target_task_id == task.id
+                        and recovery.base_commit_sha == task.git_base_commit_sha
+                        and recovery.resolved_commit_sha == normalized_base_commit.casefold()
+                        and recovery.dependency_git_sources == normalized_dependency_git_sources
+                        and reviewed is not None
+                        and reviewed.state == "accepted"
+                        and reviewed.git_refs is not None
+                        and reviewed.git_refs.commit_sha == recovery.resolved_commit_sha
+                        and recovery.verified_deliverable_id == reviewed.id
+                        and recovery.verified_commit_sha == recovery.resolved_commit_sha
+                        and recovery.verified_at is not None
+                        and (
+                            normalized_dependency_composition_manifest is None
+                            or (
+                                normalized_dependency_composition_manifest.base_commit_sha
+                                == recovery.base_commit_sha
+                                and normalized_dependency_composition_manifest.composed_commit_sha
+                                == recovery.resolved_commit_sha
+                            )
+                        )
+                    )
+                    if not reviewed_composition:
+                        raise ValueError(
+                            f"Git work context base commit {normalized_base_commit} does "
+                            f"not match task {task.id} pin {task.git_base_commit_sha}"
+                        )
             effective_context_id = normalized_context_id or _generated_id(
                 prefix="gitctx",
                 labels=[normalized_agent_id, normalized_task_id, normalized_agent_branch],

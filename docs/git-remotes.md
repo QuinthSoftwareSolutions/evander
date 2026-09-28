@@ -277,6 +277,11 @@ dependency setup locally, such as `dotnet restore` or `npm ci` where relevant.
 
 ## Temporary worktrees
 
+Team preparation incidents use [autonomous Git recovery](autonomous-git-recovery.md).
+Exact-source retries create distinct physical attempts. Dirty work is retained and can
+be captured as unapproved Git evidence for a reviewed successor; recovery holds prevent
+normal worktree cleanup and control-plane teardown from deleting that evidence.
+
 Operations that need checked-out files, including merge consolidation and PR preparation, create a
 unique detached worktree beneath:
 

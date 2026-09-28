@@ -428,6 +428,8 @@ def _accept_deliverable_and_maybe_task(
         result=result,
         now=now,
     )
+    from .git_recovery_continuation import reconcile_git_recovery_successors
+    reconcile_git_recovery_successors(state, result=result, now=now)
     if task.parent_task_id is None:
         for accepted_deliverable in task_deliverables:
             initialize_pending_initial_release_disposition(

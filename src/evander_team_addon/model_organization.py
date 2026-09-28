@@ -17,6 +17,8 @@ from evander_team_addon.git_naming import (
     normalize_canonical_release_branch_prefix,
 )
 
+from .model_git_recovery import GitRecoveryPolicy
+
 from .model_common import (
     DEFAULT_TEAM_COST_WARNING_RATIO,
     REALTIME_BUILT_IN_VOICE_IDS,
@@ -441,7 +443,10 @@ class ProjectGitIdentity(TeamModel):
         return normalized
 
 
+
+
 class ProjectGitConfig(TeamModel):
+    recovery: GitRecoveryPolicy = Field(default_factory=GitRecoveryPolicy)
     managed_repo_id: str
     directory_path: str = "root"
     base_branch: str | None = None

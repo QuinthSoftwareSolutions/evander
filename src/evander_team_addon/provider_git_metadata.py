@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .provider_git_errors import DependencyGitPreparationError
+
 import hashlib
 import json
 import re
@@ -262,16 +264,16 @@ def _ensure_project_repo_git_preparation_attempt(
             "preparation_generation",
         )
         if any(getattr(existing, name) != getattr(expected, name) for name in identity_fields):
-            raise RuntimeError(
-                f"Git preparation attempt {attempt_id} already exists with different identity"
-            )
+            raise DependencyGitPreparationError(task_id=task_id, cause="workspace_receipt_mismatch",
+                evidence={"attempt_id": attempt_id},
+                message=f"Git preparation attempt {attempt_id} already exists with different identity")
         if existing.state in {
             TeamGitPreparationAttemptState.CLEANUP_PENDING,
             TeamGitPreparationAttemptState.OPERATOR_ACTION_REQUIRED,
         }:
-            raise RuntimeError(
-                f"Git preparation attempt {attempt_id} requires recovery before reuse"
-            )
+            raise DependencyGitPreparationError(task_id=task_id, cause="workspace_receipt_mismatch",
+                evidence={"attempt_id": attempt_id},
+                message=f"Git preparation attempt {attempt_id} requires recovery before reuse")
         existing.latest_dispatch_id = dispatch_id
         existing.updated_at = now
         existing.last_error = None

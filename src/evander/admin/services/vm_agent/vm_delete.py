@@ -16,6 +16,9 @@ class VmAgentDeleteMixin:
             return VmActionResult(
                 success=False, vm_name="", action="destroy_vm", message="VM name is required."
             )
+        from evander.execution.preservation import require_session_data_disposable
+        for session in self._session_repository().list_sessions_for_vm(vm_name):
+            require_session_data_disposable(self._deps.config.runtime_dir, session.session_id)
         issue_number = session_helpers.extract_issue_number(vm_name)
         if issue_number is not None and vm_name == f"vm-{issue_number}":
             return self.destroy_issue_vm(issue_number)
@@ -84,6 +87,9 @@ class VmAgentDeleteMixin:
     def destroy_issue_vm(self, target: str) -> VmActionResult:
         issue_number = session_helpers.extract_issue_number(target) or target
         vm_name = f"vm-{issue_number}" if issue_number else target
+        from evander.execution.preservation import require_session_data_disposable
+        for session in self._session_repository().list_sessions_for_issue(issue_number):
+            require_session_data_disposable(self._deps.config.runtime_dir, session.session_id)
         root_dir = _source_project_dir()
         destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
 

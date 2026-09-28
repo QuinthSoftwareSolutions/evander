@@ -448,7 +448,24 @@ class WorkerTaskDependencyGitSource(BaseModel):
         return text
 
 
+class WorkerGitSalvageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    repo_name: str
+    repo_source: str = Field(min_length=1)
+    worktree_name: str
+    expected_branch: str
+    recovery_branch: str
+
+    @field_validator("repo_name", "worktree_name")
+    @classmethod
+    def validate_component(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", value) or value in {".", ".."}:
+            raise ValueError("Git salvage requires a safe repository/worktree name")
+        return value
+
+
 class WorkerTaskWorktreeRequest(BaseModel):
+    required_git_recovery_protocol: Literal[1] | None = None
     model_config = ConfigDict(extra="forbid")
 
     repo_name: str

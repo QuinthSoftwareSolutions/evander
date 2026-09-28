@@ -272,6 +272,7 @@ def _build_vm_task_worktree_command(
         )
     command_lines = [
         "set -eu",
+        'git_recovery_fail() { echo "EVANDER_GIT_FAILURE_CAUSE=$1" >&2; exit 1; }',
         f"export GIT_AUTHOR_NAME={quoted_dependency_author_name}",
         f"export GIT_AUTHOR_EMAIL={quoted_dependency_author_email}",
         f"export GIT_COMMITTER_NAME={quoted_dependency_committer_name}",
@@ -341,7 +342,7 @@ def _build_vm_task_worktree_command(
             '  echo "reused task worktree has no authoritative server-recorded base; '
             'use an audited provenance recovery" >&2'
         ),
-        "  exit 1",
+        "  git_recovery_fail workspace_receipt_mismatch",
         "fi",
         'git -C "$target" config --worktree evander.workBranch "$branch"',
         'git -C "$target" config --worktree evander.baseBranch "$base"',
@@ -575,6 +576,12 @@ def _build_vm_task_worktree_command(
         'echo "EVANDER_COMPOSED_COMMIT=$composed_commit"',
         'echo "EVANDER_COMPOSED_TREE=$(git -C "$target" rev-parse "$composed_commit^{tree}")"',
         'printf "%s\\n" "$head_commit"',
+    ]
+    command_lines = [
+        line + " || git_recovery_fail workspace_dirty"
+        if line.strip() == 'test -z "$(git -C "$target" status --porcelain)"'
+        else line
+        for line in command_lines
     ]
     command = "\n".join(command_lines)
     return command, clone_dir, worktree_path

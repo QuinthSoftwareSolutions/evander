@@ -10,7 +10,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
