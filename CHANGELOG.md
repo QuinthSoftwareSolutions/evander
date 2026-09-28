@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-28 - Separate SQLite lock waits from operation deadlines (0.69.2)
+
+- Remove the inferred 100 ms execution deadline from ordinary SQLite reads, writes, and
+  repository locks so query execution and record hydration can complete under load.
+- Restore normal callers' 30-second lock allowance; trigger and effect workers explicitly
+  retain short lock waits and contention recovery without interrupting healthy queries.
+- Preserve explicit reporting and maintenance execution deadlines independently of lock waits.
+
 ## 2026-09-28 - Honor the active model in standalone web search (0.69.1)
 
 - Use the model in each Codex search request for hosted web search, allowing

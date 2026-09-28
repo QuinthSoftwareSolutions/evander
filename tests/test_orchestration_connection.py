@@ -19,7 +19,7 @@ from evander.repositories.sqlite_runtime import (
     SqliteOperationDeadlineExceeded,
     close_sqlite_runtimes,
     ensure_sqlite_initialized,
-    foreground_storage_budget,
+    foreground_storage_wait_budget,
     is_storage_busy,
     open_sqlite_connection,
     storage_lock,
@@ -135,7 +135,7 @@ def test_sql_deadline_interrupts_query_and_remains_retryable(tmp_path):
     ensure_orchestration_schema(path)
     with (
         pytest.raises(SqliteOperationDeadlineExceeded) as caught,
-        open_sqlite_connection(path, read_only=True, timeout_ms=10) as connection,
+        open_sqlite_connection(path, read_only=True, deadline_seconds=0.01) as connection,
     ):
         connection.execute("""WITH RECURSIVE numbers(x) AS (
                 VALUES(1) UNION ALL SELECT x+1 FROM numbers WHERE x<100000000
@@ -145,18 +145,87 @@ def test_sql_deadline_interrupts_query_and_remains_retryable(tmp_path):
         assert connection.execute("SELECT 1").fetchone()[0] == 1
 
 
-def test_repository_lock_and_sql_share_foreground_budget(tmp_path):
+@pytest.mark.parametrize("read_only", [False, True])
+def test_short_lock_timeout_does_not_limit_query_or_row_processing(tmp_path, read_only):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    with open_sqlite_connection(path, read_only=read_only, timeout_ms=10) as connection:
+        connection.execute("BEGIN")
+
+        def slow_sum(value):
+            time.sleep(0.03)
+            return value + 1
+
+        connection.create_function("slow_sum", 1, slow_sum)
+        assert connection.execute("SELECT slow_sum(41)").fetchone()[0] == 42
+        # Subsequent SQL and commit must still work after query and Python time
+        # have consumed the lock-wait allowance.
+        time.sleep(0.02)
+        assert connection.execute("SELECT 6 * 7").fetchone()[0] == 42
+        if not read_only:
+            connection.execute("INSERT INTO orchestration_metadata VALUES ('completed', '42')")
+    if not read_only:
+        with connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute(
+                "SELECT value_json FROM orchestration_metadata WHERE key='completed'"
+            ).fetchone()[0] == "42"
+
+
+def test_normal_repository_lock_can_wait_beyond_foreground_budget(tmp_path):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    lock = threading.Lock()
+    lock.acquire()
+    release = threading.Timer(0.15, lock.release)
+    release.start()
+    try:
+        with storage_lock(lock), connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute("SELECT 6 * 7").fetchone()[0] == 42
+    finally:
+        release.join(timeout=2)
+
+
+def test_waiting_page_hydration_survives_foreground_lock_budget(tmp_path, monkeypatch):
+    from evander.daemons.effect_orchestrator import SqliteExecutionStore
+    from evander.repositories import orchestration
+    from test_operational_payload_storage import record
+
+    store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    store.put(record(status="waiting", outputs={"large": "data" * 6000}))
+    load_record = orchestration.load_record
+
+    def delayed_hydration(*args, **kwargs):
+        time.sleep(0.12)
+        return load_record(*args, **kwargs)
+
+    monkeypatch.setattr(orchestration, "load_record", delayed_hydration)
+    with foreground_storage_wait_budget(), storage_lock(store._lock):
+        records = store.list_waiting_records_page(node_type="effect:test", limit=10)
+    assert len(records) == 1
+    assert records[0].status == "waiting"
+    assert len(records[0].outputs["large"]) == 24000
+
+
+def test_expired_foreground_wait_budget_allows_uncontended_sql(tmp_path):
     path = tmp_path / "orchestration.db"
     ensure_orchestration_schema(path)
     lock = threading.RLock()
-    with foreground_storage_budget(0.02), storage_lock(lock):
-        # Spend the operation's budget before opening the connection.
+    blocker = sqlite3.connect(path)
+    with foreground_storage_wait_budget(0.02), storage_lock(lock):
+        # Row processing can consume the wait allowance. Uncontended reads
+        # remain valid while a subsequent contested write still fails quickly.
         time.sleep(0.03)
-        with (
-            pytest.raises(SqliteOperationDeadlineExceeded),
-            connect_orchestration_db_read_only(path) as connection,
-        ):
-            connection.execute("SELECT 1")
+        with connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute("SELECT 1").fetchone()[0] == 1
+        try:
+            blocker.execute("BEGIN IMMEDIATE")
+            started = time.monotonic()
+            with pytest.raises(sqlite3.OperationalError) as caught, connect_orchestration_db(path) as connection:
+                connection.execute("INSERT INTO orchestration_metadata VALUES ('blocked', '{}')")
+            assert is_storage_busy(caught.value)
+            assert time.monotonic() - started < 1
+        finally:
+            blocker.close()
     assert lock.acquire(blocking=False)
     lock.release()
 
