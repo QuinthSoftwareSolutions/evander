@@ -15,6 +15,28 @@ type DeviceLogin = {
   error?: string | null;
 };
 
+const SEVEN_DAYS_IN_MINUTES = 7 * 24 * 60;
+
+function weeklyRemainingPercent(rateLimits: Record<string, unknown> | null): number | null {
+  const byLimitId = rateLimits?.by_limit_id;
+  const codexLimit = byLimitId && typeof byLimitId === "object"
+    ? (byLimitId as Record<string, unknown>).codex
+    : null;
+  for (const bucket of [rateLimits?.default, codexLimit]) {
+    if (!bucket || typeof bucket !== "object") continue;
+    for (const windowName of ["primary", "secondary"] as const) {
+      const window = (bucket as Record<string, unknown>)[windowName];
+      if (!window || typeof window !== "object") continue;
+      const { window_duration_minutes: duration, used_percent: used } = window as Record<string, unknown>;
+      if (duration !== SEVEN_DAYS_IN_MINUTES || typeof used !== "number" || !Number.isFinite(used)) continue;
+      return Math.max(0, Math.min(100, 100 - used));
+    }
+  }
+  return null;
+}
+
+const percentFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+
 export function SubscriptionsPage() {
   const { selectedDirectoryPath, privilegedUnlocked } = useAdminUi();
   const refreshGeneration = useRef(0);
@@ -187,9 +209,10 @@ export function SubscriptionsPage() {
         </details>
 
         <div className="subscription-profiles">
-          <div className="subscription-columns" aria-hidden="true"><span>Profile</span><span>Account</span><span>Plan</span><span>Activity</span></div>
+          <div className="subscription-columns" aria-hidden="true"><span>Profile</span><span>Account</span><span>Plan</span><span>Activity</span><span>7-day remaining</span></div>
           {profiles.map((profile) => {
             const login = pendingLogins[profile.profile_id];
+            const remainingPercent = weeklyRemainingPercent(profile.rate_limits);
             return (
               <details className="subscription-profile" key={profile.profile_id}>
                 <summary className="subscription-profile-summary">
@@ -207,6 +230,10 @@ export function SubscriptionsPage() {
                   <span>
                     {profile.active_job_count ?? 0} active · {profile.queued_prompt_count ?? 0} queued
                     {profile.error || login?.error ? <small className="error-text">Needs attention</small> : null}
+                  </span>
+                  <span className="subscription-weekly-remaining">
+                    {remainingPercent === null ? "Unavailable" : `${percentFormatter.format(remainingPercent)}%`}
+                    <small>7-day remaining</small>
                   </span>
                 </summary>
                 <div className="subscription-profile-body">

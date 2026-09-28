@@ -643,13 +643,23 @@ test("subscriptions page shows worker profile identity and capacity", { timeout:
         plan_type: "plus",
         last_refresh: "2026-09-02T10:00:00Z",
         access_token_expires_at: null,
-        rate_limits: { default: { primary: { used_percent: 25 } } },
+        rate_limits: { default: {
+          primary: { used_percent: 75, window_duration_minutes: 300 },
+          secondary: { used_percent: 1, window_duration_minutes: 10080 },
+        } },
         usage: { summary: { lifetime_tokens: 1234 } },
         active_job_count: 2,
         queued_prompt_count: 3,
         error: null,
         created_at: "2026-09-01T10:00:00Z",
         updated_at: "2026-09-02T10:00:00Z",
+      },
+      {
+        profile_id: "team-b",
+        display_name: "Team B",
+        enabled: true,
+        signed_in: true,
+        rate_limits: { default: { primary: { used_percent: 25, window_duration_minutes: 300 } } },
       },
     ],
   });
@@ -669,6 +679,9 @@ test("subscriptions page shows worker profile identity and capacity", { timeout:
   finishLoading();
 
   await page.getByRole("heading", { name: "Subscriptions" }).waitFor({ state: "visible" });
+  assert.equal(await page.locator(".subscription-columns").getByText("7-day remaining").isVisible(), true);
+  assert.match(await page.locator(".subscription-profile-summary").filter({ hasText: "Team A" }).innerText(), /99%\s*7-day remaining/);
+  assert.match(await page.locator(".subscription-profile-summary").filter({ hasText: "Team B" }).innerText(), /Unavailable\s*7-day remaining/);
   await page.locator(".subscription-profile-summary").filter({ hasText: "Team A" }).click();
   const pageText = await page.locator(".feature-page").innerText();
   assert.match(pageText, /http:\/\/worker\.test:11888/);

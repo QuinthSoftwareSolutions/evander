@@ -718,7 +718,8 @@ a profile and starting or ending login require unlocked privileged operations an
 `root`; a child-directory owner is insufficient because profiles belong to the effective worker,
 not to a directory. Profile IDs are immutable lowercase slugs, display names are editable, and
 the first successful login permanently pins the OpenAI account ID. Use a new profile for a
-different account.
+different account. The profile list shows the percentage remaining in the worker-reported Codex
+Codex seven-day rate-limit window; it shows "Unavailable" when no seven-day window is reported.
 
 Before a subscription job starts, the worker checks the selected profile. A signed-out, disabled,
 unavailable, or exhausted profile returns a structured capacity deferral and the control plane
