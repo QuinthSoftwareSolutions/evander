@@ -15,6 +15,23 @@ def digest(value: object) -> str:
     ).hexdigest()
 
 
+def _task_requirements(task) -> dict:
+    # Freeze semantic scope, not lifecycle state or scheduling metadata. A new
+    # preview must never authorize an old candidate against changed requirements.
+    return task.model_dump(
+        mode="json",
+        include={
+            "title",
+            "description",
+            "task_kind",
+            "integration_boundary",
+            "outcome_contract",
+            "deliverable_contract",
+            "source_evidence_snapshot_ids",
+        },
+    )
+
+
 def recovery_inputs(state, task_id: str) -> dict:
     task = state.tasks[task_id]
     project = state.projects[task.project_id]
@@ -30,6 +47,7 @@ def recovery_inputs(state, task_id: str) -> dict:
             "state": source.state.value,
             "git_refs": source.git_refs.model_dump(mode="json") if source.git_refs else None,
             "superseded_by": source.superseded_by_deliverable_id,
+            "requirements": _task_requirements(state.tasks[source.task_id]),
         }
         for source in sorted(state.deliverables.values(), key=lambda row: row.id)
         if (
@@ -63,6 +81,7 @@ def recovery_inputs(state, task_id: str) -> dict:
             )
     return {
         "task_id": task.id,
+        "requirements": _task_requirements(task),
         "project_id": project.id,
         "managed_repo_id": project.git.managed_repo_id if project.git else None,
         "directory_path": project.git.directory_path if project.git else None,

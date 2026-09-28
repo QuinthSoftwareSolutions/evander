@@ -349,10 +349,12 @@ def test_ended_merge_recovery_is_retried_by_normal_wake_without_replenishing_bud
     assert "budget exhausted" in preview["waiting_reason"]
 
 
-def accept_successor(repo, task_id, *, callback=True):
+def accept_successor(repo, task_id, *, callback=True, deliverable_id="reviewed-successor"):
     from evander_team_addon.models import (
         Deliverable,
         DeliverableGitRefs,
+        GitWorkContext,
+        GitWorkContextState,
         TeamRecordState,
         TeamTaskState,
     )
@@ -362,15 +364,30 @@ def accept_successor(repo, task_id, *, callback=True):
     def accept(state):
         task = state.tasks[task_id]
         candidate = Deliverable(
-            id="reviewed-successor",
+            id=deliverable_id,
             task_id=task.id,
             producer_agent_id=task.owner_agent_id,
             acceptance_policy_version=1,
+            acceptance_recipient_agent_id="lead",
             summary="Reviewed implementation",
             state=TeamRecordState.PENDING,
             git_refs=DeliverableGitRefs(
-                agent_branch="agents/session-backend/recovery", commit_sha="e" * 40
+                branch_context_id=f"{deliverable_id}-context",
+                agent_branch="agents/session-backend/recovery",
+                commit_sha="e" * 40,
+                submitted_commit_sha="e" * 40,
             ),
+            source_deliverable_ids=list(task.deliverable_contract.pinned_source_deliverable_ids),
+        )
+        state.git_work_contexts[candidate.git_refs.branch_context_id] = GitWorkContext(
+            id=candidate.git_refs.branch_context_id,
+            agent_id=task.owner_agent_id,
+            task_id=task.id,
+            base_branch=task.git_base_branch,
+            base_commit=task.git_base_commit_sha,
+            agent_branch=candidate.git_refs.agent_branch,
+            commit_sha=candidate.git_refs.commit_sha,
+            state=GitWorkContextState.SUBMITTED,
         )
         state.deliverables[candidate.id] = candidate
         task.deliverable_ids.append(candidate.id)
@@ -379,6 +396,24 @@ def accept_successor(repo, task_id, *, callback=True):
             _accept_deliverable_and_maybe_task(
                 state, deliverable=candidate, task=task, now=utc_now(), result={"events": []}
             )
+        return state
+
+    return repo.update(accept)
+
+
+def accept_existing(repo, deliverable_id):
+    from evander_team_addon.models import utc_now
+    from evander_team_addon.services.domain.deliverables import _accept_deliverable_and_maybe_task
+
+    def accept(state):
+        candidate = state.deliverables[deliverable_id]
+        _accept_deliverable_and_maybe_task(
+            state,
+            deliverable=candidate,
+            task=state.tasks[candidate.task_id],
+            now=utc_now(),
+            result={"events": []},
+        )
         return state
 
     return repo.update(accept)
@@ -628,7 +663,8 @@ def test_salvage_captures_outside_state_lock_rechecks_preview_and_requires_new_r
     assert len(calls) == 2
 
 
-def test_submitted_consumer_gets_fresh_boundary_and_retains_review_history(tmp_path):
+@pytest.mark.parametrize("product_count", [1, 2])
+def test_submitted_consumer_gets_fresh_boundary_and_retains_review_history(tmp_path, product_count):
     from evander_team_addon.models import (
         AgentTask,
         Deliverable,
@@ -642,6 +678,15 @@ def test_submitted_consumer_gets_fresh_boundary_and_retains_review_history(tmp_p
     )
 
     def consumer(state):
+        state.deliverables["original-output"] = Deliverable(
+            id="original-output",
+            task_id="integration",
+            producer_agent_id="backend",
+            summary="Earlier integration output",
+            state=TeamRecordState.REJECTED,
+            git_refs=DeliverableGitRefs(commit_sha="d" * 40),
+        )
+        state.tasks["integration"].deliverable_ids.append("original-output")
         state.tasks["consumer"] = AgentTask(
             id="consumer",
             owner_agent_id="backend",
@@ -653,7 +698,9 @@ def test_submitted_consumer_gets_fresh_boundary_and_retains_review_history(tmp_p
             dependency_task_ids=["integration"],
             integration_boundary=True,
             deliverable_contract=TaskDeliverableContract(
-                require_git_provenance=True, required_contribution_task_ids=["integration"]
+                require_git_provenance=True,
+                required_contribution_task_ids=["integration"],
+                pinned_source_deliverable_ids=["original-output"],
             ),
             git_base_branch="main",
             git_base_commit_sha=state.tasks["integration"].git_base_commit_sha,
@@ -672,18 +719,22 @@ def test_submitted_consumer_gets_fresh_boundary_and_retains_review_history(tmp_p
     repo.update(consumer)
     before = repo.read().deliverables["historical-consumer-candidate"]
     _, result = apply(service, blocker_id)
-    state = accept_successor(repo, result["task_id"])
+    product_ids = [f"reviewed-product-{i}" for i in range(product_count)]
+    for product_id in product_ids:
+        accept_successor(repo, result["task_id"], callback=False, deliverable_id=product_id)
+    for product_id in product_ids:
+        state = accept_existing(repo, product_id)
     incident = state.git_recovery_incidents[result["incident_id"]]
     assert incident.state == "resumed", incident.waiting_reason
     boundary = state.tasks[incident.evidence["consumer_successor_ids"]["consumer"]]
     assert boundary.deliverable_ids == []
     assert boundary.dependency_task_ids == [result["task_id"]]
+    assert boundary.deliverable_contract.pinned_source_deliverable_ids == product_ids
     assert state.tasks["consumer"].state == "cancelled"
     assert state.deliverables["historical-consumer-candidate"] == before
 
 
-@pytest.mark.parametrize("hard_pin", [False, True])
-def test_destination_advance_uses_exact_release_sources_and_fresh_gates(tmp_path, hard_pin):
+def setup_publication_recovery(tmp_path, *, hard_pin=False):
     from evander_team_addon.models import ReleasePackage, ReleaseScopeValidation, TeamRecordState
     from evander_team_addon.repository import TeamStateRepository
 
@@ -729,9 +780,17 @@ def test_destination_advance_uses_exact_release_sources_and_fresh_gates(tmp_path
         },
     )
     incident = next(iter(saved.git_recovery_incidents.values()))
+    return repo, TeamGitRecoveryService(admin), incident, pinned, newer, candidate
+
+
+@pytest.mark.parametrize("hard_pin", [False, True])
+def test_destination_advance_uses_exact_release_sources_and_fresh_gates(tmp_path, hard_pin):
+    repo, service, incident, _, newer, candidate = setup_publication_recovery(
+        tmp_path, hard_pin=hard_pin
+    )
+    saved = repo.read()
     assert incident.stage == "publication"
     assert saved.release_packages["release"].approved_commit_sha == candidate
-    service = TeamGitRecoveryService(admin)
     preview = service.preview(incident.blocker_id)
     if hard_pin:
         assert preview["actions"] == []

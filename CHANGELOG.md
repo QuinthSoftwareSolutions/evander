@@ -10,6 +10,8 @@
   retain original work against cleanup and teardown, and require compatible worker capabilities.
 - Adopt reviewed successors through task lifecycle rules, preserve submitted consumer history,
   and recover publication destination races through fresh release reintegration and gates.
+- Fence adoption against changed requirements, wait for the complete reviewed task and all its
+  products, and close superseded publication failures after the replacement successfully publishes.
 - Expose recovery evidence, policy controls, retained work, and cause/latency counts in Admin Web
   and agent reads. Legacy ambiguous pins remain conservative; historical incidents are not replayed.
 

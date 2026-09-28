@@ -90,18 +90,25 @@ snapshot is treated as complete. No guest clean filter or hook is run by salvage
 Code is transported through Git, never through MCP bodies.
 
 Replacement tasks retain the original requirements, case, authorship, work lineage,
-and constraints. Their review and verification gates run normally. After acceptance,
-the continuation checks policy and affected consumers again, then atomically retires
+and constraints. Their review and verification gates run normally. Adoption waits until
+the whole task is resolved, including every required product, review, and child task.
+The continuation checks the frozen requirements, policy, and affected consumers again, then atomically retires
 eligible predecessor work, rebinds ordinary consumers, creates fresh integration
 boundaries for submitted consumers, and wakes affected agents. Submitted and accepted
 history remains unchanged. Active reviews, executing consumers, unresolved descendants,
 locked policies, or changed consumers defer adoption without rolling back acceptance.
 The incident preview exposes that reason and can reauthorize continuation after the
-prerequisite changes. The runtime also reconciles deferred continuations.
+prerequisite changes. Changed requirements require a fresh diagnosis and reviewed work;
+refreshing a preview cannot adopt an older candidate against the new scope. When a task
+has multiple accepted products, its replacement consumers pin the complete product set.
+The runtime also reconciles deferred continuations.
 
 An exact-source retry is complete only after a verified Git context is activated.
 A release recovery is complete only when its successor actually publishes. Merely
 resolving the preparation blocker or creating a successor is not recovery success.
+Successful publication resolves that incident's original blocker and marks the failed
+release attempt as superseded (rejected), retaining its candidate and review history.
+Project status is recalculated while unrelated failures remain open.
 
 ## Deployment and diagnosis
 

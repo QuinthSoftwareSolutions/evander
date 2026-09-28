@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...models import TaskCancellation, TeamTaskState, utc_now
+from ...models import TaskCancellation, TeamRecordState, TeamTaskState, utc_now
 from .git_recovery import digest, recovery_inputs, preserve_work
 from .blockers import resolve_blocker, task_cancellation_blocking_handoff_ids
 from .task_assessment import assess_task
@@ -45,6 +45,10 @@ def reconcile_git_recovery_successors(state, *, result, now=None):
                 "Recovery work ended without an accepted candidate; its generation remains charged."
             )
             continue
+        if assess_task(state, successor.id).resolution_status != "resolved":
+            # One accepted product is insufficient while other products, reviews,
+            # descendants, blockers, or provenance obligations remain unresolved.
+            continue
         accepted = [
             row
             for row in state.deliverables.values()
@@ -52,7 +56,7 @@ def reconcile_git_recovery_successors(state, *, result, now=None):
             and row.state == "accepted"
             and not row.superseded_by_deliverable_id
         ]
-        if len(accepted) != 1 or not accepted[0].git_refs:
+        if not accepted or not all(row.git_refs for row in accepted):
             continue
         if incident.action_id == "resolve_merge":
             # The normal preparer adopts the accepted merge. Retire earlier
@@ -76,18 +80,9 @@ def reconcile_git_recovery_successors(state, *, result, now=None):
                 incident.waiting_reason = str(exc)
             continue
         if incident.stage == "publication":
-            releases = [
-                release
-                for release in state.release_packages.values()
-                if accepted[0].id in release.deliverable_ids and release.state != "cancelled"
-            ]
-            incident.evidence["successor_release_ids"] = sorted(release.id for release in releases)
-            if any(release.published_at and release.published_commit_sha for release in releases):
-                incident.state = "resumed"
-                incident.resumed_at = incident.updated_at = now
-                incident.waiting_reason = None
-            else:
-                incident.waiting_reason = "The reviewed successor awaits its fresh release gates and successful publication."
+            _complete_publication(
+                state, incident=incident, accepted=accepted, result=result, now=now
+            )
             continue
         original = state.tasks.get(incident.task_id)
         if original is None:
@@ -101,7 +96,7 @@ def reconcile_git_recovery_successors(state, *, result, now=None):
                 incident=simulated.git_recovery_incidents[incident.id],
                 original=simulated.tasks[original.id],
                 successor=simulated.tasks[successor.id],
-                deliverable=simulated.deliverables[accepted[0].id],
+                deliverables=[simulated.deliverables[row.id] for row in accepted],
                 result={"events": []},
                 now=now,
             )
@@ -110,7 +105,7 @@ def reconcile_git_recovery_successors(state, *, result, now=None):
                 incident=incident,
                 original=original,
                 successor=successor,
-                deliverable=accepted[0],
+                deliverables=accepted,
                 result=result,
                 now=now,
             )
@@ -122,11 +117,79 @@ def reconcile_git_recovery_successors(state, *, result, now=None):
             incident.updated_at = now
 
 
-def _complete_successor(state, *, incident, original, successor, deliverable, result, now):
+def _complete_publication(state, *, incident, accepted, result, now):
+    from ..git_release_service import _resolve_superseded_release_failure_inbox_items
+    from .project_status import _recalculate_project_status
+
+    original = state.release_packages.get(incident.evidence.get("release_package_id"))
+    if original is None:
+        return
+    accepted_ids = {row.id for row in accepted}
+    releases = sorted(
+        (
+            release
+            for release in state.release_packages.values()
+            if release.project_id == incident.project_id
+            and release.canonical_branch == original.canonical_branch
+            and accepted_ids.issubset(release.deliverable_ids)
+            and release.state != TeamRecordState.CANCELLED
+        ),
+        key=lambda release: (release.created_at, release.id),
+    )
+    incident.evidence["successor_release_ids"] = [release.id for release in releases]
+    published = next(
+        (
+            release
+            for release in releases
+            if release.state == TeamRecordState.ACCEPTED
+            and release.published_at
+            and release.published_commit_sha
+            and release.published_commit_sha == release.approved_commit_sha
+        ),
+        None,
+    )
+    if published is None:
+        incident.waiting_reason = (
+            "The reviewed successor awaits its fresh release gates and successful publication."
+        )
+        return
+
+    # A reintegrated candidate has different deliverable IDs, so ordinary
+    # same-source release supersession cannot close this failed attempt.
+    if original.state == TeamRecordState.BLOCKED:
+        incident.evidence["superseded_publication_error"] = original.error
+        original.state = TeamRecordState.REJECTED
+        original.error = None
+        original.updated_at = now
+        result.setdefault("superseded_release_package_ids", []).append(original.id)
+        result.setdefault("resolved_inbox_item_ids", []).extend(
+            _resolve_superseded_release_failure_inbox_items(state, release=original, now=now)
+        )
+    blocker = state.blockers.get(incident.blocker_id)
+    if blocker and blocker.state == "open":
+        resolve_blocker(
+            state,
+            blocker=blocker,
+            actor_agent_id=None,
+            dispatch_id=None,
+            note=f"Publication recovered by successfully published package {published.id}.",
+            reference_ids=[incident.id, original.id, published.id, published.published_commit_sha],
+            now=now,
+        )
+        result.setdefault("resolved_blocker_ids", []).append(blocker.id)
+    incident.evidence["published_successor_release_id"] = published.id
+    incident.state = "resumed"
+    incident.resumed_at = incident.updated_at = now
+    incident.waiting_reason = None
+    _recalculate_project_status(state, incident.project_id)
+
+
+def _complete_successor(state, *, incident, original, successor, deliverables, result, now):
     if digest(recovery_inputs(state, original.id)) != incident.input_fingerprint:
         raise ValueError(
             "Original contribution requirements changed while recovery was reviewed; preview the new frontier."
         )
+    deliverable_ids = sorted(row.id for row in deliverables)
     project = state.projects[original.project_id]
     if not project.git or not project.git.recovery.enabled:
         raise ValueError("Project recovery policy no longer authorizes continuation.")
@@ -182,7 +245,7 @@ def _complete_successor(state, *, incident, original, successor, deliverable, re
             actor_agent_id=None,
             dispatch_id=None,
             note=f"Reviewed successor {successor.id} adopted; original Git evidence retained.",
-            reference_ids=[incident.id, successor.id, deliverable.id],
+            reference_ids=[incident.id, successor.id, *deliverable_ids],
             now=now,
         )
     preserve_work(state, incident)
@@ -268,10 +331,13 @@ def _complete_successor(state, *, incident, original, successor, deliverable, re
         replacement.git_constraints = consumer.git_constraints.model_copy(deep=True)
         replacement.deliverable_contract.pinned_source_deliverable_ids = sorted(
             {
-                deliverable.id
-                if state.deliverables[source_id].task_id == original.id
-                else source_id
+                replacement_id
                 for source_id in contract.pinned_source_deliverable_ids
+                for replacement_id in (
+                    deliverable_ids
+                    if state.deliverables[source_id].task_id == original.id
+                    else [source_id]
+                )
             }
         )
         boundary_successors[key] = replacement_id
@@ -291,9 +357,13 @@ def _complete_successor(state, *, incident, original, successor, deliverable, re
             key for values in invalidated.values() for key in values
         )
     incident.evidence["consumer_successor_ids"] = boundary_successors
-    incident.replacement_deliverables = {
-        row["id"]: deliverable.id for row in incident.inputs["sources"]
-    }
+    incident.evidence["replacement_deliverable_ids"] = deliverable_ids
+    # Retain the singular mapping for older readers only when it is unambiguous.
+    incident.replacement_deliverables = (
+        {row["id"]: deliverable_ids[0] for row in incident.inputs["sources"]}
+        if len(deliverable_ids) == 1
+        else {}
+    )
     incident.state = "resumed"
     incident.resumed_at = incident.updated_at = now
     incident.waiting_reason = None
