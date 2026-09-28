@@ -49,6 +49,10 @@ from evander.relays.local_openai_tool_compatibility import (
     LocalOpenAIToolCompatibilityAdapter,
 )
 from evander.relays.openai_usage import OpenAIUsageAccounting
+from evander.relays.openai_standalone_search import (
+    prepare_standalone_search_request,
+    standalone_search_response,
+)
 from evander.session_expiry import SessionExpiredError, ensure_session_not_expired
 from evander.session_auth import (
     MCP_SESSION_TOKEN_HEADER_NAMES,
@@ -110,7 +114,7 @@ OPENROUTER_FORBIDDEN_REQUEST_FIELDS = frozenset(
 OPENAI_COMPATIBLE_ENDPOINTS_DESCRIPTION = (
     "OpenAI relay currently supports GET /v1/models and POST /v1/responses, "
     "/v1/responses/compact, /v1/chat/completions, /v1/completions, /v1/embeddings, "
-    "/v1/images/generations, and /v1/images/edits"
+    "/v1/images/generations, /v1/images/edits, and /v1/alpha/search"
 )
 PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
 MAX_PATH_DECODE_PASSES = 5
@@ -286,6 +290,102 @@ class OpenAIRelay(OpenAIUsageAccounting):
         self.stream_clean_end_count = 0
         self.stream_transport_terminated_count = 0
 
+    async def _proxy_standalone_web_search(
+        self, request: Request, context: RelayRequestContext
+    ) -> Response:
+        if not context.web_search_enabled:
+            self._log_hosted_web_search_denied(
+                session_id=context.session_id,
+                request_kind="http",
+                path=request.url.path,
+            )
+            return JSONResponse(
+                {"error": "Standalone web search is disabled for this session"},
+                status_code=403,
+            )
+        if context.config.model_provider_mode != "openai_public":
+            return JSONResponse(
+                {"error": "Standalone web search requires the public OpenAI provider"},
+                status_code=501,
+            )
+
+        try:
+            payload = json.loads((await request.body()).decode("utf-8"))
+            upstream_payload = prepare_standalone_search_request(
+                payload, session_model=context.model
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return JSONResponse(
+                {"error": "Standalone web search requires valid JSON"}, status_code=400
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+        upstream = self._openai_compatible_upstream(context.config)
+        if not upstream.api_key:
+            return JSONResponse(
+                {"error": f"Host environment variable {upstream.api_key_source} is not set."},
+                status_code=503,
+            )
+
+        upstream_body = json.dumps(upstream_payload, separators=(",", ":")).encode("utf-8")
+        upstream_url = self._upstream_http_url(
+            base_url=upstream.base_url,
+            upstream_path="responses",
+            query_items=[],
+        )
+        async with httpx.AsyncClient(
+            timeout=context.config.openai_relay_timeout_seconds,
+            transport=self.transport,
+            trust_env=False,
+            follow_redirects=False,
+            event_hooks={"request": [self._privacy_request_hook(context)]},
+        ) as client:
+            started_at = time.perf_counter()
+            upstream_response = await client.post(
+                upstream_url,
+                headers={
+                    "authorization": f"Bearer {upstream.api_key}",
+                    "content-type": "application/json",
+                    "accept-encoding": "identity",
+                },
+                content=upstream_body,
+            )
+            try:
+                await run_in_threadpool(
+                    self._record_model_usage_event,
+                    session_id=context.session_id,
+                    upstream_path="responses",
+                    request_body=upstream_body,
+                    upstream_response=upstream_response,
+                    duration_ms=self._duration_ms_since(started_at),
+                    provider_name=upstream.provider_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                    context.session_id,
+                    request.url.path,
+                    exc.__class__.__name__,
+                    str(exc),
+                )
+
+        if upstream_response.is_error:
+            return Response(
+                content=upstream_response.content,
+                status_code=upstream_response.status_code,
+                headers=self._response_headers(upstream_response),
+                media_type=upstream_response.headers.get("content-type"),
+            )
+        try:
+            response_payload = standalone_search_response(upstream_response.json())
+        except (ValueError, json.JSONDecodeError):
+            return JSONResponse(
+                {"error": "Upstream response did not contain a completed web search"},
+                status_code=502,
+            )
+        return JSONResponse(response_payload)
+
     def create_app(self) -> Starlette:
         relay = self
 
@@ -326,6 +426,8 @@ class OpenAIRelay(OpenAIUsageAccounting):
                 )
             except ValueError:
                 canonical_upstream_path = ""
+            if canonical_upstream_path == "alpha/search" and request.method == "POST":
+                return await relay._proxy_standalone_web_search(request, request_context)
             is_direct_image_request = (
                 request.method.upper(),
                 canonical_upstream_path,

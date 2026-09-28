@@ -1115,6 +1115,16 @@ rejects Responses requests that declare hosted web search tools. Set it to
 `true` only for sessions that should be allowed to receive OpenAI-hosted web
 content in model context. Codex VM resume and container-worker prompt commands
 also set Codex `web_search` to `disabled` or `live` from this session flag.
+For container Codex sessions using the public OpenAI provider, the generated
+custom-provider configuration also advertises standalone web search. Codex
+sends `POST /v1/alpha/search` to the session relay; the host translates it to a
+Responses request with hosted `web_search` and returns the answer with direct
+source URLs. Search queries, image queries, direct URL opens and finds, finance,
+weather, sports, and time operations are supported. Link clicks by numbered ID,
+PDF screenshots, and opens using opaque search reference IDs are not supported.
+The relay never sends Codex conversation history from the search request to the
+upstream API. Existing container session files need to be refreshed for Codex
+to see the new provider capability.
 
 `image_generation_enabled` also defaults to `false`. When false, the OpenAI
 relay rejects direct `POST /v1/images/generations`, direct

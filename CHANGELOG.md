@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-28 - Enable metered Codex web search (0.69.0)
+
+- Add session-gated `POST /v1/alpha/search` compatibility to the OpenAI relay,
+  translating Codex web operations to hosted Responses web search and returning
+  the answer with direct source URLs while accounting for upstream model usage.
+- Advertise standalone web search to container Codex only for web-enabled public
+  OpenAI sessions. Unsupported link-click and PDF screenshot operations return
+  explicit errors.
+
 ## 2026-09-28 - Recover Team Git incidents autonomously (0.67.0)
 
 - Add durable typed Git incidents, blocker-scoped preview/apply tools, project recovery

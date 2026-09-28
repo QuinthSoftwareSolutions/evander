@@ -918,6 +918,9 @@ def build_container_session_files(
         openai_base_url=session_openai_base_url,
         gateway_url=session_gateway_url,
         web_search_enabled=web_search_enabled,
+        standalone_web_search_supported=(
+            web_search_enabled and config.model_provider_mode == "openai_public"
+        ),
     )
     session_env_values = {
         "EVANDER_SESSION_ID": session_id,
@@ -1984,7 +1987,11 @@ def _codex_config_content(
     openai_base_url: str,
     gateway_url: str,
     web_search_enabled: bool = False,
+    standalone_web_search_supported: bool = False,
 ) -> str:
+    standalone_search_line = (
+        "supports_standalone_web_search = true\n" if standalone_web_search_supported else ""
+    )
     return (
         f"model = {_toml_string(model)}\n"
         'model_provider = "evander_openai_relay"\n'
@@ -1999,7 +2006,7 @@ def _codex_config_content(
         'wire_api = "responses"\n'
         "requires_openai_auth = false\n"
         "supports_websockets = false\n"
-        "\n"
+        f"{standalone_search_line}\n"
         "[mcp_servers.evander]\n"
         f"url = {_toml_string(gateway_url)}\n"
         "enabled = true\n"
