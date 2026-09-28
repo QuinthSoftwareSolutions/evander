@@ -11,6 +11,44 @@ from evander.orchestration.storage_migration import (
     migrate_orchestration_storage,
 )
 from evander.repositories.orchestration_db import connect_orchestration_db_read_only
+from history_storage_support import seed_indexed_history
+
+
+def test_offline_rollback_restores_partially_retired_history(tmp_path):
+    from evander.repositories.orchestration_db import (
+        connect_orchestration_db, run_orchestration_retention_slice,
+    )
+
+    path = tmp_path / "orchestration.db"
+    seed_indexed_history(path, executions=2, fields=200)
+    with connect_orchestration_db(path) as connection:
+        connection.execute("INSERT INTO orchestration_metadata VALUES ('retention_progress',?)", (
+            json.dumps({"date": "2026-01-01", "phase": "compact",
+                        "cutoff": datetime.now(UTC).isoformat(),
+                        "compact_cutoff": datetime.now(UTC).isoformat()}),
+        ))
+        connection.execute("INSERT INTO orchestration_metadata VALUES ('retention_batch_limits',?)",
+                           (json.dumps({"index_rows": 100}),))
+    partial = run_orchestration_retention_slice(
+        path, retention_days=3, compact_history_retention_days=7,
+    )
+    assert partial.compact_executions_deleted == 0
+    assert partial.compact_index_rows_deleted == 100
+    assert not check_orchestration_storage(path)["downgrade_ready"]
+    for _ in range(30):
+        result = migrate_orchestration_storage(path, downgrade=True, max_batches=1)
+        if result["complete"]:
+            break
+    assert result["complete"]
+    assert check_orchestration_storage(path, verify=True)["downgrade_ready"]
+    with connect_orchestration_db_read_only(path) as connection:
+        # The previous executable reads this table directly. Both legacy and
+        # generation-indexed executions must regain every searchable field.
+        assert [tuple(row) for row in connection.execute(
+            """SELECT execution_key,COUNT(*) FROM workflow_node_execution_history_values
+               GROUP BY execution_key ORDER BY execution_key"""
+        )] == [("effect:0", 200), ("effect:1", 200)]
+        assert not connection.execute("SELECT 1 FROM workflow_history_retirements").fetchone()
 
 
 def test_offline_rollback_restores_old_binary_payload_and_scalar_search_contract(tmp_path):

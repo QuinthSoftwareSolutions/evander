@@ -22,6 +22,7 @@ from evander.approval_diagnostics import (
 from evander.models import DirectoryPath
 from evander.repositories.operational_payloads import FORMAT_KEY, load_record
 from evander.repositories.orchestration_db import (
+    WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
     connect_orchestration_db,
     connect_orchestration_db_read_only,
     datetime_to_storage,
@@ -1102,7 +1103,9 @@ def search_node_executions(
         page_where.append("(h.started_at < ? OR (h.started_at = ? AND h.execution_key < ?))")
         page_params.extend([cursor_value[0], cursor_value[0], cursor_value[1]])
     base_from = "FROM workflow_node_execution_history h"
-    with connect_orchestration_db_read_only(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
         connection.execute("BEGIN")
         _validate_range_filters(
             connection,
@@ -1200,7 +1203,9 @@ def list_node_execution_authorization_paths(
         statuses=[],
         filters=[],
     )
-    with connect_orchestration_db_read_only(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
         connection.execute("BEGIN")
         rows = connection.execute(
             f"""
@@ -1220,13 +1225,17 @@ def read_node_execution_authorization_path(
     execution_key: str,
 ) -> str:
     ensure_orchestration_schema(path)
-    with connect_orchestration_db_read_only(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
         connection.execute("BEGIN")
         row = connection.execute(
             """
             SELECT COALESCE(NULLIF(directory_path, ''), 'root') AS directory_path
             FROM workflow_node_execution_history
             WHERE execution_key = ?
+              AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
+                  WHERE r.execution_key=workflow_node_execution_history.execution_key)
             """,
             (execution_key,),
         ).fetchone()
@@ -1243,7 +1252,9 @@ def _history_search_predicates(
     statuses: list[str],
     filters: list[Mapping[str, Any]],
 ) -> tuple[list[str], list[Any]]:
-    where = ["h.node_id = ?", "h.started_at >= ?", "h.started_at < ?"]
+    where = ["h.node_id = ?", "h.started_at >= ?", "h.started_at < ?",
+             "NOT EXISTS (SELECT 1 FROM workflow_history_retirements r "
+             "WHERE r.execution_key=h.execution_key)"]
     params: list[Any] = [
         node_id,
         _storage_timestamp(started_from),
@@ -1271,7 +1282,9 @@ def list_node_execution_fields(
     started_to: datetime,
 ) -> dict[str, Any]:
     ensure_orchestration_schema(path)
-    with connect_orchestration_db_read_only(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
         connection.execute("BEGIN")
         rows = connection.execute(
             """
@@ -1280,6 +1293,8 @@ def list_node_execution_fields(
             JOIN workflow_node_execution_history h
               ON h.execution_key = v.execution_key
             WHERE h.node_id = ? AND h.started_at >= ? AND h.started_at < ?
+              AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
+                  WHERE r.execution_key=h.execution_key)
             GROUP BY v.location, v.json_pointer, v.value_type
             ORDER BY v.location, v.json_pointer, v.value_type
             LIMIT 1000
@@ -1298,10 +1313,14 @@ def list_node_execution_fields(
 
 def read_node_execution_detail(path: Path | str, *, execution_key: str) -> dict[str, Any]:
     ensure_orchestration_schema(path)
-    with connect_orchestration_db_read_only(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
         connection.execute("BEGIN")
         row = connection.execute(
-            "SELECT * FROM workflow_node_execution_history WHERE execution_key = ?",
+            """SELECT * FROM workflow_node_execution_history WHERE execution_key = ?
+               AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
+                   WHERE r.execution_key=workflow_node_execution_history.execution_key)""",
             (execution_key,),
         ).fetchone()
         if row is None:
@@ -1534,6 +1553,8 @@ def _history_availability(
             SELECT started_at
             FROM workflow_node_execution_history
             WHERE node_id = ? AND started_at >= ? AND started_at < ?
+              AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
+                  WHERE r.execution_key=workflow_node_execution_history.execution_key)
             ORDER BY started_at {order}
             LIMIT 1
             """,

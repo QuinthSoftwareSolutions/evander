@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from evander.repositories.orchestration_db import (
+    SCHEMA_VERSION,
     connect_orchestration_db,
     connect_orchestration_db_read_only,
     ensure_orchestration_schema,
@@ -195,7 +196,7 @@ with connect_orchestration_db_read_only(path) as connection:
         for child in children:
             stdout, stderr = child.communicate(timeout=10)
             assert child.returncode == 0, stderr
-            assert stdout.strip() == "6"
+            assert stdout.strip() == str(SCHEMA_VERSION)
     finally:
         for child in children:
             if child.poll() is None:

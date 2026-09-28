@@ -16,11 +16,13 @@ from typing import Any
 from evander.repositories.sqlite_runtime import (
     FOREGROUND_TIMEOUT_MS,
     MAINTENANCE_TIMEOUT_MS,
+    SqliteOperationDeadlineExceeded,
     ensure_sqlite_initialized,
     open_sqlite_connection,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+WORKFLOW_REPORT_READ_DEADLINE_SECONDS = 30.0
 logger = logging.getLogger(__name__)
 _warned_checkpoint_modes: set[tuple[str, str]] = set()
 SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -55,6 +57,7 @@ class OrchestrationRetentionResult:
     gate_executions_deleted: int = 0
     workflow_events_deleted: int = 0
     compact_executions_deleted: int = 0
+    compact_index_rows_deleted: int = 0
     compact_payload_blobs_deleted: int = 0
     internal_events_deleted: int = 0
     scheduled_internal_events_deleted: int = 0
@@ -807,16 +810,100 @@ def run_orchestration_retention_slice(
     time_budget_seconds: float = 0.25,
     busy_timeout_ms: int = MAINTENANCE_TIMEOUT_MS,
 ) -> OrchestrationRetentionResult:
+    """Resume bounded maintenance, shrinking work after a transaction deadline."""
+    if retention_days < 0 or compact_history_retention_days < 0:
+        raise ValueError("retention days must be non-negative")
+    if not 1 <= batch_size <= 10_000:
+        raise ValueError("batch_size must be between 1 and 10000")
+    with connect_orchestration_db_read_only(path, deadline_seconds=time_budget_seconds) as connection:
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='retention_batch_limits'"
+        ).fetchone()
+    limits = json_loads_object(row[0]) if row else {}
+    effective_batch = min(batch_size, max(1, int(limits.get("records", batch_size))))
+    index_batch = max(1, min(10000, int(limits.get("index_rows", 10000))))
+    try:
+        return _run_orchestration_retention_slice(
+            path, retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
+            batch_size=effective_batch, index_batch_size=index_batch,
+            time_budget_seconds=time_budget_seconds, busy_timeout_ms=busy_timeout_ms,
+        )
+    except SqliteOperationDeadlineExceeded as error:
+        # Lock contention is not evidence that a deletion batch is too large.
+        cause_code = getattr(error.__cause__, "sqlite_errorcode", 0) or 0
+        if (cause_code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise
+        # The failed batch has rolled back. Persist adaptation separately so a
+        # new process does not retry the same oversized transaction forever.
+        with connect_orchestration_db(path, busy_timeout_ms=busy_timeout_ms) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT value_json FROM orchestration_metadata WHERE key='retention_batch_limits'"
+            ).fetchone()
+            current = json_loads_object(row[0]) if row else {}
+            reduced = {
+                "records": min(int(current.get("records", effective_batch)), max(1, effective_batch // 2)),
+                "index_rows": min(int(current.get("index_rows", index_batch)), max(1, index_batch // 2)),
+            }
+            connection.execute(
+                """INSERT INTO orchestration_metadata VALUES ('retention_batch_limits',?)
+                   ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
+                (json_dumps(reduced),),
+            )
+        return OrchestrationRetentionResult(remaining=True, skipped_reason="batch_deadline_reduced")
+
+
+def _delete_compact_history_batch(
+    connection: sqlite3.Connection, keys: list[str], *, index_batch_size: int,
+) -> tuple[int, int]:
+    if not keys:
+        return 0, 0
+    placeholders = ",".join("?" for _ in keys)
+    connection.executemany(
+        "INSERT OR IGNORE INTO workflow_history_retirements VALUES (?)", [(key,) for key in keys]
+    )
+    tables = (
+        "workflow_node_execution_history_values", "workflow_history_index_values",
+    )
+    removed = 0
+    for table in tables:
+        if removed >= index_batch_size:
+            break
+        removed += connection.execute(
+            f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} "
+            f"WHERE execution_key IN ({placeholders}) LIMIT ?)",
+            [*keys, index_batch_size - removed],
+        ).rowcount
+    # Scalar indexes can contain thousands of rows per execution. Drain them
+    # before parent cascades; retirement hides partial indexes from readers.
+    empty = " AND ".join(
+        f"NOT EXISTS(SELECT 1 FROM {table} v WHERE v.execution_key=h.execution_key)"
+        for table in tables
+    )
+    deleted = connection.execute(
+        f"DELETE FROM workflow_node_execution_history AS h "
+        f"WHERE execution_key IN ({placeholders}) AND {empty}", keys,
+    ).rowcount
+    return deleted, removed
+
+
+def _run_orchestration_retention_slice(
+    path: Path | str,
+    *,
+    retention_days: int,
+    compact_history_retention_days: int,
+    batch_size: int = 100,
+    index_batch_size: int = 10000,
+    time_budget_seconds: float = 0.25,
+    busy_timeout_ms: int = MAINTENANCE_TIMEOUT_MS,
+) -> OrchestrationRetentionResult:
     """Commit at most one bounded retention batch and durably retain its phase.
 
     A restarted worker resumes the same sweep cutoff. Eligibility remains the
     existing policy; missing legacy FK indexes defer deletion rather than scan
     large child tables while holding the only writer lock.
     """
-    if retention_days < 0 or compact_history_retention_days < 0:
-        raise ValueError("retention days must be non-negative")
-    if not 1 <= batch_size <= 10_000:
-        raise ValueError("batch_size must be between 1 and 10000")
     now = datetime.now(UTC)
     today = now.date().isoformat()
     counts: dict[str, Any] = {}
@@ -936,20 +1023,28 @@ def run_orchestration_retention_slice(
             }
             table, key, where, result_key = definitions[phase]
             cutoff = progress["compact_cutoff" if phase == "compact" else "cutoff"]
+            order = "finished_at, execution_key" if phase == "compact" else key
             keys = [
                 row[0]
                 for row in connection.execute(
-                    f"SELECT {key} FROM {table} WHERE {where} ORDER BY {key} LIMIT ?",
+                    f"SELECT {key} FROM {table} WHERE {where} ORDER BY {order} LIMIT ?",
                     (cutoff, batch_size),
                 ).fetchall()
             ]
-            connection.executemany(f"DELETE FROM {table} WHERE {key}=?", [(key,) for key in keys])
-            deleted = len(keys)
+            if phase == "compact":
+                deleted, index_deleted = _delete_compact_history_batch(
+                    connection, keys, index_batch_size=index_batch_size,
+                )
+                counts["compact_index_rows_deleted"] = index_deleted
+            else:
+                connection.executemany(f"DELETE FROM {table} WHERE {key}=?", [(key,) for key in keys])
+                deleted = len(keys)
             counts[result_key] = deleted
         # A byte-limited batch may contain fewer rows than the count limit.
         # Advance only after an empty source snapshot, including after CAS skips.
         phase_complete = (
-            not prepared_sources.sources if phase == "sources" else deleted < batch_size
+            not prepared_sources.sources if phase == "sources"
+            else not keys if phase == "compact" else deleted < batch_size
         )
         next_index = phases.index(phase) + (phase_complete and not waiting_for_history)
         remaining = next_index < len(phases)

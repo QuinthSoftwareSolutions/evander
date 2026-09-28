@@ -56,6 +56,7 @@ def check_orchestration_storage(path: Path, *, verify: bool = False) -> dict[str
             "workflow_history_index_jobs",
             "workflow_history_index_state",
             "workflow_execution_projections",
+            "workflow_history_retirements",
         ):
             modern_state[table] = (
                 connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -195,7 +196,7 @@ def _downgrade_history(path: Path, *, max_batches: int | None) -> tuple[bool, in
             row = connection.execute(
                 "SELECT value_json FROM orchestration_metadata WHERE key=?", (state_key,)
             ).fetchone()
-            state = json.loads(row[0]) if row else {"phase": "index", "after": 0}
+            state = json.loads(row[0]) if row else {"phase": "cancel_retirement", "after": 0}
         phase = state["phase"]
         if phase == "done":
             return True, batches
@@ -204,7 +205,16 @@ def _downgrade_history(path: Path, *, max_batches: int | None) -> tuple[bool, in
             path, deadline_seconds=300, busy_timeout_ms=100
         ) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            if phase == "index":
+            if phase == "cancel_retirement":
+                # An older binary cannot hide partially retired history. The
+                # update trigger restores a complete index before rollback.
+                restored = connection.execute("""UPDATE workflow_node_execution_history
+                    SET updated_at=updated_at WHERE execution_key IN (
+                        SELECT execution_key FROM workflow_history_retirements LIMIT 100)
+                    """).rowcount
+                if not restored:
+                    state = {"phase": "index", "after": 0}
+            elif phase == "index":
                 if prepared is None:
                     state = {"phase": "clear_legacy", "after": 0}
                 else:

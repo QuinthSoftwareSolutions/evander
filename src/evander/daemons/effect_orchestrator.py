@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Literal
@@ -777,6 +778,66 @@ class EffectOrchestratorWorker:
                 self._completion_budget.deadline = 0.0
         logger.warning("Workflow completion storage busy key=%s retry_seconds=%.3f", key, delay)
 
+    def _completion_retry_deadlines(self, now: float) -> list[float]:
+        """Bound ownership checks before allowing retry alarms to shorten sleep."""
+        budget = self._completion_work_budget()
+        keys = []
+        for key in islice(self._completion_retries, COMPLETION_SLICE_ITEMS):
+            if not budget.take():
+                break
+            keys.append(key)
+        pending: dict[str, list[str]] = {"effect": [], "gate": []}
+        active = set()
+        ready = set()
+        with self._inflight_lock:
+            for key in keys:
+                if key.startswith("future:"):
+                    entry = self._inflight.get(key.removeprefix("future:"))
+                    if entry is not None:
+                        active.add(key)
+                        if entry.future.done():
+                            ready.add(key)
+                elif key.startswith("bookkeeping:"):
+                    if key.removeprefix("bookkeeping:") in self._pending_completion_bookkeeping:
+                        active.add(key)
+                        ready.add(key)
+                elif key.startswith("pending:"):
+                    _, kind, execution_id = key.split(":", 2)
+                    pending[kind].append(execution_id)
+        for kind, store in (("effect", self.execution_store), ("gate", self.gate_execution_store)):
+            ids = pending[kind]
+            if not ids:
+                continue
+            if isinstance(store, SqliteExecutionRepository):
+                owners = store.pending_completion_ids(ids)
+            else:
+                owners = {
+                    execution_id for execution_id in ids
+                    if (record := store.get_execution(execution_id)) is not None
+                    and record.status == COMPLETION_PENDING_STATUS
+                }
+            owned = {f"pending:{kind}:{execution_id}" for execution_id in owners}
+            active.update(owned)
+            ready.update(owned)
+        # Do not mutate the retry set until all status reads succeed. A busy
+        # database must not make a still-owned completion appear abandoned.
+        for key in keys:
+            retry = self._completion_retries.pop(key)
+            if key in active:
+                self._completion_retries[key] = retry  # rotate for bounded, fair checking
+        deadlines = []
+        unchecked_due = False
+        checked = set(keys)
+        for key, retry in self._completion_retries.items():
+            if retry.retry_at > now or key in ready:
+                deadlines.append(retry.retry_at)
+            elif key not in checked:
+                unchecked_due = True
+        if unchecked_due:
+            # A stale, unverified alarm must not create an idle zero-sleep loop.
+            deadlines.append(now + COMPLETION_RETRY_INITIAL_SECONDS)
+        return deadlines
+
     def _run_once(self) -> EffectOrchestratorCycleResult:
         if self._lifecycle_hooks_closed:
             self._initialize_lifecycle_hooks()
@@ -1147,7 +1208,7 @@ class EffectOrchestratorWorker:
             )
         ):
             next_sleep_seconds = 0.0
-        deadlines = [retry.retry_at for retry in self._completion_retries.values()]
+        deadlines = self._completion_retry_deadlines(now_monotonic)
         if self._completion_storage_retry_at > now_monotonic:
             deadlines.append(self._completion_storage_retry_at)
         if deadlines:

@@ -17,6 +17,10 @@ retention, payload collection and checkpoint phases make independent progress in
 Maintenance acquires writer slots opportunistically and defers for one second when busy.
 Historical backfill waits while the durable event queue has pending work. The dispatcher only
 submits or observes maintenance work; it does not run database-wide cleanup between handoffs.
+Retention commits scalar-index deletion in chunks before removing expired execution headers.
+Partially retired executions are hidden from history reports; an update cancels retirement and
+rebuilds the complete index. A deadline rollback halves the record and index batch limits, stored
+durably for subsequent slices and restarts, while preserving the current phase and cutoff.
 
 Team recovery reads typed, revision-pinned candidate projections. Active work, pending activation,
 governance reservations, current native-thread owners and overdue metadata mirrors are checked
@@ -79,6 +83,9 @@ Completed futures, durable pending receipts and delivery bookkeeping share a rot
 SQLite contention retries start at 25 ms and cap at 250 ms per entry; the shared completion lane
 waits at most 25 ms so one contended item cannot hold ready work behind its backoff. Adapter
 publication outages use a separate 250 ms to five-second exponential backoff. Retries have jitter.
+Before a retry controls sleep, the worker checks that its future, bookkeeping entry or pending
+receipt still exists. Cleared receipts lose their retry alarms. Checks share the completion budget
+and rotate through the backlog; storage failures preserve ownership and use the existing backoff.
 The trigger worker also defers transient storage failures with a 25 ms to 250 ms retry;
 subscription reconciliation and durable event publication resume without restarting the worker.
 Effect and gate receipt, successor and journal commits are atomic; external provider execution
@@ -121,7 +128,8 @@ pending work is visible. Details retain the recorded payload while indexing catc
 directory scope and source provenance remain durable.
 Lifecycle fields, including long errors and clearing reasons, remain inline. Older referenced
 errors are readable in summaries; replacing them removes obsolete field references while
-preserving shared payloads. Workflow report reads have a separate 30-second operation deadline;
+preserving shared payloads. Workflow reports, including execution-history search, fields,
+authorization and detail reads, have a separate 30-second operation deadline;
 their database lock waits retain the 100 ms limit.
 
 `sqlite_operation` logs report operation duration and connection-close time. `storage_maintenance`

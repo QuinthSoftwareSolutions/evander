@@ -342,7 +342,8 @@ evander-cli migrate-orchestration-storage --database runtime/orchestration.db --
 
 Repeat the downgrade command until `complete: true`; verification must report no errors and
 `downgrade_ready: true`. Downgrade rehydrates the original lossless values, completes pending indexing, restores the legacy
-field-search index, and clears projections that an older executable cannot maintain. Additional
+field-search index (including interrupted retention), and clears projections that an older
+executable cannot maintain. Additional
 tables and indexes may remain. Backups and migration do not physically shrink the
 database; plan any space reclamation as separate offline SQLite maintenance.
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander.daemons.effect_orchestrator import EffectExecutionRecord
+from evander.daemons.effect_orchestrator import EffectExecutionRecord, GateExecutionRecord
 from evander.events.models import TriggerEvent
 from evander.orchestration.completion_scheduling import CompletionBudget, CompletionRetry
 from test_orchestration_handoff_latency import _worker
@@ -39,6 +39,123 @@ def _allow_retry(worker):
     worker._completion_storage_retry_at = 0
     for retry in worker._completion_retries.values():
         retry.retry_at = 0
+
+
+def _pending(worker, kind="effect"):
+    now = datetime.now(UTC)
+    fields = {"effect_id": "step-0", "effect_type": "effect:vm:create"} if kind == "effect" else {
+        "gate_id": "gate", "gate_type": "gate:all",
+    }
+    model = EffectExecutionRecord if kind == "effect" else GateExecutionRecord
+    record = model(
+        execution_id="pending:receipt", idempotency_key="receipt-key", event_id="source",
+        trace_id="trace", source_node_id="start", source_trigger_type="trigger:cron",
+        status="completion_pending", completion_pending_status="succeeded",
+        started_at=now, finished_at=now, resolved_config_hash="hash", outputs={"success": True},
+        **fields,
+    )
+    store = worker.execution_store if kind == "effect" else worker.gate_execution_store
+    store.record_execution(record)
+    return record, store
+
+
+@pytest.mark.parametrize("kind", ["effect", "gate"])
+def test_operator_clear_discards_pending_retry_and_restores_idle_sleep(tmp_path, monkeypatch, kind):
+    worker = _worker(tmp_path, chain_length=1)
+    try:
+        record, store = _pending(worker, kind)
+        publish = store.record_completion_and_publish
+
+        def busy(**kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(store, "record_completion_and_publish", busy)
+        retry_pending = getattr(worker, f"_retry_pending_{kind}_completion_publications")
+        assert retry_pending(**({"graph": worker._build_execution_graph()} if kind == "gate" else {})) == 0
+        key = f"pending:{kind}:{record.execution_id}"
+        assert key in worker._completion_retries
+        monkeypatch.setattr(store, "record_completion_and_publish", publish)
+        assert store.clear_event_records(
+            record.event_id, cleared_at=datetime.now(UTC), clear_reason="operator_clear",
+            clear_error="Stopped by operator",
+        ) == 1
+        _allow_retry(worker)
+        for _ in range(3):
+            cycle = worker.run_once()
+            assert cycle.next_sleep_seconds > 0
+            assert cycle.completion_events_published == 0
+        assert key not in worker._completion_retries
+        assert store.get_execution(record.execution_id).status == "failed"
+    finally:
+        worker.close()
+
+
+def test_pending_retry_outside_current_page_survives_and_publishes_once(tmp_path):
+    worker = _worker(tmp_path, chain_length=1)
+    try:
+        record, store = _pending(worker)
+        key = f"pending:effect:{record.execution_id}"
+        worker._defer_completion(key, storage_busy=False)
+        worker._completion_cursors["effect"] = worker._completion_cursor(record)
+        assert worker.run_once().next_sleep_seconds > 0
+        assert key in worker._completion_retries
+        assert store.get_execution(record.execution_id).status == "completion_pending"
+        _allow_retry(worker)
+        worker.run_once()
+        worker.run_once()
+        assert key not in worker._completion_retries
+        saved = store.get_execution(record.execution_id)
+        assert saved.status == "succeeded"
+        assert len([event for event in worker.event_queue.read_all().values()
+                    if event.trigger_id == "step-0"]) == 1
+    finally:
+        worker.close()
+
+
+def test_busy_retry_owner_lookup_preserves_pending_work(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, chain_length=1)
+    try:
+        record, store = _pending(worker)
+        key = f"pending:effect:{record.execution_id}"
+        worker._defer_completion(key, storage_busy=False)
+        worker._completion_cursors["effect"] = worker._completion_cursor(record)
+        original = store.pending_completion_ids
+
+        def busy(_ids):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(store, "pending_completion_ids", busy)
+        assert worker.run_once().next_sleep_seconds > 0
+        assert key in worker._completion_retries
+        monkeypatch.setattr(store, "pending_completion_ids", original)
+        _allow_retry(worker)
+        worker._cycle_storage_retry.retry_at = 0
+        worker.run_once()
+        assert store.get_execution(record.execution_id).status == "succeeded"
+    finally:
+        worker.close()
+
+
+def test_stale_retry_backlog_is_pruned_in_bounded_cycles_without_idle_spin(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, chain_length=1)
+    try:
+        for number in range(70):
+            worker._completion_retries[f"pending:effect:removed-{number}"] = CompletionRetry()
+        checked = []
+        original = worker.execution_store.pending_completion_ids
+
+        def owners(ids):
+            checked.append(len(ids))
+            return original(ids)
+
+        monkeypatch.setattr(worker.execution_store, "pending_completion_ids", owners)
+        for _ in range(4):
+            assert worker.run_once().next_sleep_seconds > 0
+        assert not worker._completion_retries
+        assert sum(checked) == 70
+        assert all(size <= 32 for size in checked)
+    finally:
+        worker.close()
 
 
 @pytest.mark.parametrize("scope", ["work_items", 42, ["work_items"], {"session_id": "session"}])

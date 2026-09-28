@@ -61,6 +61,23 @@ def ensure_operational_schema(connection: sqlite3.Connection) -> None:
             enqueued_at TEXT NOT NULL, next_offset INTEGER NOT NULL DEFAULT 0, cursor_json TEXT)""",
         """CREATE INDEX IF NOT EXISTS idx_history_index_jobs_age
             ON workflow_history_index_jobs(enqueued_at, execution_key)""",
+        """CREATE TABLE IF NOT EXISTS workflow_history_retirements(
+            execution_key TEXT PRIMARY KEY REFERENCES workflow_node_execution_history(execution_key)
+                ON DELETE CASCADE)""",
+        """CREATE TRIGGER IF NOT EXISTS workflow_history_cancel_retirement
+            AFTER UPDATE ON workflow_node_execution_history
+            WHEN EXISTS(SELECT 1 FROM workflow_history_retirements r
+                        WHERE r.execution_key=NEW.execution_key)
+            BEGIN
+                INSERT INTO workflow_history_index_jobs
+                    VALUES(NEW.execution_key,NEW.input_blob_sha256,NEW.output_blob_sha256,
+                           NEW.updated_at,0,NULL)
+                    ON CONFLICT(execution_key) DO UPDATE SET
+                        input_blob_sha256=excluded.input_blob_sha256,
+                        output_blob_sha256=excluded.output_blob_sha256,
+                        enqueued_at=excluded.enqueued_at,next_offset=0,cursor_json=NULL;
+                DELETE FROM workflow_history_retirements WHERE execution_key=NEW.execution_key;
+            END""",
     ]
     statements.extend(
         [
@@ -109,6 +126,7 @@ def operational_schema_is_current(connection: sqlite3.Connection) -> bool:
         "workflow_operational_record_refs",
         "workflow_execution_projections",
         "workflow_history_index_jobs",
+        "workflow_history_retirements",
     } <= names
 
 

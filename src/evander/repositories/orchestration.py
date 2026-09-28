@@ -473,6 +473,19 @@ class SqliteExecutionRepository(Generic[TRecord]):
             ).fetchall()
             return [self._record_from_row(row, connection) for row in rows]
 
+    def pending_completion_ids(self, execution_ids: list[str]) -> set[str]:
+        """Check a bounded set of retry owners without hydrating their payloads."""
+        if not execution_ids:
+            return set()
+        if len(execution_ids) > 100:
+            raise ValueError("At most 100 completion IDs can be checked at once")
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            return {row[0] for row in connection.execute(
+                f"SELECT execution_id FROM {self.table_name} WHERE status='completion_pending' "
+                "AND execution_id IN (" + ",".join("?" for _ in execution_ids) + ")",
+                execution_ids,
+            )}
+
     def record_execution(self, record: TRecord) -> None:
         self.put(record)
 

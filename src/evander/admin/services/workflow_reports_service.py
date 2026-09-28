@@ -75,6 +75,7 @@ from evander.repositories.execution_history import (
 )
 from evander.repositories.operational_payloads import load_record
 from evander.repositories.orchestration_db import (
+    WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
     connect_orchestration_db,
     connect_orchestration_db_read_only,
     datetime_to_storage,
@@ -82,9 +83,6 @@ from evander.repositories.orchestration_db import (
 )
 
 WORKFLOW_GRAPH_ACTIVITY_SNAPSHOT_TTL_SECONDS = 15.0
-# Report snapshots include hydration and aggregation over many executions.
-# Their total budget is independent of the connector's short lock-wait limit.
-WORKFLOW_REPORT_READ_DEADLINE_SECONDS = 30.0
 
 
 @dataclass(slots=True)

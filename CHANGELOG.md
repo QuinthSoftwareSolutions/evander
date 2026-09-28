@@ -16,6 +16,10 @@
 - Preserve scalar provider scope outputs and long lifecycle errors, including reads and updates
   of previously referenced errors. Give report aggregation its own read deadline.
 - Recover trigger-worker storage contention and retain Team automatic WAL checkpoints.
+- Resume dense history retention with bounded index deletion and durable batch reduction after
+  deadlines; restore complete indexes if retiring records change or storage is downgraded.
+- Apply the separate reporting deadline to execution-history endpoints, and discard completion
+  retry alarms after their pending receipts are cleared so idle workers can sleep.
 
 ## 2026-09-28 - Add agent reads for Azure DevOps builds (0.68.0)
 
