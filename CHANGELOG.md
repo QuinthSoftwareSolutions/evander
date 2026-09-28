@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-28 - Queue workflow tasks by Team role (0.71.0)
+
+- Add `effect:team:create-task-for-role` to create durable role-queued work through
+  workflows, using existing delegation checks and dispatch-time agent selection.
+- Reuse stable task IDs without resetting progress, ownership, or accepted work;
+  commit creation and role-queue wake obligations together and reject identity collisions.
+- Expose the node's inputs and outputs in the workflow editor and document retries,
+  directory scope, dependency handling, and availability behavior.
+
 ## 2026-09-28 - Show remaining weekly subscription usage (0.70.0)
 
 - Show the percentage remaining in the seven-day Codex rate-limit window for each subscription

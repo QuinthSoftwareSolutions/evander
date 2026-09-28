@@ -26,6 +26,7 @@ from .work_item_helpers import (
     _team_create_task_normalized_payload,
 )
 from ...models import (
+    PersistentAgent,
     TeamState,
     TeamTaskState,
     _unique_text_list,
@@ -98,6 +99,113 @@ def _resolve_creation_plan_git_bases(
                 ),
             },
         ) from None
+
+
+def create_queued_role_task(
+    state_model: TeamState,
+    *,
+    agent: PersistentAgent,
+    role_id: str,
+    creation: dict[str, Any],
+    git_default_branch_resolver,
+    git_base_commit_resolver,
+    chat_source_refs: list[Any],
+) -> TeamCommandApplyResult:
+    """Shared creation boundary for agent commands and authorized workflow effects."""
+    project_id = _required_text(creation.get("project_id"), "project_id")
+    if creation.get("state") not in {None, "pending"}:
+        raise TeamCommandValidationError(
+            code="role_task_requires_pending_state",
+            message="new role tasks must start pending until dispatch assigns an owner",
+        )
+    try:
+        selection = select_role_task_owner(
+            state_model,
+            actor=agent,
+            project_id=project_id,
+            role_id=role_id,
+            allow_unavailable=True,
+            candidate_authorization_error=lambda candidate: (
+                _task_creation_owner_assignment_error(
+                    state_model,
+                    actor=agent,
+                    owner_id=candidate.id,
+                    project_id=project_id,
+                )
+            ),
+        )
+    except RoleTaskAllocationError as exc:
+        raise TeamCommandValidationError(
+            code=exc.code,
+            message=str(exc),
+            correction_context=exc.correction_context,
+        ) from None
+
+    selected_creation = {
+        **creation,
+        "owner_agent_id": selection.selected_owner_agent_id,
+    }
+    plan = _command_plan_task_creation(
+        state_model,
+        actor=agent,
+        creation=_creation_with_outcome_definition_snapshots(
+            state_model,
+            selected_creation,
+        ),
+        reserved_task_ids=set(),
+    )
+    plan = _resolve_creation_plan_git_bases(
+        state_model,
+        [plan],
+        git_default_branch_resolver=git_default_branch_resolver,
+        git_base_commit_resolver=git_base_commit_resolver,
+    )[0]
+    graph_errors = _task_creation_batch_graph_errors(
+        state_model,
+        [plan],
+        actor=agent,
+    )
+    if graph_errors:
+        error = graph_errors.get(plan.task_id) or next(iter(graph_errors.values()))
+        raise TeamCommandValidationError(
+            code="task_graph_invalid",
+            message=error,
+            correction_context=_task_graph_correction_context(
+                state_model,
+                project_id=plan.project_id,
+                task_id=plan.task_id,
+                parent_task_id=plan.parent_task_id,
+                dependency_task_ids=plan.dependency_task_ids,
+            ),
+        )
+    created_id = _apply_task_creation_plan(
+        state_model,
+        plan=replace(plan, owner_id=None),
+        assignment_role_id=role_id,
+        actor=agent,
+        chat_source_refs=chat_source_refs,
+    )
+    _recalculate_project_status(state_model, plan.project_id)
+    response_payload = {
+        "task_id": created_id,
+        "created_task_ids": [created_id],
+        "progress_made": True,
+        "assignment_outcome": "queued",
+        "assignment_policy": "role_queue_v1",
+        "assignment_role_id": role_id,
+        "selected_owner_agent_id": None,
+        "previous_owner_agent_id": None,
+        "candidate_scores": [],
+    }
+    from ..domain.role_task_queue import append_role_queue_wake_events
+
+    append_role_queue_wake_events(
+        state_model, result=response_payload, now=utc_now(), project_id=plan.project_id
+    )
+    return TeamCommandApplyResult(
+        response_payload=response_payload,
+        created_domain_ids=[created_id],
+    )
 
 
 class TeamTaskCreationCommandService(TeamCommandExecutor):
@@ -327,98 +435,14 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             resolved: _ResolvedTeamCommandContext,
         ) -> TeamCommandApplyResult:
             agent = _require_command_agent(resolved, "team_create_task_for_role")
-            if creation.get("state") not in {None, "pending"}:
-                raise TeamCommandValidationError(
-                    code="role_task_requires_pending_state",
-                    message="new role tasks must start pending until dispatch assigns an owner",
-                )
-            try:
-                selection = select_role_task_owner(
-                    state_model,
-                    actor=agent,
-                    project_id=normalized_project_id,
-                    role_id=normalized_role_id,
-                    allow_unavailable=True,
-                    candidate_authorization_error=lambda candidate: (
-                        _task_creation_owner_assignment_error(
-                            state_model,
-                            actor=agent,
-                            owner_id=candidate.id,
-                            project_id=normalized_project_id,
-                        )
-                    ),
-                )
-            except RoleTaskAllocationError as exc:
-                raise TeamCommandValidationError(
-                    code=exc.code,
-                    message=str(exc),
-                    correction_context=exc.correction_context,
-                ) from None
-
-            selected_creation = {
-                **creation,
-                "owner_agent_id": selection.selected_owner_agent_id,
-            }
-            plan = _command_plan_task_creation(
+            return create_queued_role_task(
                 state_model,
-                actor=agent,
-                creation=_creation_with_outcome_definition_snapshots(
-                    state_model,
-                    selected_creation,
-                ),
-                reserved_task_ids=set(),
-            )
-            plan = _resolve_creation_plan_git_bases(
-                state_model,
-                [plan],
+                agent=agent,
+                role_id=normalized_role_id,
+                creation=creation,
                 git_default_branch_resolver=self.git_default_branch_resolver,
                 git_base_commit_resolver=self.git_base_commit_resolver,
-            )[0]
-            graph_errors = _task_creation_batch_graph_errors(
-                state_model,
-                [plan],
-                actor=agent,
-            )
-            if graph_errors:
-                error = graph_errors.get(plan.task_id) or next(iter(graph_errors.values()))
-                raise TeamCommandValidationError(
-                    code="task_graph_invalid",
-                    message=error,
-                    correction_context=_task_graph_correction_context(
-                        state_model,
-                        project_id=plan.project_id,
-                        task_id=plan.task_id,
-                        parent_task_id=plan.parent_task_id,
-                        dependency_task_ids=plan.dependency_task_ids,
-                    ),
-                )
-            created_id = _apply_task_creation_plan(
-                state_model,
-                plan=replace(plan, owner_id=None),
-                assignment_role_id=normalized_role_id,
-                actor=agent,
                 chat_source_refs=chat_source_refs_for_dispatch(state_model, resolved.dispatch_id),
-            )
-            _recalculate_project_status(state_model, plan.project_id)
-            response_payload = {
-                "task_id": created_id,
-                "created_task_ids": [created_id],
-                "progress_made": True,
-                "assignment_outcome": "queued",
-                "assignment_policy": "role_queue_v1",
-                "assignment_role_id": normalized_role_id,
-                "selected_owner_agent_id": None,
-                "previous_owner_agent_id": None,
-                "candidate_scores": [],
-            }
-            from ..domain.role_task_queue import append_role_queue_wake_events
-
-            append_role_queue_wake_events(
-                state_model, result=response_payload, now=utc_now(), project_id=plan.project_id
-            )
-            return TeamCommandApplyResult(
-                response_payload=response_payload,
-                created_domain_ids=[created_id],
             )
 
         return self._execute_team_command(

@@ -114,6 +114,14 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     wake = nodes["effect:team:wake-due-agents"]
     finalize_dispatch = nodes["effect:team:finalize-agent-dispatch"]
     create_task = nodes["effect:team:create-task"]
+    role_task = nodes["effect:team:create-task-for-role"]
+    role_fields = {field["key"]: field for field in role_task["fields"]}
+    assert {key for key, field in role_fields.items() if field["required"]} == {
+        "team_id", "project_id", "actor_agent_id", "role_id", "task_id", "title", "description",
+    }
+    assert role_fields["priority"]["default_value"] == 0
+    assert role_fields["integration_boundary"]["default_value"] is False
+    assert {"originating_task_id", "dependency_task_ids", "deliverable_contract"} <= role_fields.keys()
     set_task_work_state = nodes["effect:team:set-task-work-state"]
     create_case = nodes["effect:team:create-case"]
     update_case = nodes["effect:team:update-case"]
