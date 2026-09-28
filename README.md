@@ -861,6 +861,10 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
 - Use `query_ado_backlog_items` to list/filter Azure DevOps backlog work items.
 - Use `get_ado_backlog_item` when you need a single normalized Azure DevOps work item by numeric
   id, with optional comments/relations/updates expansion.
+- Use `get_ado_build` to read one build by numeric ID, including its source commit and branch.
+- Use `list_ado_build_work_items` to get the IDs of work items Azure DevOps associates with that
+  build in the configured project. Results are bounded; check `truncated` before treating the list
+  as complete. Each tool needs its own session grant.
 - Use `get_ado_daily_status_report_data` to fetch the current ADO iteration, calculate the daily
   status report counts/percentages, and return the JSON block expected by
   `templates/daily-status-report.html`.

@@ -103,6 +103,10 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Build daily status report data from Azure DevOps current-iteration items."
     ),
     ToolName.GET_ADO_BACKLOG_ITEM: ("Fetch details for one Azure DevOps backlog item."),
+    ToolName.GET_ADO_BUILD: ("Fetch one Azure DevOps build and its source commit."),
+    ToolName.LIST_ADO_BUILD_WORK_ITEMS: (
+        "List same-project work items associated with one Azure DevOps build."
+    ),
     ToolName.POST_ADO_BACKLOG_COMMENT: (
         "Post comments to Azure DevOps backlog items, including staged image artifacts when enabled."
     ),

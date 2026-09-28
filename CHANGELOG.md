@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-28 - Bound orchestration storage and recover completions (0.67.1)
+## 2026-09-28 - Bound orchestration storage and recover completions (0.68.1)
 
 - Retain completed provider results across transient storage failures and atomically publish
   effect and gate successors, with bounded fair retry and independent delivery recovery.
@@ -16,6 +16,13 @@
 - Preserve scalar provider scope outputs and long lifecycle errors, including reads and updates
   of previously referenced errors. Give report aggregation its own read deadline.
 - Recover trigger-worker storage contention and retain Team automatic WAL checkpoints.
+
+## 2026-09-28 - Add agent reads for Azure DevOps builds (0.68.0)
+
+- Add separately grantable, read-only MCP tools to fetch one configured-project build by ID and
+  list its associated same-project work-item IDs. Include the build source commit and explicit
+  truncation for bounded work-item results.
+- Reuse directory-scoped host ADO credentials and keep upstream response bodies out of tool errors.
 
 ## 2026-09-28 - Recover Team Git incidents autonomously (0.67.0)
 
