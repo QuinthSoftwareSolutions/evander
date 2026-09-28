@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-28 - Add agent reads for Azure DevOps builds (0.68.0)
+
+- Add separately grantable, read-only MCP tools to fetch one configured-project build by ID and
+  list its associated same-project work-item IDs. Include the build source commit and explicit
+  truncation for bounded work-item results.
+- Reuse directory-scoped host ADO credentials and keep upstream response bodies out of tool errors.
+
 ## 2026-09-28 - Recover Team Git incidents autonomously (0.67.0)
 
 - Add durable typed Git incidents, blocker-scoped preview/apply tools, project recovery
