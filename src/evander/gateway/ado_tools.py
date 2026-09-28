@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from types import SimpleNamespace
 from typing import Annotated, Any
 
 import httpx
@@ -14,6 +16,7 @@ from evander.ado_reports import (
     DEFAULT_IN_PROGRESS_STATES,
     build_ado_daily_status_report_data,
 )
+from evander.ado_builds import AdoBuildClient, positive_id
 from evander.issues.service import IssueService
 from evander.models import (
     ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS,
@@ -152,10 +155,101 @@ def register_ado_tools(
     ado_artifacts_for_ids: Any,
     ado_artifact_approval_payload: Any,
 ) -> None:
-    """Register Azure DevOps backlog, work-item, report, identity, and activity tools."""
+    """Register Azure DevOps backlog, build, report, identity, and activity tools."""
 
     if transport_session_map is None:
         transport_session_map = getattr(server, "_evander_transport_session_map", {})
+
+    def _build_client(directory_path: str) -> AdoBuildClient:
+        return AdoBuildClient(
+            SimpleNamespace(
+                provider_config_resolver=context.provider_config,
+                resolve_secret=os.environ.get,
+            ),
+            directory_path=directory_path,
+        )
+
+    @server.tool()
+    def get_ado_build(
+        build_id: int | str,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Read one Azure DevOps build, including its source commit and branch."""
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {"session_id": session_id, "build_id": build_id}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.GET_ADO_BUILD)
+            normalized_id = positive_id(build_id, "build_id")
+            with _build_client(session.directory_path) as client:
+                payload = client.get_build(normalized_id)
+            audit_success(
+                session_id,
+                ToolName.GET_ADO_BUILD,
+                args,
+                {"build_id": str(normalized_id), "directory_path": session.directory_path},
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.GET_ADO_BUILD, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.GET_ADO_BUILD,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_ado_build_work_items(
+        build_id: int | str,
+        limit: Annotated[int, PydanticField(ge=1, le=1000)] = 200,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """List same-project Azure DevOps work-item IDs associated with one build."""
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {"session_id": session_id, "build_id": build_id, "limit": limit}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.LIST_ADO_BUILD_WORK_ITEMS)
+            normalized_id = positive_id(build_id, "build_id")
+            with _build_client(session.directory_path) as client:
+                payload = client.get_build_work_item_ids(normalized_id, limit=limit)
+            audit_success(
+                session_id,
+                ToolName.LIST_ADO_BUILD_WORK_ITEMS,
+                args,
+                {
+                    "build_id": str(normalized_id),
+                    "count": payload["count"],
+                    "truncated": payload["truncated"],
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_ADO_BUILD_WORK_ITEMS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_ADO_BUILD_WORK_ITEMS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
 
     def _fetch_ado_current_iteration_report_pages(
         issue_service: IssueService,
