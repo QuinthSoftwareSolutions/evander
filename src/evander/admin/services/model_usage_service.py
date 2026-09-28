@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, ContextManager
+from typing import Any, Callable, ContextManager, Mapping
 
 from evander.model_usage.models import (
     ModelInferenceUsageEvent,
@@ -91,6 +91,21 @@ class ModelUsageAdminService:
 
     def read_inference_cost_report(self, **kwargs) -> dict[str, Any]:
         return self._cost_report().read(catalog=self._optional_pricing_catalog(), **kwargs)
+
+    def set_inference_cost_categories(
+        self,
+        categories: Mapping[str, str | None],
+        *,
+        expected_categories: Mapping[str, str | None],
+        occurred_after: datetime,
+        occurred_before: datetime,
+    ) -> int:
+        return model_usage_store(self._runtime_dir).set_event_cost_categories(
+            categories,
+            expected_categories=expected_categories,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+        )
 
     def inference_cost_categories(self, *, directory_path: str = "root") -> list[str]:
         from evander.models import DirectoryPath
