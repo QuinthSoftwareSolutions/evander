@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from evander.cost_categories import freeze_prompt_cost_category, dispatch_with_cost_context
 from evander.reasoning_effort import recorded_reasoning_effort, resolve_reasoning_effort
 from evander.agent_threads import agent_resume_thread_missing, usable_agent_thread_id
 from evander.agent_context_retry import (
@@ -106,6 +107,7 @@ _CONTAINER_COMPLETED_WITHOUT_AGENT_RESPONSE = (
     "container worker job completed without an agent response"
 )
 _QUEUED_PROMPT_CONTEXT_METADATA_KEYS = (
+    "cost_category_snapshot",
     "reduced_context_prompt",
     "context_retry_prompt",
     "agent_context_retry_enabled",
@@ -200,7 +202,15 @@ class AgentPromptEffectProvider(EffectProviderBase):
         ),
     )
 
-    def execute(
+    def execute(self, *, resolved_config=None, execution_context=None):
+        self._cost_category_snapshot = None
+        result = self._execute(resolved_config=resolved_config, execution_context=execution_context)
+        snapshot = getattr(self, "_cost_category_snapshot", None)
+        if snapshot is not None:
+            result["cost_category_snapshot"] = snapshot
+        return result
+
+    def _execute(
         self,
         *,
         resolved_config: Mapping[str, Any] | None = None,
@@ -216,6 +226,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "prompt": effect.prompt,
             "model": effect.model,
             "reasoning_effort": effect.reasoning_effort,
+            "cost_category": effect.cost_category,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
             "resume_thread_metadata_key": effect.resume_thread_metadata_key,
@@ -309,6 +320,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             or getattr(active_session, "model", None)
             or default_agent_model_for_provider(agent_harness, effective_config)
         )
+        self._cost_category_snapshot = freeze_prompt_cost_category(payload, active_session)
+        queue_metadata["cost_category_snapshot"] = self._cost_category_snapshot
         reasoning = resolve_reasoning_effort(
             payload,
             session=active_session,
@@ -396,21 +409,33 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 **capacity_admission.output_metadata(),
             }
         with maintain_local_inference_launch(runtime_dir, capacity_admission.slot_id):
-            result = context.agent_resumer.resume_agent(
-                target=target,
-                prompt=prompt,
-                model=resolved_model,
-                **reasoning.fields(),
-                vm_user=vm_user,
-                dispatch_id=dispatch_id,
-                resume_thread_id=effective_resume_thread_id,
-                persist_thread_id=resume_thread_metadata_key is None,
-                mcp_gateway_url=self._mcp_gateway_url(
-                    config=effective_config,
+            result = dispatch_with_cost_context(
+                lambda: context.agent_resumer.resume_agent(
                     target=target,
-                    workflow_run_id=workflow_run_id,
-                    mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                    prompt=prompt,
+                    model=resolved_model,
+                    **reasoning.fields(),
+                    vm_user=vm_user,
+                    dispatch_id=dispatch_id,
+                    resume_thread_id=effective_resume_thread_id,
+                    persist_thread_id=resume_thread_metadata_key is None,
+                    mcp_gateway_url=self._mcp_gateway_url(
+                        config=effective_config,
+                        target=target,
+                        workflow_run_id=workflow_run_id,
+                        mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                    ),
                 ),
+                runtime_dir=resolve_runtime_dir(context),
+                session=active_session,
+                session_id=session_id,
+                payload=payload,
+                dispatch_id=dispatch_id,
+                model=resolved_model,
+                agent_harness=agent_harness,
+                workflow_run_id=workflow_run_id,
+                effect_id=self._effect().id,
+                execution_backend="libvirt_vm",
             )
         if not bool(getattr(result, "success", False)):
             if runtime_dir is not None:
@@ -620,6 +645,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             or getattr(session, "model", None)
             or default_agent_model_for_provider(agent_harness, effective_config)
         )
+        self._cost_category_snapshot = freeze_prompt_cost_category(payload, session)
+        queue_metadata["cost_category_snapshot"] = self._cost_category_snapshot
         reasoning = resolve_reasoning_effort(
             payload,
             session=session,
@@ -721,45 +748,59 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         try:
             with maintain_local_inference_launch(runtime_dir, capacity_admission.slot_id):
-                handle = backend.start(
-                    backend.prepare(
-                        ExecutionSpec(
-                            backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                            target_name=execution_id,
-                            session_id=session_id,
-                            directory_path=(
-                                session.directory_path if session is not None else "root"
-                            ),
-                            image=container_worker_image_for_session(session, effective_config),
-                            resource_limits=container_worker_resource_limits_for_session(session),
-                            command=command,
-                            codex_turn=codex_turn,
-                            metadata={
-                                "effect_type": self.node_type(),
-                                "dispatch_id": dispatch_id,
-                                "resume_thread_id": effective_resume_thread_id,
-                                "agent_provider": agent_harness,
-                                "model": resolved_model,
-                                **reasoning.fields(),
-                                "model_provider_mode": effective_config.model_provider_mode,
-                                **(
-                                    {"codex_auth_mode": codex_turn.auth_mode.value}
-                                    if codex_turn is not None
-                                    else {}
+                handle = dispatch_with_cost_context(
+                    lambda: backend.start(
+                        backend.prepare(
+                            ExecutionSpec(
+                                backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                                target_name=execution_id,
+                                session_id=session_id,
+                                directory_path=(
+                                    session.directory_path if session is not None else "root"
                                 ),
-                                **(
-                                    {
-                                        "subscription_profile_id": (
-                                            codex_turn.subscription_profile_id
-                                        )
-                                    }
-                                    if codex_turn is not None
-                                    and codex_turn.subscription_profile_id is not None
-                                    else {}
+                                image=container_worker_image_for_session(session, effective_config),
+                                resource_limits=container_worker_resource_limits_for_session(
+                                    session
                                 ),
-                            },
+                                command=command,
+                                codex_turn=codex_turn,
+                                metadata={
+                                    "effect_type": self.node_type(),
+                                    "dispatch_id": dispatch_id,
+                                    "resume_thread_id": effective_resume_thread_id,
+                                    "agent_provider": agent_harness,
+                                    "model": resolved_model,
+                                    **reasoning.fields(),
+                                    "model_provider_mode": effective_config.model_provider_mode,
+                                    **(
+                                        {"codex_auth_mode": codex_turn.auth_mode.value}
+                                        if codex_turn is not None
+                                        else {}
+                                    ),
+                                    **(
+                                        {
+                                            "subscription_profile_id": (
+                                                codex_turn.subscription_profile_id
+                                            )
+                                        }
+                                        if codex_turn is not None
+                                        and codex_turn.subscription_profile_id is not None
+                                        else {}
+                                    ),
+                                },
+                            )
                         )
-                    )
+                    ),
+                    runtime_dir=resolve_runtime_dir(context),
+                    session=session,
+                    session_id=session_id,
+                    payload=payload,
+                    dispatch_id=dispatch_id,
+                    model=resolved_model,
+                    agent_harness=agent_harness,
+                    workflow_run_id=workflow_run_id,
+                    effect_id=self._effect().id,
+                    execution_backend="container_worker_vm",
                 )
         except Exception as exc:
             if runtime_dir is not None:
@@ -2114,49 +2155,72 @@ class AgentPromptEffectProvider(EffectProviderBase):
             merged_outputs["context_retry_skipped_reason"] = "non_codex_agent_provider"
             return False
         try:
-            handle = backend.start(
-                backend.prepare(
-                    ExecutionSpec(
-                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                        target_name=retry_execution_id,
-                        session_id=session_id,
-                        directory_path=directory_path,
-                        image=container_worker_image_for_session(session, config),
-                        resource_limits=container_worker_resource_limits_for_session(session),
-                        command=cls._container_prompt_command(
-                            prompt=retry_prompt,
-                            model=model,
-                            **reasoning.fields(),
-                            resume_thread_id=None,
-                            session=session,
-                            agent_provider=agent_harness,
-                            resume_mode="new_context",
-                            mcp_gateway_url=retry_mcp_gateway_url,
-                            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
-                        ),
-                        codex_turn=codex_turn,
-                        metadata={
-                            "effect_type": str(getattr(record, "effect_type", "") or ""),
-                            "dispatch_id": dispatch_id,
-                            "resume_thread_id": None,
-                            "agent_provider": agent_harness,
-                            "model": model,
-                            **reasoning.fields(),
-                            "model_provider_mode": getattr(config, "model_provider_mode", None),
-                            "codex_auth_mode": codex_turn.auth_mode.value,
-                            **(
-                                {"subscription_profile_id": (codex_turn.subscription_profile_id)}
-                                if codex_turn.subscription_profile_id is not None
-                                else {}
+            handle = dispatch_with_cost_context(
+                lambda: backend.start(
+                    backend.prepare(
+                        ExecutionSpec(
+                            backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                            target_name=retry_execution_id,
+                            session_id=session_id,
+                            directory_path=directory_path,
+                            image=container_worker_image_for_session(session, config),
+                            resource_limits=container_worker_resource_limits_for_session(session),
+                            command=cls._container_prompt_command(
+                                prompt=retry_prompt,
+                                model=model,
+                                **reasoning.fields(),
+                                resume_thread_id=None,
+                                session=session,
+                                agent_provider=agent_harness,
+                                resume_mode="new_context",
+                                mcp_gateway_url=retry_mcp_gateway_url,
+                                web_search_enabled=bool(
+                                    getattr(session, "web_search_enabled", False)
+                                ),
                             ),
-                            "context_retry_mode": CONTEXT_RETRY_MODE_REDUCED,
-                            "context_retry_attempt": attempt + 1,
-                            "context_retry_max_attempts": max_attempts,
-                            "context_retry_of_execution_id": previous_execution_id,
-                            "context_retry_reason": reason,
-                        },
+                            codex_turn=codex_turn,
+                            metadata={
+                                "effect_type": str(getattr(record, "effect_type", "") or ""),
+                                "dispatch_id": dispatch_id,
+                                "resume_thread_id": None,
+                                "agent_provider": agent_harness,
+                                "model": model,
+                                **reasoning.fields(),
+                                "model_provider_mode": getattr(config, "model_provider_mode", None),
+                                "codex_auth_mode": codex_turn.auth_mode.value,
+                                **(
+                                    {
+                                        "subscription_profile_id": (
+                                            codex_turn.subscription_profile_id
+                                        )
+                                    }
+                                    if codex_turn.subscription_profile_id is not None
+                                    else {}
+                                ),
+                                "context_retry_mode": CONTEXT_RETRY_MODE_REDUCED,
+                                "context_retry_attempt": attempt + 1,
+                                "context_retry_max_attempts": max_attempts,
+                                "context_retry_of_execution_id": previous_execution_id,
+                                "context_retry_reason": reason,
+                            },
+                        )
                     )
-                )
+                ),
+                runtime_dir=resolve_runtime_dir(worker),
+                session=session,
+                session_id=session_id,
+                payload={
+                    "cost_category_snapshot": cls._record_text_value(
+                        record, "cost_category_snapshot"
+                    )
+                    or "null"
+                },
+                dispatch_id=dispatch_id,
+                agent_harness=agent_harness,
+                model=model,
+                effect_id=record.effect_id,
+                workflow_run_id=record.trace_id,
+                execution_backend="container_worker_vm",
             )
         except CodexSubscriptionDeferredClientError as exc:
             try:

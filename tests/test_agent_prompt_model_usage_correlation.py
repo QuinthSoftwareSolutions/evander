@@ -183,16 +183,46 @@ def _finalize_waiting_record(
         ),
     ],
 )
+@pytest.mark.parametrize(
+    ("session_category", "override", "expected_category"),
+    [
+        ("Development", None, "Development"),
+        ("Development", "Review", "Review"),
+        ("Development", "", None),
+        (None, None, None),
+    ],
+)
 def test_direct_prompt_dispatch_registers_and_clears_correlation_context(
     tmp_path: Path,
     provider_class,
     definition_class,
     effect_type: str,
+    session_category,
+    override,
+    expected_category,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     session_repository = _session_repository(config)
+    session = session_repository.get_session("session-1")
+    session.cost_category = session_category
+    session.expires_at = datetime.now(UTC) + timedelta(hours=12)
+    session_repository.upsert_session(session)
     resumer = _ResumerStub(SimpleNamespace(success=True, thread_id="thread-1"))
+    original_resume = resumer.resume_agent
+
+    def checked_resume(**kwargs):
+        at_launch = _usage_store(runtime_dir).get_correlation_context(
+            dispatch_id=kwargs["dispatch_id"]
+        )
+        assert at_launch is not None
+        assert at_launch.cost_attribution_recorded
+        assert at_launch.cost_category == expected_category
+        session.cost_category = "Later category"
+        session_repository.upsert_session(session)
+        return original_resume(**kwargs)
+
+    resumer.resume_agent = checked_resume
     provider = provider_class()
     provider.initialize(
         definition_class(
@@ -202,6 +232,7 @@ def test_direct_prompt_dispatch_registers_and_clears_correlation_context(
             target="session-1",
             session_id="session-1",
             prompt="Continue the task",
+            cost_category=override,
             model="gpt-5.2-codex",
         ),
         _runtime_context(config, session_repository=session_repository, resumer=resumer),
@@ -221,6 +252,18 @@ def test_direct_prompt_dispatch_registers_and_clears_correlation_context(
         dispatch_id=result["dispatch_id"],
     )
     assert context is not None
+    assert context.cost_category == expected_category
+    assert context.cost_attribution_recorded
+    assert (
+        _usage_store(runtime_dir)
+        .get_active_correlation_context(
+            session_id="session-1",
+            dispatch_id=result["dispatch_id"],
+            now_utc=datetime.now(UTC) + timedelta(hours=3),
+        )
+        .cost_category
+        == expected_category
+    )
     assert context.workflow_run_id == "workflow-1"
     assert context.effect_id == "effect-1"
     assert context.node_id == "effect-1"
@@ -371,6 +414,9 @@ def test_queued_libvirt_prompt_dispatch_registers_only_when_dispatched(
     config = GatewayConfig(runtime_dir=runtime_dir)
     session_repository = _session_repository(config)
     queue_path = runtime_dir / "queued-agent-prompts.json"
+    session = session_repository.get_session("session-1")
+    session.cost_category = "Changed after enqueue"
+    session_repository.upsert_session(session)
     queue_store = AgentPromptQueueStore(queue_path)
     queue_store.put(
         QueuedAgentPromptRecord(
@@ -383,7 +429,10 @@ def test_queued_libvirt_prompt_dispatch_registers_only_when_dispatched(
             vm_user="agent",
             resume_thread_id=None,
             effect_id="effect-1",
-            metadata={"workflow_run_id": "workflow-1"},
+            metadata={
+                "workflow_run_id": "workflow-1",
+                "cost_category_snapshot": '"Queued category"',
+            },
         )
     )
     execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
@@ -455,6 +504,7 @@ def test_queued_libvirt_prompt_dispatch_registers_only_when_dispatched(
     )
     assert context is not None
     assert context.workflow_run_id == "workflow-1"
+    assert context.cost_category == "Queued category"
     assert context.directory_path == "root/team-a"
     assert context.model == "gpt-5.2-codex"
 
@@ -485,6 +535,9 @@ def test_queued_container_prompt_dispatch_registers_and_clears_correlation_conte
         container_worker_base_url="http://worker.test",
     )
     session_repository = _session_repository(config, vm_provider="container_worker_vm")
+    session = session_repository.get_session("session-1")
+    session.cost_category = "Changed after enqueue"
+    session_repository.upsert_session(session)
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
     queue_store.put(
         QueuedAgentPromptRecord(
@@ -497,7 +550,7 @@ def test_queued_container_prompt_dispatch_registers_and_clears_correlation_conte
             vm_user="agent",
             resume_thread_id=None,
             effect_id="effect-1",
-            metadata={"workflow_run_id": "workflow-2"},
+            metadata={"workflow_run_id": "workflow-2", "cost_category_snapshot": "null"},
         )
     )
     backend = _BackendStub()
@@ -539,6 +592,8 @@ def test_queued_container_prompt_dispatch_registers_and_clears_correlation_conte
     )
     assert context is not None
     assert context.workflow_run_id == "workflow-2"
+    assert context.cost_attribution_recorded is True
+    assert context.cost_category is None
     assert context.directory_path == "root/team-a"
     assert context.model == "gpt-5.2-codex"
 

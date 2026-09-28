@@ -600,6 +600,7 @@ class SessionManifest(BaseModel):
     vm_provider: str | None = None
     vm_provider_id: str | None = None
     model: str | None = None
+    cost_category: str | None = None
     reasoning_effort: ReasoningEffort | None = None
     codex_auth_mode: CodexAuthMode | None = None
     subscription_profile_id: str | None = None
@@ -638,6 +639,13 @@ class SessionManifest(BaseModel):
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("cost_category", mode="before")
+    @classmethod
+    def normalize_cost_category_field(cls, value: object) -> str | None:
+        from evander.cost_categories import normalize_cost_category
+
+        return normalize_cost_category(value)
 
     @field_validator("directory_path")
     @classmethod

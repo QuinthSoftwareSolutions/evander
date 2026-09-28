@@ -1263,7 +1263,14 @@ def test_openai_relay_records_streaming_final_usage_without_raw_text(
     ensure_directory(config)
     write_session(config, session_id="session-1")
 
+    repository = JsonSessionManifestRepository(config.session_store_path)
+    session = repository.get_session("session-1")
+    session.cost_category = "At request start"
+    repository.upsert_session(session)
+
     def handler(_: httpx.Request) -> httpx.Response:
+        session.cost_category = "Changed while streaming"
+        repository.upsert_session(session)
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},
@@ -1288,6 +1295,10 @@ def test_openai_relay_records_streaming_final_usage_without_raw_text(
     event = ModelUsageStore(runtime_dir / "model-usage.db").get_event("resp-stream")
     assert event is not None
     event_json = json.dumps(event.model_dump(mode="json"), sort_keys=True)
+    assert event.cost_category == "At request start"
+    assert event.api_key_name == "OPENAI_API_KEY"
+    assert event.billing_kind == "api"
+    assert event.cost_attribution_recorded
     assert event.input_tokens == 7
     assert event.output_tokens == 8
     assert event.total_tokens == 15
@@ -1397,6 +1408,75 @@ def test_openai_relay_records_websocket_final_usage_without_raw_text(
     assert event.raw_usage_metadata["response_metadata"]["event_type"] == "response.completed"
     assert "secret prompt text" not in event_json
     assert "secret completion text" not in event_json
+
+
+def test_websocket_snapshots_each_prompt_and_duplicate_completion_keeps_next_attribution(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = make_config(tmp_path)
+    ensure_directory(config)
+    write_session(config, session_id="session-1")
+    repository = JsonSessionManifestRepository(config.session_store_path)
+    upstream = _FakeUpstreamWebSocket()
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        yield upstream
+
+    relay._connect_upstream_websocket = connect
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    request = json.dumps({"type": "response.create", "model": "gpt-5.2-codex"})
+
+    def completion(identity):
+        return json.dumps(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": identity,
+                    "model": "gpt-5.2-codex",
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                },
+            }
+        )
+
+    def set_category(value):
+        session = repository.get_session("session-1")
+        session.cost_category = value
+        repository.upsert_session(session)
+
+    with TestClient(relay.create_app()) as client:
+        with client.websocket_connect("/v1/session/session-1/responses") as websocket:
+            set_category("Rejected prompt")
+            websocket.send_text(request)
+            wait_for_upstream_messages(upstream, [request])
+            asyncio.run(
+                upstream.push(json.dumps({"type": "error", "error": {"code": "invalid_request"}}))
+            )
+            websocket.receive_text()
+            set_category("First prompt")
+            websocket.send_text(request)
+            wait_for_upstream_messages(upstream, [request, request])
+            set_category("Later session label")
+            asyncio.run(upstream.push(completion("first")))
+            websocket.receive_text()
+            # A new prompt uses a different label on the same connection.
+            set_category("Second prompt")
+            websocket.send_text(request)
+            wait_for_upstream_messages(upstream, [request, request, request])
+            asyncio.run(upstream.push(completion("first")))
+            websocket.receive_text()
+            set_category("Changed while streaming")
+            asyncio.run(upstream.push(completion("second")))
+            websocket.receive_text()
+
+    events = ModelUsageStore(tmp_path / "model-usage.db").list_events()
+    assert {event.event_id: event.cost_category for event in events} == {
+        "first": "First prompt",
+        "second": "Second prompt",
+    }
+    assert all(event.api_key_name == "OPENAI_API_KEY" for event in events)
+    assert "test-secret" not in json.dumps([event.model_dump(mode="json") for event in events])
 
 
 def test_openai_relay_records_websocket_usage_unavailable(tmp_path: Path, monkeypatch) -> None:

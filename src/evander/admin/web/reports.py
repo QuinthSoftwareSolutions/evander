@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -26,6 +27,19 @@ def _parse_optional_datetime(value: str | None, *, field_name: str) -> datetime 
     except ValueError as exc:
         raise ValueError(f"{field_name} must be an ISO-8601 datetime.") from exc
     return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _parse_cost_boundary(value: str | None, *, timezone: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        zone = ZoneInfo(timezone)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ValueError("Use ISO dates and a valid IANA timezone") from exc
+    if parsed.tzinfo is None and len(value) != 10:
+        raise ValueError("Timestamp boundaries must include a timezone offset")
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=zone)).astimezone(UTC)
 
 
 def _parse_optional_limit(value: str | None) -> int | None:
@@ -82,6 +96,46 @@ def report_routes(
     auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[Route]:
+    async def inference_costs(request: Request) -> JSONResponse:
+        directory = request.query_params.get("directory_path", "root")
+        try:
+            auth.require_permission(
+                request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory
+            )
+            payload = await run_in_threadpool(
+                service.model_usage_admin.read_inference_cost_report,
+                start=_parse_cost_boundary(
+                    request.query_params.get("start"),
+                    timezone=request.query_params.get("timezone", "UTC"),
+                ),
+                end=_parse_cost_boundary(
+                    request.query_params.get("end"),
+                    timezone=request.query_params.get("timezone", "UTC"),
+                ),
+                timezone=request.query_params.get("timezone", "UTC"),
+                directory_path=directory,
+            )
+            return await run_in_threadpool(JSONResponse, payload)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        except ValueError as exc:
+            return json_error(str(exc))
+
+    async def inference_cost_categories(request: Request) -> JSONResponse:
+        directory = request.query_params.get("directory_path", "root")
+        try:
+            auth.require_permission(
+                request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory
+            )
+            categories = await run_in_threadpool(
+                service.model_usage_admin.inference_cost_categories, directory_path=directory
+            )
+            return JSONResponse({"categories": categories})
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        except ValueError as exc:
+            return json_error(str(exc))
+
     async def workflow_graph_activity(request: Request) -> JSONResponse:
         try:
             kwargs = {"refresh": True} if _request_bypasses_cache(request) else {}
@@ -172,6 +226,8 @@ def report_routes(
         return JSONResponse(payload.model_dump(mode="json"))
 
     return [
+        Route("/api/admin/reports/inference-costs", inference_costs, methods=["GET"]),
+        Route("/api/admin/inference-cost-categories", inference_cost_categories, methods=["GET"]),
         Route(
             "/api/admin/reports/workflow-graph-activity",
             cache.wrap("admin.reports.workflow_graph_activity", workflow_graph_activity)

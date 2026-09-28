@@ -1,3 +1,4 @@
+import { InferenceCostsPanel } from "./InferenceCostsPanel";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
@@ -62,6 +63,7 @@ type WorkflowGraphActivityReport = {
 };
 
 type ReportView =
+  | "inference-costs"
   | "workflow-graph-activity"
   | "workflow-failure-clusters"
   | "conformance"
@@ -218,7 +220,11 @@ function formatRequirementCount(report: ConformanceReportRecord): string {
 export function ReportsPage() {
   const initialPeriod = useMemo(() => periodPreset(24), []);
   const [selectedReportView, setSelectedReportView] =
-    useState<ReportView>("workflow-graph-activity");
+    useState<ReportView>(() => new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("view") === "inference-costs" ? "inference-costs" : "workflow-graph-activity");
+  const [loadLegacyReports, setLoadLegacyReports] = useState(selectedReportView !== "inference-costs");
+  useEffect(() => {
+    if (selectedReportView !== "inference-costs") setLoadLegacyReports(true);
+  }, [selectedReportView]);
   const [startValue, setStartValue] = useState(initialPeriod.start);
   const [endValue, setEndValue] = useState(initialPeriod.end);
   const [report, setReport] = useState<WorkflowGraphActivityReport | null>(null);
@@ -282,6 +288,14 @@ export function ReportsPage() {
     );
   }, [prIntegrationReport, selectedPrIntegrationCheckIndex]);
 
+  useEffect(() => {
+    const syncView = () => {
+      if (new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("view") === "inference-costs") setSelectedReportView("inference-costs");
+    };
+    window.addEventListener("hashchange", syncView);
+    return () => window.removeEventListener("hashchange", syncView);
+  }, []);
+
   async function loadWorkflowReport(nextStart = startValue, nextEnd = endValue) {
     const params = new URLSearchParams({
       start: isoFromLocalInput(nextStart),
@@ -327,6 +341,7 @@ export function ReportsPage() {
   }
 
   useEffect(() => {
+    if (!loadLegacyReports) return;
     let cancelled = false;
     async function refresh() {
       try {
@@ -349,9 +364,10 @@ export function ReportsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadLegacyReports]);
 
   useEffect(() => {
+    if (!loadLegacyReports) return;
     let cancelled = false;
     async function refresh() {
       try {
@@ -374,7 +390,7 @@ export function ReportsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadLegacyReports]);
 
   async function handleReportViewChange(nextView: ReportView) {
     setSelectedReportView(nextView);
@@ -531,6 +547,10 @@ export function ReportsPage() {
           </div>
         </div>
         <div className="feature-list">
+          <button type="button" className={`feature-list-item ${selectedReportView === "inference-costs" ? "selected" : ""}`}
+            onClick={() => setSelectedReportView("inference-costs")}>
+            <strong>Inference costs</strong><span className="feature-list-meta">Costs by provider, API key, and category</span>
+          </button>
           <button
             type="button"
             className={`feature-list-item ${
@@ -585,7 +605,7 @@ export function ReportsPage() {
       </section>
 
       <section className="feature-content">
-        {selectedReportView === "workflow-graph-activity" ? (
+        {selectedReportView === "inference-costs" ? <InferenceCostsPanel /> : selectedReportView === "workflow-graph-activity" ? (
           <>
             <div className="feature-toolbar">
               <div>

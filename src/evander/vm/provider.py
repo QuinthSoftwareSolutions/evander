@@ -892,6 +892,7 @@ def _libvirt_create_vm(
     session_id: str | None = None,
     labels: dict[str, str] | None = None,
     model: str | None = None,
+    cost_category: str | None = None,
     reasoning_effort: str | None = None,
     vm_user: str = "agent",
     ttl_seconds: int | None = None,
@@ -1075,7 +1076,10 @@ def _libvirt_create_vm(
         except ValueError:
             manifest.model = None
     from evander.provider_config import validate_openrouter_session
+    from evander.cost_categories import normalize_cost_category
 
+    if cost_category is not None:
+        manifest.cost_category = normalize_cost_category(cost_category)
     if reasoning_effort is not None:
         manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     validate_session_reasoning_effort(

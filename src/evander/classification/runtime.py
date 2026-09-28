@@ -28,7 +28,11 @@ def settings_for_query(context: Any) -> ClassificationSettings:
 
 
 def session_attribution(runtime: Any, session: Any) -> dict[str, Any]:
-    attribution = {"session_id": session.session_id, "directory_path": session.directory_path}
+    attribution = {
+        "session_id": session.session_id,
+        "directory_path": session.directory_path,
+        "cost_category": getattr(session, "cost_category", None),
+    }
     store = model_usage_store(runtime.config.runtime_dir)
     correlation = store.get_active_correlation_context(session_id=session.session_id)
     if correlation is not None:

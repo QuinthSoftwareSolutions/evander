@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from uuid import uuid4
+from evander.cost_categories import dispatch_with_cost_context
+
 from evander.reasoning_effort import resolve_reasoning_effort, session_agent_harness
 from evander.admin.services.vm_agent.common import (
     Any,
@@ -185,12 +188,22 @@ class VmAgentResumeMixin:
         if agent_provider:
             resume_env["AGENT_PROVIDER"] = agent_provider
         try:
-            completed = process_helpers.run_subprocess(
-                args,
-                capture_output=True,
-                text=True,
-                env=resume_env,
-                timeout=resume_timeout_seconds,
+            completed = dispatch_with_cost_context(
+                lambda: process_helpers.run_subprocess(
+                    args,
+                    capture_output=True,
+                    text=True,
+                    env=resume_env,
+                    timeout=resume_timeout_seconds,
+                ),
+                runtime_dir=self._deps.config.runtime_dir,
+                session=manifest,
+                session_id=session_id,
+                payload={},
+                dispatch_id=dispatch_id or f"cost-manual-{uuid4().hex}",
+                agent_harness=agent_provider or "codex",
+                model=resolved_model,
+                execution_backend="libvirt_vm",
             )
         except subprocess.TimeoutExpired:
             return VmActionResult(

@@ -670,6 +670,54 @@ catalog before writing and writes atomically to either
 The store intentionally excludes request and response text, so it is safe to
 inspect for operational attribution without exposing prompt content.
 
+### Inference Cost Reports
+
+The dashboard shows accumulated API inference costs for the current month. Use
+**Full cost report** to open **Reports > Inference costs**, which also includes
+daily bars stacked by category and a table grouped by provider, configured API
+key name, and category. The table includes account subtotals and a grand total.
+Choose **Compare provider / API key** to select several accounts on the line
+chart, or **Total** for one accumulated total. The dashboard link retains that
+selection and the current directory scope.
+
+Reports default to month to date in the viewer's browser timezone. A custom
+period includes both the **From** and **Through** dates. Day boundaries follow
+that timezone, including daylight-saving changes; days without costs remain in
+the charts. Report access requires `workflow_runs.read` for the selected
+directory, and results include its descendants.
+
+Set **Cost category** when creating an agent or editing its session policy.
+Labels are free text with suggestions from existing categories in the directory.
+The `effect:agent:create` node also accepts `cost_category`. Both
+`effect:agent:prompt` and `effect:agent:enqueue-prompt` can override the session
+category: **Inherit session category** uses the session default, while an empty
+override explicitly selects **Uncategorized**. Workflow bindings and templates
+are supported. The chosen category is frozen when the prompt is first
+submitted and retained through queueing, deferral, and context retries. Session
+label changes apply to future prompts; they do not reclassify historical costs.
+
+Amounts are in USD, using recorded provider charges when available and the
+configured pricing catalog otherwise. Subscription and local inference are
+excluded. Missing prices and unknown billing provenance make the total partial;
+unpriced groups show **Unavailable**. Old records without a category or API key
+name appear as **Uncategorized** or **Unknown key**. API key groups use the
+configured credential environment-variable name, never its secret value; a
+rotation of that credential stays in the same group.
+
+The report maintains a disposable `runtime/inference-cost-report.db` projection
+of `model-usage.db`. It handles new events, corrections, deletions, and transcript
+replacement incrementally, and rebuilds when the pricing catalog or source
+generation changes. Aggregation and serialization run outside the web event
+loop. Report reads do not write to the usage database. Keep `model-usage.db` in
+backups; the report projection can be rebuilt from it and the pricing catalog.
+
+The read-only API is `GET /api/admin/reports/inference-costs`, with optional
+`directory_path`, `timezone` (an IANA name), `start`, and `end`. ISO timestamps
+must carry an offset; date-only boundaries are interpreted in `timezone`.
+`start` is inclusive and `end` is exclusive. Omitting both selects month to date.
+`GET /api/admin/inference-cost-categories?directory_path=root` supplies scoped
+label suggestions under the same report permission.
+
 ## Changing the Default Container Worker
 
 Admin provider-configuration saves preserve existing agents by pinning their current worker

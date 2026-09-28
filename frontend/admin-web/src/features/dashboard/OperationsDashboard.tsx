@@ -1,3 +1,4 @@
+import { InferenceCostsPanel } from "../reports/InferenceCostsPanel";
 import { useEffect, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { ApiError, fetchJson, fetchJsonConditional, formatRelativeSeconds, formatTimestamp } from "../admin/api";
@@ -1778,7 +1779,7 @@ function ProductContextPanel({
 }
 
 export function OperationsDashboard() {
-  const { selectedDirectoryPath, setSelectedDirectoryPath, privilegedUnlocked } = useAdminUi();
+  const { selectedDirectoryPath, setSelectedDirectoryPath, privilegedUnlocked, canReadWorkflowRuns } = useAdminUi();
   const documentVisible = useDocumentVisible();
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [newsIndex, setNewsIndex] = useState(0);
@@ -2339,6 +2340,7 @@ export function OperationsDashboard() {
               <p className="muted-text">No pending approvals, failed services, or storage warnings.</p>
             ) : null}
           </section>
+          {canReadWorkflowRuns && <InferenceCostsPanel compact refreshKey={refreshNonce} />}
           <DashboardPanel
             eyebrow="System health"
             title="Capacity and execution"
