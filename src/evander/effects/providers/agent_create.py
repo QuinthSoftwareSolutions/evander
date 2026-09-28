@@ -4,6 +4,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+from evander.cost_categories import normalize_cost_category
 from evander.reasoning_effort import normalize_reasoning_effort
 from evander.container_worker_images import resolve_container_worker_image_selector
 from evander.codex_auth import (
@@ -112,6 +113,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "directory_path": effect.directory_path,
             "metadata": effect.metadata,
         }
+        if "cost_category" in effect_fields_set:
+            payload["cost_category"] = effect.cost_category
         if "reasoning_effort" in effect_fields_set:
             payload["reasoning_effort"] = effect.reasoning_effort
         if codex_auth_mode_provided:
@@ -282,6 +285,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             labels=as_string_mapping(payload.get("labels")),
             model=normalize_optional_string(payload.get("model")),
+            cost_category=normalize_cost_category(payload.get("cost_category")),
             reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
             vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
@@ -312,9 +316,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 payload.get("communication_file_require_approval_for_send")
             ),
             web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")),
-            image_generation_enabled=as_bool_or_none(
-                payload.get("image_generation_enabled")
-            ),
+            image_generation_enabled=as_bool_or_none(payload.get("image_generation_enabled")),
             dotnet=bool(payload.get("dotnet", False)),
             nuget=bool(payload.get("nuget", False)),
             mssql=bool(payload.get("mssql", False)),
@@ -589,6 +591,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
             session_id=session_id,
             directory_path=directory_path,
             model=model,
+            cost_category=normalize_cost_category(
+                payload.get("cost_category", getattr(existing_session, "cost_category", None))
+            ),
             reasoning_effort=normalize_reasoning_effort(
                 payload.get("reasoning_effort", getattr(existing_session, "reasoning_effort", None))
             ),

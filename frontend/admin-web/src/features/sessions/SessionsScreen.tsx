@@ -1,3 +1,4 @@
+import { CostCategoryInput } from "../reports/CostCategoryInput";
 import { useEffect, useMemo, useState } from "react";
 
 import { ReasoningEffortSelect } from "../admin/ReasoningEffortSelect";
@@ -66,6 +67,7 @@ type SessionRecord = {
   vm_provider_id?: string | null;
   model: string | null;
   reasoning_effort?: string | null;
+  cost_category?: string | null;
   agent_harness?: string;
   effective_model_provider_mode?: string;
   model_provider_mode?: string | null;
@@ -252,6 +254,7 @@ type ToolOption = SessionCatalogResponse["tool_options"][number];
 
 type TabKey = "active" | "expired";
 type SessionPolicyDraft = {
+  costCategory: string;
   modelProviderMode: SessionModelProviderModeSelection;
   allowedScriptNames: string[];
   connectorGrants: Record<string, unknown>;
@@ -399,6 +402,7 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
   });
   return {
     modelProviderMode,
+    costCategory: session.cost_category ?? "",
     allowedScriptNames: dedupeStrings(session.allowed_script_names ?? []),
     connectorGrants: { ...(session.connector_grants ?? {}) },
     hostDirectoryGrants: { ...(session.host_directory_grants ?? {}) },
@@ -818,6 +822,7 @@ export function SessionsScreen() {
   const [toolsDirty, setToolsDirty] = useState(false);
   const [toolsBoundSessionId, setToolsBoundSessionId] = useState("");
   const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
+    costCategory: "",
     modelProviderMode: "",
     allowedScriptNames: [],
     connectorGrants: {},
@@ -1634,6 +1639,7 @@ export function SessionsScreen() {
           {
             method: "PATCH",
             body: JSON.stringify({
+              cost_category: policyDraft.costCategory.trim() || null,
               allowed_script_names: policyDraft.allowedScriptNames,
               model_provider_mode: policyDraft.modelProviderMode || null,
               allowed_contact_ids: policyDraft.allowedContactIds,
@@ -2002,6 +2008,8 @@ export function SessionsScreen() {
                     <div>
                       <dt>Model</dt>
                       <dd>{selectedSession.model ?? "Unset"}</dd>
+                      <dt>Cost category</dt>
+                      <dd>{selectedSession.cost_category ?? "Uncategorized"}</dd>
                       <dt>Reasoning effort</dt>
                       <dd>{selectedSession.reasoning_effort ?? (selectedSession.agent_harness === "codex" ? "Default (high)" : "Provider default")}</dd>
                     </div>
@@ -2705,6 +2713,9 @@ export function SessionsScreen() {
                           validateItem={(value) => validateLeadingDotExtensionValue(value)}
                         />
                       </div>
+                      <CostCategoryInput value={policyDraft.costCategory} directoryPath={selectedSession.directory_path}
+                        disabled={mutationLocked} onChange={(costCategory) => updatePolicyDraft({ costCategory })} />
+                      <p className="field-description">Applies to newly submitted prompts. Earlier costs keep their category.</p>
                       <div className="field-stack">
                         <span>Metadata</span>
                         <p className="field-description">

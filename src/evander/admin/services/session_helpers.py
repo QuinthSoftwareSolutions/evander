@@ -607,6 +607,7 @@ def session_policy_update_from_payload(
     contacts_config: Any | None = None,
 ) -> dict[str, Any]:
     allowed_fields = {
+        "cost_category",
         "approval_required_tools",
         "approval_tool_settings",
         "approval_notification_target_ids",
@@ -634,6 +635,10 @@ def session_policy_update_from_payload(
         raise ValueError("Unsupported session policy fields: " + ", ".join(unsupported))
 
     update: dict[str, Any] = {}
+    if "cost_category" in payload:
+        from evander.cost_categories import normalize_cost_category
+
+        update["cost_category"] = normalize_cost_category(payload["cost_category"])
     if "communication_target_ids" in payload:
         raw_target_ids = payload.get("communication_target_ids")
         if raw_target_ids is None:

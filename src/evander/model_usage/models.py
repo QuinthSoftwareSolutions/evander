@@ -56,6 +56,10 @@ class ModelInferenceUsageEvent(BaseModel):
     occurred_at: datetime = Field(default_factory=utc_now)
     provider: str
     provider_endpoint_identifier: str
+    cost_category: str | None = None
+    api_key_name: str | None = None
+    billing_kind: Literal["api", "subscription", "local", "unknown"] | None = None
+    cost_attribution_recorded: bool = False
     model: str | None = None
     deployment: str | None = None
     input_tokens: int | None = None
@@ -86,6 +90,8 @@ class ModelInferenceUsageEvent(BaseModel):
         "provider_endpoint_identifier",
         "model",
         "deployment",
+        "cost_category",
+        "api_key_name",
         "request_status",
         "normalized_usage_status",
         "request_body_sha256",
@@ -131,6 +137,8 @@ class ModelInferenceUsageEvent(BaseModel):
 
 
 class ModelUsageCorrelationContext(BaseModel):
+    cost_category: str | None = None
+    cost_attribution_recorded: bool = False
     session_id: str
     dispatch_id: str
     workflow_run_id: str | None = None

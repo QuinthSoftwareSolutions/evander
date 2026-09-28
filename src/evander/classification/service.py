@@ -144,13 +144,26 @@ class ClassificationService:
                 )
 
         check_privacy()
+        usage_attribution = dict(attribution or {})
+        usage_attribution.update(
+            api_key_name=config.api_key_env, billing_kind="api", cost_attribution_recorded=True
+        )
+        if self.runtime_dir is not None and usage_attribution.get("session_id"):
+            try:
+                context = model_usage_store(self.runtime_dir).get_active_correlation_context(
+                    session_id=str(usage_attribution["session_id"])
+                )
+                if context is not None and context.cost_attribution_recorded:
+                    usage_attribution["cost_category"] = context.cost_category
+            except Exception:
+                logger.warning("Unable to read classification cost attribution", exc_info=True)
         started = time.monotonic()
         with provider_dispatch_scope(check_privacy):
             response = provider.evaluate(
                 prepared,
                 config,
                 api_key,
-                lambda **attempt: self._record_attempt(prepared, attribution or {}, **attempt),
+                lambda **attempt: self._record_attempt(prepared, usage_attribution, **attempt),
             )
         answers = validate_answers(prepared.questions, response.get("answers"))
         return {
@@ -212,6 +225,10 @@ class ClassificationService:
         event = ModelInferenceUsageEvent(
             event_id=f"classification-{uuid4().hex}",
             provider=prepared.provider,
+            cost_category=attribution.get("cost_category"),
+            api_key_name=attribution.get("api_key_name"),
+            billing_kind=attribution.get("billing_kind"),
+            cost_attribution_recorded=bool(attribution.get("cost_attribution_recorded")),
             provider_endpoint_identifier="systemone" if prepared.provider == "jev" else "evaluate",
             model=payload["model"]
             if isinstance(payload.get("model"), str) and payload["model"].strip()

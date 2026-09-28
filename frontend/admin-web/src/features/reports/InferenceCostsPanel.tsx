@@ -1,0 +1,181 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { adminHash } from "../../adminRouting";
+import { useAdminUi } from "../admin/AdminContext";
+import { fetchJson } from "../admin/api";
+import { useDocumentVisible } from "../admin/visibility";
+import { browserCostDate, costAccountId, costAccountName, costCategoryName, costColor, costMoney, shiftCostDate,
+  type InferenceCostReport } from "./inferenceCosts";
+import "./inferenceCosts.css";
+
+const H = 300, LEFT = 82, RIGHT = 24, TOP = 22, BOTTOM = 55;
+const plotH = H - TOP - BOTTOM;
+
+function Chart({ report, kind, selected }: { report: InferenceCostReport; kind: "daily" | "total" | "compare"; selected: string[] }) {
+  const [detail, setDetail] = useState("");
+  const figure = useRef<HTMLElement>(null);
+  const [width, setWidth] = useState(900);
+  useEffect(() => {
+    const element = figure.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(320, entry.contentRect.width)));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [kind, selected, report]);
+  const plotW = width - LEFT - RIGHT;
+  const barWidth = Math.min(48, plotW / Math.max(1, report.daily.length) * 0.8);
+  const categories = [...new Set(report.groups.map((group) => group.category))];
+  const selectedAccounts = report.accounts.filter((account) => selected.includes(account.id));
+  const accounts = selectedAccounts.filter((account) => report.groups.some((group) => costAccountId(group) === account.id && group.priced_events > 0));
+  const unavailableAccounts = selectedAccounts.filter((account) => !accounts.includes(account));
+  const series = kind === "total" ? [{ id: "total", name: "Total", color: "#497bdf",
+    values: report.daily.map((day) => day.cumulative_cost) }]
+    : accounts.map((account) => ({ id: account.id, name: costAccountName(account), color: costColor(account.id),
+      values: report.daily.map((day) => day.accounts.find((item) => item.id === account.id)?.cumulative_cost ?? 0) }));
+  const maximum = Math.max(0.01, ...(kind === "daily" ? report.daily.map((day) => day.cost) : series.flatMap((item) => item.values)));
+  const y = (value: number) => TOP + plotH * (1 - value / maximum);
+  const x = (index: number) => LEFT + plotW * (index + 1) / Math.max(1, report.daily.length);
+  const title = kind === "daily" ? "Daily inference cost by category" : "Accumulated inference cost";
+  const labelStep = Math.max(1, Math.ceil(report.daily.length / Math.max(2, Math.floor(plotW / 65))));
+  if (kind === "compare" && !accounts.length) return <p role="status">Costs are unavailable for the selected provider / API key groups.</p>;
+  return <figure ref={figure} className="inference-chart">
+    <figcaption>{title}</figcaption>
+    <svg viewBox={`0 0 ${width} ${H}`} role="group" aria-label={`${title}, USD by date`}>
+      {[0, 1, 2, 3, 4].map((tick) => <g key={tick}>
+        <line className="cost-grid-line" x1={LEFT} x2={width - RIGHT} y1={y(maximum * tick / 4)} y2={y(maximum * tick / 4)} />
+        <text x={LEFT - 10} y={y(maximum * tick / 4) + 4} textAnchor="end">{costMoney(maximum * tick / 4)}</text>
+      </g>)}
+      <text x={LEFT} y={13}>USD</text>
+      {report.daily.map((day, index) => index % labelStep === 0 || index === report.daily.length - 1
+        ? <text key={day.date} x={kind === "daily" ? x(index) - plotW / report.daily.length / 2 : x(index)} y={H - 27} textAnchor="middle">{day.date.slice(5)}</text> : null)}
+      <text x={width / 2} y={H - 5} textAnchor="middle">Date ({report.timezone})</text>
+      {kind === "daily" ? report.daily.map((day, index) => {
+        let offset = 0;
+        return categories.map((category) => {
+          const amount = day.categories.find((item) => item.category === category)?.cost ?? 0;
+          const base = offset; offset += amount;
+          if (!amount) return null;
+          const label = `${day.date} · ${costCategoryName(category)}: ${costMoney(amount)}`;
+          return <rect key={`${day.date}:${JSON.stringify(category)}`} tabIndex={0} role="img" aria-label={label}
+            x={x(index) - plotW / report.daily.length / 2 - barWidth / 2} y={y(offset)}
+            width={barWidth} height={Math.max(0, y(base) - y(offset))}
+            fill={costColor(category)} onFocus={() => setDetail(label)} onMouseEnter={() => setDetail(label)}>
+            <title>{label}</title>
+          </rect>;
+        });
+      }) : series.map((item) => <g key={item.id}>
+        <polyline fill="none" stroke={item.color} strokeWidth={2.5}
+          points={`${LEFT},${y(0)} ${item.values.map((value, index) => `${x(index)},${y(value)}`).join(" ")}`} />
+        {item.values.map((value, index) => {
+          const label = `${report.daily[index].date} · ${item.name}: ${costMoney(value)} accumulated`;
+          return <circle key={index} tabIndex={0} role="img" aria-label={label} cx={x(index)} cy={y(value)} r={3.5} fill={item.color}
+            onFocus={() => setDetail(label)} onMouseEnter={() => setDetail(label)}><title>{label}</title></circle>;
+        })}
+      </g>)}
+    </svg>
+    <div className="cost-chart-detail" aria-live="polite">{detail || "Point to or focus a chart value for details."}</div>
+    <ul className="cost-legend" aria-label="Chart legend">
+      {(kind === "daily" ? categories.map((category) => ({ id: JSON.stringify(category), name: costCategoryName(category), color: costColor(category) })) : series)
+        .map((item) => <li key={item.id}><span style={{ background: item.color }} />{item.name}</li>)}
+    </ul>
+    {kind === "compare" && unavailableAccounts.length > 0 && <p className="muted-text">Unavailable: {unavailableAccounts.map(costAccountName).join(", ")}</p>}
+  </figure>;
+}
+
+function CostTable({ report }: { report: InferenceCostReport }) {
+  return <div className="cost-table-scroll"><table className="data-table inference-cost-table">
+    <caption>API inference cost by provider, API key, and category</caption>
+    <thead><tr><th>Provider</th><th>API key</th><th>Category</th><th>Cost (USD)</th></tr></thead>
+    <tbody>{report.accounts.map((account) => {
+      const groups = report.groups.filter((group) => costAccountId(group) === account.id);
+      const subtotal = groups.reduce((sum, group) => sum + (group.cost ?? 0), 0);
+      const priced = groups.some((group) => group.priced_events > 0);
+      return <CostTableGroup key={account.id} groups={groups} subtotal={subtotal} priced={priced} />;
+    })}</tbody>
+    <tfoot><tr><th colSpan={3}>Total{report.coverage.partial ? " (partial)" : ""}</th>
+      <td>{report.coverage.priced_events || !report.coverage.partial ? costMoney(report.total_cost) : "Unavailable"}</td></tr></tfoot>
+  </table></div>;
+}
+
+function CostTableGroup({ groups, subtotal, priced }: { groups: InferenceCostReport["groups"]; subtotal: number; priced: boolean }) {
+  return <>{groups.map((group) => <tr key={JSON.stringify(group.category)}>
+    <td>{group.provider}</td><td>{group.api_key_name ?? "Unknown key"}</td><td>{costCategoryName(group.category)}</td>
+    <td>{group.cost === null ? "Unavailable" : costMoney(group.cost)}{group.cost !== null && group.unpriced_events > 0 ? " (partial)" : ""}</td>
+  </tr>)}<tr className="cost-subtotal"><th colSpan={3}>{groups[0]?.provider} / {groups[0]?.api_key_name ?? "Unknown key"} subtotal</th>
+    <td>{priced ? costMoney(subtotal) : "Unavailable"}{priced && groups.some((group) => group.unpriced_events) ? " (partial)" : ""}</td></tr></>;
+}
+
+export function InferenceCostsPanel({ compact = false, refreshKey = 0 }: { compact?: boolean; refreshKey?: number }) {
+  const { selectedDirectoryPath, setSelectedDirectoryPath } = useAdminUi();
+  const visible = useDocumentVisible();
+  const initial = useMemo(() => new URLSearchParams(compact ? "" : window.location.hash.split("?")[1] ?? ""), [compact]);
+  const [period, setPeriod] = useState(initial.has("start") ? "custom" : "mtd");
+  const [start, setStart] = useState(initial.get("start") || `${browserCostDate().slice(0, 7)}-01`);
+  const [through, setThrough] = useState(initial.get("end") ? shiftCostDate(initial.get("end")!, -1) : browserCostDate());
+  const [mode, setMode] = useState(initial.get("mode") === "compare" ? "compare" : "total");
+  const [selected, setSelected] = useState<string[]>(() => {
+    try { const value = JSON.parse(initial.get("groups") || "[]"); return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
+    catch { return []; }
+  });
+  const timezone = initial.get("timezone") || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const [report, setReport] = useState<InferenceCostReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const invalidPeriod = period === "custom" && (!start || !through || start > through);
+  useEffect(() => {
+    const directory = initial.get("directory_path");
+    if (directory) setSelectedDirectoryPath(directory);
+  }, [initial, setSelectedDirectoryPath]);
+  useEffect(() => {
+    if (!visible) return;
+    const timer = window.setInterval(() => setRefresh((value) => value + 1), 60_000);
+    return () => window.clearInterval(timer);
+  }, [visible]);
+  useEffect(() => {
+    if (!visible || invalidPeriod) return;
+    let active = true;
+    const controller = new AbortController();
+    const query = new URLSearchParams({ timezone, directory_path: selectedDirectoryPath });
+    if (period === "custom") { query.set("start", start); query.set("end", shiftCostDate(through, 1)); }
+    setLoading(true); setError(null); setReport(null);
+    fetchJson<InferenceCostReport>(`/api/admin/reports/inference-costs?${query}`, { signal: controller.signal })
+      .then((payload) => { if (active) { setReport(payload); setLoading(false); } })
+      .catch((reason: unknown) => { if (active) { setError(reason instanceof Error ? reason.message : "Unable to load inference costs"); setLoading(false); } });
+    return () => { active = false; controller.abort(); };
+  }, [visible, invalidPeriod, period, start, through, timezone, selectedDirectoryPath, refresh, refreshKey]);
+  const reportLink = adminHash("reports", { view: "inference-costs", timezone, directory_path: selectedDirectoryPath,
+    start: period === "custom" ? start : null, end: period === "custom" ? shiftCostDate(through, 1) : null,
+    mode, groups: mode === "compare" ? JSON.stringify(selected) : null });
+  return <section className={`inference-cost-panel ${compact ? "inference-cost-compact" : ""}`} aria-label="Inference costs">
+    <div className="cost-toolbar"><div><h2>Inference costs</h2><p className="muted-text">API costs · {period === "mtd" ? "Month to date" : "Custom period"} · {timezone}</p></div>
+      {compact ? <a href={reportLink}>Full cost report</a> : <button type="button" onClick={() => setRefresh((value) => value + 1)}>Refresh costs</button>}
+    </div>
+    {!compact && <div className="cost-controls">
+      <label>Period<select aria-label="Period" value={period} onChange={(event) => setPeriod(event.target.value)}><option value="mtd">Month to date</option><option value="custom">Custom period</option></select></label>
+      {period === "custom" && <><label>From<input type="date" value={start} onChange={(event) => setStart(event.target.value)} /></label>
+        <label>Through<input type="date" value={through} onChange={(event) => setThrough(event.target.value)} /></label></>}
+    </div>}
+    {invalidPeriod ? <p role="alert">Choose a valid start and end date.</p> : error ? <p role="alert">{error}</p> : loading ? <p role="status">Loading inference costs…</p> : report && <>
+      <p className="cost-headline">{report.coverage.priced_events || !report.coverage.partial ? costMoney(report.total_cost) : "Unavailable"}
+        {report.coverage.partial && <span>Partial total</span>}</p>
+      <p className="muted-text">Provider-reported charges where available; otherwise estimates from configured prices.</p>
+      {report.coverage.partial && <p role="status">{report.coverage.unpriced_events} requests have unavailable prices; {report.coverage.unknown_billing_events} requests with unknown billing are excluded.</p>}
+      {!report.groups.length && <p>No API inference recorded for this period.</p>}
+      <div className="cost-controls">
+        <label>Accumulated chart<select aria-label="Accumulated chart" value={mode} onChange={(event) => {
+          setMode(event.target.value); if (event.target.value === "compare" && !selected.length) setSelected(report.accounts.map((account) => account.id));
+        }}><option value="total">Total</option><option value="compare">Compare provider / API key</option></select></label>
+        {mode === "compare" && <label>Provider / API key<select aria-label="Provider / API key" multiple size={Math.min(6, Math.max(2, report.accounts.length))} value={selected}
+          onChange={(event) => setSelected([...event.target.selectedOptions].map((option) => option.value))}>
+          {report.accounts.map((account) => <option key={account.id} value={account.id}>{costAccountName(account)}</option>)}
+        </select></label>}
+      </div>
+      {!report.coverage.priced_events && report.coverage.partial
+        ? <p role="status">No priced usage is available to chart for this period.</p>
+        : mode === "compare" && !selected.some((id) => report.accounts.some((account) => account.id === id))
+        ? <p>Select one or more provider / API key groups to compare.</p>
+        : <Chart report={report} kind={mode === "compare" ? "compare" : "total"} selected={selected} />}
+      {!compact && <>{(report.coverage.priced_events > 0 || !report.coverage.partial) && <Chart report={report} kind="daily" selected={[]} />}<CostTable report={report} /></>}
+    </>}
+  </section>;
+}

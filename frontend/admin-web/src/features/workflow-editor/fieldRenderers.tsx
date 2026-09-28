@@ -1,3 +1,4 @@
+import { CostCategoryInput } from "../reports/CostCategoryInput";
 import { type Dispatch, type SetStateAction } from "react";
 import { CopyIcon } from "../../features/admin/PageActionIcons";
 import { Tooltip } from "../../features/admin/Tooltip";
@@ -657,7 +658,24 @@ export function createFieldRenderers({
                 </div>
               )
             : (
-              field.key === "directory_path"
+              field.key === "cost_category"
+                ? <div>
+                  {selectedNodeType !== "effect:agent:create" && <label className="field-stack">
+                    <span>Category assignment</span>
+                    <select disabled={isDisabled} value={value == null ? "inherit" : "override"}
+                      onChange={(event) => updateKnownField(field.key, event.target.value === "inherit" ? undefined : "")}>
+                      <option value="inherit">Use session category</option><option value="override">Override category</option>
+                    </select>
+                  </label>}
+                  {(selectedNodeType === "effect:agent:create" || value != null) && <CostCategoryInput
+                    value={typeof value === "string" ? value : ""} disabled={isDisabled}
+                    directoryPath={selectedNodeGraph?.directory_path ?? selectedDirectoryPath}
+                    onChange={(nextValue) => updateKnownField(field.key, nextValue)} />}
+                  <p className="field-description">{selectedNodeType === "effect:agent:create"
+                    ? "Default category for prompts in this session."
+                    : "An empty override is Uncategorized. Existing prompt costs keep their recorded category."}</p>
+                </div>
+                : field.key === "directory_path"
                 ? renderDirectoryPathSelect(
                   field,
                   value,

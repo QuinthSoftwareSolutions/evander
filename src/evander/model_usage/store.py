@@ -253,6 +253,15 @@ class ModelUsageStore:
                 if existing_row is not None
                 else None
             )
+            if existing is not None and existing.cost_attribution_recorded:
+                validated = validated.model_copy(
+                    update={
+                        "cost_category": existing.cost_category,
+                        "api_key_name": existing.api_key_name,
+                        "billing_kind": existing.billing_kind,
+                        "cost_attribution_recorded": True,
+                    }
+                )
             affected_keys = {
                 self._incremental_event_key(candidate)
                 for candidate in (existing, validated)
@@ -261,6 +270,27 @@ class ModelUsageStore:
             before_groups = {
                 key: self._incremental_event_group(connection, key) for key in affected_keys
             }
+            if not validated.cost_attribution_recorded:
+                attribution = next(
+                    (
+                        candidate
+                        for candidate in before_groups[self._incremental_event_key(validated)]
+                        if candidate.cost_attribution_recorded
+                        and candidate.provider == validated.provider
+                    ),
+                    None,
+                )
+                if attribution is not None:
+                    # Transcript imports outlive relay records under retention.
+                    # Keep the original request attribution on the durable event.
+                    validated = validated.model_copy(
+                        update={
+                            "cost_category": attribution.cost_category,
+                            "api_key_name": attribution.api_key_name,
+                            "billing_kind": attribution.billing_kind,
+                            "cost_attribution_recorded": True,
+                        }
+                    )
             connection.execute(
                 """
                 INSERT INTO model_usage_events(

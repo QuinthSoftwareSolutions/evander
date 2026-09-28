@@ -1,0 +1,26 @@
+.inference-cost-panel { padding: 1.25rem; min-width: 0; }
+.inference-cost-compact { grid-column: 1 / -1; border: 1px solid var(--border, #8993a333); border-radius: 12px; }
+.cost-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.cost-toolbar h2 { margin: 0; }
+.cost-controls { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; align-items: start; }
+.cost-controls label { display: grid; gap: .4rem; min-width: 10rem; }
+.cost-controls select, .cost-controls input { max-width: 100%; }
+.cost-headline { font-size: 2rem; font-weight: 650; margin: 1rem 0 .3rem; font-variant-numeric: tabular-nums; }
+.cost-headline span { font-size: .85rem; margin-left: .8rem; font-weight: 400; }
+.inference-chart { margin: 1.5rem 0; }
+.inference-chart figcaption { font-weight: 600; margin-bottom: .7rem; }
+.inference-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.inference-chart svg text { fill: currentColor; font: 12px system-ui, sans-serif; }
+.cost-grid-line { stroke: currentColor; opacity: .13; }
+.inference-chart svg [tabindex]:focus { outline: 2px solid currentColor; outline-offset: 3px; }
+.cost-chart-detail { min-height: 1.5em; font-size: .85rem; }
+.cost-legend { display: flex; gap: .5rem 1.2rem; flex-wrap: wrap; list-style: none; padding: 0; font-size: .85rem; }
+.cost-legend li { display: inline-flex; align-items: center; gap: .4rem; }
+.cost-legend span { width: .75rem; height: .75rem; border-radius: 2px; display: inline-block; }
+.cost-table-scroll { overflow-x: auto; }
+.inference-cost-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.inference-cost-table caption { text-align: left; padding-bottom: .75rem; }
+.inference-cost-table th, .inference-cost-table td { text-align: left; padding: .65rem; border-bottom: 1px solid #8993a333; }
+.inference-cost-table th:last-child, .inference-cost-table td:last-child { text-align: right; white-space: nowrap; }
+.inference-cost-table .cost-subtotal { background: #8993a311; }
+@media (max-width: 600px) { .inference-cost-panel { padding: .7rem; } .inference-chart svg { min-height: 190px; } }

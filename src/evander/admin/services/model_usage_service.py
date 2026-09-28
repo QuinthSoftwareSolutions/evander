@@ -72,6 +72,42 @@ class ModelUsageAdminService:
 
     def __init__(self, dependencies: ModelUsageAdminDependencies) -> None:
         self._deps = dependencies
+        self._inference_cost_report = None
+
+    def _cost_report(self):
+        from evander.model_usage.inference_report import InferenceCostReport
+
+        if self._inference_cost_report is None:
+            self._inference_cost_report = InferenceCostReport(
+                self._runtime_dir, model_usage_store(self._runtime_dir)
+            )
+        return self._inference_cost_report
+
+    def _optional_pricing_catalog(self):
+        try:
+            return self.model_pricing_catalog()
+        except (OSError, ValueError):
+            return None
+
+    def read_inference_cost_report(self, **kwargs) -> dict[str, Any]:
+        return self._cost_report().read(catalog=self._optional_pricing_catalog(), **kwargs)
+
+    def inference_cost_categories(self, *, directory_path: str = "root") -> list[str]:
+        from evander.models import DirectoryPath
+
+        directory = DirectoryPath(segments=directory_path).as_posix()
+        categories = set(
+            self._cost_report().categories(
+                directory_path=directory, catalog=self._optional_pricing_catalog()
+            )
+        )
+        for session in self._deps.session_repository.read_all().values():
+            if session.directory_path == directory or session.directory_path.startswith(
+                directory + "/"
+            ):
+                if session.cost_category:
+                    categories.add(session.cost_category)
+        return sorted(categories)
 
     @property
     def _runtime_dir(self) -> Path:

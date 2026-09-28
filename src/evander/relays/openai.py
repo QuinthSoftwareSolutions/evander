@@ -160,6 +160,7 @@ class RelayRequestContext:
     web_search_enabled: bool
     image_generation_enabled: bool
     directory_path: str | None = None
+    usage_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -352,6 +353,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
             try:
                 await run_in_threadpool(
                     self._record_model_usage_event,
+                    usage_snapshot=context.usage_snapshot if context else None,
                     session_id=context.session_id,
                     upstream_path="responses",
                     request_body=upstream_body,
@@ -585,6 +587,9 @@ class OpenAIRelay(OpenAIUsageAccounting):
                     try:
                         await run_in_threadpool(
                             relay._record_model_usage_event,
+                            usage_snapshot=request_context.usage_snapshot
+                            if request_context
+                            else None,
                             session_id=request_context.session_id,
                             upstream_path=upstream_path,
                             request_body=request_body,
@@ -703,6 +708,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
                 try:
                     await run_in_threadpool(
                         relay._record_model_usage_event,
+                        usage_snapshot=request_context.usage_snapshot if request_context else None,
                         session_id=request_context.session_id,
                         upstream_path=upstream_path,
                         request_body=request_body,
@@ -993,6 +999,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
                 try:
                     await run_in_threadpool(
                         self._record_model_usage_event,
+                        usage_snapshot=request_context.usage_snapshot if request_context else None,
                         session_id=request_context.session_id,
                         upstream_path=normalized_path,
                         request_body=request_body,
@@ -1227,6 +1234,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
                 try:
                     await run_in_threadpool(
                         self._record_model_usage_event,
+                        usage_snapshot=request_context.usage_snapshot if request_context else None,
                         session_id=request_context.session_id,
                         upstream_path=upstream_path,
                         request_body=None,
@@ -1398,6 +1406,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
             try:
                 await run_in_threadpool(
                     self._record_model_usage_event,
+                    usage_snapshot=request_context.usage_snapshot if request_context else None,
                     session_id=request_context.session_id,
                     upstream_path=normalized_path,
                     request_body=request_body,
@@ -1589,6 +1598,9 @@ class OpenAIRelay(OpenAIUsageAccounting):
                     try:
                         await run_in_threadpool(
                             self._record_stream_model_usage_event,
+                            usage_snapshot=privacy_context.usage_snapshot
+                            if privacy_context
+                            else None,
                             session_id=session_id,
                             upstream_path=upstream_path,
                             request_body=request_body,
@@ -1961,6 +1973,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
             web_search_enabled=bool(session.web_search_enabled),
             image_generation_enabled=bool(session.image_generation_enabled),
             directory_path=session.directory_path,
+            usage_snapshot=self._capture_usage_snapshot(session, resolved_config),
         )
         self._require_privacy(context)
         return context
@@ -1986,6 +1999,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
             web_search_enabled=bool(session.web_search_enabled),
             image_generation_enabled=bool(session.image_generation_enabled),
             directory_path=session.directory_path,
+            usage_snapshot=self._capture_usage_snapshot(session, resolved_config),
         )
         self._require_privacy(context)
         return context
@@ -2352,6 +2366,26 @@ class OpenAIRelay(OpenAIUsageAccounting):
         except ModuleNotFoundError:  # pragma: no cover - guarded earlier
             ConnectionClosedOK = ()  # type: ignore[assignment]
 
+        from collections import OrderedDict, deque
+
+        pending_usage = deque()
+        response_usage = OrderedDict()
+
+        async def capture_request_usage(message) -> None:
+            try:
+                payload = json.loads(message)
+            except (ValueError, UnicodeDecodeError):
+                return
+            if not isinstance(payload, dict) or payload.get("type") != "response.create":
+                return
+            snapshot = privacy_context.usage_snapshot if privacy_context else None
+            if privacy_context is not None and session_id:
+                session = await run_in_threadpool(self._session_for_request_context, session_id)
+                snapshot = await run_in_threadpool(
+                    self._capture_usage_snapshot, session, privacy_context.config
+                )
+            pending_usage.append(snapshot)
+
         async def safe_close_client(code: int = 1000, reason: str = "") -> None:
             try:
                 await websocket.close(code=code, reason=reason)
@@ -2411,6 +2445,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
                             reason="image generation is disabled for this session",
                         )
                         return
+                    await capture_request_usage(message["text"])
                     await upstream.send(message["text"])
                     continue
                 if message.get("bytes") is not None:
@@ -2444,6 +2479,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
                             reason="image generation is disabled for this session",
                         )
                         return
+                    await capture_request_usage(message["bytes"])
                     await upstream.send(message["bytes"])
 
         started_at = time.perf_counter()
@@ -2459,12 +2495,40 @@ class OpenAIRelay(OpenAIUsageAccounting):
                     await safe_close_client(code=1011)
                     return
 
+                try:
+                    envelope = json.loads(message)
+                except (ValueError, UnicodeDecodeError):
+                    envelope = {}
+                if isinstance(envelope, dict) and envelope.get("type") == "response.created":
+                    response = envelope.get("response")
+                    response_id = response.get("id") if isinstance(response, dict) else None
+                    if response_id and response_id not in response_usage and pending_usage:
+                        response_usage[response_id] = pending_usage.popleft()
+                elif (
+                    isinstance(envelope, dict) and envelope.get("type") == "error" and pending_usage
+                ):
+                    # Rejected creates have no response.created/completed pair.
+                    pending_usage.popleft()
                 usage_payload = self._websocket_usage_payload_from_message(message)
                 if usage_payload is not None and session_id:
                     response_payload, event_type = usage_payload
+                    response_id = response_payload.get("id")
+                    if response_id in response_usage:
+                        usage_snapshot = response_usage[response_id]
+                    elif pending_usage:
+                        usage_snapshot = pending_usage.popleft()
+                    else:
+                        usage_snapshot = privacy_context.usage_snapshot if privacy_context else None
+                    if response_id:
+                        # Keep recent completions so a duplicate cannot consume
+                        # attribution queued for the next response on this socket.
+                        response_usage[response_id] = usage_snapshot
+                        while len(response_usage) > 256:
+                            response_usage.popitem(last=False)
                     try:
                         await run_in_threadpool(
                             self._record_websocket_model_usage_event,
+                            usage_snapshot=usage_snapshot,
                             session_id=session_id,
                             upstream_path=upstream_path,
                             message=message,

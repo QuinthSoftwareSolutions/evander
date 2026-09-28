@@ -21,6 +21,7 @@ export type AgentCreateFormState = {
   ttlDuration: string;
   model: string;
   reasoningEffort: string;
+  costCategory: string;
   provider: string;
   vmUser: string;
   agentProvider: string;
@@ -64,6 +65,7 @@ export function emptyCreateForm(): AgentCreateFormState {
     ttlDuration: "7d",
     model: "",
     reasoningEffort: "",
+    costCategory: "",
     provider: "",
     vmUser: "agent",
     agentProvider: "",
@@ -166,6 +168,7 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   const model = optionalText(form.model);
   if (model) payload.model = model;
   if (form.reasoningEffort) payload.reasoning_effort = form.reasoningEffort;
+  if (form.costCategory.trim()) payload.cost_category = form.costCategory.trim();
   const agentProvider = optionalText(form.agentProvider);
   if (agentProvider) payload.agent_provider = agentProvider;
   const modelProviderMode = optionalText(form.modelProviderMode);

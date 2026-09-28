@@ -1,3 +1,4 @@
+import { CostCategoryInput } from "../reports/CostCategoryInput";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
@@ -497,6 +498,8 @@ export function AgentCreateDialog({
                 placeholder={createForm.agentProvider === "claude" ? "claude-sonnet-4-6" : "Directory default"}
               />
             </label>
+            <CostCategoryInput value={createForm.costCategory} directoryPath={directoryPath}
+              onChange={(costCategory) => setCreateForm((current) => ({ ...current, costCategory }))} />
             <ReasoningEffortSelect catalog={createOptions?.reasoning_effort_catalog}
               harness={createForm.agentProvider || (effectiveCreateModelProviderMode === "anthropic" ? "claude" : "codex")}
               model={createForm.model} route={effectiveCreateModelProviderMode}

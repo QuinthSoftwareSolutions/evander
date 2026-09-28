@@ -88,6 +88,9 @@ def test_mixed_questions_translated_and_attributed(tmp_path):
     assert events[0].workflow_run_id == "run"
     assert events[0].node_id == "evaluate"
     assert events[0].input_tokens == 120
+    assert events[0].api_key_name == "TYPESAFE_API_KEY"
+    assert events[0].billing_kind == "api"
+    assert events[0].cost_attribution_recorded
     assert "The export" not in json.dumps(events[0].model_dump(mode="json"))
 
 

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from evander.cost_categories import dispatch_with_cost_context
 from evander.reasoning_effort import resolve_reasoning_effort
 from evander.agent_threads import usable_agent_thread_id
 from evander.effects.providers.agent_session import (
@@ -87,6 +88,7 @@ _RECONCILED_QUEUE_EXECUTION_STATUSES = {
     "skipped",
 }
 _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
+    "cost_category_snapshot",
     "workflow_run_id",
     "mcp_tool_approval_lease_id",
     "operator_steering_note_id",
@@ -604,22 +606,36 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 resolve_runtime_dir(worker),
                 capacity_admission.slot_id,
             ):
-                result = dispatch_agent_prompt(
-                    worker,
-                    target=record.target,
-                    prompt=record.prompt,
-                    model=record.model,
-                    reasoning_effort=record.reasoning_effort,
-                    reasoning_effort_source=record.reasoning_effort_source,
-                    vm_user=record.vm_user,
-                    dispatch_id=dispatch_id,
-                    resume_thread_id=effective_resume_thread_id,
-                    resume_mode=str(getattr(record, "resume_mode", None) or "new_context"),
-                    persist_thread_id=self._resume_thread_metadata_key(record) is None,
-                    mcp_gateway_url=self._mcp_gateway_url_for_libvirt_record(
-                        worker=worker,
-                        record=record,
+                result = dispatch_with_cost_context(
+                    lambda: dispatch_agent_prompt(
+                        worker,
+                        target=record.target,
+                        prompt=record.prompt,
+                        model=record.model,
+                        reasoning_effort=record.reasoning_effort,
+                        reasoning_effort_source=record.reasoning_effort_source,
+                        vm_user=record.vm_user,
+                        dispatch_id=dispatch_id,
+                        resume_thread_id=effective_resume_thread_id,
+                        resume_mode=str(getattr(record, "resume_mode", None) or "new_context"),
+                        persist_thread_id=self._resume_thread_metadata_key(record) is None,
+                        mcp_gateway_url=self._mcp_gateway_url_for_libvirt_record(
+                            worker=worker,
+                            record=record,
+                        ),
                     ),
+                    runtime_dir=resolve_runtime_dir(worker),
+                    session=session,
+                    session_id=_session_id,
+                    payload=dict(record.metadata),
+                    dispatch_id=dispatch_id,
+                    model=record.model,
+                    effect_id=record.effect_id,
+                    workflow_run_id=record.metadata.get("workflow_run_id"),
+                    agent_harness=(getattr(session, "metadata", {}) or {}).get(
+                        "agent_provider", "codex"
+                    ),
+                    execution_backend="libvirt_vm",
                 )
             if result is not None and bool(getattr(result, "success", False)):
                 # Legacy queue entries resolve their effort in the VM dispatcher.
@@ -1290,56 +1306,70 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 resolve_runtime_dir(worker),
                 capacity_admission.slot_id,
             ):
-                handle = backend.start(
-                    backend.prepare(
-                        ExecutionSpec(
-                            backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                            target_name=execution_id,
-                            session_id=session_id,
-                            directory_path=getattr(session, "directory_path", None) or "root",
-                            image=container_worker_image_for_session(session, config),
-                            resource_limits=container_worker_resource_limits_for_session(session),
-                            command=container_prompt_command(
-                                prompt=record.prompt,
-                                model=model,
-                                **reasoning.fields(),
-                                resume_thread_id=effective_resume_thread_id,
-                                session=session,
-                                agent_provider=agent_harness,
-                                resume_mode=getattr(record, "resume_mode", None),
-                                mcp_gateway_url=mcp_gateway_url,
-                                web_search_enabled=bool(
-                                    getattr(session, "web_search_enabled", False)
+                handle = dispatch_with_cost_context(
+                    lambda: backend.start(
+                        backend.prepare(
+                            ExecutionSpec(
+                                backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                                target_name=execution_id,
+                                session_id=session_id,
+                                directory_path=getattr(session, "directory_path", None) or "root",
+                                image=container_worker_image_for_session(session, config),
+                                resource_limits=container_worker_resource_limits_for_session(
+                                    session
                                 ),
-                            ),
-                            codex_turn=codex_turn,
-                            metadata={
-                                "effect_type": "effect:agent:enqueue-prompt",
-                                "dispatch_id": dispatch_id,
-                                "agent_provider": agent_harness,
-                                "model": model,
-                                **reasoning.fields(),
-                                "model_provider_mode": config.model_provider_mode,
-                                **(
-                                    {"codex_auth_mode": codex_turn.auth_mode.value}
-                                    if codex_turn is not None
-                                    else {}
+                                command=container_prompt_command(
+                                    prompt=record.prompt,
+                                    model=model,
+                                    **reasoning.fields(),
+                                    resume_thread_id=effective_resume_thread_id,
+                                    session=session,
+                                    agent_provider=agent_harness,
+                                    resume_mode=getattr(record, "resume_mode", None),
+                                    mcp_gateway_url=mcp_gateway_url,
+                                    web_search_enabled=bool(
+                                        getattr(session, "web_search_enabled", False)
+                                    ),
                                 ),
-                                **(
-                                    {
-                                        "subscription_profile_id": (
-                                            codex_turn.subscription_profile_id
-                                        )
-                                    }
-                                    if codex_turn is not None
-                                    and codex_turn.subscription_profile_id is not None
-                                    else {}
-                                ),
-                                "resume_thread_id": effective_resume_thread_id,
-                                "queued": True,
-                            },
+                                codex_turn=codex_turn,
+                                metadata={
+                                    "effect_type": "effect:agent:enqueue-prompt",
+                                    "dispatch_id": dispatch_id,
+                                    "agent_provider": agent_harness,
+                                    "model": model,
+                                    **reasoning.fields(),
+                                    "model_provider_mode": config.model_provider_mode,
+                                    **(
+                                        {"codex_auth_mode": codex_turn.auth_mode.value}
+                                        if codex_turn is not None
+                                        else {}
+                                    ),
+                                    **(
+                                        {
+                                            "subscription_profile_id": (
+                                                codex_turn.subscription_profile_id
+                                            )
+                                        }
+                                        if codex_turn is not None
+                                        and codex_turn.subscription_profile_id is not None
+                                        else {}
+                                    ),
+                                    "resume_thread_id": effective_resume_thread_id,
+                                    "queued": True,
+                                },
+                            )
                         )
-                    )
+                    ),
+                    runtime_dir=resolve_runtime_dir(worker),
+                    session=session,
+                    session_id=session_id,
+                    payload=dict(record.metadata),
+                    dispatch_id=dispatch_id,
+                    model=record.model,
+                    effect_id=record.effect_id,
+                    workflow_run_id=record.metadata.get("workflow_run_id"),
+                    agent_harness=agent_harness,
+                    execution_backend="container_worker_vm",
                 )
         except Exception as exc:
             self._release_local_inference_capacity(

@@ -155,6 +155,7 @@ class VmAgentPromptMixin:
             vm_name=target_name,
             prompt=prompt,
             model=model,
+            cost_category=payload.get("cost_category"),
             reasoning_effort=reasoning_effort,
             resume_thread_id=resume_thread_id,
             resume_mode=resume_mode,

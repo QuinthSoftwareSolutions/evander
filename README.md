@@ -33,6 +33,8 @@ Git, and HTTP surfaces.
 - A host-side OpenAI relay that keeps the API key on the host, exposes an OpenAI-compatible endpoint to guests, and session-gates hosted web search plus image generation/editing
 - A source- and destination-restricted Codex subscription egress proxy for container workers
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
+- Session cost categories with per-prompt overrides, a dashboard cost chart, and
+  [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
   choice/score/boolean evaluations, Smart switch routing, a structured editor, and Jev as the first provider
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls

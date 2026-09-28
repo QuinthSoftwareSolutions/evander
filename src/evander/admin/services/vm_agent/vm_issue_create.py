@@ -26,6 +26,7 @@ class VmAgentIssueCreateMixin:
         issue: str,
         session_id: str | None = None,
         model: str | None = None,
+        cost_category: str | None = None,
         reasoning_effort: str | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
@@ -129,6 +130,9 @@ class VmAgentIssueCreateMixin:
                 manifest.model = self._deps.resolve_agent_model_for_session(manifest)
             except ValueError:
                 manifest.model = None
+        from evander.cost_categories import normalize_cost_category
+
+        manifest.cost_category = normalize_cost_category(cost_category)
         if reasoning_effort is not None:
             manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
         validate_session_reasoning_effort(
@@ -299,6 +303,7 @@ class VmAgentIssueCreateMixin:
         issue_identifier: str,
         *,
         model: str | None = None,
+        cost_category: str | None = None,
         reasoning_effort: str | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
@@ -321,6 +326,7 @@ class VmAgentIssueCreateMixin:
         return self.create_issue_vm(
             issue=issue.issue_id,
             model=model,
+            cost_category=cost_category,
             reasoning_effort=reasoning_effort,
             model_provider_mode=model_provider_mode,
             vm_user=vm_user,

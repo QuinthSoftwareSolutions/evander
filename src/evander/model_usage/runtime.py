@@ -65,6 +65,8 @@ def register_model_usage_correlation_context(
     agent_harness: str = MODEL_USAGE_AGENT_HARNESS,
     started_at: datetime | None = None,
     expires_at: datetime | None = None,
+    cost_category: str | None = None,
+    cost_attribution_recorded: bool = False,
 ) -> ModelUsageCorrelationContext | None:
     normalized_session_id = str(session_id or "").strip()
     normalized_dispatch_id = str(dispatch_id or "").strip()
@@ -74,6 +76,8 @@ def register_model_usage_correlation_context(
     started = started_at or utc_now()
     expires = expires_at or (started + MODEL_USAGE_CORRELATION_TTL)
     context = ModelUsageCorrelationContext(
+        cost_category=cost_category,
+        cost_attribution_recorded=cost_attribution_recorded,
         session_id=normalized_session_id,
         dispatch_id=normalized_dispatch_id,
         workflow_run_id=workflow_run_id,
@@ -91,6 +95,31 @@ def register_model_usage_correlation_context(
         expires_at=expires,
     )
     try:
+        previous = model_usage_store(runtime_dir).get_correlation_context(
+            dispatch_id=normalized_dispatch_id
+        )
+        if previous is not None:
+            # Nested dispatch adapters must not erase the outer workflow lineage.
+            for field in (
+                "workflow_run_id",
+                "effect_id",
+                "node_id",
+                "directory_path",
+                "model",
+                "team_id",
+                "project_id",
+                "agent_id",
+                "trace_id",
+                "execution_backend",
+            ):
+                if getattr(context, field) is None:
+                    setattr(context, field, getattr(previous, field))
+        if previous is not None and previous.cost_attribution_recorded:
+            context.cost_category = previous.cost_category
+            context.cost_attribution_recorded = True
+            # Late registration of dispatch metadata must not shorten a cost
+            # snapshot needed by a prompt that runs beyond the default TTL.
+            context.expires_at = max(context.expires_at, previous.expires_at)
         model_usage_store(runtime_dir).upsert_correlation_context(context)
     except Exception:
         return None

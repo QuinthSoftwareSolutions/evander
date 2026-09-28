@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from hashlib import sha256
 from typing import Any
 
@@ -16,6 +17,30 @@ from evander.model_usage.runtime import MODEL_USAGE_AGENT_HARNESS
 
 class OpenAIUsageAccounting:
     """Model-usage capture and provider request correlation for the OpenAI relay."""
+
+    def _capture_usage_snapshot(self, session, config) -> dict[str, Any]:
+        try:
+            context = self._active_model_usage_correlation_context(session_id=session.session_id)
+        except Exception:
+            logging.getLogger(__name__).warning("Usage correlation lookup failed", exc_info=False)
+            context = None
+        return {
+            "correlation_context": context,
+            "session_id": session.session_id,
+            "directory_path": session.directory_path,
+            "cost_category": (
+                context.cost_category
+                if context is not None and context.cost_attribution_recorded
+                else getattr(session, "cost_category", None)
+            ),
+            "api_key_name": (
+                None
+                if config.model_provider_mode == "local_openai"
+                else self._resolved_api_key_env(config)
+            ),
+            "billing_kind": "local" if config.model_provider_mode == "local_openai" else "api",
+            "cost_attribution_recorded": True,
+        }
 
     def _active_model_usage_correlation_context(
         self,
@@ -41,6 +66,7 @@ class OpenAIUsageAccounting:
         upstream_response: httpx.Response,
         duration_ms: int | None = None,
         provider_name: str = "openai",
+        usage_snapshot: dict[str, Any] | None = None,
         request_body_bytes: int | None = None,
         request_body_sha256: str | None = None,
         request_model: str | None = None,
@@ -74,6 +100,7 @@ class OpenAIUsageAccounting:
             ),
             duration_ms=duration_ms,
             provider_name=provider_name,
+            usage_snapshot=usage_snapshot,
             request_body_bytes=request_body_bytes,
             request_body_sha256=request_body_sha256,
             request_model=request_model,
@@ -91,6 +118,7 @@ class OpenAIUsageAccounting:
         response_payload: dict[str, Any],
         duration_ms: int | None,
         provider_name: str = "openai",
+        usage_snapshot: dict[str, Any] | None = None,
         request_body_bytes: int | None = None,
         request_body_sha256: str | None = None,
         request_model: str | None = None,
@@ -124,6 +152,7 @@ class OpenAIUsageAccounting:
             ),
             duration_ms=duration_ms,
             provider_name=provider_name,
+            usage_snapshot=usage_snapshot,
             request_body_bytes=request_body_bytes,
             request_body_sha256=request_body_sha256,
             request_model=request_model,
@@ -139,6 +168,7 @@ class OpenAIUsageAccounting:
         event_type: str | None,
         duration_ms: int | None,
         provider_name: str = "openai",
+        usage_snapshot: dict[str, Any] | None = None,
     ) -> None:
         if not self._is_model_usage_endpoint(upstream_path):
             return
@@ -170,6 +200,7 @@ class OpenAIUsageAccounting:
             ),
             duration_ms=duration_ms,
             provider_name=provider_name,
+            usage_snapshot=usage_snapshot,
         )
 
     def _record_model_usage_payload(
@@ -186,6 +217,7 @@ class OpenAIUsageAccounting:
         response_metadata: dict[str, Any],
         duration_ms: int | None,
         provider_name: str = "openai",
+        usage_snapshot: dict[str, Any] | None = None,
         request_body_bytes: int | None = None,
         request_body_sha256: str | None = None,
         request_model: str | None = None,
@@ -205,14 +237,11 @@ class OpenAIUsageAccounting:
                 response_metadata = dict(response_metadata)
                 response_metadata["openrouter"] = openrouter_metadata
 
-        correlation_context = self.model_usage_store.get_active_correlation_context(
-            session_id=session_id,
-            agent_harness=MODEL_USAGE_AGENT_HARNESS,
+        correlation_context = (
+            usage_snapshot.get("correlation_context")
+            if usage_snapshot is not None
+            else self._active_model_usage_correlation_context(session_id=session_id)
         )
-        if correlation_context is None:
-            correlation_context = self.model_usage_store.get_active_correlation_context(
-                session_id=session_id,
-            )
         resolved_request_body_bytes = (
             request_body_bytes
             if request_body_bytes is not None
@@ -253,7 +282,16 @@ class OpenAIUsageAccounting:
                 ),
             )
         )
-        self.model_usage_store.upsert_event(result.event)
+        event = result.event
+        if usage_snapshot is not None:
+            event = event.model_copy(
+                update={
+                    key: value
+                    for key, value in usage_snapshot.items()
+                    if key != "correlation_context"
+                }
+            )
+        self.model_usage_store.upsert_event(event)
 
     @classmethod
     def _provider_request_id_from_response(

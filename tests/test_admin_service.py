@@ -14560,6 +14560,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
         "13302",
         {
             "approval_required_tools": [" complete_issue ", "approval_submit"],
+            "cost_category": "  Maintenance  ",
             "tool_argument_policies": {
                 "create_ado_backlog_item": [
                     {
@@ -14601,6 +14602,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert result.success is True
     assert result.session_id == "issue-13302-session"
     assert updated is not None
+    assert updated.cost_category == "Maintenance"
     assert updated.approval_required_tools == [
         ToolName.COMPLETE_ISSUE,
         ToolName.APPROVAL_SUBMIT,
@@ -16424,6 +16426,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     result = service.vm_agent_admin.create_vm(
         vm_name="lab-vm",
         session_id="lab-session",
+        cost_category="  Development  ",
         labels={"workflow": "issue-worker", "agent_role": "issue"},
         metadata={"workflow": {"state": "active"}, "labels": {"priority": "high"}},
         model_provider_mode="local_openai",
@@ -16461,6 +16464,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     assert manifest is not None
     assert manifest.vm_id == "lab-vm"
     assert manifest.directory_path == team_path
+    assert manifest.cost_category == "Development"
     metadata = dict(manifest.metadata)
     mcp_session_auth = metadata.pop("mcp_session_auth")
     assert setup_env["EVANDER_MCP_SESSION_TOKEN"] == mcp_session_auth["token"]

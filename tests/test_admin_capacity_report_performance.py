@@ -420,7 +420,11 @@ def test_snapshot_routes_honor_explicit_freshness_bypass(monkeypatch, kind, bypa
         route = capacity.capacity_routes(service, None)[0]
     else:
         monkeypatch.setattr(reports, "run_in_threadpool", run_inline)
-        route = reports.report_routes(service, None)[0]
+        route = next(
+            route
+            for route in reports.report_routes(service, None)
+            if route.path == "/api/admin/reports/workflow-graph-activity"
+        )
     request = Request(
         {
             "type": "http",

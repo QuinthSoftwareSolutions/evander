@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from evander.cost_categories import normalize_cost_category
+
 from evander.reasoning_effort import (
     normalize_reasoning_effort,
     validate_session_reasoning_effort,
@@ -164,6 +166,7 @@ class VmAgentCreateRequestMixin:
                 session_id=self._agent_optional_string(payload, "session_id"),
                 labels=_normalize_session_labels(payload.get("labels")),
                 model=self._agent_optional_string(payload, "model"),
+                cost_category=normalize_cost_category(payload.get("cost_category")),
                 reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
                 ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
@@ -470,6 +473,7 @@ class VmAgentCreateRequestMixin:
                 "vm_provider": "container_worker_vm",
                 "vm_provider_id": target_name,
                 "model": model,
+                "cost_category": normalize_cost_category(payload.get("cost_category")),
                 "reasoning_effort": normalize_reasoning_effort(payload.get("reasoning_effort")),
                 "codex_auth_mode": codex_auth_mode,
                 "subscription_profile_id": subscription_profile_id,

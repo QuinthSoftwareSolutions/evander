@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-28 - Inference cost categories and analytics (0.72.0)
+
+- Tag sessions with a cost category and override it on individual prompt effects, preserving
+  attribution through queues, retries, and later session changes.
+- Report API inference costs by provider, configured API key, and category with daily stacked
+  bars, cumulative comparison lines, browser-local periods, and explicit pricing coverage.
+- Add the MTD cumulative cost chart and report link to the dashboard. Keep subscription and
+  local inference outside API monetary totals; retain safe credential names rather than secrets.
+
 ## 2026-09-28 - Queue workflow tasks by Team role (0.71.0)
 
 - Add `effect:team:create-task-for-role` to create durable role-queued work through

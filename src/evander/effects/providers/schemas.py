@@ -247,6 +247,10 @@ class AgentCreateEffectDefinition(EffectDefinition):
     existing_agent_behavior: ConfigValue | None = None
     labels: ConfigValue | None = None
     model: ConfigValue | None = None
+    cost_category: ConfigValue | None = Field(
+        default=None,
+        description="Default inference cost category for the session. Blank means Uncategorized.",
+    )
     reasoning_effort: ConfigValue | None = Field(
         default=None,
         description="Native reasoning level. Omit to inherit the session default.",
@@ -478,6 +482,10 @@ class AgentPromptEffectDefinition(EffectDefinition):
     vm_name: ConfigValue | None = None
     prompt: ConfigValue
     model: ConfigValue | None = None
+    cost_category: ConfigValue | None = Field(
+        default=None,
+        description="Inference cost category. Omit/null to inherit; an empty prompt override means Uncategorized.",
+    )
     reasoning_effort: ConfigValue | None = Field(
         default=None,
         description="Native reasoning level. Omit to inherit the session default.",
@@ -511,6 +519,10 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     vm_name: ConfigValue | None = None
     prompt: ConfigValue
     model: ConfigValue | None = None
+    cost_category: ConfigValue | None = Field(
+        default=None,
+        description="Inference cost category. Omit/null to inherit; an empty prompt override means Uncategorized.",
+    )
     reasoning_effort: ConfigValue | None = Field(
         default=None,
         description="Native reasoning level. Omit to inherit the session default.",

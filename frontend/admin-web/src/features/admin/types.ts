@@ -238,6 +238,7 @@ export type AgentExecutionHistoryResponse = {
 };
 
 export type AgentCreateRequest = {
+  cost_category?: string | null;
   backend: AgentBackend;
   session_id?: string | null;
   directory_path?: string | null;
