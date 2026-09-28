@@ -38,6 +38,15 @@ from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.workflow.events import SqliteWorkflowEventJournal
 
 
+def _drain_index(path):
+    for _ in range(100):
+        with connect_orchestration_db(path, deadline_seconds=0.25) as connection:
+            execution_history.run_pending_history_indexing(connection)
+            if not connection.execute("SELECT 1 FROM workflow_history_index_jobs").fetchone():
+                return
+    raise AssertionError("History projection did not converge")
+
+
 def _effect_record(
     *,
     execution_id: str = "execution-1",
@@ -122,6 +131,7 @@ def test_execution_history_schema_upgrade_does_not_rewrite_v1_records(tmp_path) 
         ).fetchone()[0]
         connection.executescript(
             """
+            DROP VIEW workflow_node_execution_current_values;
             DROP TABLE workflow_node_execution_history_values;
             DROP TABLE workflow_node_execution_history_sources;
             DROP TABLE workflow_node_execution_history;
@@ -134,7 +144,7 @@ def test_execution_history_schema_upgrade_does_not_rewrite_v1_records(tmp_path) 
             (datetime_to_storage(datetime.now(UTC)),),
         )
 
-    ensure_orchestration_schema(path)
+    ensure_orchestration_schema(path, force=True)
 
     with connect_orchestration_db(path) as connection:
         upgraded = connection.execute(
@@ -177,7 +187,7 @@ def test_execution_history_v3_timestamp_rewrite_runs_only_during_migration(
             ),
         )
 
-    ensure_orchestration_schema(path)
+    ensure_orchestration_schema(path, force=True)
     with connect_orchestration_db(path) as connection:
         normalized = connection.execute(
             """
@@ -225,6 +235,7 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
         )
     )
 
+    _drain_index(path)
     result = search_node_executions(
         path,
         node_id="effect-1",
@@ -310,7 +321,7 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
         indexed_secrets = connection.execute(
             """
             SELECT COUNT(*)
-            FROM workflow_node_execution_history_values
+            FROM workflow_node_execution_current_values
             WHERE text_value IN (
                 'password-value', 'pat-value', 'pwd-value', 'ssh-key-value',
                 'private-key-value', 'ssh-key-camel-value', 'ado-pat-value'
@@ -401,6 +412,8 @@ def test_execution_history_numeric_equality_is_exact_and_huge_values_do_not_fail
         )
     )
 
+    _drain_index(path)
+
     def matching(value: int) -> list[str]:
         result = search_node_executions(
             path,
@@ -446,7 +459,7 @@ def test_execution_history_numeric_equality_is_exact_and_huge_values_do_not_fail
         numeric_value = connection.execute(
             """
             SELECT numeric_value
-            FROM workflow_node_execution_history_values
+            FROM workflow_node_execution_current_values
             WHERE execution_key = 'effect:exact-enormous' AND json_pointer = '/number'
             """
         ).fetchone()[0]
@@ -455,7 +468,7 @@ def test_execution_history_numeric_equality_is_exact_and_huge_values_do_not_fail
     with connect_orchestration_db(path) as connection:
         connection.execute(
             """
-            UPDATE workflow_node_execution_history_values
+            UPDATE workflow_history_index_values
             SET text_value = NULL
             WHERE execution_key = 'effect:safe-float' AND json_pointer = '/number'
             """
@@ -962,8 +975,8 @@ def test_retention_archives_and_deletes_full_records_in_bounded_batches(
     archived_batches: list[list[tuple[str, str]]] = []
     batch_connections = []
 
-    def archive_batch(connection, *, cutoff: str, batch_size: int) -> list[tuple[str, str]]:
-        archived = original_archive(connection, cutoff=cutoff, batch_size=batch_size)
+    def archive_batch(connection, *, cutoff: str, batch_size: int, prepared=None) -> list[tuple[str, str]]:
+        archived = original_archive(connection, cutoff=cutoff, batch_size=batch_size, prepared=prepared)
         archived_batches.append(archived)
         batch_connections.append(connection)
         return archived
@@ -977,8 +990,9 @@ def test_retention_archives_and_deletes_full_records_in_bounded_batches(
         execution_history_batch_size=2,
     )
 
-    assert [len(batch) for batch in archived_batches] == [2, 2, 1, 0]
-    assert len({id(connection) for connection in batch_connections}) == 4
+    assert archived_batches and all(len(batch) <= 2 for batch in archived_batches)
+    assert sum(map(len, archived_batches)) == 5
+    assert len({id(connection) for connection in batch_connections}) == len(archived_batches)
     assert result.effect_executions_deleted == 5
     with connect_orchestration_db(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM effect_executions").fetchone()[0] == 0
@@ -1109,3 +1123,140 @@ def test_gate_merge_compact_storage_reduces_duplicate_payload_by_ninety_percent(
             """
         ).fetchone()[0]
     assert compact_size < full_size * 0.1
+
+
+def test_retention_keeps_expired_source_and_compact_history_until_projection_finishes(tmp_path):
+    path = tmp_path / "orchestration.db"
+    store = SqliteExecutionStore(path, retention_days=None)
+    store.put(_effect_record(
+        execution_id="pending-expired", started_at=datetime.now(UTC) - timedelta(days=400),
+        input_payload={"first": 1, "second": 2}, outputs={"answer": "complete"},
+    ))
+    result = orchestration_db.run_orchestration_retention_slice(
+        path, retention_days=30, compact_history_retention_days=365,
+    )
+    assert result.remaining and result.skipped_reason == "history_index_pending"
+    with connect_orchestration_db(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM effect_executions").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM workflow_node_execution_history").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM workflow_history_index_jobs").fetchone()[0] == 1
+        execution_history.run_pending_history_indexing(connection, batch_size=1)
+    result = orchestration_db.run_orchestration_retention_slice(
+        path, retention_days=30, compact_history_retention_days=365,
+    )
+    assert result.remaining and result.effect_executions_deleted == 0
+    result = run_orchestration_retention(path, retention_days=30, compact_history_retention_days=365)
+    assert result.effect_executions_deleted == result.compact_executions_deleted == 1
+
+
+def test_retention_limits_source_bytes_and_prepares_outside_writer(tmp_path, monkeypatch):
+    """Large legacy rows cannot turn a 100-row slice into an unbounded hydration."""
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    old = datetime.now(UTC) - timedelta(days=40)
+    for index in range(3):
+        _insert_legacy_effect(path, _effect_record(
+            execution_id=f"oversized-{index}", started_at=old,
+            outputs={"large": "x" * (1024 * 1024 + 1)},
+        ))
+    original = execution_history.prepare_execution_history_payloads
+    prepared_ids = []
+
+    def prepare(kind, record):
+        # A distinct writer can commit while CPU-heavy archive preparation runs.
+        with connect_orchestration_db(path, busy_timeout_ms=0, deadline_seconds=1) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("INSERT OR REPLACE INTO orchestration_metadata VALUES ('probe','{}')")
+        prepared_ids.append(record["execution_id"])
+        return original(kind, record)
+
+    monkeypatch.setattr(execution_history, "prepare_execution_history_payloads", prepare)
+    batch = execution_history.prepare_records_for_retention(
+        path, cutoff=datetime_to_storage(datetime.now(UTC) - timedelta(days=30)), batch_size=100,
+    )
+    assert prepared_ids == ["oversized-0"]
+    assert len(batch.sources) == 1
+    assert batch.payload_bytes > execution_history.RETENTION_SOURCE_BYTES
+
+
+@pytest.mark.parametrize("change", ["status", "payload"])
+def test_retention_rechecks_source_after_unlocked_preparation(tmp_path, change):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    old = datetime.now(UTC) - timedelta(days=40)
+    _insert_legacy_effect(path, _effect_record(execution_id="changed", started_at=old))
+    cutoff = datetime_to_storage(datetime.now(UTC) - timedelta(days=30))
+    batch = execution_history.prepare_records_for_retention(path, cutoff=cutoff)
+    with connect_orchestration_db(path) as connection:
+        if change == "status":
+            connection.execute("UPDATE effect_executions SET status='running' WHERE execution_id='changed'")
+        else:
+            connection.execute("UPDATE effect_executions SET payload_json=json_set(payload_json, '$.outputs.answer', 'updated') WHERE execution_id='changed'")
+    with connect_orchestration_db(path) as connection:
+        safe = execution_history.archive_records_for_retention(connection, cutoff=cutoff, prepared=batch)
+        assert safe == []
+        assert connection.execute("SELECT COUNT(*) FROM workflow_node_execution_history").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM effect_executions").fetchone()[0] == 1
+
+
+def test_backfill_prepares_one_oversized_source_outside_writer_deadline(tmp_path, monkeypatch):
+    import time
+
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    for index in range(2):
+        _insert_legacy_effect(path, _effect_record(
+            execution_id=f"large-backfill-{index}", outputs={"large": "x" * (1024 * 1024 + 1)},
+        ))
+    original = execution_history.prepare_execution_history_payloads
+    prepared = []
+
+    def slow_prepare(kind, record):
+        prepared.append(record["execution_id"])
+        # Preparation takes longer than the maintenance SQL deadline, with a
+        # competing writer held throughout. Backfill must still make progress.
+        with connect_orchestration_db(path, busy_timeout_ms=0, deadline_seconds=1) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("INSERT OR REPLACE INTO orchestration_metadata VALUES ('probe','{}')")
+            time.sleep(0.3)
+        return original(kind, record)
+
+    monkeypatch.setattr(execution_history, "prepare_execution_history_payloads", slow_prepare)
+    first = run_execution_history_backfill(path, batch_size=100)
+    assert prepared == ["large-backfill-0"]
+    assert first["archived"] == first["last_batch_size"] == 1
+    assert first["completed"] is False
+    second = run_execution_history_backfill(path, batch_size=100)
+    assert prepared == ["large-backfill-0", "large-backfill-1"]
+    assert second["completed"] is True
+    assert second["archived"] == 2
+    with connect_orchestration_db(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM effect_executions").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM workflow_node_execution_history").fetchone()[0] == 2
+
+
+def test_backfill_retries_changed_source_without_advancing_cursor(tmp_path, monkeypatch):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    _insert_legacy_effect(path, _effect_record(execution_id="changing-backfill", outputs={"answer": "old"}))
+    original = execution_history.prepare_execution_history_payloads
+    changed = False
+
+    def change_during_preparation(kind, record):
+        nonlocal changed
+        if not changed:
+            changed = True
+            with connect_orchestration_db(path) as connection:
+                connection.execute("UPDATE effect_executions SET payload_json=json_set(payload_json,'$.outputs.answer','new')")
+        return original(kind, record)
+
+    monkeypatch.setattr(execution_history, "prepare_execution_history_payloads", change_during_preparation)
+    first = run_execution_history_backfill(path)
+    assert first["completed"] is False
+    assert first["last_source_key"] is None
+    assert first["archived"] == 0
+    second = run_execution_history_backfill(path)
+    assert second["completed"] is True
+    assert second["archived"] == 1
+    detail = read_node_execution_detail(path, execution_key="effect:changing-backfill")
+    assert detail["output"] == {"answer": "new"}

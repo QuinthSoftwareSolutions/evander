@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
+import traceback
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError, Thread
-import traceback
 
-from config_helpers import canonical_worker_config
 import pytest
+from config_helpers import canonical_worker_config
 
 from evander.events.internal import InternalEventBus, InternalEventSubscriptionSpec
 from evander.events.scheduled import ScheduledInternalEventStore
@@ -341,3 +342,14 @@ def test_retention_preserves_unscanned_events_and_pending_schedules(tmp_path: Pa
     assert [event.event_id for event in bus.list_events()] == [retained.event_id]
     assert [event.status for event in schedules.list_all()] == ["pending"]
     assert bus.poll_subscription(spec, matcher=lambda _event: True) == [retained]
+
+
+def test_configured_internal_bus_open_does_not_run_retention_under_writer(tmp_path):
+    path = tmp_path / "orchestration.db"
+    bus = InternalEventBus(path)
+    event = bus.publish(event_type="synthetic.recorded", created_at=datetime.now(UTC)-timedelta(days=60))
+    with sqlite3.connect(path) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        reopened = InternalEventBus(path, retention_days=30, compact_history_retention_days=365)
+        assert event.event_id in [item.event_id for item in reopened.list_events()]
+        writer.rollback()

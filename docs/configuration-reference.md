@@ -249,10 +249,10 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `orchestration_store_path` | `config/trigger-orchestrator/config.json` | Authoritative SQLite database path for trigger events, internal events and subscriptions, scheduled internal events, effect executions, gate executions, workflow events, and workflow configuration snapshots. Defaults to `runtime/orchestration.db`. |
 | `orchestration_retention_days` | `config/trigger-orchestrator/config.json` | Completed orchestration history retention window. Defaults to `30`. |
 | `orchestration_compact_history_retention_days` | `config/trigger-orchestrator/config.json` | Queryable compact node-execution history retention window. Defaults to `365`. Compact history stores sanitized canonical inputs and outputs, typed scalar indexes, and source provenance after full execution records expire. |
-| `orchestration_wal_checkpoint_mode` | `config/trigger-orchestrator/config.json` | SQLite WAL checkpoint mode for bounded orchestration-store maintenance. Defaults to `truncate`; set to `disabled` to skip explicit checkpoints. |
+| `orchestration_wal_checkpoint_mode` | `config/trigger-orchestrator/config.json` | SQLite WAL checkpoint mode for bounded orchestration-store maintenance. Defaults to `passive`. Automatic maintenance normalizes legacy `full`, `restart`, and `truncate` settings to `passive`; those blocking modes are reserved for explicitly offline maintenance. Set `disabled` to skip checkpoints; history indexing, retention and payload collection still run. |
 | `orchestration_wal_checkpoint_min_bytes` | `config/trigger-orchestrator/config.json` | Minimum `orchestration.db-wal` size before explicit checkpointing. Defaults to `67108864` bytes. |
 | `orchestration_wal_checkpoint_interval_seconds` | `config/trigger-orchestrator/config.json` | Minimum interval between explicit WAL checkpoint attempts. Defaults to `300`. |
-| `orchestration_wal_checkpoint_busy_timeout_ms` | `config/trigger-orchestrator/config.json` | Short busy timeout used only for explicit WAL checkpoint attempts. Defaults to `1000`. |
+| `orchestration_wal_checkpoint_busy_timeout_ms` | `config/trigger-orchestrator/config.json` | Configured checkpoint busy timeout, default `1000`. Automatic background checkpoints cap the lock-wait budget at `100` ms; explicitly offline maintenance may use the configured value. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
@@ -275,6 +275,14 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `addon_loader.package_dirs` | Host config and `config/trigger-orchestrator/config.json` | Local add-on package directories to scan. Defaults to `["addons", "src"]`, resolved from the Evander project root for Admin Web and normal services. Each package is an immediate child directory with an `addon.json` manifest; directories without that manifest are ignored. |
 | `addon_loader.enabled_entry_points` | Host config and `config/trigger-orchestrator/config.json` | Enables add-on discovery through Python entry points in `evander.addons`. Defaults to `false`. |
 | `addon_loader.enabled_addon_ids` | Host config and `config/trigger-orchestrator/config.json` | Optional allowlist of add-on ids to load from configured modules, entry points, or scanned packages. When omitted, explicit modules and enabled entry points preserve the legacy load-all behavior, while scanned packages remain available but disabled. |
+
+Large operational records use lossless compressed references in the same orchestration database;
+small records remain inline. Sanitized execution-history payloads use a separate blob store.
+Readers accept both layouts. The explicit
+[`migrate-orchestration-storage` procedure](operations.md#orchestration-storage-migration-and-rollback)
+converts existing rows in resumable offline batches and creates deferred maintenance indexes.
+Startup performs schema readiness checks without rewriting all retained records. Before running
+an older release, rehydrate referenced records with the documented downgrade command.
 
 The Admin Web **Add-ons** page can toggle `addon_loader.enabled_addon_ids` and
 keeps host and trigger-orchestrator add-on loader settings aligned. Changes are

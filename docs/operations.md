@@ -273,7 +273,10 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
   and internal-event stores are no longer supported. Completed full records default to 30 days;
   sanitized compact inputs/outputs, typed scalar indexes, and source provenance default to 365
   days. Existing retained rows are copied in bounded idle-worker batches and the originals expire
-  normally. Retention reuses freed SQLite pages and does not run `VACUUM` automatically.
+  normally. Large operational payloads have lossless compressed references separate from sanitized
+  history. Background maintenance updates searchable projections, expires rows and collects orphan
+  payloads in bounded batches. Retention reuses freed SQLite pages and does not run `VACUUM`
+  automatically.
 - `trigger-orchestrator-cursors.json`: trigger-worker cursors/checkpoints.
 - `trigger-cursors-host-directories.json`: per-trigger Host Directory baseline, settle candidate,
   pending-event, and acknowledgement state.
@@ -297,6 +300,70 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
+
+### Orchestration storage migration and rollback
+
+Inspect the exact configured database without applying migrations:
+
+```bash
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --check
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --check --verify
+```
+
+`--verify` reads every operational payload and reports missing or invalid references. It can take
+longer than a readiness check on a large database. Read-only checks do not initialize schemas,
+convert rows or build indexes.
+
+The new reader accepts both legacy inline records and compressed references. Large payload subtrees in new records use lossless
+operational payload storage at a 16 KiB threshold; sanitized history remains separate. Startup does
+not scan and rewrite all old rows. To convert retained records and build deferred maintenance
+indexes, stop **every process using this database**, including the trigger/effect workers, gateway,
+Admin Web and any CLI or other workers that publish events. Take a verified backup with SQLite's
+backup API or a consistent copy of the stopped database and its WAL files. Then run:
+
+```bash
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --apply --offline --max-batches 20
+```
+
+`--offline` confirms that the database users have already been stopped; the command does not stop
+services. Repeat the same command until its JSON result has `complete: true`, then run the read-only
+`--check --verify` command before restarting. The migration commits bounded batches and records its
+cursor, so an interrupted invocation resumes. Existing maintenance index construction runs before
+the conversion batches and is not limited by `--max-batches`. Use a representative database copy
+to measure this step before scheduling the outage.
+
+For rollback to a release that only understands inline operational records, keep all database users
+stopped and run the **new release's CLI** before starting the old executable:
+
+```bash
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --apply --offline --downgrade --max-batches 20
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --check --verify
+```
+
+Repeat the downgrade command until `complete: true`; verification must report no errors and
+`downgrade_ready: true`. Downgrade rehydrates the original lossless values, completes pending indexing, restores the legacy
+field-search index (including interrupted retention), and clears projections that an older
+executable cannot maintain. Additional
+tables and indexes may remain. Backups and migration do not physically shrink the
+database; plan any space reclamation as separate offline SQLite maintenance.
+
+Team activity retention removes at most 100 expired records per append. Team SQLite schema 80
+prepares its `(created_at, id)` retention index automatically only when the activity table has
+at most 10,000 rows. Larger tables retain their rows until the index is prepared offline; their
+normal append path skips pruning. Include the Team database in the maintenance check and apply:
+
+```bash
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --team-database runtime/addons/team-addon/state.db --check
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --team-database runtime/addons/team-addon/state.db --apply --offline --max-batches 20
+```
+
+Stop all users of both databases before applying. The Team readiness result reports whether
+its retention index exists; the offline index build is not limited by `--max-batches`.
+
+Team dispatch finalization now returns its outcome receipt, including revision, dispatch IDs,
+activity counts and event IDs. It no longer copies the agent's historical state into every
+successor. Before deployment, check operator workflow bindings for use of the previously
+undeclared finalizer `state` output; retrieve details through Team read queries/APIs instead.
 
 ### MCP connection-history SQLite cutover
 

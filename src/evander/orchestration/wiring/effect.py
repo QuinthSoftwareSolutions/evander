@@ -15,7 +15,6 @@ from evander.provider_profiles import (
     is_pure_orchestration_core_profile,
     resolve_provider_module_names,
 )
-from evander.repositories.orchestration_db import maybe_checkpoint_orchestration_wal
 from evander.orchestration.internal_events import internal_event_bus_metadata
 from evander.gates.registry import GateProviderFactory
 from evander.queries.registry import QueryProviderFactory
@@ -189,13 +188,6 @@ def build_effect_worker_store_wiring(
     )
     workflow_config_snapshot_store = SqliteWorkflowConfigSnapshotRepository(
         worker_config.orchestration_store_path
-    )
-    maybe_checkpoint_orchestration_wal(
-        worker_config.orchestration_store_path,
-        mode=worker_config.orchestration_wal_checkpoint_mode,
-        min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
-        interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
-        busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
     )
     lock_path = _resolve_worker_path(
         worker_config,

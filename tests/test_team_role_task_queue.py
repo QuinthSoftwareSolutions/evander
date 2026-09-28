@@ -679,6 +679,7 @@ def test_role_queue_legacy_dispatch_without_claim_evidence_retains_owner(role_re
     dispatch = leases[0]
     owner = state.tasks["one"].owner_agent_id
     with sqlite3.connect(role_repo.store.path) as connection:
+        connection.execute("UPDATE team_state_metadata SET value='0' WHERE key IN ('sqlite_schema_version', 'state_schema_version')")
         connection.execute("ALTER TABLE team_dispatches DROP COLUMN claimed_role_task_ids_json")
 
     migrated = TeamStateRepository(role_repo.runtime_dir)

@@ -7072,6 +7072,18 @@ def test_admin_web_node_execution_history_search_fields_and_detail(tmp_path: Pat
         "limit": 50,
     }
 
+    pending = client.post("/api/workflow-editor/node-executions/search", json=search_body)
+    assert pending.status_code == 200
+    assert pending.json()["indexing_complete"] is False
+    assert pending.json()["indexing_pending_count"] == 1
+    assert pending.json()["matched"] == 0
+    immediate_detail = client.get("/api/workflow-editor/node-executions/effect:exec-history")
+    assert immediate_detail.status_code == 200
+    assert immediate_detail.json()["output"]["count"] == 3
+    from evander.repositories.execution_history import run_pending_history_indexing
+    with connect_orchestration_db(runtime_dir / "orchestration.db") as connection:
+        assert run_pending_history_indexing(connection)["completed"] == 1
+
     search = client.post("/api/workflow-editor/node-executions/search", json=search_body)
     fields = client.post(
         "/api/workflow-editor/node-executions/fields",

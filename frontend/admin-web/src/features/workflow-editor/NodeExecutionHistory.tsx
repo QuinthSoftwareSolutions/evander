@@ -40,6 +40,12 @@ export function NodeExecutionHistory({
       <p className="field-description">
         Query this node's inputs and outputs. Dates use your local timezone; the end is exclusive.
       </p>
+      {nodeExecutionSearch?.indexing_complete === false && (
+        <p className="field-description" role="status">
+          Field search is updating for {nodeExecutionSearch.indexing_pending_count} execution(s).
+          Status and execution details are available now. Refresh to include newly indexed values.
+        </p>
+      )}
       <form
         className="node-execution-history-form"
         onSubmit={(event) => {

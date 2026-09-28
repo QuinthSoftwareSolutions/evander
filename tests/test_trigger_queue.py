@@ -56,11 +56,20 @@ def test_publish_result_atomically_reports_one_creator_under_race(tmp_path) -> N
     barrier = Barrier(len(queues))
 
     def publish(queue):
+        import time
+        from evander.repositories.sqlite_runtime import is_storage_busy
+
         barrier.wait()
-        return queue.publish_result(
-            _event(event_id="evt-race"),
-            idempotency_key="provider:race",
-        )
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                return queue.publish_result(
+                    _event(event_id="evt-race"), idempotency_key="provider:race",
+                )
+            except Exception as exc:
+                if not is_storage_busy(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
 
     with ThreadPoolExecutor(max_workers=len(queues)) as executor:
         results = list(executor.map(publish, queues))

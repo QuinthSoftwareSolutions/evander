@@ -362,6 +362,8 @@ export type WorkflowNodeExecutionAvailability = {
 };
 
 export type WorkflowNodeExecutionSearch = {
+  indexing_complete?: boolean;
+  indexing_pending_count?: number;
   generated_at: string;
   node_id: string;
   started_from: string;

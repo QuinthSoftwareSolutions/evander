@@ -44,6 +44,7 @@ class TeamStateConflictError(RuntimeError):
 class TeamStateRepository:
     def __init__(self, runtime_dir: str | Path, *, maintenance: bool = False) -> None:
         self.runtime_dir = Path(runtime_dir)
+        self.maintenance = maintenance
         self.store = TeamStateSqliteStore(self.runtime_dir, maintenance=maintenance)
         self._dispatch_activity_repository = TeamDispatchActivityRepository(self.store)
         self._idempotency_repository = TeamIdempotencyRepository(self.store)
@@ -92,6 +93,27 @@ class TeamStateRepository:
             return mutator(state) or state
 
         return self.store.update_state(_update)
+
+    def update_prepared(
+        self,
+        mutator: Callable[[TeamState], TeamState | None],
+        *,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        """Plan a pure state mutation once, then commit under a short revision CAS.
+
+        The caller must defer/replan on conflict. This method never retries its
+        callback, and is only suitable for mutations without external effects.
+        """
+        state = self.read()
+        if expected_revision is not None and state.revision != expected_revision:
+            raise TeamStateConflictError(expected_revision=expected_revision,
+                                         current_revision=state.revision)
+        baseline = state.model_dump(mode="json")
+        candidate = mutator(state) or state
+        return self.commit_prepared_state_with_command_transaction(
+            previous_payload=baseline, candidate=candidate, command_writer=lambda _tx: None,
+        )
 
     def update_with_outbox(
         self,

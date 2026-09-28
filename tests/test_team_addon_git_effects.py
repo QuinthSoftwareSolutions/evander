@@ -2105,6 +2105,11 @@ def test_mark_release_published_leaves_legacy_duplicate_rejected_by_migration(
         return state
 
     repo.update(_add_pending_duplicate)
+    # This is an old persisted row, so reproduce its state migration marker.
+    import sqlite3
+
+    with sqlite3.connect(repo.store.path) as connection:
+        connection.execute("UPDATE team_state_metadata SET value='0' WHERE key='state_schema_version'")
 
     result = _mark_release_provider(
         tmp_path,

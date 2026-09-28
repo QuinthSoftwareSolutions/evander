@@ -9,7 +9,6 @@ from evander.admin.services.managed_git_runtime_service import ManagedGitMainten
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.provider_config import ProviderConfigResolver
 from evander.provider_profiles import resolve_provider_module_names
-from evander.repositories.orchestration_db import maybe_checkpoint_orchestration_wal
 from evander.orchestration.internal_events import internal_event_bus_metadata
 from evander.runtime import RuntimeContext
 from evander.triggers.queue import SqliteTriggerEventQueue
@@ -87,13 +86,6 @@ def build_trigger_worker_wiring(
         compact_history_retention_days=int(
             worker_config.orchestration_compact_history_retention_days
         ),
-    )
-    maybe_checkpoint_orchestration_wal(
-        worker_config.orchestration_store_path,
-        mode=worker_config.orchestration_wal_checkpoint_mode,
-        min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
-        interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
-        busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
     )
     gate_cursor_repository = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
     runtime_wiring = build_trigger_provider_runtime_wiring(

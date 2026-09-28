@@ -20,21 +20,12 @@ from evander.repositories.orchestration import (
     read_latest_agent_prompt_execution,
 )
 
-from .human_review_projection import (
-    apply_compact_human_review_projection,
-)
-from .models import (
-    team_state_payload,
-)
 from .provider_completion import (
     TeamAgentPromptCompletionFinalizeHook,
 )
 from .provider_events import (
     _materialize,
     _publish_team_events,
-)
-from .provider_projection import (
-    _filtered_team_state_payload,
 )
 from .provider_prompt_queue import (
     _team_native_thread_receipt,
@@ -121,7 +112,7 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
             dispatch_id=_required_text(payload.get("dispatch_id"), "dispatch_id"),
         )
         try:
-            state, result = TeamRuntimeService(repo).finalize_agent_dispatch_from_activity(
+            _state, result = TeamRuntimeService(repo).finalize_agent_dispatch_from_activity(
                 session_id=_required_text(payload.get("session_id"), "session_id"),
                 dispatch_id=_required_text(payload.get("dispatch_id"), "dispatch_id"),
                 agent_id=_optional_text(payload.get("agent_id")),
@@ -142,26 +133,15 @@ class TeamFinalizeAgentDispatchEffectProvider(EffectProviderBase):
                 "expected_revision": exc.expected_revision,
                 "current_revision": exc.current_revision,
             }
-        agent_id = result.get("agent_id")
         published_event_ids = _publish_team_events(
             self.runtime_context,
             result.get("events"),
         )
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
-        if isinstance(agent_id, str):
-            state_payload = _filtered_team_state_payload(
-                state,
-                team_id=None,
-                project_id=None,
-                agent_id=agent_id,
-            )
-        else:
-            state_payload = team_state_payload(state, include_agent_avatars=False)
-            apply_compact_human_review_projection(state_payload, state)
-            state_payload["conversations"] = {}
-            state_payload["conversation_messages"] = {}
-        return {**result, "state": state_payload}
+        # The receipt identifies the committed revision and dispatch. Historical
+        # Team state belongs in the Team read APIs, not every downstream event.
+        return result
 
 
 class TeamRegisterAgentEffectProvider(EffectProviderBase):

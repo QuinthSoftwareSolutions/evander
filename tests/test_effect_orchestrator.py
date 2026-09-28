@@ -3470,6 +3470,7 @@ def test_effect_orchestrator_marks_completion_publish_failure_pending(
             raise RuntimeError("completion publish boom")
         return original_publish(event, idempotency_key=idempotency_key)
 
+    worker.event_queue.supports_atomic_publication = False
     worker.event_queue.publish = publish  # type: ignore[assignment]
     worker.event_queue.publish(
         TriggerEvent(
@@ -3530,6 +3531,7 @@ def test_effect_orchestrator_retries_pending_completion_publish_after_restart(
             raise RuntimeError("completion publish boom")
         return original_publish(event, idempotency_key=idempotency_key)
 
+    first_worker.event_queue.supports_atomic_publication = False
     first_worker.event_queue.publish = publish  # type: ignore[assignment]
     first_worker.event_queue.publish(
         TriggerEvent(
@@ -3618,6 +3620,7 @@ def test_effect_orchestrator_retries_pending_started_branch_publish_after_restar
             raise RuntimeError("started branch publish boom")
         return original_publish(event, idempotency_key=idempotency_key)
 
+    first_worker.event_queue.supports_atomic_publication = False
     first_worker.event_queue.publish = publish  # type: ignore[assignment]
     first_worker.event_queue.publish(
         TriggerEvent(
@@ -3706,6 +3709,7 @@ def test_effect_orchestrator_retries_partially_published_completion_publish_once
             raise RuntimeError("completion publish boom after write")
         return record
 
+    first_worker.event_queue.supports_atomic_publication = False
     first_worker.event_queue.publish = publish  # type: ignore[assignment]
     first_worker.event_queue.publish(
         TriggerEvent(
@@ -3835,6 +3839,7 @@ def test_effect_orchestrator_retries_partially_published_gate_completion_publish
             raise RuntimeError("gate completion publish boom after write")
         return record
 
+    worker.event_queue.supports_atomic_publication = False
     worker.event_queue.publish = publish  # type: ignore[assignment]
 
     worker.run_once()
@@ -6678,6 +6683,11 @@ def test_agent_enqueue_prompt_restart_repairs_claimed_row_then_respects_retentio
         retention_days=0,
         compact_history_retention_days=365,
     )
+    # Retention is owned by the maintenance lane, never a queue constructor.
+    from evander.repositories.orchestration_db import maybe_run_orchestration_retention
+    maybe_run_orchestration_retention(
+        database_path, retention_days=0, compact_history_retention_days=365,
+    )
     assert not restarted_event_queue.contains(started_event_id)
 
     restarted_worker = SimpleNamespace(
@@ -9337,6 +9347,7 @@ def test_agent_prompt_error_branch_publish_failure_fails_loudly(
             raise RuntimeError("error branch publish boom")
         return original_publish(event, idempotency_key=idempotency_key)
 
+    worker.event_queue.supports_atomic_publication = False
     worker.event_queue.publish = publish  # type: ignore[assignment]
     worker.event_queue.publish(
         TriggerEvent(
@@ -9819,6 +9830,7 @@ def test_await_agent_recorded_failure_routes_to_error_branch_on_replay(tmp_path:
             persisted_statuses.append(persisted.status)
         return original_publish(event, idempotency_key=idempotency_key)
 
+    worker.event_queue.supports_atomic_publication = False
     worker.event_queue.publish = publish  # type: ignore[assignment]
 
     for _ in range(3):
@@ -10955,6 +10967,7 @@ def test_await_agent_reconciliation_skips_and_retries_when_inventory_fails(
     assert "virsh list failed" in caplog.text
 
     caplog.clear()
+    worker._wal_checkpoint_maintenance.close()
     worker.agent_run_status_port = _AgentRunStatusPortStub(
         [
             VmSummary(

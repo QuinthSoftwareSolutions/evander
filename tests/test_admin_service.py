@@ -11560,6 +11560,57 @@ def test_read_workflow_failure_clusters_report_initializes_missing_sqlite_store(
     assert orchestration_store_path.exists() is True
 
 
+def test_failure_cluster_report_has_its_own_read_budget(tmp_path, monkeypatch):
+    import time
+    from evander.admin.services import workflow_reports_service as reports
+    from evander.repositories.orchestration_db import connect_orchestration_db
+
+    write_failure_cluster_config(tmp_path)
+    service = build_admin_runtime(write_config(tmp_path))
+    path = tmp_path / "runtime" / "orchestration.db"
+    store = SqliteExecutionStore(path)
+    start = datetime(2026, 6, 12, 10, 0, tzinfo=UTC)
+    store.record_execution(EffectExecutionRecord(
+        execution_id="first", idempotency_key="first", event_id="event-first", trace_id="trace",
+        source_node_id="trigger-ticket", source_trigger_type="trigger:ticket:created",
+        effect_id="effect-push-branch", effect_type="effect:git:push-branch", status="failed",
+        started_at=start, finished_at=start, resolved_config_hash="hash",
+        error="Provider connection refused",
+    ))
+    # Representative report volume without thousands of unrelated history writes.
+    with connect_orchestration_db(path, deadline_seconds=5) as connection:
+        connection.execute("""WITH RECURSIVE numbers(n) AS (
+            VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<3000
+        ) INSERT INTO effect_executions (
+            execution_id, idempotency_key, event_id, trace_id, source_node_id,
+            source_trigger_type, effect_id, effect_type, status, started_at, finished_at,
+            payload_json, dismissed_at
+        )
+        SELECT 'copy-'||n, 'key-'||n, 'event-'||n, trace_id, source_node_id,
+               source_trigger_type, effect_id, effect_type, status, started_at, finished_at,
+               json_set(payload_json, '$.execution_id', 'copy-'||n,
+                        '$.event_id', 'event-'||n, '$.idempotency_key', 'key-'||n), dismissed_at
+        FROM effect_executions CROSS JOIN numbers WHERE execution_id='first'""")
+    load = reports.load_record
+    seen = 0
+
+    def slow_record_processing(*args, **kwargs):
+        nonlocal seen
+        seen += 1
+        if seen == 1:
+            time.sleep(0.12)
+        return load(*args, **kwargs)
+
+    monkeypatch.setattr(reports, "load_record", slow_record_processing)
+    report = service.workflow_reports_admin.read_workflow_failure_clusters_report(
+        period_start=start - timedelta(hours=1), period_end=start + timedelta(hours=1),
+    )
+    assert seen == 3001
+    assert len(report.clusters) == 1
+    assert report.clusters[0].count == 3001
+    assert report.clusters[0].latest_error_summary == "Provider connection refused"
+
+
 def test_workflow_failure_cluster_payload_models_validate_representative_json() -> None:
     report = admin_service.WorkflowFailureClusterReportPayload.model_validate(
         {

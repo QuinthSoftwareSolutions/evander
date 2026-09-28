@@ -7,11 +7,13 @@ import logging
 import math
 import os
 import random
+import sqlite3
 import time
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Literal
@@ -58,6 +60,16 @@ from evander.orchestration.maintenance import (
     MaintenanceBudget,
     MaintenanceResult,
     RecoverySchedule,
+)
+from evander.orchestration.completion_scheduling import (
+    COMPLETION_RETRY_INITIAL_SECONDS,
+    COMPLETION_SLICE_ITEMS,
+    CompletionBudget,
+    CompletionRetry,
+)
+from evander.repositories.sqlite_runtime import (
+    foreground_storage_budget,
+    is_storage_busy as sqlite_busy,
 )
 from evander.orchestration.adapters import (
     EffectCompletionPublisherAdapter,
@@ -130,7 +142,6 @@ from evander.repositories.orchestration import (
     SqliteExecutionRepository,
     SqliteGateExecutionRepository,
 )
-from evander.repositories.execution_history import run_execution_history_backfill
 
 logger = logging.getLogger(__name__)
 
@@ -332,11 +343,12 @@ class EffectOrchestratorCycleResult:
     next_sleep_seconds: float
 
 
-@dataclass(frozen=True)
+@dataclass
 class InflightExecution:
     future: Future[dict[str, Any]]
     config_revision: str
     kind: str = "effect"
+    completion_observed_at: datetime | None = None
 
 
 class _WorkerAgentPromptActivity(AgentPromptActivityRuntime):
@@ -549,6 +561,13 @@ class EffectOrchestratorWorker:
         self._executor = resolved_wiring.executor
         self._inflight: dict[str, InflightExecution] = {}
         self._inflight_lock = RLock()
+        self._completion_budget: CompletionBudget | None = None
+        self._completion_retries: dict[str, CompletionRetry] = {}
+        self._completion_storage_retry_at = 0.0
+        self._completion_cursors: dict[str, tuple[str, str] | None] = {}
+        self._completion_lane = "future"
+        self._pending_completion_bookkeeping: dict[str, EffectExecutionRecord | GateExecutionRecord] = {}
+        self._cycle_storage_retry = CompletionRetry()
         self._last_graph_revision: str | None = None
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
@@ -586,6 +605,7 @@ class EffectOrchestratorWorker:
         wake_path = wake_socket_path_for_lock(self.lock_path)
         self._wake_sleeper = HostWakeSleeper(wake_path)
         self._wake_notifier = HostWakeNotifier(wake_path)
+        self._wal_checkpoint_maintenance.set_wake_callback(self._wake_notifier.notify)
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -598,6 +618,10 @@ class EffectOrchestratorWorker:
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
             on_start=self._wake_sleeper.start,
             on_stop=self.close,
+            on_cycle_exception=self._on_cycle_storage_exception,
+            get_exception_sleep_seconds=lambda _error: max(
+                0.0, self._cycle_storage_retry.retry_at - time.monotonic()
+            ),
         )
         self._initialize_lifecycle_hooks()
 
@@ -610,6 +634,7 @@ class EffectOrchestratorWorker:
 
     def close(self) -> None:
         """Drain isolated lifecycle work before releasing runtime bindings."""
+        self._wal_checkpoint_maintenance.close()
         for hook in self._completion_dispatch_hooks:
             close = getattr(hook, "close", None)
             if callable(close):
@@ -617,11 +642,18 @@ class EffectOrchestratorWorker:
         self._lifecycle_hooks_closed = True
 
     def _bind_provider_factory_runtime_ports(self) -> None:
+        from evander.orchestration.event_publisher import InternalEventPublisherRuntime
+        from evander.orchestration.internal_events import internal_event_bus_metadata
+
         try:
             setattr(
                 self.provider_factory,
                 "agent_prompt_activity",
                 self._agent_prompt_activity,
+            )
+            self.provider_factory.internal_event_publisher = InternalEventPublisherRuntime(
+                runtime_dir=self.worker_config.runtime_dir,
+                metadata=internal_event_bus_metadata(self.worker_config),
             )
         except Exception:
             return
@@ -690,6 +722,123 @@ class EffectOrchestratorWorker:
         return self._run_force_complete_hooks(dispatch_id=dispatch_id)
 
     def run_once(self) -> EffectOrchestratorCycleResult:
+        remaining = self._cycle_storage_retry.retry_at - time.monotonic()
+        if remaining > 0:
+            return EffectOrchestratorCycleResult(0, 0, 0, 0, remaining)
+        self._completion_budget = CompletionBudget()
+        try:
+            with foreground_storage_budget(seconds=0.1):
+                result = self._run_once()
+            self._cycle_storage_retry = CompletionRetry()
+            return result
+        except Exception as error:
+            self._on_cycle_storage_exception(error)
+            return EffectOrchestratorCycleResult(
+                0, 0, 0, 0,
+                max(0.0, self._cycle_storage_retry.retry_at - time.monotonic()),
+            )
+        finally:
+            self._completion_budget = None
+
+    def _on_cycle_storage_exception(self, error: Exception) -> None:
+        if not sqlite_busy(error):
+            raise error
+        delay = self._cycle_storage_retry.defer()
+        logger.warning(
+            "Effect orchestrator storage busy; retaining completion ownership retry_seconds=%.3f",
+            delay,
+        )
+
+    def _completion_work_budget(self) -> CompletionBudget:
+        budget = self._completion_budget or CompletionBudget()
+        if time.monotonic() < self._completion_storage_retry_at:
+            budget.deadline = 0.0
+        return budget
+
+    def _completion_retry_ready(self, key: str) -> bool:
+        retry = self._completion_retries.get(key)
+        return retry is None or retry.retry_at <= time.monotonic()
+
+    def _defer_completion(self, key: str, *, storage_busy: bool = True) -> None:
+        retry = self._completion_retries.setdefault(
+            key,
+            CompletionRetry() if storage_busy else CompletionRetry(
+                initial_delay_seconds=0.25, maximum_delay_seconds=5.0,
+            ),
+        )
+        delay = retry.defer()
+        if storage_busy:
+            # A repeatedly blocked item must not lend its growing backoff to
+            # every other completion. SQLite writers often release in short
+            # windows; wait briefly before another item can try that window.
+            self._completion_storage_retry_at = min(
+                retry.retry_at, time.monotonic() + COMPLETION_RETRY_INITIAL_SECONDS,
+            )
+            if self._completion_budget is not None:
+                self._completion_budget.deadline = 0.0
+        logger.warning("Workflow completion storage busy key=%s retry_seconds=%.3f", key, delay)
+
+    def _completion_retry_deadlines(self, now: float) -> list[float]:
+        """Bound ownership checks before allowing retry alarms to shorten sleep."""
+        budget = self._completion_work_budget()
+        keys = []
+        for key in islice(self._completion_retries, COMPLETION_SLICE_ITEMS):
+            if not budget.take():
+                break
+            keys.append(key)
+        pending: dict[str, list[str]] = {"effect": [], "gate": []}
+        active = set()
+        ready = set()
+        with self._inflight_lock:
+            for key in keys:
+                if key.startswith("future:"):
+                    entry = self._inflight.get(key.removeprefix("future:"))
+                    if entry is not None:
+                        active.add(key)
+                        if entry.future.done():
+                            ready.add(key)
+                elif key.startswith("bookkeeping:"):
+                    if key.removeprefix("bookkeeping:") in self._pending_completion_bookkeeping:
+                        active.add(key)
+                        ready.add(key)
+                elif key.startswith("pending:"):
+                    _, kind, execution_id = key.split(":", 2)
+                    pending[kind].append(execution_id)
+        for kind, store in (("effect", self.execution_store), ("gate", self.gate_execution_store)):
+            ids = pending[kind]
+            if not ids:
+                continue
+            if isinstance(store, SqliteExecutionRepository):
+                owners = store.pending_completion_ids(ids)
+            else:
+                owners = {
+                    execution_id for execution_id in ids
+                    if (record := store.get_execution(execution_id)) is not None
+                    and record.status == COMPLETION_PENDING_STATUS
+                }
+            owned = {f"pending:{kind}:{execution_id}" for execution_id in owners}
+            active.update(owned)
+            ready.update(owned)
+        # Do not mutate the retry set until all status reads succeed. A busy
+        # database must not make a still-owned completion appear abandoned.
+        for key in keys:
+            retry = self._completion_retries.pop(key)
+            if key in active:
+                self._completion_retries[key] = retry  # rotate for bounded, fair checking
+        deadlines = []
+        unchecked_due = False
+        checked = set(keys)
+        for key, retry in self._completion_retries.items():
+            if retry.retry_at > now or key in ready:
+                deadlines.append(retry.retry_at)
+            elif key not in checked:
+                unchecked_due = True
+        if unchecked_due:
+            # A stale, unverified alarm must not create an idle zero-sleep loop.
+            deadlines.append(now + COMPLETION_RETRY_INITIAL_SECONDS)
+        return deadlines
+
+    def _run_once(self) -> EffectOrchestratorCycleResult:
         if self._lifecycle_hooks_closed:
             self._initialize_lifecycle_hooks()
         self._reconcile_managed_git_worktrees()
@@ -711,9 +860,12 @@ class EffectOrchestratorWorker:
 
             if store_changed:
                 _completed_count, early_completion_events_published = self._reap_completed_futures()
-                pending_existing_store_events = len(self.event_queue.list_pending())
+                active_events = getattr(self.event_queue, "list_active_summaries", None)
+                pending_existing_store_events = len(
+                    active_events() if callable(active_events) else self.event_queue.list_pending()
+                )
                 with self._inflight_lock:
-                    inflight_count = len(self._inflight)
+                    inflight_count = len(self._inflight) + len(self._pending_completion_bookkeeping)
                 if inflight_count > 0 or pending_existing_store_events > 0:
                     logger.info(
                         "Effect orchestrator store rebind deferred waiting for existing store "
@@ -789,6 +941,9 @@ class EffectOrchestratorWorker:
                 active_config = latest_config
                 if store_wiring is not None:
                     self._recovery_schedule = RecoverySchedule()
+                    self._completion_cursors.clear()
+                    self._completion_retries.clear()
+                    self._completion_storage_retry_at = 0.0
                     self.workflow_event_journal = store_wiring.workflow_event_journal
                     self.event_queue = store_wiring.event_queue
                     self.lock_path = store_wiring.lock_path
@@ -804,6 +959,7 @@ class EffectOrchestratorWorker:
                     wake_path = wake_socket_path_for_lock(self.lock_path)
                     self._wake_sleeper.set_path(wake_path)
                     self._wake_notifier = HostWakeNotifier(wake_path)
+                    self._wal_checkpoint_maintenance.set_wake_callback(self._wake_notifier.notify)
                     self._kernel.config = PollingKernelConfig(
                         poll_interval_seconds=self.worker_config.poll_interval_seconds,
                         jitter_seconds=self.worker_config.jitter_seconds,
@@ -891,33 +1047,26 @@ class EffectOrchestratorWorker:
             edge_count=len(active_config.edges),
         )
 
-        phase_started = time.perf_counter()
-        _completed_count, published_count = self._reap_completed_futures()
-        self._log_phase_duration(
-            "reap_completed_futures",
-            phase_started,
-            completed_count=_completed_count,
-            published_count=published_count,
-        )
-        completion_events_published += published_count
-
-        phase_started = time.perf_counter()
-        count = self._retry_pending_effect_completion_publications()
-        self._log_phase_duration(
-            "retry_pending_effect_completion_publications",
-            phase_started,
-            retried=count,
-        )
-        completion_events_published += count
-
-        phase_started = time.perf_counter()
-        count = self._retry_pending_gate_completion_publications(graph=graph)
-        self._log_phase_duration(
-            "retry_pending_gate_completion_publications",
-            phase_started,
-            retried=count,
-        )
-        completion_events_published += count
+        # Rotate the first lane so a stream of newly completed providers cannot
+        # starve older durable retries, and gates cannot starve effects.
+        lanes = ["future", "effect", "gate"]
+        start = lanes.index(self._completion_lane)
+        lanes = lanes[start:] + lanes[:start]
+        self._completion_lane = lanes[1]
+        for lane in lanes:
+            phase_started = time.perf_counter()
+            if lane == "future":
+                completed, count = self._reap_completed_futures()
+                phase = "reap_completed_futures"
+            else:
+                count = (
+                    self._retry_pending_effect_completion_publications()
+                    if lane == "effect"
+                    else self._retry_pending_gate_completion_publications(graph=graph)
+                )
+                phase = f"retry_pending_{lane}_completion_publications"
+            self._log_phase_duration(phase, phase_started, published_count=count)
+            completion_events_published += count
 
         loop = OrchestrationLoop[
             TriggerQueueRecord,
@@ -1033,28 +1182,6 @@ class EffectOrchestratorWorker:
             foreground_pending=foreground_pending,
         )
         completion_events_published += recovered
-        with self._inflight_lock:
-            has_inflight = bool(self._inflight)
-        if (
-            events_processed == 0
-            and recovery_ran
-            and not has_inflight
-            and not self._recovery_schedule.pending
-            and not self.event_queue.list_pending(limit=1)
-        ):
-            phase_started = time.perf_counter()
-            try:
-                backfill = run_execution_history_backfill(
-                    self.worker_config.orchestration_store_path
-                )
-                self._log_phase_duration(
-                    "execution_history_backfill",
-                    phase_started,
-                    archived=backfill.get("last_batch_size", 0),
-                    completed=backfill.get("completed", False),
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("Workflow execution history backfill failed")
         self._run_orchestration_wal_checkpoint_maintenance()
 
         next_sleep_seconds = _compute_effect_cycle_sleep_seconds(
@@ -1067,6 +1194,27 @@ class EffectOrchestratorWorker:
         next_sleep_seconds = min(next_sleep_seconds, self._recovery_schedule.sleep_limit())
         if self.event_queue.list_pending(limit=1):
             next_sleep_seconds = 0.0
+        now_monotonic = time.monotonic()
+        storage_ready = now_monotonic >= self._completion_storage_retry_at
+        if storage_ready and (
+            any(self._completion_cursors.values())
+            or any(
+                entry.future.done() and self._completion_retry_ready(f"future:{key}")
+                for key, entry in self._inflight.items()
+            )
+            or any(
+                self._completion_retry_ready(f"bookkeeping:{key}")
+                for key in self._pending_completion_bookkeeping
+            )
+        ):
+            next_sleep_seconds = 0.0
+        deadlines = self._completion_retry_deadlines(now_monotonic)
+        if self._completion_storage_retry_at > now_monotonic:
+            deadlines.append(self._completion_storage_retry_at)
+        if deadlines:
+            next_sleep_seconds = min(
+                next_sleep_seconds, max(0.0, min(deadlines) - now_monotonic)
+            )
 
         return EffectOrchestratorCycleResult(
             pending_events_scanned=pending_events_scanned,
@@ -1439,53 +1587,82 @@ class EffectOrchestratorWorker:
                 )
         return dispatched
 
+    def _pending_completion_page(self, kind: str, store: Any, budget: CompletionBudget):
+        limit = min(COMPLETION_SLICE_ITEMS, budget.remaining)
+        if not limit:
+            return []
+        after = self._completion_cursors.get(kind)
+        list_pending = getattr(store, "list_completion_pending_records", None)
+        if isinstance(store, SqliteExecutionRepository):
+            records = list_pending(limit=limit, after=after)
+        else:
+            # Compatibility repositories retain their existing read boundary.
+            read = list_pending or getattr(store, "list_executions", None)
+            if callable(read):
+                records = list(read())
+            else:
+                read_all = getattr(store, "read_all", None)
+                records = list(read_all().values()) if callable(read_all) else []
+            records = sorted(
+                (r for r in records if r.status == COMPLETION_PENDING_STATUS),
+                key=self._completion_cursor,
+            )
+            records = [r for r in records if after is None or self._completion_cursor(r) > after]
+            records = records[:limit]
+        if not records:
+            self._completion_cursors[kind] = None
+        return records
+
+    @staticmethod
+    def _completion_cursor(record: Any) -> tuple[str, str]:
+        from evander.repositories.orchestration_db import datetime_to_storage
+
+        return (
+            datetime_to_storage(record.finished_at or record.started_at),
+            record.execution_id,
+        )
+
     def _retry_pending_effect_completion_publications(self) -> int:
         retried = 0
-        list_completion_pending = getattr(
-            self.execution_store, "list_completion_pending_records", None
-        )
-        if callable(list_completion_pending):
-            records = list(list_completion_pending())
-        else:
-            list_executions = getattr(self.execution_store, "list_executions", None)
-            if callable(list_executions):
-                records = [
-                    record
-                    for record in list_executions()
-                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
-                ]
-            else:
-                read_all = getattr(self.execution_store, "read_all", None)
-                if not callable(read_all):
-                    return 0
-                records = [
-                    record
-                    for record in read_all().values()
-                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
-                ]
-
-        for record in records:
-            outputs = dict(getattr(record, "outputs", {}) or {})
-            branch_port = getattr(record, "completion_event_branch_port", None)
-            published_event_id = self._publish_effect_completion_event_or_mark_pending(
-                record=record,
-                outputs=outputs,
-                branch_port=branch_port,
-                pending_status=str(
-                    getattr(record, "completion_pending_status", None) or "succeeded"
-                ),
-                finished_at=datetime.now(UTC),
-            )
-            if published_event_id is None:
+        budget = self._completion_work_budget()
+        for record in self._pending_completion_page("effect", self.execution_store, budget):
+            if not budget.take():
+                break
+            self._completion_cursors["effect"] = self._completion_cursor(record)
+            key = f"pending:effect:{record.execution_id}"
+            if not self._completion_retry_ready(key):
                 continue
-
-            self._finalize_effect_completion_publication(
-                record=record,
-                outputs=outputs,
-                published_event_id=published_event_id,
-                finished_at=datetime.now(UTC),
-                status=str(getattr(record, "completion_pending_status", None) or "succeeded"),
-            )
+            outputs = dict(record.outputs or {})
+            branch_port = record.completion_event_branch_port
+            status = record.completion_pending_status or "succeeded"
+            try:
+                published_event_id = self._publish_effect_completion_event_or_mark_pending(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=branch_port,
+                    pending_status=status,
+                    finished_at=record.finished_at,
+                )
+                if published_event_id is None:
+                    if record.status == COMPLETION_PENDING_STATUS:
+                        self._defer_completion(key, storage_busy=False)
+                    else:
+                        self._completion_retries.pop(key, None)
+                    continue
+                self._finalize_effect_completion_publication(
+                    record=record,
+                    outputs=outputs,
+                    published_event_id=published_event_id,
+                    finished_at=record.finished_at,
+                    status=status,
+                    branch_port=branch_port,
+                )
+            except Exception as exc:
+                if not sqlite_busy(exc):
+                    raise
+                self._defer_completion(key)
+                break
+            self._completion_retries.pop(key, None)
             retried += 1
         return retried
 
@@ -1505,6 +1682,7 @@ class EffectOrchestratorWorker:
         record.outputs = dict(outputs)
         record.published_event_id = None
         record.completion_event_enqueued_at = None
+        record.completion_published_at = None
         record.error = str(error)
         record.finished_at = finished_at
         self.execution_store.record_execution(record)
@@ -1519,13 +1697,41 @@ class EffectOrchestratorWorker:
         error: BaseException,
     ) -> None:
         record.status = "failed"
+        record.completion_pending_status = None
+        record.completion_event_branch_port = None
         record.outputs = dict(outputs)
         record.published_event_id = None
         record.completion_event_enqueued_at = None
+        record.completion_published_at = None
         record.error = str(error)
         record.finished_at = finished_at
         self.execution_store.record_execution(record)
         self._update_event_delivery_state(record.event_id)
+
+    @staticmethod
+    def _set_effect_completion_fields(
+        record: EffectExecutionRecord,
+        *,
+        outputs: dict[str, Any],
+        published_event_id: str,
+        finished_at: datetime,
+        status: str,
+        branch_port: str | None,
+    ) -> None:
+        record.status = status
+        record.outputs = dict(outputs)
+        record.published_event_id = published_event_id
+        record.completion_event_enqueued_at = finished_at
+        record.completion_published_at = datetime.now(UTC)
+        record.finished_at = finished_at
+        record.completion_pending_status = None
+        record.completion_event_branch_port = branch_port
+        record.error = None
+        if outputs.get("success") is False:
+            record.error = (
+                _normalize_optional_string(outputs.get("error_message"))
+                or _normalize_optional_string(outputs.get("message"))
+            )
 
     def _publish_effect_completion_event_or_mark_pending(
         self,
@@ -1535,53 +1741,70 @@ class EffectOrchestratorWorker:
         pending_status: str,
         branch_port: str | None = None,
         finished_at: datetime | None = None,
+        _terminal_publication_failure: bool = False,
     ) -> str | None:
         resolved_finished_at = finished_at or datetime.now(UTC)
         try:
             completion_event, idempotency_key, completion_event_id = (
                 self._build_completion_event_from_record(
-                    record=record,
-                    outputs=outputs,
-                    branch_port=branch_port,
+                    record=record, outputs=outputs, branch_port=branch_port,
                 )
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Effect completion event build failed "
-                "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
-                record.event_id,
-                record.trace_id,
-                record.effect_id,
-                record.effect_type,
-                branch_port,
-            )
+        except Exception as exc:
+            logger.exception("Effect completion event build failed execution_id=%s", record.execution_id)
             self._mark_effect_completion_publication_failed(
-                record=record,
-                outputs=outputs,
-                finished_at=resolved_finished_at,
-                error=exc,
+                record=record, outputs=outputs, finished_at=resolved_finished_at, error=exc,
             )
             return None
+
+        atomic_publish = getattr(self.execution_store, "record_completion_and_publish", None)
+        atomic = callable(atomic_publish) and bool(
+            getattr(self.event_queue, "supports_atomic_publication", False)
+        )
         try:
-            self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Effect completion publication failed "
-                "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
-                record.event_id,
-                record.trace_id,
-                record.effect_id,
-                record.effect_type,
-                branch_port,
-            )
-            self._mark_effect_completion_publication_pending(
-                record=record,
-                outputs=outputs,
-                finished_at=resolved_finished_at,
-                error=exc,
-                pending_status=pending_status,
-                branch_port=branch_port,
-            )
+            if atomic:
+                self._set_effect_completion_fields(
+                    record, outputs=outputs, published_event_id=completion_event_id,
+                    finished_at=resolved_finished_at, status=pending_status, branch_port=branch_port,
+                )
+                atomic_publish(
+                    record=record, event_queue=self.event_queue,
+                    event=completion_event, idempotency_key=idempotency_key,
+                )
+            else:
+                # An adapter without atomic publication must save the provider
+                # result before attempting the successor. Restart can then retry
+                # publication without invoking the provider again.
+                record.status = COMPLETION_PENDING_STATUS
+                record.completion_pending_status = pending_status
+                record.completion_event_branch_port = branch_port
+                record.outputs = dict(outputs)
+                record.finished_at = resolved_finished_at
+                record.published_event_id = None
+                record.completion_event_enqueued_at = None
+                record.completion_published_at = None
+                self.execution_store.record_execution(record)
+                self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
+                self._set_effect_completion_fields(
+                    record, outputs=outputs, published_event_id=completion_event_id,
+                    finished_at=resolved_finished_at, status=pending_status, branch_port=branch_port,
+                )
+                self.execution_store.record_execution(record)
+        except Exception as exc:
+            # Storage contention is retried by the owning future/pending receipt.
+            # Do not issue another write against the same busy database here.
+            if sqlite_busy(exc) or isinstance(exc, sqlite3.DatabaseError):
+                raise
+            logger.exception("Effect completion publication failed execution_id=%s", record.execution_id)
+            if _terminal_publication_failure:
+                self._mark_effect_completion_publication_failed(
+                    record=record, outputs=outputs, finished_at=resolved_finished_at, error=exc,
+                )
+            else:
+                self._mark_effect_completion_publication_pending(
+                    record=record, outputs=outputs, finished_at=resolved_finished_at,
+                    error=exc, pending_status=pending_status, branch_port=branch_port,
+                )
             return None
         return completion_event_id
 
@@ -1593,52 +1816,26 @@ class EffectOrchestratorWorker:
         branch_port: str | None = None,
         finished_at: datetime | None = None,
     ) -> str | None:
-        resolved_finished_at = finished_at or datetime.now(UTC)
-        try:
-            completion_event, idempotency_key, completion_event_id = (
-                self._build_completion_event_from_record(
-                    record=record,
-                    outputs=outputs,
-                    branch_port=branch_port,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Effect completion event build failed "
-                "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
-                record.event_id,
-                record.trace_id,
-                record.effect_id,
-                record.effect_type,
-                branch_port,
-            )
-            self._mark_effect_completion_publication_failed(
-                record=record,
-                outputs=outputs,
-                finished_at=resolved_finished_at,
-                error=exc,
-            )
-            return None
-        try:
-            self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Effect completion publication failed "
-                "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
-                record.event_id,
-                record.trace_id,
-                record.effect_id,
-                record.effect_type,
-                branch_port,
-            )
-            self._mark_effect_completion_publication_failed(
-                record=record,
-                outputs=outputs,
-                finished_at=resolved_finished_at,
-                error=exc,
-            )
-            return None
-        return completion_event_id
+        return self._publish_effect_completion_event_or_mark_pending(
+            record=record, outputs=outputs, branch_port=branch_port,
+            finished_at=finished_at, pending_status="error_routed",
+            _terminal_publication_failure=True,
+        )
+
+    def _finish_completion_bookkeeping(
+        self, record: EffectExecutionRecord | GateExecutionRecord,
+    ) -> None:
+        # Keep this hint until delivery bookkeeping commits. Publication itself
+        # has already committed and must never be repeated as provider work.
+        self._pending_completion_bookkeeping[record.execution_id] = record
+        self._update_event_delivery_state(record.event_id)
+        if isinstance(record, EffectExecutionRecord):
+            self._notify_prompt_lifecycle(record)
+        self._pending_completion_bookkeeping.pop(record.execution_id, None)
+        self._completion_retries.pop(f"bookkeeping:{record.execution_id}", None)
+        if record.status != COMPLETION_PENDING_STATUS:
+            kind = "effect" if isinstance(record, EffectExecutionRecord) else "gate"
+            self._completion_retries.pop(f"pending:{kind}:{record.execution_id}", None)
 
     def _finalize_effect_completion_publication(
         self,
@@ -1650,81 +1847,56 @@ class EffectOrchestratorWorker:
         status: str = "succeeded",
         branch_port: str | None = None,
     ) -> None:
-        record.status = str(status or "succeeded").strip() or "succeeded"
-        record.outputs = dict(outputs)
-        record.published_event_id = published_event_id
-        record.completion_event_enqueued_at = finished_at
-        record.completion_published_at = datetime.now(UTC)
-        record.finished_at = finished_at
-        record.error = None
-        if branch_port is not None:
-            record.completion_event_branch_port = branch_port
-        if outputs.get("success") is False:
-            error_message = _normalize_optional_string(outputs.get("error_message"))
-            if error_message is None:
-                error_message = _normalize_optional_string(outputs.get("message"))
-            if error_message is not None:
-                record.error = error_message
-        self.execution_store.record_execution(record)
-        self._update_event_delivery_state(record.event_id)
-        self._notify_prompt_lifecycle(record)
+        status = str(status or "succeeded").strip() or "succeeded"
+        already_committed = (
+            record.status == status
+            and record.published_event_id == published_event_id
+            and record.completion_published_at is not None
+        )
+        if not already_committed:
+            self._set_effect_completion_fields(
+                record, outputs=outputs, published_event_id=published_event_id,
+                finished_at=finished_at, status=status, branch_port=branch_port,
+            )
+            self.execution_store.record_execution(record)
+        self._finish_completion_bookkeeping(record)
 
     def _retry_pending_gate_completion_publications(self, *, graph: ExecutionGraph) -> int:
         retried = 0
-        list_completion_pending = getattr(
-            self.gate_execution_store, "list_completion_pending_records", None
-        )
-        if callable(list_completion_pending):
-            records = list(list_completion_pending())
-        else:
-            list_executions = getattr(self.gate_execution_store, "list_executions", None)
-            if callable(list_executions):
-                records = [
-                    record
-                    for record in list_executions()
-                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
-                ]
-            else:
-                read_all = getattr(self.gate_execution_store, "read_all", None)
-                if not callable(read_all):
-                    return 0
-                records = [
-                    record
-                    for record in read_all().values()
-                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
-                ]
-
-        for record in records:
-            outputs = dict(getattr(record, "outputs", {}) or {})
-            branch_port = getattr(record, "completion_event_branch_port", None)
-            for_execution_ids = getattr(record, "completion_event_for_execution_ids", None)
-            published_event_id = self._publish_gate_completion_event_or_mark_pending(
-                record=record,
-                outputs=outputs,
-                branch_port=branch_port,
-                for_execution_ids=for_execution_ids,
-                preserved_context_node_ids=_gate_completion_preserved_context_node_ids(
-                    graph=graph,
-                    gate_id=getattr(record, "gate_id", ""),
-                    gate_type=getattr(record, "gate_type", ""),
-                ),
-                pending_status=str(
-                    getattr(record, "completion_pending_status", None) or "succeeded"
-                ),
-                finished_at=datetime.now(UTC),
-            )
-            if published_event_id is None:
+        budget = self._completion_work_budget()
+        for record in self._pending_completion_page("gate", self.gate_execution_store, budget):
+            if not budget.take():
+                break
+            self._completion_cursors["gate"] = self._completion_cursor(record)
+            key = f"pending:gate:{record.execution_id}"
+            if not self._completion_retry_ready(key):
                 continue
-
-            record.status = str(
-                getattr(record, "completion_pending_status", None) or "succeeded"
-            ).strip()
-            record.outputs = outputs
-            record.published_event_id = published_event_id
-            record.completion_event_enqueued_at = datetime.now(UTC)
-            record.error = None
-            self.gate_execution_store.record_execution(record)
-            self._update_event_delivery_state(record.event_id)
+            outputs = dict(record.outputs or {})
+            try:
+                published_event_id = self._publish_gate_completion_event_or_mark_pending(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=record.completion_event_branch_port,
+                    for_execution_ids=record.completion_event_for_execution_ids,
+                    preserved_context_node_ids=_gate_completion_preserved_context_node_ids(
+                        graph=graph, gate_id=record.gate_id, gate_type=record.gate_type,
+                    ),
+                    pending_status=record.completion_pending_status or "succeeded",
+                    finished_at=record.finished_at,
+                )
+                if published_event_id is None:
+                    if record.status == COMPLETION_PENDING_STATUS:
+                        self._defer_completion(key, storage_busy=False)
+                    else:
+                        self._completion_retries.pop(key, None)
+                    continue
+                self._finish_completion_bookkeeping(record)
+            except Exception as exc:
+                if not sqlite_busy(exc):
+                    raise
+                self._defer_completion(key)
+                break
+            self._completion_retries.pop(key, None)
             retried += 1
         return retried
 
@@ -1784,18 +1956,43 @@ class EffectOrchestratorWorker:
                 error=exc,
             )
             return None
+        atomic_publish = getattr(self.gate_execution_store, "record_completion_and_publish", None)
         try:
-            self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Gate completion publication failed "
-                "event_id=%s trace_id=%s gate_id=%s gate_type=%s branch_port=%s",
-                record.event_id,
-                record.trace_id,
-                record.gate_id,
-                record.gate_type,
-                branch_port,
-            )
+            if callable(atomic_publish) and bool(
+                getattr(self.event_queue, "supports_atomic_publication", False)
+            ):
+                record.status = pending_status
+                record.completion_pending_status = None
+                record.outputs = dict(outputs)
+                record.published_event_id = completion_event_id
+                record.completion_event_enqueued_at = resolved_finished_at
+                record.finished_at = resolved_finished_at
+                record.error = None
+                atomic_publish(
+                    record=record, event_queue=self.event_queue,
+                    event=completion_event, idempotency_key=idempotency_key,
+                )
+            else:
+                record.status = COMPLETION_PENDING_STATUS
+                record.completion_pending_status = pending_status
+                record.completion_event_branch_port = branch_port
+                record.completion_event_for_execution_ids = for_execution_ids
+                record.outputs = dict(outputs)
+                record.finished_at = resolved_finished_at
+                record.published_event_id = None
+                record.completion_event_enqueued_at = None
+                self.gate_execution_store.record_execution(record)
+                self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
+                record.status = pending_status
+                record.completion_pending_status = None
+                record.published_event_id = completion_event_id
+                record.completion_event_enqueued_at = resolved_finished_at
+                record.error = None
+                self.gate_execution_store.record_execution(record)
+        except Exception as exc:
+            if sqlite_busy(exc) or isinstance(exc, sqlite3.DatabaseError):
+                raise
+            logger.exception("Gate completion publication failed execution_id=%s", record.execution_id)
             record.status = COMPLETION_PENDING_STATUS
             record.completion_pending_status = pending_status
             record.completion_event_branch_port = branch_port
@@ -1806,7 +2003,7 @@ class EffectOrchestratorWorker:
             record.error = str(exc)
             record.finished_at = resolved_finished_at
             self.gate_execution_store.record_execution(record)
-            self._update_event_delivery_state(record.event_id)
+            self._finish_completion_bookkeeping(record)
             return None
         return completion_event_id
 
@@ -2428,11 +2625,10 @@ class EffectOrchestratorWorker:
                 "record_completion_and_publish",
                 None,
             )
-            queue_publish = getattr(self.event_queue, "publish", None)
-            atomic_queue = getattr(queue_publish, "__self__", None) is self.event_queue
+            atomic_queue = bool(getattr(self.event_queue, "supports_atomic_publication", False))
             if callable(atomic_publish) and atomic_queue:
                 record.status = "error_routed"
-                record.completion_pending_status = "error_routed"
+                record.completion_pending_status = None
                 record.completion_event_branch_port = AGENT_PROMPT_ERROR_PORT
                 record.outputs = outputs
                 record.published_event_id = completion_event_id
@@ -2446,7 +2642,9 @@ class EffectOrchestratorWorker:
                     idempotency_key=completion_key,
                 )
                 return True
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if sqlite_busy(exc) or isinstance(exc, sqlite3.DatabaseError):
+                raise
             logger.exception(
                 "Atomic gate error-branch publication failed; preserving retry state "
                 "event_id=%s gate_id=%s",
@@ -2546,132 +2744,148 @@ class EffectOrchestratorWorker:
     def _reap_completed_futures(self) -> tuple[int, int]:
         completed_count = 0
         published_count = 0
-        graph_for_error_routing: ExecutionGraph | None = None
-        to_finalize: list[tuple[str, InflightExecution]] = []
-        with self._inflight_lock:
-            for idempotency_key, inflight in list(self._inflight.items()):
-                if inflight.future.done():
-                    to_finalize.append((idempotency_key, inflight))
-                    self._inflight.pop(idempotency_key, None)
-
-        for idempotency_key, inflight in to_finalize:
-            completed_count += 1
-            future = inflight.future
-            if inflight.kind == "gate":
-                from evander.workflow.engine.async_gates import finalize_async_gate
-
-                published_count += finalize_async_gate(self, idempotency_key, future)
+        budget = self._completion_work_budget()
+        for execution_id, record in list(self._pending_completion_bookkeeping.items()):
+            key = f"bookkeeping:{execution_id}"
+            if not self._completion_retry_ready(key):
                 continue
-            record = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
-            if record is None:
-                continue
-            finished_at = datetime.now(UTC)
-            timing = getattr(future, "provider_timing", {})
-            for key in (
-                "provider_started_at",
-                "provider_returned_at",
-                "provider_duration_ms",
-                "executor_queue_duration_ms",
-            ):
-                if key in timing:
-                    setattr(record, key, timing[key])
-            record.completion_observed_at = finished_at
-            if "returned_monotonic" in timing:
-                record.return_to_reap_ms = (time.monotonic() - timing["returned_monotonic"]) * 1000
+            if not budget.take():
+                return completed_count, published_count
             try:
-                outputs = dict(future.result() or {})
-                provider_class = self._effect_provider_class(record.effect_type)
-                waits_for_completion = bool(
-                    provider_class is not None
-                    and provider_class.on_execution_started(record=record, outputs=outputs)
-                )
-                if waits_for_completion:
-                    record.status = "waiting"
-                    record.outputs = outputs
-                    record.published_event_id = None
-                    record.completion_event_enqueued_at = None
-                    record.finished_at = finished_at
-                    self.execution_store.record_execution(record)
-                    if provider_class is not None:
-                        provider_class.on_execution_waiting(worker=self, record=record)
-                    self._update_event_delivery_state(record.event_id)
-                    self._notify_prompt_lifecycle(record)
-                    continue
-            except Exception as exc:  # noqa: BLE001
-                if record.effect_type in _PROMPT_FAILURE_EFFECT_TYPES:
-                    outputs = _prompt_failure_outputs(exc)
+                self._finish_completion_bookkeeping(record)
+            except Exception as exc:
+                if not sqlite_busy(exc):
+                    raise
+                self._defer_completion(key)
+                return completed_count, published_count
+            self._completion_retries.pop(key, None)
+
+        with self._inflight_lock:
+            candidates = [
+                (key, inflight) for key, inflight in self._inflight.items()
+                if inflight.future.done()
+            ]
+        for idempotency_key, inflight in candidates:
+            retry_key = f"future:{idempotency_key}"
+            if not self._completion_retry_ready(retry_key):
+                continue
+            if not budget.take():
+                break
+            if inflight.completion_observed_at is None:
+                inflight.completion_observed_at = datetime.now(UTC)
+            try:
+                if inflight.kind == "gate":
+                    from evander.workflow.engine.async_gates import finalize_async_gate
+
+                    published = finalize_async_gate(self, idempotency_key, inflight.future)
+                    record = self.gate_execution_store.find_execution_by_idempotency_key(
+                        idempotency_key
+                    )
+                    if record is not None:
+                        self._finish_completion_bookkeeping(record)
                 else:
-                    outputs = _outputs_from_exception(exc)
-                if graph_for_error_routing is None:
-                    graph_for_error_routing = self._build_execution_graph()
-                if _effect_error_outbound_edge_exists(
-                    graph=graph_for_error_routing,
-                    effect_id=record.effect_id,
-                ):
-                    if record.effect_type not in _PROMPT_FAILURE_EFFECT_TYPES:
-                        outputs = _effect_failure_outputs(exc)
-                    logger.info(
-                        "Effect execution routed to error branch "
-                        "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
-                        record.event_id,
-                        record.trace_id,
-                        record.effect_id,
-                        record.effect_type,
-                        AGENT_PROMPT_ERROR_PORT,
-                    )
-                    published_event_id = self._publish_effect_completion_event_or_fail(
-                        record=record,
-                        outputs=outputs,
-                        branch_port=AGENT_PROMPT_ERROR_PORT,
-                        finished_at=finished_at,
-                    )
-                    if published_event_id is None:
-                        continue
-                    self._finalize_effect_completion_publication(
-                        record=record,
-                        outputs=outputs,
-                        published_event_id=published_event_id,
-                        finished_at=finished_at,
-                        status="error_routed",
-                        branch_port=AGENT_PROMPT_ERROR_PORT,
-                    )
-                    published_count += 1
-                    continue
-                logger.exception(
-                    "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
-                    record.event_id,
-                    record.trace_id,
-                    record.effect_id,
-                    record.effect_type,
-                )
-                record.status = "failed"
-                record.error = str(exc)
-                record.outputs = outputs
-                record.finished_at = finished_at
-                self.execution_store.record_execution(record)
-                self._update_event_delivery_state(record.event_id)
-                self._notify_prompt_lifecycle(record)
-                continue
-
-            record.outputs = outputs
-            published_event_id = self._publish_effect_completion_event_or_mark_pending(
-                record=record,
-                outputs=outputs,
-                pending_status="succeeded",
-                finished_at=finished_at,
-            )
-            if published_event_id is None:
-                continue
-
-            self._finalize_effect_completion_publication(
-                record=record,
-                outputs=outputs,
-                published_event_id=published_event_id,
-                finished_at=finished_at,
-            )
-            published_count += 1
-
+                    published = self._finalize_completed_effect(idempotency_key, inflight)
+            except Exception as exc:
+                if not sqlite_busy(exc):
+                    raise
+                self._defer_completion(retry_key)
+                # The result and every later future remain owned. One storage
+                # contention wait is enough for this completion slice.
+                break
+            with self._inflight_lock:
+                if self._inflight.get(idempotency_key) is inflight:
+                    self._inflight.pop(idempotency_key)
+            self._completion_retries.pop(retry_key, None)
+            completed_count += 1
+            published_count += published
         return completed_count, published_count
+
+    def _finalize_completed_effect(
+        self, idempotency_key: str, inflight: InflightExecution,
+    ) -> int:
+        record = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
+        if record is None:
+            return 0
+        if record.status not in {"running", COMPLETION_PENDING_STATUS}:
+            # A previous attempt committed the outcome but failed bookkeeping.
+            self._finish_completion_bookkeeping(record)
+            return 0
+        finished_at = inflight.completion_observed_at or datetime.now(UTC)
+        timing = getattr(inflight.future, "provider_timing", {})
+        for name in (
+            "provider_started_at", "provider_returned_at", "provider_duration_ms",
+            "executor_queue_duration_ms",
+        ):
+            if name in timing:
+                setattr(record, name, timing[name])
+        record.completion_observed_at = finished_at
+        if "returned_monotonic" in timing:
+            record.return_to_reap_ms = max(
+                0.0, (finished_at - timing["provider_returned_at"]).total_seconds() * 1000
+            )
+
+        # Only provider/result interpretation belongs in this exception boundary.
+        # Storage failures must not become provider failures or error branches.
+        try:
+            outputs = dict(inflight.future.result() or {})
+            provider_class = self._effect_provider_class(record.effect_type)
+            waits_for_completion = bool(
+                provider_class is not None
+                and provider_class.on_execution_started(record=record, outputs=outputs)
+            )
+        except Exception as exc:
+            outputs = (
+                _prompt_failure_outputs(exc)
+                if record.effect_type in _PROMPT_FAILURE_EFFECT_TYPES
+                else _outputs_from_exception(exc)
+            )
+            graph = self._build_execution_graph()
+            if _effect_error_outbound_edge_exists(graph=graph, effect_id=record.effect_id):
+                if record.effect_type not in _PROMPT_FAILURE_EFFECT_TYPES:
+                    outputs = _effect_failure_outputs(exc)
+                published_event_id = self._publish_effect_completion_event_or_fail(
+                    record=record, outputs=outputs, branch_port=AGENT_PROMPT_ERROR_PORT,
+                    finished_at=finished_at,
+                )
+                if published_event_id is None:
+                    return 0
+                self._finalize_effect_completion_publication(
+                    record=record, outputs=outputs, published_event_id=published_event_id,
+                    finished_at=finished_at, status="error_routed", branch_port=AGENT_PROMPT_ERROR_PORT,
+                )
+                return 1
+            logger.exception("Effect execution failed execution_id=%s", record.execution_id)
+            record.status = "failed"
+            record.error = str(exc)
+            record.outputs = outputs
+            record.finished_at = finished_at
+            self.execution_store.record_execution(record)
+            self._finish_completion_bookkeeping(record)
+            return 0
+
+        if waits_for_completion:
+            record.status = "waiting"
+            record.outputs = outputs
+            record.finished_at = finished_at
+            record.published_event_id = None
+            record.completion_event_enqueued_at = None
+            provider_class.on_execution_waiting(worker=self, record=record)
+            if record.status == "waiting" and record.completion_published_at is None:
+                # Providers without a started branch still require a durable wait.
+                self.execution_store.record_execution(record)
+            self._finish_completion_bookkeeping(record)
+            return int(record.published_event_id is not None)
+
+        published_event_id = self._publish_effect_completion_event_or_mark_pending(
+            record=record, outputs=outputs, pending_status="succeeded", finished_at=finished_at,
+        )
+        if published_event_id is None:
+            return 0
+        self._finalize_effect_completion_publication(
+            record=record, outputs=outputs, published_event_id=published_event_id,
+            finished_at=finished_at,
+        )
+        return 1
 
     def _wait_for_inflight_completion(self, *, timeout_seconds: float) -> None:
         with self._inflight_lock:
@@ -3001,8 +3215,7 @@ class EffectOrchestratorWorker:
                     "record_completion_and_publish",
                     None,
                 )
-                queue_publish = getattr(self.event_queue, "publish", None)
-                atomic_queue = getattr(queue_publish, "__self__", None) is self.event_queue
+                atomic_queue = bool(getattr(self.event_queue, "supports_atomic_publication", False))
                 if callable(atomic_publish) and atomic_queue:
                     atomic_publish(
                         record=record,
@@ -3011,7 +3224,9 @@ class EffectOrchestratorWorker:
                         idempotency_key=completion_key,
                     )
                     return
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if sqlite_busy(exc) or isinstance(exc, sqlite3.DatabaseError):
+                    raise
                 logger.exception(
                     "Atomic gate completion publication failed; preserving retry state "
                     "event_id=%s gate_id=%s",

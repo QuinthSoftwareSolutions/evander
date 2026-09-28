@@ -346,7 +346,7 @@ def test_gate_completion_and_successor_event_commit_atomically(tmp_path: Path, m
     )
     failed_event = event.model_copy(update={"event_id": "event-rolled-back", "trigger_id": "map-2"})
 
-    def fail_record(_connection, _record):
+    def fail_record(_connection, _record, **_kwargs):
         raise RuntimeError("synthetic gate persistence failure")
 
     monkeypatch.setattr(gate_store, "_upsert_record", fail_record)
@@ -890,7 +890,7 @@ def test_orchestration_wal_checkpoint_records_maintenance_metadata(tmp_path: Pat
     )
 
     assert result.attempted is True
-    assert result.mode == "truncate"
+    assert result.mode == "passive"
     with connect_orchestration_db(db_path) as connection:
         row = connection.execute(
             "SELECT value_json FROM orchestration_metadata WHERE key = ?",
@@ -898,7 +898,7 @@ def test_orchestration_wal_checkpoint_records_maintenance_metadata(tmp_path: Pat
         ).fetchone()
     assert row is not None
     payload = json.loads(row["value_json"])
-    assert payload["mode"] == "truncate"
+    assert payload["mode"] == "passive"
     assert isinstance(payload["wal_size_bytes"], int)
 
     skipped = maybe_checkpoint_orchestration_wal(

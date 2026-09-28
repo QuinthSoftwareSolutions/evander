@@ -467,13 +467,13 @@ def test_handled_missing_thread_receipts_do_not_open_state_transactions(
 
     before = env.repo.read()
     transactions = []
-    update_state = TeamStateSqliteStore.update_state
+    update_state = TeamStateSqliteStore.commit_prepared_state_with_command_transaction
 
     def track_update(store, *args, **kwargs):
         transactions.append(store.path)
         return update_state(store, *args, **kwargs)
 
-    monkeypatch.setattr(TeamStateSqliteStore, "update_state", track_update)
+    monkeypatch.setattr(TeamStateSqliteStore, "commit_prepared_state_with_command_transaction", track_update)
     # The failed execution remains available for all of these polling cycles.
     # An unchanged revision alone would miss the expensive no-op transactions.
     for _ in range(3):
@@ -583,13 +583,13 @@ def test_historical_native_reconciliation_is_batched_restart_safe_and_eventually
         lambda worker: [_receipt_record(receipt) for receipt in receipts],
     )
     transactions = []
-    update_state = TeamStateSqliteStore.update_state
+    update_state = TeamStateSqliteStore.commit_prepared_state_with_command_transaction
 
     def track_update(store, *args, **kwargs):
         transactions.append(store.path)
         return update_state(store, *args, **kwargs)
 
-    monkeypatch.setattr(TeamStateSqliteStore, "update_state", track_update)
+    monkeypatch.setattr(TeamStateSqliteStore, "commit_prepared_state_with_command_transaction", track_update)
     # Candidate pages use a cooperative time/item budget. Restart once during
     # recovery: already persisted observations must not be rewritten or lost.
     hook = TeamAgentPromptCompletionFinalizeHook()
@@ -935,6 +935,7 @@ def test_legacy_schema_and_poisoned_binding_recover_through_execution_receipt(
 
     env.repo.update(legacy_binding)
     with sqlite3.connect(env.repo.store.path) as connection:
+        connection.execute("UPDATE team_state_metadata SET value='0' WHERE key IN ('sqlite_schema_version', 'state_schema_version')")
         connection.execute("ALTER TABLE team_dispatches DROP COLUMN native_thread_id")
         connection.execute("ALTER TABLE team_dispatches DROP COLUMN native_thread_observed_at")
         connection.execute(

@@ -401,6 +401,8 @@ class WorkflowNodeExecutionSearchItemPayload(BaseModel):
 
 
 class WorkflowNodeExecutionSearchPayload(BaseModel):
+    indexing_complete: bool = True
+    indexing_pending_count: int = Field(default=0, ge=0)
     generated_at: datetime
     node_id: str
     started_from: datetime

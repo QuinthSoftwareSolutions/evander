@@ -37,6 +37,8 @@ from evander.events.models import (
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
 )
+from evander.orchestration.event_publisher import InternalEventPublisherRuntime
+from evander.provider_runtime.contracts import InternalEventPublisher
 
 from .provider_schemas import (
     TeamPublishOutboxEventsEffectDefinition,
@@ -134,6 +136,7 @@ def _publish_team_outbox_events(
     completed_record_ids: list[str] = []
     failed_record_ids: list[str] = []
     errors: list[dict[str, Any]] = []
+    publisher = _event_publisher(context) if claimed else None
     for record in claimed:
         try:
             event = dict(record.payload)
@@ -150,7 +153,7 @@ def _publish_team_outbox_events(
                     )
                     completed_record_ids.append(record.id)
                     continue
-            record_event_ids = _publish_team_events(context, [event])
+            record_event_ids = _publish_team_events(context, [event], publisher=publisher)
             if not record_event_ids:
                 raise RuntimeError("outbox record did not publish an internal event")
             repo.complete_outbox_record(
@@ -242,11 +245,12 @@ def _publish_human_review_admin_notification(
     )
 
 
-def _publish_team_events(context: Any, events: Any) -> list[str]:
-    if not isinstance(events, list):
+def _publish_team_events(
+    context: Any, events: Any, *, publisher: InternalEventPublisher | None = None
+) -> list[str]:
+    if not isinstance(events, list) or not any(isinstance(event, Mapping) for event in events):
         return []
-    bus = _internal_event_bus(context)
-    scheduled_store = _scheduled_internal_event_store(context)
+    publisher = publisher or _event_publisher(context)
     published_ids: list[str] = []
     for event in events:
         if not isinstance(event, Mapping):
@@ -259,7 +263,7 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
         run_at = _team_event_run_at(event.get("run_at"))
         delay_seconds = _optional_float(event.get("delay_seconds"), default=None)
         if run_at is not None or (delay_seconds is not None and delay_seconds > 0):
-            scheduled, _created = scheduled_store.schedule_event(
+            scheduled, _created = publisher.schedule_event(
                 event_type=event_type,
                 payload=dict(payload),
                 correlation_key=_optional_text(event.get("correlation_key")),
@@ -276,7 +280,7 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
             )
             published_ids.append(scheduled.schedule_id)
             continue
-        published = bus.publish(
+        published = publisher.publish(
             event_type=event_type,
             payload=dict(payload),
             correlation_key=_optional_text(event.get("correlation_key")),
@@ -285,6 +289,17 @@ def _publish_team_events(context: Any, events: Any) -> list[str]:
         )
         published_ids.append(published.event_id)
     return published_ids
+
+
+def _event_publisher(context: Any) -> InternalEventPublisher:
+    publisher = getattr(context, "internal_event_publisher", None)
+    if publisher is not None:
+        return publisher
+    metadata = getattr(context, "metadata", {})
+    return InternalEventPublisherRuntime(
+        runtime_dir=_runtime_dir(context),
+        metadata=metadata if isinstance(metadata, Mapping) else None,
+    )
 
 
 def _team_event_payload(

@@ -12265,6 +12265,14 @@ def test_finalize_agent_dispatch_provider_closes_from_activity_and_publishes_cha
         dispatch_id=queued_dispatch_id,
         reason="agent backend already has an active dispatch",
     )
+    def add_history(state):
+        for index in range(50):
+            item = message.model_copy(update={
+                "id": f"historic-{index}", "sender": "agent", "status": "sent",
+                "dispatch_id": None, "body": f"historical-payload-{index}:" + "x" * 4000,
+            })
+            state.conversation_messages[item.id] = item
+    repo.update(add_history)
     session_store = FakeSessionStore()
     provider = TeamFinalizeAgentDispatchEffectProvider()
     provider.initialize(
@@ -12288,7 +12296,17 @@ def test_finalize_agent_dispatch_provider_closes_from_activity_and_publishes_cha
     assert result["progress_made"] is True
     assert result["published_event_ids"]
     assert session_store.calls == []
+    # Completing a dispatch must not embed the agent's growing chat history in
+    # its receipt or duplicate that history into the next node's transport.
+    from evander.daemons.effect_orchestrator import _payload_with_node_output_context
+    completion = _payload_with_node_output_context(
+        source_payload={}, source_node_id="completion", completed_node_id="finalize",
+        outputs=result, reset_context=False,
+    )
+    assert len(json.dumps(completion)) < 16_384
+    assert "historical-payload-" not in json.dumps(completion)
     reread = TeamStateRepository(tmp_path).read()
+    assert len(reread.conversation_messages) == 51
     assert reread.agent_runtimes["backend"].active_dispatch_id is None
     assert reread.agent_runtimes["backend"].no_progress_count == 0
     assert reread.conversation_messages[message.id].status == "queued"

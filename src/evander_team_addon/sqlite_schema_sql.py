@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SQLITE_SCHEMA_VERSION = 79
+SQLITE_SCHEMA_VERSION = 80
 
 _LIFECYCLE_INDEX_SQL = """
 DROP INDEX IF EXISTS idx_team_dispatches_pending_mirror;
