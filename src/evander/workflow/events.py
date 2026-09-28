@@ -15,7 +15,6 @@ from evander.repositories.orchestration_db import (
     ensure_orchestration_schema,
     json_dumps,
     json_loads_object,
-    maybe_run_orchestration_retention,
 )
 
 
@@ -36,13 +35,10 @@ class SqliteWorkflowEventJournal:
         retention_days: int | None = None,
         compact_history_retention_days: int | None = None,
     ) -> None:
+        if retention_days is not None and compact_history_retention_days is None:
+            raise ValueError("compact_history_retention_days is required when retention_days is configured")
         self.path = Path(path)
         ensure_orchestration_schema(self.path)
-        maybe_run_orchestration_retention(
-            self.path,
-            retention_days=retention_days,
-            compact_history_retention_days=compact_history_retention_days,
-        )
 
     def append(
         self,

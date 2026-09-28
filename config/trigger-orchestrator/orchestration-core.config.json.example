@@ -7,7 +7,7 @@
   "orchestration_store_path": null,
   "orchestration_compact_history_retention_days": 365,
   "orchestration_retention_days": 30,
-  "orchestration_wal_checkpoint_mode": "truncate",
+  "orchestration_wal_checkpoint_mode": "passive",
   "orchestration_wal_checkpoint_min_bytes": 67108864,
   "orchestration_wal_checkpoint_interval_seconds": 300,
   "orchestration_wal_checkpoint_busy_timeout_ms": 1000,

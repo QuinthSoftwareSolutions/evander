@@ -12,6 +12,14 @@ class SecretResolver(Protocol):
     def resolve_secret(self, ref: str) -> str | None: ...
 
 
+class InternalEventPublisher(Protocol):
+    """Durable immediate and scheduled publication using initialized stores."""
+
+    def publish(self, **kwargs: Any) -> Any: ...
+
+    def schedule_event(self, **kwargs: Any) -> Any: ...
+
+
 class VmCreator(Protocol):
     def create_vm(self, **kwargs: Any) -> Any: ...
 

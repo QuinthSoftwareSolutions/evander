@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import Any, Callable
 
 from evander.models import utc_now
@@ -45,6 +46,42 @@ from .sqlite_schema_sql import (
     _SCHEMA_SQL,
     SQLITE_SCHEMA_VERSION,
 )
+
+
+_ACTIVITY_RETENTION_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_team_dispatch_activity_retention "
+    "ON team_dispatch_activity(created_at, id)"
+)
+
+
+def check_team_activity_retention_index(path: Path | str) -> bool:
+    """Read-only readiness check, suitable for an offline migration report."""
+    from evander.repositories.sqlite_runtime import open_sqlite_connection
+
+    if not Path(path).is_file():
+        return False
+    with open_sqlite_connection(path, read_only=True, operation="team_retention_readiness") as connection:
+        return connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_team_dispatch_activity_retention'"
+        ).fetchone() is not None
+
+
+def prepare_team_activity_retention_index(path: Path | str) -> None:
+    """Explicit offline preparation; the caller must stop every Team DB user."""
+    from evander.repositories.sqlite_runtime import open_sqlite_connection
+
+    with open_sqlite_connection(path, timeout_ms=300000, operation="team_retention_index_offline") as connection:
+        connection.execute(_ACTIVITY_RETENTION_INDEX_SQL)
+
+
+def _prepare_small_activity_retention_index(connection: sqlite3.Connection) -> None:
+    # Probe at most 10,001 rows. Large existing stores require explicit offline
+    # indexing, and appends skip pruning until the index is ready.
+    count = connection.execute(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM team_dispatch_activity LIMIT 10001)"
+    ).fetchone()[0]
+    if count <= 10000:
+        connection.execute(_ACTIVITY_RETENTION_INDEX_SQL)
 
 
 def migrate_schema(
@@ -99,6 +136,7 @@ def migrate_schema(
         read_payload=read_payload,
         write_state=write_state,
     )
+    _prepare_small_activity_retention_index(connection)
     for statement in _LIFECYCLE_INDEX_SQL.split(";"):
         if statement.strip():
             connection.execute(statement)

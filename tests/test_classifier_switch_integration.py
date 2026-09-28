@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from unittest.mock import Mock
 
@@ -201,6 +202,7 @@ def test_pending_publication_reuses_decision_after_restart(setup, monkeypatch):
             raise RuntimeError("publication unavailable")
         return original(event, **kwargs)
 
+    first.event_queue.supports_atomic_publication = False
     monkeypatch.setattr(first.event_queue, "publish", failing_publish)
     first.run_once()
     assert records(config)["smart"]["status"] == "completion_pending"
@@ -208,6 +210,37 @@ def test_pending_publication_reuses_decision_after_restart(setup, monkeypatch):
     restarted = worker(admin, config)
     for _ in range(4):
         restarted.run_once()
+    result = records(config)
+    assert result["smart"]["status"] == "succeeded" and "support" in result
+    assert len(calls) == 1
+    completions = [e for e in trigger_queue_payload(config).values() if e["trigger_id"] == "smart"]
+    assert len(completions) == 1
+
+
+def test_busy_atomic_gate_completion_reuses_finished_classifier_result(setup, monkeypatch):
+    admin, _, calls = setup
+    config = workflow(admin)
+    instance = worker(admin, config)
+    original = instance.gate_execution_store.record_completion_and_publish
+    blocked = [True]
+
+    def publish_completion(**kwargs):
+        if kwargs["record"].gate_id == "smart" and blocked[0]:
+            raise sqlite3.OperationalError("database is locked")
+        return original(**kwargs)
+
+    monkeypatch.setattr(instance.gate_execution_store, "record_completion_and_publish", publish_completion)
+    publish(instance)
+    instance.run_once()
+    assert len(calls) == 1
+    assert records(config)["smart"]["status"] == "running"
+    assert "input::smart" in instance._inflight
+    blocked[0] = False
+    instance._completion_storage_retry_at = 0
+    for retry in instance._completion_retries.values():
+        retry.retry_at = 0
+    for _ in range(4):
+        instance.run_once()
     result = records(config)
     assert result["smart"]["status"] == "succeeded" and "support" in result
     assert len(calls) == 1

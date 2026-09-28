@@ -17,6 +17,7 @@ from evander.provider_runtime.contracts import (
     GitBranchPromoter,
     GitBranchPusher,
     IssueUpdater,
+    InternalEventPublisher,
     ProviderRuntimeBase,
     PullRequestCreator,
     SessionLookup,
@@ -60,6 +61,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
     vm_frontend_bootstrapper: VmFrontendBootstrapper | None = None
     agent_resumer: AgentResumer | None = None
     agent_prompt_activity: AgentPromptActivity | None = None
+    internal_event_publisher: InternalEventPublisher | None = None
     vm_power_controller: VmPowerController | None = None
     vm_inventory: VmInventory | None = None
     vm_executor: VmExecutor | None = None

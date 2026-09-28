@@ -19,7 +19,6 @@ from evander.repositories.orchestration_db import (
     ensure_orchestration_schema,
     json_dumps,
     json_loads_object,
-    maybe_run_orchestration_retention,
 )
 
 _EVENT_TYPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
@@ -105,11 +104,6 @@ class InternalEventBus:
         self.path = Path(database_path)
         self._wake_notifier = wake_notifier
         ensure_orchestration_schema(self.path)
-        maybe_run_orchestration_retention(
-            self.path,
-            retention_days=retention_days,
-            compact_history_retention_days=compact_history_retention_days,
-        )
 
     def publish(
         self,

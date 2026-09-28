@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
-from pathlib import Path
-from threading import Lock
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -119,14 +117,16 @@ from .domain.work_due import (
 )
 from .domain.work_lineage import work_lineage_id_for_record
 from .commands.outbox import _team_event_outbox_records
+from .dispatch_planning import (
+    TEAM_DISPATCH_PREPARED_COMMIT_MAX_ATTEMPTS,
+    team_dispatch_planning_lock,
+)
 
 
 GIT_WORK_CONTEXT_RETENTION_DAYS = 30
 REVIEW_DECISION_MCP_TOOL_NAME = "team_decide_review"
 MAX_REVIEW_MCP_CAPABILITY_ATTEMPTS = 2
-TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS = 3
-_TEAM_LEASE_PLANNING_LOCKS_GUARD = Lock()
-_TEAM_LEASE_PLANNING_LOCKS: dict[str, Lock] = {}
+TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS = TEAM_DISPATCH_PREPARED_COMMIT_MAX_ATTEMPTS
 
 
 def _reconcile_leasing_state(
@@ -1580,7 +1580,7 @@ def lease_due_agents(
         assert last_conflict is not None
         raise last_conflict
 
-    with _team_lease_planning_lock(service._repository.store.path):
+    with team_dispatch_planning_lock(service._repository.store.path):
         state = _plan_and_commit()
     if not defer_activation:
         for lease in leases:
@@ -1593,16 +1593,6 @@ def lease_due_agents(
             lease["runtime"] = state.agent_runtimes[lease["agent"]["id"]].model_dump(mode="json")
             lease["dispatch"] = state.dispatches[lease["dispatch_id"]].model_dump(mode="json")
     return state, leases
-
-
-def _team_lease_planning_lock(state_db_path: object) -> Lock:
-    key = str(Path(str(state_db_path)).resolve())
-    with _TEAM_LEASE_PLANNING_LOCKS_GUARD:
-        lock = _TEAM_LEASE_PLANNING_LOCKS.get(key)
-        if lock is None:
-            lock = Lock()
-            _TEAM_LEASE_PLANNING_LOCKS[key] = lock
-        return lock
 
 
 def _action_feedback_cause_id(

@@ -470,7 +470,9 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                         governance_group_id=group_id,
                         dispatch_id=dispatch_id,
                     )
-                except (RuntimeError, ValueError, TeamStateConflictError):
+                except TeamStateConflictError:
+                    raise
+                except (RuntimeError, ValueError):
                     continue
                 activated_count += 1
                 pending_governance.pop(dispatch_id, None)
@@ -504,7 +506,9 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                         dispatch_id=dispatch_id,
                         result_payload=outputs,
                     )
-                except (RuntimeError, ValueError, TeamStateConflictError):
+                except TeamStateConflictError:
+                    raise
+                except (RuntimeError, ValueError):
                     continue
                 activated_count += int(was_preparing)
                 activation_candidates.pop(dispatch_id, None)

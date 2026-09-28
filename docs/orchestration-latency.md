@@ -12,13 +12,17 @@ and the completion wake socket remain independent. Legacy extension hooks still 
 invocations on the recovery cadence. A slow single operation cannot be preempted: it is logged as
 a budget overrun and can exceed the cadence/latency target. These constants are internal defaults,
 not new workflow settings; lease renewal windows and gate deadlines have not changed.
-Execution-history backfill only runs after a completed recovery pass with no in-flight effects
-or pending events, so it does not sit between a running provider's return and reaping.
+Storage maintenance runs on a separate single-flight background lane. Its history indexing,
+retention, payload collection and checkpoint phases make independent progress in bounded slices.
+Maintenance acquires writer slots opportunistically and defers for one second when busy.
+Historical backfill waits while the durable event queue has pending work. The dispatcher only
+submits or observes maintenance work; it does not run database-wide cleanup between handoffs.
 
 Team recovery reads typed, revision-pinned candidate projections. Active work, pending activation,
 governance reservations, current native-thread owners and overdue metadata mirrors are checked
 before separately paginated historical receipt recovery. Prompt receipts are selected by immutable
-dispatch IDs using an additive SQLite expression index. All receipts for a selected dispatch are
+dispatch IDs using an indexed metadata projection, with the expression-indexed inline lookup
+retained for legacy records. All receipts for a selected dispatch are
 considered, so a newer missing-thread receipt wins over an older success. Actual changes still use
 the authoritative transactional Team runtime service. Generic replay revalidates Team ownership
 before claiming; FIFO, single-flight, capacity/profile deferrals and compare-delete remain in place.
@@ -50,6 +54,34 @@ the running lane and its cursors. Orderly shutdown and every locked single-cycle
 failures, drain the lane before releasing the worker lock. Replacing a live Team database is
 unsupported: the worker detects a changed file identity and requires restart/schema initialization.
 
+## Team dispatch storage
+
+Team repository construction checks schema and state version markers through a read-only
+connection. Initial setup and upgrades run under a shared initialization lock, and empty state is
+created only after checking again with the writer reserved. Ordinary state and projection reads
+pin a committed snapshot without taking the Team writer lock.
+
+Chat dispatch selection uses the same optimistic planning pattern as ordinary Team leases.
+Session activity checks and candidate validation happen before the writer reservation; commit
+verifies the Team revision. A conflict causes at most three complete replans. Targeted wake
+exhaustion schedules a delayed successor while preserving the queued message. The final prompt
+claim still excludes concurrent prompts; if activity changes after planning, delivery queues the
+reserved dispatch and starts its lease only after actual delivery.
+
+Finalization publishes a compact receipt rather than historical Team state. Immediate and delayed
+event publishers initialize lazily and reuse their store objects across provider invocations and
+outbox batches. Actual SQLite operations use separate connections, and an empty event list does
+not initialize a publisher. Team state and outbox intents remain committed together before
+publication, so a publication failure can be retried.
+
+Completed futures, durable pending receipts and delivery bookkeeping share a rotating budget of
+32 entries and 100 ms per cycle. A transient storage error keeps ownership of the completed result.
+SQLite contention retries start at 25 ms and cap at 250 ms per entry; the shared completion lane
+waits at most 25 ms so one contended item cannot hold ready work behind its backoff. Adapter
+publication outages use a separate 250 ms to five-second exponential backoff. Retries have jitter.
+Effect and gate receipt, successor and journal commits are atomic; external provider execution
+itself is not made transactional by SQLite.
+
 ## Reading timings
 
 Effect execution payloads may now include:
@@ -71,17 +103,28 @@ require synchronized clocks. No prompt text, message contents or credentials are
 new timing instrumentation.
 
 `workflow_execution_storage` logs separate the full persistence operation from `record_write`
-and `history` phases. `record_write` includes serialization and the SQL upsert, including any
-writer wait there; `history` covers compact history maintenance. Total duration also includes
-repository locks, connection setup, commit/close and journal publication. Gate-completion totals
+and `history` phases. `record_write` covers the SQL upsert and immutable object references, including any
+writer wait there; `history` covers compact history metadata maintenance. Payload serialization,
+hashing and compression are prepared before acquiring the writer. Total duration also includes
+payload preparation, repository locks, connection setup, commit/close and journal publication. Gate-completion totals
 include atomic successor publication. The phase durations are inside the total and must not be
 added to it. These diagnostic logs use DEBUG and are disabled under the usual INFO configuration.
 Temporarily enable DEBUG for `evander.repositories.orchestration` to capture them. These measurements
 identify storage work but do not independently measure SQLite lock wait.
 
-Lifecycle-only history updates reuse already stored compressed payloads and leave unchanged
-scalar-index rows in place. Changed input/output payloads rebuild their indexes in the same
-transaction; status, directory scope and source provenance continue to be refreshed.
+Lifecycle-only history updates reuse stored compressed payloads. Changed input/output payloads
+commit a durable indexing job with their receipt; background maintenance builds the scalar
+projection. History query responses expose `indexing_complete` and `indexing_pending_count` so
+pending work is visible. Details retain the recorded payload while indexing catches up. Status,
+directory scope and source provenance remain durable.
+
+`sqlite_operation` logs report operation duration and connection-close time. `storage_maintenance`
+logs identify the phase, elapsed time, outcome and progress. Automatic checkpointing uses PASSIVE;
+legacy blocking checkpoint settings are normalized for online work. No connection operation
+renegotiates WAL after initialization. Shared idle read-only connections keep the database open
+without holding a transaction or snapshot, avoiding a large last-connection checkpoint on each
+request. SQL operation deadlines bound lock waits and interrupt long SQL execution; filesystem
+commit/close I/O is measured separately and cannot be given the same hard time bound.
 
 Recovery phase logs name each underlying hook and report elapsed time, records examined, changes,
 whether work remains, and budget overruns. Examined count is unavailable for legacy hooks.
@@ -89,6 +132,12 @@ whether work remains, and budget overruns. Examined count is unavailable for leg
 from the foreground submission timing. Team subphase logs distinguish repository initialization,
 database connection, candidate selection, indexed receipt lookup, lease renewal and completion
 finalization. Slow or failed phases are logged at info/warning level; fast subphases use debug.
+
+Team background dispatch activation, native receipt reconciliation and finalization prepare
+state validation and row deltas before taking the writer lock. Finalization checks both the
+Team revision and its dispatch activity evidence again under the writer; conflicting plans
+are deferred without publishing their events. Background snapshot assembly has a separate
+five-second operation budget, while its SQLite lock waits remain capped at 100 ms.
 
 ## Verification and deployment gate
 
@@ -112,5 +161,7 @@ copy of the orchestration and Team databases, record baseline sizes and timings,
 normal controlled deployment/restart procedure. Never rewrite live workflow packs for this change.
 Then observe operator-generated assistant messages and normal PR-review activity: compare at least
 30 traces, inspect handoff p50/p95, recovery lag, lease renewals, duplicate executions and queue age.
-Code rollback can leave additive indexes and optional payload fields in place. No live configuration
-change, service restart or synthetic external message is required by local verification.
+Before code rollback, use the explicit
+[storage downgrade procedure](operations.md#orchestration-storage-migration-and-rollback) to
+rehydrate referenced operational records. Additive tables and indexes may remain. Local verification
+requires no live configuration change, service restart or synthetic external message.

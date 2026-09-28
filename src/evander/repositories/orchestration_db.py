@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import sqlite3
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -13,7 +13,16 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 5
+from evander.repositories.sqlite_runtime import (
+    FOREGROUND_TIMEOUT_MS,
+    MAINTENANCE_TIMEOUT_MS,
+    ensure_sqlite_initialized,
+    open_sqlite_connection,
+)
+
+SCHEMA_VERSION = 6
+logger = logging.getLogger(__name__)
+_warned_checkpoint_modes: set[tuple[str, str]] = set()
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS = 1_000
 SQLITE_WAL_CHECKPOINT_MIN_BYTES = 64 * 1024 * 1024
@@ -49,70 +58,67 @@ class OrchestrationRetentionResult:
     compact_payload_blobs_deleted: int = 0
     internal_events_deleted: int = 0
     scheduled_internal_events_deleted: int = 0
+    remaining: bool = False
+    skipped_reason: str | None = None
 
 
 @dataclass(frozen=True)
 class OrchestrationWalCheckpointResult:
     attempted: bool = False
     skipped_reason: str | None = None
-    mode: str = "truncate"
+    mode: str = "passive"
     wal_size_bytes: int = 0
     busy: int | None = None
     log_frames: int | None = None
     checkpointed_frames: int | None = None
     error: str | None = None
+    history_index_pending: int = 0
+    history_index_oldest_age_seconds: float | None = None
 
 
 @contextmanager
-def connect_orchestration_db(path: Path | str) -> Iterator[sqlite3.Connection]:
-    db_path = Path(path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    timeout_seconds = SQLITE_BUSY_TIMEOUT_MS / 1000
-    deadline = time.monotonic() + timeout_seconds
-    connection = sqlite3.connect(db_path, timeout=timeout_seconds)
-    try:
-        connection.row_factory = sqlite3.Row
-        while True:
-            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
-            connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
-            try:
-                connection.execute("PRAGMA journal_mode=WAL")
-                break
-            except sqlite3.OperationalError as exc:
-                # Concurrent first opens can return SQLITE_BUSY during the WAL
-                # transition without invoking SQLite's busy handler. Retry only
-                # that family and include every attempt in the original budget.
-                code = getattr(exc, "sqlite_errorcode", None)
-                if code is None or code & 0xFF != sqlite3.SQLITE_BUSY:
-                    raise
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise
-                time.sleep(min(0.01, remaining))
-                if time.monotonic() >= deadline:
-                    raise
-        # Subsequent transactions retain their normal independent busy timeout.
-        connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-        connection.execute("PRAGMA foreign_keys=ON")
+def connect_orchestration_db(
+    path: Path | str,
+    *,
+    busy_timeout_ms: int = FOREGROUND_TIMEOUT_MS,
+    deadline_seconds: float | None = None,
+    operation: str = "orchestration_write",
+) -> Iterator[sqlite3.Connection]:
+    # Bootstrap remains supported for callers constructing a fresh store.
+    if not Path(path).exists():
+        ensure_orchestration_schema(path)
+    with open_sqlite_connection(
+        path,
+        timeout_ms=busy_timeout_ms,
+        deadline_seconds=deadline_seconds,
+        operation=operation,
+    ) as connection:
         connection.create_function(
             "execution_history_numeric_compare", 2, _compare_execution_history_numbers
         )
-        with connection:
-            yield connection
-    finally:
-        connection.close()
+        yield connection
 
 
 @contextmanager
-def connect_orchestration_db_read_only(path: Path | str) -> Iterator[sqlite3.Connection]:
-    """Read an initialized database without WAL negotiation or repository locks."""
-    connection = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.1)
-    try:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA query_only=ON")
+def connect_orchestration_db_read_only(
+    path: Path | str,
+    *,
+    busy_timeout_ms: int = FOREGROUND_TIMEOUT_MS,
+    deadline_seconds: float | None = None,
+    operation: str = "orchestration_read",
+) -> Iterator[sqlite3.Connection]:
+    """Read initialized state without schema writes or WAL negotiation."""
+    with open_sqlite_connection(
+        path,
+        read_only=True,
+        timeout_ms=busy_timeout_ms,
+        deadline_seconds=deadline_seconds,
+        operation=operation,
+    ) as connection:
+        connection.create_function(
+            "execution_history_numeric_compare", 2, _compare_execution_history_numbers
+        )
         yield connection
-    finally:
-        connection.close()
 
 
 @contextmanager
@@ -144,360 +150,389 @@ def _try_orchestration_retention_lock(path: Path | str) -> Iterator[bool]:
             os.close(fd)
 
 
-def ensure_orchestration_schema(path: Path | str) -> None:
-    with connect_orchestration_db(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
-            );
+def _orchestration_schema_current(connection: sqlite3.Connection) -> bool:
+    row = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    if row is None or int(row[0] or 0) < SCHEMA_VERSION:
+        return False
+    from evander.repositories.operational_payloads import operational_schema_is_current
 
-            CREATE TABLE IF NOT EXISTS orchestration_metadata (
-                key TEXT PRIMARY KEY,
-                value_json TEXT NOT NULL
-            );
+    return operational_schema_is_current(connection)
 
-            CREATE TABLE IF NOT EXISTS trigger_events (
-                event_id TEXT PRIMARY KEY,
-                idempotency_key TEXT UNIQUE,
-                delivery_state TEXT NOT NULL,
-                trigger_id TEXT NOT NULL,
-                trigger_type TEXT NOT NULL,
-                trace_id TEXT NOT NULL,
-                occurred_at TEXT NOT NULL,
-                inflight_at TEXT,
-                delivered_at TEXT,
-                clear_reason TEXT,
-                error TEXT,
-                payload_json TEXT NOT NULL
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_trigger_events_state
-                ON trigger_events(delivery_state, occurred_at, event_id);
-            CREATE INDEX IF NOT EXISTS idx_trigger_events_trigger
-                ON trigger_events(trigger_id, trigger_type, occurred_at, event_id);
-            CREATE INDEX IF NOT EXISTS idx_trigger_events_occurred
-                ON trigger_events(occurred_at, event_id);
-            CREATE INDEX IF NOT EXISTS idx_trigger_events_activity
-                ON trigger_events(COALESCE(delivered_at, inflight_at, occurred_at), event_id);
-            CREATE INDEX IF NOT EXISTS idx_trigger_events_trace
-                ON trigger_events(trace_id, occurred_at);
-            CREATE INDEX IF NOT EXISTS idx_trigger_events_idempotency
-                ON trigger_events(idempotency_key);
+def ensure_orchestration_schema(path: Path | str, *, force: bool = False) -> None:
+    ensure_sqlite_initialized(
+        path,
+        schema_key=f"orchestration:{SCHEMA_VERSION}",
+        is_current=_orchestration_schema_current,
+        initialize=_initialize_orchestration_schema,
+        force=force,
+    )
 
-            CREATE TABLE IF NOT EXISTS effect_executions (
-                execution_id TEXT PRIMARY KEY,
-                idempotency_key TEXT NOT NULL UNIQUE,
-                event_id TEXT NOT NULL,
-                trace_id TEXT NOT NULL,
-                source_node_id TEXT NOT NULL,
-                source_trigger_type TEXT NOT NULL,
-                status TEXT NOT NULL,
-                effect_id TEXT NOT NULL,
-                effect_type TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT NOT NULL,
-                cleared_at TEXT,
-                dismissed_at TEXT,
-                payload_json TEXT NOT NULL
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_event
-                ON effect_executions(event_id, status, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_status
-                ON effect_executions(status, finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_status_type
-                ON effect_executions(status, effect_type, finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_prompt_dispatch
-                ON effect_executions(effect_type, json_extract(payload_json, '$.outputs.dispatch_id'), status);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_waiting_page
-                ON effect_executions(effect_type, execution_id) WHERE status = 'waiting';
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_effect
-                ON effect_executions(effect_id, effect_type, finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_node_failed_dismissed
-                ON effect_executions(effect_id, status, dismissed_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_trace
-                ON effect_executions(trace_id, finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_started
-                ON effect_executions(started_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_finished
-                ON effect_executions(finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_effect_executions_activity
-                ON effect_executions(COALESCE(finished_at, started_at), execution_id);
-
-            CREATE TABLE IF NOT EXISTS gate_executions (
-                execution_id TEXT PRIMARY KEY,
-                idempotency_key TEXT NOT NULL UNIQUE,
-                event_id TEXT NOT NULL,
-                trace_id TEXT NOT NULL,
-                source_node_id TEXT NOT NULL,
-                source_trigger_type TEXT NOT NULL,
-                status TEXT NOT NULL,
-                gate_id TEXT NOT NULL,
-                gate_type TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT NOT NULL,
-                cleared_at TEXT,
-                dismissed_at TEXT,
-                payload_json TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_event
-                ON gate_executions(event_id, status, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_status
-                ON gate_executions(status, finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_status_type
-                ON gate_executions(status, gate_type, finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_gate
-                ON gate_executions(gate_id, gate_type, finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_node_failed_dismissed
-                ON gate_executions(gate_id, status, dismissed_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_trace
-                ON gate_executions(trace_id, finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_started
-                ON gate_executions(started_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_finished
-                ON gate_executions(finished_at, execution_id);
-            CREATE INDEX IF NOT EXISTS idx_gate_executions_activity
-                ON gate_executions(COALESCE(finished_at, started_at), execution_id);
-
-            CREATE TABLE IF NOT EXISTS workflow_events (
-                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id TEXT NOT NULL UNIQUE,
-                event_type TEXT NOT NULL,
-                source TEXT NOT NULL,
-                subject_id TEXT,
-                occurred_at TEXT NOT NULL,
-                payload_json TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_workflow_events_type
-                ON workflow_events(event_type, row_id);
-            CREATE INDEX IF NOT EXISTS idx_workflow_events_source
-                ON workflow_events(source, row_id);
-            CREATE INDEX IF NOT EXISTS idx_workflow_events_subject
-                ON workflow_events(subject_id, row_id);
-            CREATE INDEX IF NOT EXISTS idx_workflow_events_occurred
-                ON workflow_events(occurred_at, row_id);
-
-            CREATE TABLE IF NOT EXISTS internal_events (
-                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id TEXT NOT NULL UNIQUE,
-                event_type TEXT NOT NULL,
-                correlation_key TEXT,
-                created_at TEXT NOT NULL,
-                source_json TEXT,
-                idempotency_key TEXT UNIQUE,
-                payload_json TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_internal_events_type_row
-                ON internal_events(event_type, row_id);
-            CREATE INDEX IF NOT EXISTS idx_internal_events_created
-                ON internal_events(created_at, row_id);
-            CREATE INDEX IF NOT EXISTS idx_internal_events_idempotency
-                ON internal_events(idempotency_key);
-
-            CREATE TABLE IF NOT EXISTS internal_event_subscriptions (
-                trigger_id TEXT PRIMARY KEY,
-                trigger_type TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                filter_hash TEXT NOT NULL,
-                filter_json TEXT NOT NULL,
-                scan_cursor_row_id INTEGER NOT NULL DEFAULT 0,
-                active INTEGER NOT NULL DEFAULT 1,
-                config_revision TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_internal_event_subscriptions_active
-                ON internal_event_subscriptions(active, event_type, scan_cursor_row_id);
-
-            CREATE TABLE IF NOT EXISTS internal_event_deliveries (
-                trigger_id TEXT NOT NULL,
-                internal_event_row_id INTEGER NOT NULL,
-                state TEXT NOT NULL CHECK(state IN ('pending', 'delivered')),
-                created_at TEXT NOT NULL,
-                delivered_at TEXT,
-                PRIMARY KEY(trigger_id, internal_event_row_id),
-                FOREIGN KEY(trigger_id)
-                    REFERENCES internal_event_subscriptions(trigger_id)
-                    ON DELETE CASCADE,
-                FOREIGN KEY(internal_event_row_id)
-                    REFERENCES internal_events(row_id)
-                    ON DELETE CASCADE
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_internal_event_deliveries_pending
-                ON internal_event_deliveries(trigger_id, state, internal_event_row_id);
-
-            CREATE TABLE IF NOT EXISTS scheduled_internal_events (
-                schedule_id TEXT PRIMARY KEY,
-                event_type TEXT NOT NULL,
-                correlation_key TEXT,
-                run_at TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('pending', 'published')),
-                created_at TEXT NOT NULL,
-                published_at TEXT,
-                published_event_id TEXT,
-                idempotency_key TEXT UNIQUE,
-                source_json TEXT,
-                payload_json TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_scheduled_internal_events_due
-                ON scheduled_internal_events(status, run_at, created_at, schedule_id);
-            CREATE INDEX IF NOT EXISTS idx_scheduled_internal_events_published
-                ON scheduled_internal_events(status, published_at, schedule_id);
-
-            CREATE TABLE IF NOT EXISTS workflow_config_snapshots (
-                revision TEXT PRIMARY KEY,
-                captured_at TEXT NOT NULL,
-                payload_json TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_workflow_config_snapshots_captured
-                ON workflow_config_snapshots(captured_at, revision);
-
-            CREATE TABLE IF NOT EXISTS workflow_execution_payload_blobs (
-                sha256 TEXT PRIMARY KEY,
-                codec TEXT NOT NULL,
-                original_bytes INTEGER NOT NULL,
-                compressed_bytes INTEGER NOT NULL,
-                payload_blob BLOB NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS workflow_node_execution_history (
-                execution_key TEXT PRIMARY KEY,
-                execution_kind TEXT NOT NULL,
-                execution_id TEXT NOT NULL,
-                event_id TEXT NOT NULL,
-                trace_id TEXT,
-                node_id TEXT NOT NULL,
-                node_type TEXT NOT NULL,
-                source_node_id TEXT,
-                source_trigger_type TEXT,
-                status TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT NOT NULL,
-                config_revision TEXT,
-                config_hash TEXT,
-                directory_path TEXT,
-                published_event_id TEXT,
-                error TEXT,
-                input_blob_sha256 TEXT,
-                output_blob_sha256 TEXT,
-                updated_at TEXT NOT NULL,
-                UNIQUE(execution_kind, execution_id),
-                FOREIGN KEY(input_blob_sha256)
-                    REFERENCES workflow_execution_payload_blobs(sha256),
-                FOREIGN KEY(output_blob_sha256)
-                    REFERENCES workflow_execution_payload_blobs(sha256)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_node_started
-                ON workflow_node_execution_history(node_id, started_at DESC, execution_key DESC);
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_node_status_started
-                ON workflow_node_execution_history(
-                    node_id, status, started_at DESC, execution_key DESC
-                );
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_event
-                ON workflow_node_execution_history(event_id, execution_key);
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_finished
-                ON workflow_node_execution_history(finished_at, execution_key);
-
-            CREATE TABLE IF NOT EXISTS workflow_node_execution_history_sources (
-                execution_key TEXT NOT NULL,
-                source_node_id TEXT NOT NULL,
-                source_event_id TEXT,
-                occurred_at TEXT,
-                PRIMARY KEY(execution_key, source_node_id),
-                FOREIGN KEY(execution_key)
-                    REFERENCES workflow_node_execution_history(execution_key)
-                    ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS workflow_node_execution_history_values (
-                execution_key TEXT NOT NULL,
-                location TEXT NOT NULL,
-                json_pointer TEXT NOT NULL,
-                value_type TEXT NOT NULL,
-                value_hash TEXT,
-                text_value TEXT,
-                numeric_value REAL,
-                boolean_value INTEGER,
-                PRIMARY KEY(execution_key, location, json_pointer),
-                FOREIGN KEY(execution_key)
-                    REFERENCES workflow_node_execution_history(execution_key)
-                    ON DELETE CASCADE
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_lookup
-                ON workflow_node_execution_history_values(
-                    location, json_pointer, value_type, value_hash, execution_key
-                );
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_numeric
-                ON workflow_node_execution_history_values(
-                    location, json_pointer, value_type, numeric_value, execution_key
-                );
-            """
-        )
-        v3_applied = connection.execute(
-            "SELECT 1 FROM schema_migrations WHERE version = ?", (3,)
+def _initialize_orchestration_schema(connection: sqlite3.Connection) -> None:
+    fresh = (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
         ).fetchone()
-        if v3_applied is None:
-            history_columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(workflow_node_execution_history)")
-            }
-            if "directory_path" not in history_columns:
-                connection.execute(
-                    "ALTER TABLE workflow_node_execution_history ADD COLUMN directory_path TEXT"
-                )
+        is None
+    )
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS orchestration_metadata (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS trigger_events (
+            event_id TEXT PRIMARY KEY,
+            idempotency_key TEXT UNIQUE,
+            delivery_state TEXT NOT NULL,
+            trigger_id TEXT NOT NULL,
+            trigger_type TEXT NOT NULL,
+            trace_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            inflight_at TEXT,
+            delivered_at TEXT,
+            clear_reason TEXT,
+            error TEXT,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_trigger_events_state
+            ON trigger_events(delivery_state, occurred_at, event_id);
+        CREATE INDEX IF NOT EXISTS idx_trigger_events_trigger
+            ON trigger_events(trigger_id, trigger_type, occurred_at, event_id);
+        CREATE INDEX IF NOT EXISTS idx_trigger_events_occurred
+            ON trigger_events(occurred_at, event_id);
+        CREATE INDEX IF NOT EXISTS idx_trigger_events_activity
+            ON trigger_events(COALESCE(delivered_at, inflight_at, occurred_at), event_id);
+        CREATE INDEX IF NOT EXISTS idx_trigger_events_trace
+            ON trigger_events(trace_id, occurred_at);
+        CREATE INDEX IF NOT EXISTS idx_trigger_events_idempotency
+            ON trigger_events(idempotency_key);
+
+        CREATE TABLE IF NOT EXISTS effect_executions (
+            execution_id TEXT PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            event_id TEXT NOT NULL,
+            trace_id TEXT NOT NULL,
+            source_node_id TEXT NOT NULL,
+            source_trigger_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            effect_id TEXT NOT NULL,
+            effect_type TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            cleared_at TEXT,
+            dismissed_at TEXT,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_event
+            ON effect_executions(event_id, status, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_status
+            ON effect_executions(status, finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_status_type
+            ON effect_executions(status, effect_type, finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_prompt_dispatch
+            ON effect_executions(effect_type, json_extract(payload_json, '$.outputs.dispatch_id'), status);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_waiting_page
+            ON effect_executions(effect_type, execution_id) WHERE status = 'waiting';
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_effect
+            ON effect_executions(effect_id, effect_type, finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_node_failed_dismissed
+            ON effect_executions(effect_id, status, dismissed_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_trace
+            ON effect_executions(trace_id, finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_started
+            ON effect_executions(started_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_finished
+            ON effect_executions(finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_effect_executions_activity
+            ON effect_executions(COALESCE(finished_at, started_at), execution_id);
+
+        CREATE TABLE IF NOT EXISTS gate_executions (
+            execution_id TEXT PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            event_id TEXT NOT NULL,
+            trace_id TEXT NOT NULL,
+            source_node_id TEXT NOT NULL,
+            source_trigger_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            gate_id TEXT NOT NULL,
+            gate_type TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            cleared_at TEXT,
+            dismissed_at TEXT,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_event
+            ON gate_executions(event_id, status, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_status
+            ON gate_executions(status, finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_status_type
+            ON gate_executions(status, gate_type, finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_gate
+            ON gate_executions(gate_id, gate_type, finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_node_failed_dismissed
+            ON gate_executions(gate_id, status, dismissed_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_trace
+            ON gate_executions(trace_id, finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_started
+            ON gate_executions(started_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_finished
+            ON gate_executions(finished_at, execution_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_executions_activity
+            ON gate_executions(COALESCE(finished_at, started_at), execution_id);
+
+        CREATE TABLE IF NOT EXISTS workflow_events (
+            row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            event_type TEXT NOT NULL,
+            source TEXT NOT NULL,
+            subject_id TEXT,
+            occurred_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_events_type
+            ON workflow_events(event_type, row_id);
+        CREATE INDEX IF NOT EXISTS idx_workflow_events_source
+            ON workflow_events(source, row_id);
+        CREATE INDEX IF NOT EXISTS idx_workflow_events_subject
+            ON workflow_events(subject_id, row_id);
+        CREATE INDEX IF NOT EXISTS idx_workflow_events_occurred
+            ON workflow_events(occurred_at, row_id);
+
+        CREATE TABLE IF NOT EXISTS internal_events (
+            row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            event_type TEXT NOT NULL,
+            correlation_key TEXT,
+            created_at TEXT NOT NULL,
+            source_json TEXT,
+            idempotency_key TEXT UNIQUE,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_internal_events_type_row
+            ON internal_events(event_type, row_id);
+        CREATE INDEX IF NOT EXISTS idx_internal_events_created
+            ON internal_events(created_at, row_id);
+        CREATE INDEX IF NOT EXISTS idx_internal_events_idempotency
+            ON internal_events(idempotency_key);
+
+        CREATE TABLE IF NOT EXISTS internal_event_subscriptions (
+            trigger_id TEXT PRIMARY KEY,
+            trigger_type TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            filter_hash TEXT NOT NULL,
+            filter_json TEXT NOT NULL,
+            scan_cursor_row_id INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            config_revision TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_internal_event_subscriptions_active
+            ON internal_event_subscriptions(active, event_type, scan_cursor_row_id);
+
+        CREATE TABLE IF NOT EXISTS internal_event_deliveries (
+            trigger_id TEXT NOT NULL,
+            internal_event_row_id INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('pending', 'delivered')),
+            created_at TEXT NOT NULL,
+            delivered_at TEXT,
+            PRIMARY KEY(trigger_id, internal_event_row_id),
+            FOREIGN KEY(trigger_id)
+                REFERENCES internal_event_subscriptions(trigger_id)
+                ON DELETE CASCADE,
+            FOREIGN KEY(internal_event_row_id)
+                REFERENCES internal_events(row_id)
+                ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_internal_event_deliveries_pending
+            ON internal_event_deliveries(trigger_id, state, internal_event_row_id);
+
+        CREATE TABLE IF NOT EXISTS scheduled_internal_events (
+            schedule_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            correlation_key TEXT,
+            run_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'published')),
+            created_at TEXT NOT NULL,
+            published_at TEXT,
+            published_event_id TEXT,
+            idempotency_key TEXT UNIQUE,
+            source_json TEXT,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_scheduled_internal_events_due
+            ON scheduled_internal_events(status, run_at, created_at, schedule_id);
+        CREATE INDEX IF NOT EXISTS idx_scheduled_internal_events_published
+            ON scheduled_internal_events(status, published_at, schedule_id);
+
+        CREATE TABLE IF NOT EXISTS workflow_config_snapshots (
+            revision TEXT PRIMARY KEY,
+            captured_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_config_snapshots_captured
+            ON workflow_config_snapshots(captured_at, revision);
+
+        CREATE TABLE IF NOT EXISTS workflow_execution_payload_blobs (
+            sha256 TEXT PRIMARY KEY,
+            codec TEXT NOT NULL,
+            original_bytes INTEGER NOT NULL,
+            compressed_bytes INTEGER NOT NULL,
+            payload_blob BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS workflow_node_execution_history (
+            execution_key TEXT PRIMARY KEY,
+            execution_kind TEXT NOT NULL,
+            execution_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            trace_id TEXT,
+            node_id TEXT NOT NULL,
+            node_type TEXT NOT NULL,
+            source_node_id TEXT,
+            source_trigger_type TEXT,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            config_revision TEXT,
+            config_hash TEXT,
+            directory_path TEXT,
+            published_event_id TEXT,
+            error TEXT,
+            input_blob_sha256 TEXT,
+            output_blob_sha256 TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(execution_kind, execution_id),
+            FOREIGN KEY(input_blob_sha256)
+                REFERENCES workflow_execution_payload_blobs(sha256),
+            FOREIGN KEY(output_blob_sha256)
+                REFERENCES workflow_execution_payload_blobs(sha256)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_node_history_node_started
+            ON workflow_node_execution_history(node_id, started_at DESC, execution_key DESC);
+        CREATE INDEX IF NOT EXISTS idx_workflow_node_history_node_status_started
+            ON workflow_node_execution_history(
+                node_id, status, started_at DESC, execution_key DESC
+            );
+        CREATE INDEX IF NOT EXISTS idx_workflow_node_history_event
+            ON workflow_node_execution_history(event_id, execution_key);
+        CREATE INDEX IF NOT EXISTS idx_workflow_node_history_finished
+            ON workflow_node_execution_history(finished_at, execution_key);
+
+        CREATE TABLE IF NOT EXISTS workflow_node_execution_history_sources (
+            execution_key TEXT NOT NULL,
+            source_node_id TEXT NOT NULL,
+            source_event_id TEXT,
+            occurred_at TEXT,
+            PRIMARY KEY(execution_key, source_node_id),
+            FOREIGN KEY(execution_key)
+                REFERENCES workflow_node_execution_history(execution_key)
+                ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS workflow_node_execution_history_values (
+            execution_key TEXT NOT NULL,
+            location TEXT NOT NULL,
+            json_pointer TEXT NOT NULL,
+            value_type TEXT NOT NULL,
+            value_hash TEXT,
+            text_value TEXT,
+            numeric_value REAL,
+            boolean_value INTEGER,
+            PRIMARY KEY(execution_key, location, json_pointer),
+            FOREIGN KEY(execution_key)
+                REFERENCES workflow_node_execution_history(execution_key)
+                ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_lookup
+            ON workflow_node_execution_history_values(
+                location, json_pointer, value_type, value_hash, execution_key
+            );
+        CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_numeric
+            ON workflow_node_execution_history_values(
+                location, json_pointer, value_type, numeric_value, execution_key
+            );
+        """
+    )
+    v3_applied = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?", (3,)
+    ).fetchone()
+    if v3_applied is None:
+        history_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(workflow_node_execution_history)")
+        }
+        if "directory_path" not in history_columns:
             connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_workflow_node_history_directory_started
-                ON workflow_node_execution_history(
-                    directory_path, node_id, started_at DESC, execution_key DESC
-                )
-                """
+                "ALTER TABLE workflow_node_execution_history ADD COLUMN directory_path TEXT"
             )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_exact
-                ON workflow_node_execution_history_values(
-                    location, json_pointer, value_type, text_value, execution_key
-                )
-                """
-            )
-            # Execution-history comparisons require a fixed-width UTC representation.
-            # Rows written by schema v2 at an exact second used the shorter ``...00Z``
-            # spelling, which is not lexicographically ordered with fractional seconds.
-            connection.execute(
-                """
-                UPDATE workflow_node_execution_history
-                SET started_at = substr(started_at, 1, 19) || '.000000Z'
-                WHERE length(started_at) = 20 AND substr(started_at, -1) = 'Z'
-                """
-            )
-            connection.execute(
-                """
-                UPDATE workflow_node_execution_history
-                SET finished_at = substr(finished_at, 1, 19) || '.000000Z'
-                WHERE length(finished_at) = 20 AND substr(finished_at, -1) = 'Z'
-                """
-            )
-        applied_at = datetime_to_storage(datetime.now(UTC))
-        connection.executemany(
+        connection.execute(
             """
-            INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-            VALUES (?, ?)
-            """,
-            [(version, applied_at) for version in range(1, SCHEMA_VERSION + 1)],
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_directory_started
+            ON workflow_node_execution_history(
+                directory_path, node_id, started_at DESC, execution_key DESC
+            )
+            """
         )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_exact
+            ON workflow_node_execution_history_values(
+                location, json_pointer, value_type, text_value, execution_key
+            )
+            """
+        )
+        # Execution-history comparisons require a fixed-width UTC representation.
+        # Rows written by schema v2 at an exact second used the shorter ``...00Z``
+        # spelling, which is not lexicographically ordered with fractional seconds.
+        connection.execute(
+            """
+            UPDATE workflow_node_execution_history
+            SET started_at = substr(started_at, 1, 19) || '.000000Z'
+            WHERE length(started_at) = 20 AND substr(started_at, -1) = 'Z'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE workflow_node_execution_history
+            SET finished_at = substr(finished_at, 1, 19) || '.000000Z'
+            WHERE length(finished_at) = 20 AND substr(finished_at, -1) = 'Z'
+            """
+        )
+    from evander.repositories.operational_payloads import initialize_payload_schema
+
+    initialize_payload_schema(connection)
+    if fresh:
+        _create_maintenance_indexes(connection)
+    applied_at = datetime_to_storage(datetime.now(UTC))
+    connection.executemany(
+        """
+        INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+        VALUES (?, ?)
+        """,
+        [(version, applied_at) for version in range(1, SCHEMA_VERSION + 1)],
+    )
 
 
 def json_dumps(payload: Any) -> str:
@@ -520,6 +555,79 @@ def datetime_to_storage(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+_MAINTENANCE_INDEXES = {
+    "idx_workflow_history_input_blob": ("workflow_node_execution_history", "input_blob_sha256"),
+    "idx_workflow_history_output_blob": ("workflow_node_execution_history", "output_blob_sha256"),
+    "idx_internal_delivery_event": ("internal_event_deliveries", "internal_event_row_id"),
+}
+
+
+def _create_maintenance_indexes(connection: sqlite3.Connection) -> None:
+    for name, (table, column) in _MAINTENANCE_INDEXES.items():
+        connection.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({column})")
+
+
+def _maintenance_indexes_ready(connection: sqlite3.Connection) -> bool:
+    for name, (table, column) in _MAINTENANCE_INDEXES.items():
+        row = connection.execute(
+            "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?", (name,)
+        ).fetchone()
+        if row is None or row[0] != table:
+            return False
+        columns = [row[2] for row in connection.execute(f"PRAGMA index_info({name})")]
+        if columns != [column]:
+            return False
+    return True
+
+
+def orchestration_maintenance_index_status(path: Path | str) -> dict[str, Any]:
+    with connect_orchestration_db_read_only(
+        path, operation="maintenance_index_status"
+    ) as connection:
+        ready = _maintenance_indexes_ready(connection)
+        indexed_schema = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_history_index_jobs'"
+        ).fetchone()
+        pending, oldest = (
+            connection.execute(
+                "SELECT COUNT(*), MIN(enqueued_at) FROM workflow_history_index_jobs"
+            ).fetchone()
+            if indexed_schema
+            else (None, None)
+        )
+    db_path = Path(path)
+    try:
+        wal_bytes = db_path.with_name(db_path.name + "-wal").stat().st_size
+    except FileNotFoundError:
+        wal_bytes = 0
+    oldest_at = _datetime_from_storage(oldest)
+    return {
+        "ready": ready,
+        "required_indexes": list(_MAINTENANCE_INDEXES),
+        "database_bytes": db_path.stat().st_size,
+        "wal_bytes": wal_bytes,
+        "history_index_pending": pending,
+        "history_index_oldest_age_seconds": max(0, (datetime.now(UTC) - oldest_at).total_seconds())
+        if oldest_at
+        else None,
+    }
+
+
+def build_orchestration_maintenance_indexes(path: Path | str) -> dict[str, Any]:
+    """Explicit offline migration: index builds may scan large legacy tables."""
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(
+        path,
+        busy_timeout_ms=30_000,
+        deadline_seconds=3600,
+        operation="offline_maintenance_indexes",
+    ) as connection:
+        _create_maintenance_indexes(connection)
+        if not _maintenance_indexes_ready(connection):
+            raise ValueError("Maintenance index definitions do not match the expected schema")
+    return orchestration_maintenance_index_status(path)
 
 
 def maybe_run_orchestration_retention(
@@ -562,6 +670,7 @@ def maybe_checkpoint_orchestration_wal(
     min_bytes: int = SQLITE_WAL_CHECKPOINT_MIN_BYTES,
     interval_seconds: int = SQLITE_WAL_CHECKPOINT_INTERVAL_SECONDS,
     busy_timeout_ms: int = SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS,
+    offline: bool = False,
 ) -> OrchestrationWalCheckpointResult:
     normalized_mode = str(mode or "").strip().casefold()
     if normalized_mode in {"", "disabled", "none", "off"}:
@@ -579,8 +688,20 @@ def maybe_checkpoint_orchestration_wal(
         raise ValueError("interval_seconds must be non-negative")
     if busy_timeout_ms < 0:
         raise ValueError("busy_timeout_ms must be non-negative")
-
-    ensure_orchestration_schema(path)
+    if checkpoint_mode != "PASSIVE" and not offline:
+        # Old configurations commonly persisted the former truncate default.
+        # Automatic maintenance remains nonblocking; explicit offline callers
+        # may still request the configured blocking checkpoint mode.
+        warning_key = (str(Path(path).resolve()), normalized_mode)
+        if warning_key not in _warned_checkpoint_modes:
+            _warned_checkpoint_modes.add(warning_key)
+            logger.warning(
+                "Automatic orchestration WAL checkpoint mode=%s normalized to passive; "
+                "blocking modes require explicit offline maintenance",
+                normalized_mode,
+            )
+        checkpoint_mode = "PASSIVE"
+        normalized_mode = "passive"
     db_path = Path(path)
     wal_path = db_path.with_name(f"{db_path.name}-wal")
     wal_size_bytes = wal_path.stat().st_size if wal_path.exists() else 0
@@ -592,7 +713,14 @@ def maybe_checkpoint_orchestration_wal(
         )
 
     now = datetime.now(UTC)
-    with connect_orchestration_db(path) as connection:
+    with connect_orchestration_db(
+        path,
+        busy_timeout_ms=min(busy_timeout_ms, MAINTENANCE_TIMEOUT_MS)
+        if not offline
+        else busy_timeout_ms,
+        deadline_seconds=3600 if offline else max(0.1, busy_timeout_ms / 1000),
+        operation="wal_checkpoint",
+    ) as connection:
         row = connection.execute(
             "SELECT value_json FROM orchestration_metadata WHERE key = ?",
             ("last_wal_checkpoint",),
@@ -669,6 +797,207 @@ def maybe_checkpoint_orchestration_wal(
     return result
 
 
+def run_orchestration_retention_slice(
+    path: Path | str,
+    *,
+    retention_days: int,
+    compact_history_retention_days: int,
+    batch_size: int = 100,
+    time_budget_seconds: float = 0.25,
+    busy_timeout_ms: int = MAINTENANCE_TIMEOUT_MS,
+) -> OrchestrationRetentionResult:
+    """Commit at most one bounded retention batch and durably retain its phase.
+
+    A restarted worker resumes the same sweep cutoff. Eligibility remains the
+    existing policy; missing legacy FK indexes defer deletion rather than scan
+    large child tables while holding the only writer lock.
+    """
+    if retention_days < 0 or compact_history_retention_days < 0:
+        raise ValueError("retention days must be non-negative")
+    if not 1 <= batch_size <= 10_000:
+        raise ValueError("batch_size must be between 1 and 10000")
+    now = datetime.now(UTC)
+    today = now.date().isoformat()
+    counts: dict[str, Any] = {}
+    phases = ("sources", "workflow", "compact", "blobs", "internal", "scheduled")
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=time_budget_seconds, operation="retention_progress"
+    ) as connection:
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='retention_progress'"
+        ).fetchone()
+        expected_progress = row[0] if row else None
+    progress = json_loads_object(expected_progress) if expected_progress else {}
+    if not progress:
+        progress = {
+            "date": today,
+            "phase": "sources",
+            "cutoff": datetime_to_storage(now - timedelta(days=retention_days)),
+            "compact_cutoff": datetime_to_storage(
+                now - timedelta(days=compact_history_retention_days)
+            ),
+        }
+    phase = progress["phase"]
+    prepared_sources = None
+    if phase == "sources":
+        from evander.repositories.execution_history import prepare_records_for_retention
+
+        prepared_sources = prepare_records_for_retention(
+            path, cutoff=progress["cutoff"], batch_size=batch_size
+        )
+    with connect_orchestration_db(
+        path,
+        busy_timeout_ms=busy_timeout_ms,
+        deadline_seconds=time_budget_seconds,
+        operation="retention_batch",
+    ) as connection:
+        if phase in {"compact", "blobs", "internal"} and not _maintenance_indexes_ready(connection):
+            return OrchestrationRetentionResult(
+                remaining=True, skipped_reason="maintenance_indexes_required"
+            )
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='retention_progress'"
+        ).fetchone()
+        if (row[0] if row else None) != expected_progress:
+            return OrchestrationRetentionResult(remaining=True)
+        deleted = 0
+        waiting_for_history = False
+        if phase == "sources":
+            from evander.repositories.execution_history import archive_records_for_retention
+
+            sources = archive_records_for_retention(
+                connection,
+                cutoff=progress["cutoff"],
+                batch_size=batch_size,
+                prepared=prepared_sources,
+            )
+            by_kind = _delete_archived_execution_sources(connection, sources)
+            counts.update(
+                trigger_events_deleted=by_kind["trigger"] + by_kind["transport"],
+                effect_executions_deleted=by_kind["effect"],
+                gate_executions_deleted=by_kind["gate"],
+            )
+            deleted = len(sources)
+            waiting_for_history = _has_pending_retention_sources(connection, progress["cutoff"])
+        elif phase == "blobs":
+            keys = [
+                row[0]
+                for row in connection.execute(
+                    """SELECT b.sha256 FROM workflow_execution_payload_blobs b
+                   WHERE NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
+                                     WHERE h.input_blob_sha256=b.sha256)
+                     AND NOT EXISTS (SELECT 1 FROM workflow_node_execution_history h
+                                     WHERE h.output_blob_sha256=b.sha256)
+                   ORDER BY b.sha256 LIMIT ?""",
+                    (batch_size,),
+                ).fetchall()
+            ]
+            connection.executemany(
+                "DELETE FROM workflow_execution_payload_blobs WHERE sha256=?",
+                [(key,) for key in keys],
+            )
+            deleted = len(keys)
+            counts["compact_payload_blobs_deleted"] = deleted
+        else:
+            definitions = {
+                "workflow": (
+                    "workflow_events",
+                    "row_id",
+                    "occurred_at < ?",
+                    "workflow_events_deleted",
+                ),
+                "compact": (
+                    "workflow_node_execution_history",
+                    "execution_key",
+                    """finished_at < ?
+                    AND NOT EXISTS (SELECT 1 FROM workflow_history_index_jobs j
+                        WHERE j.execution_key=workflow_node_execution_history.execution_key)""",
+                    "compact_executions_deleted",
+                ),
+                "scheduled": (
+                    "scheduled_internal_events",
+                    "schedule_id",
+                    "status='published' AND published_at < ?",
+                    "scheduled_internal_events_deleted",
+                ),
+                "internal": (
+                    "internal_events",
+                    "row_id",
+                    """created_at < ?
+                    AND NOT EXISTS (SELECT 1 FROM internal_event_deliveries d
+                        WHERE d.internal_event_row_id=internal_events.row_id AND d.state='pending')
+                    AND NOT EXISTS (SELECT 1 FROM internal_event_subscriptions s
+                        WHERE s.active=1 AND s.event_type=internal_events.event_type
+                          AND s.scan_cursor_row_id < internal_events.row_id)""",
+                    "internal_events_deleted",
+                ),
+            }
+            table, key, where, result_key = definitions[phase]
+            cutoff = progress["compact_cutoff" if phase == "compact" else "cutoff"]
+            keys = [
+                row[0]
+                for row in connection.execute(
+                    f"SELECT {key} FROM {table} WHERE {where} ORDER BY {key} LIMIT ?",
+                    (cutoff, batch_size),
+                ).fetchall()
+            ]
+            connection.executemany(f"DELETE FROM {table} WHERE {key}=?", [(key,) for key in keys])
+            deleted = len(keys)
+            counts[result_key] = deleted
+        # A byte-limited batch may contain fewer rows than the count limit.
+        # Advance only after an empty source snapshot, including after CAS skips.
+        phase_complete = (
+            not prepared_sources.sources if phase == "sources" else deleted < batch_size
+        )
+        next_index = phases.index(phase) + (phase_complete and not waiting_for_history)
+        remaining = next_index < len(phases)
+        if remaining:
+            progress["phase"] = phases[next_index]
+            connection.execute(
+                """INSERT INTO orchestration_metadata(key,value_json) VALUES ('retention_progress',?)
+                   ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
+                (json_dumps(progress),),
+            )
+        else:
+            connection.execute("DELETE FROM orchestration_metadata WHERE key='retention_progress'")
+            connection.execute(
+                """INSERT INTO orchestration_metadata(key,value_json) VALUES ('last_retention_date',?)
+                   ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
+                (json_dumps({"date": progress["date"]}),),
+            )
+    return OrchestrationRetentionResult(
+        **counts,
+        remaining=remaining,
+        skipped_reason="history_index_pending" if waiting_for_history else None,
+    )
+
+
+def _has_pending_retention_sources(connection: sqlite3.Connection, cutoff: str) -> bool:
+    return (
+        connection.execute(
+            """SELECT 1 FROM trigger_events t JOIN workflow_history_index_jobs j
+             ON j.execution_key='trigger:' || t.event_id
+           WHERE t.delivery_state='delivered' AND COALESCE(t.delivered_at,t.occurred_at) < ?
+           UNION ALL
+           SELECT 1 FROM effect_executions e JOIN workflow_history_index_jobs j
+             ON j.execution_key='effect:' || e.execution_id
+           WHERE (e.status IN ('succeeded','skipped','dropped') AND COALESCE(e.finished_at,e.started_at) < ?)
+              OR (e.status='failed' AND (e.dismissed_at IS NOT NULL OR e.cleared_at IS NOT NULL)
+                  AND COALESCE(e.dismissed_at,e.cleared_at,e.finished_at,e.started_at) < ?)
+           UNION ALL
+           SELECT 1 FROM gate_executions g JOIN workflow_history_index_jobs j
+             ON j.execution_key='gate:' || g.execution_id
+           WHERE (g.status IN ('succeeded','skipped','dropped') AND COALESCE(g.finished_at,g.started_at) < ?)
+              OR (g.status='failed' AND (g.dismissed_at IS NOT NULL OR g.cleared_at IS NOT NULL)
+                  AND COALESCE(g.dismissed_at,g.cleared_at,g.finished_at,g.started_at) < ?)
+           LIMIT 1""",
+            (cutoff, cutoff, cutoff, cutoff, cutoff),
+        ).fetchone()
+        is not None
+    )
+
+
 def run_orchestration_retention(
     path: Path | str,
     *,
@@ -676,120 +1005,44 @@ def run_orchestration_retention(
     compact_history_retention_days: int,
     execution_history_batch_size: int = 250,
 ) -> OrchestrationRetentionResult:
-    if retention_days < 0:
-        raise ValueError("retention_days must be non-negative")
-    if compact_history_retention_days < 0:
-        raise ValueError("compact_history_retention_days must be non-negative")
-    if execution_history_batch_size < 1 or execution_history_batch_size > 10_000:
-        raise ValueError("execution_history_batch_size must be between 1 and 10000")
+    """Explicit maintenance operation; foreground constructors never call it."""
     ensure_orchestration_schema(path)
-    now = datetime.now(UTC)
-    cutoff = datetime_to_storage(now - timedelta(days=retention_days))
-    assert cutoff is not None
-    compact_cutoff = datetime_to_storage(now - timedelta(days=compact_history_retention_days))
-    assert compact_cutoff is not None
-    today = now.date().isoformat()
-
-    trigger_deleted = 0
-    effect_deleted = 0
-    gate_deleted = 0
+    totals = {
+        name: 0
+        for name in OrchestrationRetentionResult.__dataclass_fields__
+        if name not in {"remaining", "skipped_reason"}
+    }
     while True:
-        # Keep retention writes bounded: each batch commits before the next
-        # source-key batch is read. Execution rows receive a compact history
-        # copy; completion transport envelopes are deliberately not archived
-        # because they must not create a duplicate node-history entry.
-        with connect_orchestration_db(path) as connection:
-            # Import locally to keep the low-level schema module independent
-            # of the history query surface at import time.
-            from evander.repositories.execution_history import archive_records_for_retention
-
-            archived_sources = archive_records_for_retention(
-                connection,
-                cutoff=cutoff,
-                batch_size=execution_history_batch_size,
-            )
-            if not archived_sources:
-                break
-            deleted_by_kind = _delete_archived_execution_sources(connection, archived_sources)
-            trigger_deleted += deleted_by_kind["trigger"] + deleted_by_kind["transport"]
-            effect_deleted += deleted_by_kind["effect"]
-            gate_deleted += deleted_by_kind["gate"]
-
-    with connect_orchestration_db(path) as connection:
-        # Full execution records are already copied and deleted in bounded
-        # transactions above. The remaining retention tables contain no
-        # archival payload work.
-        workflow_deleted = connection.execute(
-            "DELETE FROM workflow_events WHERE occurred_at < ?",
-            (cutoff,),
-        ).rowcount
-        compact_deleted = connection.execute(
-            """
-            DELETE FROM workflow_node_execution_history
-            WHERE finished_at < ?
-            """,
-            (compact_cutoff,),
-        ).rowcount
-        blob_deleted = connection.execute(
-            """
-            DELETE FROM workflow_execution_payload_blobs
-            WHERE sha256 NOT IN (
-                SELECT input_blob_sha256
-                FROM workflow_node_execution_history
-                WHERE input_blob_sha256 IS NOT NULL
-                UNION
-                SELECT output_blob_sha256
-                FROM workflow_node_execution_history
-                WHERE output_blob_sha256 IS NOT NULL
-            )
-            """
-        ).rowcount
-        internal_deleted = connection.execute(
-            """
-            DELETE FROM internal_events
-            WHERE created_at < ?
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM internal_event_deliveries AS delivery
-                  WHERE delivery.internal_event_row_id = internal_events.row_id
-                    AND delivery.state = 'pending'
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM internal_event_subscriptions AS subscription
-                  WHERE subscription.active = 1
-                    AND subscription.event_type = internal_events.event_type
-                    AND subscription.scan_cursor_row_id < internal_events.row_id
-              )
-            """,
-            (cutoff,),
-        ).rowcount
-        scheduled_deleted = connection.execute(
-            """
-            DELETE FROM scheduled_internal_events
-            WHERE status = 'published'
-              AND published_at < ?
-            """,
-            (cutoff,),
-        ).rowcount
-        connection.execute(
-            """
-            INSERT INTO orchestration_metadata(key, value_json)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
-            """,
-            ("last_retention_date", json_dumps({"date": today})),
+        result = run_orchestration_retention_slice(
+            path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
+            batch_size=execution_history_batch_size,
         )
-    return OrchestrationRetentionResult(
-        trigger_events_deleted=max(0, trigger_deleted),
-        effect_executions_deleted=max(0, effect_deleted),
-        gate_executions_deleted=max(0, gate_deleted),
-        workflow_events_deleted=max(0, workflow_deleted),
-        compact_executions_deleted=max(0, compact_deleted),
-        compact_payload_blobs_deleted=max(0, blob_deleted),
-        internal_events_deleted=max(0, internal_deleted),
-        scheduled_internal_events_deleted=max(0, scheduled_deleted),
-    )
+        for name in totals:
+            totals[name] += getattr(result, name)
+        if result.skipped_reason == "history_index_pending":
+            from evander.repositories.execution_history import (
+                prepare_pending_history_indexing,
+                run_pending_history_indexing,
+            )
+
+            prepared = prepare_pending_history_indexing(path, batch_size=100)
+
+            with connect_orchestration_db(
+                path,
+                busy_timeout_ms=100,
+                deadline_seconds=0.25,
+                operation="retention_history_projection",
+            ) as connection:
+                run_pending_history_indexing(connection, prepared=prepared)
+            continue
+        if not result.remaining or result.skipped_reason:
+            return OrchestrationRetentionResult(
+                **totals,
+                remaining=result.remaining,
+                skipped_reason=result.skipped_reason,
+            )
 
 
 def _delete_archived_execution_sources(
@@ -821,7 +1074,7 @@ def _datetime_from_storage(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     if parsed.tzinfo is None:

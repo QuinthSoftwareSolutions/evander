@@ -1473,7 +1473,7 @@ class OrchestrationCoreConfig(BaseModel):
     orchestration_compact_history_retention_days: int = Field(default=365, ge=0)
     orchestration_wal_checkpoint_mode: Literal[
         "disabled", "passive", "full", "restart", "truncate"
-    ] = "truncate"
+    ] = "passive"
     orchestration_wal_checkpoint_min_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
     orchestration_wal_checkpoint_interval_seconds: int = Field(default=5 * 60, ge=0)
     orchestration_wal_checkpoint_busy_timeout_ms: int = Field(default=1_000, ge=0)

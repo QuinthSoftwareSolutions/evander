@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-28 - Bound orchestration storage and recover completions (0.67.1)
+
+- Retain completed provider results across transient storage failures and atomically publish
+  effect and gate successors, with bounded fair retry and independent delivery recovery.
+- Cache schema readiness, retain idle SQLite WAL anchors, and move passive checkpoints,
+  incremental indexing, retention, and garbage collection to isolated bounded maintenance.
+- Store large operational payloads as shared immutable compressed objects; keep lifecycle
+  metadata small and preserve legacy reads, prompt receipts, and ancestor bindings.
+- Keep sanitized execution details immediately available while field search indexes complete
+  generations asynchronously, with a visible pending count.
+- Return compact Team finalization receipts, reuse lazy event publishers, and perform
+  chat busy checks outside write transactions with revision-checked dispatch planning.
+- Add explicit offline storage migration, verification, index preparation, and inline rollback.
+
 ## 2026-09-28 - Recover Team Git incidents autonomously (0.67.0)
 
 - Add durable typed Git incidents, blocker-scoped preview/apply tools, project recovery

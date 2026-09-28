@@ -226,6 +226,7 @@ from .cli_issues import (
     set_issue_state,
 )
 from .cli_maintenance import (
+    migrate_orchestration_storage_command,
     init_state,
     migrate_directory_ownership,
     migrate_internal_events_to_sqlite,

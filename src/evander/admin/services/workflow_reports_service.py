@@ -22,8 +22,8 @@ from evander.admin.common import (
 from evander.admin.payloads import (
     ConformanceReportPayload,
     ConformanceReportRunPayload,
-    ConformanceRequirementSnippetPayload,
     ConformanceReportsPayload,
+    ConformanceRequirementSnippetPayload,
     WorkflowEditorDocumentPayload,
     WorkflowFailureClusterExamplePayload,
     WorkflowFailureClusterPayload,
@@ -32,6 +32,9 @@ from evander.admin.payloads import (
     WorkflowGraphActivityGraphPayload,
     WorkflowGraphActivityNodePayload,
     WorkflowGraphActivityReportPayload,
+    WorkflowNodeExecutionDetailPayload,
+    WorkflowNodeExecutionFieldsPayload,
+    WorkflowNodeExecutionSearchPayload,
     WorkflowRunDetailPayload,
     WorkflowRunLookupPayload,
     WorkflowRunNodeActivityPayload,
@@ -41,10 +44,8 @@ from evander.admin.payloads import (
     WorkflowRunSearchPayload,
     WorkflowRunSnapshotPayload,
     WorkflowRunSummaryPayload,
-    WorkflowNodeExecutionDetailPayload,
-    WorkflowNodeExecutionFieldsPayload,
-    WorkflowNodeExecutionSearchPayload,
 )
+from evander.admin.services.snapshot_cache import SnapshotCache
 from evander.admin.workflow_report_helpers import (
     CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
     CONFORMANCE_REPORT_SNIPPET_LIMIT,
@@ -65,12 +66,6 @@ from evander.admin.workflow_report_helpers import (
 )
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.models import AgentRecord
-from evander.repositories.orchestration_db import (
-    connect_orchestration_db,
-    datetime_to_storage,
-    ensure_orchestration_schema,
-    json_loads_object,
-)
 from evander.repositories.execution_history import (
     list_node_execution_authorization_paths,
     list_node_execution_fields,
@@ -78,8 +73,13 @@ from evander.repositories.execution_history import (
     read_node_execution_detail,
     search_node_executions,
 )
-from evander.admin.services.snapshot_cache import SnapshotCache
-
+from evander.repositories.operational_payloads import load_record
+from evander.repositories.orchestration_db import (
+    connect_orchestration_db,
+    connect_orchestration_db_read_only,
+    datetime_to_storage,
+    ensure_orchestration_schema,
+)
 
 WORKFLOW_GRAPH_ACTIVITY_SNAPSHOT_TTL_SECONDS = 15.0
 
@@ -1753,7 +1753,8 @@ class WorkflowReportsAdminService:
             end_text = datetime_to_storage(end_at)
             db_path = Path(stores["orchestration_store_path"])
             ensure_orchestration_schema(db_path)
-            with connect_orchestration_db(db_path) as connection:
+            with connect_orchestration_db_read_only(db_path) as connection:
+                connection.execute("BEGIN")
                 for row in connection.execute(
                     """
                     SELECT payload_json
@@ -1763,7 +1764,7 @@ class WorkflowReportsAdminService:
                     """,
                     (start_text, end_text),
                 ):
-                    raw_record = json_loads_object(row["payload_json"])
+                    raw_record = load_record(connection, row["payload_json"])
                     register_record(
                         raw_record,
                         source_kind="trigger",
@@ -1782,7 +1783,7 @@ class WorkflowReportsAdminService:
                     """,
                     (start_text, end_text),
                 ):
-                    raw_record = json_loads_object(row["payload_json"])
+                    raw_record = load_record(connection, row["payload_json"])
                     register_record(
                         raw_record,
                         source_kind="effect",
@@ -1801,7 +1802,7 @@ class WorkflowReportsAdminService:
                     """,
                     (start_text, end_text),
                 ):
-                    raw_record = json_loads_object(row["payload_json"])
+                    raw_record = load_record(connection, row["payload_json"])
                     register_record(
                         raw_record,
                         source_kind="gate",
@@ -2291,28 +2292,19 @@ class WorkflowReportsAdminService:
                 AND session_value.type = 'text'
                 AND TRIM(CAST(session_value.value AS TEXT)) <> ''
             """
-            no_session_cte = f"""
-            ,
-            session_events AS (
-                SELECT trigger_events.event_id
-                FROM trigger_events
-                JOIN candidate_events ON candidate_events.event_id = trigger_events.event_id
-                CROSS JOIN json_tree(trigger_events.payload_json) AS session_value
-                WHERE {session_id_value_predicate}
-                UNION
-                SELECT effect_executions.event_id
-                FROM effect_executions
-                JOIN candidate_events ON candidate_events.event_id = effect_executions.event_id
-                CROSS JOIN json_tree(effect_executions.payload_json) AS session_value
-                WHERE {session_id_value_predicate}
-                UNION
-                SELECT gate_executions.event_id
-                FROM gate_executions
-                JOIN candidate_events ON candidate_events.event_id = gate_executions.event_id
-                CROSS JOIN json_tree(gate_executions.payload_json) AS session_value
-                WHERE {session_id_value_predicate}
-            )
-            """
+            session_selects = []
+            for kind, table, key in (("trigger", "trigger_events", "event_id"),
+                                     ("effect", "effect_executions", "execution_id"),
+                                     ("gate", "gate_executions", "execution_id")):
+                session_selects.append(f"""
+                    SELECT r.event_id FROM {table} r
+                    JOIN candidate_events c ON c.event_id=r.event_id
+                    LEFT JOIN workflow_execution_projections p ON p.record_kind='{kind}' AND p.record_id=r.{key}
+                    WHERE CASE WHEN p.record_id IS NOT NULL THEN p.has_session_reference
+                        ELSE EXISTS(SELECT 1 FROM json_tree(r.payload_json) AS session_value
+                            WHERE {session_id_value_predicate}) END
+                """)
+            no_session_cte = ", session_events AS (" + " UNION ".join(session_selects) + ")"
         candidate_filter = (
             "WHERE " + " AND ".join(candidate_conditions) if candidate_conditions else ""
         )
@@ -2343,7 +2335,8 @@ class WorkflowReportsAdminService:
         """
         db_path = Path(stores["orchestration_store_path"])
         ensure_orchestration_schema(db_path)
-        with connect_orchestration_db(db_path) as connection:
+        with connect_orchestration_db_read_only(db_path) as connection:
+            connection.execute("BEGIN")
             count_row = connection.execute(
                 f"{cte} SELECT COUNT(*) AS matched FROM candidate_events {candidate_filter}",
                 target_params,
@@ -2397,7 +2390,7 @@ class WorkflowReportsAdminService:
             *,
             key_field: str,
         ) -> None:
-            payload = json_loads_object(row["payload_json"])
+            payload = load_record(connection, row["payload_json"])
             key = _coerce_optional_string(payload.get(key_field)) or _coerce_optional_string(
                 row[key_field]
             )
@@ -2409,7 +2402,8 @@ class WorkflowReportsAdminService:
             for index in range(0, len(normalized_event_ids), batch_size):
                 yield normalized_event_ids[index : index + batch_size]
 
-        with connect_orchestration_db(db_path) as connection:
+        with connect_orchestration_db_read_only(db_path) as connection:
+            connection.execute("BEGIN")
             for event_id_batch in event_id_batches():
                 placeholders = ", ".join("?" for _ in event_id_batch)
                 for row in connection.execute(
@@ -2469,7 +2463,7 @@ class WorkflowReportsAdminService:
             *,
             key_field: str,
         ) -> None:
-            payload = json_loads_object(row["payload_json"])
+            payload = load_record(connection, row["payload_json"])
             key = _coerce_optional_string(payload.get(key_field)) or _coerce_optional_string(
                 row[key_field]
             )
@@ -2479,7 +2473,8 @@ class WorkflowReportsAdminService:
         def placeholders(values: set[str]) -> str:
             return ", ".join("?" for _ in values)
 
-        with connect_orchestration_db(db_path) as connection:
+        with connect_orchestration_db_read_only(db_path) as connection:
+            connection.execute("BEGIN")
             if event_keys:
                 event_key_params = sorted(event_keys)
                 event_key_placeholders = placeholders(event_keys)

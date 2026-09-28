@@ -168,6 +168,13 @@ class TeamRuntimeService:
         self._event_bus = event_bus
         self._event_bus_factory = event_bus_factory
 
+    def _update_lifecycle_state(self, mutator, *, expected_revision=None) -> TeamState:
+        # Only the known-pure activation/native-thread/governance callbacks use
+        # this path. Other APIs retain their transactional callback semantics.
+        update = (self._repository.update_prepared if self._repository.maintenance
+                  else self._repository.update)
+        return update(mutator, expected_revision=expected_revision)
+
     @property
     def repository(self) -> TeamStateRepository:
         return self._repository
@@ -550,7 +557,7 @@ class TeamRuntimeService:
             runtime.updated_at = effective_now
             return state
 
-        return self._repository.update(_mutate)
+        return self._update_lifecycle_state(_mutate)
 
     def activate_delivered_agent_dispatch(
         self,
@@ -733,7 +740,7 @@ class TeamRuntimeService:
             runtime.updated_at = effective_now
             return state
 
-        state = self._repository.update(_mutate)
+        state = self._update_lifecycle_state(_mutate)
         if preparation_error:
             raise RuntimeError(preparation_error[0])
         return state, activation
@@ -839,7 +846,7 @@ class TeamRuntimeService:
             )
             return state
 
-        return self._repository.update(_mutate), recorded
+        return self._update_lifecycle_state(_mutate), recorded
 
     def reconcile_agent_dispatch_native_threads(
         self,
@@ -926,7 +933,7 @@ class TeamRuntimeService:
                 )
             return current
 
-        return self._repository.update(mutate), deferred
+        return self._update_lifecycle_state(mutate), deferred
 
     @staticmethod
     def _apply_dispatch_native_thread_receipt(
@@ -1626,7 +1633,7 @@ class TeamRuntimeService:
             runtime.updated_at = effective_now
             return state
 
-        return self._repository.update(_mutate)
+        return self._update_lifecycle_state(_mutate)
 
     def activate_governance_dispatch(
         self,
@@ -1659,7 +1666,7 @@ class TeamRuntimeService:
             runtime.updated_at = effective_now
             return state
 
-        return self._repository.update(_mutate)
+        return self._update_lifecycle_state(_mutate)
 
     def complete_governance_dispatch(
         self,
@@ -1682,7 +1689,7 @@ class TeamRuntimeService:
             runtime.updated_at = utc_now()
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._update_lifecycle_state(_mutate, expected_revision=expected_revision)
 
     def release_agent_wake_lease_for_retry(
         self,
@@ -2096,6 +2103,12 @@ class TeamRuntimeService:
             )
             return state, result
 
+        if self._repository.maintenance:
+            from .prepared_finalization import commit_prepared_dispatch_finalization
+
+            return commit_prepared_dispatch_finalization(
+                self._repository, dispatch_id=normalized_dispatch_id, mutator=_transaction,
+            )
         return self._repository.store.update_state_with_command_transaction(_transaction)
 
 

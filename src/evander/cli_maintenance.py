@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Annotated
 
@@ -18,6 +19,80 @@ from evander.model_usage import DEFAULT_MODEL_PRICING_FILENAME, seed_default_mod
 from evander.repositories.audit_index import ToolCallAuditIndex, audit_index_path_for_log_path
 
 from . import cli_app, cli_common, cli_runtime
+
+
+@cli_app.app.command("migrate-orchestration-storage", rich_help_panel="Health and State")
+def migrate_orchestration_storage_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="Exact orchestration SQLite database path.")
+    ],
+    apply_migration: Annotated[
+        bool, typer.Option("--apply", help="Apply resumable storage conversion.")
+    ] = False,
+    check: Annotated[
+        bool, typer.Option("--check", help="Read-only readiness check (the default).")
+    ] = False,
+    offline: Annotated[
+        bool,
+        typer.Option("--offline", help="Confirm every process using this database is stopped."),
+    ] = False,
+    downgrade: Annotated[
+        bool,
+        typer.Option(
+            "--downgrade", help="Rehydrate inline records before starting the previous release."
+        ),
+    ] = False,
+    verify: Annotated[
+        bool, typer.Option("--verify", help="Read and verify every operational payload.")
+    ] = False,
+    max_batches: Annotated[
+        int | None,
+        typer.Option("--max-batches", min=1, help="Bound this invocation; rerun to resume."),
+    ] = None,
+    team_database: Annotated[
+        Path | None,
+        typer.Option(
+            "--team-database",
+            help="Also check or prepare this Team activity retention index offline.",
+        ),
+    ] = None,
+) -> None:
+    """Check, migrate, or roll back operational payload storage."""
+    from evander.orchestration.storage_migration import (
+        check_orchestration_storage,
+        migrate_orchestration_storage,
+    )
+
+    if check and apply_migration:
+        raise typer.BadParameter("choose --check or --apply")
+    if apply_migration and not offline:
+        raise typer.BadParameter("--apply requires --offline after stopping all database users")
+    if downgrade and not apply_migration:
+        raise typer.BadParameter("--downgrade requires --apply --offline")
+    try:
+        result = (
+            migrate_orchestration_storage(database, downgrade=downgrade, max_batches=max_batches)
+            if apply_migration
+            else check_orchestration_storage(database, verify=verify)
+        )
+        if apply_migration and verify:
+            result["verification"] = check_orchestration_storage(database, verify=True)
+        if team_database is not None:
+            from evander_team_addon.sqlite_schema import (
+                check_team_activity_retention_index,
+                prepare_team_activity_retention_index,
+            )
+
+            if apply_migration:
+                prepare_team_activity_retention_index(team_database)
+            result["team_activity_retention_index_ready"] = check_team_activity_retention_index(
+                team_database
+            )
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
+    if result.get("errors") or result.get("verification", {}).get("errors"):
+        raise typer.Exit(code=1)
 
 
 @cli_app.app.command(

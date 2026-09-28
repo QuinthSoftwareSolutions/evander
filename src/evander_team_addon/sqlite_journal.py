@@ -436,10 +436,15 @@ class CommandJournalStoreMixin:
         record = TeamDispatchActivity.model_validate(activity)
         payload = record.model_dump(mode="json")
         retention_cutoff = utc_now() - timedelta(days=30)
-        connection.execute(
-            "DELETE FROM team_dispatch_activity WHERE created_at < ?",
-            (_datetime_text(retention_cutoff),),
-        )
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_team_dispatch_activity_retention'"
+        ).fetchone() is not None:
+            connection.execute(
+                "DELETE FROM team_dispatch_activity WHERE id IN ("
+                "SELECT id FROM team_dispatch_activity WHERE created_at < ? "
+                "ORDER BY created_at, id LIMIT 100)",
+                (_datetime_text(retention_cutoff),),
+            )
         connection.execute(
             """
             INSERT INTO team_dispatch_activity(
