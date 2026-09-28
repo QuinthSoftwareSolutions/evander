@@ -13,6 +13,9 @@
 - Return compact Team finalization receipts, reuse lazy event publishers, and perform
   chat busy checks outside write transactions with revision-checked dispatch planning.
 - Add explicit offline storage migration, verification, index preparation, and inline rollback.
+- Preserve scalar provider scope outputs and long lifecycle errors, including reads and updates
+  of previously referenced errors. Give report aggregation its own read deadline.
+- Recover trigger-worker storage contention and retain Team automatic WAL checkpoints.
 
 ## 2026-09-28 - Recover Team Git incidents autonomously (0.67.0)
 

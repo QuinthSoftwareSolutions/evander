@@ -41,6 +41,37 @@ def _allow_retry(worker):
         retry.retry_at = 0
 
 
+@pytest.mark.parametrize("scope", ["work_items", 42, ["work_items"], {"session_id": "session"}])
+def test_completion_preserves_provider_scope_and_retries_saved_result(tmp_path, monkeypatch, scope):
+    worker = _worker(tmp_path, chain_length=1)
+    record = _completed(worker)
+    result = {"scope": scope, "inserted": 3}
+    future = Future()
+    future.set_result(result)
+    worker._inflight[record.idempotency_key].future = future
+    publish = worker.execution_store.record_completion_and_publish
+
+    def unavailable(**kwargs):
+        raise RuntimeError("publication temporarily unavailable")
+
+    monkeypatch.setattr(worker.execution_store, "record_completion_and_publish", unavailable)
+    assert worker._reap_completed_futures() == (1, 0)
+    pending = worker.execution_store.get_execution(record.execution_id)
+    assert pending.status == "completion_pending"
+    assert pending.outputs == result
+    monkeypatch.setattr(worker.execution_store, "record_completion_and_publish", publish)
+    _allow_retry(worker)
+    assert worker._retry_pending_effect_completion_publications() == 1
+    assert worker._retry_pending_effect_completion_publications() == 0
+    saved = worker.execution_store.get_execution(record.execution_id)
+    assert saved.status == "succeeded"
+    assert saved.outputs == result
+    successors = [event for event in worker.event_queue.read_all().values()
+                  if event.trigger_id == "step-0"]
+    assert len(successors) == 1
+    assert successors[0].payload["scope"] == scope
+
+
 @pytest.mark.parametrize("operation", ["lookup", "atomic_commit"])
 def test_busy_completion_preserves_every_completed_future(tmp_path, monkeypatch, operation):
     worker = _worker(tmp_path, chain_length=1)

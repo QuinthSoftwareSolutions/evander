@@ -48,6 +48,25 @@ def test_team_reopen_and_snapshots_do_not_require_writer(tmp_path, monkeypatch):
         writer.rollback()
 
 
+def test_team_wal_is_reused_during_sustained_writes_without_orchestrator(tmp_path):
+    repo = _seed_team(tmp_path)
+    wal = repo.store.path.with_name(repo.store.path.name + "-wal")
+    # Keep the process and its idle connection alive throughout both batches.
+    # No explicit checkpoint or orchestration maintenance participates.
+    sizes = []
+    for batch in range(2):
+        for number in range(1200):
+            with repo.store._connect() as writer:
+                writer.execute(
+                    "UPDATE team_state_metadata SET value=? WHERE key='revision'",
+                    (str(10000 + batch * 1200 + number),),
+                )
+        sizes.append(wal.stat().st_size)
+    assert sizes[0] > 0
+    assert sizes[1] <= sizes[0] + 65536
+    assert repo.read().revision == 12399
+
+
 def test_chat_planning_allows_writer_and_rechecks_external_activity_after_conflict(tmp_path):
     repo = _seed_team(tmp_path)
     chat, message = _queued_chat(repo)

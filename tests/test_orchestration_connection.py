@@ -102,7 +102,8 @@ def test_schema_failure_is_not_cached_and_database_replacement_reinitializes(tmp
     assert len(attempts) == 3
 
 
-def test_busy_writer_uses_one_budget_and_does_not_commit_partial_writes(tmp_path):
+@pytest.mark.parametrize("deadline_seconds", [None, 5.0])
+def test_busy_writer_uses_one_budget_and_does_not_commit_partial_writes(tmp_path, deadline_seconds):
     path = tmp_path / "orchestration.db"
     ensure_orchestration_schema(path)
     writer = sqlite3.connect(path)
@@ -111,7 +112,9 @@ def test_busy_writer_uses_one_budget_and_does_not_commit_partial_writes(tmp_path
         started = time.monotonic()
         with (
             pytest.raises(sqlite3.OperationalError) as caught,
-            connect_orchestration_db(path, busy_timeout_ms=30) as connection,
+            connect_orchestration_db(
+                path, busy_timeout_ms=30, deadline_seconds=deadline_seconds,
+            ) as connection,
         ):
             connection.execute("INSERT INTO orchestration_metadata VALUES ('blocked', '{}')")
         assert is_storage_busy(caught.value)

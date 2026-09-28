@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import random
+import time
 from datetime import UTC, datetime
 from uuid import uuid4
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ from evander.orchestration.host_polling import (
     wake_socket_path_for_lock,
 )
 from evander.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from evander.orchestration.completion_scheduling import CompletionRetry
 from evander.orchestration.wal_maintenance import (
     OrchestrationWalCheckpointMaintenance,
 )
@@ -60,6 +62,7 @@ from evander.orchestration.internal_events import (
 from evander.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from evander.orchestration.wiring.trigger import build_trigger_provider_runtime_wiring
 from evander.repositories.orchestration import GateCursorRepository
+from evander.repositories.sqlite_runtime import is_storage_busy
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +122,7 @@ class TriggerOrchestratorWorker:
         self.managed_git_maintenance = resolved_wiring.managed_git_maintenance
         self.cursor_repository: GateCursorRepository = resolved_wiring.gate_cursor_repository
         self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
+        self._cycle_storage_retry = CompletionRetry()
         self._wake_sleeper = HostWakeSleeper(
             wake_socket_path_for_lock(self.worker_config.lock_path),
         )
@@ -136,6 +140,10 @@ class TriggerOrchestratorWorker:
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
             on_start=self._wake_sleeper.start,
+            on_cycle_exception=self._on_cycle_storage_exception,
+            get_exception_sleep_seconds=lambda _error: max(
+                0.0, self._cycle_storage_retry.retry_at - time.monotonic()
+            ),
         )
 
     def run_forever(self) -> None:
@@ -145,6 +153,27 @@ class TriggerOrchestratorWorker:
         return self._kernel.run_once_with_lock()
 
     def run_once(self) -> TriggerOrchestratorCycleResult:
+        remaining = self._cycle_storage_retry.retry_at - time.monotonic()
+        if remaining > 0:
+            return TriggerOrchestratorCycleResult(len(self.worker_config.triggers), 0, 0, remaining)
+        try:
+            result = self._run_once()
+        except Exception as error:
+            self._on_cycle_storage_exception(error)
+            return TriggerOrchestratorCycleResult(
+                len(self.worker_config.triggers), 0, 0,
+                max(0.0, self._cycle_storage_retry.retry_at - time.monotonic()),
+            )
+        self._cycle_storage_retry = CompletionRetry()
+        return result
+
+    def _on_cycle_storage_exception(self, error: Exception) -> None:
+        if not is_storage_busy(error):
+            raise error
+        delay = self._cycle_storage_retry.defer()
+        logger.warning("Trigger orchestrator storage busy; retry_seconds=%.3f", delay)
+
+    def _run_once(self) -> TriggerOrchestratorCycleResult:
         latest_config, _ = self._config_reloader.get_latest()
         previous_config = self.worker_config
         config_changed = latest_config != previous_config
@@ -173,6 +202,9 @@ class TriggerOrchestratorWorker:
                     self.provider_factory = runtime_wiring.provider_factory
                     self.managed_git_maintenance = runtime_wiring.managed_git_maintenance
             if latest_config != previous_config:
+                # A contended replacement must leave the old queue/config pair
+                # intact so the next cycle retries the rebind.
+                event_queue = _build_trigger_event_queue(latest_config)
                 self.worker_config = latest_config
                 active_config = latest_config
                 self._wake_sleeper.set_paths(
@@ -183,7 +215,7 @@ class TriggerOrchestratorWorker:
                     _config_revision_hash(latest_config),
                     len(latest_config.triggers),
                 )
-                self.event_queue = _build_trigger_event_queue(self.worker_config)
+                self.event_queue = event_queue
                 self._effect_wake_notifier = HostWakeNotifier(
                     wake_socket_path_for_lock(self.worker_config.effect_lock_path)
                 )

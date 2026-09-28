@@ -13,7 +13,10 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from evander.repositories.sqlite_runtime import storage_lock
-from evander.repositories.operational_payloads import load_record, prepare_record, store_prepared_record
+from evander.repositories.operational_payloads import (
+    FORMAT_KEY, discard_record_field_references, load_lifecycle_field,
+    load_record, prepare_record, store_prepared_record,
+)
 from evander.repositories.execution_history import prepare_execution_history_payloads
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
@@ -498,11 +501,14 @@ class SqliteExecutionRepository(Generic[TRecord]):
             + " WHERE execution_id=?", [*columns.values(), *json_params, execution_id])
         if not cursor.rowcount:
             return False
+        kind = "gate" if self.table_name == "gate_executions" else "effect"
+        discard_record_field_references(
+            connection, kind=kind, record_id=execution_id, fields=values,
+        )
         history_fields = {key: value for key, value in values.items()
                           if key in {"status", "finished_at", "error", "published_event_id"}}
         if history_fields:
             history_fields["updated_at"] = datetime_to_storage(datetime.now(UTC))
-            kind = "gate" if self.table_name == "gate_executions" else "effect"
             connection.execute("UPDATE workflow_node_execution_history SET "
                 + ",".join(f"{key}=?" for key in history_fields) + " WHERE execution_key=?",
                 [*history_fields.values(), f"{kind}:{execution_id}"])
@@ -620,12 +626,14 @@ class SqliteExecutionRepository(Generic[TRecord]):
         # Missing legacy input_payload fields default to {} in the record models.
         # Keep extra activity timestamps too: the renderer considers all of them.
         order = "DESC" if newest_first else "ASC"
-        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""
                 SELECT execution_id, event_id, trace_id, source_node_id, source_trigger_type,
                        {self.node_id_field}, status, started_at, finished_at, dismissed_at,
                        json_extract(payload_json, '$.error') AS error,
+                       json_extract(payload_json, '$.{FORMAT_KEY}.fields.error') AS encoded_error,
                        COALESCE(json_type(payload_json, '$.input_payload'), 'object') = 'object'
                            AS has_input_payload,
                        json_extract(payload_json, '$.occurred_at') AS occurred_at,
@@ -637,7 +645,12 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 """,
                 parameters,
             ).fetchall()
-        return [dict(row) for row in rows]
+            summaries = [dict(row) for row in rows]
+            for summary in summaries:
+                summary["error"] = load_lifecycle_field(
+                    connection, summary["error"], summary.pop("encoded_error"),
+                )
+            return summaries
 
     def list_records_for_event(
         self, event_id: str, *, statuses: set[str] | None = None

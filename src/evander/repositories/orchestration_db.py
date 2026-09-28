@@ -92,6 +92,7 @@ def connect_orchestration_db(
         timeout_ms=busy_timeout_ms,
         deadline_seconds=deadline_seconds,
         operation=operation,
+        managed_checkpoints=True,
     ) as connection:
         connection.create_function(
             "execution_history_numeric_compare", 2, _compare_execution_history_numbers

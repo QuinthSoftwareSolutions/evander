@@ -1,10 +1,14 @@
 import json
 import sqlite3
+import hashlib
+import zlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from evander.daemons.effect_orchestrator import EffectExecutionRecord, SqliteExecutionStore
+from evander.daemons.effect_orchestrator import (
+    EffectExecutionRecord, GateExecutionRecord, SqliteExecutionStore, SqliteGateExecutionStore,
+)
 from evander.events.models import TriggerEvent
 from evander.orchestration.storage_migration import (
     check_orchestration_storage,
@@ -161,6 +165,93 @@ def test_history_freshness_and_superseded_partial_generation(tmp_path):
         ]
         == 0
     )
+
+
+def _externalize_legacy_error(path, *, kind, record_id, error):
+    # Persist the first codec version's externalized lifecycle field. Its
+    # wire format is the compatibility contract being exercised here.
+    table, key = ("trigger_events", "event_id") if kind == "trigger" else (
+        f"{kind}_executions", "execution_id"
+    )
+    raw = json.dumps(["v", error], separators=(",", ":")).encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    with connect_orchestration_db(path) as connection:
+        connection.execute(
+            "INSERT OR IGNORE INTO workflow_operational_blobs VALUES (?, 'zlib-json-v1', ?, ?)",
+            (digest, zlib.compress(raw), len(raw)),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO workflow_operational_record_refs VALUES (?, ?, ?)",
+            (kind, record_id, digest),
+        )
+        connection.execute(
+            f"UPDATE {table} SET payload_json=json_set(payload_json, '$.error', '', ?, json(?)) "
+            f"WHERE {key}=?",
+            (f"$.{FORMAT_KEY}.fields.error", json.dumps(["r", digest]), record_id),
+        )
+
+
+@pytest.mark.parametrize("kind", ["effect", "gate"])
+@pytest.mark.parametrize("legacy_reference", [False, True])
+def test_large_error_remains_visible_and_clearing_replaces_it(tmp_path, legacy_reference, kind):
+    path = tmp_path / "orchestration.db"
+    store = (SqliteExecutionStore if kind == "effect" else SqliteGateExecutionStore)(path)
+    error = "Provider could not complete the request. " * 800
+    original = record(status="waiting", error=error, outputs={"detail": error})
+    if kind == "gate":
+        fields = original.model_dump()
+        fields["gate_id"] = fields.pop("effect_id")
+        fields["gate_type"] = fields.pop("effect_type")
+        original = GateExecutionRecord.model_validate(fields)
+    store.put(original)
+    if legacy_reference:
+        _externalize_legacy_error(path, kind=kind, record_id="effect-1", error=error)
+    assert store.list_active_summaries()[0]["error"] == error
+    if legacy_reference:
+        # Older lifecycle updates could already have left this stale reference.
+        with connect_orchestration_db(path) as connection:
+            connection.execute(
+                f"UPDATE {kind}_executions SET payload_json=json_set(payload_json, '$.error', ?)",
+                ("Previously updated error",),
+            )
+        assert store.get_execution("effect-1").error == "Previously updated error"
+        assert store.list_active_summaries()[0]["error"] == "Previously updated error"
+    assert store.clear_event_records(
+        "event-1", cleared_at=datetime.now(UTC), clear_reason="Operator requested clear",
+        clear_error="Execution cleared by operator",
+    ) == 1
+    saved = store.get_execution("effect-1")
+    assert saved.error == "Execution cleared by operator"
+    assert saved.clear_reason == "Operator requested clear"
+    assert saved.status == "failed"
+    with connect_orchestration_db(path) as connection:
+        for _ in range(10):
+            collect_unreferenced_payloads(connection)
+    assert store.get_execution("effect-1").outputs == {"detail": error}
+    assert store.list_activity_summaries_between(
+        start_at=original.started_at - timedelta(seconds=1), end_at=datetime.now(UTC)
+    )[0]["error"] == "Execution cleared by operator"
+    store.update_lifecycle("effect-1", error="")
+    assert store.get_execution("effect-1").error == ""
+
+
+def test_trigger_clearing_removes_legacy_error_reference(tmp_path):
+    path = tmp_path / "orchestration.db"
+    queue = SqliteTriggerEventQueue(path)
+    error = "Delivery could not complete. " * 1000
+    queue.publish(TriggerEvent(
+        event_id="event", trigger_id="trigger", trigger_type="trigger:test",
+        occurred_at=datetime.now(UTC), payload={"detail": error},
+    ))
+    _externalize_legacy_error(path, kind="trigger", record_id="event", error=error)
+    assert queue.read_all()["event"].error == error
+    assert queue.mark_event_cleared(
+        "event", cleared_at=datetime.now(UTC), clear_reason="Resolved by operator", error="",
+    ) == 1
+    cleared = queue.read_all()["event"]
+    assert cleared.error == ""
+    assert cleared.clear_reason == "Resolved by operator"
+    assert cleared.payload == {"detail": error}
 
 
 def test_offline_conversion_resume_verification_and_inline_rollback(tmp_path):

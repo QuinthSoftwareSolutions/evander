@@ -11,12 +11,18 @@ import hashlib
 import json
 import sqlite3
 import zlib
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 THRESHOLD_BYTES = 16 * 1024
 FORMAT_KEY = "__evander_operational_storage_v1__"
+PAYLOAD_FIELDS = frozenset({
+    "payload", "input_payload", "outputs", "resolved_config", "inputs_by_source",
+    "input_event_ids_by_source", "input_occurred_at_by_source", "binding_trace",
+    "completion_event_for_execution_ids",
+})
 TABLES = {
     "trigger": ("trigger_events", "event_id"),
     "effect": ("effect_executions", "execution_id"),
@@ -206,6 +212,10 @@ def prepare_record(*, kind: str, record: dict[str, Any]) -> PreparedOperationalR
     encoded: dict[str, Any] = {}
     blobs: dict[str, PreparedOperationalBlob] = {}
     for key, value in record.items():
+        # Lifecycle fields are read and changed independently of immutable
+        # payloads. Their meaning must not depend on their serialized size.
+        if key not in PAYLOAD_FIELDS:
+            continue
         if isinstance(value, (dict, list)) or (
             isinstance(value, str) and len(value) >= THRESHOLD_BYTES
         ):
@@ -219,7 +229,9 @@ def prepare_record(*, kind: str, record: dict[str, Any]) -> PreparedOperationalR
         inline[FORMAT_KEY] = {"fields": encoded}
     outputs = record.get("outputs") or {}
     config = record.get("resolved_config") or {}
-    scope = outputs.get("scope") or {}
+    scope = outputs.get("scope")
+    if not isinstance(scope, Mapping):
+        scope = {}
     return PreparedOperationalRecord(
         kind,
         record_id,
@@ -285,8 +297,58 @@ def load_record(connection: sqlite3.Connection, payload: str | bytes) -> dict[st
     storage = record.pop(FORMAT_KEY)
     cache: dict[str, Any] = {}
     for key, node in storage["fields"].items():
+        if key not in PAYLOAD_FIELDS and record.get(key) not in ("", {}, []):
+            # Early codec rows could externalize lifecycle text. A subsequent
+            # inline update is authoritative even if the old reference remains.
+            continue
         record[key] = _decode(connection, node, cache)
     return record
+
+
+def load_lifecycle_field(
+    connection: sqlite3.Connection, value: Any, encoded_json: str | None,
+) -> Any:
+    """Read an early codec lifecycle reference without loading execution inputs."""
+    if encoded_json is not None and value in ("", {}, []):
+        return _decode(connection, json.loads(encoded_json), {})
+    return value
+
+
+def discard_record_field_references(
+    connection: sqlite3.Connection, *, kind: str, record_id: str, fields: Iterable[str],
+) -> None:
+    """Drop replaced legacy references in the caller's lifecycle transaction.
+
+    Inspect only encoded reference metadata, never decompress immutable inputs.
+    Shared roots stay reachable through any other field of the same record.
+    """
+    table, key = TABLES[kind]
+    row = connection.execute(
+        f"SELECT json_extract(payload_json, ?) FROM {table} WHERE {key}=?",
+        (f"$.{FORMAT_KEY}.fields", record_id),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return
+    encoded = json.loads(row[0])
+    replaced = set(fields).intersection(encoded)
+    if not replaced:
+        return
+    for field in replaced:
+        del encoded[field]
+    paths = [f"$.{FORMAT_KEY}.fields.{field}" for field in sorted(replaced)]
+    if not encoded:
+        paths = [f"$.{FORMAT_KEY}"]
+    connection.execute(
+        f"UPDATE {table} SET payload_json=json_remove(payload_json,"
+        + ",".join("?" for _ in paths) + f") WHERE {key}=?",
+        [*paths, record_id],
+    )
+    roots = sorted({ref for node in encoded.values() for ref in _references(node)})
+    keep = " AND sha256 NOT IN (" + ",".join("?" for _ in roots) + ")" if roots else ""
+    connection.execute(
+        "DELETE FROM workflow_operational_record_refs WHERE record_kind=? AND record_id=?" + keep,
+        [kind, record_id, *roots],
+    )
 
 
 def load_record_at_path(path: Path, payload: str | bytes) -> dict[str, Any]:

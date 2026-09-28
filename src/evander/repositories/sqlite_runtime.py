@@ -360,6 +360,7 @@ def open_sqlite_connection(
     timeout_ms: int = FOREGROUND_TIMEOUT_MS,
     operation: str = "database",
     deadline_seconds: float | None = None,
+    managed_checkpoints: bool = False,
 ) -> ManagedSqliteConnection:
     """Open an initialized DB; one deadline covers connection and SQL lock waits.
 
@@ -394,7 +395,10 @@ def open_sqlite_connection(
         connection._deadline = deadline
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON" if read_only else "PRAGMA foreign_keys=ON")
-        if not read_only:
+        # Only databases covered by a background checkpoint owner may disable
+        # SQLite's own WAL maintenance. Team and other standalone stores retain
+        # automatic checkpoints even while an idle lifetime anchor is open.
+        if not read_only and managed_checkpoints:
             connection.execute("PRAGMA wal_autocheckpoint=0")
         connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         connection._connection_ms = (time.monotonic() - started) * 1000

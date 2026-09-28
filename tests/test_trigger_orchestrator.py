@@ -3,6 +3,8 @@ from __future__ import annotations
 from config_helpers import canonical_worker_config, trigger_queue_payload
 
 import json
+import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1522,6 +1524,71 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
     assert record["payload"]["event_type"] == "issue.plan_committed"
     assert record["payload"]["payload"] == {"issue_id": "ISSUE-1", "plan_version": 3}
     assert record["payload"]["correlation_key"] == "issue:ISSUE-1"
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+def test_event_trigger_recovers_from_writer_contention_without_losing_events(
+    tmp_path, monkeypatch, continuous,
+):
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config({
+        "runtime_dir": runtime_dir, "poll_interval_seconds": 1, "jitter_seconds": 0,
+        "triggers": [{"id": "listener", "display_name": "Listener", "type": "trigger:event",
+                      "event_type": "issue.plan_committed"}],
+    })
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    worker.run_once()
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    event = bus.publish(event_type="issue.plan_committed", payload={"issue_id": "issue"},
+                        idempotency_key="contended-event")
+    writer = sqlite3.connect(worker_config.orchestration_store_path)
+    writer.execute("BEGIN IMMEDIATE")
+    sleeps = []
+    started = time.monotonic()
+
+    def wait(delay):
+        sleeps.append(delay)
+        if len(sleeps) == 1:
+            assert 0 < delay <= 0.3
+            writer.rollback()
+            time.sleep(delay + 0.01)
+        else:
+            raise KeyboardInterrupt
+
+    try:
+        if continuous:
+            monkeypatch.setattr(worker._wake_sleeper, "sleep", wait)
+            with pytest.raises(KeyboardInterrupt):
+                worker.run_forever()
+            assert len(sleeps) == 2
+        else:
+            deferred = worker.run_once()
+            assert deferred.events_published == 0
+            assert time.monotonic() - started < 1
+            wait(deferred.next_sleep_seconds)
+            assert worker.run_once().events_published == 1
+        assert worker.run_once().events_published == 0
+        assert list(worker.event_queue.read_all()) == [f"listener:{event.event_id}"]
+    finally:
+        writer.rollback()
+        writer.close()
+        worker._wake_sleeper.close()
+        worker._wal_checkpoint_maintenance.close()
+
+
+def test_trigger_worker_does_not_retry_permanent_storage_errors(tmp_path, monkeypatch):
+    worker = TriggerOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=tmp_path),
+        worker_config=canonical_worker_config({"runtime_dir": tmp_path}), runtime=None,
+    )
+
+    def invalid_schema(*args, **kwargs):
+        raise sqlite3.OperationalError("no such table: missing")
+
+    monkeypatch.setattr(worker, "_reconcile_internal_event_subscriptions", invalid_schema)
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        worker.run_once()
 
 
 def test_event_trigger_pending_delivery_survives_transient_provider_initialization_failure(

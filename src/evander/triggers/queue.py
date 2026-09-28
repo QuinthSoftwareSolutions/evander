@@ -10,7 +10,9 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from evander.repositories.sqlite_runtime import storage_lock
-from evander.repositories.operational_payloads import load_record, prepare_record, store_prepared_record
+from evander.repositories.operational_payloads import (
+    discard_record_field_references, load_record, prepare_record, store_prepared_record,
+)
 from evander.repositories.execution_history import prepare_execution_history_payloads
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
@@ -267,6 +269,9 @@ class SqliteTriggerEventQueue:
         connection.execute("UPDATE trigger_events SET " + ",".join(f"{key}=?" for key in fields)
             + ",payload_json=json_set(payload_json," + ",".join("?,?" for _ in fields) + ") WHERE event_id=?",
             [*fields.values(), *json_params, event_id])
+        discard_record_field_references(
+            connection, kind="trigger", record_id=event_id, fields=fields,
+        )
         connection.execute("""UPDATE workflow_node_execution_history SET status=?,
             finished_at=CASE WHEN ?='pending' THEN started_at ELSE ? END,updated_at=?,
             error=COALESCE(?,error) WHERE execution_key=?""",

@@ -82,6 +82,9 @@ from evander.repositories.orchestration_db import (
 )
 
 WORKFLOW_GRAPH_ACTIVITY_SNAPSHOT_TTL_SECONDS = 15.0
+# Report snapshots include hydration and aggregation over many executions.
+# Their total budget is independent of the connector's short lock-wait limit.
+WORKFLOW_REPORT_READ_DEADLINE_SECONDS = 30.0
 
 
 @dataclass(slots=True)
@@ -1297,7 +1300,9 @@ class WorkflowReportsAdminService:
             end_text = datetime_to_storage(end_at)
             db_path = Path(stores["orchestration_store_path"])
             ensure_orchestration_schema(db_path)
-            with connect_orchestration_db(db_path) as connection:
+            with connect_orchestration_db(
+                db_path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+            ) as connection:
                 connection.execute(
                     """
                     CREATE TEMP TABLE workflow_graph_activity_nodes (
@@ -1753,7 +1758,9 @@ class WorkflowReportsAdminService:
             end_text = datetime_to_storage(end_at)
             db_path = Path(stores["orchestration_store_path"])
             ensure_orchestration_schema(db_path)
-            with connect_orchestration_db_read_only(db_path) as connection:
+            with connect_orchestration_db_read_only(
+                db_path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+            ) as connection:
                 connection.execute("BEGIN")
                 for row in connection.execute(
                     """
@@ -2335,7 +2342,9 @@ class WorkflowReportsAdminService:
         """
         db_path = Path(stores["orchestration_store_path"])
         ensure_orchestration_schema(db_path)
-        with connect_orchestration_db_read_only(db_path) as connection:
+        with connect_orchestration_db_read_only(
+            db_path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        ) as connection:
             connection.execute("BEGIN")
             count_row = connection.execute(
                 f"{cte} SELECT COUNT(*) AS matched FROM candidate_events {candidate_filter}",
@@ -2402,7 +2411,9 @@ class WorkflowReportsAdminService:
             for index in range(0, len(normalized_event_ids), batch_size):
                 yield normalized_event_ids[index : index + batch_size]
 
-        with connect_orchestration_db_read_only(db_path) as connection:
+        with connect_orchestration_db_read_only(
+            db_path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        ) as connection:
             connection.execute("BEGIN")
             for event_id_batch in event_id_batches():
                 placeholders = ", ".join("?" for _ in event_id_batch)
@@ -2473,7 +2484,9 @@ class WorkflowReportsAdminService:
         def placeholders(values: set[str]) -> str:
             return ", ".join("?" for _ in values)
 
-        with connect_orchestration_db_read_only(db_path) as connection:
+        with connect_orchestration_db_read_only(
+            db_path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+        ) as connection:
             connection.execute("BEGIN")
             if event_keys:
                 event_key_params = sorted(event_keys)

@@ -79,6 +79,8 @@ Completed futures, durable pending receipts and delivery bookkeeping share a rot
 SQLite contention retries start at 25 ms and cap at 250 ms per entry; the shared completion lane
 waits at most 25 ms so one contended item cannot hold ready work behind its backoff. Adapter
 publication outages use a separate 250 ms to five-second exponential backoff. Retries have jitter.
+The trigger worker also defers transient storage failures with a 25 ms to 250 ms retry;
+subscription reconciliation and durable event publication resume without restarting the worker.
 Effect and gate receipt, successor and journal commits are atomic; external provider execution
 itself is not made transactional by SQLite.
 
@@ -117,14 +119,20 @@ commit a durable indexing job with their receipt; background maintenance builds 
 projection. History query responses expose `indexing_complete` and `indexing_pending_count` so
 pending work is visible. Details retain the recorded payload while indexing catches up. Status,
 directory scope and source provenance remain durable.
+Lifecycle fields, including long errors and clearing reasons, remain inline. Older referenced
+errors are readable in summaries; replacing them removes obsolete field references while
+preserving shared payloads. Workflow report reads have a separate 30-second operation deadline;
+their database lock waits retain the 100 ms limit.
 
 `sqlite_operation` logs report operation duration and connection-close time. `storage_maintenance`
-logs identify the phase, elapsed time, outcome and progress. Automatic checkpointing uses PASSIVE;
+logs identify the phase, elapsed time, outcome and progress. Orchestration background checkpointing uses PASSIVE;
 legacy blocking checkpoint settings are normalized for online work. No connection operation
 renegotiates WAL after initialization. Shared idle read-only connections keep the database open
 without holding a transaction or snapshot, avoiding a large last-connection checkpoint on each
 request. SQL operation deadlines bound lock waits and interrupt long SQL execution; filesystem
 commit/close I/O is measured separately and cannot be given the same hard time bound.
+The Team database retains SQLite automatic checkpointing because it has no dedicated background
+checkpoint owner. Disabling automatic checkpoints is an explicit orchestration-store choice.
 
 Recovery phase logs name each underlying hook and report elapsed time, records examined, changes,
 whether work remains, and budget overruns. Examined count is unavailable for legacy hooks.
