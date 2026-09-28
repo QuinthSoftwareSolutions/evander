@@ -59,6 +59,25 @@ class AdoBuildClient:
         data, _ = self.get(f"build/builds/{positive_id(run_id, 'run_id')}")
         return self.output(data)
 
+    def get_build_work_item_ids(self, run_id: Any, *, limit: int = 200) -> dict[str, Any]:
+        build_id = positive_id(run_id, "run_id")
+        top = positive_id(limit, "limit")
+        if top > 1000:
+            raise ValueError("limit must be at most 1000")
+        data, _ = self.get(f"build/builds/{build_id}/workitems", **{"$top": top + 1})
+        refs = data.get("value")
+        if not isinstance(refs, list) or any(not isinstance(ref, dict) for ref in refs):
+            raise RuntimeError("Azure DevOps returned invalid build work item data")
+        ids = [str(positive_id(ref.get("id"), "work item id")) for ref in refs[:top]]
+        return {
+            "build_id": str(build_id),
+            "project": self.project,
+            "work_item_ids": ids,
+            "count": len(ids),
+            "truncated": len(refs) > top,
+            "same_project_only": True,
+        }
+
     def list_builds(self, **params: Any) -> tuple[list[dict[str, Any]], str | None]:
         data, continuation = self.get("build/builds", **params)
         builds = data.get("value")

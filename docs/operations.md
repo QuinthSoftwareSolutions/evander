@@ -1448,6 +1448,20 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Response payload includes `items`, `count`, and `paging` (`skip`, `top`, `returned_count`,
   `total_matches`, `has_more`, `next_skip`).
 
+## Host-Side Azure DevOps Build Read Tools
+
+- Grant `get_ado_build` and `list_ado_build_work_items` separately in the session's `allowed_tools`.
+- Both tools take a positive numeric `build_id`, use the session directory's configured Azure
+  DevOps organization, project, and host credential, and make read-only requests.
+- `get_ado_build` returns the build number, status, source branch, source commit
+  (`source_version`), timestamps, and build URL.
+- `list_ado_build_work_items` returns associated work-item IDs for the configured project.
+  `limit` defaults to `200` and can be at most `1000`; `truncated` indicates that more IDs were
+  returned by Azure DevOps than the tool included. Azure DevOps excludes work items from other
+  projects in this operation. Use `get_ado_backlog_item` to inspect a returned ID.
+- A build's associated work items are evidence about that build. Confirm which build was deployed
+  before reporting an item's inclusion in a release.
+
 ## Host-Side Azure DevOps Work Item Activity Tool
 
 - Gateway tool name: `query_ado_work_item_activity`.
