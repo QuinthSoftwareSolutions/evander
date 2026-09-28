@@ -191,6 +191,38 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
         raise ValueError("effect:team:create-task dependency_task_ids must be a JSON array")
 
 
+class TeamCreateTaskForRoleEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:create-task-for-role"]
+    team_id: ConfigValue
+    project_id: ConfigValue
+    actor_agent_id: ConfigValue
+    role_id: ConfigValue
+    task_id: ConfigValue
+    title: ConfigValue
+    description: ConfigValue
+    priority: ConfigValue = 0
+    case_id: ConfigValue | None = None
+    task_kind: ConfigValue = "support"
+    parent_task_id: ConfigValue | None = None
+    originating_task_id: ConfigValue | None = None
+    authored_by: ConfigValue | None = None
+    git_base_branch: ConfigValue | None = None
+    git_base_commit_sha: ConfigValue | None = None
+    git_constraints: ConfigValue | None = None
+    dependency_task_ids: ConfigValue | None = None
+    integration_boundary: ConfigValue = False
+    deliverable_contract: ConfigValue | None = None
+    outcome_contract: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+    @field_validator("dependency_task_ids")
+    @classmethod
+    def validate_dependency_task_ids(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (list, str)):
+            return value
+        raise ValueError("effect:team:create-task-for-role dependency_task_ids must be a JSON array")
+
+
 class TeamSetTaskWorkStateEffectDefinition(EffectDefinition):
     type: Literal["effect:team:set-task-work-state"]
     task_id: ConfigValue
@@ -698,6 +730,23 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "created": {"type": "boolean"},
         "task": {"type": ["object", "null"]},
         "error": {"type": ["string", "null"]},
+    },
+    "effect:team:create-task-for-role": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "task_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "owner_agent_id": {"type": ["string", "null"]},
+        "created": {"type": "boolean"},
+        "reused": {"type": "boolean"},
+        "assignment_mode": {"type": ["string", "null"]},
+        "assignment_role_id": {"type": ["string", "null"]},
+        "task": {"type": ["object", "null"]},
+        "outbox_record_ids": {"type": "array"},
+        "outbox_publication": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+        "error_code": {"type": ["string", "null"]},
     },
     "effect:team:set-task-work-state": {
         "success": {"type": "boolean"},

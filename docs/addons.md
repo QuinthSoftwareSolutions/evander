@@ -1075,6 +1075,51 @@ Workflow automation can also create concrete execution work with
 the Admin API task creation semantics: a missing `task_id` creates a task, while
 an existing matching task id updates/reprioritizes that task.
 
+Use `effect:team:create-task-for-role` to let Team select the actual agent. It
+requires `team_id`, `project_id`, `actor_agent_id`, `role_id`, `task_id`, `title`,
+and `description`. The delegating actor must pass the same task creation and
+role assignment checks as `team_create_task_for_role`; no active agent dispatch
+or session impersonation is needed. The project must be inside the workflow's
+directory scope. Work starts pending with `assignment_mode=role` and no owner.
+The existing role queue assigns an eligible agent when the task is ready and
+execution capacity is available. Busy or temporarily unavailable eligible agents
+leave work queued; missing/archived roles or no authorized role members produce
+an error without creating a task.
+
+The node supports `priority` (default `0`), `task_kind` (default `support`),
+`case_id`, `parent_task_id`, `originating_task_id`, `authored_by`,
+`dependency_task_ids`, `git_base_branch`, `git_base_commit_sha`, `git_constraints`,
+`integration_boundary` (default `false`), `deliverable_contract`,
+`outcome_contract`, and `expected_revision`. Existing task graph, contribution,
+authorship, work-lineage, and Git-base validation applies. An integration boundary
+originating from coordination must be top-level with its required contributions
+included as dependencies.
+
+`task_id` is the permanent create-or-reuse key. A replay with the same team,
+project, delegating actor, role, case, parent and originating task returns the
+current task without changing its instructions, dependencies, priority, owner,
+Git base, state or deliverables, including after completion or reassignment.
+Those other fields apply only on initial creation. Changed identity fields, an
+unrelated pre-existing task ID, or a missing original task fail closed. Use a
+different ID for genuinely new work and normal Team lifecycle tools for edits
+or recovery. A stale `expected_revision` blocks creation but does not block a
+matching replay. Identity receipts use the existing Team idempotency journal;
+the workflow must retain the same stable ID across retries and correction events.
+
+Success includes `created`, `reused`, `task_id`, `task`, `assignment_mode`,
+`assignment_role_id`, `owner_agent_id`, `revision`, and `outbox_record_ids`.
+Task creation, its receipt and the role-queue wake event commit atomically. The
+effect requests outbox publication after commit; `outbox_publication` reports
+notification results, while the durable outbox supports recovery if notification
+fails. A replay requests publication of the original outbox records again without
+creating another task or wake obligation.
+
+For example, a workflow can queue a final code assessment using
+`task_id=final-assessment-<project-id>-<work-lineage-id>`, the project's developer
+role, and the integration task as its originating task and dependency. Keep
+project-specific triggers, review requirements and release handoffs in operator
+workflow configuration; this generic node does not impose a release policy.
+
 Workflow automation can enforce deliverable review handoffs without relying on
 agent prompt discipline. `trigger:team:deliverable-created` emits newly created
 Team deliverables, suppressing already-existing deliverables when a trigger is

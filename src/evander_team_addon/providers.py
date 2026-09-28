@@ -697,6 +697,7 @@ from .provider_schemas import (
     TeamCreateReviewCohortEffectDefinition,
     TeamCreateReviewRequestEffectDefinition,
     TeamCreateTaskEffectDefinition,
+    TeamCreateTaskForRoleEffectDefinition,
     TeamDeliverableCreatedTriggerDefinition,
     TeamEnqueueOperatorChatMessageEffectDefinition,
     TeamFinalizeAgentDispatchEffectDefinition,
@@ -731,6 +732,7 @@ from .provider_tasks import (
     TeamSetTaskWorkStateEffectProvider,
     TeamUpdateCaseEffectProvider,
 )
+from .provider_role_tasks import TeamCreateTaskForRoleEffectProvider
 from .provider_triggers import (
     TeamDeliverableCreatedTriggerProvider,
 )
@@ -893,6 +895,7 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:create-review-request": TeamCreateReviewRequestEffectProvider,
             "effect:team:create-review-cohort": TeamCreateReviewCohortEffectProvider,
             "effect:team:create-task": TeamCreateTaskEffectProvider,
+            "effect:team:create-task-for-role": TeamCreateTaskForRoleEffectProvider,
             "effect:team:set-task-work-state": TeamSetTaskWorkStateEffectProvider,
             "effect:team:create-case": TeamCreateCaseEffectProvider,
             "effect:team:update-case": TeamUpdateCaseEffectProvider,
@@ -983,6 +986,9 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:create-task": (
                 lambda node: _materialize(TeamCreateTaskEffectDefinition, node)
+            ),
+            "effect:team:create-task-for-role": (
+                lambda node: _materialize(TeamCreateTaskForRoleEffectDefinition, node)
             ),
             "effect:team:set-task-work-state": (
                 lambda node: _materialize(TeamSetTaskWorkStateEffectDefinition, node)
