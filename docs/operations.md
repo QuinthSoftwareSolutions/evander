@@ -1381,7 +1381,10 @@ and record the backup SHA-256 in the resulting artifact bundle.
   identity are not included.
 - Hosted OpenAI web search is denied by default at the relay. Set the session
   policy flag `web_search_enabled: true` only for agents that should be allowed
-  to declare Responses `web_search` tools.
+  to declare Responses `web_search` tools. For public OpenAI container Codex
+  sessions, refreshed session files also enable Codex standalone web search
+  through `POST /v1/alpha/search` on the same relay. The relay sends a hosted
+  Responses web search on behalf of the session and returns source URLs.
 - OpenAI image generation and editing are denied by default. Set the session
   policy flag `image_generation_enabled: true` only for agents that should be
   allowed to call `POST /v1/images/generations`, `POST /v1/images/edits`, or

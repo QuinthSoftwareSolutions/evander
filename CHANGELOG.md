@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-28 - Enable metered Codex web search (0.69.0)
+
+- Add session-gated `POST /v1/alpha/search` compatibility to the OpenAI relay,
+  translating Codex web operations to hosted Responses web search and returning
+  the answer with direct source URLs while accounting for upstream model usage.
+- Advertise standalone web search to container Codex only for web-enabled public
+  OpenAI sessions. Unsupported link-click and PDF screenshot operations return
+  explicit errors.
+- Reject batches that would apply a per-query domain filter to other operations,
+  and preserve direct image and source-page URLs from structured search results.
+
 ## 2026-09-28 - Bound orchestration storage and recover completions (0.68.1)
 
 - Retain completed provider results across transient storage failures and atomically publish

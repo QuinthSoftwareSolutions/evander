@@ -1002,6 +1002,364 @@ def test_relay_allows_hosted_web_search_for_session_with_flag(tmp_path: Path) ->
     }
 
 
+def test_standalone_web_search_uses_hosted_responses_and_returns_sources(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("authorization")
+        captured["guest_header"] = request.headers.get("x-guest-header")
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_search",
+                "model": "gpt-6-astra",
+                "output": [
+                    {
+                        "type": "web_search_call",
+                        "status": "completed",
+                        "action": {
+                            "type": "search",
+                            "sources": [
+                                {"url": "https://example.com/result", "title": "Example result"}
+                            ],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "The answer is 42.", "annotations": []}
+                        ],
+                    },
+                ],
+                "usage": {"input_tokens": 20, "output_tokens": 12, "total_tokens": 32},
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(
+        config,
+        session_id="session-1",
+        model="gpt-6-astra",
+        web_search_enabled=True,
+        metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
+    )
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        relay.create_app(),
+        "POST",
+        "/v1/session/session-1/auth/correct-token/alpha/search",
+        headers={"authorization": "Bearer guest-key", "x-guest-header": "guest-value"},
+        json={
+            "id": "codex-session",
+            "model": "gpt-6-astra",
+            "input": "private conversation history",
+            "commands": {
+                "search_query": [{"q": "meaning of life", "domains": ["example.com"]}],
+                "response_length": "short",
+            },
+            "settings": {"external_web_access": "live"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "encrypted_output": None,
+        "output": "The answer is 42.\n\nSources:\n- Example result: https://example.com/result",
+    }
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    assert captured["authorization"] == "Bearer host-key"
+    assert captured["guest_header"] is None
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "gpt-6-astra"
+    assert payload["tools"] == [
+        {
+            "type": "web_search",
+            "filters": {"allowed_domains": ["example.com"]},
+            "external_web_access": True,
+        }
+    ]
+    assert payload["tool_choice"] == "required"
+    assert "meaning of life" in payload["input"]
+    assert "private conversation history" not in payload["input"]
+    events = relay.model_usage_store.list_events()
+    assert len(events) == 1
+    assert events[0].provider == "openai"
+    assert "meaning of life" not in events[0].model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "commands",
+    [
+        pytest.param(
+            {
+                "search_query": [
+                    {"q": "official news", "domains": ["example.com"]},
+                    {"q": "independent coverage"},
+                ]
+            },
+            id="filtered-and-unrestricted-text",
+        ),
+        pytest.param(
+            {
+                "search_query": [
+                    {"q": "independent coverage"},
+                    {"q": "official news", "domains": ["example.com"]},
+                ]
+            },
+            id="unrestricted-and-filtered-text",
+        ),
+        pytest.param(
+            {
+                "image_query": [
+                    {"q": "official photos", "domains": ["example.com"]},
+                    {"q": "other photos"},
+                ]
+            },
+            id="filtered-and-unrestricted-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "official news", "domains": ["example.com"]}],
+                "image_query": [{"q": "other photos"}],
+            },
+            id="filtered-text-and-unrestricted-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "independent coverage"}],
+                "image_query": [{"q": "official photos", "domains": ["example.com"]}],
+            },
+            id="unrestricted-text-and-filtered-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "official news", "domains": ["example.com"]}],
+                "open": [{"ref_id": "https://other.example/article"}],
+            },
+            id="filtered-query-and-page-open",
+        ),
+    ],
+)
+def test_standalone_web_search_rejects_per_query_domains_in_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, commands: dict[str, object]
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": commands},
+    )
+
+    assert response.status_code == 400
+    assert "Per-query domain filters" in response.json()["error"]
+    assert called is False
+
+
+def test_standalone_web_search_keeps_unrestricted_batches_unfiltered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {"type": "web_search_call", "status": "completed"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "Results."}]},
+                ]
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={
+            "model": "gpt-6-astra",
+            "commands": {
+                "search_query": [{"q": "bridge history"}, {"q": "bridge construction"}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["tools"] == [{"type": "web_search"}]
+    assert "bridge history" in captured["input"]
+    assert "bridge construction" in captured["input"]
+
+
+def test_standalone_image_search_returns_image_and_source_page_urls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "web_search_call",
+                        "status": "completed",
+                        "results": [
+                            {
+                                "type": "image_result",
+                                "image_url": "https://cdn.example/bridge.jpg",
+                                "source_website_url": "https://example.com/photos/bridge",
+                                "thumbnail_url": "https://cdn.example/bridge-thumb.jpg",
+                                "caption": "Bridge at sunset",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Found a bridge photo."}],
+                    },
+                ]
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={
+            "model": "gpt-6-astra",
+            "commands": {
+                "image_query": [{"q": "bridge at sunset", "domains": ["example.com"]}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["tools"] == [
+        {
+            "type": "web_search",
+            "filters": {"allowed_domains": ["example.com"]},
+            "search_content_types": ["image", "text"],
+        }
+    ]
+    output = response.json()["output"]
+    assert "Found a bridge photo." in output
+    assert "Bridge at sunset (image): https://cdn.example/bridge.jpg" in output
+    assert "Bridge at sunset (source page): https://example.com/photos/bridge" in output
+
+
+@pytest.mark.parametrize(
+    ("web_search_enabled", "provider_mode", "expected_status"),
+    [(False, "openai_public", 403), (True, "local_openai", 501)],
+)
+def test_standalone_web_search_requires_session_permission_and_public_openai(
+    tmp_path: Path, web_search_enabled: bool, provider_mode: str, expected_status: int
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    if provider_mode != "openai_public":
+        config.model_provider_mode = provider_mode
+        config.local_openai_api_base_url = "http://local-model.test:12345/v1"
+    write_session(config, session_id="session-1", web_search_enabled=web_search_enabled)
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": {"search_query": [{"q": "news"}]}},
+    )
+
+    assert response.status_code == expected_status, response.text
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    "commands",
+    [
+        {"open": [{"ref_id": "turn0search0"}]},
+        {"screenshot": [{"ref_id": "https://example.com/test.pdf", "pageno": 0}]},
+    ],
+)
+def test_standalone_web_search_rejects_operations_it_cannot_resolve(
+    tmp_path: Path, commands: dict[str, object]
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": commands},
+    )
+
+    assert response.status_code == 400
+    assert called is False
+
+
+def test_standalone_web_search_does_not_claim_success_without_search_call(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    os.environ["OPENAI_API_KEY"] = "host-key"
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "No search"}]}
+                ]
+            },
+        )
+    )
+
+    response = request_asgi(
+        create_app(config, transport=transport),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": {"search_query": [{"q": "news"}]}},
+    )
+
+    assert response.status_code == 502
+
+
 def test_relay_uses_root_directory_provider_overlay(tmp_path: Path) -> None:
     captured: dict[str, str] = {}
 

@@ -4005,6 +4005,39 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
     assert "deployment-gpt-5-4" not in combined_content
 
 
+@pytest.mark.parametrize(
+    ("provider_mode", "web_search_enabled", "advertised"),
+    [
+        ("openai_public", True, True),
+        ("openai_public", False, False),
+        ("openrouter", True, False),
+    ],
+)
+def test_container_session_files_advertise_standalone_search_only_when_supported(
+    provider_mode: str, web_search_enabled: bool, advertised: bool
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=Path("/tmp/runtime"),
+        model_provider_mode=provider_mode,
+    )
+
+    files = build_container_session_files(
+        config=config,
+        session_id="session-1",
+        model="gpt-6-astra",
+        web_search_enabled=web_search_enabled,
+        dotnet=False,
+        nuget=False,
+        playwright=False,
+    )
+    by_path = {entry["destination_path"]: entry["content"] for entry in files}
+
+    assert (
+        "supports_standalone_web_search = true"
+        in by_path["/home/agent/.config/evander/codex/config.toml"]
+    ) is advertised
+
+
 def test_container_session_files_include_claude_provider_config() -> None:
     config = GatewayConfig(
         runtime_dir=Path("/tmp/runtime"),
