@@ -311,9 +311,7 @@ class OpenAIRelay(OpenAIUsageAccounting):
 
         try:
             payload = json.loads((await request.body()).decode("utf-8"))
-            upstream_payload = prepare_standalone_search_request(
-                payload, session_model=context.model
-            )
+            upstream_payload = prepare_standalone_search_request(payload)
         except (UnicodeDecodeError, json.JSONDecodeError):
             return JSONResponse(
                 {"error": "Standalone web search requires valid JSON"}, status_code=400
