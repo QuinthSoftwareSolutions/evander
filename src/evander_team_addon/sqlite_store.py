@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import logging
 import sqlite3
-import time
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from types import TracebackType
 from typing import Any, Callable
 
 from pydantic import ConfigDict, PrivateAttr, TypeAdapter
 
 from evander.addons import addon_storage_path
 from evander.models import utc_now
-from evander.orchestration.isolated_maintenance import sqlite_busy
 from evander.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
+from evander.repositories.sqlite_runtime import ensure_sqlite_initialized, open_sqlite_connection
 
 from .case_context_store import CaseContextStoreMixin
 from .lifecycle_candidates import LifecycleCandidate, LifecycleCandidatePage
@@ -254,8 +251,6 @@ ADDON_ID = "team-addon"
 
 STATE_DB_FILE = "state.db"
 
-_SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
-logger = logging.getLogger(__name__)
 
 _STATE_METADATA_FIELDS = frozenset({"schema_version", "revision", "updated_at"})
 
@@ -319,29 +314,29 @@ class TeamStateSqliteStore(
         self._busy_timeout_ms = SQLITE_BUSY_TIMEOUT_MS
         self._maintenance = False
         self.ensure_schema()
-        self._initialize_if_empty()
         self._maintenance = maintenance
         if maintenance:
             self._busy_timeout_ms = 100
 
     def read_object(self) -> dict[str, Any]:
-        with self._lock:
-            with self._connect() as connection:
-                # _read_payload spans normalized tables. Pin one SQLite read
-                # transaction so every row belongs to the same revision.
-                connection.execute("BEGIN")
-                return self._read_payload(connection)
+        with self._read_connection() as connection:
+            connection.execute("BEGIN")
+            return self._read_payload(connection)
 
     def read_state(self) -> TeamState:
-        """Read and validate Team state once without a JSON model round-trip."""
+        """Read one committed snapshot independently of concurrent writers."""
+        with self._read_connection() as connection:
+            connection.execute("BEGIN")
+            return self._read_state(connection)
 
-        with self._lock:
-            with self._connect() as connection:
-                # Without an explicit transaction, each completed SELECT may
-                # observe a later writer commit and assemble an impossible
-                # cross-revision TeamState (for example, half a review cohort).
-                connection.execute("BEGIN")
-                return self._read_state(connection)
+    def read_state_with_dispatch_activity(
+        self, *, dispatch_id: str
+    ) -> tuple[TeamState, list[TeamDispatchActivity]]:
+        """Snapshot the finalizer's state and activity evidence together."""
+        with self._read_connection() as connection:
+            connection.execute("BEGIN")
+            return (self._read_state(connection),
+                    self._list_dispatch_activity(connection, dispatch_id=dispatch_id))
 
     def read_projection(self, *, collections: Sequence[str]) -> TeamStateReadProjection:
         """Read only the collections needed by a read-only API projection."""
@@ -352,10 +347,7 @@ class TeamStateSqliteStore(
             raise ValueError(f"Unknown Team projection collections: {sorted(unknown)!r}")
         # WAL readers can take a consistent snapshot without waiting for the
         # process-local writer lock or resetting the journal mode.
-        with closing(sqlite3.connect(self.path, timeout=30.0)) as connection:
-            connection.row_factory = sqlite3.Row
-            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-            connection.execute("PRAGMA query_only=ON")
+        with self._read_connection() as connection:
             connection.execute("BEGIN")
             payload = self._read_state_payload(connection, collections=selected)
         validated = {
@@ -373,10 +365,7 @@ class TeamStateSqliteStore(
         # Do not take the process-local state lock or reapply WAL mode here. This
         # read is used by one-second UI polls and WAL readers can safely proceed
         # while a state update holds its write transaction.
-        with closing(sqlite3.connect(self.path, timeout=30.0)) as connection:
-            connection.row_factory = sqlite3.Row
-            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-            connection.execute("PRAGMA query_only=ON")
+        with self._read_connection() as connection:
             row = connection.execute(
                 "SELECT value FROM team_state_metadata WHERE key = 'revision'"
             ).fetchone()
@@ -593,7 +582,7 @@ class TeamStateSqliteStore(
         to guarantee progress with the same callback semantics as before.
         """
         for _attempt in range(3):
-            with self._connect() as reader:
+            with self._read_connection() as reader:
                 reader.execute("BEGIN")
                 state = self._read_state(reader)
                 baseline = state.model_dump(mode="json")
@@ -876,87 +865,77 @@ class TeamStateSqliteStore(
                 }
         return changed_by_field
 
+    @staticmethod
+    def _schema_is_current(connection: sqlite3.Connection) -> bool:
+        rows = dict(connection.execute(
+            "SELECT key, value FROM team_state_metadata "
+            "WHERE key IN ('sqlite_schema_version', 'state_schema_version', 'revision')"
+        ))
+        return (
+            int(rows.get("sqlite_schema_version", 0)) >= SQLITE_SCHEMA_VERSION
+            and int(rows.get("state_schema_version", 0)) >= SCHEMA_VERSION
+            and "revision" in rows
+        )
+
     def ensure_schema(self) -> None:
-        with self._lock:
-            with self._connect() as connection:
-                migrate_schema(
-                    connection,
-                    read_payload=self._read_payload,
-                    write_state=self._write_state,
-                )
+        # Markers are cheap to read and detect an explicitly restored/downgraded
+        # database even when its inode did not change. Steady-state opens write
+        # nothing; initialization is serialized across threads and processes.
+        force = False
+        if self.path.exists():
+            try:
+                with self._read_connection() as connection:
+                    force = not self._schema_is_current(connection)
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    raise
+                force = True
+
+        def initialize(connection: sqlite3.Connection) -> None:
+            try:
+                if self._schema_is_current(connection):
+                    return
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    raise
+            migrate_schema(
+                connection,
+                read_payload=self._read_payload,
+                write_state=self._write_state,
+            )
+            # The emptiness check must run while the writer is reserved. A
+            # competing initializer cannot overwrite state committed meanwhile.
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            if not self._has_state(connection):
+                self._write_state(connection, TeamState.empty())
+
+        ensure_sqlite_initialized(
+            self.path,
+            schema_key=f"team:{SQLITE_SCHEMA_VERSION}:{SCHEMA_VERSION}",
+            is_current=self._schema_is_current,
+            initialize=initialize,
+            force=force,
+            timeout_ms=self._busy_timeout_ms,
+        )
 
     def _read_connection(self) -> sqlite3.Connection:
-        """Read a committed snapshot without negotiating WAL or a writer lock."""
-        started = time.perf_counter()
-        connection = sqlite3.connect(
-            self.path.resolve().as_uri() + "?mode=ro",
-            uri=True,
-            timeout=self._busy_timeout_ms / 1000,
-            factory=_ClosingSqliteConnection,
+        return open_sqlite_connection(
+            self.path,
+            read_only=True,
+            timeout_ms=self._busy_timeout_ms,
+            operation="team_read",
+            # Snapshot assembly parses many domain rows between SQL calls. It
+            # runs on the background lane; lock waits stay capped at 100 ms.
+            deadline_seconds=5.0 if self._maintenance else None,
         )
-        try:
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA query_only=ON")
-        except BaseException:
-            connection.close()
-            raise
-        logger.debug(
-            "Team lifecycle phase=database_connection duration_ms=%.1f mode=read outcome=succeeded",
-            (time.perf_counter() - started) * 1000,
-        )
-        return connection
 
     def _connect(self) -> sqlite3.Connection:
-        started = time.perf_counter()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(
+        return open_sqlite_connection(
             self.path,
-            timeout=self._busy_timeout_ms / 1000,
-            factory=_ClosingSqliteConnection,
+            timeout_ms=self._busy_timeout_ms,
+            operation="team_write",
         )
-        try:
-            connection.row_factory = sqlite3.Row
-            connection.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
-            if not self._maintenance:
-                self._enable_wal(connection)
-            connection.execute("PRAGMA foreign_keys=ON")
-        except BaseException as exc:
-            connection.close()
-            if self._maintenance:
-                logger.warning(
-                    "Team lifecycle phase=database_connection duration_ms=%.1f "
-                    "mode=maintenance outcome=%s",
-                    (time.perf_counter() - started) * 1000,
-                    "busy" if sqlite_busy(exc) else "failed",
-                )
-            raise
-        if self._maintenance:
-            logger.debug(
-                "Team lifecycle phase=database_connection duration_ms=%.1f "
-                "mode=maintenance outcome=succeeded",
-                (time.perf_counter() - started) * 1000,
-            )
-        return connection
-
-    @staticmethod
-    def _enable_wal(connection: sqlite3.Connection) -> None:
-        deadline = time.monotonic() + _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS
-        while True:
-            try:
-                connection.execute("PRAGMA journal_mode=WAL")
-                return
-            except sqlite3.OperationalError as exc:
-                if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.05)
-
-    def _initialize_if_empty(self) -> None:
-        with self._lock:
-            with self._connect() as connection:
-                if self._has_state(connection):
-                    return
-                connection.execute("BEGIN IMMEDIATE")
-                self._write_state(connection, TeamState.empty())
 
     @staticmethod
     def _has_state(connection: sqlite3.Connection) -> bool:
@@ -1217,19 +1196,6 @@ class TeamStateSqliteStore(
     def _clear_state_tables(connection: sqlite3.Connection) -> None:
         for table in _STATE_TABLES:
             connection.execute(f"DELETE FROM {table}")
-
-
-class _ClosingSqliteConnection(sqlite3.Connection):
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> bool:
-        try:
-            return super().__exit__(exc_type, exc_value, traceback)
-        finally:
-            self.close()
 
 
 @dataclass(frozen=True)

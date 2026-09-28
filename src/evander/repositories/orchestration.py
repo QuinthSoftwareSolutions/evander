@@ -12,6 +12,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from evander.repositories.sqlite_runtime import storage_lock
+from evander.repositories.operational_payloads import (
+    FORMAT_KEY, discard_record_field_references, load_lifecycle_field,
+    load_record, prepare_record, store_prepared_record,
+)
+from evander.repositories.execution_history import prepare_execution_history_payloads
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
     connect_orchestration_db_read_only,
@@ -19,7 +25,6 @@ from evander.repositories.orchestration_db import (
     ensure_orchestration_schema,
     json_dumps,
     json_loads_object,
-    maybe_run_orchestration_retention,
 )
 from evander.storage import write_json_atomically
 
@@ -32,36 +37,38 @@ R = TypeVar("R")
 def read_latest_agent_prompt_execution(
     path: Path, *, session_id: str, dispatch_id: str
 ) -> dict[str, Any] | None:
-    """Read one dispatch's durable receipt without materializing execution history.
-
-    Completion can be delivered while the prompt row is still waiting, so include
-    nonterminal receipts too. Queued retry markers are never execution evidence.
-    Do not create a database for legacy synchronous dispatches without one.
-    """
+    """Read a dispatch receipt using indexed metadata, with legacy inline fallback."""
     if not path.is_file():
         return None
-    with connect_orchestration_db(path) as connection:
+    with connect_orchestration_db_read_only(path) as connection:
+        connection.execute("BEGIN")
         row = connection.execute(
-            """
-            SELECT payload_json FROM effect_executions
-            WHERE effect_type = 'effect:agent:enqueue-prompt'
-              AND status IN ('running', 'waiting', 'completion_pending', 'succeeded', 'failed')
-              AND json_extract(payload_json, '$.outputs.dispatch_id') = ?
-              AND COALESCE(
-                  NULLIF(json_extract(payload_json, '$.outputs.session_id'), ''),
-                  NULLIF(json_extract(payload_json, '$.outputs.scope.session_id'), ''),
-                  json_extract(payload_json, '$.resolved_config.session_id')
-              ) = ?
-              AND COALESCE(json_extract(payload_json, '$.outputs.queued'), 0) != 1
-            ORDER BY COALESCE(
-                json_extract(payload_json, '$.outputs.native_thread_observed_at'),
-                finished_at, started_at
-            ) DESC, execution_id DESC
-            LIMIT 1
-            """,
-            (dispatch_id, session_id),
+            """SELECT payload_json FROM (
+                SELECT e.payload_json, e.execution_id,
+                       COALESCE(p.native_thread_observed_at,e.finished_at,e.started_at) AS observed_at
+                FROM workflow_execution_projections p INDEXED BY idx_execution_projection_dispatch
+                JOIN effect_executions e ON e.execution_id=p.record_id
+                WHERE p.dispatch_id=? AND p.session_id=? AND p.record_kind='effect' AND p.queued!=1
+                  AND e.effect_type='effect:agent:enqueue-prompt'
+                  AND e.status IN ('running','waiting','completion_pending','succeeded','failed')
+                UNION ALL
+                SELECT e.payload_json, e.execution_id,
+                       COALESCE(json_extract(e.payload_json,'$.outputs.native_thread_observed_at'),
+                                e.finished_at,e.started_at) AS observed_at
+                FROM effect_executions e
+                WHERE e.effect_type='effect:agent:enqueue-prompt'
+                  AND json_extract(e.payload_json,'$.outputs.dispatch_id')=?
+                  AND e.status IN ('running','waiting','completion_pending','succeeded','failed')
+                  AND COALESCE(NULLIF(json_extract(e.payload_json,'$.outputs.session_id'),''),
+                       NULLIF(json_extract(e.payload_json,'$.outputs.scope.session_id'),''),
+                       json_extract(e.payload_json,'$.resolved_config.session_id'))=?
+                  AND COALESCE(json_extract(e.payload_json,'$.outputs.queued'),0)!=1
+                  AND NOT EXISTS(SELECT 1 FROM workflow_execution_projections p
+                                 WHERE p.record_kind='effect' AND p.record_id=e.execution_id)
+            ) ORDER BY observed_at DESC,execution_id DESC LIMIT 1""",
+            (dispatch_id, session_id, dispatch_id, session_id),
         ).fetchone()
-    return json_loads_object(row["payload_json"]) if row is not None else None
+        return load_record(connection, row["payload_json"]) if row is not None else None
 
 
 class EffectExecutionRepository(Protocol):
@@ -145,15 +152,15 @@ class JsonCursorRepository:
         self._lock = RLock()
 
     def load(self) -> dict[str, Any]:
-        with self._lock:
+        with storage_lock(self._lock):
             return self._read_payload()
 
     def save(self, payload: dict[str, Any]) -> None:
-        with self._lock:
+        with storage_lock(self._lock):
             self._write_payload(payload)
 
     def update(self, updater: Any) -> dict[str, Any]:
-        with self._lock:
+        with storage_lock(self._lock):
             payload = self._read_payload()
             updater(payload)
             self._write_payload(payload)
@@ -255,7 +262,7 @@ class SqliteWorkflowConfigSnapshotRepository:
         normalized_revision = str(revision or "").strip()
         if not normalized_revision:
             return None
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
             row = connection.execute(
                 """
                 SELECT payload_json
@@ -267,7 +274,7 @@ class SqliteWorkflowConfigSnapshotRepository:
         return json_loads_object(row["payload_json"]) if row is not None else None
 
     def list_snapshots(self) -> list[dict[str, Any]]:
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
             rows = connection.execute(
                 """
                 SELECT payload_json
@@ -284,7 +291,7 @@ class SqliteWorkflowConfigSnapshotRepository:
             raise ValueError("workflow config snapshot requires revision")
         if not captured_at:
             raise ValueError("workflow config snapshot requires captured_at")
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
             connection.execute(
                 """
                 INSERT INTO workflow_config_snapshots(
@@ -315,6 +322,8 @@ class SqliteExecutionRepository(Generic[TRecord]):
         retention_days: int | None = None,
         compact_history_retention_days: int | None = None,
     ) -> None:
+        if retention_days is not None and compact_history_retention_days is None:
+            raise ValueError("compact_history_retention_days is required when retention_days is configured")
         self.path = Path(path)
         self.model = model
         self.table_name = table_name
@@ -324,30 +333,27 @@ class SqliteExecutionRepository(Generic[TRecord]):
         self._journal_source = source
         self._lock = RLock()
         ensure_orchestration_schema(self.path)
-        maybe_run_orchestration_retention(
-            self.path,
-            retention_days=retention_days,
-            compact_history_retention_days=compact_history_retention_days,
-        )
 
     def read_all(self) -> dict[str, TRecord]:
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"SELECT payload_json FROM {self.table_name} ORDER BY started_at ASC, execution_id ASC"
             ).fetchall()
-        records = [self._record_from_row(row) for row in rows]
+            records = [self._record_from_row(row, connection) for row in rows]
         return {str(getattr(record, "execution_id")): record for record in records}
 
     def get_execution(self, execution_id: str) -> TRecord | None:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
             return None
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             row = connection.execute(
                 f"SELECT payload_json FROM {self.table_name} WHERE execution_id = ?",
                 (normalized_execution_id,),
             ).fetchone()
-        return self._record_from_row(row) if row is not None else None
+            return self._record_from_row(row, connection) if row is not None else None
 
     def list_executions(self) -> list[TRecord]:
         return list(self.read_all().values())
@@ -362,7 +368,8 @@ class SqliteExecutionRepository(Generic[TRecord]):
         if not normalized_type or not normalized_statuses:
             return []
         placeholders = ", ".join("?" for _ in normalized_statuses)
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""
                 SELECT payload_json
@@ -373,7 +380,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 """,
                 [normalized_type, *normalized_statuses],
             ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+            return [self._record_from_row(row, connection) for row in rows]
 
     def list_prompt_records_for_dispatches(self, dispatch_ids: set[str]) -> list[TRecord]:
         """Read all receipts for a bounded set of immutable dispatches.
@@ -392,27 +399,40 @@ class SqliteExecutionRepository(Generic[TRecord]):
         # Maintenance runs concurrently with foreground dispatch. A separate
         # SQLite snapshot must not hold the execution repository's writer lock.
         with connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
-                f"""SELECT payload_json FROM effect_executions
-                    WHERE effect_type = 'effect:agent:enqueue-prompt'
-                      AND json_extract(payload_json, '$.outputs.dispatch_id') IN ({placeholders})
-                      AND status IN ('waiting', 'succeeded', 'failed')
-                    ORDER BY COALESCE(finished_at, started_at), execution_id""",
-                ids,
+                f"""SELECT payload_json FROM (
+                    SELECT e.payload_json,e.execution_id,COALESCE(e.finished_at,e.started_at) AS observed_at
+                    FROM workflow_execution_projections p INDEXED BY idx_execution_projection_dispatch
+                    JOIN effect_executions e ON e.execution_id=p.record_id
+                    WHERE p.dispatch_id IN ({placeholders}) AND p.record_kind='effect'
+                      AND e.effect_type='effect:agent:enqueue-prompt'
+                      AND e.status IN ('waiting','succeeded','failed')
+                    UNION ALL
+                    SELECT e.payload_json,e.execution_id,COALESCE(e.finished_at,e.started_at) AS observed_at
+                    FROM effect_executions e
+                    WHERE e.effect_type='effect:agent:enqueue-prompt'
+                      AND json_extract(e.payload_json,'$.outputs.dispatch_id') IN ({placeholders})
+                      AND e.status IN ('waiting','succeeded','failed')
+                      AND NOT EXISTS(SELECT 1 FROM workflow_execution_projections p
+                                     WHERE p.record_kind='effect' AND p.record_id=e.execution_id)
+                    ) ORDER BY observed_at,execution_id""",
+                [*ids, *ids],
             ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+            return [self._record_from_row(row, connection) for row in rows]
 
     def list_waiting_records_page(
         self, *, node_type: str, after: str = "", limit: int = 50
     ) -> list[TRecord]:
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""SELECT payload_json FROM {self.table_name}
                     WHERE status = 'waiting' AND {self.node_type_field} = ? AND execution_id > ?
                     ORDER BY execution_id LIMIT ?""",
                 (node_type, after, max(1, min(50, limit))),
             ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+            return [self._record_from_row(row, connection) for row in rows]
 
     def list_waiting_records(self, node_type: str | None = None) -> list[TRecord]:
         params: list[Any] = []
@@ -421,7 +441,8 @@ class SqliteExecutionRepository(Generic[TRecord]):
         if normalized_type:
             where.append(f"{self.node_type_field} = ?")
             params.append(normalized_type)
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""
                 SELECT payload_json
@@ -431,27 +452,86 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 """,
                 params,
             ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+            return [self._record_from_row(row, connection) for row in rows]
 
-    def list_completion_pending_records(self) -> list[TRecord]:
-        with self._lock, connect_orchestration_db(self.path) as connection:
+    def list_completion_pending_records(
+        self, *, limit: int = 32, after: tuple[str, str] | None = None
+    ) -> list[TRecord]:
+        parameters: list[Any] = []
+        cursor_clause = ""
+        if after is not None:
+            cursor_clause = "AND (COALESCE(finished_at, started_at), execution_id) > (?, ?)"
+            parameters.extend(after)
+        parameters.append(max(1, min(100, limit)))
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
-                f"""
-                SELECT payload_json
-                FROM {self.table_name}
-                WHERE status = 'completion_pending'
-                ORDER BY COALESCE(finished_at, started_at) DESC, execution_id DESC
-                """
+                f"""SELECT payload_json FROM {self.table_name}
+                    WHERE status = 'completion_pending' {cursor_clause}
+                    ORDER BY COALESCE(finished_at, started_at), execution_id LIMIT ?""",
+                parameters,
             ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+            return [self._record_from_row(row, connection) for row in rows]
+
+    def pending_completion_ids(self, execution_ids: list[str]) -> set[str]:
+        """Check a bounded set of retry owners without hydrating their payloads."""
+        if not execution_ids:
+            return set()
+        if len(execution_ids) > 100:
+            raise ValueError("At most 100 completion IDs can be checked at once")
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            return {row[0] for row in connection.execute(
+                f"SELECT execution_id FROM {self.table_name} WHERE status='completion_pending' "
+                "AND execution_id IN (" + ",".join("?" for _ in execution_ids) + ")",
+                execution_ids,
+            )}
 
     def record_execution(self, record: TRecord) -> None:
         self.put(record)
 
+    def update_lifecycle(self, execution_id: str, **fields: Any) -> bool:
+        """Update small lifecycle fields without hydrating immutable payloads."""
+        allowed = {"status", "finished_at", "cleared_at", "dismissed_at", "error",
+                   "published_event_id", "dismiss_reason", "clear_reason", "completion_status"}
+        if set(fields) - allowed:
+            raise ValueError("update_lifecycle only accepts lifecycle metadata")
+        values = {key: datetime_to_storage(value) if isinstance(value, datetime) else value
+                  for key, value in fields.items()}
+        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self._update_lifecycle_fields(connection, execution_id, values)
+
+    def _update_lifecycle_fields(self, connection: Any, execution_id: str, values: dict[str, Any]) -> bool:
+        if not values:
+            return connection.execute(f"SELECT 1 FROM {self.table_name} WHERE execution_id=?",
+                                      (execution_id,)).fetchone() is not None
+        columns = {key: value for key, value in values.items()
+                   if key in {"status", "finished_at", "cleared_at", "dismissed_at"}}
+        json_params = [value for key, value in values.items() for value in (f"$.{key}", value)]
+        assignments = [*(f"{key}=?" for key in columns),
+                       "payload_json=json_set(payload_json," + ",".join("?,?" for _ in values) + ")"]
+        cursor = connection.execute(f"UPDATE {self.table_name} SET " + ",".join(assignments)
+            + " WHERE execution_id=?", [*columns.values(), *json_params, execution_id])
+        if not cursor.rowcount:
+            return False
+        kind = "gate" if self.table_name == "gate_executions" else "effect"
+        discard_record_field_references(
+            connection, kind=kind, record_id=execution_id, fields=values,
+        )
+        history_fields = {key: value for key, value in values.items()
+                          if key in {"status", "finished_at", "error", "published_event_id"}}
+        if history_fields:
+            history_fields["updated_at"] = datetime_to_storage(datetime.now(UTC))
+            connection.execute("UPDATE workflow_node_execution_history SET "
+                + ",".join(f"{key}=?" for key in history_fields) + " WHERE execution_key=?",
+                [*history_fields.values(), f"{kind}:{execution_id}"])
+        return True
+
     def put(self, record: TRecord) -> None:
         started = time.perf_counter()
-        with self._lock, connect_orchestration_db(self.path) as connection:
-            phases = self._upsert_record(connection, record)
+        prepared = self._prepare_record(record)
+        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
+            phases = self._upsert_record(connection, record, prepared=prepared)
         if self._journal is not None and self._journal_source is not None:
             self._journal.append(
                 "workflow.execution.updated",
@@ -490,12 +570,13 @@ class SqliteExecutionRepository(Generic[TRecord]):
         normalized_key = str(idempotency_key or "").strip()
         if not normalized_key:
             return None
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             row = connection.execute(
                 f"SELECT payload_json FROM {self.table_name} WHERE idempotency_key = ?",
                 (normalized_key,),
             ).fetchone()
-        return self._record_from_row(row) if row is not None else None
+            return self._record_from_row(row, connection) if row is not None else None
 
     def find_execution_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
         return self.find_by_idempotency_key(idempotency_key)
@@ -504,7 +585,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
         normalized_event_id = str(event_id or "").strip()
         if not normalized_event_id:
             return False
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
             row = connection.execute(
                 f"""
                 SELECT 1
@@ -517,7 +598,8 @@ class SqliteExecutionRepository(Generic[TRecord]):
         return row is not None
 
     def list_active_records(self) -> list[TRecord]:
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""
                 SELECT payload_json
@@ -529,7 +611,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 ORDER BY COALESCE(finished_at, started_at) DESC, execution_id DESC
                 """
             ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+            return [self._record_from_row(row, connection) for row in rows]
 
     def list_active_summaries(self) -> list[dict[str, Any]]:
         """Read display metadata without hydrating execution inputs and outputs."""
@@ -557,12 +639,14 @@ class SqliteExecutionRepository(Generic[TRecord]):
         # Missing legacy input_payload fields default to {} in the record models.
         # Keep extra activity timestamps too: the renderer considers all of them.
         order = "DESC" if newest_first else "ASC"
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""
                 SELECT execution_id, event_id, trace_id, source_node_id, source_trigger_type,
                        {self.node_id_field}, status, started_at, finished_at, dismissed_at,
                        json_extract(payload_json, '$.error') AS error,
+                       json_extract(payload_json, '$.{FORMAT_KEY}.fields.error') AS encoded_error,
                        COALESCE(json_type(payload_json, '$.input_payload'), 'object') = 'object'
                            AS has_input_payload,
                        json_extract(payload_json, '$.occurred_at') AS occurred_at,
@@ -574,7 +658,12 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 """,
                 parameters,
             ).fetchall()
-        return [dict(row) for row in rows]
+            summaries = [dict(row) for row in rows]
+            for summary in summaries:
+                summary["error"] = load_lifecycle_field(
+                    connection, summary["error"], summary.pop("encoded_error"),
+                )
+            return summaries
 
     def list_records_for_event(
         self, event_id: str, *, statuses: set[str] | None = None
@@ -588,7 +677,8 @@ class SqliteExecutionRepository(Generic[TRecord]):
             placeholders = ", ".join("?" for _ in statuses)
             where.append(f"status IN ({placeholders})")
             params.extend(sorted(statuses))
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""
                 SELECT payload_json
@@ -598,12 +688,13 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 """,
                 params,
             ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+            return [self._record_from_row(row, connection) for row in rows]
 
     def list_activity_between(self, *, start_at: datetime, end_at: datetime) -> list[TRecord]:
         start_text = datetime_to_storage(start_at)
         end_text = datetime_to_storage(end_at)
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""
                 SELECT payload_json
@@ -613,78 +704,50 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 """,
                 (start_text, end_text),
             ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+            return [self._record_from_row(row, connection) for row in rows]
 
     def clear_event_records(
-        self,
-        event_id: str,
-        *,
-        cleared_at: datetime,
-        clear_reason: str,
-        clear_error: str,
+        self, event_id: str, *, cleared_at: datetime, clear_reason: str, clear_error: str,
     ) -> int:
-        normalized_event_id = str(event_id or "").strip()
-        if not normalized_event_id:
+        event_id = str(event_id or "").strip()
+        if not event_id:
             return 0
-        updated = 0
-        with self._lock:
-            records = self.list_records_for_event(normalized_event_id)
-            with connect_orchestration_db(self.path) as connection:
-                for record in records:
-                    status = str(getattr(record, "status", "") or "").strip()
-                    if status == "failed":
-                        setattr(record, "dismissed_at", cleared_at)
-                        setattr(record, "dismiss_reason", "manual_dismiss_errored_workflow_run")
-                        self._upsert_record(connection, record)
-                        updated += 1
-                        continue
-                    if status not in {"running", "waiting", "completion_pending"}:
-                        continue
-                    setattr(record, "status", "failed")
-                    setattr(record, "finished_at", cleared_at)
-                    setattr(record, "cleared_at", cleared_at)
-                    setattr(record, "clear_reason", clear_reason)
-                    setattr(record, "error", clear_error)
-                    setattr(record, "dismissed_at", cleared_at)
-                    setattr(record, "dismiss_reason", "manual_clear_stale_workflow_runs")
-                    self._upsert_record(connection, record)
-                    updated += 1
-        return updated
+        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(f"SELECT execution_id,status FROM {self.table_name} WHERE event_id=? "
+                "AND status IN ('failed','running','waiting','completion_pending')", (event_id,)).fetchall()
+            timestamp = datetime_to_storage(cleared_at)
+            for row in rows:
+                fields = {"dismissed_at": timestamp, "dismiss_reason": "manual_dismiss_errored_workflow_run"}
+                if row["status"] != "failed":
+                    fields.update(status="failed", finished_at=timestamp, cleared_at=timestamp,
+                                  clear_reason=clear_reason, error=clear_error,
+                                  dismiss_reason="manual_clear_stale_workflow_runs")
+                self._update_lifecycle_fields(connection, row["execution_id"], fields)
+            return len(rows)
 
     def dismiss_failed_records_for_node(
-        self,
-        node_id: str,
-        *,
-        dismissed_at: datetime,
-        dismiss_reason: str,
+        self, node_id: str, *, dismissed_at: datetime, dismiss_reason: str,
     ) -> int:
-        normalized_node_id = str(node_id or "").strip()
-        if not normalized_node_id:
+        node_id = str(node_id or "").strip()
+        if not node_id:
             return 0
-        updated = 0
-        with self._lock, connect_orchestration_db(self.path) as connection:
-            rows = connection.execute(
-                f"""
-                SELECT payload_json
-                FROM {self.table_name}
-                WHERE {self.node_id_field} = ?
-                  AND status = 'failed'
-                  AND dismissed_at IS NULL
-                """,
-                (normalized_node_id,),
-            ).fetchall()
+        with storage_lock(self._lock), connect_orchestration_db(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(f"SELECT execution_id FROM {self.table_name} "
+                f"WHERE {self.node_id_field}=? AND status='failed' AND dismissed_at IS NULL", (node_id,)).fetchall()
             for row in rows:
-                record = self._record_from_row(row)
-                setattr(record, "dismissed_at", dismissed_at)
-                setattr(record, "dismiss_reason", dismiss_reason)
-                self._upsert_record(connection, record)
-                updated += 1
-        return updated
+                self._update_lifecycle_fields(connection, row["execution_id"],
+                    {"dismissed_at": datetime_to_storage(dismissed_at), "dismiss_reason": dismiss_reason})
+            return len(rows)
 
     def update_all(self, updater: Callable[[dict[str, TRecord]], R]) -> R:
-        with self._lock:
+        with storage_lock(self._lock):
             records = self.read_all()
             result = updater(records)
+            prepared_records = [(validated, self._prepare_record(validated))
+                                for record in records.values()
+                                for validated in [self.model.model_validate(record)]]
             with connect_orchestration_db(self.path) as connection:
                 existing_ids = set(
                     row["execution_id"]
@@ -696,15 +759,20 @@ class SqliteExecutionRepository(Generic[TRecord]):
                         f"DELETE FROM {self.table_name} WHERE execution_id = ?",
                         (execution_id,),
                     )
-                for record in records.values():
-                    self._upsert_record(connection, self.model.model_validate(record))
+                for record, prepared in prepared_records:
+                    self._upsert_record(connection, record, prepared=prepared)
         return result
 
-    def _record_from_row(self, row: Any) -> TRecord:
-        return self.model.model_validate(json_loads_object(row["payload_json"]))
+    def _record_from_row(self, row: Any, connection: Any) -> TRecord:
+        return self.model.model_validate(load_record(connection, row["payload_json"]))
 
-    def _record_columns(self, record: TRecord) -> tuple[Any, ...]:
+    def _prepare_record(self, record: TRecord) -> tuple[Any, ...]:
         payload = record.model_dump(mode="json")
+        kind = "gate" if self.table_name == "gate_executions" else "effect"
+        return (payload, prepare_record(kind=kind, record=payload),
+                prepare_execution_history_payloads(kind=kind, record=payload))
+
+    def _record_columns(self, connection: Any, record: TRecord, prepared: tuple[Any, ...]) -> tuple[Any, ...]:
         return (
             str(getattr(record, "execution_id")),
             str(getattr(record, "idempotency_key")),
@@ -719,10 +787,11 @@ class SqliteExecutionRepository(Generic[TRecord]):
             datetime_to_storage(getattr(record, "finished_at")),
             datetime_to_storage(getattr(record, "cleared_at", None)),
             datetime_to_storage(getattr(record, "dismissed_at", None)),
-            json_dumps(payload),
+            store_prepared_record(connection, prepared[1]),
         )
 
-    def _upsert_record(self, connection: Any, record: TRecord) -> dict[str, float]:
+    def _upsert_record(self, connection: Any, record: TRecord, *, prepared: tuple[Any, ...] | None = None) -> dict[str, float]:
+        prepared = prepared or self._prepare_record(record)
         started = time.perf_counter()
         node_id_column = self.node_id_field
         node_type_column = self.node_type_field
@@ -760,7 +829,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 dismissed_at = excluded.dismissed_at,
                 payload_json = excluded.payload_json
             """,
-            self._record_columns(record),
+            self._record_columns(connection, record, prepared),
         )
         record_written = time.perf_counter()
         from evander.repositories.execution_history import archive_execution_record
@@ -768,15 +837,14 @@ class SqliteExecutionRepository(Generic[TRecord]):
         archive_execution_record(
             connection,
             kind="gate" if self.table_name == "gate_executions" else "effect",
-            record=record.model_dump(mode="json"),
+            record=prepared[0],
+            prepared_payloads=prepared[2],
         )
         return {
             "record_write": (record_written - started) * 1000,
             "history": (time.perf_counter() - record_written) * 1000,
         }
 
-
-class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
     def record_completion_and_publish(
         self,
         *,
@@ -785,13 +853,13 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
         event: Any,
         idempotency_key: str,
     ) -> str:
-        """Commit a terminal gate and its durable successor in one transaction."""
+        """Commit a terminal execution and its durable successor in one transaction."""
 
         from evander.triggers.queue import TriggerQueueRecord
 
         queue_path = Path(getattr(event_queue, "path", ""))
         if queue_path != self.path:
-            raise ValueError("gate execution and trigger event stores must share one database")
+            raise ValueError("execution and trigger event stores must share one database")
         queue_lock = getattr(event_queue, "_lock", None)
         fetch_by_key = getattr(event_queue, "_fetch_record_by_idempotency_key", None)
         fetch_by_id = getattr(event_queue, "_fetch_record", None)
@@ -799,39 +867,41 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
         if queue_lock is None or not all(
             callable(item) for item in (fetch_by_key, fetch_by_id, insert_record)
         ):
-            raise TypeError("trigger event queue does not support atomic gate publication")
+            raise TypeError("trigger event queue does not support atomic completion publication")
 
         normalized_key = str(idempotency_key or "").strip()
         if not normalized_key:
-            raise ValueError("gate completion idempotency_key is required")
+            raise ValueError("completion idempotency_key is required")
         event_id = str(getattr(event, "event_id", "") or "").strip()
         if not event_id:
-            raise ValueError("gate completion event_id is required")
+            raise ValueError("completion event_id is required")
 
         started = time.perf_counter()
         created_event = False
-        with self._lock, queue_lock, connect_orchestration_db(self.path) as connection:
+        queued = TriggerQueueRecord(
+            event_id=event_id,
+            trigger_id=str(event.trigger_id),
+            trigger_type=str(event.trigger_type),
+            trace_id=str(event.trace_id),
+            occurred_at=event.occurred_at,
+            payload=dict(event.payload),
+            delivery_state="pending",
+            idempotency_key=normalized_key,
+        )
+        prepared_event = event_queue._prepare_record(queued)
+        prepared_execution = self._prepare_record(record)
+        with storage_lock(self._lock), storage_lock(queue_lock), connect_orchestration_db(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = fetch_by_key(connection, normalized_key)
             if existing is None:
                 existing = fetch_by_id(connection, event_id)
             if existing is None:
-                queued = TriggerQueueRecord(
-                    event_id=event_id,
-                    trigger_id=str(event.trigger_id),
-                    trigger_type=str(event.trigger_type),
-                    trace_id=str(event.trace_id),
-                    occurred_at=event.occurred_at,
-                    payload=dict(event.payload),
-                    delivery_state="pending",
-                    idempotency_key=normalized_key,
-                )
-                insert_record(connection, queued)
+                insert_record(connection, queued, prepared=prepared_event)
                 created_event = True
             elif existing.event_id != event_id:
-                raise ValueError("gate completion idempotency key belongs to another event")
+                raise ValueError("completion idempotency key belongs to another event")
 
-            phases = self._upsert_record(connection, record)
+            phases = self._upsert_record(connection, record, prepared=prepared_execution)
             now = datetime.now(UTC)
             if created_event and getattr(event_queue, "_journal", None) is not None:
                 self._append_journal_row(
@@ -849,7 +919,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
             if self._journal is not None and self._journal_source is not None:
                 self._append_journal_row(
                     connection,
-                    event_id=str(uuid4()),
+                    event_id=f"execution-completion:{self.table_name}:{getattr(record, 'execution_id')}:{event_id}",
                     event_type="workflow.execution.updated",
                     source=self._journal_source,
                     subject_id=str(getattr(record, "execution_id")),
@@ -859,7 +929,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
                         "status": str(getattr(record, "status", "")),
                     },
                 )
-        self._log_write_duration(record, "gate_completion", started, phases)
+        self._log_write_duration(record, "completion", started, phases)
         return event_id
 
     @staticmethod
@@ -882,7 +952,7 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
             "payload": payload,
         }
         connection.execute(
-            """INSERT INTO workflow_events(
+            """INSERT OR IGNORE INTO workflow_events(
                    event_id, event_type, source, subject_id, occurred_at, payload_json
                ) VALUES (?, ?, ?, ?, ?, ?)""",
             (
@@ -895,6 +965,9 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
             ),
         )
 
+
+
+class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
     def find_latest_by_gate_id(self, gate_id: str) -> TRecord | None:
         return self.find_latest_execution_for_gate(gate_id)
 
@@ -902,7 +975,8 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
         normalized_gate_id = str(gate_id or "").strip()
         if not normalized_gate_id:
             return None
-        with self._lock, connect_orchestration_db(self.path) as connection:
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
             row = connection.execute(
                 f"""
                 SELECT payload_json
@@ -913,4 +987,4 @@ class SqliteGateExecutionRepository(SqliteExecutionRepository[TRecord]):
                 """,
                 (normalized_gate_id,),
             ).fetchone()
-        return self._record_from_row(row) if row is not None else None
+            return self._record_from_row(row, connection) if row is not None else None

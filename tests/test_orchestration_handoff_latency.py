@@ -304,21 +304,33 @@ def test_idle_cycle_does_not_sleep_on_event_published_by_zero_count_hook(tmp_pat
     assert worker.event_queue.list_pending(limit=1)
 
 
-def test_history_backfill_does_not_block_inflight_effects(tmp_path, monkeypatch):
+def test_storage_maintenance_does_not_block_inflight_effects(tmp_path, monkeypatch):
+    from threading import Event, get_ident
+
     worker = _worker(tmp_path)
-    worker._recovery_schedule.next_due = 0
-    worker._lifecycle_reconciliation_hooks = (SimpleNamespace(reconcile=lambda **kw: 0),)
-    worker._completion_dispatch_hooks = ()
     worker._register_inflight_future(
         idempotency_key="running", future=Future(), config_revision="revision"
     )
-    backfills = []
+    entered, release = Event(), Event()
+    threads = []
+
+    def maintenance(_config):
+        threads.append(get_ident())
+        entered.set()
+        assert release.wait(5)
+
     monkeypatch.setattr(
-        "evander.daemons.effect_orchestrator.run_execution_history_backfill",
-        lambda path: backfills.append(path) or {},
+        "evander.orchestration.wal_maintenance.run_storage_maintenance", maintenance,
     )
-    worker.run_once()
-    assert not backfills
+    try:
+        worker.run_once()
+        assert entered.wait(1)
+        assert len(threads) == 1
+        assert threads[0] != get_ident()
+        assert not release.is_set()
+    finally:
+        release.set()
+        worker.close()
 
 
 def test_queue_recovery_is_bounded_and_reuses_noop_snapshot(monkeypatch):
@@ -679,6 +691,7 @@ def test_lifecycle_projection_snapshot_pages_and_query_indexes(tmp_path, monkeyp
         agent_id="backend", defer_activation=True
     )
     dispatch_id = leases[0]["dispatch_id"]
+    expected_revision = repo.read_revision()
     original_connect = repo.store._read_connection
     statements = []
 
@@ -689,7 +702,7 @@ def test_lifecycle_projection_snapshot_pages_and_query_indexes(tmp_path, monkeyp
 
     monkeypatch.setattr(repo.store, "_read_connection", connect)
     page = repo.lifecycle_candidates(limit=1)
-    assert page.revision == repo.read_revision()
+    assert page.revision == expected_revision
     assert page.candidates[0].dispatch_id == dispatch_id
     selects = [
         s
@@ -748,6 +761,11 @@ def test_lifecycle_indexes_drop_obsolete_mirror_index(tmp_path):
         connection.execute(
             """CREATE INDEX idx_team_dispatches_pending_mirror
                ON team_dispatches(id) WHERE session_metadata_mirrored_at IS NULL"""
+        )
+        from evander_team_addon.sqlite_store import SQLITE_SCHEMA_VERSION
+        connection.execute(
+            "UPDATE team_state_metadata SET value=? WHERE key='sqlite_schema_version'",
+            (str(SQLITE_SCHEMA_VERSION - 1),),
         )
     reopened = TeamStateSqliteStore(tmp_path)
     assert reopened.read_revision() == revision
@@ -869,15 +887,28 @@ def test_thirty_synthetic_chains_handoff_p95_under_two_seconds(tmp_path):
     team = TeamAgentPromptCompletionFinalizeHook()
     worker._lifecycle_reconciliation_hooks = (_ProviderLifecycleReconciliationHook(team),)
     worker._completion_dispatch_hooks = (_ProviderCompletionDispatchHook(team),)
+    from evander.repositories.sqlite_runtime import is_storage_busy
+
     samples = []
+    busy_retries = 0
     for sample in range(30):
         trace_id = f"sample-{sample}"
-        _publish(worker, trace_id)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                _publish(worker, trace_id)
+                break
+            except sqlite3.OperationalError as error:
+                if not is_storage_busy(error) or time.monotonic() >= deadline:
+                    raise
+                busy_retries += 1
+                time.sleep(0.01)
         # Include due recovery during the measured chains, not only idle time.
         worker._recovery_schedule.next_due = 0
-        deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            worker.run_once()
+            cycle = worker.run_once()
+            if cycle.next_sleep_seconds and not cycle.events_processed and not cycle.completion_events_published:
+                time.sleep(min(cycle.next_sleep_seconds, max(0, deadline - time.monotonic())))
             with connect_orchestration_db(worker.execution_store.path) as connection:
                 rows = connection.execute(
                     "SELECT payload_json FROM effect_executions WHERE trace_id = ?", (trace_id,)
@@ -897,6 +928,7 @@ def test_thirty_synthetic_chains_handoff_p95_under_two_seconds(tmp_path):
         )
     p95 = sorted(samples)[28]
     print(
-        f"30 six-stage synthetic chains with 10k executions / 5k Team dispatches: cumulative handoff p95={p95:.4f}s max={max(samples):.4f}s"
+        f"30 six-stage synthetic chains with 10k executions / 5k Team dispatches: cumulative handoff p95={p95:.4f}s max={max(samples):.4f}s publish_busy_retries={busy_retries}"
     )
+    worker.close()
     assert p95 < 2

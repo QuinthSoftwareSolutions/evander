@@ -72,10 +72,15 @@ def _runtime_dir_from_worker(worker: Any) -> Path | None:
 
 
 def _effect_context_from_worker(worker: Any, *, runtime_dir: Path) -> EffectRuntimeContext:
-    admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+    factory = getattr(worker, "provider_factory", None)
+    admin_service = getattr(factory, "admin_service", None)
+    publisher_getter = getattr(factory, "get_internal_event_publisher", None)
     return EffectRuntimeContext(
         resolved_config={"runtime_dir": str(runtime_dir)},
         admin_service=admin_service,
+        internal_event_publisher=(
+            publisher_getter(runtime_dir=runtime_dir) if callable(publisher_getter) else None
+        ),
     )
 
 

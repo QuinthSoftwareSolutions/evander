@@ -57,6 +57,10 @@ from .domain.stand_down import (
     _stand_down_error_detail,
 )
 from ..chat_attachments import PreparedChatAttachment
+from .dispatch_planning import (
+    TEAM_DISPATCH_PREPARED_COMMIT_MAX_ATTEMPTS,
+    team_dispatch_planning_lock,
+)
 
 
 def utc_now() -> datetime:
@@ -1355,8 +1359,26 @@ class TeamChatService:
                 )
             return state
 
-        state = self._repository.update(_mutate)
-        return state, claims
+        # Session activity belongs to another store. Plan and check it before
+        # reserving the Team writer, then reject stale Team snapshots atomically.
+        with team_dispatch_planning_lock(self._repository.store.path):
+            for attempt in range(TEAM_DISPATCH_PREPARED_COMMIT_MAX_ATTEMPTS):
+                claims.clear()
+                state = self._repository.read()
+                previous_payload = state.model_dump(mode="json")
+                candidate = _mutate(state)
+                try:
+                    state = self._repository.commit_prepared_state_with_command_transaction(
+                        previous_payload=previous_payload,
+                        candidate=candidate,
+                        command_writer=lambda _transaction: None,
+                    )
+                except TeamStateConflictError:
+                    if attempt + 1 == TEAM_DISPATCH_PREPARED_COMMIT_MAX_ATTEMPTS:
+                        raise
+                else:
+                    return state, claims
+        raise RuntimeError("chat dispatch planning did not complete")  # pragma: no cover
 
     def activate_chat_message_dispatch(
         self,

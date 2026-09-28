@@ -6,19 +6,25 @@ import json
 import math
 import re
 import sqlite3
+import time
 import zlib
+from bisect import bisect_left
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from evander.approval_diagnostics import (
     DEFAULT_REDACTED_PAYLOAD_KEYS,
     DEFAULT_SENSITIVE_PAYLOAD_MARKERS,
 )
 from evander.models import DirectoryPath
+from evander.repositories.operational_payloads import FORMAT_KEY, load_record
 from evander.repositories.orchestration_db import (
+    WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
     connect_orchestration_db,
+    connect_orchestration_db_read_only,
     datetime_to_storage,
     ensure_orchestration_schema,
     json_dumps,
@@ -96,9 +102,40 @@ def canonical_execution_payload(value: Any, *, strip_node_outputs: bool = False)
     return sanitize_execution_payload(payload)
 
 
-def _store_payload_blob(connection: sqlite3.Connection, payload: Any) -> str:
+@dataclass(frozen=True)
+class PreparedHistoryPayload:
+    payload: dict[str, Any]
+    digest: str
+    original_bytes: int
+    compressed: bytes
+
+
+def _prepare_history_payload(payload: dict[str, Any]) -> PreparedHistoryPayload:
     raw = json_dumps(payload).encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
+    return PreparedHistoryPayload(payload, digest, len(raw), zlib.compress(raw, level=1))
+
+
+def prepare_execution_history_payloads(
+    kind: str, record: Mapping[str, Any]
+) -> tuple[PreparedHistoryPayload, PreparedHistoryPayload]:
+    """Sanitize, hash, and compress before acquiring the operational writer."""
+    inputs = (
+        {}
+        if kind == "trigger"
+        else canonical_execution_payload(record.get("input_payload"), strip_node_outputs=True)
+    )
+    outputs = canonical_execution_payload(record.get("payload" if kind == "trigger" else "outputs"))
+    return _prepare_history_payload(inputs), _prepare_history_payload(outputs)
+
+
+def _store_payload_blob(connection: sqlite3.Connection, payload: Any) -> str:
+    prepared = (
+        payload
+        if isinstance(payload, PreparedHistoryPayload)
+        else _prepare_history_payload(payload)
+    )
+    digest = prepared.digest
     if (
         connection.execute(
             "SELECT 1 FROM workflow_execution_payload_blobs WHERE sha256 = ?", (digest,)
@@ -106,7 +143,7 @@ def _store_payload_blob(connection: sqlite3.Connection, payload: Any) -> str:
         is not None
     ):
         return digest
-    compressed = zlib.compress(raw, level=6)
+    compressed = prepared.compressed
     connection.execute(
         """
         INSERT OR IGNORE INTO workflow_execution_payload_blobs(
@@ -115,7 +152,7 @@ def _store_payload_blob(connection: sqlite3.Connection, payload: Any) -> str:
         """,
         (
             digest,
-            len(raw),
+            prepared.original_bytes,
             len(compressed),
             compressed,
             datetime_to_storage(datetime.now(UTC)),
@@ -147,30 +184,6 @@ def _read_payload_blob(connection: sqlite3.Connection, digest: str | None) -> di
 
 def _escape_json_pointer_segment(value: str) -> str:
     return value.replace("~", "~0").replace("/", "~1")
-
-
-def _iter_object_scalars(
-    value: Any,
-    *,
-    pointer: str = "",
-    depth: int = 0,
-) -> Iterable[tuple[str, Any]]:
-    if depth > 32:
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            child_pointer = f"{pointer}/{_escape_json_pointer_segment(str(key))}"
-            if len(child_pointer) > 1024:
-                continue
-            if isinstance(item, dict):
-                yield child_pointer, _ContainerValue("object")
-                yield from _iter_object_scalars(item, pointer=child_pointer, depth=depth + 1)
-            elif isinstance(item, list):
-                # Arrays remain available in the compressed detail payload and
-                # support presence predicates, but their elements are not indexed.
-                yield child_pointer, _ContainerValue("array")
-            else:
-                yield child_pointer, item
 
 
 def _scalar_columns(value: Any) -> tuple[str, str | None, str | None, float | None, int | None]:
@@ -229,51 +242,12 @@ def _numeric_fallback_is_exact(value: Any) -> bool:
     return math.isfinite(value) and abs(value) <= _MAX_EXACT_FLOAT_INTEGER
 
 
-def _replace_scalar_index(
-    connection: sqlite3.Connection,
-    *,
-    execution_key: str,
-    input_payload: dict[str, Any],
-    output_payload: dict[str, Any],
-) -> None:
-    connection.execute(
-        "DELETE FROM workflow_node_execution_history_values WHERE execution_key = ?",
-        (execution_key,),
-    )
-    rows: list[tuple[Any, ...]] = []
-    for location, payload in (("input", input_payload), ("output", output_payload)):
-        for pointer, value in _iter_object_scalars(payload):
-            value_type, value_hash, text_value, numeric_value, boolean_value = _scalar_columns(
-                value
-            )
-            rows.append(
-                (
-                    execution_key,
-                    location,
-                    pointer,
-                    value_type,
-                    value_hash,
-                    text_value,
-                    numeric_value,
-                    boolean_value,
-                )
-            )
-    connection.executemany(
-        """
-        INSERT INTO workflow_node_execution_history_values(
-            execution_key, location, json_pointer, value_type, value_hash,
-            text_value, numeric_value, boolean_value
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-    )
-
-
 def archive_execution_record(
     connection: sqlite3.Connection,
     *,
     kind: str,
     record: Mapping[str, Any],
+    prepared_payloads: tuple[PreparedHistoryPayload, PreparedHistoryPayload] | None = None,
 ) -> str | None:
     if kind == "trigger":
         execution_id = str(record.get("event_id") or "").strip()
@@ -288,7 +262,11 @@ def archive_execution_record(
         started_at = record.get("occurred_at")
         finished_at = record.get("delivered_at") or record.get("inflight_at") or started_at
         input_payload: dict[str, Any] = {}
-        output_payload = canonical_execution_payload(record.get("payload"))
+        output_payload = (
+            prepared_payloads[1].payload
+            if prepared_payloads
+            else canonical_execution_payload(record.get("payload"))
+        )
         published_event_id = execution_id
         config_revision = record.get("config_revision")
         config_hash = None
@@ -301,10 +279,16 @@ def archive_execution_record(
         status = str(record.get("status") or "unknown")
         started_at = record.get("started_at")
         finished_at = record.get("finished_at") or started_at
-        input_payload = canonical_execution_payload(
-            record.get("input_payload"), strip_node_outputs=True
+        input_payload = (
+            prepared_payloads[0].payload
+            if prepared_payloads
+            else canonical_execution_payload(record.get("input_payload"), strip_node_outputs=True)
         )
-        output_payload = canonical_execution_payload(record.get("outputs"))
+        output_payload = (
+            prepared_payloads[1].payload
+            if prepared_payloads
+            else canonical_execution_payload(record.get("outputs"))
+        )
         published_event_id = record.get("published_event_id")
         config_revision = record.get("config_revision")
         config_hash = record.get("resolved_config_hash")
@@ -326,8 +310,12 @@ def archive_execution_record(
     # Keep reused blobs alive until the history row commits its references.
     if not connection.in_transaction:
         connection.execute("BEGIN IMMEDIATE")
-    input_digest = _store_payload_blob(connection, input_payload)
-    output_digest = _store_payload_blob(connection, output_payload)
+    input_digest = _store_payload_blob(
+        connection, prepared_payloads[0] if prepared_payloads else input_payload
+    )
+    output_digest = _store_payload_blob(
+        connection, prepared_payloads[1] if prepared_payloads else output_payload
+    )
     previous_payloads = connection.execute(
         "SELECT input_blob_sha256, output_blob_sha256 "
         "FROM workflow_node_execution_history WHERE execution_key = ?",
@@ -387,12 +375,15 @@ def archive_execution_record(
     # Status, publication and timing updates do not change the searchable
     # input/output values. Keep their existing index rows in the same transaction.
     if previous_payloads is None or tuple(previous_payloads) != (input_digest, output_digest):
-        _replace_scalar_index(
-            connection,
-            execution_key=execution_key,
-            input_payload=input_payload,
-            output_payload=output_payload,
+        connection.execute(
+            """INSERT INTO workflow_history_index_jobs(
+                execution_key,input_blob_sha256,output_blob_sha256,enqueued_at,next_offset,cursor_json
+            ) VALUES(?,?,?,?,0,NULL) ON CONFLICT(execution_key) DO UPDATE SET
+                input_blob_sha256=excluded.input_blob_sha256,output_blob_sha256=excluded.output_blob_sha256,
+                enqueued_at=excluded.enqueued_at,next_offset=0,cursor_json=NULL""",
+            (execution_key, input_digest, output_digest, datetime_to_storage(datetime.now(UTC))),
         )
+
     _replace_source_provenance(
         connection,
         execution_key=execution_key,
@@ -451,6 +442,232 @@ def _replace_source_provenance(
         """,
         rows,
     )
+
+
+@dataclass(frozen=True)
+class PreparedHistoryIndex:
+    job: dict[str, Any]
+    generation: str
+    rows: list[tuple[Any, ...]]
+    cursor_json: str | None
+    exhausted: bool
+
+
+def _history_index_snapshot(connection: sqlite3.Connection):
+    job = connection.execute("""SELECT * FROM workflow_history_index_jobs
+        ORDER BY enqueued_at,execution_key LIMIT 1""").fetchone()
+    if job is None:
+        return None
+    payloads = []
+    for field in ("input_blob_sha256", "output_blob_sha256"):
+        row = connection.execute(
+            "SELECT codec,payload_blob FROM workflow_execution_payload_blobs WHERE sha256=?",
+            (job[field],),
+        ).fetchone()
+        if row is None or row[0] != "zlib":
+            raise ValueError("Missing execution history indexing payload")
+        payloads.append(bytes(row[1]))
+    return dict(job), payloads
+
+
+def _iter_scalars_after(value, *, after=(), prefix=(), depth=0):
+    """Seek through sorted object keys using the durable traversal path.
+
+    Completed sibling subtrees are skipped without walking their descendants.
+    Arrays are indexed for presence only, as in the original scalar contract.
+    """
+    if depth > 32 or not isinstance(value, dict):
+        return
+    keys = sorted(value)
+    offset = (
+        bisect_left(keys, after[len(prefix)])
+        if len(after) > len(prefix) and after[: len(prefix)] == prefix
+        else 0
+    )
+    for key in keys[offset:]:
+        item = value[key]
+        path = (*prefix, key)
+        pointer = "/" + "/".join(_escape_json_pointer_segment(part) for part in path)
+        if len(pointer) > 1024:
+            continue
+        if path > after:
+            yield (
+                path,
+                pointer,
+                _ContainerValue("object")
+                if isinstance(item, dict)
+                else _ContainerValue("array")
+                if isinstance(item, list)
+                else item,
+            )
+        if isinstance(item, dict) and (path >= after or after[: len(path)] == path):
+            yield from _iter_scalars_after(item, after=after, prefix=path, depth=depth + 1)
+
+
+def _prepare_history_index(snapshot, *, batch_size, time_budget_seconds):
+    if snapshot is None:
+        return None
+    job, compressed = snapshot
+    started = time.monotonic()
+    generation = job["input_blob_sha256"] + ":" + job["output_blob_sha256"]
+    cursor = json.loads(job["cursor_json"]) if job.get("cursor_json") else None
+
+    def values():
+        for location, blob in zip(("input", "output"), compressed, strict=True):
+            if cursor and location < cursor[0]:
+                continue
+            after = tuple(cursor[1]) if cursor and location == cursor[0] else ()
+            payload = json.loads(zlib.decompress(blob))
+            for path, pointer, value in _iter_scalars_after(payload, after=after):
+                yield (
+                    (location, path),
+                    (job["execution_key"], generation, location, pointer, *_scalar_columns(value)),
+                )
+
+    iterator = values()
+    rows = []
+    exhausted = False
+    next_cursor = job.get("cursor_json")
+    for _ in range(max(1, min(100, batch_size))):
+        if rows and time.monotonic() - started >= time_budget_seconds:
+            break
+        item = next(iterator, None)
+        if item is None:
+            exhausted = True
+            break
+        cursor_value, row = item
+        rows.append(row)
+        next_cursor = json_dumps(cursor_value)
+    return PreparedHistoryIndex(job, generation, rows, next_cursor, exhausted)
+
+
+def prepare_pending_history_indexing(
+    path: Path | str, *, batch_size: int = 100, time_budget_seconds: float = 0.25
+) -> PreparedHistoryIndex | None:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=0.25, operation="history_index_snapshot"
+    ) as connection:
+        connection.execute("BEGIN")
+        snapshot = _history_index_snapshot(connection)
+    # Decompression, traversal and scalar hashing hold no SQLite transaction.
+    return _prepare_history_index(
+        snapshot, batch_size=batch_size, time_budget_seconds=time_budget_seconds
+    )
+
+
+_UNPREPARED = object()
+
+
+def run_pending_history_indexing(
+    connection: sqlite3.Connection,
+    *,
+    batch_size: int = 100,
+    time_budget_seconds: float = 0.25,
+    prepared: PreparedHistoryIndex | None | object = _UNPREPARED,
+) -> dict[str, int]:
+    """Apply one prepared batch, exposing only a complete generation atomically.
+
+    Production maintenance prepares outside this connection. The optional inline
+    preparation path supports small explicit administrative batches and tests.
+    """
+    if prepared is _UNPREPARED:
+        prepared = _prepare_history_index(
+            _history_index_snapshot(connection),
+            batch_size=batch_size,
+            time_budget_seconds=time_budget_seconds,
+        )
+    if prepared is None:
+        return {"indexed_values": 0, "completed": 0}
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    job = prepared.job
+    key = job["execution_key"]
+    current = connection.execute(
+        """SELECT input_blob_sha256,output_blob_sha256,next_offset,cursor_json
+        FROM workflow_history_index_jobs WHERE execution_key=?""",
+        (key,),
+    ).fetchone()
+    if current is None or tuple(current) != (
+        job["input_blob_sha256"],
+        job["output_blob_sha256"],
+        job["next_offset"],
+        job.get("cursor_json"),
+    ):
+        return {"indexed_values": 0, "completed": 0}
+    connection.executemany(
+        "INSERT OR REPLACE INTO workflow_history_index_values VALUES(?,?,?,?,?,?,?,?,?)",
+        prepared.rows,
+    )
+    if prepared.exhausted:
+        connection.execute(
+            """INSERT INTO workflow_history_index_state VALUES(?,?)
+            ON CONFLICT(execution_key) DO UPDATE SET generation=excluded.generation""",
+            (key, prepared.generation),
+        )
+        connection.execute("DELETE FROM workflow_history_index_jobs WHERE execution_key=?", (key,))
+    else:
+        connection.execute(
+            "UPDATE workflow_history_index_jobs SET next_offset=next_offset+?,cursor_json=? WHERE execution_key=?",
+            (len(prepared.rows), prepared.cursor_json, key),
+        )
+    return {"indexed_values": len(prepared.rows), "completed": int(prepared.exhausted)}
+
+
+def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: int = 100) -> int:
+    """Scan bounded candidate windows, preserving progress through live values."""
+    if not 1 <= limit <= 10_000:
+        raise ValueError("limit must be between 1 and 10000")
+    limit = min(limit, 100)
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    row = connection.execute(
+        "SELECT value_json FROM orchestration_metadata WHERE key='history_scalar_gc_cursor'"
+    ).fetchone()
+    previous = json_loads_object(row[0]) if row else {}
+    progress = dict(previous)
+    deleted = 0
+    tables = (
+        (
+            "current",
+            "workflow_history_index_values",
+            """
+            NOT EXISTS(SELECT 1 FROM workflow_history_index_state s
+                WHERE s.execution_key=v.execution_key AND s.generation=v.generation)
+            AND NOT EXISTS(SELECT 1 FROM workflow_history_index_jobs j
+                WHERE j.execution_key=v.execution_key
+                  AND j.input_blob_sha256 || ':' || j.output_blob_sha256=v.generation)""",
+        ),
+        (
+            "legacy",
+            "workflow_node_execution_history_values",
+            """
+            EXISTS(SELECT 1 FROM workflow_history_index_state s
+                WHERE s.execution_key=v.execution_key)""",
+        ),
+    )
+    for name, table, orphan in tables:
+        candidates = [
+            item[0]
+            for item in connection.execute(
+                f"SELECT rowid FROM {table} WHERE rowid>? ORDER BY rowid LIMIT ?",
+                (int(progress.get(name, 0)), limit),
+            ).fetchall()
+        ]
+        if candidates:
+            placeholders = ",".join("?" for _ in candidates)
+            cursor = connection.execute(
+                f"DELETE FROM {table} AS v WHERE rowid IN ({placeholders}) AND {orphan}",
+                candidates,
+            )
+            deleted += cursor.rowcount
+        progress[name] = candidates[-1] if len(candidates) == limit else 0
+    if progress != previous and (row is not None or any(progress.values())):
+        connection.execute(
+            """INSERT INTO orchestration_metadata VALUES ('history_scalar_gc_cursor',?)
+            ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
+            (json_dumps(progress),),
+        )
+    return deleted
 
 
 def _optional_text(value: Any) -> str | None:
@@ -542,176 +759,317 @@ def _storage_timestamp(value: Any) -> str | None:
     return None
 
 
+RETENTION_SOURCE_BYTES = 1024 * 1024
+_RETENTION_SOURCE_TABLES = {
+    "trigger": ("trigger_events", "event_id"),
+    "transport": ("trigger_events", "event_id"),
+    "effect": ("effect_executions", "execution_id"),
+    "gate": ("gate_executions", "execution_id"),
+}
+
+
+@dataclass(frozen=True)
+class PreparedRetentionSource:
+    kind: str
+    source_id: str
+    payload_json: str
+    record: dict[str, Any]
+    payloads: tuple[PreparedHistoryPayload, PreparedHistoryPayload] | None
+
+
+@dataclass(frozen=True)
+class PreparedRetentionBatch:
+    sources: tuple[PreparedRetentionSource, ...]
+    payload_bytes: int
+
+
+def _retention_predicate(kind: str) -> str:
+    if kind in {"trigger", "transport"}:
+        comparison = "LIKE" if kind == "trigger" else "NOT LIKE"
+        return (
+            f"delivery_state='delivered' AND trigger_type {comparison} 'trigger:%' "
+            "AND COALESCE(delivered_at,occurred_at) < :cutoff"
+        )
+    return """((status IN ('succeeded','skipped','dropped')
+                AND COALESCE(finished_at,started_at) < :cutoff)
+        OR (status='failed' AND (dismissed_at IS NOT NULL OR cleared_at IS NOT NULL)
+            AND COALESCE(dismissed_at,cleared_at,finished_at,started_at) < :cutoff))"""
+
+
+def _source_payload_bytes(connection, *, kind, source_id):
+    table, key = _RETENTION_SOURCE_TABLES[kind]
+    size = connection.execute(
+        f"SELECT length(CAST(payload_json AS BLOB)) FROM {table} WHERE {key}=?",
+        (source_id,),
+    ).fetchone()[0]
+    if kind != "transport":
+        size += connection.execute(
+            """WITH RECURSIVE reachable(sha256) AS (
+            SELECT sha256 FROM workflow_operational_record_refs
+            WHERE record_kind=? AND record_id=?
+            UNION SELECT e.child_sha256 FROM workflow_operational_blob_edges e
+            JOIN reachable r ON e.parent_sha256=r.sha256)
+            SELECT COALESCE(SUM(b.original_bytes),0) FROM reachable r
+            JOIN workflow_operational_blobs b ON b.sha256=r.sha256""",
+            (kind, source_id),
+        ).fetchone()[0]
+    return size
+
+
+def _read_retention_sources(connection, *, cutoff, batch_size, max_payload_bytes):
+    if not 1 <= batch_size <= 10_000:
+        raise ValueError("batch_size must be between 1 and 10000")
+    if max_payload_bytes < 1:
+        raise ValueError("max_payload_bytes must be positive")
+    selections = []
+    for kind, (table, key) in _RETENTION_SOURCE_TABLES.items():
+        timestamp = "occurred_at" if kind in {"trigger", "transport"} else "started_at"
+        selections.append(
+            f"SELECT '{kind}' execution_kind,{key} source_id,"
+            f"{timestamp} sort_at FROM {table} WHERE {_retention_predicate(kind)}"
+        )
+    candidates = connection.execute(
+        " UNION ALL ".join(selections) + " ORDER BY sort_at,execution_kind,source_id LIMIT :limit",
+        {"cutoff": cutoff, "limit": batch_size},
+    ).fetchall()
+    selected = []
+    total_bytes = 0
+    for candidate in candidates:
+        kind, source_id = candidate["execution_kind"], candidate["source_id"]
+        table, key = _RETENTION_SOURCE_TABLES[kind]
+        # Include reachable uncompressed blobs so reference envelopes cannot
+        # evade the same byte budget as legacy inline payloads.
+        size = _source_payload_bytes(connection, kind=kind, source_id=source_id)
+        if selected and total_bytes + size > max_payload_bytes:
+            break
+        raw = connection.execute(
+            f"SELECT payload_json FROM {table} WHERE {key}=?", (source_id,)
+        ).fetchone()[0]
+        selected.append(
+            (kind, source_id, raw, {} if kind == "transport" else load_record(connection, raw))
+        )
+        total_bytes += size
+        # One oversized source is allowed alone, so it can eventually retire.
+        if total_bytes >= max_payload_bytes:
+            break
+    return selected, total_bytes
+
+
+def _prepare_retention_sources(snapshot) -> PreparedRetentionBatch:
+    rows, payload_bytes = snapshot
+    return PreparedRetentionBatch(
+        tuple(
+            PreparedRetentionSource(
+                kind,
+                source_id,
+                raw,
+                record,
+                None if kind == "transport" else prepare_execution_history_payloads(kind, record),
+            )
+            for kind, source_id, raw, record in rows
+        ),
+        payload_bytes,
+    )
+
+
+def prepare_records_for_retention(
+    path: Path | str,
+    *,
+    cutoff: str,
+    batch_size: int = EXECUTION_HISTORY_RETENTION_BATCH_SIZE,
+    max_payload_bytes: int = RETENTION_SOURCE_BYTES,
+) -> PreparedRetentionBatch:
+    """Read a byte-bounded snapshot, then sanitize and compress with no DB writer."""
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=0.25, operation="retention_source_snapshot"
+    ) as connection:
+        connection.execute("BEGIN")
+        snapshot = _read_retention_sources(
+            connection, cutoff=cutoff, batch_size=batch_size, max_payload_bytes=max_payload_bytes
+        )
+    return _prepare_retention_sources(snapshot)
+
+
 def archive_records_for_retention(
     connection: sqlite3.Connection,
     *,
     cutoff: str,
     batch_size: int = EXECUTION_HISTORY_RETENTION_BATCH_SIZE,
+    prepared: PreparedRetentionBatch | None = None,
 ) -> list[tuple[str, str]]:
-    """Process one bounded retention batch and return its source row keys.
+    """Archive unchanged eligible sources and return keys safe to delete atomically.
 
-    Execution records are archived before their source rows are deleted.
-    Completion transport envelopes do not represent a separate execution, so
-    they are returned for deletion without creating a duplicate history row.
+    Production callers prepare before acquiring the writer. The inline fallback
+    supports explicit small administrative batches using the same byte cap.
     """
-    if batch_size < 1 or batch_size > 10_000:
-        raise ValueError("batch_size must be between 1 and 10000")
-    rows = connection.execute(
-        """
-        SELECT 'trigger' AS execution_kind, event_id AS source_id, payload_json,
-               occurred_at AS sort_at
-        FROM trigger_events
-        WHERE delivery_state = 'delivered'
-          AND trigger_type LIKE 'trigger:%'
-          AND COALESCE(delivered_at, occurred_at) < ?
-        UNION ALL
-        SELECT 'transport' AS execution_kind, event_id AS source_id, payload_json,
-               occurred_at AS sort_at
-        FROM trigger_events
-        WHERE delivery_state = 'delivered'
-          AND trigger_type NOT LIKE 'trigger:%'
-          AND COALESCE(delivered_at, occurred_at) < ?
-        UNION ALL
-        SELECT 'effect', execution_id, payload_json, started_at
-        FROM effect_executions
-        WHERE (
-            status IN ('succeeded', 'skipped', 'dropped')
-            AND COALESCE(finished_at, started_at) < ?
-        ) OR (
-            status = 'failed'
-            AND (dismissed_at IS NOT NULL OR cleared_at IS NOT NULL)
-            AND COALESCE(dismissed_at, cleared_at, finished_at, started_at) < ?
+    if prepared is None:
+        prepared = _prepare_retention_sources(
+            _read_retention_sources(
+                connection,
+                cutoff=cutoff,
+                batch_size=batch_size,
+                max_payload_bytes=RETENTION_SOURCE_BYTES,
+            )
         )
-        UNION ALL
-        SELECT 'gate', execution_id, payload_json, started_at
-        FROM gate_executions
-        WHERE (
-            status IN ('succeeded', 'skipped', 'dropped')
-            AND COALESCE(finished_at, started_at) < ?
-        ) OR (
-            status = 'failed'
-            AND (dismissed_at IS NOT NULL OR cleared_at IS NOT NULL)
-            AND COALESCE(dismissed_at, cleared_at, finished_at, started_at) < ?
-        )
-        ORDER BY sort_at ASC, execution_kind ASC, source_id ASC
-        LIMIT ?
-        """,
-        (cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, batch_size),
-    ).fetchall()
-    for row in rows:
-        if row["execution_kind"] == "transport":
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    safe = []
+    for source in prepared.sources:
+        table, key = _RETENTION_SOURCE_TABLES[source.kind]
+        current = connection.execute(
+            f"SELECT 1 FROM {table} WHERE {key}=:id AND payload_json=:payload "
+            f"AND {_retention_predicate(source.kind)}",
+            {"id": source.source_id, "payload": source.payload_json, "cutoff": cutoff},
+        ).fetchone()
+        if current is None:
             continue
-        archive_execution_record(
-            connection,
-            kind=str(row["execution_kind"]),
-            record=json_loads_object(row["payload_json"]),
-        )
-    return [(str(row["execution_kind"]), str(row["source_id"])) for row in rows]
+        if source.kind != "transport":
+            archive_execution_record(
+                connection,
+                kind=source.kind,
+                record=source.record,
+                prepared_payloads=source.payloads,
+            )
+            if (
+                connection.execute(
+                    "SELECT 1 FROM workflow_history_index_jobs WHERE execution_key=?",
+                    (_execution_key(source.kind, source.source_id),),
+                ).fetchone()
+                is not None
+            ):
+                continue
+        safe.append((source.kind, source.source_id))
+    return safe
 
 
 def run_execution_history_backfill(
     path: Path | str,
     *,
     batch_size: int = EXECUTION_HISTORY_BACKFILL_BATCH_SIZE,
+    busy_timeout_ms: int = 100,
 ) -> dict[str, Any]:
+    """Copy a byte-bounded legacy batch, preparing payloads before the writer.
+
+    The durable cursor only advances over unchanged, archived, or deleted rows.
+    A changed source without history is retried instead of publishing stale data.
+    """
     if batch_size < 1 or batch_size > 10_000:
         raise ValueError("batch_size must be between 1 and 10000")
     ensure_orchestration_schema(path)
-    with connect_orchestration_db(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=0.25, operation="history_backfill_snapshot"
+    ) as connection:
+        connection.execute("BEGIN")
         state_row = connection.execute(
-            "SELECT value_json FROM orchestration_metadata WHERE key = ?",
-            ("execution_history_backfill",),
+            "SELECT value_json FROM orchestration_metadata WHERE key='execution_history_backfill'"
         ).fetchone()
-        state = json_loads_object(state_row["value_json"]) if state_row else {}
+        expected_state = state_row[0] if state_row else None
+        state = json_loads_object(expected_state) if expected_state else {}
         if state.get("completed") is True:
             return state
         last_sort_at = _optional_text(state.get("last_sort_at"))
         last_source_key = _optional_text(state.get("last_source_key"))
-        rows = connection.execute(
-            """
-            SELECT execution_kind, payload_json, sort_at, source_key
-            FROM (
-                SELECT 'trigger' AS execution_kind, t.payload_json, t.occurred_at AS sort_at,
-                       'trigger:' || t.event_id AS source_key
-                FROM trigger_events t
-                WHERE t.trigger_type LIKE 'trigger:%'
-                  AND (
-                    ? IS NULL
-                    OR t.occurred_at > ?
-                    OR (t.occurred_at = ? AND 'trigger:' || t.event_id > ?)
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM workflow_node_execution_history h
-                    WHERE h.execution_key = 'trigger:' || t.event_id
-                )
-                UNION ALL
-                SELECT 'effect', e.payload_json, e.started_at,
-                       'effect:' || e.execution_id
-                FROM effect_executions e
-                WHERE (
-                    ? IS NULL
-                    OR e.started_at > ?
-                    OR (e.started_at = ? AND 'effect:' || e.execution_id > ?)
-                )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM workflow_node_execution_history h
-                    WHERE h.execution_key = 'effect:' || e.execution_id
-                )
-                UNION ALL
-                SELECT 'gate', g.payload_json, g.started_at,
-                       'gate:' || g.execution_id
-                FROM gate_executions g
-                WHERE (
-                    ? IS NULL
-                    OR g.started_at > ?
-                    OR (g.started_at = ? AND 'gate:' || g.execution_id > ?)
-                )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM workflow_node_execution_history h
-                    WHERE h.execution_key = 'gate:' || g.execution_id
-                )
-            ) candidates
-            ORDER BY sort_at ASC, source_key ASC
-            LIMIT ?
-            """,
-            (
-                last_sort_at,
-                last_sort_at,
-                last_sort_at,
-                last_source_key,
-                last_sort_at,
-                last_sort_at,
-                last_sort_at,
-                last_source_key,
-                last_sort_at,
-                last_sort_at,
-                last_sort_at,
-                last_source_key,
-                batch_size,
-            ),
+        selections = []
+        for kind in ("trigger", "effect", "gate"):
+            table, key = _RETENTION_SOURCE_TABLES[kind]
+            timestamp = "occurred_at" if kind == "trigger" else "started_at"
+            trigger_only = "source.trigger_type LIKE 'trigger:%' AND " if kind == "trigger" else ""
+            selections.append(f"""SELECT '{kind}' execution_kind,source.{key} source_id,
+                source.{timestamp} sort_at,'{kind}:' || source.{key} source_key FROM {table} source
+                WHERE {trigger_only}(:last_sort_at IS NULL OR source.{timestamp}>:last_sort_at
+                    OR (source.{timestamp}=:last_sort_at AND '{kind}:' || source.{key}>:last_source_key))
+                AND NOT EXISTS(SELECT 1 FROM workflow_node_execution_history h
+                    WHERE h.execution_key='{kind}:' || source.{key})""")
+        candidates = connection.execute(
+            " UNION ALL ".join(selections) + " ORDER BY sort_at,source_key LIMIT :limit",
+            {"last_sort_at": last_sort_at, "last_source_key": last_source_key, "limit": batch_size},
         ).fetchall()
-        for row in rows:
-            archive_execution_record(
-                connection,
-                kind=str(row["execution_kind"]),
-                record=json_loads_object(row["payload_json"]),
-            )
-        completed = len(rows) < batch_size
+        rows = []
+        payload_bytes = 0
+        for row in candidates:
+            kind, source_id = row["execution_kind"], row["source_id"]
+            size = _source_payload_bytes(connection, kind=kind, source_id=source_id)
+            if rows and payload_bytes + size > RETENTION_SOURCE_BYTES:
+                break
+            table, key = _RETENTION_SOURCE_TABLES[kind]
+            raw = connection.execute(
+                f"SELECT payload_json FROM {table} WHERE {key}=?",
+                (source_id,),
+            ).fetchone()[0]
+            # Legacy JSON parsing can also be expensive. It needs no read
+            # snapshot; only external operational references need hydration here.
+            record = load_record(connection, raw) if FORMAT_KEY in raw else None
+            rows.append((dict(row), raw, record))
+            payload_bytes += size
+            if payload_bytes >= RETENTION_SOURCE_BYTES:
+                break
+        exhausted = len(candidates) < batch_size and len(rows) == len(candidates)
+    prepared = []
+    for row, raw, record in rows:
+        record = json.loads(raw) if record is None else record
+        prepared.append(
+            (row, raw, record, prepare_execution_history_payloads(row["execution_kind"], record))
+        )
+    with connect_orchestration_db(
+        path,
+        busy_timeout_ms=busy_timeout_ms,
+        deadline_seconds=0.25,
+        operation="history_backfill",
+    ) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        current_state = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key='execution_history_backfill'"
+        ).fetchone()
+        if (current_state[0] if current_state else None) != expected_state:
+            return json_loads_object(current_state[0]) if current_state else {}
+        archived = 0
+        completed = exhausted
+        for row, raw, record, payloads in prepared:
+            kind, source_id = row["execution_kind"], row["source_id"]
+            table, key = _RETENTION_SOURCE_TABLES[kind]
+            timestamp = "occurred_at" if kind == "trigger" else "started_at"
+            existing = connection.execute(
+                "SELECT 1 FROM workflow_node_execution_history WHERE execution_key=?",
+                (row["source_key"],),
+            ).fetchone()
+            if existing is None:
+                trigger_only = " AND trigger_type LIKE 'trigger:%'" if kind == "trigger" else ""
+                unchanged = connection.execute(
+                    f"SELECT 1 FROM {table} WHERE {key}=? AND payload_json=? AND {timestamp}=?{trigger_only}",
+                    (source_id, raw, row["sort_at"]),
+                ).fetchone()
+                if unchanged is None:
+                    current = connection.execute(
+                        f"SELECT {timestamp} FROM {table} WHERE {key}=?",
+                        (source_id,),
+                    ).fetchone()
+                    if current is not None:
+                        # Changed payloads retry from the prior cursor. A changed
+                        # ordering key requires a fresh metadata scan as well.
+                        if current[0] != row["sort_at"]:
+                            last_sort_at = last_source_key = None
+                        completed = False
+                        break
+                else:
+                    archive_execution_record(
+                        connection, kind=kind, record=record, prepared_payloads=payloads
+                    )
+                    archived += 1
+            last_sort_at = row["sort_at"]
+            last_source_key = row["source_key"]
         next_state = {
             "completed": completed,
-            "archived": int(state.get("archived") or 0) + len(rows),
-            "last_batch_size": len(rows),
-            "last_sort_at": str(rows[-1]["sort_at"]) if rows else last_sort_at,
-            "last_source_key": str(rows[-1]["source_key"]) if rows else last_source_key,
+            "archived": int(state.get("archived") or 0) + archived,
+            "last_batch_size": archived,
+            "last_sort_at": last_sort_at,
+            "last_source_key": last_source_key,
             "updated_at": datetime_to_storage(datetime.now(UTC)),
         }
         connection.execute(
-            """
-            INSERT INTO orchestration_metadata(key, value_json)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
-            """,
-            ("execution_history_backfill", json_dumps(next_state)),
+            """INSERT INTO orchestration_metadata(key,value_json)
+            VALUES ('execution_history_backfill',?)
+            ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
+            (json_dumps(next_state),),
         )
         return next_state
 
@@ -745,7 +1103,10 @@ def search_node_executions(
         page_where.append("(h.started_at < ? OR (h.started_at = ? AND h.execution_key < ?))")
         page_params.extend([cursor_value[0], cursor_value[0], cursor_value[1]])
     base_from = "FROM workflow_node_execution_history h"
-    with connect_orchestration_db(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
+        connection.execute("BEGIN")
         _validate_range_filters(
             connection,
             node_id=node_id,
@@ -791,6 +1152,12 @@ def search_node_executions(
         if has_more and visible_rows:
             last = visible_rows[-1]
             next_cursor = _encode_cursor(str(last["started_at"]), str(last["execution_key"]))
+        indexing_pending_count = connection.execute(
+            """SELECT COUNT(*) FROM workflow_history_index_jobs j
+                JOIN workflow_node_execution_history h ON h.execution_key=j.execution_key
+                WHERE h.node_id=? AND h.started_at>=? AND h.started_at<?""",
+            (node_id, _storage_timestamp(started_from), _storage_timestamp(started_to)),
+        ).fetchone()[0]
         availability = _history_availability(
             connection,
             node_id=node_id,
@@ -811,6 +1178,8 @@ def search_node_executions(
         "next_cursor": next_cursor,
         "executions": items,
         "availability": availability,
+        "indexing_complete": indexing_pending_count == 0,
+        "indexing_pending_count": indexing_pending_count,
     }
 
 
@@ -834,7 +1203,10 @@ def list_node_execution_authorization_paths(
         statuses=[],
         filters=[],
     )
-    with connect_orchestration_db(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
+        connection.execute("BEGIN")
         rows = connection.execute(
             f"""
             SELECT DISTINCT COALESCE(NULLIF(h.directory_path, ''), 'root') AS directory_path
@@ -853,12 +1225,17 @@ def read_node_execution_authorization_path(
     execution_key: str,
 ) -> str:
     ensure_orchestration_schema(path)
-    with connect_orchestration_db(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
+        connection.execute("BEGIN")
         row = connection.execute(
             """
             SELECT COALESCE(NULLIF(directory_path, ''), 'root') AS directory_path
             FROM workflow_node_execution_history
             WHERE execution_key = ?
+              AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
+                  WHERE r.execution_key=workflow_node_execution_history.execution_key)
             """,
             (execution_key,),
         ).fetchone()
@@ -875,7 +1252,9 @@ def _history_search_predicates(
     statuses: list[str],
     filters: list[Mapping[str, Any]],
 ) -> tuple[list[str], list[Any]]:
-    where = ["h.node_id = ?", "h.started_at >= ?", "h.started_at < ?"]
+    where = ["h.node_id = ?", "h.started_at >= ?", "h.started_at < ?",
+             "NOT EXISTS (SELECT 1 FROM workflow_history_retirements r "
+             "WHERE r.execution_key=h.execution_key)"]
     params: list[Any] = [
         node_id,
         _storage_timestamp(started_from),
@@ -884,6 +1263,10 @@ def _history_search_predicates(
     if statuses:
         where.append(f"h.status IN ({', '.join('?' for _ in statuses)})")
         params.extend(statuses)
+    if filters:
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM workflow_history_index_jobs j WHERE j.execution_key=h.execution_key)"
+        )
     for index, item in enumerate(filters):
         clause, clause_params = _filter_clause(item, alias=f"v{index}")
         where.append(clause)
@@ -899,14 +1282,19 @@ def list_node_execution_fields(
     started_to: datetime,
 ) -> dict[str, Any]:
     ensure_orchestration_schema(path)
-    with connect_orchestration_db(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
+        connection.execute("BEGIN")
         rows = connection.execute(
             """
             SELECT v.location, v.json_pointer, v.value_type, COUNT(*) AS observed_count
-            FROM workflow_node_execution_history_values v
+            FROM workflow_node_execution_current_values v
             JOIN workflow_node_execution_history h
               ON h.execution_key = v.execution_key
             WHERE h.node_id = ? AND h.started_at >= ? AND h.started_at < ?
+              AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
+                  WHERE r.execution_key=h.execution_key)
             GROUP BY v.location, v.json_pointer, v.value_type
             ORDER BY v.location, v.json_pointer, v.value_type
             LIMIT 1000
@@ -925,9 +1313,14 @@ def list_node_execution_fields(
 
 def read_node_execution_detail(path: Path | str, *, execution_key: str) -> dict[str, Any]:
     ensure_orchestration_schema(path)
-    with connect_orchestration_db(path) as connection:
+    with connect_orchestration_db_read_only(
+        path, deadline_seconds=WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    ) as connection:
+        connection.execute("BEGIN")
         row = connection.execute(
-            "SELECT * FROM workflow_node_execution_history WHERE execution_key = ?",
+            """SELECT * FROM workflow_node_execution_history WHERE execution_key = ?
+               AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
+                   WHERE r.execution_key=workflow_node_execution_history.execution_key)""",
             (execution_key,),
         ).fetchone()
         if row is None:
@@ -969,12 +1362,12 @@ def _filter_clause(item: Mapping[str, Any], *, alias: str) -> tuple[str, list[An
     params: list[Any] = [location, pointer]
     if operator == "exists":
         return (
-            f"EXISTS (SELECT 1 FROM workflow_node_execution_history_values {alias} WHERE {base})",
+            f"EXISTS (SELECT 1 FROM workflow_node_execution_current_values {alias} WHERE {base})",
             params,
         )
     if operator == "not_exists":
         return (
-            f"NOT EXISTS (SELECT 1 FROM workflow_node_execution_history_values {alias} WHERE {base})",
+            f"NOT EXISTS (SELECT 1 FROM workflow_node_execution_current_values {alias} WHERE {base})",
             params,
         )
     value = item.get("value")
@@ -1009,7 +1402,7 @@ def _filter_clause(item: Mapping[str, Any], *, alias: str) -> tuple[str, list[An
         )
         params.append(_canonical_number_text(value))
     return (
-        f"EXISTS (SELECT 1 FROM workflow_node_execution_history_values {alias} WHERE {base}{comparison})",
+        f"EXISTS (SELECT 1 FROM workflow_node_execution_current_values {alias} WHERE {base}{comparison})",
         params,
     )
 
@@ -1044,7 +1437,7 @@ def _validate_range_filters(
         row = connection.execute(
             f"""
             SELECT 1
-            FROM workflow_node_execution_history_values v
+            FROM workflow_node_execution_current_values v
             JOIN workflow_node_execution_history h ON h.execution_key = v.execution_key
             WHERE {" AND ".join(where)}
               AND v.location = ?
@@ -1075,7 +1468,7 @@ def _history_row_payload(
         value_row = connection.execute(
             """
             SELECT value_type, text_value, numeric_value, boolean_value
-            FROM workflow_node_execution_history_values
+            FROM workflow_node_execution_current_values
             WHERE execution_key = ? AND location = ? AND json_pointer = ?
             """,
             (row["execution_key"], item.get("location"), item.get("path")),
@@ -1136,7 +1529,7 @@ def _full_record(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, 
         (row["execution_id"],),
     ).fetchone()
     return (
-        sanitize_execution_payload(json_loads_object(source["payload_json"]))
+        sanitize_execution_payload(load_record(connection, source["payload_json"]))
         if source is not None
         else None
     )
@@ -1160,6 +1553,8 @@ def _history_availability(
             SELECT started_at
             FROM workflow_node_execution_history
             WHERE node_id = ? AND started_at >= ? AND started_at < ?
+              AND NOT EXISTS (SELECT 1 FROM workflow_history_retirements r
+                  WHERE r.execution_key=workflow_node_execution_history.execution_key)
             ORDER BY started_at {order}
             LIMIT 1
             """,

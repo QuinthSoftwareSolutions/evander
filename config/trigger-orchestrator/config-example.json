@@ -13,7 +13,7 @@
   "orchestration_wal_checkpoint_busy_timeout_ms": 1000,
   "orchestration_wal_checkpoint_interval_seconds": 300,
   "orchestration_wal_checkpoint_min_bytes": 67108864,
-  "orchestration_wal_checkpoint_mode": "truncate",
+  "orchestration_wal_checkpoint_mode": "passive",
   "poll_interval_seconds": 5.0,
   "provider_loader": {
     "provider_entry_points_enabled": true,

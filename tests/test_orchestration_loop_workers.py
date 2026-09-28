@@ -14,7 +14,6 @@ from evander.orchestration.wiring import (
     build_effect_worker_wiring,
     build_trigger_worker_wiring,
 )
-from evander.orchestration.wiring import effect as effect_wiring
 from evander.repositories.orchestration_db import OrchestrationWalCheckpointResult
 from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from evander.workflow.engine import OrchestrationLoop
@@ -176,52 +175,29 @@ def test_effect_worker_runs_wal_checkpoint_maintenance_from_worker_cycle(
             "edges": [],
         }
     )
-    startup_results: list[Path] = []
-    cycle_calls: list[tuple[Path, dict[str, object]]] = []
+    from threading import Event, get_ident
 
-    def _startup_checkpoint(path: Path, **_kwargs: object) -> OrchestrationWalCheckpointResult:
-        startup_results.append(Path(path))
-        return OrchestrationWalCheckpointResult(skipped_reason="startup-test")
+    completed = Event()
+    cycle_calls = []
 
-    def _cycle_checkpoint(
-        path: Path,
-        **kwargs: object,
-    ) -> OrchestrationWalCheckpointResult:
-        cycle_calls.append((Path(path), dict(kwargs)))
+    def maintenance(config):
+        cycle_calls.append((config.orchestration_store_path, get_ident()))
+        completed.set()
         return OrchestrationWalCheckpointResult(attempted=True, wal_size_bytes=128)
 
-    monkeypatch.setattr(
-        effect_wiring,
-        "maybe_checkpoint_orchestration_wal",
-        _startup_checkpoint,
-    )
-    monkeypatch.setattr(
-        wal_maintenance,
-        "maybe_checkpoint_orchestration_wal",
-        _cycle_checkpoint,
-    )
-
-    worker = EffectOrchestratorWorker(
-        config=config,
-        worker_config=worker_config,
-        runtime=None,  # type: ignore[arg-type]
-    )
-
-    worker.run_once()
-    worker.run_once()
-
-    assert startup_results == [worker_config.orchestration_store_path]
-    assert cycle_calls == [
-        (
-            worker_config.orchestration_store_path,
-            {
-                "mode": "truncate",
-                "min_bytes": 0,
-                "interval_seconds": 300,
-                "busy_timeout_ms": 1_000,
-            },
-        )
-    ]
+    monkeypatch.setattr(wal_maintenance, "run_storage_maintenance", maintenance)
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    worker._wal_checkpoint_maintenance.clock = lambda: 0.0
+    try:
+        assert cycle_calls == []
+        worker.run_once()
+        assert completed.wait(1)
+        worker.run_once()
+        assert len(cycle_calls) == 1
+        assert cycle_calls[0][0] == worker_config.orchestration_store_path
+        assert cycle_calls[0][1] != get_ident()
+    finally:
+        worker.close()
 
 
 def test_core_minimal_profile_smoke_builds_trigger_and_effect_workers_without_builtin_providers(

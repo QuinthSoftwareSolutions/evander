@@ -154,7 +154,7 @@ def test_slow_receipt_query_does_not_hold_foreground_execution_store(tmp_path, m
         connection = connect(*args, **kwargs)
         if current_thread().name.startswith("team-maintenance"):
             def trace(statement):
-                if "SELECT payload_json FROM effect_executions" in statement:
+                if "FROM effect_executions" in statement:
                     entered.set()
                     release.wait(10)
 
@@ -482,7 +482,6 @@ def test_repeated_team_slices_do_not_initialize_schema_or_negotiate_wal(tmp_path
         raise AssertionError("schema/WAL initialization in steady-state maintenance")
 
     monkeypatch.setattr(TeamStateSqliteStore, "ensure_schema", forbidden)
-    monkeypatch.setattr(TeamStateSqliteStore, "_enable_wal", forbidden)
     for _ in range(3):
         hook.on_waiting_reconciliation(worker=worker)
         hook.on_post_completion_dispatch(worker=worker)
@@ -681,10 +680,22 @@ def test_two_extra_teams_with_history_and_lock_contention_keep_message_p95_under
             for i in range(30):
                 trace = f"message-{i}"
                 start = time.monotonic()
-                _publish(worker, trace)
+                from evander.repositories.sqlite_runtime import is_storage_busy
+
+                deadline = start + 5
+                while True:
+                    try:
+                        _publish(worker, trace)
+                        break
+                    except sqlite3.OperationalError as exc:
+                        if not is_storage_busy(exc) or time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.01)
                 worker._recovery_schedule.next_due = 0
-                for _ in range(30):
-                    worker.run_once()
+                while time.monotonic() < deadline:
+                    cycle = worker.run_once()
+                    if cycle.next_sleep_seconds and not cycle.events_processed and not cycle.completion_events_published:
+                        time.sleep(min(cycle.next_sleep_seconds, max(0, deadline - time.monotonic())))
                     with sqlite3.connect(worker.execution_store.path) as connection:
                         completed = connection.execute(
                             "SELECT count(*) FROM effect_executions WHERE trace_id=? AND status='succeeded'",
@@ -692,6 +703,7 @@ def test_two_extra_teams_with_history_and_lock_contention_keep_message_p95_under
                         ).fetchone()[0]
                     if completed == 6:
                         break
+                    time.sleep(0.005)
                 assert completed == 6
                 samples.append(time.monotonic() - start)
             writer.rollback()

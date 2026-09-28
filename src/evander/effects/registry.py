@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from typing import Any
+from threading import Lock
 
 from evander.code_consultation_service import CodeConsultationServiceFactoryPort
 from evander.events.models import (
@@ -11,6 +12,8 @@ from evander.events.models import (
     WorkflowNodeEnvelope,
 )
 from evander.provider_config import EffectProviderConfig, ProviderConfigResolver
+from evander.orchestration.event_publisher import InternalEventPublisherRuntime
+from evander.provider_runtime.contracts import InternalEventPublisher
 from evander.provider_runtime.adapters import (
     build_provider_runtime_ports,
     effect_provider_config_blob,
@@ -63,6 +66,7 @@ class EffectProviderFactory:
         admin_adapter: object | None = None,
         gate_adapter: object | None = None,
         agent_prompt_activity: object | None = None,
+        internal_event_publisher: InternalEventPublisher | None = None,
         code_consultation_service_factory: CodeConsultationServiceFactoryPort | None = None,
         env: Mapping[str, str] | None = None,
         secret_resolver: Callable[[str], str | None] | None = None,
@@ -83,6 +87,9 @@ class EffectProviderFactory:
         )
         self._admin_adapter = self.admin_service
         self.agent_prompt_activity = agent_prompt_activity
+        self.internal_event_publisher = internal_event_publisher
+        self._event_publisher_cache: tuple[tuple, InternalEventPublisherRuntime] | None = None
+        self._event_publisher_lock = Lock()
         self.code_consultation_service_factory = code_consultation_service_factory
         self.registry = registry or EffectProviderRegistry()
         self.env = env or dict(os.environ)
@@ -115,6 +122,9 @@ class EffectProviderFactory:
             vm_frontend_bootstrapper=self._provider_runtime_ports.vm_frontend_bootstrapper,
             agent_resumer=self._provider_runtime_ports.agent_resumer,
             agent_prompt_activity=self.agent_prompt_activity,
+            internal_event_publisher=self.get_internal_event_publisher(
+                runtime_dir=resolved_config.runtime_dir
+            ),
             vm_power_controller=self._provider_runtime_ports.vm_power_controller,
             vm_inventory=self._provider_runtime_ports.vm_inventory
             or self._provider_runtime_ports.gate_vm_inventory,
@@ -139,6 +149,20 @@ class EffectProviderFactory:
         validated_definition = _validate_effect_definition(provider_class, effect_definition)
         provider.initialize(effect_definition=validated_definition, runtime_context=runtime_context)
         return provider
+
+    def get_internal_event_publisher(self, *, runtime_dir: Any) -> InternalEventPublisher:
+        if self.internal_event_publisher is not None:
+            return self.internal_event_publisher
+        key = InternalEventPublisherRuntime.configuration_key(
+            runtime_dir=runtime_dir, metadata=self.metadata
+        )
+        with self._event_publisher_lock:
+            if self._event_publisher_cache is None or self._event_publisher_cache[0] != key:
+                self._event_publisher_cache = (
+                    key,
+                    InternalEventPublisherRuntime(runtime_dir=runtime_dir, metadata=self.metadata),
+                )
+            return self._event_publisher_cache[1]
 
 
 def _validate_effect_definition(

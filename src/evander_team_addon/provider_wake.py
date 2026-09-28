@@ -364,6 +364,51 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         normalized_limit = max(0, int(lease_limit or 0))
         transient_conflicts: list[dict[str, Any]] = []
         retry_event_ids: list[str] = []
+
+        def defer_planning_conflict(exc: TeamStateConflictError, *, phase: str):
+            retry_agent_id = _optional_text(payload.get("agent_id"))
+            if retry_agent_id is None:
+                raise exc
+            retry_state = repo.read()
+            retry_result: dict[str, Any] = {"events": []}
+            _append_agent_wake_requested_event(
+                retry_state,
+                agent_id=retry_agent_id,
+                result=retry_result,
+                reason="state_conflict_retry",
+                now=datetime.now(UTC),
+                delay_seconds=TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS,
+                idempotency_suffix=(
+                    f"{phase.replace('_', '-')}-state-conflict:"
+                    f"{invocation_key or f'{exc.expected_revision}:{exc.current_revision}'}"
+                ),
+            )
+            scheduled_ids = _publish_team_events(context, retry_result["events"])
+            if not scheduled_ids:
+                raise RuntimeError(
+                    "dispatch planning exhausted state-conflict retries and no "
+                    "successor wake could be scheduled"
+                ) from exc
+            retry_event_ids.extend(scheduled_ids)
+            retry_agent = retry_state.agents.get(retry_agent_id)
+            transient_conflicts.append(
+                {
+                    "agent_id": retry_agent_id,
+                    "session_id": retry_agent.session_id if retry_agent is not None else None,
+                    "dispatch_id": None,
+                    "phase": phase,
+                    "attempt_count": TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
+                    "conflict_count": TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
+                    "expected_revision": exc.expected_revision,
+                    "current_revision": exc.current_revision,
+                    "resolved": False,
+                    "retry_scheduled": True,
+                    "retry_event_ids": scheduled_ids,
+                }
+            )
+            return retry_state
+
+        chat_planning_conflict = False
         if normalized_limit == 0 or (
             not run_global_maintenance
             and not _team_wake_has_chat_claim_candidate(
@@ -378,18 +423,23 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             state = current_state
             queued_chat_claims = []
         else:
-            state, queued_chat_claims = TeamChatService(repo).claim_pending_chat_message_dispatches(
-                team_id=_optional_text(payload.get("team_id")),
-                project_id=_optional_text(payload.get("project_id")),
-                agent_id=_optional_text(payload.get("agent_id")),
-                limit=normalized_limit,
-                blocked_team_ids=blocked_team_ids,
-                session_is_busy=lambda session_id: _team_session_has_active_prompt(
-                    context,
-                    session_id=session_id,
-                ),
-                defer_activation=True,
-            )
+            try:
+                state, queued_chat_claims = TeamChatService(repo).claim_pending_chat_message_dispatches(
+                    team_id=_optional_text(payload.get("team_id")),
+                    project_id=_optional_text(payload.get("project_id")),
+                    agent_id=_optional_text(payload.get("agent_id")),
+                    limit=normalized_limit,
+                    blocked_team_ids=blocked_team_ids,
+                    session_is_busy=lambda session_id: _team_session_has_active_prompt(
+                        context,
+                        session_id=session_id,
+                    ),
+                    defer_activation=True,
+                )
+            except TeamStateConflictError as exc:
+                state = defer_planning_conflict(exc, phase="chat_claim_planning")
+                queued_chat_claims = []
+                chat_planning_conflict = True
         chat_dispatches: list[dict[str, Any]] = []
         errors: list[str] = []
         state, chat_dispatches, chat_errors = _dispatch_queued_team_chat_messages(
@@ -403,7 +453,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         )
         errors.extend(chat_errors)
         agent_lease_seconds = _optional_int(payload.get("lease_seconds"), default=900) or 900
-        if normalized_limit == 0 or len(queued_chat_claims) >= normalized_limit:
+        if chat_planning_conflict or normalized_limit == 0 or len(queued_chat_claims) >= normalized_limit:
             leases = []
         else:
             regular_limit = (
@@ -440,49 +490,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     defer_activation=True,
                 )
             except TeamStateConflictError as exc:
-                retry_agent_id = _optional_text(payload.get("agent_id"))
-                if retry_agent_id is None:
-                    raise
-                state = repo.read()
-                retry_result: dict[str, Any] = {"events": []}
-                _append_agent_wake_requested_event(
-                    state,
-                    agent_id=retry_agent_id,
-                    result=retry_result,
-                    reason="state_conflict_retry",
-                    now=datetime.now(UTC),
-                    delay_seconds=TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS,
-                    idempotency_suffix=(
-                        "lease-planning-state-conflict:"
-                        f"{invocation_key or f'{exc.expected_revision}:{exc.current_revision}'}"
-                    ),
-                )
-                scheduled_ids = _publish_team_events(
-                    context,
-                    retry_result["events"],
-                )
-                if not scheduled_ids:
-                    raise RuntimeError(
-                        "lease planning exhausted state-conflict retries and no "
-                        "successor wake could be scheduled"
-                    ) from exc
-                retry_event_ids.extend(scheduled_ids)
-                retry_agent = state.agents.get(retry_agent_id)
-                transient_conflicts.append(
-                    {
-                        "agent_id": retry_agent_id,
-                        "session_id": retry_agent.session_id if retry_agent is not None else None,
-                        "dispatch_id": None,
-                        "phase": "lease_planning",
-                        "attempt_count": TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
-                        "conflict_count": TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
-                        "expected_revision": exc.expected_revision,
-                        "current_revision": exc.current_revision,
-                        "resolved": False,
-                        "retry_scheduled": True,
-                        "retry_event_ids": scheduled_ids,
-                    }
-                )
+                state = defer_planning_conflict(exc, phase="lease_planning")
                 leases = []
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []

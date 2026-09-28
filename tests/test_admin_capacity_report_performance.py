@@ -246,8 +246,8 @@ def test_graph_report_scans_source_activity_once_and_preserves_distinct_runs(
     original_connect = workflow_reports_service.connect_orchestration_db
 
     @contextmanager
-    def connect(path):
-        with original_connect(path) as connection:
+    def connect(path, **kwargs):
+        with original_connect(path, **kwargs) as connection:
             connection.set_trace_callback(statements.append)
             yield connection
 
@@ -379,8 +379,8 @@ def test_graph_aggregate_payload_matches_legacy_two_query_report(activity_servic
             return [{**dict(row), "run_count": None} for row in nodes] + [dict(row) for row in runs]
 
     @contextmanager
-    def connect_legacy(path):
-        with original_connect(path) as connection:
+    def connect_legacy(path, **kwargs):
+        with original_connect(path, **kwargs) as connection:
             yield LegacyAggregationConnection(connection)
 
     monkeypatch.setattr(workflow_reports_service, "connect_orchestration_db", connect_legacy)

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-09-28 - Bound orchestration storage and recover completions (0.68.1)
+
+- Retain completed provider results across transient storage failures and atomically publish
+  effect and gate successors, with bounded fair retry and independent delivery recovery.
+- Cache schema readiness, retain idle SQLite WAL anchors, and move passive checkpoints,
+  incremental indexing, retention, and garbage collection to isolated bounded maintenance.
+- Store large operational payloads as shared immutable compressed objects; keep lifecycle
+  metadata small and preserve legacy reads, prompt receipts, and ancestor bindings.
+- Keep sanitized execution details immediately available while field search indexes complete
+  generations asynchronously, with a visible pending count.
+- Return compact Team finalization receipts, reuse lazy event publishers, and perform
+  chat busy checks outside write transactions with revision-checked dispatch planning.
+- Add explicit offline storage migration, verification, index preparation, and inline rollback.
+- Preserve scalar provider scope outputs and long lifecycle errors, including reads and updates
+  of previously referenced errors. Give report aggregation its own read deadline.
+- Recover trigger-worker storage contention and retain Team automatic WAL checkpoints.
+- Resume dense history retention with bounded index deletion and durable batch reduction after
+  deadlines; restore complete indexes if retiring records change or storage is downgraded.
+- Apply the separate reporting deadline to execution-history endpoints, and discard completion
+  retry alarms after their pending receipts are cleared so idle workers can sleep.
+
 ## 2026-09-28 - Add agent reads for Azure DevOps builds (0.68.0)
 
 - Add separately grantable, read-only MCP tools to fetch one configured-project build by ID and
