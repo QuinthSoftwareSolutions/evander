@@ -1041,7 +1041,7 @@ def test_standalone_web_search_uses_hosted_responses_and_returns_sources(tmp_pat
     write_session(
         config,
         session_id="session-1",
-        model="gpt-6-astra",
+        model="gpt-6-luna",
         web_search_enabled=True,
         metadata={"mcp_session_auth": session_mcp_auth_metadata("correct-token")},
     )

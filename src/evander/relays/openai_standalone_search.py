@@ -10,15 +10,13 @@ SUPPORTED_COMMANDS = frozenset(
 UNSUPPORTED_COMMANDS = frozenset({"click", "screenshot"})
 
 
-def prepare_standalone_search_request(payload: Any, *, session_model: str | None) -> dict[str, Any]:
+def prepare_standalone_search_request(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Standalone web search request must be a JSON object")
 
     requested_model = payload.get("model")
     if not isinstance(requested_model, str) or not requested_model.strip():
         raise ValueError("Standalone web search requires a model")
-    if session_model and requested_model != session_model:
-        raise ValueError("Standalone web search model does not match the session model")
 
     commands = payload.get("commands")
     if not isinstance(commands, dict):
@@ -147,7 +145,7 @@ def prepare_standalone_search_request(payload: Any, *, session_model: str | None
         raise ValueError("Standalone web search max_output_tokens must be a positive integer")
 
     return {
-        "model": session_model or requested_model,
+        "model": requested_model,
         "input": (
             "Carry out these web operations. Use the web search tool. Give factual results "
             f"with direct source URLs. Keep the answer {length}.\n"

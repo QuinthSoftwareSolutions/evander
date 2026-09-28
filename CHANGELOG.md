@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-28 - Honor the active model in standalone web search (0.69.1)
+
+- Use the model in each Codex search request for hosted web search, allowing
+  model changes within a session without changing its stored default model.
+
 ## 2026-09-28 - Enable metered Codex web search (0.69.0)
 
 - Add session-gated `POST /v1/alpha/search` compatibility to the OpenAI relay,
