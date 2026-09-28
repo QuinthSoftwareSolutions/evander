@@ -8,6 +8,8 @@
 - Advertise standalone web search to container Codex only for web-enabled public
   OpenAI sessions. Unsupported link-click and PDF screenshot operations return
   explicit errors.
+- Reject batches that would apply a per-query domain filter to other operations,
+  and preserve direct image and source-page URLs from structured search results.
 
 ## 2026-09-28 - Add agent reads for Azure DevOps builds (0.68.0)
 

@@ -1122,6 +1122,9 @@ Responses request with hosted `web_search` and returns the answer with direct
 source URLs. Search queries, image queries, direct URL opens and finds, finance,
 weather, sports, and time operations are supported. Link clicks by numbered ID,
 PDF screenshots, and opens using opaque search reference IDs are not supported.
+Per-query domain filters require a single operation; send filtered queries in
+separate requests or use a global domain filter for the whole batch. Image
+results include both the direct image URL and the page where the image was found.
 The relay never sends Codex conversation history from the search request to the
 upstream API. Existing container session files need to be refreshed for Codex
 to see the new provider capability.

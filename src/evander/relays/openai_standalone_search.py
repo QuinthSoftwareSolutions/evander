@@ -106,9 +106,10 @@ def prepare_standalone_search_request(payload: Any, *, session_model: str | None
         if key in filters:
             upstream_filters[key] = _domain_list(filters[key], f"settings.filters.{key}")
     if query_domains:
-        if len(query_domains) != 1 or "allowed_domains" in upstream_filters:
+        if len(instructions) != 1 or "allowed_domains" in upstream_filters:
             raise ValueError(
-                "Per-query domain filters require one query and no global allowed_domains filter"
+                "Per-query domain filters require a single operation and no global "
+                "allowed_domains filter; send filtered queries in separate requests"
             )
         upstream_filters["allowed_domains"] = query_domains[0]
     if upstream_filters:
@@ -224,10 +225,19 @@ def _domain_list(value: Any, field: str) -> list[str]:
 def _append_source(sources: list[tuple[str, str]], value: Any) -> None:
     if not isinstance(value, dict):
         return
-    url = value.get("url") or value.get("source_url")
-    if not isinstance(url, str) or urlsplit(url).scheme not in {"http", "https"}:
-        return
     title = value.get("title") or value.get("name") or "Source"
-    source = (str(title), url)
-    if source not in sources:
-        sources.append(source)
+    if value.get("type") == "image_result":
+        title = value.get("caption") or title
+        candidates = [
+            (f"{title} (image)", value.get("image_url")),
+            (f"{title} (source page)", value.get("source_website_url")),
+        ]
+    else:
+        candidates = [(str(title), value.get("url") or value.get("source_url"))]
+
+    for label, url in candidates:
+        if not isinstance(url, str) or urlsplit(url).scheme not in {"http", "https"}:
+            continue
+        source = (label, url)
+        if source not in sources:
+            sources.append(source)

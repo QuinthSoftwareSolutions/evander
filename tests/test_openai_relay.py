@@ -1093,6 +1093,186 @@ def test_standalone_web_search_uses_hosted_responses_and_returns_sources(tmp_pat
 
 
 @pytest.mark.parametrize(
+    "commands",
+    [
+        pytest.param(
+            {
+                "search_query": [
+                    {"q": "official news", "domains": ["example.com"]},
+                    {"q": "independent coverage"},
+                ]
+            },
+            id="filtered-and-unrestricted-text",
+        ),
+        pytest.param(
+            {
+                "search_query": [
+                    {"q": "independent coverage"},
+                    {"q": "official news", "domains": ["example.com"]},
+                ]
+            },
+            id="unrestricted-and-filtered-text",
+        ),
+        pytest.param(
+            {
+                "image_query": [
+                    {"q": "official photos", "domains": ["example.com"]},
+                    {"q": "other photos"},
+                ]
+            },
+            id="filtered-and-unrestricted-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "official news", "domains": ["example.com"]}],
+                "image_query": [{"q": "other photos"}],
+            },
+            id="filtered-text-and-unrestricted-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "independent coverage"}],
+                "image_query": [{"q": "official photos", "domains": ["example.com"]}],
+            },
+            id="unrestricted-text-and-filtered-images",
+        ),
+        pytest.param(
+            {
+                "search_query": [{"q": "official news", "domains": ["example.com"]}],
+                "open": [{"ref_id": "https://other.example/article"}],
+            },
+            id="filtered-query-and-page-open",
+        ),
+    ],
+)
+def test_standalone_web_search_rejects_per_query_domains_in_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, commands: dict[str, object]
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={"model": "gpt-6-astra", "commands": commands},
+    )
+
+    assert response.status_code == 400
+    assert "Per-query domain filters" in response.json()["error"]
+    assert called is False
+
+
+def test_standalone_web_search_keeps_unrestricted_batches_unfiltered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {"type": "web_search_call", "status": "completed"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "Results."}]},
+                ]
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={
+            "model": "gpt-6-astra",
+            "commands": {
+                "search_query": [{"q": "bridge history"}, {"q": "bridge construction"}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["tools"] == [{"type": "web_search"}]
+    assert "bridge history" in captured["input"]
+    assert "bridge construction" in captured["input"]
+
+
+def test_standalone_image_search_returns_image_and_source_page_urls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "web_search_call",
+                        "status": "completed",
+                        "results": [
+                            {
+                                "type": "image_result",
+                                "image_url": "https://cdn.example/bridge.jpg",
+                                "source_website_url": "https://example.com/photos/bridge",
+                                "thumbnail_url": "https://cdn.example/bridge-thumb.jpg",
+                                "caption": "Bridge at sunset",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Found a bridge photo."}],
+                    },
+                ]
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", web_search_enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+
+    response = request_asgi(
+        create_app(config, transport=httpx.MockTransport(handler)),
+        "POST",
+        "/v1/session/session-1/alpha/search",
+        json={
+            "model": "gpt-6-astra",
+            "commands": {
+                "image_query": [{"q": "bridge at sunset", "domains": ["example.com"]}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["tools"] == [
+        {
+            "type": "web_search",
+            "filters": {"allowed_domains": ["example.com"]},
+            "search_content_types": ["image", "text"],
+        }
+    ]
+    output = response.json()["output"]
+    assert "Found a bridge photo." in output
+    assert "Bridge at sunset (image): https://cdn.example/bridge.jpg" in output
+    assert "Bridge at sunset (source page): https://example.com/photos/bridge" in output
+
+
+@pytest.mark.parametrize(
     ("web_search_enabled", "provider_mode", "expected_status"),
     [(False, "openai_public", 403), (True, "local_openai", 501)],
 )
