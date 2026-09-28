@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-28 - Show remaining weekly subscription usage (0.70.0)
+
+- Show the percentage remaining in the seven-day Codex rate-limit window for each subscription
+  profile in Admin Web, with an unavailable state when the worker does not report that window.
+
 ## 2026-09-28 - Separate SQLite lock waits from operation deadlines (0.69.2)
 
 - Remove the inferred 100 ms execution deadline from ordinary SQLite reads, writes, and
