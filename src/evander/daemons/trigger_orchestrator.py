@@ -62,7 +62,7 @@ from evander.orchestration.internal_events import (
 from evander.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from evander.orchestration.wiring.trigger import build_trigger_provider_runtime_wiring
 from evander.repositories.orchestration import GateCursorRepository
-from evander.repositories.sqlite_runtime import is_storage_busy
+from evander.repositories.sqlite_runtime import foreground_storage_wait_budget, is_storage_busy
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,8 @@ class TriggerOrchestratorWorker:
         if remaining > 0:
             return TriggerOrchestratorCycleResult(len(self.worker_config.triggers), 0, 0, remaining)
         try:
-            result = self._run_once()
+            with foreground_storage_wait_budget():
+                result = self._run_once()
         except Exception as error:
             self._on_cycle_storage_exception(error)
             return TriggerOrchestratorCycleResult(

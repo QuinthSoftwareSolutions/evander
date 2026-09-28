@@ -68,7 +68,7 @@ from evander.orchestration.completion_scheduling import (
     CompletionRetry,
 )
 from evander.repositories.sqlite_runtime import (
-    foreground_storage_budget,
+    foreground_storage_wait_budget,
     is_storage_busy as sqlite_busy,
 )
 from evander.orchestration.adapters import (
@@ -727,7 +727,7 @@ class EffectOrchestratorWorker:
             return EffectOrchestratorCycleResult(0, 0, 0, 0, remaining)
         self._completion_budget = CompletionBudget()
         try:
-            with foreground_storage_budget(seconds=0.1):
+            with foreground_storage_wait_budget():
                 result = self._run_once()
             self._cycle_storage_retry = CompletionRetry()
             return result

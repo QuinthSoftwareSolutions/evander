@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from evander.repositories.sqlite_runtime import (
-    FOREGROUND_TIMEOUT_MS,
+    DEFAULT_BUSY_TIMEOUT_MS,
     MAINTENANCE_TIMEOUT_MS,
     SqliteOperationDeadlineExceeded,
     ensure_sqlite_initialized,
@@ -83,7 +83,7 @@ class OrchestrationWalCheckpointResult:
 def connect_orchestration_db(
     path: Path | str,
     *,
-    busy_timeout_ms: int = FOREGROUND_TIMEOUT_MS,
+    busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
     deadline_seconds: float | None = None,
     operation: str = "orchestration_write",
 ) -> Iterator[sqlite3.Connection]:
@@ -107,7 +107,7 @@ def connect_orchestration_db(
 def connect_orchestration_db_read_only(
     path: Path | str,
     *,
-    busy_timeout_ms: int = FOREGROUND_TIMEOUT_MS,
+    busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
     deadline_seconds: float | None = None,
     operation: str = "orchestration_read",
 ) -> Iterator[sqlite3.Connection]:

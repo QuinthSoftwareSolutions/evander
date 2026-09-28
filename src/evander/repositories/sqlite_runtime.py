@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+DEFAULT_BUSY_TIMEOUT_MS = 30_000
 FOREGROUND_TIMEOUT_MS = 100
 MAINTENANCE_TIMEOUT_MS = 100
 _MAX_IDLE_DATABASES = 32
@@ -29,9 +30,11 @@ _guard = threading.RLock()
 _path_locks: dict[Path, threading.RLock] = {}
 _initialized: set[tuple[Path, int, int, str]] = set()
 _pid = os.getpid()
-_foreground_budget: ContextVar[float | None] = ContextVar("sqlite_foreground_budget", default=None)
-_operation_deadline: ContextVar[float | None] = ContextVar(
-    "sqlite_operation_deadline", default=None
+_foreground_wait_budget: ContextVar[float | None] = ContextVar(
+    "sqlite_foreground_wait_budget", default=None
+)
+_storage_wait_deadline: ContextVar[float | None] = ContextVar(
+    "sqlite_storage_wait_deadline", default=None
 )
 
 
@@ -50,29 +53,32 @@ def is_storage_busy(error: BaseException) -> bool:
 
 
 @contextmanager
-def foreground_storage_budget(seconds: float = 0.1) -> Iterator[None]:
-    """Limit each foreground operation without changing provider executor budgets."""
-    previous = _foreground_budget.get()
-    token = _foreground_budget.set(min(seconds, previous) if previous is not None else seconds)
+def foreground_storage_wait_budget(seconds: float = FOREGROUND_TIMEOUT_MS / 1000) -> Iterator[None]:
+    """Bound lock waits in retry-capable workers; query execution is independent."""
+    previous = _foreground_wait_budget.get()
+    token = _foreground_wait_budget.set(min(seconds, previous) if previous is not None else seconds)
     try:
         yield
     finally:
-        _foreground_budget.reset(token)
+        _foreground_wait_budget.reset(token)
 
 
 @contextmanager
 def storage_lock(lock) -> Iterator[None]:
-    """Share one bounded operation deadline across repository locks and SQL."""
-    deadline = _operation_deadline.get()
+    """Share a lock-wait allowance without imposing a query execution deadline."""
+    deadline = _storage_wait_deadline.get()
     if deadline is None:
-        deadline = time.monotonic() + (_foreground_budget.get() or FOREGROUND_TIMEOUT_MS / 1000)
+        budget = _foreground_wait_budget.get()
+        deadline = time.monotonic() + (
+            DEFAULT_BUSY_TIMEOUT_MS / 1000 if budget is None else budget
+        )
     if not lock.acquire(timeout=max(0, deadline - time.monotonic())):
-        raise SqliteOperationDeadlineExceeded("SQLite repository lock deadline exceeded")
-    token = _operation_deadline.set(deadline)
+        raise SqliteOperationDeadlineExceeded("SQLite repository lock wait deadline exceeded")
+    token = _storage_wait_deadline.set(deadline)
     try:
         yield
     finally:
-        _operation_deadline.reset(token)
+        _storage_wait_deadline.reset(token)
         lock.release()
 
 
@@ -247,10 +253,11 @@ class _ManagedCursor(sqlite3.Cursor):
 class ManagedSqliteConnection(sqlite3.Connection):
     _anchor: _Anchor | None = None
     _deadline: float | None = None
+    _wait_deadline: float | None = None
     _operation: str = "database"
     _started: float = 0.0
     _closed: bool = False
-    _busy_timeout_ms: int = FOREGROUND_TIMEOUT_MS
+    _busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS
     _connection_ms: float = 0.0
     _sql_ms: float = 0.0
     _writer_acquire_ms: float = 0.0
@@ -259,14 +266,18 @@ class ManagedSqliteConnection(sqlite3.Connection):
     _error_code: int | None = None
 
     def _prepare(self) -> None:
+        now = time.monotonic()
+        remaining_ms = self._busy_timeout_ms
+        if self._wait_deadline is not None:
+            remaining_ms = min(remaining_ms, max(0, int((self._wait_deadline - now) * 1000)))
         if self._deadline is not None:
-            remaining = self._deadline - time.monotonic()
+            remaining = self._deadline - now
             if remaining <= 0:
                 self._outcome = "deadline"
                 self._error_code = sqlite3.SQLITE_BUSY
                 raise SqliteOperationDeadlineExceeded("SQLite operation deadline exceeded")
-            remaining_ms = min(self._busy_timeout_ms, max(0, int(remaining * 1000)))
-            super().execute(f"PRAGMA busy_timeout={remaining_ms}")
+            remaining_ms = min(remaining_ms, max(0, int(remaining * 1000)))
+        super().execute(f"PRAGMA busy_timeout={remaining_ms}")
 
     def _translate(self, error: sqlite3.OperationalError) -> None:
         self._error_code = getattr(error, "sqlite_errorcode", None)
@@ -357,31 +368,34 @@ def open_sqlite_connection(
     path: Path | str,
     *,
     read_only: bool = False,
-    timeout_ms: int = FOREGROUND_TIMEOUT_MS,
+    timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
     operation: str = "database",
     deadline_seconds: float | None = None,
     managed_checkpoints: bool = False,
 ) -> ManagedSqliteConnection:
-    """Open an initialized DB; one deadline covers connection and SQL lock waits.
+    """Open an initialized DB with independent lock and execution limits.
 
-    Deadline checks also interrupt long SQL VM execution. Filesystem fsync/close
+    Only explicit execution deadlines interrupt SQL or expire between statements.
+    Exhausting the lock-wait allowance still permits uncontended work. Filesystem fsync/close
     is measured separately: SQLite cannot promise a hard I/O time limit.
     """
     resolved = Path(path).resolve()
     started = time.monotonic()
-    duration = timeout_ms / 1000 if deadline_seconds is None else deadline_seconds
-    foreground = _foreground_budget.get()
+    deadline = None if deadline_seconds is None else started + deadline_seconds
+    foreground = _foreground_wait_budget.get()
     if foreground is not None:
-        duration = min(duration, foreground)
-    deadline = started + duration
-    outer_deadline = _operation_deadline.get()
-    if outer_deadline is not None:
-        deadline = min(deadline, outer_deadline)
-    timeout_ms = min(timeout_ms, max(0, int((deadline - time.monotonic()) * 1000)))
+        timeout_ms = min(timeout_ms, max(0, int(foreground * 1000)))
+    wait_deadline = started + timeout_ms / 1000
+    outer_wait_deadline = _storage_wait_deadline.get()
+    if outer_wait_deadline is not None:
+        wait_deadline = min(wait_deadline, outer_wait_deadline)
+    if deadline is not None:
+        wait_deadline = min(wait_deadline, deadline)
+    timeout_ms = min(timeout_ms, max(0, int((wait_deadline - time.monotonic()) * 1000)))
     anchor = _acquire_anchor(resolved, timeout_ms=timeout_ms)
     connection = None
     try:
-        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+        remaining_ms = max(0, int((wait_deadline - time.monotonic()) * 1000))
         connection = sqlite3.connect(
             resolved.as_uri() + ("?mode=ro" if read_only else "?mode=rw"),
             uri=True,
@@ -393,6 +407,7 @@ def open_sqlite_connection(
         connection._operation = operation
         connection._busy_timeout_ms = timeout_ms
         connection._deadline = deadline
+        connection._wait_deadline = wait_deadline
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON" if read_only else "PRAGMA foreign_keys=ON")
         # Only databases covered by a background checkpoint owner may disable
@@ -400,7 +415,8 @@ def open_sqlite_connection(
         # automatic checkpoints even while an idle lifetime anchor is open.
         if not read_only and managed_checkpoints:
             connection.execute("PRAGMA wal_autocheckpoint=0")
-        connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+        if deadline is not None:
+            connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         connection._connection_ms = (time.monotonic() - started) * 1000
         return connection
     except BaseException:

@@ -48,8 +48,8 @@ without taking the repository writer lock or renegotiating WAL. Maintenance writ
 SQLite busy timeout. Contention retains the failed candidate and defers that phase for five seconds;
 unrelated foreground events and other ready maintenance phases can continue. Transactions are not
 cancelled. The existing 50-candidate / 100 ms cooperative budget still applies between candidates.
-Execution receipts also use a separate read-only connection with a 100 ms busy timeout, without
-holding the foreground execution repository's lock or negotiating WAL.
+Execution receipts also use a separate read-only connection without holding the foreground
+execution repository's lock or negotiating WAL.
 
 Queued-prompt ownership validation remains synchronous and read-only; an unavailable or invalid
 ownership check never grants permission to replay. Configuration rebinding drains the lane before
@@ -88,6 +88,9 @@ receipt still exists. Cleared receipts lose their retry alarms. Checks share the
 and rotate through the backlog; storage failures preserve ownership and use the existing backoff.
 The trigger worker also defers transient storage failures with a 25 ms to 250 ms retry;
 subscription reconciliation and durable event publication resume without restarting the worker.
+Trigger and effect cycles explicitly cap storage lock waits at 100 ms. This allowance covers
+repository locks and SQLite contention; elapsed query execution and record hydration do not abort
+an otherwise uncontended operation. Other callers retain a 30-second lock allowance by default.
 Effect and gate receipt, successor and journal commits are atomic; external provider execution
 itself is not made transactional by SQLite.
 
@@ -129,15 +132,16 @@ directory scope and source provenance remain durable.
 Lifecycle fields, including long errors and clearing reasons, remain inline. Older referenced
 errors are readable in summaries; replacing them removes obsolete field references while
 preserving shared payloads. Workflow reports, including execution-history search, fields,
-authorization and detail reads, have a separate 30-second operation deadline;
-their database lock waits retain the 100 ms limit.
+authorization and detail reads, have an explicit 30-second operation deadline. Ordinary storage
+operations have no implicit execution deadline. Callers choose any execution deadline separately
+from their lock-wait limit; reports use the normal 30-second lock allowance.
 
 `sqlite_operation` logs report operation duration and connection-close time. `storage_maintenance`
 logs identify the phase, elapsed time, outcome and progress. Orchestration background checkpointing uses PASSIVE;
 legacy blocking checkpoint settings are normalized for online work. No connection operation
 renegotiates WAL after initialization. Shared idle read-only connections keep the database open
 without holding a transaction or snapshot, avoiding a large last-connection checkpoint on each
-request. SQL operation deadlines bound lock waits and interrupt long SQL execution; filesystem
+request. Explicit SQL operation deadlines also cap lock waits and interrupt long SQL execution; filesystem
 commit/close I/O is measured separately and cannot be given the same hard time bound.
 The Team database retains SQLite automatic checkpointing because it has no dedicated background
 checkpoint owner. Disabling automatic checkpoints is an explicit orchestration-store choice.
