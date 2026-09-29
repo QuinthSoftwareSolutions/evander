@@ -4294,6 +4294,12 @@ function bindTaskBoardSelectors() {
       });
       return;
     }
+    const briefButton = event.target?.closest?.("[data-task-brief-id]");
+    if (briefButton) {
+      event.preventDefault();
+      openTaskBoardBrief(briefButton);
+      return;
+    }
     if (event.target?.closest?.("[data-task-board-clear-focus]")) {
       event.preventDefault();
       selectedTaskBoardTaskId = "";
@@ -14180,6 +14186,9 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
         ${renderTaskBoardBrief(task)}
         ${renderTaskBoardBlockerLine(task)}
         ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
+        <div class="record-actions">
+          ${renderTaskBoardBriefButton(task)}
+        </div>
       </article>
       ${
         visibleChildren.length
@@ -14437,7 +14446,6 @@ function renderTaskBoardCard(task, focus) {
   const blocked = isTaskBoardBlocked(task);
   const stateLabel = taskStateLabel(task);
   const laneEntered = taskBoardLaneEnteredText(task);
-  const depth = taskHierarchyDepth(task);
   const assessment = task.assessment || {};
   const unresolvedIds = assessment.unresolved_descendant_ids || [];
   const worktreeContexts = taskGitWorkContexts(task);
@@ -14480,6 +14488,7 @@ function renderTaskBoardCard(task, focus) {
       ${renderTaskBoardBlockerLine(task)}
       ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
       <div class="record-actions">
+        ${renderTaskBoardBriefButton(task)}
         ${editButton("task", task.id)}
         ${taskCancellationButton(task)}
       </div>
@@ -14522,32 +14531,22 @@ function renderTaskBoardUnresolvedDescendants(taskId, unresolvedIds) {
       stateLabel: task ? taskStateLabel(task) : "Unavailable",
     };
   });
-  const previewLabels = descendants.slice(0, 3).map((descendant) => descendant.label);
-  if (descendants.length > previewLabels.length) {
-    previewLabels.push(`+${descendants.length - previewLabels.length} more`);
-  }
   return `
-    <div class="task-board-card-descendants">
-      <div class="task-board-card-descendant-summary">
-        <strong>${descendants.length} unresolved descendant${descendants.length === 1 ? "" : "s"}</strong>
-        <span>${escapeHtml(previewLabels.join(", "))}</span>
-      </div>
-      <details class="task-board-descendant-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "task", taskId, "descendants"))}>
-        <summary>View all ${descendants.length} descendant${descendants.length === 1 ? "" : "s"}</summary>
-        <ul class="task-board-descendant-list">
-          ${descendants.map((descendant) => `
-            <li>
-              ${
-                state.tasks[descendant.id] && taskBoardLaneForTask(state.tasks[descendant.id])
-                  ? renderTaskBoardTaskLink(descendant.id, { reveal: true })
-                  : `<span>${escapeHtml(descendant.label)}</span>`
-              }
-              <span class="state-pill ${escapeAttr(descendant.state || "neutral")}">${escapeHtml(descendant.stateLabel)}</span>
-            </li>
-          `).join("")}
-        </ul>
-      </details>
-    </div>
+    <details class="task-board-descendant-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "task", taskId, "descendants"))}>
+      <summary>${descendants.length} unresolved descendant${descendants.length === 1 ? "" : "s"}</summary>
+      <ul class="task-board-descendant-list">
+        ${descendants.map((descendant) => `
+          <li>
+            ${
+              state.tasks[descendant.id] && taskBoardLaneForTask(state.tasks[descendant.id])
+                ? renderTaskBoardTaskLink(descendant.id, { reveal: true })
+                : `<span>${escapeHtml(descendant.label)}</span>`
+            }
+            <span class="state-pill ${escapeAttr(descendant.state || "neutral")}">${escapeHtml(descendant.stateLabel)}</span>
+          </li>
+        `).join("")}
+      </ul>
+    </details>
   `;
 }
 
@@ -14646,19 +14645,61 @@ function taskBoardLaneEnteredText(task) {
 
 function renderTaskBoardBrief(task) {
   const brief = text(task?.description);
+  return brief
+    ? `<div class="task-board-task-brief">${escapeHtml(readablePreview(brief, 160))}</div>`
+    : "";
+}
+
+function renderTaskBoardBriefButton(task) {
+  return text(task?.description)
+    ? `<button type="button" class="record-action secondary" data-task-brief-id="${escapeAttr(task.id)}" aria-haspopup="dialog">Show full task brief</button>`
+    : "";
+}
+
+function openTaskBoardBrief(button) {
+  const taskId = text(button.dataset.taskBriefId);
+  const task = state.tasks[taskId];
+  const brief = text(task?.description);
   if (!brief) {
-    return "";
+    return;
   }
-  const isLong = brief.length > 240 || brief.split(/\r?\n/).length > 3;
-  if (!isLong) {
-    return `<div class="task-board-task-brief"><strong>Task brief:</strong> ${escapeHtml(brief)}</div>`;
-  }
-  return `
-    <details class="task-board-task-brief task-board-task-brief-details" ${teamDisclosureAttributes(teamDisclosureKey("task-board", "brief", task.id))}>
-      <summary>Show full task brief: ${escapeHtml(readablePreview(brief, 160))}</summary>
-      <div class="task-board-task-brief-content">${escapeHtml(brief)}</div>
-    </details>
+  const dialog = document.createElement("dialog");
+  dialog.className = "task-board-brief-dialog";
+  dialog.setAttribute("aria-labelledby", "task-board-brief-title");
+  dialog.innerHTML = `
+    <header class="task-board-brief-header">
+      <h2 id="task-board-brief-title">Task brief</h2>
+      <p>${escapeHtml(task.title)}</p>
+    </header>
+    <div class="task-board-brief-content" tabindex="0">${escapeHtml(brief)}</div>
+    <footer class="task-board-brief-actions">
+      <button type="button" class="secondary" autofocus>Close</button>
+    </footer>
   `;
+  const content = dialog.querySelector(".task-board-brief-content");
+  const closeButton = dialog.querySelector("button");
+  closeButton.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Tab") {
+      const target = event.shiftKey ? closeButton : content;
+      const boundary = event.shiftKey ? content : closeButton;
+      if (document.activeElement === boundary) {
+        event.preventDefault();
+        target.focus();
+      }
+    }
+  });
+  dialog.addEventListener("close", () => {
+    dialog.remove();
+    const returnTarget = button.isConnected ? button :
+      [...document.querySelectorAll("[data-task-brief-id]")].find(
+        (candidate) => text(candidate.dataset.taskBriefId) === taskId,
+      );
+    returnTarget?.focus({ preventScroll: true });
+  }, { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
 }
 
 function isTaskBoardBlocked(task) {

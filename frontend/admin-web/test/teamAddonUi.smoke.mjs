@@ -5934,15 +5934,10 @@ test("team add-on review profiles and task descendants prioritize display names"
   await rootTaskCard.getByText("26 unresolved descendants", { exact: true }).waitFor({
     state: "visible",
   });
-  await rootTaskCard
-    .getByText("Bookkeeping follow-up 1, Bookkeeping follow-up 2, Bookkeeping follow-up 3, +23 more", {
-      exact: true,
-    })
-    .waitFor({ state: "visible" });
   assert.equal(await rootTaskCard.getByText("task-descendant-26", { exact: true }).isVisible(), false);
   assert.equal(await rootTaskCard.getByText("task_open", { exact: true }).isVisible(), false);
 
-  await rootTaskCard.getByText("View all 26 descendants", { exact: true }).click();
+  await rootTaskCard.getByText("26 unresolved descendants", { exact: true }).click();
   assert.equal(await rootTaskCard.locator(".task-board-descendant-list > li").count(), 26);
   await rootTaskCard.getByText("Bookkeeping follow-up 26", { exact: true }).waitFor({
     state: "visible",
@@ -12175,7 +12170,8 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
       "The task board must retain this complete task brief.",
       "It includes the ownership context, acceptance criteria, and handoff notes.",
       "Operators should be able to read every line without leaving the board.",
-      "This final line ensures the brief uses the expandable board presentation.",
+      ...Array.from({ length: 30 }, (_, index) => `Acceptance criterion ${index + 1}: retain the complete instructions.`),
+      'The final instruction contains literal markup: <img src=x onerror="alert(1)">.',
     ].join("\n"),
     readiness: "waiting_on_children",
     resolution_status: "unresolved",
@@ -12189,6 +12185,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     },
   });
   Object.assign(pending, {
+    description: "A short task brief.",
     parent_task_id: planned.id,
     readiness: "blocked",
     resolution_status: "unresolved",
@@ -12301,7 +12298,8 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     };
   }
 
-  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  accepted.description = "";
+  const { port, requests, state: serverState, emitStateSnapshot } = await createTeamAddonServer(t, { initialState });
   const page = await openBrowserPage(t, port);
 
   await waitForRevision(page, 4);
@@ -12413,14 +12411,28 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   const plannedNode = boardPanel.locator(
     '.task-board-hierarchy-branch[data-task-board-task-id="task-planned"]',
   );
-  const hierarchyBrief = plannedNode.locator(".task-board-task-brief");
-  await hierarchyBrief.locator("summary").click();
-  const hierarchyBriefContent = hierarchyBrief.locator(".task-board-task-brief-content");
-  await hierarchyBriefContent.waitFor({ state: "visible" });
+  const hierarchyBriefButton = plannedNode
+    .locator(":scope > .task-board-hierarchy-node > .record-actions")
+    .getByRole("button", { name: "Show full task brief" });
+  await hierarchyBriefButton.click();
+  const briefDialog = page.getByRole("dialog", { name: "Task brief", exact: true });
+  await briefDialog.waitFor({ state: "visible" });
+  const briefContent = briefDialog.locator(".task-board-brief-content");
   assert.match(
-    await hierarchyBriefContent.textContent(),
-    /Operators should be able to read every line without leaving the board\./,
+    await briefContent.textContent(),
+    /The final instruction contains literal markup: <img src=x onerror="alert\(1\)">\./,
   );
+  assert.equal(await briefContent.locator("img").count(), 0, "task text must not become HTML");
+  assert.equal(await briefContent.evaluate((content) => content.scrollHeight > content.clientHeight), true);
+  await page.keyboard.press("Tab");
+  assert.equal(await briefDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+  serverState.revision += 1;
+  emitStateSnapshot(serverState);
+  await waitForRevision(page, 5);
+  assert.equal(await briefDialog.isVisible(), true, "a refresh must not dismiss an open brief");
+  await page.keyboard.press("Escape");
+  await page.locator(".task-board-brief-dialog").waitFor({ state: "detached" });
+  assert.equal(await hierarchyBriefButton.evaluate((button) => button === document.activeElement), true);
   await plannedNode.getByRole("button", { name: "Plan alpha delivery", exact: true }).click();
   assert.equal(
     await plannedNode
@@ -12491,13 +12503,20 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     '.task-board-card[data-task-board-task-id="task-planned"]',
   );
   assert.equal(await plannedCard.evaluate((element) => element.classList.contains("task-board-task-selected")), true);
-  const cardBrief = plannedCard.locator(".task-board-task-brief");
-  const cardBriefContent = cardBrief.locator(".task-board-task-brief-content");
-  await cardBriefContent.waitFor({ state: "visible" });
-  assert.match(
-    await cardBriefContent.textContent(),
-    /This final line ensures the brief uses the expandable board presentation\./,
-  );
+  const cardBriefButton = plannedCard.locator(".record-actions")
+    .getByRole("button", { name: "Show full task brief" });
+  await cardBriefButton.click();
+  await briefDialog.waitFor({ state: "visible" });
+  assert.equal(await briefContent.textContent(), planned.description);
+  await briefDialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator(".task-board-brief-dialog").waitFor({ state: "detached" });
+  assert.equal(await cardBriefButton.evaluate((button) => button === document.activeElement), true);
+  await pendingCard.getByRole("button", { name: "Show full task brief" }).click();
+  await briefDialog.waitFor({ state: "visible" });
+  assert.equal(await briefContent.textContent(), "A short task brief.");
+  await briefDialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator(".task-board-brief-dialog").waitFor({ state: "detached" });
+  assert.equal(await acceptedCard.getByRole("button", { name: "Show full task brief" }).count(), 0);
   assert.equal(await pendingCard.evaluate((element) => element.classList.contains("task-board-task-direct-child")), true);
 
   await boardPanel.locator("details.task-board-create > summary").click();
