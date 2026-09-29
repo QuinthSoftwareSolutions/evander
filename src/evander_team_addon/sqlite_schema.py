@@ -9,6 +9,7 @@ from typing import Any, Callable
 from evander.models import utc_now
 
 from .case_context_store import CONTEXT_SCHEMA_SQL
+from .case_context_history import HISTORY_SCHEMA_SQL, backfill_snapshot_index
 from .models import SCHEMA_VERSION, TeamState
 from .sqlite_codec import (
     _ensure_column,
@@ -97,6 +98,10 @@ def migrate_schema(
     """
     connection.executescript(_SCHEMA_SQL)
     connection.executescript(CONTEXT_SCHEMA_SQL)
+    connection.executescript(HISTORY_SCHEMA_SQL)
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    backfill_snapshot_index(connection)
     for context_column in ("case_note_ids_json", "context_snapshot_ids_json"):
         _ensure_column(
             connection,

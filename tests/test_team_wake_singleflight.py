@@ -11,6 +11,8 @@ from evander_team_addon.models import (
     PersistentAgent,
     TeamConversation,
     TeamConversationMessage,
+    TeamDispatch,
+    TeamDispatchStatus,
     TeamState,
 )
 from evander_team_addon.providers import (
@@ -389,3 +391,33 @@ def _wait_for_flight_waiters(
                 return
         time.sleep(0.001)
     raise AssertionError("wake invocation did not reach the expected single-flight wait state")
+
+
+def test_chat_precheck_keeps_global_recovery_for_expired_blocked_team_preparations():
+    now = datetime(2030, 1, 1, tzinfo=UTC)
+    dispatch = TeamDispatch(
+        id="stale-chat",
+        agent_id="blocked-agent",
+        session_id="session",
+        cause_kind="team_chat",
+        status=TeamDispatchStatus.PREPARING,
+        preparation_expires_at=now,
+    )
+    state = TeamState.model_construct(dispatches={dispatch.id: dispatch})
+    assert _team_wake_has_chat_claim_candidate(
+        state,
+        team_id=None,
+        project_id=None,
+        agent_id=None,
+        blocked_team_ids={"blocked-team"},
+        now=now,
+    )
+    dispatch.status = TeamDispatchStatus.COMPLETED
+    assert not _team_wake_has_chat_claim_candidate(
+        state,
+        team_id=None,
+        project_id=None,
+        agent_id=None,
+        blocked_team_ids={"blocked-team"},
+        now=now,
+    )

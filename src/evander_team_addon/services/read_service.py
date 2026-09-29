@@ -4,6 +4,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, TypeVar
 
+from ..case_context_models import CaseContextSnapshot
+
 from ..models import (
     AgentInboxItem,
     AgentTask,
@@ -350,6 +352,7 @@ class TeamReadService:
         self,
         *,
         detail: Literal["summary", "full"] = "full",
+        snapshots: Sequence[CaseContextSnapshot] = (),
     ) -> dict[str, Any] | None:
         """Hydrate the caller's active immutable dispatch scope on demand."""
 
@@ -404,7 +407,9 @@ class TeamReadService:
                 "reviews": reviews,
                 "inbox": inbox,
                 "projects": projects,
-                "case_contexts": dispatch_case_contexts(self._state, dispatch.id),
+                "case_contexts": dispatch_case_contexts(
+                    self._state, dispatch.id, snapshots=snapshots
+                ),
                 "external_source_evidence_snapshots": [
                     external_source_evidence_snapshot_payload(
                         self._state.external_source_evidence_snapshots[snapshot_id]

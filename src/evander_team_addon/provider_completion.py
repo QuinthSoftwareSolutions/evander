@@ -442,7 +442,9 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
         runtime_dir = _runtime_dir_from_worker(worker)
         if runtime_dir is None:
             return 0
-        state = repo.read()
+        state = repo.read_projection(
+            collections=("governance_runtimes", "dispatches", "agent_runtimes", "agents")
+        )
         context = _effect_context_from_worker(worker, runtime_dir=runtime_dir)
         activated_count = 0
         completed_records = _completed_agent_prompt_records_from_records(records)

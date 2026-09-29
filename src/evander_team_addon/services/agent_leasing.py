@@ -741,6 +741,9 @@ def lease_due_agents(
             role_description_fingerprint = agent_role_description_fingerprint(manager_payload)
             durable_dispatch.role_description_fingerprint = role_description_fingerprint
             teams_with_lease.add(team.id)
+            context_snapshots = service._repository.snapshots.for_dispatch(
+                dispatch_id, state=state_model
+            )
             leases.append(
                 {
                     "agent": manager_payload,
@@ -779,9 +782,11 @@ def lease_due_agents(
                         for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
                         if snapshot_id in state_model.external_source_evidence_snapshots
                     ],
-                    "case_contexts": dispatch_case_contexts(state_model, dispatch_id),
+                    "case_contexts": dispatch_case_contexts(
+                        state_model, dispatch_id, snapshots=context_snapshots
+                    ),
                     "case_contexts_delta": dispatch_case_contexts(
-                        state_model, dispatch_id, delta=True
+                        state_model, dispatch_id, snapshots=context_snapshots, delta=True
                     ),
                     "inbox": [item.model_dump(mode="json") for item in manager_inbox],
                     "blockers": scoped_blockers,
@@ -1379,6 +1384,9 @@ def lease_due_agents(
             agent_payload = _agent_payload(state_model, agent)
             role_description_fingerprint = agent_role_description_fingerprint(agent_payload)
             durable_dispatch.role_description_fingerprint = role_description_fingerprint
+            context_snapshots = service._repository.snapshots.for_dispatch(
+                dispatch_id, state=state_model
+            )
             leases.append(
                 {
                     "agent": agent_payload,
@@ -1449,9 +1457,11 @@ def lease_due_agents(
                         for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
                         if snapshot_id in state_model.external_source_evidence_snapshots
                     ],
-                    "case_contexts": dispatch_case_contexts(state_model, dispatch_id),
+                    "case_contexts": dispatch_case_contexts(
+                        state_model, dispatch_id, snapshots=context_snapshots
+                    ),
                     "case_contexts_delta": dispatch_case_contexts(
-                        state_model, dispatch_id, delta=True
+                        state_model, dispatch_id, snapshots=context_snapshots, delta=True
                     ),
                     "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                     "blockers": scoped_blockers,

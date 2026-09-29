@@ -145,6 +145,7 @@ def test_child_handoff_routes_to_parent_owner_instead_of_org_superior() -> None:
         deliverable_id="deliverable-child",
         published_records=[],
         suppress_superior_notice=False,
+        context_snapshot_ids=[],
     )
 
     deliverable = state.deliverables["deliverable-child"]
@@ -211,6 +212,7 @@ def test_formal_review_handoff_still_notifies_parent_owner() -> None:
         deliverable_id="deliverable-reviewed-child",
         published_records=[],
         suppress_superior_notice=True,
+        context_snapshot_ids=[],
     )
 
     deliverable = state.deliverables["deliverable-reviewed-child"]
@@ -242,6 +244,7 @@ def test_formal_review_handoff_does_not_wake_its_own_parent_owner() -> None:
         deliverable_id="deliverable-self-reviewed-child",
         published_records=[],
         suppress_superior_notice=True,
+        context_snapshot_ids=[],
     )
 
     assert created_inbox_ids == []

@@ -63,7 +63,7 @@ def _team_wake_has_chat_claim_candidate(
     blocked_team_ids: set[str],
     now: datetime,
 ) -> bool:
-    """Cheaply avoid a full write transaction when a targeted wake has no chat work."""
+    """Cheaply avoid a full write transaction when a wake has no chat work."""
 
     def _agent_is_in_scope(candidate_agent_id: str) -> bool:
         agent = state.agents.get(candidate_agent_id)
@@ -96,7 +96,6 @@ def _team_wake_has_chat_claim_candidate(
         and dispatch.status == TeamDispatchStatus.PREPARING
         and dispatch.preparation_expires_at is not None
         and _team_datetime_utc(dispatch.preparation_expires_at) <= effective_now
-        and _agent_is_in_scope(dispatch.agent_id)
         for dispatch in state.dispatches.values()
     )
 

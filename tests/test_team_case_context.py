@@ -122,7 +122,7 @@ def test_context_query_is_read_only_and_has_evidence(case_repo):
     assert "Preserve the established contract" in context["text"]
     assert context["case_ids"] == ["case"]
     assert case_repo.read().revision == revision
-    assert not case_repo.read().case_context_snapshots
+    assert not case_repo.snapshots.list_for_case("case", directory_path="root")["records"]
 
 
 def test_snapshot_is_immutable_idempotent_and_exactly_session_granted(case_repo):
@@ -316,17 +316,15 @@ def test_dispatch_brief_is_preserved_and_read_in_both_prompt_modes(case_repo):
         prepare_case_context,
         dispatch_case_contexts,
     )
-    from evander_team_addon.services.read_service import TeamReadService
     from evander_team_addon.services.wake_prompt_context import build_compact_wake_context
 
     record(case_repo, kind="decision")
     case_repo.update(lambda s: prepare_case_context(case_repo, s, s.dispatches["dispatch-command"]))
     state = case_repo.read()
-    contexts = dispatch_case_contexts(state, "dispatch-command")
+    contexts = dispatch_case_contexts(
+        state, "dispatch-command", snapshots=case_repo.snapshots.for_dispatch("dispatch-command")
+    )
     assert contexts and "Choose additive" in contexts[0]["text"]
-    read = TeamReadService(state=state, actor=state.agents["worker"])
-    assert read.get_current_dispatch_context()["case_contexts"] == contexts
-    assert read.get_current_dispatch_context(detail="summary")["case_contexts"] == contexts
     for fresh in [True, False]:
         compact = build_compact_wake_context({"case_contexts": contexts}, fresh_context=fresh)
         assert compact["case_contexts"] == contexts
@@ -378,18 +376,19 @@ def test_review_dispatch_preserves_terminal_case_context(case_repo, status, revi
     state = case_repo.read()
     dispatch = state.dispatches["review-dispatch"]
     assert not dispatch.task_ids and dispatch.review_request_ids == ["review"]
-    contexts = dispatch_case_contexts(state, dispatch.id)
+    contexts = dispatch_case_contexts(
+        state, dispatch.id, snapshots=case_repo.snapshots.for_dispatch(dispatch.id)
+    )
     assert len(contexts) == 1
     assert contexts[0]["case_ids"] == ["case"]
     assert "Choose additive compatibility" in contexts[0]["text"]
-    snapshot = state.case_context_snapshots[contexts[0]["snapshot_id"]]
+    snapshot = case_repo.snapshots.get(contexts[0]["snapshot_id"])
     assert snapshot.view.view_id == "review-brief"
     # Closed cases stay out of the active work/index projection.
     active = _dispatch_case_payloads(state, agent=state.agents["lead"], dispatch=dispatch)
     assert active["cases"] == [] and active["case_index"] == []
     # If capture fails, review-only wakes must expose the retrieval fallback too.
-    state.case_context_snapshots.clear()
-    assert dispatch_case_contexts(state, dispatch.id)[0]["omissions"] == [
+    assert dispatch_case_contexts(state, dispatch.id, snapshots=[])[0]["omissions"] == [
         {"kind": "unavailable", "section": "case_context"}
     ]
 
@@ -608,7 +607,7 @@ def test_operator_context_rejects_cross_directory_release_and_snapshot(scoped_re
             )
             assert frozen.status_code == 403, frozen.text
             assert repo.read().revision == before
-            assert not repo.read().case_context_snapshots
+            assert not repo.snapshots.list_for_case("case", directory_path="root")["records"]
             for denied in (response, preview, frozen):
                 assert "OUT_OF_SCOPE_EVIDENCE" not in denied.text
             allowed = await client.get("/cases/case/context?release_package_id=release")
@@ -665,7 +664,7 @@ def test_workflow_context_rejects_cross_directory_release(scoped_release_repo, o
     with pytest.raises(PermissionError, match="release context"):
         provider.execute()
     assert repo.read().revision == before
-    assert not repo.read().case_context_snapshots
+    assert not repo.snapshots.list_for_case("case", directory_path="root")["records"]
     allowed = provider.execute(resolved_config={"release_package_id": "release"})
     assert allowed["success"]
     assert "Authorized review evidence" in allowed["text"]
@@ -1037,7 +1036,9 @@ def test_deliverable_links_context_without_requiring_notes(case_repo):
     )
     assert result["success"], result
     assert state.deliverables["delivery"].case_note_ids == list(state.notes)
-    assert state.deliverables["delivery"].context_snapshot_ids == list(state.case_context_snapshots)
+    assert state.deliverables[
+        "delivery"
+    ].context_snapshot_ids == case_repo.snapshots.ids_for_dispatch("dispatch-command")
     assert case_repo.read().deliverables["delivery"] == state.deliverables["delivery"]
 
 
@@ -1190,7 +1191,7 @@ def test_resumed_dispatch_gets_only_changes_and_fresh_context_gets_baseline(case
 
     record(case_repo, kind="decision")
     case_repo.update(lambda s: prepare_case_context(case_repo, s, s.dispatches["dispatch-command"]))
-    first_id = next(iter(case_repo.read().case_context_snapshots))
+    first_id = case_repo.snapshots.ids_for_dispatch("dispatch-command")[0]
 
     def next_dispatch(state):
         previous = state.dispatches["dispatch-command"]
@@ -1214,11 +1215,18 @@ def test_resumed_dispatch_gets_only_changes_and_fresh_context_gets_baseline(case
 
     case_repo.update(next_dispatch)
     state = case_repo.read()
-    delta = dispatch_case_contexts(state, "next", delta=True)
+    delta = dispatch_case_contexts(
+        state, "next", snapshots=case_repo.snapshots.for_dispatch("next"), delta=True
+    )
     assert delta[0]["baseline_snapshot_id"] == first_id
     assert delta[0]["changed_record_count"] == 0 and "unchanged" in delta[0]["text"]
     assert "Choose additive" not in delta[0]["text"]
-    lease = {"case_contexts": dispatch_case_contexts(state, "next"), "case_contexts_delta": delta}
+    lease = {
+        "case_contexts": dispatch_case_contexts(
+            state, "next", snapshots=case_repo.snapshots.for_dispatch("next")
+        ),
+        "case_contexts_delta": delta,
+    }
     assert (
         "Choose additive"
         in build_compact_wake_context(lease, fresh_context=True)["case_contexts"][0]["text"]
@@ -1274,19 +1282,19 @@ def test_delta_baseline_excludes_failed_dispatches_thread_switches_and_resets(ca
     current = previous.model_copy(update={"id": "new", "created_at": datetime.now(UTC)})
     runtime = state.agent_runtimes["worker"]
     runtime.last_thread_id = "thread"
-    assert previous_context_snapshot(state, current) is None
+    assert previous_context_snapshot(case_repo, state, current) is None
     previous.status = TeamDispatchStatus.COMPLETED
-    assert previous_context_snapshot(state, current)
+    assert previous_context_snapshot(case_repo, state, current)
     runtime.last_thread_id = "other-thread"
-    assert previous_context_snapshot(state, current) is None
+    assert previous_context_snapshot(case_repo, state, current) is None
     runtime.last_thread_id = "thread"
     runtime.context_rotation_pending = True
-    assert previous_context_snapshot(state, current) is None
+    assert previous_context_snapshot(case_repo, state, current) is None
     runtime.context_rotation_pending = False
     runtime.context_clearing_policy = AgentContextClearingPolicy.WORK_LINEAGE
     current.work_lineage_id = "new-lineage"
     runtime.work_lineage_thread_ids = {"old-lineage": "thread"}
-    assert previous_context_snapshot(state, current) is None
+    assert previous_context_snapshot(case_repo, state, current) is None
 
 
 def test_delta_reports_supersession_and_removed_records_without_old_bodies(case_repo):

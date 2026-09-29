@@ -3000,3 +3000,57 @@ def test_team_task_author_mcp_can_set_and_clear_identity(tmp_path: Path) -> None
         assert result["success"] is True, result
         identity = repo.read().tasks["task"].authored_by
         assert (identity.model_dump(mode="json") if identity else None) == fields.get("authored_by")
+
+
+@pytest.mark.parametrize("detail", ["summary", "full"])
+def test_current_dispatch_tool_loads_archived_brief_for_the_calling_agent(tmp_path, detail):
+    from evander_team_addon.models import AgentTask, TeamCase
+    from evander_team_addon.services.case_context_dispatch import prepare_case_context
+    from team_repository_support import _seed_hierarchy, _lease_agent_dispatch
+
+    tool = "team_get_current_dispatch_context"
+    context = _runtime(tmp_path, allowed_tools=[tool])
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-worker",
+            allowed_tools=[tool],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    repo = _seed_hierarchy(context.config.runtime_dir)
+
+    def seed(state):
+        state.cases["case"] = TeamCase(
+            id="case",
+            team_id="team",
+            project_id="project",
+            title="Compatibility request",
+            owner_agent_id="lead",
+            task_ids=["task"],
+        )
+        state.tasks["task"] = AgentTask(
+            id="task",
+            owner_agent_id="worker",
+            project_id="project",
+            case_id="case",
+            title="Implement compatibility",
+            description="Preserve existing consumers",
+            priority=1,
+            created_by_agent_id="lead",
+        )
+
+    repo.update(seed)
+    _lease_agent_dispatch(repo, agent_id="worker")
+    repo.update(
+        lambda state: prepare_case_context(repo, state, state.dispatches["dispatch-command"])
+    )
+    repo.update(lambda state: setattr(state.tasks["task"], "description", "Later task description"))
+    result = _call_tool(
+        create_server(context), tool, {"session_id": "session-worker", "detail": detail}
+    )
+    assert result["success"] is True
+    brief = result["record"]["case_contexts"][0]
+    assert brief["snapshot_id"] == repo.snapshots.ids_for_dispatch("dispatch-command")[0]
+    assert "Preserve existing consumers" in brief["text"]
+    assert "Later task description" not in brief["text"]

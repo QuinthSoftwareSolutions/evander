@@ -8,7 +8,7 @@ from .case_context_prompt import compact_case_contexts
 logger = logging.getLogger(__name__)
 
 
-def previous_context_snapshot(state, dispatch):
+def previous_context_snapshot(repository, state, dispatch):
     """Only a completed dispatch known to have used this retained native thread."""
     runtime = state.agent_runtimes[dispatch.agent_id]
     if runtime.context_rotation_pending or runtime.context_clearing_policy.value == "every_wake":
@@ -20,9 +20,8 @@ def previous_context_snapshot(state, dispatch):
     )
     if not thread_id:
         return None
-    candidates = []
-    for snapshot in state.case_context_snapshots.values():
-        previous = state.dispatches.get(snapshot.dispatch_id)
+    candidates = {}
+    for previous in state.dispatches.values():
         if (
             previous
             and previous.id != dispatch.id
@@ -33,8 +32,8 @@ def previous_context_snapshot(state, dispatch):
             and previous.completed_at
             and previous.completed_at <= dispatch.created_at
         ):
-            candidates.append((previous.completed_at, snapshot.id))
-    return max(candidates)[1] if candidates else None
+            candidates[previous.id] = previous.completed_at
+    return repository.snapshots.previous_id(candidates, state=state)
 
 
 def prepare_case_context(repository, state, dispatch):
@@ -56,13 +55,13 @@ def prepare_case_context(repository, state, dispatch):
             case_ids=case_ids,
             view_id="review-brief" if dispatch.review_request_ids else "task-brief",
             recipient_session_id=agent.session_id,
-            baseline_snapshot_id=previous_context_snapshot(state, dispatch),
+            baseline_snapshot_id=previous_context_snapshot(repository, state, dispatch),
         )
     except (ValueError, PermissionError, OSError):
         logger.warning("Case context unavailable for dispatch %s", dispatch.id, exc_info=True)
 
 
-def dispatch_case_contexts(state, dispatch_id, *, delta=False):
+def dispatch_case_contexts(state, dispatch_id, *, snapshots, delta=False):
     from .domain.wake import _dispatch_case_ids
 
     contexts = [
@@ -84,7 +83,7 @@ def dispatch_case_contexts(state, dispatch_id, *, delta=False):
             "content_digest": s.content_digest,
             "read": {"tool": "team_get_case_context_snapshot", "snapshot_id": s.id},
         }
-        for s in state.case_context_snapshots.values()
+        for s in snapshots
         if s.dispatch_id == dispatch_id
         for context in [s.wake_delta_context if delta and s.wake_delta_context else s.context]
     ]
