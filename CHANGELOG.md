@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-29 - Reduce event and retention writer contention (0.72.7)
+
+- Check pending retention sources through queued history jobs and source primary keys,
+  keeping maintenance work proportional to pending jobs instead of execution history.
+- Skip unchanged subscription updates during event polling and retain known configuration
+  revisions, while preserving filter changes, reactivation, and durable event delivery.
+- Retry contended event-delivery writes through the worker's bounded storage retry path.
+
 ## 2026-09-29 - Bound Team case-history memory during lifecycle work (0.72.6)
 
 - Read immutable case-context snapshots through indexed history queries instead of

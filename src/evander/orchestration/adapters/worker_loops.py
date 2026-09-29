@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from evander.events.models import TriggerDefinitionDiscriminated, TriggerEvent
+from evander.repositories.sqlite_runtime import is_storage_busy
 from evander.triggers.queue import TriggerQueueRecord
 
 
@@ -43,7 +44,9 @@ class TriggerDependencyResolverAdapter:
             return []
         try:
             events = provider.poll()
-        except Exception:
+        except Exception as error:
+            if is_storage_busy(error):
+                raise
             if self._on_poll_error is not None:
                 self._on_poll_error(event)
             return []
