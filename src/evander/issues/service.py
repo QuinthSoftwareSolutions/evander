@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import html
 from html.parser import HTMLParser
 import mimetypes
+import logging
+import time
 import os
 from pathlib import Path
 import re
@@ -31,9 +33,12 @@ from evander.inline_media import (
     require_provider_media_url,
 )
 from evander.issue_owner import assigned_to_identity
+from evander.issues.activity_cache import AdoActivityScanCache, ActivityScanResult
 from evander.models import InlineMediaRef
 from evander.provider_config import ProviderConfigResolver
 from evander.text_formatting import looks_like_html, render_markdownish_text_to_html
+
+LOGGER = logging.getLogger(__name__)
 
 _ADO_RICH_TEXT_MEDIA_FIELDS = (
     "System.Description",
@@ -1672,8 +1677,105 @@ class AzureDevOpsIssueAdapter:
         skip: int = 0,
         exhaustive: bool = False,
         max_candidates: int = 50,
+        _activity_cache: AdoActivityScanCache | None = None,
+        _cache_scope: str | None = None,
     ) -> dict[str, Any]:
-        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        connection = self._resolve_connection(directory_path)
+        organization_url, configured_project, pat = connection
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps work item activity queries.")
+        normalized_top = max(1, min(int(top), 200))
+        normalized_skip = max(0, int(skip))
+        normalized_max_candidates = _ado_activity_max_candidates(max_candidates)
+        normalized_types = sorted(
+            {str(value or "").strip().casefold() for value in (activity_types or [])}
+        )
+        normalized_types = normalized_types or ["created", "changed", "commented"]
+
+        def load() -> ActivityScanResult:
+            return self._scan_work_item_activity(
+                directory_path=directory_path,
+                project=normalized_project,
+                actor=actor,
+                since=since,
+                until=until,
+                activity_types=normalized_types,
+                states=states,
+                types=types,
+                tags_any=tags_any,
+                exhaustive=exhaustive,
+                max_candidates=normalized_max_candidates,
+                _connection=connection,
+            )
+
+        if _activity_cache is None or _cache_scope is None:
+            return load().page(top=normalized_top, skip=normalized_skip)
+        return _activity_cache.query(
+            directory_path=directory_path,
+            key_parts=[
+                _cache_scope,
+                directory_path,
+                organization_url,
+                normalized_project,
+                pat,
+                str(actor or "").strip().casefold(),
+                _ado_activity_iso(since),
+                _ado_activity_iso(until) if until is not None else None,
+                normalized_types,
+                sorted(set(states or [])),
+                sorted(set(types or [])),
+                sorted(set(tags_any or [])),
+                exhaustive,
+                normalized_max_candidates,
+                self.comments_max_count,
+            ],
+            load=load,
+            top=normalized_top,
+            skip=normalized_skip,
+        )
+
+    def _fetch_activity_candidates(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        auth_header: str,
+        ids: list[int],
+    ) -> list[dict[str, Any]]:
+        response = client.post(
+            f"{organization_url}/_apis/wit/workitemsbatch",
+            params={"api-version": "7.1"},
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            json={"ids": ids, "$expand": "All", "errorPolicy": "Omit"},
+        )
+        if response.is_error:
+            self._raise_ado_http_error(action="fetch activity candidates batch", response=response)
+        by_id = {
+            str(item.get("id")): item
+            for item in response.json().get("value", [])
+            if isinstance(item, dict)
+        }
+        return [by_id[str(item_id)] for item_id in ids if str(item_id) in by_id]
+
+    def _scan_work_item_activity(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        actor: str | None = None,
+        since: datetime,
+        until: datetime | None = None,
+        activity_types: list[str] | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        exhaustive: bool = False,
+        max_candidates: int = 50,
+        _connection: tuple[str, str, str],
+    ) -> ActivityScanResult:
+        scan_started = time.perf_counter()
+        organization_url, configured_project, pat = _connection
         normalized_project = str(project or configured_project).strip()
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps work item activity queries.")
@@ -1690,26 +1792,27 @@ class AzureDevOpsIssueAdapter:
             types=types or [],
             tags_any=tags_any or [],
         )
-        normalized_top = max(1, min(int(top), 200))
-        normalized_skip = max(0, int(skip))
         normalized_max_candidates = _ado_activity_max_candidates(max_candidates)
         candidate_page_size = 200 if exhaustive else min(200, normalized_max_candidates)
         candidate_scanned_count = 0
         matched_items: list[dict[str, Any]] = []
+        batch_ms = 0.0
+        histories_ms = 0.0
 
         def load_activity_item(candidate: dict[str, Any]) -> dict[str, Any] | None:
             item_id = str(candidate.get("id") or "").strip()
             if not item_id:
                 return None
-            detail = self.get_backlog_item_by_id(
-                directory_path=directory_path,
+            detail = self._backlog_item_from_payload(
+                candidate,
+                client=client,
+                organization_url=organization_url,
+                auth_header=auth_header,
                 backlog_item_id=item_id,
                 project=normalized_project,
                 include_comments="commented" in normalized_types,
                 include_relations=False,
                 include_updates="changed" in normalized_types,
-                _client=client,
-                _connection=(organization_url, configured_project, pat),
             )
             activities = self._work_item_activity_records(
                 detail,
@@ -1744,6 +1847,7 @@ class AzureDevOpsIssueAdapter:
                 auth_header=auth_header,
                 wiql=wiql,
             )
+            wiql_ms = (time.perf_counter() - scan_started) * 1000
             candidate_total_matches = len(candidate_ids)
             candidate_limit = (
                 candidate_total_matches
@@ -1753,18 +1857,18 @@ class AzureDevOpsIssueAdapter:
             candidate_scan_complete = candidate_limit == candidate_total_matches
             # Omitted/deleted IDs still consume their positions in the frozen WIQL list.
             for candidate_skip in range(0, candidate_limit, candidate_page_size):
-                candidates = self._query_backlog_items_core(
+                batch_started = time.perf_counter()
+                ids = candidate_ids[
+                    candidate_skip : min(candidate_skip + candidate_page_size, candidate_limit)
+                ]
+                candidate_items = self._fetch_activity_candidates(
                     client,
                     organization_url=organization_url,
-                    project=normalized_project,
                     auth_header=auth_header,
-                    wiql=wiql,
-                    top=min(candidate_page_size, candidate_limit - candidate_skip),
-                    skip=candidate_skip,
-                    include_relations=False,
-                    work_item_ids=candidate_ids,
+                    ids=ids,
                 )
-                candidate_items = candidates.get("items") or []
+                batch_ms += (time.perf_counter() - batch_started) * 1000
+                history_started = time.perf_counter()
                 candidate_scanned_count += len(candidate_items)
                 page_results = (
                     workers.map(load_activity_item, candidate_items)
@@ -1772,17 +1876,9 @@ class AzureDevOpsIssueAdapter:
                     else map(load_activity_item, candidate_items)
                 )
                 matched_items.extend(item for item in page_results if item is not None)
+                histories_ms += (time.perf_counter() - history_started) * 1000
         total_activity_matches = len(matched_items)
-        items = matched_items[normalized_skip : normalized_skip + normalized_top]
-        next_skip = (
-            normalized_skip + len(items)
-            if normalized_skip + len(items) < total_activity_matches
-            else None
-        )
         paging = {
-            "skip": normalized_skip,
-            "top": normalized_top,
-            "returned_count": len(items),
             "total_matches": total_activity_matches,
             "total_activity_matches": total_activity_matches,
             "candidate_total_matches": candidate_total_matches,
@@ -1790,19 +1886,29 @@ class AzureDevOpsIssueAdapter:
             "candidate_scan_complete": candidate_scan_complete,
             "total_matches_complete": candidate_scan_complete,
             "total_activity_matches_complete": candidate_scan_complete,
-            "has_more": next_skip is not None or not candidate_scan_complete,
-            "next_skip": next_skip,
             "activity_types": sorted(normalized_types),
             "exhaustive": exhaustive,
             "max_candidates": normalized_max_candidates,
         }
-        return {
-            "provider": self.provider_name,
-            "project": normalized_project,
-            "items": items,
-            "count": len(items),
-            "paging": paging,
-        }
+        LOGGER.info(
+            "ado_activity_scan duration_ms=%.3f wiql_ms=%.3f batch_ms=%.3f histories_ms=%.3f "
+            "candidate_total=%d candidate_scanned=%d matched=%d",
+            (time.perf_counter() - scan_started) * 1000,
+            wiql_ms,
+            batch_ms,
+            histories_ms,
+            candidate_total_matches,
+            candidate_scanned_count,
+            total_activity_matches,
+        )
+        return ActivityScanResult(
+            items=matched_items,
+            metadata={
+                "provider": self.provider_name,
+                "project": normalized_project,
+                "paging": paging,
+            },
+        )
 
     def _build_activity_wiql_query(
         self,
@@ -2453,82 +2559,105 @@ class AzureDevOpsIssueAdapter:
             if response.is_error:
                 self._raise_ado_http_error(action="get backlog item by id", response=response)
             payload = response.json()
-            fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-            project_name = (
-                str(fields.get("System.TeamProject") or normalized_project).strip() or None
+            return self._backlog_item_from_payload(
+                payload,
+                client=client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                backlog_item_id=backlog_item_id,
+                include_comments=include_comments,
+                include_relations=include_relations,
+                include_updates=include_updates,
+                comment_page_limit=comment_page_limit,
             )
-            item: dict[str, Any] = {
-                "provider": self.provider_name,
-                "organization_url": organization_url,
-                "id": str(payload.get("id") or backlog_item_id).strip(),
-                "project": project_name,
-                "rev": payload.get("rev"),
-                "url": str(payload.get("url") or "").strip() or None,
-                "web_url": str(
-                    (payload.get("_links") or {}).get("web", {}).get("href") or ""
-                ).strip()
-                or None,
-                "title": str(fields.get("System.Title") or "").strip() or None,
-                "description": str(fields.get("System.Description") or "").strip(),
-                "acceptance_criteria": str(
-                    fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""
-                ).strip(),
-                "state": str(fields.get("System.State") or "").strip() or None,
-                "type": str(fields.get("System.WorkItemType") or "").strip() or None,
-                "created_at": self._normalize_datetime(
-                    str(fields.get("System.CreatedDate") or "").strip()
-                ),
-                "changed_at": self._normalize_datetime(
-                    str(fields.get("System.ChangedDate") or "").strip()
-                ),
-                "closed_at": self._normalize_datetime(
-                    str(fields.get("Microsoft.VSTS.Common.ClosedDate") or "").strip()
-                ),
-                "fields": self._json_safe(fields),
-                "relations": [],
-                "inline_media": [],
-            }
-            item["relations"] = (
-                self._normalize_relations(payload.get("relations"), resource_id=item["id"])
-                if include_relations
-                else []
+
+    def _backlog_item_from_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        client: httpx.Client,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+        backlog_item_id: str,
+        include_comments: bool,
+        include_relations: bool,
+        include_updates: bool,
+        comment_page_limit: int = 1,
+    ) -> dict[str, Any]:
+        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        project_name = str(fields.get("System.TeamProject") or project).strip() or None
+        item: dict[str, Any] = {
+            "provider": self.provider_name,
+            "organization_url": organization_url,
+            "id": str(payload.get("id") or backlog_item_id).strip(),
+            "project": project_name,
+            "rev": payload.get("rev"),
+            "url": str(payload.get("url") or "").strip() or None,
+            "web_url": str((payload.get("_links") or {}).get("web", {}).get("href") or "").strip()
+            or None,
+            "title": str(fields.get("System.Title") or "").strip() or None,
+            "description": str(fields.get("System.Description") or "").strip(),
+            "acceptance_criteria": str(
+                fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or ""
+            ).strip(),
+            "state": str(fields.get("System.State") or "").strip() or None,
+            "type": str(fields.get("System.WorkItemType") or "").strip() or None,
+            "created_at": self._normalize_datetime(
+                str(fields.get("System.CreatedDate") or "").strip()
+            ),
+            "changed_at": self._normalize_datetime(
+                str(fields.get("System.ChangedDate") or "").strip()
+            ),
+            "closed_at": self._normalize_datetime(
+                str(fields.get("Microsoft.VSTS.Common.ClosedDate") or "").strip()
+            ),
+            "fields": self._json_safe(fields),
+            "relations": [],
+            "inline_media": [],
+        }
+        item["relations"] = (
+            self._normalize_relations(payload.get("relations"), resource_id=item["id"])
+            if include_relations
+            else []
+        )
+        item["comments_paging"] = {"complete": False, "reason": "not_requested"}
+        item["comments"] = (
+            self._fetch_comments(
+                client,
+                organization_url=organization_url,
+                project=project_name or project,
+                auth_header=auth_header,
+                remote_issue_id=item["id"],
+                page_limit=comment_page_limit,
+                paging=item["comments_paging"],
             )
-            item["comments_paging"] = {"complete": False, "reason": "not_requested"}
-            item["comments"] = (
-                self._fetch_comments(
-                    client,
-                    organization_url=organization_url,
-                    project=project_name or normalized_project,
-                    auth_header=auth_header,
-                    remote_issue_id=item["id"],
-                    page_limit=comment_page_limit,
-                    paging=item["comments_paging"],
-                )
-                if include_comments
-                else []
+            if include_comments
+            else []
+        )
+        item["updates"] = (
+            self._fetch_updates(
+                client,
+                organization_url=organization_url,
+                project=project_name or project,
+                auth_header=auth_header,
+                backlog_item_id=item["id"],
             )
-            item["updates"] = (
-                self._fetch_updates(
-                    client,
-                    organization_url=organization_url,
-                    project=project_name or normalized_project,
-                    auth_header=auth_header,
-                    backlog_item_id=item["id"],
-                )
-                if include_updates
-                else []
-            )
-            inline_media = extract_ado_field_inline_media_refs(
-                fields, provider=self.provider_name, resource_id=item["id"]
-            )
-            for relation in item["relations"]:
-                if isinstance(relation, dict) and isinstance(relation.get("inline_media"), dict):
-                    inline_media.append(relation["inline_media"])
-            for comment in item["comments"]:
-                if isinstance(comment, dict) and isinstance(comment.get("inline_media"), list):
-                    inline_media.extend(comment["inline_media"])
-            item["inline_media"] = inline_media
-            return item
+            if include_updates
+            else []
+        )
+        inline_media = extract_ado_field_inline_media_refs(
+            fields, provider=self.provider_name, resource_id=item["id"]
+        )
+        for relation in item["relations"]:
+            if isinstance(relation, dict) and isinstance(relation.get("inline_media"), dict):
+                inline_media.append(relation["inline_media"])
+        for comment in item["comments"]:
+            if isinstance(comment, dict) and isinstance(comment.get("inline_media"), list):
+                inline_media.extend(comment["inline_media"])
+        item["inline_media"] = inline_media
+        return item
 
     def delete_issue(
         self,
@@ -3515,10 +3644,15 @@ class IssueService:
         skip: int = 0,
         exhaustive: bool = False,
         max_candidates: int = 50,
+        _activity_cache: AdoActivityScanCache | None = None,
+        _cache_scope: str | None = None,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
             raise ValueError(f"Unsupported issue provider: {provider}")
+        cache_kwargs: dict[str, Any] = {}
+        if _activity_cache is not None and isinstance(adapter, AzureDevOpsIssueAdapter):
+            cache_kwargs = {"_activity_cache": _activity_cache, "_cache_scope": _cache_scope}
         return adapter.query_work_item_activity(
             directory_path=directory_path,
             project=project,
@@ -3533,6 +3667,7 @@ class IssueService:
             skip=skip,
             exhaustive=exhaustive,
             max_candidates=max_candidates,
+            **cache_kwargs,
         )
 
     def list_remote_current_iteration_backlog_items(

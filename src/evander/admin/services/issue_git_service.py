@@ -1055,7 +1055,12 @@ class IssueGitAdminService:
                 include_comments=True,
             )
             admin.refresh_proxy_cache_from_remote(issue, remote_payload)
-        return {"issue_number": issue.issue_number, "source_type": "proxy", **result}
+        return {
+            "issue_number": issue.issue_number,
+            "source_type": "proxy",
+            **result,
+            "directory_path": issue.directory_path,
+        }
 
     def update_issue_metadata(
         self,
