@@ -1,7 +1,14 @@
 import json
 from pathlib import Path
 
-from evander.admin.web.app import _index_html
+from starlette.applications import Starlette
+from starlette.routing import Mount
+from starlette.testclient import TestClient
+
+from config_helpers import write_runtime_config
+from evander.admin.composition import build_admin_runtime
+from evander.admin.web import app as web_app
+from evander.admin.web.app import AdminWebStaticFiles, _index_html
 from evander.admin.web.frontend_assets import (
     admin_frontend_assets_ready,
     admin_frontend_hashed_asset_url,
@@ -23,6 +30,60 @@ def test_admin_frontend_assets_ready_requires_referenced_files(tmp_path: Path) -
     (assets_dir / "index-missing.js").write_text("console.log('ok')", encoding="utf-8")
 
     assert admin_frontend_assets_ready(dist_dir) is True
+
+
+def test_admin_web_serves_current_ui_for_saved_and_bookmarked_classic_choice(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    assets_dir = dist_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "current.js").write_text("export {}", encoding="utf-8")
+    (dist_dir / "index.html").write_text(
+        '<html><head><title></title></head><body>'
+        '<script type="module" src="/assets/current.js"></script></body></html>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(web_app, "_dist_dir", lambda: dist_dir)
+    client = TestClient(
+        web_app.create_app(build_admin_runtime(write_runtime_config(tmp_path / "state")))
+    )
+    client.cookies.set("admin_ui_version", "classic")
+
+    for path in ("/", "/index.html?admin_ui=classic"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert '/assets/current.js' in response.text
+        assert "__ADMIN_WEB_BRANDING__" in response.text
+        assert "ui-rollout" not in response.text
+        assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_admin_web_blocks_stale_classic_bundle_after_upgrade(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    (dist_dir / "assets").mkdir(parents=True)
+    (dist_dir / "assets" / "current.js").write_text("export {}", encoding="utf-8")
+    (dist_dir / "index.html").write_text(
+        '<script type="module" src="/assets/current.js"></script>',
+        encoding="utf-8",
+    )
+    classic_dir = dist_dir / "classic"
+    (classic_dir / "assets").mkdir(parents=True)
+    (classic_dir / "index.html").write_text("retired UI", encoding="utf-8")
+    (classic_dir / "assets" / "classic.js").write_text(
+        "retired bundle", encoding="utf-8"
+    )
+    assert admin_frontend_assets_ready(dist_dir)
+
+    client = TestClient(
+        Starlette(routes=[Mount("/", app=AdminWebStaticFiles(directory=dist_dir, html=True))])
+    )
+
+    for path in ("/classic", "/classic/", "/classic/index.html", "/classic/assets/classic.js"):
+        assert client.get(path, follow_redirects=False).status_code == 404
+
+    assert client.get("/assets/current.js").status_code == 200
+    assert client.get("/").status_code == 200
 
 
 def test_admin_frontend_hashed_asset_url_resolves_manifest_assets(tmp_path: Path) -> None:

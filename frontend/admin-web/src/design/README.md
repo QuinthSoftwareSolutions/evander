@@ -38,10 +38,6 @@ The host build runs `sync:design`. It generates `admin-design.css` and
 imports its existing structural styles into a lower-priority CSS layer. Update the
 canonical sources here, then regenerate; do not edit the copies independently.
 
-During the temporary rollout the host build also installs the frozen Classic asset
-package. See `frontend/admin-web/classic/README.md` for version selection, deployment
-requirements, and the complete removal steps.
-
 The add-on assets are package data and have explicit route allowlists where required.
 Host `dist/assets` remains generated/ignored according to the existing build process;
 a deployable checkout must run the host build and include its referenced assets. The

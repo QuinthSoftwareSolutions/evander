@@ -70,17 +70,7 @@ When no asset directory is configured, Admin Web serves the bundled defaults fro
 
 ### Appearance and record navigation
 
-During the design rollout, the header's **UI** selector offers **Classic** and **New UI**.
-**New UI** is the default when no explicit URL or saved preference selects Classic.
-Switching reloads the current page after a confirmation; save
-any edits first. The browser remembers your choice, and each open tab keeps its own
-version. Both versions operate on the same live data and share your signed-in session.
-Only the selected version and its matching built-in add-on assets are loaded.
-
-Use `/?admin_ui=classic` or `/?admin_ui=new` to open a particular version directly.
-The following appearance and list-navigation controls describe New UI.
-
-New UI uses a consistent compact layout. The browser remembers the light/dark theme,
+Admin Web uses a consistent compact layout. The browser remembers the light/dark theme,
 and embedded add-ons receive the same theme. Touch devices retain larger control targets.
 Long names and descriptions wrap in record details, and loading indicators distinguish a
 pending read from an empty inventory.

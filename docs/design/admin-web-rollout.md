@@ -38,11 +38,8 @@ controls, light/dark themes, and consistent compact spacing.
   forms and evidence remain available through **View agent**, **View session**, and
   equivalent page-specific actions. The list and detail view
   stay mounted to retain filters and local state.
-- A temporary **Classic / New UI** header selector defaults to a frozen snapshot of main.
-  It remembers the choice, preserves the current URL, confirms before switching, and
-  loads only the selected application's assets and matching built-in add-ons. Both
-  versions use the same authenticated backend. Packaging and removal are documented in
-  [classic/README.md](../../frontend/admin-web/classic/README.md).
+- The temporary **Classic / New UI** selector was retired after acceptance. The current
+  application and all six built-in add-on UIs now use the compact design.
 - The global rail is 208 px. Controls and one-line rows start at 32/40 px.
   Coarse pointer controls retain 44 px targets. There is no density selector.
 - Inspectors are companion panes on desktop and native dialogs on narrow screens.

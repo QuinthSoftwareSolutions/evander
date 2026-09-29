@@ -88,7 +88,6 @@ tasks/
 !ansible/roles/worker_container_egress_policy/tasks/
 !ansible/roles/worker_container_egress_policy/tasks/main.yml
 frontend/admin-web/tsconfig.tsbuildinfo
-frontend/admin-web/.classic-addons/
 **/dist/*
 /integrations/teams-meeting-media-bridge/**/bin/
 /integrations/teams-meeting-media-bridge/**/obj/

@@ -7,16 +7,14 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
-_ASSET_REFERENCE_RE = re.compile(r"""(?:src|href)=["'](?P<path>/?(?:classic/)?assets/[^"']+)["']""")
+_ASSET_REFERENCE_RE = re.compile(r"""(?:src|href)=["'](?P<path>/?assets/[^"']+)["']""")
 
 
 def admin_frontend_dist_dir(project_dir: Path) -> Path:
     return project_dir / "frontend" / "admin-web" / "dist"
 
 
-def missing_admin_frontend_assets(
-    dist_dir: Path, *, asset_root: Path | None = None, include_rollout: bool = True
-) -> list[Path]:
+def missing_admin_frontend_assets(dist_dir: Path) -> list[Path]:
     index_path = dist_dir / "index.html"
     if not index_path.is_file():
         return [index_path]
@@ -28,26 +26,11 @@ def missing_admin_frontend_assets(
     ]
     if not references:
         return [dist_dir / "assets" / "*.js"]
-    root = asset_root or dist_dir
-    missing = [
-        root / reference for reference in references if not (root / reference).is_file()
-    ]
-    rollout = dist_dir / "ui-rollout.json"
-    if include_rollout and rollout.is_file():
-        try:
-            required = json.loads(rollout.read_text())["required_files"]
-            missing.extend(dist_dir.parent / name for name in required if not (dist_dir.parent / name).is_file())
-        except (OSError, KeyError, TypeError, json.JSONDecodeError):
-            missing.append(rollout)
-    return missing
+    return [dist_dir / reference for reference in references if not (dist_dir / reference).is_file()]
 
 
-def admin_frontend_assets_ready(
-    dist_dir: Path, *, asset_root: Path | None = None, include_rollout: bool = True
-) -> bool:
-    return not missing_admin_frontend_assets(
-        dist_dir, asset_root=asset_root, include_rollout=include_rollout
-    )
+def admin_frontend_assets_ready(dist_dir: Path) -> bool:
+    return not missing_admin_frontend_assets(dist_dir)
 
 
 def admin_frontend_hashed_asset_url(dist_dir: Path, asset_name: str) -> str | None:
