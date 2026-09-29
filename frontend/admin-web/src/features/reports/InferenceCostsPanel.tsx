@@ -3,7 +3,7 @@ import { adminHash } from "../../adminRouting";
 import { useAdminUi } from "../admin/AdminContext";
 import { fetchJson } from "../admin/api";
 import { useDocumentVisible } from "../admin/visibility";
-import { browserCostDate, costAccountId, costAccountName, costCategoryName, costColor, costMoney, shiftCostDate,
+import { browserCostDate, costAccountId, costAccountName, costCategoryName, costColors, costMoney, shiftCostDate,
   type InferenceCostReport } from "./inferenceCosts";
 import "./inferenceCosts.css";
 
@@ -24,12 +24,14 @@ function Chart({ report, kind, selected }: { report: InferenceCostReport; kind: 
   const plotW = width - LEFT - RIGHT;
   const barWidth = Math.min(48, plotW / Math.max(1, report.daily.length) * 0.8);
   const categories = [...new Set(report.groups.map((group) => group.category))];
+  const categoryColors = costColors(categories);
+  const accountColors = costColors(report.accounts.map((account) => account.id));
   const selectedAccounts = report.accounts.filter((account) => selected.includes(account.id));
   const accounts = selectedAccounts.filter((account) => report.groups.some((group) => costAccountId(group) === account.id && group.priced_events > 0));
   const unavailableAccounts = selectedAccounts.filter((account) => !accounts.includes(account));
   const series = kind === "total" ? [{ id: "total", name: "Total", color: "#497bdf",
     values: report.daily.map((day) => day.cumulative_cost) }]
-    : accounts.map((account) => ({ id: account.id, name: costAccountName(account), color: costColor(account.id),
+    : accounts.map((account) => ({ id: account.id, name: costAccountName(account), color: accountColors.get(account.id)!,
       values: report.daily.map((day) => day.accounts.find((item) => item.id === account.id)?.cumulative_cost ?? 0) }));
   const maximum = Math.max(0.01, ...(kind === "daily" ? report.daily.map((day) => day.cost) : series.flatMap((item) => item.values)));
   const y = (value: number) => TOP + plotH * (1 - value / maximum);
@@ -55,10 +57,10 @@ function Chart({ report, kind, selected }: { report: InferenceCostReport; kind: 
           const base = offset; offset += amount;
           if (!amount) return null;
           const label = `${day.date} · ${costCategoryName(category)}: ${costMoney(amount)}`;
-          return <rect key={`${day.date}:${JSON.stringify(category)}`} tabIndex={0} role="img" aria-label={label}
+          return <rect className="cost-bar" key={`${day.date}:${JSON.stringify(category)}`} tabIndex={0} role="img" aria-label={label}
             x={x(index) - plotW / report.daily.length / 2 - barWidth / 2} y={y(offset)}
             width={barWidth} height={Math.max(0, y(base) - y(offset))}
-            fill={costColor(category)} onFocus={() => setDetail(label)} onMouseEnter={() => setDetail(label)}>
+            fill={categoryColors.get(category)} onFocus={() => setDetail(label)} onMouseEnter={() => setDetail(label)}>
             <title>{label}</title>
           </rect>;
         });
@@ -74,7 +76,7 @@ function Chart({ report, kind, selected }: { report: InferenceCostReport; kind: 
     </svg>
     <div className="cost-chart-detail" aria-live="polite">{detail || "Point to or focus a chart value for details."}</div>
     <ul className="cost-legend" aria-label="Chart legend">
-      {(kind === "daily" ? categories.map((category) => ({ id: JSON.stringify(category), name: costCategoryName(category), color: costColor(category) })) : series)
+      {(kind === "daily" ? categories.map((category) => ({ id: JSON.stringify(category), name: costCategoryName(category), color: categoryColors.get(category) })) : series)
         .map((item) => <li key={item.id}><span style={{ background: item.color }} />{item.name}</li>)}
     </ul>
     {kind === "compare" && unavailableAccounts.length > 0 && <p className="muted-text">Unavailable: {unavailableAccounts.map(costAccountName).join(", ")}</p>}
@@ -99,9 +101,16 @@ function CostTable({ report }: { report: InferenceCostReport }) {
 function CostTableGroup({ groups, subtotal, priced }: { groups: InferenceCostReport["groups"]; subtotal: number; priced: boolean }) {
   return <>{groups.map((group) => <tr key={JSON.stringify(group.category)}>
     <td>{group.provider}</td><td>{group.api_key_name ?? "Unknown key"}</td><td>{costCategoryName(group.category)}</td>
-    <td>{group.cost === null ? "Unavailable" : costMoney(group.cost)}{group.cost !== null && group.unpriced_events > 0 ? " (partial)" : ""}</td>
+    <td>{group.cost === null ? "Unavailable" : costMoney(group.cost)}<MissingCosts count={group.unpriced_events} /></td>
   </tr>)}<tr className="cost-subtotal"><th colSpan={3}>{groups[0]?.provider} / {groups[0]?.api_key_name ?? "Unknown key"} subtotal</th>
-    <td>{priced ? costMoney(subtotal) : "Unavailable"}{priced && groups.some((group) => group.unpriced_events) ? " (partial)" : ""}</td></tr></>;
+    <td>{priced ? costMoney(subtotal) : "Unavailable"}<MissingCosts count={groups.reduce((sum, group) => sum + group.unpriced_events, 0)} /></td></tr></>;
+}
+
+function MissingCosts({ count }: { count: number }) {
+  return count > 0 ? <small className="cost-coverage-note"
+    title="These requests lack usage or pricing data, so their costs are excluded from this amount.">
+    {count.toLocaleString()} {count === 1 ? "request" : "requests"} excluded
+  </small> : null;
 }
 
 export function InferenceCostsPanel({ compact = false, refreshKey = 0 }: { compact?: boolean; refreshKey?: number }) {
@@ -159,7 +168,11 @@ export function InferenceCostsPanel({ compact = false, refreshKey = 0 }: { compa
       <p className="cost-headline">{report.coverage.priced_events || !report.coverage.partial ? costMoney(report.total_cost) : "Unavailable"}
         {report.coverage.partial && <span>Partial total</span>}</p>
       <p className="muted-text">Provider-reported charges where available; otherwise estimates from configured prices.</p>
-      {report.coverage.partial && <p role="status">{report.coverage.unpriced_events} requests have unavailable prices; {report.coverage.unknown_billing_events} requests with unknown billing are excluded.</p>}
+      {report.coverage.partial && <p role="status">
+        {report.coverage.priced_events.toLocaleString()} of {(report.coverage.priced_events + report.coverage.unpriced_events).toLocaleString()} API requests have cost data.
+        {report.coverage.unpriced_events > 0 && <> {report.coverage.unpriced_events.toLocaleString()} lack usage or pricing data and are excluded.</>}
+        {report.coverage.unknown_billing_events > 0 && <> {report.coverage.unknown_billing_events.toLocaleString()} requests with unknown billing are also excluded.</>}
+      </p>}
       {!report.groups.length && <p>No API inference recorded for this period.</p>}
       <div className="cost-controls">
         <label>Accumulated chart<select aria-label="Accumulated chart" value={mode} onChange={(event) => {

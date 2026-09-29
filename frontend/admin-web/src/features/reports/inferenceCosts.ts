@@ -21,11 +21,16 @@ export const costCategoryName = (value: string | null) => value ?? "Uncategorize
 export const costAccountName = (value: CostAccount) => `${value.provider} / ${value.api_key_name ?? "Unknown key"}`;
 export const costAccountId = (value: Pick<CostGroup, "provider" | "api_key_name">) => JSON.stringify([value.provider, value.api_key_name]);
 
-export function costColor(value: string | null): string {
-  if (value === null) return "#88929e";
-  let hash = 0;
-  for (const character of value) hash = ((hash * 31) + character.codePointAt(0)!) >>> 0;
-  return `hsl(${hash % 360} 62% 48%)`;
+const COST_PALETTE = ["#0072b2", "#d55e00", "#009e73", "#cc79a7", "#e69f00", "#56b4e9", "#6f4e9c", "#8c564b"];
+
+export function costColors(values: readonly (string | null)[]): Map<string | null, string> {
+  const colors = new Map<string | null, string>([[null, "#88929e"]]);
+  const labels = [...new Set(values.filter((value): value is string => value !== null))].sort();
+  // Allocate across the whole report so adjacent series cannot collide and
+  // selecting or reordering accounts does not change their colors.
+  labels.forEach((label, index) => colors.set(label, COST_PALETTE[index]
+    ?? `hsl(${(index * 137.508) % 360} 65% 42%)`));
+  return colors;
 }
 
 export function shiftCostDate(value: string, days: number): string {

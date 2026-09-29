@@ -12,6 +12,7 @@
 .inference-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
 .inference-chart svg text { fill: currentColor; font: 12px system-ui, sans-serif; }
 .cost-grid-line { stroke: currentColor; opacity: .13; }
+.cost-bar { stroke: #ffffff; stroke-width: .75; }
 .inference-chart svg [tabindex]:focus { outline: 2px solid currentColor; outline-offset: 3px; }
 .cost-chart-detail { min-height: 1.5em; font-size: .85rem; }
 .cost-legend { display: flex; gap: .5rem 1.2rem; flex-wrap: wrap; list-style: none; padding: 0; font-size: .85rem; }
@@ -23,4 +24,5 @@
 .inference-cost-table th, .inference-cost-table td { text-align: left; padding: .65rem; border-bottom: 1px solid #8993a333; }
 .inference-cost-table th:last-child, .inference-cost-table td:last-child { text-align: right; white-space: nowrap; }
 .inference-cost-table .cost-subtotal { background: #8993a311; }
+.cost-coverage-note { display: block; font-size: .8rem; font-weight: 400; opacity: .75; }
 @media (max-width: 600px) { .inference-cost-panel { padding: .7rem; } .inference-chart svg { min-height: 190px; } }
