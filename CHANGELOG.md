@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-29 - Open workflow canvases at the first lane (0.72.3)
+
+- Open each workflow pack and directory at the start of its topmost workflow at a
+  readable zoom, including large canvases with many horizontal lanes.
+
 ## 2026-09-29 - Retire the Classic Admin Web UI (0.72.2)
 
 - Serve the current Admin Web and add-on UIs directly, removing the temporary version
