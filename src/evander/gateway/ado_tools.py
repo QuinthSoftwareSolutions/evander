@@ -400,6 +400,7 @@ def register_ado_tools(
             if acceptance_artifacts:
                 create_kwargs["acceptance_criteria_attachments"] = acceptance_artifacts
             remote_payload = issue_service.create_remote_issue(**create_kwargs)
+            deps.ado_activity_cache.invalidate_directory(session.directory_path)
             remote_fields = (
                 remote_payload.get("fields")
                 if isinstance(remote_payload.get("fields"), dict)
@@ -514,6 +515,7 @@ def register_ado_tools(
                 mentions=request_model.mentions or None,
                 attachments=artifacts,
             )
+            deps.ado_activity_cache.invalidate_directory(session.directory_path)
             audit_result = {
                 "work_item_id": request_model.id,
                 "project": request_model.project,
@@ -570,6 +572,7 @@ def register_ado_tools(
                 project=request_model.project,
                 destroy=request_model.destroy,
             )
+            deps.ado_activity_cache.invalidate_directory(session.directory_path)
             payload_source = remote_payload if isinstance(remote_payload, dict) else {}
             normalized_destroy = bool(payload_source.get("destroy", request_model.destroy))
             response_model = AdoBacklogDeleteResponse.model_validate(
@@ -688,6 +691,7 @@ def register_ado_tools(
                 fields=fields,
                 field_attachments=field_attachments,
             )
+            deps.ado_activity_cache.invalidate_directory(session.directory_path)
             audit_success(
                 session_id,
                 ToolName.UPDATE_ADO_BACKLOG_TEXT,
@@ -742,6 +746,7 @@ def register_ado_tools(
                 state=None,
                 fields={"System.Title": request_model.title},
             )
+            deps.ado_activity_cache.invalidate_directory(session.directory_path)
             result_fields = result.get("fields")
             updated_title = request_model.title
             if isinstance(result_fields, dict) and "System.Title" in result_fields:
@@ -816,6 +821,7 @@ def register_ado_tools(
                 expected_state=request_model.expected_state,
                 fields=None,
             )
+            deps.ado_activity_cache.invalidate_directory(session.directory_path)
             response = {**result, "work_item_id": request_model.id}
             audit_success(
                 session_id,
@@ -888,6 +894,7 @@ def register_ado_tools(
                 state=None,
                 fields={"System.Tags": "; ".join(merged_tags)},
             )
+            deps.ado_activity_cache.invalidate_directory(session.directory_path)
             response = {
                 **result,
                 "work_item_id": request_model.id,
@@ -1171,6 +1178,8 @@ def register_ado_tools(
                 skip=request.skip,
                 exhaustive=request.exhaustive,
                 max_candidates=request.max_candidates,
+                _activity_cache=deps.ado_activity_cache,
+                _cache_scope=request.session_id,
             )
             response_model = AdoWorkItemActivityResponse.model_validate(remote_payload)
             payload = response_model.model_dump(mode="json")

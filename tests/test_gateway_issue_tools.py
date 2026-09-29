@@ -1815,3 +1815,135 @@ def test_delete_ado_backlog_item_propagates_missing_work_item_error(
     ]
     assert [event["decision"] for event in tool_events] == ["pending_approval", "error"]
     assert tool_events[-1]["result"]["error_class"] == "unexpected_error"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "arguments"),
+    [
+        ("update_ado_backlog_title", {"id": 1, "title": "Updated"}),
+        ("update_ado_backlog_text", {"id": 1, "description": "Updated"}),
+        ("update_ado_backlog_state", {"id": 1, "state": "Active"}),
+        ("update_ado_backlog_tags", {"id": 1, "add_tags": ["example"]}),
+        ("post_ado_backlog_comment", {"id": 1, "comment": "Updated"}),
+        ("delete_ado_backlog_item", {"id": 1}),
+        (
+            "create_ado_backlog_item",
+            {"type": "task", "title": "New", "iteration": "Example\\Sprint 1"},
+        ),
+    ],
+)
+def test_activity_cache_survives_service_factories_and_invalidates_after_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    arguments: dict,
+) -> None:
+    import httpx
+    from evander.issues.service import AzureDevOpsIssueAdapter, IssueService
+
+    context = make_context(tmp_path)
+    session = SessionManifest(
+        session_id="session-activity",
+        directory_path="root/team-a",
+        allowed_tools=[ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY, ToolName(mutation)],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    context.session_repository.upsert_session(session)
+    state = {"revision": 0, "batches": 0, "instances": 0}
+    monkeypatch.setattr(
+        AzureDevOpsIssueAdapter,
+        "_resolve_connection",
+        lambda self, directory: (
+            "https://dev.azure.com/example",
+            "Example",
+            "synthetic-pat",
+        ),
+    )
+
+    def item():
+        return {
+            "id": 1,
+            "fields": {
+                "System.Title": f"revision-{state['revision']}",
+                "System.ChangedDate": "2026-09-25T08:00:00Z",
+            },
+        }
+
+    def handle(request):
+        if request.url.path.endswith("/wiql"):
+            return httpx.Response(200, json={"workItems": [{"id": 1}]})
+        if request.url.path.endswith("/workitemsbatch"):
+            state["batches"] += 1
+            return httpx.Response(200, json={"value": [item()]})
+        if request.url.path.endswith("/comments"):
+            return httpx.Response(200, json={"comments": []})
+        if request.url.path.endswith("/updates"):
+            return httpx.Response(200, json={"value": []})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        "evander.issues.service.httpx.Client",
+        lambda timeout: client_type(
+            timeout=timeout,
+            transport=httpx.MockTransport(handle),
+        ),
+    )
+
+    class MutationStub(IssueService):
+        def __init__(self, provider_config):
+            super().__init__(provider_config)
+            state["instances"] += 1
+
+        def _mutate(self, **kwargs):
+            state["revision"] += 1
+            return {
+                "provider": "azure_devops",
+                "remote_issue_id": "1",
+                "id": 1,
+                "project": "Example",
+                "updated": True,
+                "url": "https://dev.azure.com/example/_workitems/edit/1",
+                "fields": {"System.Title": "Updated"},
+                "comment": {"id": 1},
+            }
+
+        create_remote_issue = _mutate
+        update_remote_issue = _mutate
+        post_remote_comment = _mutate
+        delete_remote_issue = _mutate
+
+        def read_remote_issue(self, **kwargs):
+            return {"fields": {"System.Tags": ""}}
+
+    monkeypatch.setattr("evander.gateway.IssueService", MutationStub)
+    server = create_server(context)
+    query = {"session_id": session.session_id, "since": "2026-09-25T00:00:00Z"}
+    assert (
+        call_tool(server, "query_ado_work_item_activity", query)["items"][0]["title"]
+        == "revision-0"
+    )
+    assert call_tool(server, "query_ado_work_item_activity", query)["count"] == 1
+    assert state["batches"] == 1
+    assert state["instances"] == 2
+    mutation_arguments = {"session_id": session.session_id, "project": "Example", **arguments}
+    if mutation == "delete_ado_backlog_item":
+        with pytest.raises(ToolError, match="requires approval"):
+            call_tool(server, mutation, mutation_arguments)
+        approval = next(iter(context.approvals.read_all().values()))
+        approval.status = ApprovalStatus.APPROVED
+        approval.approver = "operator"
+        approval.decision_at = datetime.now(UTC)
+        context.approvals.put(approval.request_id, approval)
+        mutation_arguments["approval_request_id"] = approval.request_id
+    call_tool(server, mutation, mutation_arguments)
+    assert (
+        call_tool(server, "query_ado_work_item_activity", query)["items"][0]["title"]
+        == "revision-1"
+    )
+    assert state["batches"] == 2
+    context.session_repository.upsert_session(session.model_copy(update={"allowed_tools": []}))
+    with pytest.raises(ToolError, match="not allowed"):
+        call_tool(server, "query_ado_work_item_activity", query)
+    assert state["batches"] == 2
+    assert state["instances"] == 4

@@ -123,10 +123,21 @@ limit is reached, `has_more` can be true even if `next_skip` is absent: increase
 `max_candidates`, narrow the time window, or explicitly request `exhaustive=true`
 to broaden the scan. Paging an incomplete result does not expand its candidate scope.
 
-Each request freezes the candidate IDs from one WIQL query and reads candidate
-histories concurrently. Deleted or inaccessible batch items still consume their
+Each fresh scan freezes the candidate IDs from one WIQL query, fetches full records
+in batches of up to 200, and reads comment and update histories concurrently. Deleted or inaccessible batch items still consume their
 candidate positions, so an omitted item does not skip a later page. This improves
 bounded activity reads without changing the meaning of the returned activity.
+
+Identical gateway queries in the same session reuse the completed result set for five
+minutes, including when `top` or `skip` changes. Overlapping requests share one scan.
+Authorization and current provider credentials are checked for every request. Successful
+gateway work-item mutations invalidate affected directory results; external changes can
+remain unseen until expiry. Expiry or eviction can start a new result set between pages.
+
+The cache retains at most 64 MiB of serialized data and 128 entries per gateway instance.
+Oversized results are returned without retention. Active scans and decoded pages use
+additional memory. Gateway restarts clear the cache; other service callers remain fresh.
+
 
 ## Reviews and merge checks
 

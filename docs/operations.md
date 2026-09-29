@@ -1605,6 +1605,18 @@ A transport-terminated warning without client-visible failure can be expected fo
 - By default the tool bounds the number of matching candidate work items it expands into detailed
   activity records. Set `exhaustive=true` only when exact totals are needed and the wider ADO scan
   cost is acceptable.
+- Identical gateway queries in the same session reuse a completed scan for five minutes;
+  `top` and `skip` select pages from that result set. Overlapping identical queries share
+  one scan. Expiry, eviction, or a successful work-item mutation through this gateway
+  refreshes the affected result set. External changes can remain unseen until expiry.
+- Each gateway instance retains at most 64 MiB of serialized scan data and 128 entries.
+  Oversized results are returned without retention; active scans and decoded responses
+  use additional memory. Restarting the gateway clears the cache.
+- Cold scans fetch full work-item records in batches of up to 200, followed by concurrent
+  comment and update-history reads. The cache does not change exhaustive or bounded
+  completeness semantics. Policy and current provider credentials are checked on hits.
+- `ado_activity_cache` and `ado_activity_scan` logs expose cache outcomes, retained bytes,
+  candidate counts, and scan phases without logging work-item contents or credentials.
 - Update-history records use the semantic `System.ChangedBy.newValue` and
   `System.ChangedDate.newValue` fields when ADO provides them, and metadata-only revisions are
   omitted from the default activity output.

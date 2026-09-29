@@ -1,15 +1,15 @@
 {
   "edition": "1.1",
-  "generated_at": "2026-09-27T21:50:58.734994+00:00",
+  "generated_at": "2026-09-29T21:51:47.446619+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "65bf53f76d1b74c7ef8708f7b5270a3105b1d7a661daa07cdd23b88737374fb8",
-    "docs/evander-user-manual.html": "5690e832b67056493c708ccf0c84f5931cdfa1fc294374c12aba6a2fbfed51c9",
-    "docs/evander-user-manual.md": "b5e6f1d0485de499619fde81e1fcd791398b42b1ba8bd6e643d5e7f243c000ab",
-    "docs/evander-user-manual.pdf": "a2c16b3ddff5e68fd0aaaeace7275f6d98f4b90503b76c4218fb5b1e0c0488fb"
+    "docs/evander-user-manual.docx": "902c1dd1708e0c8667e8fd004c85e2188e869de69afb65eefcf923cbd32247b6",
+    "docs/evander-user-manual.html": "94518c852b3b010e4d363f784ac6e4d04c6e0c5157e3ee8f1062c2c1661401ed",
+    "docs/evander-user-manual.md": "28cc61ae4e1cb193cad737752ba4677dce5d9df87f8701e4d4f7496b4872e1bf",
+    "docs/evander-user-manual.pdf": "badcd500f6a355f790a135c85629ebbeef078b4558fd352acde053741861bdc3"
   },
   "project_version": "0.64.0",
   "schema_version": 1,
-  "source_fingerprint": "6e936e87be13afb673e9376f448eb54c02aff436db288ca4f96665a836c89f39",
+  "source_fingerprint": "902d8ee2901cc0b00305e3bacbb81a99d08944a2e508a198f41c731992afd500",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -71,7 +71,7 @@
     "docs/evander-user-manual/chapters/09-execution-backends.md": "82975d9347ec233f334d9be1a21d0a6f3c42f5e3a56802c8f89ad3404bda25a4",
     "docs/evander-user-manual/chapters/10-networking-relays-secrets.md": "1637874a7d7cd743f6494a3adea28d28d1528805552b32625478a01fe5b4bb27",
     "docs/evander-user-manual/chapters/11-managed-git-artifacts-consultations.md": "c3fd913150db1a808d7d0848cf643c02828ef0fcecdbae025e9455df964b8fe4",
-    "docs/evander-user-manual/chapters/12-issues-provider-integrations.md": "2c615a00d9fcf3f9729feaf9a208889e5b5c5e1137dbe55cd045bc55875adba3",
+    "docs/evander-user-manual/chapters/12-issues-provider-integrations.md": "e96c6d036a2dacdc49fba476d2cada3889b37a9b25ae3f5b3e4064273164bcc9",
     "docs/evander-user-manual/chapters/13-communications-and-wakes.md": "483f9797f74a2a61b269008dd841781083729e6421020dc9baa0593914f27836",
     "docs/evander-user-manual/chapters/14-semantic-model-usage-skills-addons.md": "7dd0acdcb2a8a41240bfe4a22b5ca9d6ca68d990f2e5a70ac3f5cfae39d9fb3b",
     "docs/evander-user-manual/chapters/15-admin-operations-recovery.md": "a7c7a82df1f4006518ccc83e8a5a2218a1e66d7b1cfde5bef2270b21c0665149",

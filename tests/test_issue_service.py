@@ -1430,7 +1430,9 @@ def test_query_work_item_activity_filters_created_comments_and_updates(
                 "value": [
                     {
                         "id": 101,
+                        "url": "https://dev.azure.com/example/_apis/wit/workItems/101",
                         "fields": {
+                            "System.TeamProject": "My Project",
                             "System.Title": "Activity item",
                             "System.State": "Active",
                             "System.WorkItemType": "Task",
@@ -1452,34 +1454,6 @@ def test_query_work_item_activity_filters_created_comments_and_updates(
                         },
                     }
                 ]
-            },
-        ),
-        httpx.Response(
-            200,
-            json={
-                "id": 101,
-                "url": "https://dev.azure.com/example/_apis/wit/workItems/101",
-                "fields": {
-                    "System.TeamProject": "My Project",
-                    "System.Title": "Activity item",
-                    "System.State": "Active",
-                    "System.WorkItemType": "Task",
-                    "System.CreatedDate": "2026-06-01T09:00:00Z",
-                    "System.CreatedBy": {
-                        "displayName": "Alex Example",
-                        "uniqueName": "alex@example.com",
-                    },
-                    "System.ChangedDate": "2026-06-03T11:00:00Z",
-                    "System.ChangedBy": {
-                        "displayName": "Alex Example",
-                        "uniqueName": "alex@example.com",
-                    },
-                },
-                "_links": {
-                    "web": {
-                        "href": "https://dev.azure.com/example/My%20Project/_workitems/edit/101"
-                    }
-                },
             },
         ),
         httpx.Response(
@@ -1520,10 +1494,7 @@ def test_query_work_item_activity_filters_created_comments_and_updates(
                             "uniqueName": "alex@example.com",
                         },
                         "fields": {
-                            "System.Title": {
-                                "oldValue": "Old title",
-                                "newValue": "Activity item",
-                            }
+                            "System.Title": {"oldValue": "Old title", "newValue": "Activity item"}
                         },
                     },
                     {
@@ -1609,26 +1580,14 @@ def test_query_work_item_activity_uses_update_changed_by_for_actor(
             httpx.Response(
                 200,
                 json={
-                    "id": 101,
-                    "fields": {
-                        "System.TeamProject": "My Project",
-                        "System.Title": "Activity item",
-                        "System.State": "Active",
-                        "System.WorkItemType": "Task",
-                    },
-                },
-            ),
-            httpx.Response(
-                200,
-                json={
                     "value": [
                         {
                             "id": 5,
                             "rev": 5,
                             "revisedDate": "2026-06-02T10:00:00Z",
                             "revisedBy": {
-                                "displayName": "Jonathan Quinth",
-                                "uniqueName": "jonathan@example.com",
+                                "displayName": "Automation User",
+                                "uniqueName": "automation@example.com",
                             },
                             "fields": {
                                 "System.ChangedBy": {
@@ -1649,8 +1608,8 @@ def test_query_work_item_activity_uses_update_changed_by_for_actor(
                             "rev": 6,
                             "revisedDate": "2026-06-02T11:00:00Z",
                             "revisedBy": {
-                                "displayName": "Jonathan Quinth",
-                                "uniqueName": "jonathan@example.com",
+                                "displayName": "Automation User",
+                                "uniqueName": "automation@example.com",
                             },
                             "fields": {
                                 "System.ChangedBy": {
@@ -1678,7 +1637,7 @@ def test_query_work_item_activity_uses_update_changed_by_for_actor(
 
     wrong_actor_result = adapter.query_work_item_activity(
         directory_path="root",
-        actor="jonathan@example.com",
+        actor="automation@example.com",
         since=datetime(2026, 6, 1, tzinfo=UTC),
         until=datetime(2026, 6, 3, tzinfo=UTC),
         activity_types=["changed"],
@@ -1732,61 +1691,49 @@ def test_query_work_item_activity_paginates_after_activity_filtering(
             200,
             json={
                 "value": [
-                    {"id": 202, "fields": {"System.Title": "Other user created"}},
-                    {"id": 101, "fields": {"System.Title": "Alex created newest"}},
-                    {"id": 102, "fields": {"System.Title": "Alex created older"}},
+                    {
+                        "id": 202,
+                        "fields": {
+                            "System.TeamProject": "My Project",
+                            "System.Title": "Other user created",
+                            "System.State": "Active",
+                            "System.WorkItemType": "Task",
+                            "System.CreatedDate": "2026-06-04T12:00:00Z",
+                            "System.CreatedBy": {
+                                "displayName": "Other User",
+                                "uniqueName": "other@example.com",
+                            },
+                        },
+                    },
+                    {
+                        "id": 101,
+                        "fields": {
+                            "System.TeamProject": "My Project",
+                            "System.Title": "Alex created newest",
+                            "System.State": "Active",
+                            "System.WorkItemType": "Task",
+                            "System.CreatedDate": "2026-06-03T12:00:00Z",
+                            "System.CreatedBy": {
+                                "displayName": "Alex Example",
+                                "uniqueName": "alex@example.com",
+                            },
+                        },
+                    },
+                    {
+                        "id": 102,
+                        "fields": {
+                            "System.TeamProject": "My Project",
+                            "System.Title": "Alex created older",
+                            "System.State": "Active",
+                            "System.WorkItemType": "Task",
+                            "System.CreatedDate": "2026-06-02T12:00:00Z",
+                            "System.CreatedBy": {
+                                "displayName": "Alex Example",
+                                "uniqueName": "alex@example.com",
+                            },
+                        },
+                    },
                 ]
-            },
-        ),
-        httpx.Response(
-            200,
-            json={
-                "id": 202,
-                "fields": {
-                    "System.TeamProject": "My Project",
-                    "System.Title": "Other user created",
-                    "System.State": "Active",
-                    "System.WorkItemType": "Task",
-                    "System.CreatedDate": "2026-06-04T12:00:00Z",
-                    "System.CreatedBy": {
-                        "displayName": "Other User",
-                        "uniqueName": "other@example.com",
-                    },
-                },
-            },
-        ),
-        httpx.Response(
-            200,
-            json={
-                "id": 101,
-                "fields": {
-                    "System.TeamProject": "My Project",
-                    "System.Title": "Alex created newest",
-                    "System.State": "Active",
-                    "System.WorkItemType": "Task",
-                    "System.CreatedDate": "2026-06-03T12:00:00Z",
-                    "System.CreatedBy": {
-                        "displayName": "Alex Example",
-                        "uniqueName": "alex@example.com",
-                    },
-                },
-            },
-        ),
-        httpx.Response(
-            200,
-            json={
-                "id": 102,
-                "fields": {
-                    "System.TeamProject": "My Project",
-                    "System.Title": "Alex created older",
-                    "System.State": "Active",
-                    "System.WorkItemType": "Task",
-                    "System.CreatedDate": "2026-06-02T12:00:00Z",
-                    "System.CreatedBy": {
-                        "displayName": "Alex Example",
-                        "uniqueName": "alex@example.com",
-                    },
-                },
             },
         ),
     ]
@@ -1795,10 +1742,6 @@ def test_query_work_item_activity_paginates_after_activity_filtering(
         lambda timeout: _RecordingClient(
             calls,
             responses[:2],
-            get_responses={
-                f"https://dev.azure.com/example/My%20Project/_apis/wit/workitems/{response.json()['id']}": response
-                for response in responses[2:]
-            },
         ),
     )
 
@@ -1838,39 +1781,31 @@ def test_query_work_item_activity_bounds_candidate_scan(
             200,
             json={
                 "value": [
-                    {"id": 101, "fields": {"System.Title": "First"}},
-                    {"id": 102, "fields": {"System.Title": "Second"}},
+                    {
+                        "id": 101,
+                        "fields": {
+                            "System.TeamProject": "My Project",
+                            "System.Title": "First",
+                            "System.CreatedDate": "2026-06-02T10:00:00Z",
+                            "System.CreatedBy": {
+                                "displayName": "Alex Example",
+                                "uniqueName": "alex@example.com",
+                            },
+                        },
+                    },
+                    {
+                        "id": 102,
+                        "fields": {
+                            "System.TeamProject": "My Project",
+                            "System.Title": "Second",
+                            "System.CreatedDate": "2026-06-02T11:00:00Z",
+                            "System.CreatedBy": {
+                                "displayName": "Alex Example",
+                                "uniqueName": "alex@example.com",
+                            },
+                        },
+                    },
                 ]
-            },
-        ),
-        httpx.Response(
-            200,
-            json={
-                "id": 101,
-                "fields": {
-                    "System.TeamProject": "My Project",
-                    "System.Title": "First",
-                    "System.CreatedDate": "2026-06-02T10:00:00Z",
-                    "System.CreatedBy": {
-                        "displayName": "Alex Example",
-                        "uniqueName": "alex@example.com",
-                    },
-                },
-            },
-        ),
-        httpx.Response(
-            200,
-            json={
-                "id": 102,
-                "fields": {
-                    "System.TeamProject": "My Project",
-                    "System.Title": "Second",
-                    "System.CreatedDate": "2026-06-02T11:00:00Z",
-                    "System.CreatedBy": {
-                        "displayName": "Alex Example",
-                        "uniqueName": "alex@example.com",
-                    },
-                },
             },
         ),
     ]
@@ -1879,10 +1814,6 @@ def test_query_work_item_activity_bounds_candidate_scan(
         lambda timeout: _RecordingClient(
             calls,
             responses[:2],
-            get_responses={
-                f"https://dev.azure.com/example/My%20Project/_apis/wit/workitems/{response.json()['id']}": response
-                for response in responses[2:]
-            },
         ),
     )
 
