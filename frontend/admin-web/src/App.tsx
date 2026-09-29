@@ -1251,6 +1251,7 @@ export default function App() {
       normalizedDocument,
       defaultDirectoryPath,
     );
+    hasAutoFitRef.current = false;
     validationCacheRef.current.clear();
     const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
       graphVisibleInDirectory(graph, defaultDirectoryPath),
@@ -2023,13 +2024,32 @@ export default function App() {
 
   useEffect(() => {
     if (!flowInstance || displayedFlowNodes.length === 0 || hasAutoFitRef.current) return;
+    hasAutoFitRef.current = true;
     queueMicrotask(() => {
-      void flowInstance.fitView({ padding: 0.2 }).finally(() => {
+      const nodesById = new Map(displayedFlowNodes.map((node) => [node.id, node]));
+      const graphs = canvasVisibleWorkflowGraphs
+        .map((graph) => graph.node_ids.flatMap((id) => nodesById.get(id) ?? []))
+        .filter((nodes) => nodes.length > 0)
+        .sort((left, right) =>
+          Math.min(...left.map((node) => node.position.y)) - Math.min(...right.map((node) => node.position.y))
+          || Math.min(...left.map((node) => node.position.x)) - Math.min(...right.map((node) => node.position.x)),
+        );
+      const firstNode = [...(graphs[0] ?? displayedFlowNodes)].sort((left, right) =>
+        left.position.x - right.position.x || left.position.y - right.position.y,
+      )[0];
+      const zoom = 0.8;
+      const positionCanvas = isInspectMode || isTutorialMode
+        ? flowInstance.fitView({ padding: 0.2 })
+        : flowInstance.setViewport({
+          x: Math.min(280, (canvasShellRef.current?.clientWidth ?? 960) * 0.25) - firstNode.position.x * zoom,
+          y: 100 - firstNode.position.y * zoom,
+          zoom,
+        });
+      void positionCanvas.finally(() => {
         setCanvasViewport(flowInstance.getViewport());
       });
-      hasAutoFitRef.current = true;
     });
-  }, [flowInstance, displayedFlowNodes, displayedFlowEdges]);
+  }, [flowInstance, displayedFlowNodes, displayedFlowEdges, canvasVisibleWorkflowGraphs, isInspectMode, isTutorialMode]);
 
   useEffect(() => {
     if (!isTutorialMode || !activeWorkflowTutorialStep) {
@@ -3258,7 +3278,7 @@ export default function App() {
               nodesDraggable={!workflowMutationLocked && (!isCompactCanvasTouchMode || compactCanvasMode !== "connect")}
               nodesConnectable={!workflowMutationLocked}
               elementsSelectable={!workflowEditLocked}
-              fitView
+              fitView={isInspectMode || isTutorialMode}
               deleteKeyCode={workflowMutationLocked ? null : ["Backspace", "Delete"]}
               multiSelectionKeyCode={["Control", "Meta"]}
             >
