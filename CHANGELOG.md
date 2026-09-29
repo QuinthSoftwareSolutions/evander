@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-29 - Clarify inference cost reports and correct categories (0.72.1)
+
+- Support bounded, atomic administrative category corrections with period and previous-label
+  checks, preserving token counts, billing provenance, and immutable ingestion behavior.
+- Refresh cost reports after historical corrections without changing monetary totals.
+- Use distinct category and account colors, and show excluded-request counts so partial
+  costs clearly indicate missing usage or pricing data.
+
 ## 2026-09-28 - Inference cost categories and analytics (0.72.0)
 
 - Tag sessions with a cost category and override it on individual prompt effects, preserving

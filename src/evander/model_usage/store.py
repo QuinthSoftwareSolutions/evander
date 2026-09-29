@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Iterable, Mapping
 
+from evander.cost_categories import normalize_cost_category
 from evander.model_usage.cost_balances import (
     CostAttribution,
     UsageCostSummary,
@@ -239,6 +240,61 @@ class ModelUsageStore:
         with self._connect() as connection:
             connection.execute("BEGIN")
             yield CostReportSnapshot(connection)
+
+    def set_event_cost_categories(
+        self,
+        categories: Mapping[str, str | None],
+        *,
+        expected_categories: Mapping[str, str | None],
+        occurred_after: datetime,
+        occurred_before: datetime,
+    ) -> int:
+        """Explicit operator correction, separate from immutable ingestion snapshots.
+
+        Each bounded batch commits atomically after checking the period and
+        previous labels. Preserve every other payload field, including captured
+        billing provenance. Source triggers invalidate derived reports.
+        """
+        if len(categories) > 1000:
+            raise ValueError("Category corrections are limited to 1000 events per batch")
+        if set(categories) != set(expected_categories):
+            raise ValueError("Expected categories must cover exactly the corrected event IDs")
+        if any(not isinstance(key, str) or not key.strip() for key in categories):
+            raise ValueError("Category corrections require non-empty event IDs")
+        for value in (occurred_after, occurred_before):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("Category correction boundaries must include a timezone")
+        if occurred_after >= occurred_before:
+            raise ValueError("Category correction start must be earlier than end")
+        normalized = {key: normalize_cost_category(value) for key, value in categories.items()}
+        expected = {
+            key: normalize_cost_category(value) for key, value in expected_categories.items()
+        }
+        if not normalized:
+            return 0
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updates = []
+            for event_id, category in normalized.items():
+                row = connection.execute(
+                    "SELECT payload_json FROM model_usage_events WHERE event_id = ?",
+                    (event_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Usage event no longer exists: {event_id}")
+                payload = json.loads(row["payload_json"])
+                event = ModelInferenceUsageEvent.model_validate(payload)
+                if not occurred_after <= event.occurred_at < occurred_before:
+                    raise ValueError(f"Usage event is outside the correction period: {event_id}")
+                if event.cost_category != expected[event_id]:
+                    raise ValueError(f"Usage event category changed before correction: {event_id}")
+                if event.cost_category != category:
+                    payload["cost_category"] = category
+                    updates.append((_json_dumps(payload), event_id))
+            connection.executemany(
+                "UPDATE model_usage_events SET payload_json = ? WHERE event_id = ?", updates
+            )
+        return len(updates)
 
     def upsert_event(self, event: ModelInferenceUsageEvent) -> None:
         validated = ModelInferenceUsageEvent.model_validate(event)

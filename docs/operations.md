@@ -696,6 +696,16 @@ are supported. The chosen category is frozen when the prompt is first
 submitted and retained through queueing, deferral, and context retries. Session
 label changes apply to future prompts; they do not reclassify historical costs.
 
+For an explicit historical correction, operators can use
+`build_admin_runtime(runtime_dir).model_usage_admin.set_inference_cost_categories`.
+Supply event IDs mapped to labels, `expected_categories` for those same IDs, and
+timezone-aware `occurred_after` / `occurred_before` bounds (end exclusive). Each
+batch is limited to 1,000 events and fails atomically if an event is missing,
+outside the period, or its category has changed. Preserve the previous labels
+before applying a correction so it can be reversed through the same service.
+Only categories change; usage, billing provenance, and monetary totals remain
+intact, and cost reports refresh automatically.
+
 Amounts are in USD, using recorded provider charges when available and the
 configured pricing catalog otherwise. Subscription and local inference are
 excluded. Missing prices and unknown billing provenance make the total partial;
