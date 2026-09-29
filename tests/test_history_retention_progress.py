@@ -40,6 +40,102 @@ def _slice(path, **kwargs):
     )
 
 
+def _seed_sources(connection, kind, source_ids, at):
+    timestamp = db.datetime_to_storage(at)
+    if kind == "trigger":
+        sql = """INSERT INTO trigger_events(
+            event_id,idempotency_key,delivery_state,trigger_id,trigger_type,trace_id,
+            occurred_at,delivered_at,payload_json)
+            VALUES (?,?,'delivered','node','trigger:test','trace',?,?,'{}')"""
+    else:
+        sql = f"""INSERT INTO {kind}_executions(
+            execution_id,idempotency_key,event_id,trace_id,source_node_id,source_trigger_type,
+            status,{kind}_id,{kind}_type,started_at,finished_at,payload_json)
+            VALUES (?,?,'event','trace','source','trigger:test','succeeded',
+                    'node','{kind}:test',?,?,'{{}}')"""
+    connection.executemany(sql, ((key, key, timestamp, timestamp) for key in source_ids))
+
+
+def _queue_source_history(connection, kind, source_id, at, *, status="succeeded"):
+    if kind == "trigger":
+        record = {
+            "event_id": source_id,
+            "trigger_id": "node",
+            "trigger_type": "trigger:test",
+            "delivery_state": "delivered",
+            "occurred_at": at,
+            "delivered_at": at,
+        }
+    else:
+        record = {
+            "execution_id": source_id,
+            f"{kind}_id": "node",
+            f"{kind}_type": f"{kind}:test",
+            "status": status,
+            "started_at": at,
+            "finished_at": at,
+        }
+    history.archive_execution_record(connection, kind=kind, record=record)
+
+
+@pytest.mark.parametrize("kind", ["trigger", "effect", "gate"])
+def test_pending_retention_check_is_bounded_by_jobs_instead_of_source_history(tmp_path, kind):
+    path = tmp_path / "orchestration.db"
+    db.ensure_orchestration_schema(path)
+    now = datetime.now(UTC)
+    old = now - timedelta(days=40)
+    cutoff = db.datetime_to_storage(now - timedelta(days=30))
+    with db.connect_orchestration_db(path) as connection:
+        _seed_sources(connection, kind, (f"node:{index}" for index in range(5000)), old)
+        _seed_sources(connection, kind, ["node:recent"], now)
+        _queue_source_history(connection, kind, "node:recent", now)
+
+    with db.connect_orchestration_db_read_only(path) as connection:
+        # A VM work budget makes an execution-table scan fail without relying on elapsed time.
+        connection.set_progress_handler(lambda: 1, 2000)
+        try:
+            assert not db._has_pending_retention_sources(connection, cutoff)
+        finally:
+            connection.set_progress_handler(None, 0)
+
+    with db.connect_orchestration_db(path) as connection:
+        _queue_source_history(connection, kind, "node:4999", old)
+    with db.connect_orchestration_db_read_only(path) as connection:
+        connection.set_progress_handler(lambda: 1, 2000)
+        try:
+            assert db._has_pending_retention_sources(connection, cutoff)
+        finally:
+            connection.set_progress_handler(None, 0)
+
+
+@pytest.mark.parametrize("kind", ["effect", "gate"])
+def test_pending_failed_retention_requires_an_old_acknowledgement(tmp_path, kind):
+    path = tmp_path / "orchestration.db"
+    db.ensure_orchestration_schema(path)
+    now = datetime.now(UTC)
+    old = now - timedelta(days=40)
+    cutoff = db.datetime_to_storage(now - timedelta(days=30))
+    with db.connect_orchestration_db(path) as connection:
+        _seed_sources(connection, kind, ["failed"], old)
+        connection.execute(f"UPDATE {kind}_executions SET status='failed'")
+        _queue_source_history(connection, kind, "failed", old, status="failed")
+        assert not db._has_pending_retention_sources(connection, cutoff)
+
+        connection.execute(
+            f"UPDATE {kind}_executions SET dismissed_at=?", (db.datetime_to_storage(now),)
+        )
+        assert not db._has_pending_retention_sources(connection, cutoff)
+        connection.execute(
+            f"UPDATE {kind}_executions SET dismissed_at=?", (db.datetime_to_storage(old),)
+        )
+        assert db._has_pending_retention_sources(connection, cutoff)
+        connection.execute(
+            f"UPDATE {kind}_executions SET dismissed_at=NULL,cleared_at=?",
+            (db.datetime_to_storage(old),),
+        )
+        assert db._has_pending_retention_sources(connection, cutoff)
+
+
 def test_dense_history_retention_commits_progress_and_reaches_later_phases(tmp_path):
     path = tmp_path / "orchestration.db"
     seed_indexed_history(path, executions=100, fields=3000)

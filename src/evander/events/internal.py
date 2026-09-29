@@ -365,11 +365,13 @@ class InternalEventBus:
         config_revision: str | None,
         legacy_start: bool = False,
     ) -> None:
+        """Reconcile changes; revisionless polls retain an unchanged filter's known revision."""
         now = datetime_to_storage(datetime.now(UTC))
         assert now is not None
         with connect_orchestration_db(self.path) as connection:
             existing = connection.execute(
-                "SELECT filter_hash FROM internal_event_subscriptions WHERE trigger_id = ?",
+                "SELECT filter_hash, active, config_revision "
+                "FROM internal_event_subscriptions WHERE trigger_id = ?",
                 (spec.trigger_id,),
             ).fetchone()
             if existing is None:
@@ -426,10 +428,14 @@ class InternalEventBus:
                     ),
                 )
                 return
+            if existing["active"] and (
+                config_revision is None or existing["config_revision"] == config_revision
+            ):
+                return
             connection.execute(
                 """
                 UPDATE internal_event_subscriptions
-                SET active = 1, config_revision = ?, updated_at = ?
+                SET active = 1, config_revision = COALESCE(?, config_revision), updated_at = ?
                 WHERE trigger_id = ?
                 """,
                 (config_revision, now, spec.trigger_id),
