@@ -2205,42 +2205,6 @@ button.task-board-task-title {
   line-height: 1.45;
 }
 
-.task-board-task-brief-details > summary {
-  width: fit-content;
-  cursor: pointer;
-  color: var(--accent-strong);
-  font-weight: 800;
-}
-
-.task-board-task-brief-content {
-  margin-top: 0.45rem;
-  white-space: pre-wrap;
-}
-
-.task-board-card-descendants {
-  display: grid;
-  gap: 0.4rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.5rem;
-  background: var(--panel-alt);
-}
-
-.task-board-card-descendant-summary {
-  display: grid;
-  gap: 0.15rem;
-}
-
-.task-board-card-descendant-summary strong {
-  font-size: 0.78rem;
-}
-
-.task-board-card-descendant-summary span {
-  color: var(--muted);
-  font-size: 0.75rem;
-  line-height: 1.35;
-}
-
 .task-board-descendant-details > summary,
 .task-board-technical-details > summary {
   width: fit-content;

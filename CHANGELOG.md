@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-29 - Simplify Team task board cards (0.72.4)
+
+- Open full task briefs from a bottom-row button in a modal on the board and hierarchy.
+- Flatten unresolved descendants into a collapsible list of task links and remove
+  nested lane, execution-status, and cancellation panels while retaining technical details.
+
 ## 2026-09-29 - Open workflow canvases at the first lane (0.72.3)
 
 - Open each workflow pack and directory at the start of its topmost workflow at a

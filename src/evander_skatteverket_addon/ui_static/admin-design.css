@@ -1102,13 +1102,16 @@
   padding-bottom: 12px;
 }
 [data-addon="team"] .task-board-lane {
-  padding: 10px;
-  border-radius: var(--ui-radius);
-  border-color: var(--ui-border);
-  background: var(--ui-navigation);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 [data-addon="team"] .task-board-lane-header {
-  margin-bottom: 10px;
+  border-top: 3px solid var(--lane-color);
+  padding-top: 10px;
+  margin-bottom: 2px;
 }
 [data-addon="team"] .task-board-card-list {
   gap: 8px;
@@ -1123,6 +1126,22 @@
 [data-addon="team"] .task-board-card-blocked {
   border-left: 3px solid var(--ui-warning);
 }
+[data-addon="team"] button.task-board-task-link {
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ui-accent);
+  font: inherit;
+  text-decoration-color: currentColor;
+}
+[data-addon="team"] button.task-board-task-link:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ui-accent-hover);
+}
+[data-addon="team"] button.task-board-task-title {
+  color: var(--ui-text);
+}
 [data-addon="team"] :is(.task-board-card, .task-board-hierarchy-node).task-board-task-selected {
   border-color: var(--ui-accent);
   background: var(--ui-selected);
@@ -1133,6 +1152,62 @@
   border-radius: 0;
   padding: 10px;
   background: var(--ui-surface);
+}
+[data-addon="team"] :is(.task-board-card, .task-board-hierarchy-node)
+  :is(.task-board-descendant-details, .planning-execution-status, .task-cancellation) {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+[data-addon="team"] :is(.task-board-card, .task-board-hierarchy-node) .planning-execution-status {
+  flex-wrap: wrap;
+}
+[data-addon="team"] .task-board-brief-dialog {
+  width: min(800px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-dialog-radius);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow);
+}
+[data-addon="team"] .task-board-brief-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+[data-addon="team"] .task-board-brief-dialog::backdrop {
+  background: var(--ui-overlay);
+}
+[data-addon="team"] .task-board-brief-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--ui-border);
+  overflow-wrap: anywhere;
+}
+[data-addon="team"] .task-board-brief-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+[data-addon="team"] .task-board-brief-header p {
+  margin: 4px 0 0;
+  color: var(--ui-muted);
+}
+[data-addon="team"] .task-board-brief-content {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+[data-addon="team"] .task-board-brief-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid var(--ui-border);
 }
 [data-addon="team"] .team-org-flow-canvas {
   border-color: var(--ui-border);
