@@ -668,7 +668,7 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     )
     _register_git_release_tools(server, git_release_commands, resolver, context)
     _register_ephemeral_worker_tools(server, ephemeral_commands, resolver, context)
-    _register_read_tools(server, resolver, context)
+    _register_read_tools(server, resolver, context, repository=repo)
 
     for tool_name in ORDINARY_TEAM_MCP_TOOL_NAMES:
         if tool_name in IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES:
@@ -3696,6 +3696,8 @@ def _register_read_tools(
     server: FastMCP,
     resolver: TeamMcpContextResolver,
     context: AddonContext,
+    *,
+    repository: TeamStateRepository,
 ) -> None:
     def team_list_conversation_messages(
         conversation_id: str,
@@ -4252,7 +4254,10 @@ def _register_read_tools(
         )
         dispatch_id = caller.active_dispatch_id or "current"
         return _team_read_get_result(
-            _read_service(caller).get_current_dispatch_context(detail=detail),
+            _read_service(caller).get_current_dispatch_context(
+                detail=detail,
+                snapshots=repository.snapshots.for_dispatch(dispatch_id),
+            ),
             caller=caller,
             record_name="dispatch",
             record_id=dispatch_id,

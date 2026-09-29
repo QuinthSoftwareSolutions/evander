@@ -149,6 +149,7 @@ def case_context_routes(context, repository, route):
         def mutate(state):
             nonlocal saved
             # Apply the same chat projection used by preview, without deleting canonical chat.
+            # The shallow copy also shares this transaction's staged snapshot additions.
             projected = state.model_copy(
                 update={"conversations": filtered.conversations}, deep=False
             )
@@ -158,7 +159,6 @@ def case_context_routes(context, repository, route):
                 directory_path=path,
                 **selected,
             )
-            state.case_context_snapshots[saved.id] = saved
 
         updated = repository.update(mutate, expected_revision=_expected_revision(payload))
         return JSONResponse(
@@ -168,8 +168,7 @@ def case_context_routes(context, repository, route):
 
     async def get_snapshot(request):
         snapshot_id = request.path_params["snapshot_id"]
-        state = repository.read()
-        snapshot = state.case_context_snapshots.get(snapshot_id)
+        snapshot = repository.snapshots.get(snapshot_id)
         if not snapshot:
             return JSONResponse({"error": "snapshot unavailable"}, status_code=404)
         _, path = scoped(request, {"directory_path": snapshot.directory_path})
@@ -200,28 +199,12 @@ def case_context_routes(context, repository, route):
         case_id = request.path_params["case_id"]
         if case_id not in state.cases:
             return JSONResponse({"error": "case unavailable"}, status_code=404)
-        records = [
-            s
-            for s in state.case_context_snapshots.values()
-            if case_id in s.case_ids and within(s.directory_path, path)
-        ]
-        records.sort(key=lambda s: (s.created_at, s.id), reverse=True)
-        cursor = int(request.query_params.get("cursor") or 0)
-        if cursor < 0:
-            raise ValueError("invalid snapshot cursor")
         return JSONResponse(
-            {
-                "records": [
-                    {
-                        "id": s.id,
-                        "view_id": s.view.view_id,
-                        "source_revision": s.source_revision,
-                        "created_at": s.created_at.isoformat(),
-                    }
-                    for s in records[cursor : cursor + 20]
-                ],
-                "next_cursor": cursor + 20 if cursor + 20 < len(records) else None,
-            }
+            repository.snapshots.list_for_case(
+                case_id,
+                directory_path=path,
+                cursor=int(request.query_params.get("cursor") or 0),
+            )
         )
 
     async def backfill_notes(request):

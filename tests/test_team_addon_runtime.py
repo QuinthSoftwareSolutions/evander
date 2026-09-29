@@ -3196,6 +3196,28 @@ def test_wake_due_agents_cleanup_mode_distinguishes_omitted_from_explicit(
     assert observed == [expected_dry_run]
 
 
+def test_global_wake_skips_chat_claim_transaction_when_there_is_no_chat_work(tmp_path, monkeypatch):
+    def unexpected_claim(*_args, **_kwargs):
+        raise AssertionError("global wake prepared an empty chat mutation")
+
+    monkeypatch.setattr(TeamChatService, "claim_pending_chat_message_dispatches", unexpected_claim)
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            run_global_maintenance=True,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+    assert provider.execute()["success"] is True
+
+
 def test_immediate_wake_can_skip_global_maintenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

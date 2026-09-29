@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-29 - Bound Team case-history memory during lifecycle work (0.72.6)
+
+- Read immutable case-context snapshots through indexed history queries instead of
+  loading their payloads into every Team state read, validation, and mutation.
+- Commit new snapshots atomically with dispatch state, command receipts, and outbox
+  records; retain snapshot IDs, evidence, grants, and bounded retrieval contracts.
+- Backfill history indexes in bounded batches and recover metadata after rollback
+  to older writers. Preserve archived snapshots during operational state replacement.
+- Use narrow completion and Git-index reads, and skip empty global chat planning
+  while retaining expired preparation recovery.
+
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
 - Remove rounded corners from Admin Web and standalone add-on surfaces, dialogs,

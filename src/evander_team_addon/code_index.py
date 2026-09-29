@@ -11,7 +11,15 @@ def protected_bindings(runtime_dir: Path) -> set[tuple[str, str]]:
         return set()
     from .repository import TeamStateRepository
 
-    state = TeamStateRepository(Path(runtime_dir)).read()
+    state = TeamStateRepository(Path(runtime_dir)).read_projection(
+        collections=(
+            "git_work_contexts",
+            "tasks",
+            "projects",
+            "review_requests",
+            "ephemeral_assignments",
+        )
+    )
     result = set()
     for context in state.git_work_contexts.values():
         if str(getattr(context.state, "value", context.state)) != "active":
@@ -50,7 +58,18 @@ def session_bindings(runtime_dir: Path, session_id: str) -> set[tuple[str, str]]
         return None
     from .repository import TeamStateRepository
 
-    state = TeamStateRepository(Path(runtime_dir)).read()
+    state = TeamStateRepository(Path(runtime_dir)).read_projection(
+        collections=(
+            "agents",
+            "agent_runtimes",
+            "dispatches",
+            "ephemeral_assignments",
+            "git_work_contexts",
+            "tasks",
+            "projects",
+            "review_requests",
+        )
+    )
     agent = next((agent for agent in state.agents.values() if agent.session_id == session_id), None)
     assignments = [a for a in state.ephemeral_assignments.values() if a.session_id == session_id]
     if agent is None:

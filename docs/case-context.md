@@ -193,6 +193,9 @@ get additive tables/columns; keep normal pre-upgrade backups. Immutable context
 history is durable and currently retained until an operator-managed retention
 policy is introduced—there is no automatic pruning in this version.
 
+For storage, migration, rollback, and memory measurement details, see
+[Team case-context history](team-case-context-history.md).
+
 ## Integrate context into a workflow
 
 The [workflow example](../config/workflow-packs/case-context.v1-example.json) is

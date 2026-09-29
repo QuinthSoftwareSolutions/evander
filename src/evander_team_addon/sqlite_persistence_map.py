@@ -5,7 +5,6 @@ from __future__ import annotations
 _STATE_TABLES = (
     "team_notes",
     "team_case_context_views",
-    "team_case_context_snapshots",
     "team_governance_group_members",
     "team_governance_group_goals",
     "team_governance_agenda",
@@ -96,11 +95,6 @@ _PERSISTENCE_GROUPS = (
         ("case_context_views",),
         (("team_case_context_views", "id", "case_context_views"),),
         "_write_case_context_views",
-    ),
-    (
-        ("case_context_snapshots",),
-        (("team_case_context_snapshots", "id", "case_context_snapshots"),),
-        "_write_case_context_snapshots",
     ),
     (
         ("teams",),

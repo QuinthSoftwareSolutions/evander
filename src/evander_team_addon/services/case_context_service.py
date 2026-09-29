@@ -915,7 +915,7 @@ class CaseContextService:
         )
         request_digest = digest(request)
         key = "case-context-" + digest([directory(directory_path), actor_id, request_id])[:32]
-        existing = state.case_context_snapshots.get(key)
+        existing = self.repository.snapshots.get(key, state=state)
         if existing:
             if existing.request_digest != request_digest:
                 raise ValueError("snapshot request_id reused with different inputs")
@@ -952,7 +952,7 @@ class CaseContextService:
             "candidate_commit_sha": candidate_commit_sha,
             "analysis_base_commit_sha": analysis_base_commit_sha,
         }
-        baseline = state.case_context_snapshots.get(baseline_snapshot_id)
+        baseline = self.repository.snapshots.get(baseline_snapshot_id, state=state)
         delta = None
         if (
             baseline
@@ -989,7 +989,7 @@ class CaseContextService:
             baseline_snapshot_id=baseline.id if delta else None,
             wake_delta_context=delta,
         )
-        state.case_context_snapshots[key] = snapshot
+        self.repository.snapshots.stage(state, snapshot)
         return snapshot
 
     def create_snapshot(self, **kwargs):
@@ -1014,7 +1014,7 @@ class CaseContextService:
         limit=20,
     ):
         state = self.repository.read()
-        snapshot = state.case_context_snapshots.get(snapshot_id)
+        snapshot = self.repository.snapshots.get(snapshot_id)
         if snapshot is None or not within(snapshot.directory_path, directory(directory_path)):
             raise PermissionError("snapshot is unavailable in this scope")
         granted = bool(session_id and snapshot.recipient_session_id == session_id)

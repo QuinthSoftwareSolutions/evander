@@ -410,8 +410,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
 
         chat_planning_conflict = False
         if normalized_limit == 0 or (
-            not run_global_maintenance
-            and not _team_wake_has_chat_claim_candidate(
+            not _team_wake_has_chat_claim_candidate(
                 current_state,
                 team_id=_optional_text(payload.get("team_id")),
                 project_id=_optional_text(payload.get("project_id")),
