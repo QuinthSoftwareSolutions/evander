@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import json
 import logging
+import posixpath
 import re
 import time
 from html import escape
@@ -426,8 +427,12 @@ class AdminWebRequestTimingMiddleware:
 
 class AdminWebStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope: dict[str, Any]) -> Response:
+        # An in-place upgrade can leave this bundle behind when current assets are valid.
+        normalized_path = posixpath.normpath(path.replace("\\", "/").lstrip("/"))
+        if normalized_path == "classic" or normalized_path.startswith("classic/"):
+            return Response(status_code=404)
+
         response = await super().get_response(path, scope)
-        normalized_path = path.replace("\\", "/").lstrip("/")
         content_type = response.headers.get("content-type", "")
         if response.status_code in {200, 304} and _HASHED_FRONTEND_ASSET_RE.match(normalized_path):
             response.headers["Cache-Control"] = _IMMUTABLE_STATIC_CACHE_CONTROL
