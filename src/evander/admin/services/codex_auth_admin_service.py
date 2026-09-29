@@ -10,6 +10,7 @@ from evander.execution.container_worker_client import (
     ContainerWorkerClientError,
 )
 from evander.config import GatewayConfig
+from evander.codex_auth import CodexRateLimitResetRequest
 from evander.models import AuditEvent
 
 
@@ -147,6 +148,36 @@ class CodexAuthAdminService:
             actor_user_id,
             lambda: self._client(directory_path).start_codex_profile_device_login(profile_id),
         )
+
+    def consume_profile_reset_credit(
+        self,
+        directory_path: str,
+        profile_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_user_id: str | None,
+    ) -> dict[str, Any]:
+        request = CodexRateLimitResetRequest.model_validate(payload)
+        config = self._deps.provider_config.resolve_for_directory(directory_path)
+        worker_url = str(config.container_worker_base_url or "").strip()
+        result = self._mutate(
+            "codex_subscription_reset_credit_consume",
+            directory_path,
+            actor_user_id,
+            lambda: self._client_for_config(config).consume_codex_profile_reset_credit(
+                profile_id, request.model_dump(exclude_none=True)
+            ),
+        )
+        profile = result.get("profile")
+        if isinstance(profile, dict):
+            profile["queued_prompt_count"] = self._queued_counts_by_profile(
+                worker_url=worker_url
+            ).get(profile_id, 0)
+            if result.get("outcome") in {"reset", "alreadyRedeemed"}:
+                if self._profile_is_ready(profile):
+                    self._make_subscription_profile_ready(profile_id, worker_url=worker_url)
+                self._wake()
+        return result
 
     def profile_device_login_status(
         self, directory_path: str, profile_id: str, login_id: str

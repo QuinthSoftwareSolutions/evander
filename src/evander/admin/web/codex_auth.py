@@ -215,6 +215,27 @@ def codex_auth_routes(
             return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(payload, status_code=201)
 
+    async def consume_profile_reset_credit(request: Request) -> JSONResponse:
+        context = request_context(request)
+        if isinstance(context, JSONResponse):
+            return context
+        directory_path, actor = context
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Request body must be a JSON object")
+            payload = service.codex_auth_admin.consume_profile_reset_credit(
+                directory_path,
+                request.path_params["profile_id"],
+                body,
+                actor_user_id=actor,
+            )
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except ContainerWorkerClientError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(payload)
+
     async def profile_login_status(request: Request) -> JSONResponse:
         context = request_context(request)
         if isinstance(context, JSONResponse):
@@ -283,6 +304,11 @@ def codex_auth_routes(
         Route(
             "/api/admin/codex-subscriptions/{profile_id:str}/device-login",
             start_profile_login,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/codex-subscriptions/{profile_id:str}/reset-credits/consume",
+            consume_profile_reset_credit,
             methods=["POST"],
         ),
         Route(

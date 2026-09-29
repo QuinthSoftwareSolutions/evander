@@ -41,6 +41,22 @@ class CodexAuthMode(str, Enum):
     CHATGPT_SUBSCRIPTION = "chatgpt_subscription"
 
 
+class CodexRateLimitResetRequest(BaseModel):
+    """One logical redemption; retries must retain the same idempotency key."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+    idempotency_key: str
+    credit_id: str | None = None
+
+    @field_validator("idempotency_key", "credit_id")
+    @classmethod
+    def validate_nonempty_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+
 def normalize_codex_auth_mode(
     value: object,
     *,

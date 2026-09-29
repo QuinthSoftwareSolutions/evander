@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
-from evander.codex_auth import CodexSubscriptionDeferredError
+from evander.codex_auth import CodexRateLimitResetRequest, CodexSubscriptionDeferredError
 
 from .models import (
     DEFAULT_WORKER_ROOT,
@@ -135,6 +135,22 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         except (ValueError, CodexAuthBrokerError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(record, status_code=201)
+
+    async def consume_codex_profile_reset_credit(request: Request) -> JSONResponse:
+        try:
+            payload = CodexRateLimitResetRequest.model_validate(await request.json())
+            record = await run_in_threadpool(
+                daemon.consume_codex_profile_reset_credit,
+                request.path_params["profile_id"],
+                payload,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except CodexSubscriptionDeferredError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(record)
 
     async def codex_profile_device_login_status(request: Request) -> JSONResponse:
         try:
@@ -563,6 +579,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route(
                 "/v1/codex-auth/profiles/{profile_id}/device-login",
                 start_codex_profile_device_login,
+                methods=["POST"],
+            ),
+            Route(
+                "/v1/codex-auth/profiles/{profile_id}/reset-credits/consume",
+                consume_codex_profile_reset_credit,
                 methods=["POST"],
             ),
             Route(

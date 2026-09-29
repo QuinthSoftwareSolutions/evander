@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from evander.codex_auth import CodexRateLimitResetRequest
 from evander.worker.codex_app_server import CodexAppServerError
 from evander.worker.codex_auth_broker import (
     CodexAuthBroker,
@@ -94,6 +95,139 @@ class FakeManagedClient:
             "account/login/completed",
             {"loginId": "login-1", "success": success, "error": None},
         )
+
+
+class ResetCreditClient(FakeManagedClient):
+    def __init__(self, auth_path: Path, *, outcome: object = "reset") -> None:
+        super().__init__(auth_path)
+        self.outcome = outcome
+        self.redeemed: set[str] = set()
+        self.consumed_count = 0
+        self.lose_response = False
+
+    def request(self, method, params=None, *, timeout_seconds=None):
+        if method == "account/rateLimitResetCredit/consume":
+            self.requests.append((method, dict(params)))
+            outcome = self.outcome
+            if outcome == "reset":
+                key = params["idempotencyKey"]
+                if key in self.redeemed:
+                    outcome = "alreadyRedeemed"
+                else:
+                    self.redeemed.add(key)
+                    self.consumed_count += 1
+            if self.lose_response:
+                self.lose_response = False
+                raise CodexAppServerError("response lost after redemption")
+            return {"outcome": outcome, "accessToken": "must-not-leak"}
+        payload = super().request(method, params, timeout_seconds=timeout_seconds)
+        if method == "account/rateLimits/read":
+            payload["rateLimits"]["primary"]["usedPercent"] = 0 if self.consumed_count else 100
+            payload["rateLimitResetCredits"]["availableCount"] = 2 - self.consumed_count
+        return payload
+
+
+def test_reset_redemption_retry_after_lost_response_consumes_only_one_credit(tmp_path: Path) -> None:
+    auth_home = tmp_path / "codex-auth"
+    auth_home.mkdir()
+    _write_auth(
+        auth_home / "auth.json",
+        access_token=_jwt(plan="plus", expiration=int(time.time()) + 3600, marker="reset"),
+    )
+    client = ResetCreditClient(auth_home / "auth.json")
+    client.lose_response = True
+    broker = CodexAuthBroker(auth_home=auth_home, client_factory=lambda *a, **k: client)
+    request = CodexRateLimitResetRequest(idempotency_key="attempt-1", credit_id="credit-1")
+    try:
+        with pytest.raises(CodexAuthBrokerError, match="response lost"):
+            broker.consume_reset_credit(request, expected_account_id="account-1")
+        assert broker.consume_reset_credit(request, expected_account_id="account-1") == {
+            "outcome": "alreadyRedeemed"
+        }
+        refreshed = broker.status()
+    finally:
+        broker.close()
+
+    assert client.consumed_count == 1
+    assert refreshed["rate_limits"]["reset_credits"]["available_count"] == 1
+    assert refreshed["rate_limits"]["default"]["primary"]["used_percent"] == 0
+    requests = [params for method, params in client.requests if method.endswith("/consume")]
+    assert requests == [
+        {"idempotencyKey": "attempt-1", "creditId": "credit-1"},
+        {"idempotencyKey": "attempt-1", "creditId": "credit-1"},
+    ]
+    assert "must-not-leak" not in json.dumps(refreshed)
+
+
+@pytest.mark.parametrize("outcome", ["reset", "alreadyRedeemed", "nothingToReset", "noCredit"])
+def test_reset_redemption_returns_only_a_recognized_outcome(
+    tmp_path: Path, outcome: str
+) -> None:
+    auth_home = tmp_path / "codex-auth"
+    auth_home.mkdir()
+    _write_auth(
+        auth_home / "auth.json",
+        access_token=_jwt(plan="plus", expiration=int(time.time()) + 3600, marker="reset"),
+    )
+    client = ResetCreditClient(auth_home / "auth.json", outcome=outcome)
+    broker = CodexAuthBroker(auth_home=auth_home, client_factory=lambda *a, **k: client)
+    try:
+        result = broker.consume_reset_credit(
+            CodexRateLimitResetRequest(idempotency_key="attempt"),
+            expected_account_id="account-1",
+        )
+    finally:
+        broker.close()
+    assert result == {"outcome": outcome}
+    assert client.requests[-1][1] == {"idempotencyKey": "attempt"}
+
+
+@pytest.mark.parametrize("outcome", [None, "unknown", {"token": "secret"}])
+def test_reset_redemption_rejects_unknown_response_without_exposing_it(
+    tmp_path: Path, outcome: object
+) -> None:
+    auth_home = tmp_path / "codex-auth"
+    auth_home.mkdir()
+    _write_auth(
+        auth_home / "auth.json",
+        access_token=_jwt(plan="plus", expiration=int(time.time()) + 3600, marker="reset"),
+    )
+    client = ResetCreditClient(auth_home / "auth.json", outcome=outcome)
+    broker = CodexAuthBroker(auth_home=auth_home, client_factory=lambda *a, **k: client)
+    try:
+        with pytest.raises(CodexAuthBrokerError, match="unknown reset redemption outcome") as error:
+            broker.consume_reset_credit(
+                CodexRateLimitResetRequest(idempotency_key="attempt"),
+                expected_account_id="account-1",
+            )
+        assert "secret" not in str(error.value)
+    finally:
+        broker.close()
+
+
+@pytest.mark.parametrize("signed_in", [False, True])
+def test_reset_redemption_never_consumes_for_a_missing_or_changed_account(
+    tmp_path: Path, signed_in: bool
+) -> None:
+    auth_home = tmp_path / "codex-auth"
+    auth_home.mkdir()
+    if signed_in:
+        _write_auth(
+            auth_home / "auth.json",
+            access_token=_jwt(plan="plus", expiration=int(time.time()) + 3600, marker="reset"),
+        )
+    client = ResetCreditClient(auth_home / "auth.json")
+    broker = CodexAuthBroker(auth_home=auth_home, client_factory=lambda *a, **k: client)
+    try:
+        with pytest.raises(CodexAuthBrokerError, match="changed|not signed in"):
+            broker.consume_reset_credit(
+                CodexRateLimitResetRequest(idempotency_key="attempt"),
+                expected_account_id="different-account",
+            )
+    finally:
+        broker.close()
+    assert client.consumed_count == 0
+    assert not any(method.endswith("/consume") for method, _ in client.requests)
 
 
 class NotificationDuringCancelClient(FakeManagedClient):

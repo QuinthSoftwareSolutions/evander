@@ -646,8 +646,16 @@ public egress, but it is not the networked deployment default.
 After deployment, sign in to Admin Web as an Admin with `admin.owner` permission at `root`, unlock
 privileged operations, and open **Subscriptions**. Create a profile, start device login, complete
 the displayed link and code, and wait for the profile to show signed in with its pinned account.
-Creation, rename, enable/disable, login, cancellation, and logout are privileged worker operations;
+Creation, rename, enable/disable, login, cancellation, logout, and reset redemption are privileged worker operations;
 ownership of a child directory is insufficient. Mutations are audited without recording tokens.
+
+The profile list shows **7-day remaining** and **Banked resets**. Reset counts come from the
+provider's authoritative available count; **Unavailable** means the provider did not return a
+valid count, rather than zero. Expand an enabled, signed-in profile and choose **Redeem one
+reset** to consume one available earned reset after confirmation. Evander rereads limits and
+reset counts after redemption. **Retry reset redemption** checks the same attempt after a
+transport error, retaining its idempotency key so a completed redemption cannot consume twice.
+If there is no eligible window or no credit, the page reports that outcome without claiming a reset.
 
 Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent. New UI
 subscription agents must select one enabled profile. An existing session can switch between
@@ -673,7 +681,7 @@ rate-limit exhaustion during a turn, the terminal execution enters the same dura
 Subscription queues have no automatic expiry. They preserve FIFO ordering within one worker
 profile while other profiles dispatch concurrently. A reported reset timestamp is authoritative;
 without one, backoff grows exponentially to a 15-minute cap. Profile login, re-enable, and manual
-refresh wake reconciliation, and ordinary effect-orchestrator polling is the fallback. Admin Web
+refresh and successful reset redemption wake reconciliation, and ordinary effect-orchestrator polling is the fallback. Admin Web
 shows the profile, queue reason, and retry time on agent and workflow state and permits an
 authorized manual cancellation. Evander never
 falls back from subscription mode to metered usage.
@@ -683,9 +691,17 @@ profile credentials in this release, even though OpenAI supports them for truste
 the [OpenAI access-token documentation](https://learn.chatgpt.com/docs/enterprise/access-tokens)
 and the [OpenAI App Server documentation](https://learn.chatgpt.com/docs/app-server).
 
-The control plane mirrors profile list/create/read/update, device-login, and logout operations
+The control plane mirrors profile list/create/read/update, device-login, logout, and reset redemption operations
 under `/api/admin/codex-subscriptions`. The older `/api/admin/codex-auth` surface remains a
 compatibility alias for `default`.
+
+Reset redemption uses `POST /api/admin/codex-subscriptions/{profile_id}/reset-credits/consume`,
+forwarded to the selected worker's `/v1/codex-auth/profiles/{profile_id}/reset-credits/consume`.
+Send a non-empty `idempotency_key` (a UUID is recommended) and, optionally, a non-empty
+`credit_id` from the reported reset details. Reuse the same key when retrying the same attempt.
+The response contains `outcome` (`reset`, `alreadyRedeemed`, `nothingToReset`, or `noCredit`)
+and the refreshed `profile`. Provider selection applies when `credit_id` is omitted. This requires
+a worker Codex App Server version supporting `account/rateLimitResetCredit/consume`.
 
 ## Session Durability
 

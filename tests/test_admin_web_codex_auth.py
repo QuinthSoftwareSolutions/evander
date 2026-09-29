@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -13,6 +14,7 @@ from evander.admin.services.codex_auth_admin_service import (
 )
 from evander.admin.web import codex_auth as codex_auth_module
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
+from evander.execution.container_worker_client import ContainerWorkerClientError
 
 
 class FakeAuth:
@@ -37,6 +39,9 @@ class FakeAuth:
 
 
 class FakeWorkerClient:
+    def __init__(self) -> None:
+        self.reset_requests: list[tuple[str, dict[str, object]]] = []
+
     def codex_auth_status(self) -> dict[str, object]:
         return {"signed_in": False, "email": None}
 
@@ -94,6 +99,19 @@ class FakeWorkerClient:
 
     def logout_codex_auth_profile(self, profile_id: str) -> dict[str, object]:
         return {"profile_id": profile_id, "signed_in": False}
+
+    def consume_codex_profile_reset_credit(self, profile_id, payload):
+        self.reset_requests.append((profile_id, payload))
+        return {
+            "outcome": "reset",
+            "profile": {
+                "profile_id": profile_id,
+                "enabled": True,
+                "available": True,
+                "signed_in": True,
+                "rate_limits": {"default": {"primary": {"used_percent": 0}}},
+            },
+        }
 
 
 def _service(
@@ -365,3 +383,113 @@ def test_admin_subscription_profile_routes_proxy_worker_operations_at_root_owner
         "codex_subscription_profile_login_cancel",
         "codex_subscription_profile_logout",
     }
+
+
+@pytest.mark.parametrize("permission_denied", [False, True])
+def test_reset_redemption_requires_privileged_root_owner(permission_denied: bool) -> None:
+    class OwnerAuth(FakeAuth):
+        def require_permission(self, request, permission, *, directory_path):
+            super().require_permission(request, permission, directory_path=directory_path)
+            if permission_denied:
+                raise PermissionError("Root ownership is required")
+
+    worker = FakeWorkerClient()
+    auth = OwnerAuth(privileged=permission_denied)
+    service = _service(worker)
+    app = Starlette(routes=codex_auth_module.codex_auth_routes(service, auth))
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/admin/codex-subscriptions/team-a/reset-credits/consume?directory_path=engineering",
+            json={"idempotency_key": "attempt"},
+        )
+    assert response.status_code == 403
+    assert worker.reset_requests == []
+    assert service.audit_events == []
+    if permission_denied:
+        assert auth.permission_checks == [("admin.owner", "root")]
+
+
+@pytest.mark.parametrize("outcome", ["reset", "alreadyRedeemed", "nothingToReset", "noCredit"])
+def test_reset_redemption_refreshes_capacity_and_wakes_only_the_selected_worker(
+    tmp_path: Path, outcome: str
+) -> None:
+    class ResetWorker(FakeWorkerClient):
+        def consume_codex_profile_reset_credit(self, profile_id, payload):
+            result = super().consume_codex_profile_reset_credit(profile_id, payload)
+            result["outcome"] = outcome
+            return result
+
+    queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    for session_id, profile_id in (
+        ("selected-worker", "team-a"),
+        ("other-worker", "team-a"),
+        ("other-profile", "team-b"),
+    ):
+        queue.defer_capacity(
+            QueuedAgentPromptRecord(
+                queue_key=session_id, target=session_id, vm_name=session_id,
+                session_id=session_id, prompt="Continue", effect_id=f"effect-{session_id}",
+                subscription_profile_id=profile_id,
+            ),
+            queue_reason="subscription_rate_limited",
+            retry_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+    wakes = []
+    worker = ResetWorker()
+    service = _service(
+        worker, runtime_dir=tmp_path, worker_url="http://worker-a.test",
+        session_worker_urls={"other-worker": "http://worker-b.test"},
+        wake_reconciliation=lambda: wakes.append("wake"),
+    )
+    auth = FakeAuth()
+    app = Starlette(routes=codex_auth_module.codex_auth_routes(service, auth))
+    payload = {"idempotency_key": "same-attempt", "credit_id": "credit-a"}
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/admin/codex-subscriptions/team-a/reset-credits/consume?directory_path=engineering",
+            json=payload,
+        )
+    assert response.status_code == 200
+    assert response.json()["outcome"] == outcome
+    assert response.json()["profile"]["queued_prompt_count"] == 1
+    assert worker.reset_requests == [("team-a", payload)]
+    assert auth.permission_checks == [("admin.owner", "root")]
+    assert (queue.get("selected-worker").retry_not_before is None) == (
+        outcome in {"reset", "alreadyRedeemed"}
+    )
+    assert queue.get("other-worker").retry_not_before is not None
+    assert queue.get("other-profile").retry_not_before is not None
+    assert wakes == (["wake"] if outcome in {"reset", "alreadyRedeemed"} else [])
+    assert len(service.audit_events) == 1
+    audit = service.audit_events[0]
+    assert audit.event_type == "codex_subscription_reset_credit_consume"
+    assert audit.actor_user_id == "owner@example.test"
+    assert audit.directory_path == "engineering"
+    assert audit.decision == "allowed"
+
+
+def test_reset_redemption_rejects_malformed_requests_and_audits_worker_failure() -> None:
+    class UnavailableWorker(FakeWorkerClient):
+        def consume_codex_profile_reset_credit(self, profile_id, payload):
+            super().consume_codex_profile_reset_credit(profile_id, payload)
+            raise ContainerWorkerClientError("worker unavailable")
+
+    worker = UnavailableWorker()
+    service = _service(worker)
+    app = Starlette(routes=codex_auth_module.codex_auth_routes(service, FakeAuth()))
+    path = "/api/admin/codex-subscriptions/team-a/reset-credits/consume"
+    with TestClient(app) as client:
+        for invalid in (
+            [], {}, {"idempotency_key": " "}, {"idempotency_key": 123},
+            {"idempotency_key": "attempt", "credit_id": ""},
+            {"idempotency_key": "attempt", "access_token": "secret"},
+        ):
+            response = client.post(path, json=invalid)
+            assert response.status_code == 400
+            assert "secret" not in response.text
+        assert worker.reset_requests == []
+        response = client.post(path, json={"idempotency_key": "attempt"})
+    assert response.status_code == 502
+    assert response.json()["error"] == "worker unavailable"
+    assert len(worker.reset_requests) == 1
+    assert service.audit_events[0].decision == "error"

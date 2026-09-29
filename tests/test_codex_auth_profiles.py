@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from evander.codex_auth import CodexSubscriptionDeferredError
+from evander.codex_auth import CodexRateLimitResetRequest, CodexSubscriptionDeferredError
 from evander.worker.codex_auth_broker import CodexAuthBrokerError, CodexExternalAuthTokens
 from evander.worker.codex_auth_profiles import CodexAuthBrokerRegistry
 
@@ -32,6 +32,7 @@ class FakeProfileBroker:
         self.barrier: threading.Barrier | None = None
         self.status_error: str | None = None
         self.usage_requests: list[bool] = []
+        self.reset_requests: list[tuple[CodexRateLimitResetRequest, str]] = []
 
     def status(self, *, include_usage: bool = True) -> dict[str, Any]:
         self.usage_requests.append(include_usage)
@@ -57,6 +58,14 @@ class FakeProfileBroker:
         self.logged_out = True
         self.status_payload.update(signed_in=False, account_id=None)
         return self.status()
+
+    def consume_reset_credit(self, request, *, expected_account_id):
+        self.reset_requests.append((request, expected_account_id))
+        self.status_payload["rate_limits"] = {
+            "default": {"primary": {"used_percent": 0}},
+            "reset_credits": {"available_count": 1},
+        }
+        return {"outcome": "reset"}
 
     def close(self) -> None:
         self.closed = True
@@ -379,5 +388,61 @@ def test_profile_brokers_can_report_status_concurrently(tmp_path: Path) -> None:
 
         assert all(not thread.is_alive() for thread in threads)
         assert sorted(results) == ["first", "second"]
+    finally:
+        registry.close()
+
+
+def test_reset_redemption_accepts_exhausted_capacity_and_refreshes_only_selected_profile(
+    tmp_path: Path,
+) -> None:
+    registry, _ = _registry(tmp_path)
+    try:
+        for profile_id in ("team-a", "team-b"):
+            registry.create_profile({"profile_id": profile_id, "display_name": profile_id})
+            registry.broker(profile_id).status_payload.update(
+                signed_in=True,
+                account_id=f"account-{profile_id}",
+                rate_limits={"default": {"primary": {"used_percent": 100}}},
+            )
+        request = CodexRateLimitResetRequest(idempotency_key="attempt")
+        result = registry.consume_reset_credit("team-a", request)
+
+        assert result["outcome"] == "reset"
+        assert result["profile"]["profile_id"] == "team-a"
+        assert result["profile"]["pinned_account_id"] == "account-team-a"
+        assert result["profile"]["rate_limits"]["default"]["primary"]["used_percent"] == 0
+        assert result["profile"]["rate_limits"]["reset_credits"]["available_count"] == 1
+        assert registry.broker("team-a").reset_requests == [(request, "account-team-a")]
+        assert registry.broker("team-b").reset_requests == []
+        assert registry.broker("team-a").usage_requests == [False, True]
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize("state", ["disabled", "signed_out", "unavailable", "wrong_account"])
+def test_reset_redemption_rejects_unusable_or_mismatched_profiles(
+    tmp_path: Path, state: str
+) -> None:
+    registry, _ = _registry(tmp_path)
+    try:
+        registry.create_profile({"profile_id": "team-a", "display_name": "Team A"})
+        broker = registry.broker("team-a")
+        broker.status_payload.update(signed_in=True, account_id="account-a")
+        registry.profile_status("team-a")
+        if state == "disabled":
+            registry.profiles.patch("team-a", enabled=False)
+        elif state == "signed_out":
+            broker.status_payload["signed_in"] = False
+        elif state == "unavailable":
+            broker.status_payload["available"] = False
+        else:
+            broker.status_payload["account_id"] = "account-b"
+        with pytest.raises((CodexAuthBrokerError, CodexSubscriptionDeferredError)):
+            registry.consume_reset_credit(
+                "team-a", CodexRateLimitResetRequest(idempotency_key="attempt")
+            )
+        assert broker.reset_requests == []
+        if state == "wrong_account":
+            assert broker.logged_out is True
     finally:
         registry.close()

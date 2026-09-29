@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-30 - Display and redeem banked subscription resets (0.73.0)
+
+- Show each subscription profile's banked reset count beside remaining weekly usage,
+  distinguishing unavailable telemetry from zero available resets.
+- Let privileged root owners redeem one reset, refresh account limits, and wake queued
+  work when capacity recovers. Preserve account pins and retry identity to avoid
+  consuming another reset after an uncertain response.
+
 ## 2026-09-29 - Reduce event and retention writer contention (0.72.7)
 
 - Check pending retention sources through queued history jobs and source primary keys,

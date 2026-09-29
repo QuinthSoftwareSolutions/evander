@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from evander.codex_auth import (
     DEFAULT_SUBSCRIPTION_PROFILE_ID,
+    CodexRateLimitResetRequest,
     CodexSubscriptionDeferral,
     CodexSubscriptionDeferredError,
     normalize_subscription_profile_id,
@@ -299,6 +300,26 @@ class CodexAuthBrokerRegistry:
     def logout(self, profile_id: object) -> dict[str, Any]:
         self.broker(profile_id).logout()
         return self.profile_status(profile_id)
+
+    def consume_reset_credit(
+        self, profile_id: object, request: CodexRateLimitResetRequest
+    ) -> dict[str, Any]:
+        record = self._require_enabled(profile_id)
+        broker = self.broker(record.profile_id)
+        # Capacity exhaustion is precisely when redemption is useful. Check the
+        # account pin without the turn preflight's rate-limit rejection.
+        status = broker.status(include_usage=False)
+        self._pin_status_account(record, status, broker=broker)
+        if not status.get("signed_in") or not status.get("available"):
+            raise CodexAuthBrokerError(
+                str(status.get("error") or "Subscription profile must be signed in and available")
+            )
+        result = broker.consume_reset_credit(
+            request, expected_account_id=str(status["account_id"])
+        )
+        # Read authoritative windows and credit counts after every definitive
+        # outcome, including an idempotent replay of a successful redemption.
+        return {**result, "profile": self.profile_status(record.profile_id)}
 
     def preflight(self, profile_id: object) -> CodexExternalAuthTokens:
         normalized = str(normalize_subscription_profile_id(profile_id, allow_none=False))
