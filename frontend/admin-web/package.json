@@ -11,7 +11,7 @@
     "build:team-agent-create": "vite build --config vite.team-agent-create.config.ts",
     "sync:design": "node scripts/sync-design-assets.mjs",
     "check:design-assets": "node scripts/sync-design-assets.mjs --check",
-    "build": "npm run sync:design && tsc -b && vite build && python3 scripts/classic-ui.py install",
+    "build": "npm run sync:design && tsc -b && vite build",
     "preview": "vite preview",
     "test:unit": "node --test --test-timeout=30000 --test-concurrency=1 --experimental-strip-types test/**/*.test.mjs",
     "test:browser": "node --test --test-timeout=60000 --test-concurrency=1 --experimental-strip-types test/**/*.browser.mjs",

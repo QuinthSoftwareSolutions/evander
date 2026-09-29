@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-29 - Retire the Classic Admin Web UI (0.72.2)
+
+- Serve the current Admin Web and add-on UIs directly, removing the temporary version
+  selector, frozen Classic bundle, and Classic-only deployment checks.
+
 ## 2026-09-29 - Clarify inference cost reports and correct categories (0.72.1)
 
 - Support bounded, atomic administrative category corrections with period and previous-label

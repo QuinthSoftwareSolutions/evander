@@ -38,7 +38,6 @@ from evander.admin.web.frontend_assets import (
     admin_frontend_assets_ready,
     admin_frontend_dist_dir,
 )
-from evander.admin.web.ui_rollout import addon_rollout_routes, decorate_ui_html, selected_ui
 from evander.admin.web.git_repositories import git_repository_routes
 from evander.admin.web.repository_index import repository_index_routes
 from evander.admin.web.agents import agent_routes
@@ -193,11 +192,11 @@ def _script_json(payload: object) -> str:
 
 
 def _index_html(
-    dist_dir: Path, *, branding_payload: dict[str, object], asset_root: Path | None = None
+    dist_dir: Path, *, branding_payload: dict[str, object]
 ) -> str:
     index_path = dist_dir / "index.html"
     page_title = str(branding_payload.get("page_title") or "")
-    if not admin_frontend_assets_ready(dist_dir, asset_root=asset_root, include_rollout=False):
+    if not admin_frontend_assets_ready(dist_dir):
         return _fallback_html(
             dist_dir,
             page_title=page_title,
@@ -714,13 +713,11 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             }
         )
 
-    def index(request: Request) -> Response:
-        version = selected_ui(request)
-        selected_dist = dist_dir / "classic" if version == "classic" else dist_dir
-        html = _index_html(selected_dist, branding_payload=branding_payload(), asset_root=dist_dir)
+    def index(_: Request) -> Response:
+        html = _index_html(dist_dir, branding_payload=branding_payload())
         return HTMLResponse(
-            decorate_ui_html(html, version),
-            headers={"Cache-Control": "private, no-store", "Vary": "Cookie"},
+            html,
+            headers={"Cache-Control": "private, no-store"},
         )
 
     routes = [
@@ -809,7 +806,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
             routes.append(
                 Mount(
                     f"/addons/{addon.addon_id}",
-                    routes=addon_rollout_routes(addon.addon_id, ui_routes, dist_dir, auth),
+                    routes=list(ui_routes),
                 )
             )
     if dist_dir.exists():
