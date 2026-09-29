@@ -28,7 +28,7 @@ input {
 
 button {
   border: 1px solid #68c9d4;
-  border-radius: 6px;
+  border-radius: var(--ui-radius, 0);
   background: var(--accent);
   color: #062124;
   cursor: pointer;
@@ -93,7 +93,7 @@ p,
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--ui-radius, 0);
   display: grid;
   gap: 12px;
   padding: 16px;
@@ -132,7 +132,7 @@ th:last-child {
 input {
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius, 0);
   color: var(--text);
   min-height: 34px;
   padding: 7px 9px;

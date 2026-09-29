@@ -48,7 +48,7 @@ body {
 button, input, select { font: inherit; }
 button, input, select {
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--ui-radius, 0);
   background: var(--panel);
   color: var(--text);
 }
@@ -80,7 +80,7 @@ h3 { margin-bottom: 9px; font-size: 13px; text-transform: uppercase; letter-spac
 .notice {
   margin-bottom: 14px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--ui-radius, 0);
   background: var(--soft);
   padding: 10px 12px;
   font-size: 13px;
@@ -93,7 +93,7 @@ h3 { margin-bottom: 9px; font-size: 13px; text-transform: uppercase; letter-spac
 .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .summary-card, .panel {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--ui-radius, 0);
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -140,7 +140,7 @@ h3 { margin-bottom: 9px; font-size: 13px; text-transform: uppercase; letter-spac
 .detail-header { align-items: flex-start; }
 .detail-header h2 { margin-top: 3px; font-size: 22px; }
 .property-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
-.property-grid div { min-width: 0; border: 1px solid var(--border); border-radius: 7px; background: var(--soft); padding: 9px; }
+.property-grid div { min-width: 0; border: 1px solid var(--border); border-radius: var(--ui-radius, 0); background: var(--soft); padding: 9px; }
 .property-grid dt { color: var(--muted); font-size: 11px; text-transform: uppercase; }
 .property-grid dd { overflow-wrap: anywhere; margin: 3px 0 0; font-size: 13px; }
 .action-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
@@ -152,7 +152,7 @@ pre {
   overflow: auto;
   margin: 0;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--ui-radius, 0);
   background: var(--soft);
   padding: 12px;
   color: var(--text);
@@ -170,7 +170,7 @@ pre {
 
 .operations-panel { margin-top: 16px; }
 .operations { display: grid; gap: 8px; margin-top: 14px; }
-.operation-row { flex-wrap: wrap; border: 1px solid var(--border); border-radius: 7px; background: var(--soft); padding: 10px 12px; }
+.operation-row { flex-wrap: wrap; border: 1px solid var(--border); border-radius: var(--ui-radius, 0); background: var(--soft); padding: 10px 12px; }
 .operation-row > div { display: grid; min-width: 0; gap: 3px; }
 .operation-row span, .operation-row p { color: var(--muted); font-size: 12px; }
 .operation-row p { width: 100%; color: var(--danger); }

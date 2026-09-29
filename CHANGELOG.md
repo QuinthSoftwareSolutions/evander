@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
+
+- Remove rounded corners from Admin Web and standalone add-on surfaces, dialogs,
+  forms, ordinary buttons, chat messages, and graph nodes using shared radius tokens.
+- Preserve pills and badges, avatars, circular controls and indicators, dials, and
+  switches where their shape conveys their purpose.
+
 ## 2026-09-29 - Simplify Team task board cards (0.72.4)
 
 - Open full task briefs from a bottom-row button in a modal on the board and hierarchy.

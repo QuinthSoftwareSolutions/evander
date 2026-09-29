@@ -805,7 +805,7 @@
 [data-addon="team"] .chat-message-bubble {
   font-size: 14px;
   line-height: 1.6;
-  border-radius: 8px;
+  border-radius: var(--ui-radius, 0);
   background: var(--ui-navigation);
   color: var(--ui-text);
 }
@@ -862,7 +862,7 @@
 }
 [data-addon="team"] .mail-folders button {
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ui-radius, 0);
   padding: 6px 8px;
 }
 [data-addon="team"] .mail-list {

@@ -5,6 +5,10 @@ standalone add-ons. See `docs/design/admin-web-direction.md` and the rollout led
 
 - `tokens.css` defines semantic colors, type, and compact spacing. Use the same token
   for the same meaning in light and dark themes.
+- Surfaces, dialogs, ordinary controls, and graph nodes have square corners. Use
+  `--ui-radius` or `--ui-dialog-radius` for their corners, including structural CSS.
+  Keep explicit rounding for pills and badges, avatars, status dots, circular
+  controls, graph connection handles, dials, and switch tracks/thumbs.
 - `baseline.css` puts the historical host stylesheet in `admin-structure`. It retains
   component geometry and behavior; the focused files here own current visual rules.
 - `controls.css`, `layout.css`, and `collections.css` define controls, the shared shell,
