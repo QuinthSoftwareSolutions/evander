@@ -23,6 +23,26 @@
   border-radius: var(--ui-radius);
 }
 
+/* Preserve pill launchers and circular controls above the structural CSS layers. */
+[data-admin-design] :is(
+  .chat-pill,
+  .session-tool-settings-button,
+  .structured-input-json-row .admin-icon-button,
+  .copy-identifier-button,
+  .mail-directive-composer .icon-button,
+  .skv-help
+) {
+  border-radius: 999px;
+}
+
+[data-admin-design] .react-flow {
+  --xy-node-border-radius: var(--ui-radius);
+}
+
+[data-admin-design] .react-flow__resize-control.handle {
+  border-radius: var(--ui-radius);
+}
+
 [data-admin-design] :is(input, select, textarea) {
   font-weight: 400;
   border-color: var(--ui-control-border);

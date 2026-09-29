@@ -23,8 +23,9 @@
   --ui-danger-surface: #fceef0;
   --ui-overlay: rgb(16 29 42 / 35%);
   --ui-shadow: 0 16px 48px rgb(16 29 42 / 18%);
-  --ui-radius: 6px;
-  --ui-dialog-radius: 10px;
+  /* Square surfaces and controls; pills, avatars, and circular indicators opt in. */
+  --ui-radius: 0;
+  --ui-dialog-radius: 0;
   --ui-space-1: 4px;
   --ui-space-2: 8px;
   --ui-space-3: 12px;

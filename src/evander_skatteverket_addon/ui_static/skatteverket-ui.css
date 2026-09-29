@@ -88,7 +88,7 @@ p {
 button {
   border: 1px solid var(--skv-button-border);
   background: var(--skv-button-bg);
-  border-radius: 6px;
+  border-radius: var(--ui-radius, 0);
   color: var(--skv-text);
   padding: 8px 12px;
   cursor: pointer;
@@ -117,7 +117,7 @@ button:focus-visible {
 article {
   background: var(--skv-panel-bg);
   border: 1px solid var(--skv-panel-border);
-  border-radius: 8px;
+  border-radius: var(--ui-radius, 0);
   box-shadow: var(--skv-shadow);
   padding: 14px;
   min-width: 0;
@@ -182,7 +182,7 @@ article {
   max-width: min(320px, 70vw);
   padding: 8px 10px;
   border: 1px solid var(--skv-panel-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius, 0);
   background: var(--skv-code-bg);
   box-shadow: var(--skv-shadow);
   color: var(--skv-text);
@@ -232,7 +232,7 @@ select {
   min-width: 0;
   box-sizing: border-box;
   border: 1px solid var(--skv-button-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius, 0);
   background: var(--skv-input-bg);
   color: var(--skv-text);
   font: inherit;
@@ -252,7 +252,7 @@ select:focus {
 .skv-api-picker {
   margin: 0;
   border: 1px solid var(--skv-panel-border);
-  border-radius: 8px;
+  border-radius: var(--ui-radius, 0);
   padding: 12px;
 }
 
@@ -269,7 +269,7 @@ select:focus {
   gap: 8px;
   align-items: flex-start;
   border: 1px solid var(--skv-row-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius, 0);
   background: var(--skv-code-bg);
   padding: 8px;
 }
@@ -315,7 +315,7 @@ pre {
   overflow-wrap: anywhere;
   margin: 0;
   border: 1px solid var(--skv-code-border);
-  border-radius: 6px;
+  border-radius: var(--ui-radius, 0);
   background: var(--skv-code-bg);
   color: var(--skv-text);
   font-size: 12px;

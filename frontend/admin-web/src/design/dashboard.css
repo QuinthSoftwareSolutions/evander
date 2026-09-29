@@ -108,7 +108,7 @@
   border: 0;
   background: transparent;
   color: var(--ui-muted);
-  border-radius: 4px;
+  border-radius: var(--ui-radius, 0);
   width: 24px;
   height: 24px;
   line-height: 24px;
@@ -219,7 +219,7 @@
 }
 [data-admin-design] .release-news-image {
   margin: 16px 0;
-  border-radius: 4px;
+  border-radius: var(--ui-radius, 0);
   overflow: hidden;
 }
 [data-admin-design] .release-news-image img {

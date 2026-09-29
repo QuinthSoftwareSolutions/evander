@@ -159,13 +159,11 @@ def _fallback_html(dist_dir: Path, *, page_title: str, branding_payload: dict[st
         max-width: 42rem;
         background: #fffaf1;
         border: 1px solid #d7cdbb;
-        border-radius: 18px;
         padding: 2rem;
         box-shadow: 0 18px 60px rgba(58, 45, 20, 0.08);
       }}
       code {{
         background: #efe7d7;
-        border-radius: 6px;
         padding: 0.12rem 0.33rem;
       }}
     </style>

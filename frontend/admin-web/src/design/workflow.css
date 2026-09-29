@@ -113,7 +113,7 @@
   background: var(--ui-navigation);
   color: var(--ui-text);
   border-color: var(--ui-border);
-  border-radius: 4px;
+  border-radius: var(--ui-radius, 0);
   padding: 6px 8px;
 }
 [data-admin-design] :is(.create-group, .create-subgroup) {
@@ -251,7 +251,7 @@
      geometry stay independent of the node's type. */
   background: linear-gradient(var(--node-color), var(--node-color)) top / 100% 4px no-repeat,
     var(--node-surface);
-  border-radius: 8px;
+  border-radius: var(--ui-radius, 0);
   border-color: var(--node-border);
   box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
   color: var(--ui-text);

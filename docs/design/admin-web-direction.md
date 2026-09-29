@@ -99,7 +99,7 @@ These are starting dimensions to evaluate, not a blanket CSS scaling operation.
 | Global navigation | Approximately 208 px expanded. Keep collapse and page search; show tooltips/accessible names when collapsed. |
 | Controls | About 32 px in the compact layout. Larger touch targets for primary navigation and actions. |
 | Data rows | 40 px minimum for one-line rows; natural height for wrapped content. |
-| Corners | 4–6 px for controls and ordinary surfaces; 8–10 px for dialogs. Fully round shapes reserved for avatars or a meaningful badge. |
+| Corners | Square controls, surfaces, dialogs, and graph nodes. Rounding is reserved for pills and badges, avatars, status dots, circular controls, graph connection handles, dials, and switches. |
 | Elevation | Borders and surface tones for persistent regions. Shadow mainly for drawers, menus, and dialogs. |
 | Inspector | About 340–400 px when space permits; full record view available. At narrow widths use an accessible sheet or dedicated page. |
 | Motion | Short state transitions where useful. Respect reduced-motion preferences. Live updates should not move the selected row or steal focus. |

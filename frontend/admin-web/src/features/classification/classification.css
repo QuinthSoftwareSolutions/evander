@@ -1,5 +1,5 @@
 .classification-configuration, .classification-workflow, .classification-questions { display: grid; gap: 1rem; }
-.classification-configuration fieldset, .classification-question { display: grid; gap: .75rem; border: 1px solid var(--border-color, #64748b); border-radius: 8px; padding: 1rem; min-width: 0; }
+.classification-configuration fieldset, .classification-question { display: grid; gap: .75rem; border: 1px solid var(--border-color, #64748b); border-radius: var(--ui-radius, 0); padding: 1rem; min-width: 0; }
 .classification-actions, .classification-option { display: flex; align-items: end; flex-wrap: wrap; gap: .75rem; }
 .classification-actions .field-stack, .classification-option .field-stack { flex: 1; min-width: 140px; }
 .classification-json { min-height: 18rem; font-family: monospace; }
