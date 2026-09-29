@@ -7,7 +7,8 @@
 - Fetch full work-item records in batches while preserving custom fields, activity
   filtering, candidate omissions, and paging completeness.
 - Recheck policy and provider credentials on each request, invalidate cached scans
-  after gateway work-item mutations, and expose content-free cache and scan timings.
+  after gateway work-item and proxy-issue mutations, and expose content-free cache
+  and scan timings.
 
 ## 2026-09-29 - Reduce event and retention writer contention (0.72.7)
 

@@ -19,6 +19,8 @@ from evander.models import (
     ApprovalGrantSettings,
     ApprovalPayloadMode,
     ApprovalStatus,
+    LocalIssueRecord,
+    RemoteIssueReference,
     SessionManifest,
     ToolName,
 )
@@ -1947,3 +1949,131 @@ def test_activity_cache_survives_service_factories_and_invalidates_after_mutatio
         call_tool(server, "query_ado_work_item_activity", query)
     assert state["batches"] == 2
     assert state["instances"] == 4
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_state"),
+    [
+        ("approve_issue", "Approved"),
+        ("reject_issue", "Closed"),
+        ("commit_issue", "Committed"),
+    ],
+)
+@pytest.mark.parametrize("mutation_directory", ["root/team-a", "root"])
+@pytest.mark.parametrize("update_fails", [False, True])
+def test_proxy_issue_mutations_invalidate_activity_for_the_issue_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    expected_state: str,
+    mutation_directory: str,
+    update_fails: bool,
+) -> None:
+    import httpx
+    from evander.issues.service import AzureDevOpsIssueAdapter
+
+    context = make_context(tmp_path)
+    ensure_directories(context, "root/team-b")
+    for session_id, directory, tools in [
+        ("reader", "root/team-a", [ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY]),
+        ("other-reader", "root/team-b", [ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY]),
+        ("writer", mutation_directory, [ToolName(mutation)]),
+    ]:
+        context.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                directory_path=directory,
+                allowed_tools=tools,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+        )
+    admin = build_admin_runtime(context.config.runtime_dir)
+    issue = LocalIssueRecord(
+        issue_id="proxy-1",
+        issue_number="1",
+        title="Example work item",
+        body="",
+        yaml_path=str(tmp_path / "issues" / "1.yaml"),
+        directory_path="root/team-a",
+        source_type="remote_proxy",
+        state="New",
+        remote_reference=RemoteIssueReference(
+            provider="azure_devops",
+            organization="https://dev.azure.com/example",
+            project="Example",
+            work_item_id="1",
+        ),
+    )
+    admin.local_issue_store.put(issue.issue_id, issue)
+    remote = {"state": "New", "batches": 0, "patches": 0}
+    monkeypatch.setattr(
+        AzureDevOpsIssueAdapter,
+        "_resolve_connection",
+        lambda self, directory: ("https://dev.azure.com/example", "Example", "synthetic-pat"),
+    )
+
+    def item():
+        return {
+            "id": 1,
+            "fields": {
+                "System.Title": "Example work item",
+                "System.State": remote["state"],
+                "System.ChangedDate": "2026-09-25T08:00:00Z",
+            },
+        }
+
+    def handle(request):
+        if request.method == "PATCH" and request.url.path.endswith("/workitems/1"):
+            remote["patches"] += 1
+            if update_fails:
+                return httpx.Response(503, json={"message": "Provider unavailable"})
+            for operation in json.loads(request.content):
+                if operation["path"] == "/fields/System.State":
+                    remote["state"] = operation["value"]
+            return httpx.Response(200, json=item())
+        if request.url.path.endswith("/wiql"):
+            return httpx.Response(200, json={"workItems": [{"id": 1}]})
+        if request.url.path.endswith("/workitemsbatch"):
+            remote["batches"] += 1
+            return httpx.Response(200, json={"value": [item()]})
+        if request.url.path.endswith("/workitems/1"):
+            return httpx.Response(200, json=item())
+        if request.url.path.endswith("/comments"):
+            return httpx.Response(200, json={"comments": []})
+        if request.url.path.endswith("/updates"):
+            return httpx.Response(200, json={"value": []})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        "evander.issues.service.httpx.Client",
+        lambda timeout: client_type(timeout=timeout, transport=httpx.MockTransport(handle)),
+    )
+    server = create_server(context)
+    query = {"session_id": "reader", "since": "2026-09-25T00:00:00Z"}
+    other_query = {**query, "session_id": "other-reader"}
+    for arguments in [query, other_query, query]:
+        assert (
+            call_tool(server, "query_ado_work_item_activity", arguments)["items"][0]["state"]
+            == "New"
+        )
+    assert remote["batches"] == 2
+
+    mutation_arguments = {"session_id": "writer", "issue_id": issue.issue_id}
+    if update_fails:
+        with pytest.raises(ToolError, match="Provider unavailable"):
+            call_tool(server, mutation, mutation_arguments)
+        assert remote["state"] == "New"
+    else:
+        result = call_tool(server, mutation, mutation_arguments)
+        assert result["source_type"] == "proxy"
+        assert remote["state"] == expected_state
+        assert admin.local_issue_store.get(issue.issue_id).state == expected_state
+    assert remote["patches"] == 1
+
+    assert call_tool(server, "query_ado_work_item_activity", query)["items"][0]["state"] == (
+        "New" if update_fails else expected_state
+    )
+    assert remote["batches"] == (2 if update_fails else 3)
+    assert call_tool(server, "query_ado_work_item_activity", other_query)["count"] == 1
+    assert remote["batches"] == (2 if update_fails else 3)
