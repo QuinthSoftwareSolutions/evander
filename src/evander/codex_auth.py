@@ -48,11 +48,26 @@ class CodexRateLimitResetRequest(BaseModel):
 
     idempotency_key: str
     credit_id: str | None = None
+    expected_account_id: str | None = None
 
-    @field_validator("idempotency_key", "credit_id")
+    @field_validator("idempotency_key", "credit_id", "expected_account_id")
     @classmethod
     def validate_nonempty_text(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+
+class CodexSubscriptionResetRequest(CodexRateLimitResetRequest):
+    """Bind Admin Web redemption to the worker and account the operator saw."""
+
+    expected_worker_url: str
+    expected_account_id: str
+
+    @field_validator("expected_worker_url")
+    @classmethod
+    def validate_worker_url(cls, value: str) -> str:
+        if not value.strip():
             raise ValueError("must be a non-empty string")
         return value
 

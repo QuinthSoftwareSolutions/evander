@@ -286,7 +286,9 @@ The same page shows remaining weekly usage and banked resets. With privileged op
 expand an enabled, signed-in profile and choose **Redeem one reset** to use an available reset.
 The page refreshes its counts and usage, and recovered capacity makes queued work eligible again.
 If the response fails, **Retry reset redemption** checks the same attempt without consuming a
-second reset. **Unavailable** is distinct from a reported count of zero.
+second reset, including after leaving the page or reloading it. Retry information is saved before
+submission and retained until a definitive response. A changed directory worker or account cannot
+receive the original redemption. **Unavailable** is distinct from a reported count of zero.
 
 When cleanup fails:
 

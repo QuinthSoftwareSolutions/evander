@@ -25,7 +25,7 @@ function profile(profileId, displayName, count, update = {}) {
   };
 }
 
-async function fixture(t, routeHandler) {
+async function fixture(t, routeHandler, options = {}) {
   const html = `<html><head><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
     <body><div id="root"></div><script type="module">
       import React from 'react';
@@ -42,14 +42,17 @@ async function fixture(t, routeHandler) {
       function App() {
         const [privilegedUnlocked, unlock] = React.useState(false);
         const [selectedDirectoryPath, selectDirectory] = React.useState('engineering');
+        const [subscriptionsVisible, showSubscriptions] = React.useState(true);
         return React.createElement(React.Fragment, null,
           React.createElement('button', { onClick: () => unlock(true) }, 'Unlock operations'),
+          React.createElement('button', { onClick: () => showSubscriptions(!subscriptionsVisible) },
+            subscriptionsVisible ? 'Leave subscriptions' : 'Open subscriptions'),
           React.createElement('select', { 'aria-label': 'Directory', value: selectedDirectoryPath,
             onChange: (event) => selectDirectory(event.target.value) },
             React.createElement('option', { value: 'engineering' }, 'Engineering'),
             React.createElement('option', { value: 'operations' }, 'Operations')),
           React.createElement(AdminUiContext.Provider, { value: { privilegedUnlocked, selectedDirectoryPath } },
-            React.createElement(SubscriptionsPage)));
+            subscriptionsVisible ? React.createElement(SubscriptionsPage) : null));
       }
       createRoot(document.getElementById('root')).render(React.createElement(App));
     </script></body></html>`;
@@ -67,6 +70,7 @@ async function fixture(t, routeHandler) {
   await withTimeout(server.listen(), 15_000, "Subscription test server did not start");
   const context = await browser.newContext(t);
   const page = await context.newPage();
+  if (options.initScript) await page.addInitScript(options.initScript);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/api/**", routeHandler);
@@ -176,6 +180,10 @@ test("banked resets use the authoritative count and redemption retries consume o
     assert.equal(url.pathname, "/api/admin/codex-subscriptions/team-plus/reset-credits/consume");
     assert.equal(url.searchParams.get("directory_path"), "engineering");
   }
+  for (const { body } of requests) {
+    assert.equal(body.expected_worker_url, "http://worker.test");
+    assert.equal(body.expected_account_id, "account-team-plus");
+  }
   assert.deepEqual(errors, []);
   if (process.env.PLAYWRIGHT_ARTIFACT_DIR) {
     await mkdir(process.env.PLAYWRIGHT_ARTIFACT_DIR, { recursive: true });
@@ -216,5 +224,123 @@ test("a redemption finishing after a directory switch cannot replace the new wor
   assert.match(await current.locator("summary").first().innerText(), /5\s+Banked resets/);
   assert.equal(await row(page, "Old worker").count(), 0);
   assert.equal(await page.getByRole("status").count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test("unresolved redemption survives a tab remount and reload until a definitive response", { timeout: 60_000 }, async (t) => {
+  let selected = profile("team-plus", "Team Plus", 3);
+  const keys = new Set();
+  const requests = [];
+  let consumed = 0;
+  const { page, errors } = await fixture(t, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      return route.fulfill({ json: { worker_url: "http://worker.test", profiles: [selected] } });
+    }
+    const body = request.postDataJSON();
+    requests.push(body);
+    let outcome = "alreadyRedeemed";
+    if (!keys.has(body.idempotency_key)) {
+      keys.add(body.idempotency_key);
+      consumed += 1;
+      selected = profile("team-plus", "Team Plus", 3 - consumed);
+      outcome = "reset";
+    }
+    // Usage becomes resettable again before the operator returns. A new key
+    // would now consume another credit instead of replaying the first attempt.
+    selected.rate_limits.default.secondary.used_percent = 80;
+    if (requests.length <= 2) {
+      return route.fulfill({ status: 502, json: { error: "Response lost after redemption" } });
+    }
+    return route.fulfill({ json: { outcome, profile: selected } });
+  });
+  await row(page, "Team Plus").waitFor();
+  await page.getByRole("button", { name: "Unlock operations" }).click();
+  await row(page, "Team Plus").locator("summary").first().click();
+  await confirmClick(page, row(page, "Team Plus").getByRole("button", { name: "Redeem one reset" }));
+  await page.getByText(/Response lost after redemption/).waitFor();
+  await page.getByRole("button", { name: "Leave subscriptions" }).click();
+  assert.equal(await page.getByRole("heading", { name: "Subscriptions" }).count(), 0);
+  await page.getByRole("button", { name: "Open subscriptions" }).click();
+  await row(page, "Team Plus").waitFor();
+  await row(page, "Team Plus").locator("summary").first().click();
+  await row(page, "Team Plus").getByRole("button", { name: "Retry reset redemption" }).click();
+  await page.getByText(/Response lost after redemption/).waitFor();
+  await page.reload();
+  await row(page, "Team Plus").waitFor();
+  await page.getByRole("button", { name: "Unlock operations" }).click();
+  await row(page, "Team Plus").locator("summary").first().click();
+  await row(page, "Team Plus").getByRole("button", { name: "Retry reset redemption" }).click();
+  await page.getByRole("status").filter({ hasText: "already redeemed" }).waitFor();
+  assert.equal(consumed, 1);
+  assert.equal(requests.length, 3);
+  assert.equal(new Set(requests.map((request) => request.idempotency_key)).size, 1);
+  for (const request of requests) {
+    assert.equal(request.expected_worker_url, "http://worker.test");
+    assert.equal(request.expected_account_id, "account-team-plus");
+  }
+  // Only a definitive outcome removes the pending attempt.
+  await page.reload();
+  await row(page, "Team Plus").waitFor();
+  await row(page, "Team Plus").locator("summary").first().click();
+  assert.equal(await row(page, "Team Plus").getByRole("button", { name: "Redeem one reset", exact: true }).count(), 1);
+  assert.equal(await row(page, "Team Plus").getByRole("button", { name: "Retry reset redemption" }).count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test("a retry retains its original destination when the directory worker changes", { timeout: 60_000 }, async (t) => {
+  let configuredWorker = "http://worker.test";
+  let originalConsumed = 0;
+  let replacementConsumed = 0;
+  const requests = [];
+  const { page, errors } = await fixture(t, async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      return route.fulfill({ json: {
+        worker_url: configuredWorker, profiles: [profile("team-plus", "Team Plus", 3)],
+      } });
+    }
+    const body = request.postDataJSON();
+    requests.push(body);
+    if (body.expected_worker_url !== configuredWorker) {
+      return route.fulfill({ status: 409, json: { error: "Subscription worker changed" } });
+    }
+    if (configuredWorker === "http://worker.test") originalConsumed += 1;
+    else replacementConsumed += 1;
+    configuredWorker = "http://replacement-worker.test";
+    return route.fulfill({ status: 502, json: { error: "Response lost after redemption" } });
+  });
+  const selected = row(page, "Team Plus");
+  await selected.waitFor();
+  await page.getByRole("button", { name: "Unlock operations" }).click();
+  await selected.locator("summary").first().click();
+  await confirmClick(page, selected.getByRole("button", { name: "Redeem one reset" }));
+  await page.getByText(/Response lost after redemption/).waitFor();
+  await selected.getByRole("button", { name: "Retry reset redemption" }).click();
+  await page.getByText(/Subscription worker changed/).waitFor();
+  assert.equal(originalConsumed, 1);
+  assert.equal(replacementConsumed, 0);
+  assert.deepEqual(requests[0], requests[1]);
+  assert.equal(await selected.getByRole("button", { name: "Retry reset redemption" }).count(), 1);
+  assert.deepEqual(errors, []);
+});
+
+test("storage failure prevents a redemption from being sent", { timeout: 60_000 }, async (t) => {
+  let redemptions = 0;
+  const { page, errors } = await fixture(t, (route) => {
+    if (route.request().method() !== "GET") redemptions += 1;
+    return route.fulfill({ json: {
+      worker_url: "http://worker.test", profiles: [profile("team-plus", "Team Plus", 3)],
+    } });
+  }, { initScript: () => {
+    Storage.prototype.setItem = () => { throw new Error("Browser storage is unavailable"); };
+  } });
+  const selected = row(page, "Team Plus");
+  await selected.waitFor();
+  await page.getByRole("button", { name: "Unlock operations" }).click();
+  await selected.locator("summary").first().click();
+  await confirmClick(page, selected.getByRole("button", { name: "Redeem one reset" }));
+  await page.getByText(/Reset redemption was not submitted/).waitFor();
+  assert.equal(redemptions, 0);
   assert.deepEqual(errors, []);
 });

@@ -419,7 +419,9 @@ def test_reset_redemption_accepts_exhausted_capacity_and_refreshes_only_selected
         registry.close()
 
 
-@pytest.mark.parametrize("state", ["disabled", "signed_out", "unavailable", "wrong_account"])
+@pytest.mark.parametrize("state", [
+    "disabled", "signed_out", "unavailable", "wrong_account", "wrong_expected_account",
+])
 def test_reset_redemption_rejects_unusable_or_mismatched_profiles(
     tmp_path: Path, state: str
 ) -> None:
@@ -435,11 +437,14 @@ def test_reset_redemption_rejects_unusable_or_mismatched_profiles(
             broker.status_payload["signed_in"] = False
         elif state == "unavailable":
             broker.status_payload["available"] = False
-        else:
+        elif state == "wrong_account":
             broker.status_payload["account_id"] = "account-b"
         with pytest.raises((CodexAuthBrokerError, CodexSubscriptionDeferredError)):
             registry.consume_reset_credit(
-                "team-a", CodexRateLimitResetRequest(idempotency_key="attempt")
+                "team-a", CodexRateLimitResetRequest(
+                    idempotency_key="attempt",
+                    expected_account_id="account-b" if state == "wrong_expected_account" else "account-a",
+                )
             )
         assert broker.reset_requests == []
         if state == "wrong_account":

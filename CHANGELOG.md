@@ -7,6 +7,8 @@
 - Let privileged root owners redeem one reset, refresh account limits, and wake queued
   work when capacity recovers. Preserve account pins and retry identity to avoid
   consuming another reset after an uncertain response.
+- Bind redemption to the original worker and account, and retain unresolved attempts
+  across tab changes and reloads until the provider returns a definitive outcome.
 
 ## 2026-09-29 - Reduce event and retention writer contention (0.72.7)
 

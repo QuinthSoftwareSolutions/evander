@@ -10,7 +10,7 @@ from evander.execution.container_worker_client import (
     ContainerWorkerClientError,
 )
 from evander.config import GatewayConfig
-from evander.codex_auth import CodexRateLimitResetRequest
+from evander.codex_auth import CodexSubscriptionResetRequest
 from evander.models import AuditEvent
 
 
@@ -22,6 +22,10 @@ class CodexAuthProviderConfigPort(Protocol):
 
 class CodexAuthAuditPort(Protocol):
     def log(self, event: AuditEvent) -> None: ...
+
+
+class CodexSubscriptionResetConflict(ValueError):
+    """The configured destination no longer matches the redemption attempt."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,15 +161,24 @@ class CodexAuthAdminService:
         *,
         actor_user_id: str | None,
     ) -> dict[str, Any]:
-        request = CodexRateLimitResetRequest.model_validate(payload)
+        request = CodexSubscriptionResetRequest.model_validate(payload)
         config = self._deps.provider_config.resolve_for_directory(directory_path)
         worker_url = str(config.container_worker_base_url or "").strip()
+        if self._normalize_worker_url(request.expected_worker_url) != self._normalize_worker_url(
+            worker_url
+        ):
+            self._audit(
+                "codex_subscription_reset_credit_consume", directory_path, actor_user_id, "deny"
+            )
+            raise CodexSubscriptionResetConflict(
+                "Subscription worker changed. Refresh profiles before redeeming a reset."
+            )
         result = self._mutate(
             "codex_subscription_reset_credit_consume",
             directory_path,
             actor_user_id,
             lambda: self._client_for_config(config).consume_codex_profile_reset_credit(
-                profile_id, request.model_dump(exclude_none=True)
+                profile_id, request.model_dump(exclude={"expected_worker_url"}, exclude_none=True)
             ),
         )
         profile = result.get("profile")

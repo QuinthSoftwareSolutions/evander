@@ -314,8 +314,13 @@ class CodexAuthBrokerRegistry:
             raise CodexAuthBrokerError(
                 str(status.get("error") or "Subscription profile must be signed in and available")
             )
+        if (
+            request.expected_account_id is not None
+            and request.expected_account_id != status["account_id"]
+        ):
+            raise CodexAuthBrokerError("Subscription account changed before reset redemption")
         result = broker.consume_reset_credit(
-            request, expected_account_id=str(status["account_id"])
+            request, expected_account_id=request.expected_account_id or str(status["account_id"])
         )
         # Read authoritative windows and credit counts after every definitive
         # outcome, including an idempotent replay of a successful redemption.

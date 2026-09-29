@@ -646,8 +646,9 @@ public egress, but it is not the networked deployment default.
 After deployment, sign in to Admin Web as an Admin with `admin.owner` permission at `root`, unlock
 privileged operations, and open **Subscriptions**. Create a profile, start device login, complete
 the displayed link and code, and wait for the profile to show signed in with its pinned account.
-Creation, rename, enable/disable, login, cancellation, logout, and reset redemption are privileged worker operations;
-ownership of a child directory is insufficient. Mutations are audited without recording tokens.
+Creation, rename, enable/disable, login, cancellation, logout, and reset redemption are privileged
+worker operations; ownership of a child directory is insufficient. Mutations are audited without
+recording tokens.
 
 The profile list shows **7-day remaining** and **Banked resets**. Reset counts come from the
 provider's authoritative available count; **Unavailable** means the provider did not return a
@@ -655,6 +656,11 @@ valid count, rather than zero. Expand an enabled, signed-in profile and choose *
 reset** to consume one available earned reset after confirmation. Evander rereads limits and
 reset counts after redemption. **Retry reset redemption** checks the same attempt after a
 transport error, retaining its idempotency key so a completed redemption cannot consume twice.
+Unresolved attempts are saved in the browser before submission, scoped by worker, profile, and
+account. They survive tab changes and reloads, and are removed only after a definitive response.
+If the browser cannot retain retry information, Evander does not submit a new redemption.
+Requests retain the original worker and account; a directory worker change rejects the request
+before forwarding rather than applying it to the replacement worker.
 If there is no eligible window or no credit, the page reports that outcome without claiming a reset.
 
 Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent. New UI
@@ -697,8 +703,12 @@ compatibility alias for `default`.
 
 Reset redemption uses `POST /api/admin/codex-subscriptions/{profile_id}/reset-credits/consume`,
 forwarded to the selected worker's `/v1/codex-auth/profiles/{profile_id}/reset-credits/consume`.
-Send a non-empty `idempotency_key` (a UUID is recommended) and, optionally, a non-empty
-`credit_id` from the reported reset details. Reuse the same key when retrying the same attempt.
+Send a non-empty `idempotency_key` (a UUID is recommended), `expected_worker_url` from the profile
+list, and `expected_account_id` from the selected profile. Optionally send a non-empty `credit_id`
+from the reported reset details. Reuse the same key and destination when retrying the same attempt.
+The control plane compares the expected worker to the current directory configuration and returns
+HTTP 409 without forwarding if it changed. The worker checks the expected account before consuming
+a reset. The expected worker URL is a comparison value, never an operator-supplied routing override.
 The response contains `outcome` (`reset`, `alreadyRedeemed`, `nothingToReset`, or `noCredit`)
 and the refreshed `profile`. Provider selection applies when `credit_id` is omitted. This requires
 a worker Codex App Server version supporting `account/rateLimitResetCredit/consume`.
