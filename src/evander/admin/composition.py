@@ -681,6 +681,7 @@ def _build_admin_runtime_components(
         artifact_store_factory=lambda: CommunicationArtifactStore(config.runtime_dir),
         registry=connector_registry_from_catalog(addon_catalog),
         session_authorizer=lambda sid: runtime.policy.require_tool(sid, "call_connector"),
+        session_argument_authorizer=runtime.policy.require_tool_arguments,
         host_services={"managed_git": lambda: managed_git_admin},
     )
     connector_admin = ConnectorAdminService(

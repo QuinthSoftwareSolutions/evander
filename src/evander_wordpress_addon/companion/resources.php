@@ -31,6 +31,7 @@ final class Evander_Core_Resources implements Evander_Resource_Adapter {
         if ($kind === 'option' && !in_array($id, $this->options(), true)) { throw new RuntimeException('Option is not approved for design editing', 400); }
         if ($kind === 'option' && $value !== null && (!is_array($value) || !array_key_exists('value',$value) || count($value)!==2 || !in_array($value['autoload']??null,['yes','no','on','off','auto','auto-on','auto-off'],true))) { throw new RuntimeException('Option value and autoload mode required',400); }
         if (in_array($kind,['meta','termmeta','acf'],true) && (!$field || !ctype_digit($id))) { throw new RuntimeException('Numeric record and field required',400); }
+        if (in_array($kind,['meta','termmeta'],true) && $value !== null && (!is_array($value) || !array_is_list($value))) { throw new RuntimeException('Metadata requires a list of stored values',400); }
         if (in_array($kind,['post','term'],true) && !ctype_digit($id) && !($kind==='post' && preg_match('/^new-[a-zA-Z0-9_-]+$/D',$id))) { throw new RuntimeException('Invalid record ID',400); }
         if ($kind === 'post' && $value !== null) {
             if (!is_array($value) || array_diff(array_keys($value),$this->post_fields())) { throw new RuntimeException('Unsupported post fields',400); }
@@ -102,47 +103,58 @@ final class Evander_Core_Resources implements Evander_Resource_Adapter {
         if ($kind === 'post') {
             if ($value === null) {
                 // Do not delete unrelated metadata, translation links or media files implicitly.
-                $wpdb->delete($wpdb->posts,['ID'=>(int)$id]); clean_post_cache((int)$id); return $key;
+                $this->require_write($wpdb->delete($wpdb->posts,['ID'=>(int)$id])); clean_post_cache((int)$id); return $key;
             }
             if (ctype_digit($id)) {
-                if ($this->read($key) === null) { $wpdb->insert($wpdb->posts,array_merge(['ID'=>(int)$id],$value)); }
-                else { $wpdb->update($wpdb->posts,$value,['ID'=>(int)$id]); }
+                if ($this->read($key) === null) { $this->require_write($wpdb->insert($wpdb->posts,array_merge(['ID'=>(int)$id],$value))); }
+                else { $this->require_write($wpdb->update($wpdb->posts,$value,['ID'=>(int)$id])); }
                 clean_post_cache((int)$id);
             }
             else {
                 $value = array_merge(['post_author'=>get_current_user_id(),'post_date'=>current_time('mysql'),
                     'post_date_gmt'=>current_time('mysql',true),'post_status'=>'draft','post_type'=>'page'], $value);
-                if (!$wpdb->insert($wpdb->posts,$value)) { throw new RuntimeException('Post creation failed'); }
+                $this->require_write($wpdb->insert($wpdb->posts,$value));
                 $key = 'post:' . $wpdb->insert_id;
             }
         } elseif ($kind === 'option') {
-            $wpdb->delete($wpdb->options,['option_name'=>$id]);
-            if ($value !== null) { $wpdb->insert($wpdb->options,['option_name'=>$id,'option_value'=>maybe_serialize($value['value']),'autoload'=>$value['autoload']]); }
+            $this->require_write($wpdb->delete($wpdb->options,['option_name'=>$id]));
+            if ($value !== null) { $this->require_write($wpdb->insert($wpdb->options,['option_name'=>$id,'option_value'=>maybe_serialize($value['value']),'autoload'=>$value['autoload']])); }
             wp_cache_delete($id,'options'); wp_cache_delete('alloptions','options'); wp_cache_delete('notoptions','options');
         } elseif ($kind === 'term') {
-            if ($value===null) { $wpdb->delete($wpdb->terms,['term_id'=>(int)$id]); }
-            elseif ($this->read($key) === null) { $wpdb->insert($wpdb->terms,array_merge(['term_id'=>(int)$id],$value)); }
-            else { $wpdb->update($wpdb->terms,$value,['term_id'=>(int)$id]); }
+            if ($value===null) { $this->require_write($wpdb->delete($wpdb->terms,['term_id'=>(int)$id])); }
+            elseif ($this->read($key) === null) { $this->require_write($wpdb->insert($wpdb->terms,array_merge(['term_id'=>(int)$id],$value))); }
+            else { $this->require_write($wpdb->update($wpdb->terms,$value,['term_id'=>(int)$id])); }
             clean_term_cache((int)$id);
         }
         elseif ($kind === 'relationships') {
             $previous=$this->read($key);
-            $wpdb->query($wpdb->prepare("DELETE r FROM $wpdb->term_relationships r INNER JOIN $wpdb->term_taxonomy t ON t.term_taxonomy_id=r.term_taxonomy_id WHERE r.object_id=%d AND t.taxonomy=%s",$id,$field));
-            foreach (($value??[]) as $row) { $wpdb->insert($wpdb->term_relationships,['object_id'=>(int)$id,'term_taxonomy_id'=>(int)$row['term_taxonomy_id'],'term_order'=>(int)($row['term_order']??0)]); }
+            $this->require_write($wpdb->query($wpdb->prepare("DELETE r FROM $wpdb->term_relationships r INNER JOIN $wpdb->term_taxonomy t ON t.term_taxonomy_id=r.term_taxonomy_id WHERE r.object_id=%d AND t.taxonomy=%s",$id,$field)));
+            foreach (($value??[]) as $row) { $this->require_write($wpdb->insert($wpdb->term_relationships,['object_id'=>(int)$id,'term_taxonomy_id'=>(int)$row['term_taxonomy_id'],'term_order'=>(int)($row['term_order']??0)])); }
             $ids=array_unique(array_merge(array_column($previous,'term_taxonomy_id'),array_column($value??[],'term_taxonomy_id')));
             if ($ids) { wp_update_term_count_now($ids,$field); }
             clean_object_term_cache((int)$id,get_post_type((int)$id));
         }
         elseif ($kind === 'acf') {
-            delete_post_meta((int)$id,$field); delete_post_meta((int)$id,'_'.$field);
-            if ($value !== null && !empty($value['exists'])) {
-                add_post_meta((int)$id,$field,$value['value']); add_post_meta((int)$id,'_'.$field,$value['reference']);
-            }
+            $exists = $value !== null && !empty($value['exists']);
+            $this->write_metadata('post',(int)$id,$field,$exists ? [$value['value']] : []);
+            $this->write_metadata('post',(int)$id,'_'.$field,$exists ? [$value['reference']] : []);
         } else {
-            $type = $kind==='meta' ? 'post' : 'term'; delete_metadata($type,(int)$id,$field);
-            foreach (($value ?? []) as $item) { add_metadata($type,(int)$id,$field,$item); }
+            $this->write_metadata($kind==='meta' ? 'post' : 'term',(int)$id,$field,$value ?? []);
         }
         return $key;
+    }
+    private function require_write($result) {
+        // Zero affected rows is a valid no-op; false is a database failure.
+        if ($result === false) { throw new RuntimeException('Resource write failed'); }
+    }
+    private function write_metadata($type, $id, $field, $values) {
+        global $wpdb;
+        $table = $type==='post' ? $wpdb->postmeta : $wpdb->termmeta;
+        $column = $type==='post' ? 'post_id' : 'term_id';
+        // Metadata APIs conflate missing rows and failed deletion. Use exact results.
+        $this->require_write($wpdb->delete($table,[$column=>$id,'meta_key'=>$field]));
+        foreach ($values as $item) { $this->require_write($wpdb->insert($table,[$column=>$id,'meta_key'=>$field,'meta_value'=>maybe_serialize($item)])); }
+        wp_cache_delete($id,$type.'_meta');
     }
     public function allows_query($key, $sql) {
         global $wpdb; [$kind,$id,$field] = $this->split($key);

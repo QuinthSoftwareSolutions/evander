@@ -547,6 +547,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             base_dir=context.config.runtime_dir.parent,
         ),
         session_authorizer=lambda sid: context.policy.require_tool(sid, "call_connector"),
+        session_argument_authorizer=context.policy.require_tool_arguments,
         host_services={"managed_git": lambda: deps.admin_runtime_factory().managed_git_admin},
     )
     host_directory_service = HostDirectoryService(

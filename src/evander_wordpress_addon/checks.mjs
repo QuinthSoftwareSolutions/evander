@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 let raw = '';
 for await (const chunk of process.stdin) raw += chunk;
 const config = JSON.parse(raw);
@@ -20,7 +21,8 @@ try {
     for (const check of config.checks) {
       const page = await context.newPage();
       const prefix = `${check.path}:${viewport.width}`;
-      const fail = (kind, objective=true) => result.failures.push({id:prefix+':'+kind,objective});
+      const fail = (kind, objective=true, specification=null) => result.failures.push({
+        id:prefix+(specification===null ? '' : ':'+createHash('sha256').update(specification).digest('hex'))+':'+kind,objective});
       page.on('pageerror', error=>fail('script:'+error.name));
       try {
         const response = await page.goto(config.origin+check.path,{waitUntil:'domcontentloaded',timeout:20000});
@@ -28,10 +30,10 @@ try {
         else if (response.status() >= 400) fail('navigation');
         const text = await page.locator('body').innerText({timeout:5000});
         if (!text.trim() || /critical error on this website|Fatal error:|Parse error:/i.test(text)) fail('rendering');
-        if (check.selector && !await page.locator(check.selector).isVisible()) fail('required-element');
+        if (check.selector && !await page.locator(check.selector).isVisible()) fail('required-element',true,check.selector);
         if (check.form_selector) {
           const form = page.locator(check.form_selector);
-          if (!await form.isVisible() || !await form.locator('input, textarea, select, button').count()) fail('form');
+          if (!await form.isVisible() || !await form.locator('input, textarea, select, button').count()) fail('form',true,check.form_selector);
         }
         for (const link of check.links) {
           if (!await page.locator('a').evaluateAll((items, target) => items.some(a=>new URL(a.href).pathname===target),link)) fail('link:'+link);

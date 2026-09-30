@@ -21,6 +21,7 @@ class WordPressBrowserAdapter:
                 resolver.config.addon_loader, base_dir=resolver.config.runtime_dir.parent
             ),
             session_authorizer=lambda sid: self.runtime.policy.require_tool(sid, "call_connector"),
+            session_argument_authorizer=self.runtime.policy.require_tool_arguments,
         )
 
     def validate_profile(self, directory, profile):
@@ -77,11 +78,14 @@ class WordPressBrowserAdapter:
             if len(candidates) != 1:
                 raise ValueError
             change = candidates[0]
-            config, _, _ = self.host.require_operation(
-                session, site.connector_id, "prepare_change", change["request"]
-            )
-            self.host.require_operation(
-                session,
+            for request in store.preparation_requests(change):
+                config, _, preparation = self.host.authorize_current(
+                    session.session_id, site.connector_id, "prepare_change", request
+                )
+                if preparation.requires_approval:
+                    raise ValueError
+            _, _, publication = self.host.authorize_current(
+                session.session_id,
                 site.connector_id,
                 "apply_change",
                 {
@@ -91,6 +95,11 @@ class WordPressBrowserAdapter:
                     "idempotency_key": "browser-access",
                 },
             )
+            # Browser writes happen immediately, outside the MCP approval invocation.
+            if publication.requires_approval or self.runtime.policy.approval_required_for_tool(
+                session, "call_connector"
+            ):
+                raise ValueError
             revisions = []
             for id in Service.connector_ids(site):
                 connector = config.connectors[id]
@@ -128,17 +137,16 @@ class WordPressBrowserAdapter:
             session = self.resolver.get_session_manifest(sid)
             if self.grant_context(session, profile) != grant:
                 raise WebsiteSessionError("wordpress_change_revoked", 403)
+            store = Store(self.resolver.config.runtime_dir)
+            change = store.get(grant["change_id"], session.directory_path, grant["site_id"])
             self.host.authorize_current(
                 sid,
-                Store(self.resolver.config.runtime_dir)
-                .settings(session.directory_path)[1]
-                .sites[grant["site_id"]]
-                .connector_id,
+                store.settings(session.directory_path)[1].sites[grant["site_id"]].connector_id,
                 "apply_change",
                 {
                     "site_id": grant["site_id"],
                     "change_id": grant["change_id"],
-                    "expected_revision": 1,
+                    "expected_revision": change["revision"],
                     "idempotency_key": "browser-access",
                 },
             )

@@ -22,6 +22,7 @@ update_option('permalink_structure','/%postname%/');
 flush_rewrite_rules();
 $menu=wp_insert_term('Synthetic menu','nav_menu');
 $second_menu=wp_insert_term('Second menu','nav_menu');
+add_term_meta($menu['term_id'], '_design_caption', ['caption'=>'Before']);
 wp_set_object_terms($post,[$menu['term_id']],'nav_menu');
 wp_set_object_terms($other,[$menu['term_id']],'nav_menu');
-echo json_encode(['password'=>$password[0], 'post'=>$post,'other'=>$other,'menu'=>$menu['term_taxonomy_id'],'second_menu'=>$second_menu['term_taxonomy_id']]);
+echo json_encode(['password'=>$password[0], 'post'=>$post,'other'=>$other,'menu'=>$menu['term_taxonomy_id'],'menu_term'=>$menu['term_id'],'second_menu'=>$second_menu['term_taxonomy_id']]);

@@ -12,6 +12,7 @@ from evander.website_sessions import _public_transport, website_origin
 from .checks import BrowserChecks, confirmed_regressions
 from .deployment import Deployments
 from .models import (
+    ACTIVE,
     Check,
     CodeChange,
     Conflict,
@@ -261,6 +262,7 @@ class Service:
                     "actor": self.actor.session_id,
                     "operator": self.actor.operator,
                     "request": payload,
+                    "preparation_requests": [payload],
                     "binding": await self.binding(site),
                     "expires_at": time.time() + site.change_ttl_seconds,
                     "urls": [site.origin + check.path for check in checks],
@@ -355,6 +357,7 @@ class Service:
                 raise Conflict("Change belongs to a different session")
             if change["binding"] != await self.binding(site):
                 raise Conflict("Prepared configuration changed")
+            preparation_requests = self.store.preparation_requests(change)
             plugin = await self.companion(site)
             captured = await plugin.call(
                 "prepare-extend",
@@ -376,6 +379,7 @@ class Service:
                 change,
                 snapshot=artifact,
                 snapshot_digest=digest(snapshot),
+                preparation_requests=[*preparation_requests, payload],
                 ready=False,
                 browser_ready=False,
                 phase="extend",
@@ -457,6 +461,7 @@ class Service:
             change = self.store.update(
                 change,
                 state="restoring" if restore else "queued",
+                publication_request=change.get("publication_request") if restore else payload,
                 last_requested_by=self.actor.session_id,
                 request=(operation, request.idempotency_key, payload),
             )
@@ -615,7 +620,7 @@ class Service:
             site_id,
             configure=initial["state"] == "restoring"
             or initial.get("phase") == "restore"
-            or (initial["state"] == "prepared" and owns_browser(initial)),
+            or owns_browser(initial),
         )
         if (
             initial["state"] == "prepared"
@@ -635,11 +640,16 @@ class Service:
             }:
                 return self.receipt(change)
             self.store.require_clear(site.origin, change_id)
-            if change["state"] == "prepared" and owns_browser(change):
+            if (
+                change["state"] in ACTIVE | {"prepared"}
+                and owns_browser(change)
+                and change.get("phase") != "restore"
+                and change["state"] != "restoring"
+            ):
                 recovery_reason = None
                 if change["expires_at"] <= time.time() or not site.enabled:
                     recovery_reason = "Browser change expired or site was disabled"
-                elif change.get("extension_pending"):
+                else:
                     try:
                         self.reauthorize()
                     except Exception:

@@ -382,22 +382,23 @@ class ManagedWebsiteSessionService:
             if not math.isfinite(expiry) or expiry <= self.clock() + profile.renew_before_seconds:
                 raise WebsiteSessionError("website_login_expiry_too_short")
 
+            def check_secret(candidate, *, include_public=False):
+                if isinstance(candidate, str):
+                    for field, secret in credentials.items():
+                        if (include_public or field not in profile.public_credential_fields) and secret in candidate:
+                            raise WebsiteSessionError("website_login_unsafe_response")
+                elif isinstance(candidate, dict):
+                    for key, value in candidate.items():
+                        check_secret(key, include_public=include_public)
+                        check_secret(value, include_public=include_public)
+                elif isinstance(candidate, list):
+                    for item in candidate:
+                        check_secret(item, include_public=include_public)
+
             def render(bindings):
                 result = {}
                 for key, binding in bindings.items():
                     value = _pointer(data, binding.response_pointer)
-                    def check_secret(candidate):
-                        if isinstance(candidate, str):
-                            for field, secret in credentials.items():
-                                if field not in profile.public_credential_fields and secret in candidate:
-                                    raise WebsiteSessionError("website_login_unsafe_response")
-                        elif isinstance(candidate, dict):
-                            for k, v in candidate.items():
-                                check_secret(k)
-                                check_secret(v)
-                        elif isinstance(candidate, list):
-                            for item in candidate:
-                                check_secret(item)
                     check_secret(value)
                     if binding.encoding == "string" and not isinstance(value, str):
                         raise ValueError("string storage binding requires a string")
@@ -418,9 +419,10 @@ class ManagedWebsiteSessionService:
                 ):
                     raise WebsiteSessionError("website_login_unsafe_response")
             cookies = _pointer(data, profile.cookies_response_pointer) if profile.cookies_response_pointer is not None else []
-            for secret in credentials.values():
-                if secret and secret in json.dumps(cookies, ensure_ascii=False):
-                    raise WebsiteSessionError("website_login_unsafe_response")
+            check_secret(cookies, include_public=True)
+            rendered_cookies = json.dumps(cookies, ensure_ascii=False)
+            if any(secret and secret in rendered_cookies for secret in credentials.values()):
+                raise WebsiteSessionError("website_login_unsafe_response")
             return {"origin": profile.browser_origin, "expiresAt": expiry,
                     "storageState": {"cookies": cookies, "origins": [{"origin": profile.browser_origin,
                         "localStorage": [{"name": k, "value": v} for k, v in local.items()]}]},

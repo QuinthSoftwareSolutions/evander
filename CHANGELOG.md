@@ -15,6 +15,14 @@
 - Keep undo available after failed SSH activation and retry interrupted restores with the
   original change ID. Preserve browser ownership and recovery during coverage extensions,
   including when the site is disabled or the agent session expires or loses authorization.
+- Reject reflected host credentials in parsed cookies, require browser-write authorization
+  without approval, and recheck current argument policies before background publication.
+- Recover queued browser edits after authorization is lost, preserve each site's undo
+  retention period, resume pending jobs beyond inactive drafts, and retain source pins
+  before contacting hosting services.
+- Roll back failed resource writes, validate metadata lists before preparation, distinguish
+  selector and form check failures, support adapter-managed website login profiles in the
+  editor, and include the HTTP target relay in adapter add-on restart requirements.
 
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 

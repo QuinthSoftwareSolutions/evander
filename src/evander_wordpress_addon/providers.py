@@ -16,7 +16,7 @@ from evander.workflow.catalog import WorkflowEditorFieldDefinition, WorkflowEdit
 from evander.workflow.contracts import register_node_output_schema
 from evander.workflow.plugins import ProviderPluginRegistration
 
-from .models import ACTIVE, Contract, WordPressError, owns_browser
+from .models import Contract, WordPressError, owns_browser
 from .service import Actor, Service
 from .state import Store
 
@@ -68,20 +68,22 @@ def background_service(context, change):
     def authorize():
         if actor.operator:
             return
-        site = (
-            Store(context.resolved_config.runtime_dir)
-            .settings(directory)[1]
-            .sites[change["site_id"]]
-        )
+        store = Store(context.resolved_config.runtime_dir)
+        site = store.settings(directory)[1].sites[change["site_id"]]
+        preparing = change["state"] == "prepared" and not change.get("ready")
+        if preparing or owns_browser(change):
+            for request in store.preparation_requests(change):
+                host.authorize_current(
+                    actor.session_id, site.connector_id, "prepare_change", request
+                )
+            if preparing:
+                return
         host.authorize_current(
             actor.session_id,
             site.connector_id,
-            "prepare_change"
-            if change["state"] == "prepared" and not change.get("ready")
-            else "apply_change",
-            change["request"]
-            if change["state"] == "prepared" and not change.get("ready")
-            else {
+            "apply_change",
+            change.get("publication_request")
+            or {
                 "site_id": change["site_id"],
                 "change_id": change["change_id"],
                 "expected_revision": change["revision"],
@@ -169,28 +171,15 @@ class WordPressReadyProvider(TriggerProviderBase):
             )
 
         settings = store.settings(scope(self.runtime_context))[1]
-        retention = min((site.retention_days for site in settings.sites.values()), default=90)
+        retention = {site_id: site.retention_days for site_id, site in settings.sites.items()}
         store.prune(
             scope(self.runtime_context),
             retention,
             release_pin=release if callable(managed) else None,
         )
         for change in store.list(scope(self.runtime_context), definition.site_id, pending=True):
-            if (
-                change["state"] not in ACTIVE
-                and not (
-                    change["state"] == "prepared"
-                    and owns_browser(change)
-                    and (
-                        change["expires_at"] <= now
-                        or not settings.sites.get(change["site_id"])
-                        or not settings.sites[change["site_id"]].enabled
-                    )
-                )
-                and not change.get("extension_pending")
-                and not (change["state"] == "prepared" and not change.get("ready"))
-            ):
-                continue
+            # Prepared browser sessions also need regular authorization checks.
+            # The store excludes inactive drafts before selecting pending work.
             # A durable slot ID suppresses duplicates within a poll interval. Pending
             # operations receive another event after a worker crash or unknown result.
             result.append(

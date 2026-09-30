@@ -83,7 +83,7 @@ def test_real_browser_probes_detect_confirmed_server_regression_and_capture_both
     wrapper.chmod(0o700)
     monkeypatch.setenv("PLAYWRIGHT_MCP_EXECUTABLE_PATH", str(wrapper))
     requests = []
-    state = {"broken": False}
+    state = {"broken": False, "missing_main_and_form": False}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -91,6 +91,9 @@ def test_real_browser_probes_detect_confirmed_server_regression_and_capture_both
             self.send_response(500 if state["broken"] and self.path == "/" else 200)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.end_headers()
+            if state["missing_main_and_form"]:
+                self.wfile.write(b"<!doctype html><section><h1>Synthetic website</h1></section>")
+                return
             self.wfile.write(b"""<!doctype html><main><h1>Synthetic website</h1>
 <a href="/contact/">Contact</a><form><input required name="email"><button>Send</button></form></main>
 <script>new WebSocket(location.origin.replace('https:','wss:')+'/socket/')</script>""")
@@ -131,11 +134,28 @@ def test_real_browser_probes_detect_confirmed_server_regression_and_capture_both
         after = await checker.run(site, specifications, "after")
         confirmed = await checker.run(site, specifications, "confirm")
         assert not after["uncertain"] and not confirmed["uncertain"]
-        assert probes.confirmed_regressions(before, after, confirmed) == [
-            "/:1280:server",
-            "/:390:server",
-        ]
+        failures = probes.confirmed_regressions(before, after, confirmed)
+        assert len(failures) == 2 and all(id.endswith(":server") for id in failures)
+        assert {id.split(":")[1] for id in failures} == {"1280", "390"}
         assert "/contact/" in requests and "/socket/" not in requests
+
+        state["broken"] = False
+        same_path_checks = [
+            Check(selector="header"),
+            Check(selector="main"),
+            Check(form_selector="#missing"),
+            Check(form_selector="form"),
+        ]
+        baseline = await checker.run(site, same_path_checks, "selector-baseline")
+        assert len(baseline["failures"]) == 4
+        state["missing_main_and_form"] = True
+        first = await checker.run(site, same_path_checks, "selector-first")
+        second = await checker.run(site, same_path_checks, "selector-confirm")
+        regressions = probes.confirmed_regressions(baseline, first, second)
+        assert len(regressions) == 4
+        assert sum(id.endswith(":required-element") for id in regressions) == 2
+        assert sum(id.endswith(":form") for id in regressions) == 2
+        assert len({failure["id"] for failure in first["failures"]}) == 8
 
     try:
         asyncio.run(exercise())

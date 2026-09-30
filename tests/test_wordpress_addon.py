@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
+from urllib.parse import parse_qs
 import zipfile
 
 import httpx
@@ -23,11 +24,19 @@ from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.packs import WorkflowPack
 from evander_wordpress_addon import register_addon
 from evander_wordpress_addon.api import admin_api_routes, plugin_zip
-from evander_wordpress_addon.models import Conflict, Settings, Site, digest, operation_definitions
+from evander_wordpress_addon.models import (
+    Conflict,
+    Settings,
+    Site,
+    WordPressError,
+    digest,
+    operation_definitions,
+)
 from evander_wordpress_addon.providers import (
     ReadyDefinition,
     WordPressEffectProvider,
     WordPressReadyProvider,
+    background_service,
     register_providers,
 )
 from evander_wordpress_addon.service import Actor, Service
@@ -49,7 +58,8 @@ class Remote:
         self.lost_reply = False
 
     def handle(self, request):
-        operation = request.url.path.split("/")[-1]
+        route = parse_qs(request.url.query.decode()).get("rest_route", [request.url.path])[0]
+        operation = route.split("/")[-1]
         args = json.loads(request.content) if request.content else {}
         self.calls.append((operation, args))
         if operation == "discover":
@@ -194,7 +204,7 @@ def queue(rig, change, restore=False, **extra):
 
 
 @pytest.fixture
-def pending_browser_extension(rig):
+def browser_change(rig):
     revision, settings = rig.store.settings("root/design")
     site = settings.sites["main"]
     site.capabilities.add("browser")
@@ -205,6 +215,12 @@ def pending_browser_extension(rig):
     # Browser requests have already published an edit covered by the original snapshot.
     rig.remote.value = dict(rig.remote.desired)
     rig.remote.state = "browser_open"
+    return rig, prepared
+
+
+@pytest.fixture
+def pending_browser_extension(browser_change):
+    rig, prepared = browser_change
 
     def handle(request):
         if request.url.path.endswith("/prepare-extend"):
@@ -330,7 +346,8 @@ print(r.binding())
     assert values[0] == values[1]
 
 
-def test_managed_browser_cache_rechecks_connector_and_tool_grants(tmp_path, monkeypatch):
+@pytest.fixture
+def browser_grant(tmp_path, monkeypatch):
     from datetime import UTC, datetime, timedelta
     import time
     from config_helpers import write_runtime_config
@@ -342,6 +359,7 @@ def test_managed_browser_cache_rechecks_connector_and_tool_grants(tmp_path, monk
 
     runtime_dir = write_runtime_config(
         tmp_path,
+        enable_directory_scoped_config=True,
         addon_loader=AddonLoaderConfig(
             modules=["evander_wordpress_addon"], enabled_addon_ids=["wordpress-addon"]
         ),
@@ -355,7 +373,8 @@ def test_managed_browser_cache_rechecks_connector_and_tool_grants(tmp_path, monk
             }
         },
     )
-    runtime = build_admin_runtime(runtime_dir).runtime
+    admin = build_admin_runtime(runtime_dir)
+    runtime = admin.runtime
     session = SessionManifest(
         session_id="browser-agent",
         allowed_tools=["call_connector"],
@@ -451,6 +470,29 @@ def test_managed_browser_cache_rechecks_connector_and_tool_grants(tmp_path, monk
         }
 
     monkeypatch.setattr(broker.adapters["wordpress"], "login", temporary_login)
+    return SimpleNamespace(
+        admin=admin,
+        runtime=runtime,
+        broker=broker,
+        calls=calls,
+        session=session,
+        config=config,
+        store=store,
+        site=site,
+        change=change,
+    )
+
+
+def test_managed_browser_cache_rechecks_connector_and_tool_grants(browser_grant, monkeypatch):
+    fixture = browser_grant
+    runtime, broker, calls, session, store, change = (
+        fixture.runtime,
+        fixture.broker,
+        fixture.calls,
+        fixture.session,
+        fixture.store,
+        fixture.change,
+    )
     first = run(broker.acquire(session.session_id, "editor", "fixture-proof"))
     assert (
         first == run(broker.acquire(session.session_id, "editor", "fixture-proof"))
@@ -477,6 +519,452 @@ def test_managed_browser_cache_rechecks_connector_and_tool_grants(tmp_path, monk
     with pytest.raises(WebsiteSessionError):
         run(broker.acquire(session.session_id, "editor", "fixture-proof"))
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("operation", ["prepare_change", "apply_change", "call_connector"])
+@pytest.mark.parametrize("cached", [False, True])
+def test_browser_cookie_issuance_requires_unapproved_writes(browser_grant, operation, cached):
+    fixture = browser_grant
+    if cached:
+        run(fixture.broker.acquire(fixture.session.session_id, "editor", "fixture-proof"))
+    if operation == "call_connector":
+        fixture.session.approval_required_tools = ["call_connector"]
+        fixture.runtime.session_repository.upsert_session(fixture.session)
+    else:
+        fixture.config.connectors["website"].operations[operation].requires_approval = True
+        fixture.store.update(
+            fixture.change, binding=Service.config_binding(fixture.site, fixture.config)
+        )
+    with pytest.raises(WebsiteSessionError):
+        run(fixture.broker.acquire(fixture.session.session_id, "editor", "fixture-proof"))
+    assert len(fixture.calls) == int(cached)
+
+
+def restrict_connector_arguments(fixture, origin, path, value, *, operator="fixed"):
+    from evander.directory_config import DirectoryConfigStore
+    from evander.models import SessionManifest
+
+    policies = {
+        "call_connector": [
+            {
+                "id": "website-restriction",
+                "name": "Website restriction",
+                "constraints": [
+                    {
+                        "id": "allowed-value",
+                        "path": path,
+                        "operator": operator,
+                        "value" if operator == "fixed" else "values": value,
+                    }
+                ],
+            }
+        ]
+    }
+    if origin == "session":
+        fixture.session = SessionManifest.model_validate(
+            fixture.session.model_dump() | {"tool_argument_policies": policies}
+        )
+        fixture.runtime.session_repository.upsert_session(fixture.session)
+    else:
+        DirectoryConfigStore(
+            fixture.runtime.directories, runtime_dir=fixture.store.runtime_dir
+        ).write("root", domain="policy", payload={"tool_argument_policies": policies})
+
+
+@pytest.mark.parametrize("origin", ["session", "directory"])
+@pytest.mark.parametrize(
+    "path, value",
+    [("arguments.site_id", "other"), ("operation", "inspect"), ("connector_id", "other")],
+)
+def test_durable_authorization_rechecks_complete_argument_policy(
+    browser_grant, origin, path, value
+):
+    from evander.policy import ToolArgumentPolicyError
+
+    fixture = browser_grant
+    arguments = {
+        "site_id": "main",
+        "change_id": fixture.change["change_id"],
+        "expected_revision": fixture.change["revision"],
+        "idempotency_key": "approved-publication",
+    }
+    fixture.admin.connector_service.authorize_current(
+        fixture.session.session_id, "website", "apply_change", arguments
+    )
+    restrict_connector_arguments(fixture, origin, path, value)
+    with pytest.raises(ToolArgumentPolicyError):
+        fixture.admin.connector_service.authorize_current(
+            fixture.session.session_id, "website", "apply_change", arguments
+        )
+
+
+def test_durable_authorization_fails_closed_without_argument_policy_capability(browser_grant):
+    from evander.connectors.service import ConnectorPolicyError
+
+    fixture = browser_grant
+    fixture.admin.connector_service.session_argument_authorizer = None
+    with pytest.raises(ConnectorPolicyError):
+        fixture.admin.connector_service.authorize_current(
+            fixture.session.session_id,
+            "website",
+            "apply_change",
+            {
+                "site_id": "main",
+                "change_id": fixture.change["change_id"],
+                "expected_revision": 1,
+                "idempotency_key": "publication-request",
+            },
+        )
+
+
+def test_durable_authorization_binds_session_and_normalizes_connector_aliases(browser_grant):
+    fixture = browser_grant
+    arguments = {
+        "site_id": "main",
+        "change_id": fixture.change["change_id"],
+        "expected_revision": 1,
+        "idempotency_key": "publication-request",
+    }
+    restrict_connector_arguments(fixture, "directory", "session_id", fixture.session.session_id)
+    fixture.admin.connector_service.authorize_current(
+        fixture.session.session_id, " Website ", " APPLY_CHANGE ", arguments
+    )
+    restrict_connector_arguments(fixture, "directory", "connector_id", "website")
+    fixture.admin.connector_service.authorize_current(
+        fixture.session.session_id, " Website ", " APPLY_CHANGE ", arguments
+    )
+
+
+@pytest.mark.parametrize("origin", ["session", "directory"])
+@pytest.mark.parametrize("cached", [False, True])
+def test_browser_authorization_rechecks_argument_policy_before_cache_delivery(
+    browser_grant, origin, cached
+):
+    fixture = browser_grant
+    if cached:
+        run(fixture.broker.acquire(fixture.session.session_id, "editor", "fixture-proof"))
+    restrict_connector_arguments(fixture, origin, "arguments.site_id", "other")
+    with pytest.raises(WebsiteSessionError):
+        run(fixture.broker.acquire(fixture.session.session_id, "editor", "fixture-proof"))
+    assert len(fixture.calls) == int(cached)
+
+
+def prepare_extended_browser_change(fixture, *, pending=False):
+    fixture.store.update(fixture.change, state="resolved", browser_ready=False)
+    remote, probe = Remote(), Probe()
+    remote.pending_extension = pending
+    original = {
+        "site_id": "main",
+        "summary": "Change heading",
+        "browser": True,
+        "idempotency_key": "prepare-heading",
+        "resources": [
+            {
+                "key": "post:7",
+                "expected_version": digest(remote.value),
+                "value": {"post_title": "After", "post_content": "Welcome"},
+            }
+        ],
+    }
+
+    def handle(request):
+        route = parse_qs(request.url.query.decode()).get("rest_route", [request.url.path])[0]
+        operation = route.split("/")[-1]
+        if operation == "prepare-extend":
+            return httpx.Response(
+                200,
+                json={
+                    "snapshot": {
+                        "meta:7:builder": {
+                            "before": [],
+                            "before_version": digest([]),
+                            "value": ["New builder data"],
+                        }
+                    }
+                },
+            )
+        if operation == "arm-extend":
+            remote.calls.append((operation, json.loads(request.content)))
+            return (
+                httpx.Response(503)
+                if remote.pending_extension
+                else httpx.Response(200, json={"state": "browser_open"})
+            )
+        if operation == "close":
+            remote.calls.append((operation, json.loads(request.content)))
+            remote.state = "applied"
+            return httpx.Response(200, json={"state": remote.state})
+        return remote.handle(request)
+
+    host = fixture.admin.connector_service
+    service = Service(
+        fixture.store.runtime_dir,
+        Actor("root", fixture.session.session_id),
+        host,
+        authorize=lambda: host.authorize_current(
+            fixture.session.session_id, "website", "prepare_change", original
+        ),
+        transport_factory=lambda _: httpx.MockTransport(handle),
+        checks=probe,
+        wait=async_no_wait,
+    )
+    prepared = run(service.prepare(original))
+    remote.value, remote.state = dict(remote.desired), "browser_open"
+    extension = {
+        "site_id": "main",
+        "summary": "Cover builder metadata",
+        "browser": True,
+        "idempotency_key": "extend-builder",
+        "change_id": prepared["change_id"],
+        "expected_revision": prepared["revision"],
+        "resources": [
+            {"key": "meta:7:builder", "expected_version": digest([]), "value": ["New builder data"]}
+        ],
+    }
+    service.authorize = lambda: host.authorize_current(
+        fixture.session.session_id, "website", "prepare_change", extension
+    )
+    extended = run(service.prepare(extension))
+    assert bool(extended["ready"]) is not pending
+    return SimpleNamespace(
+        service=service,
+        remote=remote,
+        probe=probe,
+        change=extended,
+        original=original,
+        extension=extension,
+    )
+
+
+@pytest.mark.parametrize("origin", ["session", "directory"])
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("allowed_resource", ["post:7", "meta:7:builder"])
+def test_extended_browser_cache_rechecks_every_preparation(
+    browser_grant, origin, cached, allowed_resource
+):
+    fixture = browser_grant
+    prepare_extended_browser_change(fixture)
+    if cached:
+        run(fixture.broker.acquire(fixture.session.session_id, "editor", "fixture-proof"))
+    restrict_connector_arguments(
+        fixture, origin, "arguments.resources[].key", [allowed_resource], operator="allowlist"
+    )
+    with pytest.raises(WebsiteSessionError):
+        run(fixture.broker.acquire(fixture.session.session_id, "editor", "fixture-proof"))
+    assert len(fixture.calls) == int(cached)
+
+
+@pytest.mark.parametrize("origin", ["session", "directory"])
+@pytest.mark.parametrize("stage", ["extension_pending", "queued"])
+@pytest.mark.parametrize("revoked", ["initial", "extension", "extension-key"])
+def test_background_browser_extensions_recover_when_any_preparation_is_revoked(
+    browser_grant, origin, stage, revoked
+):
+    fixture = browser_grant
+    prepared = prepare_extended_browser_change(fixture, pending=stage == "extension_pending")
+    if stage == "queued":
+        publication = {
+            "site_id": "main",
+            "change_id": prepared.change["change_id"],
+            "expected_revision": prepared.change["revision"],
+            "idempotency_key": "publish-heading",
+        }
+        prepared.service.authorize = lambda: fixture.admin.connector_service.authorize_current(
+            fixture.session.session_id, "website", "apply_change", publication
+        )
+        run(prepared.service.queue(publication))
+    if revoked == "extension-key":
+        restrict_connector_arguments(
+            fixture,
+            origin,
+            "arguments.idempotency_key",
+            ["prepare-heading", "publish-heading", "browser-access"],
+            operator="allowlist",
+        )
+    else:
+        restrict_connector_arguments(
+            fixture,
+            origin,
+            "arguments.resources[].key",
+            ["post:7" if revoked == "extension" else "meta:7:builder"],
+            operator="allowlist",
+        )
+    worker = background_service(
+        SimpleNamespace(
+            metadata={"directory_path": "root"},
+            resolved_config=SimpleNamespace(runtime_dir=fixture.store.runtime_dir),
+            admin_service=fixture.admin,
+        ),
+        fixture.store.get(prepared.change["change_id"], "root"),
+    )
+    worker.transport_factory, worker.checks, worker.wait = (
+        prepared.service.transport_factory,
+        prepared.probe,
+        async_no_wait,
+    )
+    result = run(worker.execute("main", prepared.change["change_id"]))
+    assert result["state"] == "restored"
+    assert prepared.remote.value == {"post_title": "Before", "post_content": "Welcome"}
+    assert len([name for name, _ in prepared.remote.calls if name == "arm-extend"]) == 1
+    assert not any(name in {"apply", "close"} for name, _ in prepared.remote.calls)
+
+
+def test_browser_extension_with_unrecorded_authorization_requires_reconciliation(browser_grant):
+    fixture = browser_grant
+    prepared = prepare_extended_browser_change(fixture)
+    change = fixture.store.get(prepared.change["change_id"], "root")
+    fixture.store.update(change, preparation_requests=None)
+    with pytest.raises(WebsiteSessionError):
+        run(fixture.broker.acquire(fixture.session.session_id, "editor", "fixture-proof"))
+    assert not fixture.calls
+
+
+@pytest.mark.parametrize("stage", ["extension_pending", "queued"])
+def test_background_browser_extensions_preserve_authorized_retry_and_publication(
+    browser_grant, stage
+):
+    fixture = browser_grant
+    prepared = prepare_extended_browser_change(fixture, pending=stage == "extension_pending")
+    if stage == "queued":
+        publication = {
+            "site_id": "main",
+            "change_id": prepared.change["change_id"],
+            "expected_revision": prepared.change["revision"],
+            "idempotency_key": "publish-heading",
+        }
+        prepared.service.authorize = lambda: fixture.admin.connector_service.authorize_current(
+            fixture.session.session_id, "website", "apply_change", publication
+        )
+        run(prepared.service.queue(publication))
+    restrict_connector_arguments(
+        fixture,
+        "directory",
+        "arguments.resources[].key",
+        ["post:7", "meta:7:builder"],
+        operator="allowlist",
+    )
+    worker = background_service(
+        SimpleNamespace(
+            metadata={"directory_path": "root"},
+            resolved_config=SimpleNamespace(runtime_dir=fixture.store.runtime_dir),
+            admin_service=fixture.admin,
+        ),
+        fixture.store.get(prepared.change["change_id"], "root"),
+    )
+    prepared.remote.pending_extension = False
+    worker.transport_factory, worker.checks, worker.wait = (
+        prepared.service.transport_factory,
+        prepared.probe,
+        async_no_wait,
+    )
+    result = run(worker.execute("main", prepared.change["change_id"]))
+    assert result["state"] == ("prepared" if stage == "extension_pending" else "published")
+    assert result["ready"]
+    assert prepared.remote.value["post_title"] == "After"
+    if stage == "extension_pending":
+        assert run(fixture.broker.acquire(fixture.session.session_id, "editor", "fixture-proof"))[
+            "storageState"
+        ]["cookies"]
+    else:
+        assert any(name == "close" for name, _ in prepared.remote.calls)
+    assert not any(name == "restore" for name, _ in prepared.remote.calls)
+
+
+def test_adapter_managed_profile_can_save_lifetime_and_enabled_state(browser_grant):
+    admin = browser_grant.admin.website_session_admin
+    snapshot = admin.snapshot("root")
+    profile = snapshot["profiles"][0]["profile"]
+    updated = profile | {"enabled": False, "max_age_seconds": 600}
+    saved = admin.save(
+        "root",
+        "website",
+        {"expected_revision": snapshot["revision"], "profile": updated, "credentials": {}},
+    )
+    entry = saved["profiles"][0]
+    assert entry["profile"] == updated
+    assert entry["credentials"]["managed_by"] == "wordpress"
+    assert entry["credentials"]["configured_fields"] == []
+
+
+@pytest.mark.parametrize("stop", ["restricted", "allowed", "expired_browser"])
+def test_background_publication_uses_original_arguments_and_current_policy(browser_grant, stop):
+    from datetime import UTC, datetime, timedelta
+
+    allowed = stop == "allowed"
+    fixture = browser_grant
+    fixture.store.update(fixture.change, state="resolved", browser_ready=False)
+    remote, probe = Remote(), Probe()
+    request = {
+        "site_id": "main",
+        "summary": "Change heading",
+        "idempotency_key": "prepare-heading",
+        "browser": stop == "expired_browser",
+        "resources": [
+            {
+                "key": "post:7",
+                "expected_version": digest(remote.value),
+                "value": {"post_title": "After", "post_content": "Welcome"},
+            }
+        ],
+    }
+    host = fixture.admin.connector_service
+    service = Service(
+        fixture.store.runtime_dir,
+        Actor("root", fixture.session.session_id),
+        host,
+        authorize=lambda: host.authorize_current(
+            fixture.session.session_id, "website", "prepare_change", request
+        ),
+        transport_factory=lambda _: httpx.MockTransport(remote.handle),
+        checks=probe,
+        wait=async_no_wait,
+    )
+    prepared = run(service.prepare(request))
+    if stop == "expired_browser":
+        remote.value, remote.state = dict(remote.desired), "browser_open"
+    publication = {
+        "site_id": "main",
+        "change_id": prepared["change_id"],
+        "expected_revision": prepared["revision"],
+        "idempotency_key": "explicit-publication",
+    }
+    service.authorize = lambda: host.authorize_current(
+        fixture.session.session_id, "website", "apply_change", publication
+    )
+    queued = run(service.queue(publication))
+    if stop == "expired_browser":
+        fixture.session.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        fixture.runtime.session_repository.upsert_session(fixture.session)
+    else:
+        restrict_connector_arguments(
+            fixture,
+            "directory",
+            "arguments.idempotency_key" if allowed else "arguments.site_id",
+            "explicit-publication" if allowed else "other",
+        )
+    worker = background_service(
+        SimpleNamespace(
+            metadata={"directory_path": "root"},
+            resolved_config=SimpleNamespace(runtime_dir=fixture.store.runtime_dir),
+            admin_service=fixture.admin,
+        ),
+        fixture.store.get(queued["change_id"], "root"),
+    )
+    worker.transport_factory, worker.checks, worker.wait = (
+        service.transport_factory,
+        probe,
+        async_no_wait,
+    )
+    result = run(worker.execute("main", queued["change_id"]))
+    assert result["state"] == (
+        "restored" if stop == "expired_browser" else "published" if allowed else "uncertain"
+    )
+    assert remote.writes == int(allowed)
+    assert remote.value["post_title"] == ("After" if allowed else "Before")
+
+
+async def async_no_wait(seconds):
+    pass
 
 
 def test_idempotent_publish_and_changed_key_payload_conflict(rig):
@@ -561,6 +1049,31 @@ def test_pending_browser_extension_recovers_existing_edits(
     assert restored["state"] == "restored"
     assert rig.remote.value["post_title"] == "Before"
     assert len([name for name, _ in rig.remote.calls if name == "arm-extend"]) == 1
+    assert not pending_events(rig)
+
+
+@pytest.mark.parametrize("state", ["queued", "uncertain"])
+@pytest.mark.parametrize("stop", ["expired", "disabled", "revoked"])
+def test_queued_browser_changes_recover_after_publication_authorization_is_lost(
+    browser_change, monkeypatch, state, stop
+):
+    rig, prepared = browser_change
+    queued = queue(rig, prepared)
+    if state == "uncertain":
+        rig.store.update(rig.store.get(queued["change_id"], "root/design"), state="uncertain")
+    if stop == "expired":
+        monkeypatch.setattr(time, "time", lambda: prepared["expires_at"] + 1)
+    elif stop == "disabled":
+        revision, settings = rig.store.settings("root/design")
+        settings.sites["main"].enabled = False
+        rig.store.save_settings("root/design", revision, settings)
+    else:
+        rig.revoked[0] = True
+    assert queued["change_id"] in {event.payload["change_id"] for event in pending_events(rig)}
+    result = run(resumed_service(rig).execute("main", queued["change_id"]))
+    assert result["state"] == "restored"
+    assert rig.remote.value == {"post_title": "Before", "post_content": "Welcome"}
+    assert not any(operation in {"apply", "close"} for operation, args in rig.remote.calls)
     assert not pending_events(rig)
 
 
@@ -739,6 +1252,46 @@ def test_trigger_retries_pending_jobs_and_retains_current_recovery_baseline(rig)
     assert trigger.poll()[0].event_id == events[0].event_id
     assert rig.store.prune("root/design", 90) is None
     assert rig.store.get(queued["change_id"], "root/design")["state"] == "queued"
+
+
+@pytest.mark.parametrize("state", ["queued", "restoring"])
+def test_pending_recovery_is_not_hidden_by_newer_inactive_preparations(rig, state):
+    actionable = rig.store.create("root/design", "main", rig.site.origin, {"ready": True})
+    rig.store.update(actionable, state=state)
+    for index in range(501):
+        rig.store.create(
+            "root/design",
+            "main",
+            rig.site.origin,
+            {"ready": True, "summary": f"Unpublished draft {index}"},
+        )
+    assert [event.payload["change_id"] for event in pending_events(rig)] == [
+        actionable["change_id"]
+    ]
+
+
+def test_site_retention_does_not_shorten_another_sites_undo_window(rig, monkeypatch):
+    revision, settings = rig.store.settings("root/design")
+    settings.sites["main"].retention_days = 90
+    settings.sites["short"] = Site(
+        origin="https://short.example.test", connector_id="website", retention_days=7
+    )
+    rig.store.save_settings("root/design", revision, settings)
+    older = {}
+    now = time.time()
+    for site_id in ["main", "short"]:
+        origin = settings.sites[site_id].origin
+        with monkeypatch.context() as past:
+            past.setattr(time, "time", lambda: now - 20 * 86400)
+            row = rig.store.create("root/design", site_id, origin, {})
+            older[site_id] = row["change_id"]
+            rig.store.update(row, state="published")
+        newest = rig.store.create("root/design", site_id, origin, {})
+        rig.store.update(newest, state="published")
+    assert not pending_events(rig)
+    assert rig.store.get(older["main"], "root/design")["state"] == "published"
+    with pytest.raises(Conflict):
+        rig.store.get(older["short"], "root/design")
 
 
 def test_example_workflow_imports_and_routes_queued_change_to_publication(rig, monkeypatch):
@@ -1020,9 +1573,12 @@ def test_admin_settings_and_restore_enforce_directory_permissions_and_server_own
     run(exercise())
 
 
-@pytest.mark.parametrize("scenario", ["fatal", "manual_edit", "restore_conflict"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["fatal", "manual_edit", "restore_conflict", "adapter_unavailable", "hosting_unavailable"],
+)
 def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
-    rig, hosting, tmp_path, scenario
+    rig, hosting, tmp_path, scenario, monkeypatch
 ):
     from evander.admin.services.managed_git_service import ManagedGitAdminService
 
@@ -1093,6 +1649,8 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
             return rig.remote.handle(request)
         payload = json.loads(request.content)
         action = request.url.path.rsplit("/", 1)[-1]
+        if scenario == "hosting_unavailable":
+            return httpx.Response(503)
         if action == "prepare" and payload["operation_id"].endswith(":build"):
             builds[0] += 1
             submitted = base64.b64decode(payload["source_archive"])
@@ -1119,6 +1677,12 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
         )
 
     rig.service.transport_factory = lambda origin: httpx.MockTransport(handle)
+    if scenario == "adapter_unavailable":
+
+        async def unavailable_adapter(*args):
+            raise WordPressError("Hosting adapter unavailable")
+
+        rig.service.deployments.adapter = unavailable_adapter
     request = {
         "site_id": "main",
         "summary": "Deploy a pinned website template",
@@ -1132,6 +1696,37 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
             }
         ],
     }
+    if scenario in {"adapter_unavailable", "hosting_unavailable"}:
+        with pytest.raises(WordPressError):
+            run(rig.service.prepare(request))
+        failed = rig.store.list("root/design")[0]
+        assert failed["state"] == "failed"
+        pin = failed["build_pending"]["pin"]
+        assert (
+            managed.resolve_snapshot(
+                repo["managed_repo_id"], "root/design", source_ref=pin["pin_ref"], commit_sha=sha
+            )["commit_sha"]
+            == sha
+        )
+        trigger = WordPressReadyProvider()
+        trigger.initialize(
+            ReadyDefinition(
+                id="ready", display_name="Ready", type="trigger:wordpress:change-ready"
+            ),
+            SimpleNamespace(
+                metadata={"directory_path": "root/design"},
+                resolved_config=SimpleNamespace(runtime_dir=rig.store.runtime_dir),
+                admin_service=SimpleNamespace(connector_service=rig.host),
+            ),
+        )
+        later = time.time() + 100 * 86400
+        with monkeypatch.context() as future:
+            future.setattr(time, "time", lambda: later)
+            assert not trigger.poll()
+        with pytest.raises(Conflict):
+            rig.store.get(failed["change_id"], "root/design")
+        assert managed.delete_repository(repo["managed_repo_id"])["deleted"] is True
+        return
     prepared = run(rig.service.prepare(request))
     assert prepared["build_pending"]
     if scenario == "manual_edit":

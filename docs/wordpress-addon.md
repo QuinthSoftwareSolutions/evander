@@ -167,6 +167,12 @@ profile as:
 }
 ```
 
+Browser editing requires both `prepare_change` and `apply_change`, and the
+`call_connector` tool, to permit writes without approval. Browser requests write
+immediately, so a later publication approval cannot authorize them. Use queued
+CMS changes when publication requires approval. Current session and directory
+argument policies apply to browser access as well as background publication.
+
 Prepare a change with `browser: true` and all resources that the screen can write.
 Recovery is captured before the managed browser broker can issue a session. Use
 the seeded `createManagedWebsiteContext(browser, targetAlias)` helper. After editing,
@@ -182,7 +188,8 @@ Do not edit the new resources until the receipt reports `ready` and `browser_rea
 While coverage is pending, the original browser change continues to own the site
 and its recovery data is retained. An operator can still undo it; expiration,
 site disablement or revoked session authorization restores the existing edits
-without requiring the extension to finish first.
+without requiring the extension to finish first. These recovery checks also apply
+after browser changes are queued for publication or have an uncertain outcome.
 
 The host exchanges its application password for a 60-second, single-use ticket.
 The plugin redeems it into scoped, temporary, HttpOnly HTTPS cookies. Sessions last

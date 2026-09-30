@@ -158,6 +158,14 @@ class Deployments:
                 source_ref=code.source_ref,
                 commit_sha=code.commit_sha,
             )
+            # Retention must own the ref even when adapter setup or hosting fails.
+            pending = {
+                "building": True,
+                "pin": pinned,
+                "adapter": site.deployment.model_dump(),
+                "commit_sha": code.commit_sha,
+            }
+            change.update(self.service.store.update(change, build_pending=pending))
         pending = change.get("build_pending")
         adapter = await self.adapter(site_id, site)
         if pending and pending.get("prepared"):

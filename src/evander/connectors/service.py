@@ -114,6 +114,7 @@ class ConnectorService:
         auth_transport: httpx.AsyncBaseTransport | None = None,
         credential_store: CredentialStore | None = None,
         session_authorizer: Any | None = None,
+        session_argument_authorizer: Any | None = None,
         host_services: Mapping[str, Any] | None = None,
     ) -> None:
         self.credentials = credential_store or CredentialStore(runtime_dir)
@@ -126,6 +127,7 @@ class ConnectorService:
         self._oauth_tokens: dict[tuple[str, str], _OAuthToken] = {}
         self._oauth_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self.session_authorizer = session_authorizer
+        self.session_argument_authorizer = session_argument_authorizer
         self.host_services = dict(host_services or {})
 
     def authorize_current(self, session_id, connector_id, operation_name, arguments):
@@ -135,6 +137,18 @@ class ConnectorService:
                    self.provider_config.get_session_manifest(session_id))
         if session.expires_at <= datetime.now(UTC):
             raise ConnectorPolicyError("Connector session has expired")
+        if self.session_argument_authorizer is None:
+            raise ConnectorPolicyError("Current connector argument policy is unavailable")
+        self.session_argument_authorizer(
+            session,
+            "call_connector",
+            {
+                "session_id": session.session_id,
+                "connector_id": normalize_connector_id(connector_id),
+                "operation": normalize_connector_operation(operation_name),
+                "arguments": arguments,
+            },
+        )
         return self.require_operation(session, connector_id, operation_name, arguments)
 
     async def host_auth(self, directory_path, connector_id):

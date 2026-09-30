@@ -16,7 +16,7 @@ from uuid import uuid4
 from evander.credentials.store import protected_read, secure_directory, write_private
 from evander.models import DirectoryPath
 
-from .models import ADDON_ID, Conflict, Settings, UNRESOLVED, digest, owns_browser
+from .models import ADDON_ID, Conflict, Settings, UNRESOLVED, WordPressError, digest, owns_browser
 
 
 class Store:
@@ -206,6 +206,17 @@ class Store:
             raise Conflict("Change belongs to a different site")
         return value
 
+    def preparation_requests(self, change):
+        requests = change.get("preparation_requests") or [change["request"]]
+        if change.get("extension_pending") and not change.get("preparation_requests"):
+            raise WordPressError("Exact coverage authorization requires reconciliation")
+        if change.get("snapshot"):
+            covered = set(json.loads(self.read_artifact(change["snapshot"])))
+            authorized = {row["key"] for request in requests for row in request["resources"]}
+            if covered != authorized:
+                raise WordPressError("Resource coverage authorization requires reconciliation")
+        return requests
+
     def update(self, change, *, request=None, **fields):
         previous = change["revision"]
         value = {**change, **fields, "revision": previous + 1, "updated_at": time.time()}
@@ -251,24 +262,25 @@ class Store:
 
     def list(self, directory, site=None, *, active=False, pending=False):
         with self.db() as db:
-            states = (
-                " AND state IN ('queued','applying','verifying','restoring','uncertain','prepared')"
-                if pending
-                else ""
-            )
+            where, parameters = "directory=?", [directory]
+            if site is not None:
+                where += " AND site=?"
+                parameters.append(site)
+            if active:
+                where += " AND state IN ('queued','applying','verifying','restoring','uncertain','conflict','recovery_required')"
+            if pending:
+                where += """ AND (state IN ('queued','applying','verifying','restoring','uncertain')
+                    OR (state='prepared' AND (json_extract(payload,'$.browser_ready')=1
+                        OR json_extract(payload,'$.extension_pending') IS NOT NULL
+                        OR COALESCE(json_extract(payload,'$.ready'),0)=0)))"""
             rows = db.execute(
-                "SELECT payload FROM changes WHERE directory=?"
-                + states
-                + " ORDER BY updated DESC LIMIT 500",
-                (directory,),
+                "SELECT payload FROM changes WHERE "
+                + where
+                + " ORDER BY updated DESC"
+                + ("" if pending else " LIMIT 500"),
+                parameters,
             ).fetchall()
-        return [
-            value
-            for row in rows
-            if (value := json.loads(row[0]))
-            and (site is None or value["site_id"] == site)
-            and (not active or value["state"] in UNRESOLVED)
-        ]
+        return [json.loads(row[0]) for row in rows]
 
     def require_clear(self, origin, change_id=None):
         with self.db() as db:
@@ -311,8 +323,11 @@ class Store:
         for change in changes:
             if change["state"] == "published":
                 latest.setdefault(change["site_id"], change["change_id"])
-        cutoff = time.time() - retention_days * 86400
+        retention = retention_days if isinstance(retention_days, dict) else None
+        now = time.time()
         for change in changes:
+            days = retention.get(change["site_id"], 90) if retention is not None else retention_days
+            cutoff = now - days * 86400
             if (
                 change["state"] in UNRESOLVED
                 or (change["state"] == "prepared" and owns_browser(change))
@@ -344,6 +359,11 @@ class Store:
 
         referenced = set(re.findall(r"[a-f0-9]{64}\.(?:json|png|zip)", "\n".join(retained)))
         artifacts = self.root / "artifacts"
+        cutoff = (
+            now
+            - (max(retention.values(), default=90) if retention is not None else retention_days)
+            * 86400
+        )
         if artifacts.exists():
             for path in artifacts.iterdir():
                 if (

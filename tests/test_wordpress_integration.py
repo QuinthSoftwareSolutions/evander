@@ -458,6 +458,82 @@ def test_design_option_undo_restores_value_and_autoload_metadata(wordpress):
     assert inspect(client, key) == before
 
 
+@pytest.mark.parametrize("kind", ["post", "term"])
+def test_database_write_failure_rolls_back_all_resources_and_receipt(wordpress, kind):
+    client, data, _ = wordpress
+    key = "post:" + str(data["post"]) if kind == "post" else "term:" + str(data["menu_term"])
+    option = "option:theme_mods_evander-fixture-theme"
+    before, option_before = inspect(client, key), inspect(client, option)
+    invalid = {"post_name" if kind == "post" else "slug": "x" * 300}
+    id, _ = prepare(
+        client, {option: {"value": {"custom_color": "#abcdef"}, "autoload": "off"}, key: invalid}
+    )
+    response = call(client, "apply", {"change_id": id, "fence": 100})
+    assert response.status_code == 503, response.text
+    assert inspect(client, key) == before
+    assert inspect(client, option) == option_before
+    assert call(client, "status", {"change_id": id}).json()["state"] == "armed"
+
+
+@pytest.mark.parametrize("kind", ["meta", "termmeta"])
+@pytest.mark.parametrize("value", ["scalar", 42, {"caption": "object"}])
+def test_metadata_preparation_rejects_nonlist_values_without_deleting_existing_data(
+    wordpress, kind, value
+):
+    client, data, _ = wordpress
+    key = (
+        "meta:" + str(data["post"]) + ":_builder_data"
+        if kind == "meta"
+        else "termmeta:" + str(data["menu_term"]) + ":_design_caption"
+    )
+    before = inspect(client, key)
+    assert before["value"], "Exercise existing metadata, not a missing field"
+    id = "wp_" + uuid4().hex
+    response = call(
+        client,
+        "prepare",
+        {
+            "change_id": id,
+            "expires_at": int(time.time() + 3600),
+            "resources": [{"key": key, "expected_version": before["version"], "value": value}],
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert inspect(client, key) == before
+    assert call(client, "status", {"change_id": id}).status_code == 409
+
+
+@pytest.mark.parametrize("kind", ["meta", "termmeta"])
+def test_metadata_lists_can_be_published_and_restored(wordpress, kind):
+    client, data, _ = wordpress
+    key = (
+        "meta:" + str(data["post"]) + ":_builder_data"
+        if kind == "meta"
+        else "termmeta:" + str(data["menu_term"]) + ":_design_caption"
+    )
+    before = inspect(client, key)
+    values = [{"caption": "After"}, "Additional stored value"]
+    id, snapshot = prepare(client, {key: values})
+    assert call(client, "apply", {"change_id": id, "fence": 100}).status_code == 200
+    assert inspect(client, key)["value"] == values
+    response = call(client, "restore", {"change_id": id, "fence": 100, "snapshot": snapshot})
+    assert response.status_code == 200, response.text
+    assert inspect(client, key) == before
+
+
+def test_zero_affected_rows_and_deleting_missing_metadata_are_successful_noops(wordpress):
+    client, data, _ = wordpress
+    post = "post:" + str(data["post"])
+    missing = "meta:" + str(data["post"]) + ":_missing_design_field"
+    before = inspect(client, post)
+    id, _ = prepare(client, {post: {"post_title": before["value"]["post_title"]}, missing: None})
+    response = call(client, "apply", {"change_id": id, "fence": 100})
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "applied"
+    assert inspect(client, post) == before
+    assert inspect(client, missing)["value"] == []
+
+
 def test_browser_cookie_cannot_be_reused_for_a_different_blog(wordpress):
     client, data, wp = wordpress
     key = "post:" + str(data["post"])

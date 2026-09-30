@@ -290,6 +290,62 @@ def test_failures_are_sanitized_and_never_return_stale_state(rig, case, monkeypa
     assert len(rig.calls) == 3
 
 
+@pytest.mark.parametrize("secret", ['host-"password', "host-\\password", "host-\npassword"])
+@pytest.mark.parametrize("location", ["value", "key", "nested"])
+def test_cookie_export_rejects_decoded_credentials(rig, monkeypatch, secret, location):
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    rig.profile.local_storage = {}
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "session-token", "domain": "app.example.test",
+              "path": "/", "secure": True, "sameSite": "Lax"}
+    if location == "value":
+        cookie["value"] = "prefix:" + secret + ":suffix"
+    elif location == "key":
+        cookie[secret] = "attribute"
+    else:
+        cookie["extra"] = [{"attribute": secret}]
+    rig.handler = lambda request: httpx.Response(
+        200, json={"token": jwt(rig.now[0] + 3600), "cookies": [cookie]})
+    with pytest.raises(WebsiteSessionError, match="website_login_unsafe_response"):
+        acquire(rig)
+    assert not rig.service._cache
+
+
+def test_cookie_export_accepts_unrelated_temporary_authentication(rig):
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "session-token", "domain": "app.example.test",
+              "path": "/", "secure": True, "sameSite": "Lax"}
+    rig.handler = lambda request: httpx.Response(
+        200, json={"token": jwt(rig.now[0] + 3600), "cookies": [cookie]})
+    state = acquire(rig)
+    assert state["storageState"]["cookies"][0]["value"] == "session-token"
+
+
+@pytest.mark.parametrize("secret, reflected", [("123456789", 123456789), ("true", True), ("null", None)])
+def test_cookie_export_preserves_serialized_credential_rejection(rig, monkeypatch, secret, reflected):
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    rig.profile.local_storage = {}
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "session-token", "domain": "app.example.test",
+              "path": "/", "secure": True, "sameSite": "Lax", "extra": [{"reflected": reflected}]}
+    rig.handler = lambda request: httpx.Response(
+        200, json={"token": jwt(rig.now[0] + 3600), "cookies": [cookie]})
+    with pytest.raises(WebsiteSessionError, match="website_login_unsafe_response"):
+        acquire(rig)
+    assert not rig.service._cache
+
+
+def test_cookie_export_preserves_rejection_of_public_login_identifiers(rig):
+    rig.profile.local_storage = {}
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "operator@example.test", "domain": "app.example.test",
+              "path": "/", "secure": True, "sameSite": "Lax"}
+    rig.handler = lambda request: httpx.Response(
+        200, json={"token": jwt(rig.now[0] + 3600), "cookies": [cookie]})
+    with pytest.raises(WebsiteSessionError, match="website_login_unsafe_response"):
+        acquire(rig)
+
+
 @pytest.mark.parametrize("address", ["127.0.0.1", "10.2.0.4", "169.254.169.254", "100.100.100.200", "::ffff:127.0.0.1", "::ffff:224.0.0.1"])
 def test_login_destination_cannot_resolve_to_private_or_metadata_hosts(monkeypatch, address):
     monkeypatch.setattr("evander.website_sessions.socket.getaddrinfo", lambda *a, **k: [(None, None, None, None, (address, 443))])
