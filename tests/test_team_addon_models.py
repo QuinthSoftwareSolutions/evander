@@ -245,6 +245,39 @@ def _valid_state() -> TeamState:
     )
 
 
+@pytest.mark.parametrize("missing_records", ["verification_runs", "reviews", "both"])
+def test_release_validation_collects_missing_records_and_continues(
+    missing_records: str,
+) -> None:
+    state = _valid_state()
+    release = state.release_packages["release"]
+    release.owner_agent_id = "missing-owner"
+    release.candidate_commit_sha = "candidate-sha"
+    if missing_records in {"verification_runs", "both"}:
+        release.verification_run_ids = ["missing-run-1", "missing-run-2"]
+    if missing_records in {"reviews", "both"}:
+        release.review_request_ids = ["missing-review-1", "missing-review-2"]
+    state.release_packages["next-release"] = ReleasePackage(
+        id="next-release", project_id="missing-project"
+    )
+
+    with pytest.raises(ValidationError) as captured:
+        TeamState.model_validate(state.model_dump(mode="python"))
+
+    errors = captured.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "value_error"
+    message = errors[0]["msg"]
+    expected_ids = ["missing-owner"]
+    if missing_records in {"verification_runs", "both"}:
+        expected_ids.extend(["missing-run-1", "missing-run-2"])
+    if missing_records in {"reviews", "both"}:
+        expected_ids.extend(["missing-review-1", "missing-review-2"])
+    expected_ids.append("missing-project")
+    positions = [message.index(record_id) for record_id in expected_ids]
+    assert positions == sorted(positions)
+
+
 def test_release_package_upgrades_legacy_candidate_manifest_shape() -> None:
     release = ReleasePackage(
         id="release",

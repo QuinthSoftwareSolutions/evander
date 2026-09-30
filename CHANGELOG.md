@@ -59,6 +59,9 @@
 - Execute release verification through explicit run recovery, workspace, command,
   evidence, persistence, and cleanup stages. Keep generation checks, single-flight
   execution, infrastructure precedence, and cleanup of partial setup in their order.
+- Separate release-state validation into ordered package checks for ownership,
+  cohorts, inputs, verification, reviews, and frozen evidence. Report missing runs
+  and reviews as validation errors and continue collecting later diagnostics.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
