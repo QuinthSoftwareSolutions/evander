@@ -20,6 +20,9 @@
 - Dispatch wake reservations through separate repository, capability, artifact,
   prompt, delivery, and recovery stages with fresh state for each lease, retaining
   queue activation rules and durable failure and conflict retries.
+- Project scoped Team state through ordered membership, work, delivery, dispatch,
+  assessment, and reference-closure stages, removing a superseded task projection
+  while retaining scope intersections and globally derived task assessments.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
