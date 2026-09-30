@@ -50,6 +50,9 @@
 - Build workflow run searches through separate event selection, activity grouping,
   session enrichment, filtering, and pagination stages, retaining SQLite counts,
   bounded record hydration, shared-trace sessions, and the patchable report clock.
+- Replay queued prompts through explicit batch and VM delivery stages, retaining
+  container-first dispatch, maintenance budgets, claim order, and queue replacement
+  guards. Keep delivery claims and pending steering when a waiting receipt fails.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

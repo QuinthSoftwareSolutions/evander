@@ -5937,6 +5937,75 @@ def test_agent_enqueue_prompt_releases_lock_and_capacity_when_replay_cas_fails(
     assert follow_up_lock.claimed is True
 
 
+def test_queued_libvirt_delivery_retains_claims_when_waiting_receipt_cannot_be_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
+
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    steering_store = operator_steering_note_store(tmp_path)
+    note = steering_store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-receipt",
+        message="Keep this instruction pending until delivery is recorded.",
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            prompt="continue",
+            model="local-model",
+            dispatch_id="dispatch-receipt",
+            effect_id="effect-1",
+            metadata={"operator_steering_note_id": note.note_id},
+        )
+    )
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
+
+    def fail_to_record(_record):
+        raise OSError("synthetic waiting receipt failure")
+
+    monkeypatch.setattr(execution_store, "record_execution", fail_to_record)
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        _agent_prompt_activity=AgentPromptActivityRuntime(
+            runtime_dir=tmp_path, execution_store=execution_store
+        ),
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [VmSummary(vm_name="vm-1", libvirt_state="running", agent_state="idle")]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls, SimpleNamespace(success=True, thread_id="thread-delivered")
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={"effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt")}
+        ),
+    )
+
+    assert AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker) == 0
+    assert [call["dispatch_id"] for call in resume_calls] == ["dispatch-receipt"]
+    assert execution_store.read_all() == {}
+    [claimed] = queue_store.read_all().values()
+    assert claimed.queue_key == "vm-1:replay:dispatch-receipt"
+    assert claimed.dispatch_id == "dispatch-receipt"
+    [capacity] = LocalInferenceCapacityStore(tmp_path).read_all().values()
+    assert capacity.status == "running"
+    assert capacity.dispatch_id == "dispatch-receipt"
+    [prompt_lock] = AgentPromptLockStore(tmp_path / "agent-prompt-locks.json").read_all().values()
+    assert prompt_lock.dispatch_id == "dispatch-receipt"
+    assert steering_store.get_note(note.note_id).status == "pending"
+
+
 def test_agent_enqueue_prompt_replay_discards_libvirt_row_after_waiting_record_crash(
     tmp_path: Path,
 ) -> None:
