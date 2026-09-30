@@ -504,6 +504,22 @@ class TeamsInboxStore:
             self._compact_notifications(connection)
             return cursor.rowcount > 0
 
+    def has_ready_notifications(self, *, now: datetime) -> bool:
+        """Check readiness without acquiring leases or preparing ingestion configuration."""
+
+        stored_now = self._datetime_to_storage(now)
+        with self._lock, self._connect() as connection:
+            return connection.execute(
+                """
+                SELECT 1 FROM teams_inbox_notification_queue
+                WHERE state IN ('pending', 'retry', 'leased')
+                  AND next_attempt_at <= ?
+                  AND (leased_until IS NULL OR leased_until <= ?)
+                LIMIT 1
+                """,
+                (stored_now, stored_now),
+            ).fetchone() is not None
+
     def lease_notifications(
         self,
         *,

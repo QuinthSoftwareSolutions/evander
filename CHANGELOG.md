@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-01 - Reduce control-plane polling and bookkeeping cost (0.76.1)
+
+- Reuse revision-aware compiled workflow configuration in polling consumers and skip
+  expensive Teams notification preparation when no queue item is ready.
+- Batch empty trigger cursor telemetry while preserving immediate published-event
+  checkpoints and storage-busy retry classification.
+- Update existing Team dispatch receipts and runtime bookkeeping through bounded,
+  revision-checked transactions without reconstructing unrelated historical state.
+- Skip completed history-backfill queue probes, use indexed pending/inflight checks,
+  and space completed garbage-collection sweeps while history and retention progress.
+- Default Teams fallback polling to four concurrent targets and defer background
+  timeout retries to durable per-target backoff, preserving interactive retry behavior.
+
 ## 2026-09-30 - Independent add-on projects and website login adapters (0.76.0)
 
 - Establish self-contained, independently installed add-on projects under `packages/`.

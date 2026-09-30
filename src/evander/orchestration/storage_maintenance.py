@@ -21,15 +21,24 @@ from evander.repositories.sqlite_runtime import is_storage_busy
 logger = logging.getLogger(__name__)
 
 
-def run_storage_maintenance(config) -> OrchestrationWalCheckpointResult:
+def run_storage_maintenance(
+    config, *, run_garbage_collection: bool = True
+) -> OrchestrationWalCheckpointResult:
     path = config.orchestration_store_path
-    result = OrchestrationWalCheckpointResult(skipped_reason="maintenance_busy")
+    garbage_collection_pending = True if run_garbage_collection else None
+    result = OrchestrationWalCheckpointResult(
+        skipped_reason="maintenance_busy", garbage_collection_pending=garbage_collection_pending
+    )
     with _try_orchestration_retention_lock(path) as acquired:
         if not acquired:
             return result
         # Each phase owns a separate transaction/deadline. One busy phase must
         # not suppress passive checkpoints or permanently starve another phase.
-        phases = ("checkpoint", "history", "retention", "history_gc", "payload_gc", "backfill")
+        phases = ("checkpoint", "history", "retention")
+        if run_garbage_collection:
+            phases += ("history_gc", "payload_gc")
+        phases += ("backfill",)
+        garbage_collection_phases: dict[str, bool] = {}
         writer_busy = False
         for phase in phases:
             started = time.monotonic()
@@ -123,6 +132,14 @@ def run_storage_maintenance(config) -> OrchestrationWalCheckpointResult:
                         operation="history_scalar_gc",
                     ) as connection:
                         details = {"deleted": collect_superseded_history_values(connection)}
+                        row = connection.execute(
+                            "SELECT value_json FROM orchestration_metadata "
+                            "WHERE key='history_scalar_gc_cursor'"
+                        ).fetchone()
+                        details["remaining"] = bool(row and any(json_loads_object(row[0]).values()))
+                    garbage_collection_phases[phase] = bool(
+                        details["deleted"] or details["remaining"]
+                    )
                 elif phase == "payload_gc":
                     from evander.repositories.operational_payloads import (
                         collect_unreferenced_payloads,
@@ -135,17 +152,26 @@ def run_storage_maintenance(config) -> OrchestrationWalCheckpointResult:
                         operation="operational_payload_gc",
                     ) as connection:
                         details = {"deleted": collect_unreferenced_payloads(connection, limit=100)}
+                        row = connection.execute(
+                            "SELECT value_json FROM orchestration_metadata "
+                            "WHERE key='operational_payload_gc_cursor'"
+                        ).fetchone()
+                        details["remaining"] = bool(row and json_loads_object(row[0]).get("after"))
+                    garbage_collection_phases[phase] = bool(
+                        details["deleted"] or details["remaining"]
+                    )
                 else:
                     with connect_orchestration_db_read_only(path) as connection:
-                        pending = connection.execute(
-                            "SELECT 1 FROM trigger_events WHERE delivery_state!='delivered' LIMIT 1"
-                        ).fetchone()
                         state = connection.execute(
                             "SELECT value_json FROM orchestration_metadata WHERE key='execution_history_backfill'"
                         ).fetchone()
-                    if pending is not None or (
-                        state and json_loads_object(state[0]).get("completed")
-                    ):
+                        if state and json_loads_object(state[0]).get("completed"):
+                            continue
+                        pending = connection.execute(
+                            "SELECT 1 FROM trigger_events "
+                            "WHERE delivery_state IN ('pending','inflight') LIMIT 1"
+                        ).fetchone()
+                    if pending is not None:
                         continue
                     from evander.repositories.execution_history import (
                         run_execution_history_backfill,
@@ -174,6 +200,10 @@ def run_storage_maintenance(config) -> OrchestrationWalCheckpointResult:
                 # normal lane interval rather than repeatedly competing.
                 result = replace(result, skipped_reason="storage_busy")
                 break
+        if len(garbage_collection_phases) == 2:
+            # Deletions may orphan DAG children behind the cursor, requiring a new sweep.
+            garbage_collection_pending = any(garbage_collection_phases.values())
+        result = replace(result, garbage_collection_pending=garbage_collection_pending)
         try:
             with connect_orchestration_db_read_only(path) as connection:
                 pending, oldest = connection.execute(

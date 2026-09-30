@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -103,6 +104,15 @@ class GateExecutionRepository(EffectExecutionRepository, Protocol):
     def find_latest_by_gate_id(self, gate_id: str) -> Any | None: ...
 
 
+@dataclass(frozen=True)
+class TriggerPollCheckpoint:
+    trigger_id: str
+    trigger_type: str
+    discovered: int
+    event_ids: list[str]
+    polled_at: datetime
+
+
 class GateCursorRepository(Protocol):
     def get_trigger_state(self, trigger_id: str) -> dict[str, Any] | None: ...
 
@@ -115,6 +125,8 @@ class GateCursorRepository(Protocol):
         event_ids: list[str],
         polled_at: datetime | None = None,
     ) -> None: ...
+
+    def record_trigger_polls(self, polls: list[TriggerPollCheckpoint]) -> None: ...
 
     def load(self) -> dict[str, Any]: ...
 
@@ -208,22 +220,35 @@ class JsonGateCursorRepository(JsonCursorRepository):
         event_ids: list[str],
         polled_at: datetime | None = None,
     ) -> None:
-        timestamp = (polled_at or datetime.now(UTC)).isoformat().replace("+00:00", "Z")
+        self.record_trigger_polls([
+            TriggerPollCheckpoint(
+                trigger_id=trigger_id,
+                trigger_type=trigger_type,
+                discovered=discovered,
+                event_ids=list(event_ids),
+                polled_at=polled_at or datetime.now(UTC),
+            )
+        ])
+
+    def record_trigger_polls(self, polls: list[TriggerPollCheckpoint]) -> None:
+        if not polls:
+            return
 
         def _update(payload: dict[str, Any]) -> None:
             triggers_payload = payload.setdefault("triggers", {})
             if not isinstance(triggers_payload, dict):
                 payload["triggers"] = {}
                 triggers_payload = payload["triggers"]
-            trigger_payload: dict[str, Any] = {
-                "trigger_type": trigger_type,
-                "last_polled_at": timestamp,
-                "last_discovered_count": discovered,
-                "last_event_ids": event_ids[-20:],
-            }
-            if event_ids:
-                trigger_payload["last_event_id"] = event_ids[-1]
-            triggers_payload[trigger_id] = trigger_payload
+            for poll in polls:
+                trigger_payload: dict[str, Any] = {
+                    "trigger_type": poll.trigger_type,
+                    "last_polled_at": poll.polled_at.isoformat().replace("+00:00", "Z"),
+                    "last_discovered_count": poll.discovered,
+                    "last_event_ids": poll.event_ids[-20:],
+                }
+                if poll.event_ids:
+                    trigger_payload["last_event_id"] = poll.event_ids[-1]
+                triggers_payload[poll.trigger_id] = trigger_payload
 
         self.update(_update)
 

@@ -103,6 +103,7 @@ from .sqlite_codec import (
 from .sqlite_deliverables import (
     DeliverableStoreMixin,
 )
+from .sqlite_dispatch_bookkeeping import DispatchBookkeepingStoreMixin
 from .sqlite_git import (
     GitStoreMixin,
 )
@@ -297,6 +298,7 @@ def _require_complete_state(state: TeamState) -> None:
 
 
 class TeamStateSqliteStore(
+    DispatchBookkeepingStoreMixin,
     CommandJournalStoreMixin,
     OrganizationStoreMixin,
     TaskStoreMixin,

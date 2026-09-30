@@ -288,6 +288,12 @@ converts existing rows in resumable offline batches and creates deferred mainten
 Startup performs schema readiness checks without rewriting all retained records. Before running
 an older release, rehydrate referenced records with the documented downgrade command.
 
+The background storage lane advances history indexing and retention every second. Bounded scalar
+and payload garbage collection continues at that cadence while sweep cursors or deletions remain,
+then waits 30 seconds between completed idle sweeps. Garbage-collection failures retain the shorter
+retry cadence. A completed execution-history backfill skips trigger-queue readiness queries;
+unfinished backfill waits for pending and inflight trigger deliveries to finish.
+
 The Admin Web **Add-ons** page can toggle `addon_loader.enabled_addon_ids` and
 keeps host and trigger-orchestrator add-on loader settings aligned. Changes are
 restart-gated; restart Admin Web, trigger/effect orchestrators, and gateway when
@@ -2672,14 +2678,18 @@ and user lookup. Retryable failure of one target does not delay healthy targets.
 initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and
 `target_backoff_max_seconds` (default `900`) in `config/teams-ingest/config.json`; the older
 `backoff_seconds` remains reserved for worker-wide configuration or store failures.
-Timeouts, transport failures, and Graph `5xx` responses instead use the shorter
+Background Graph polls hand a timed-out request directly to durable target backoff, without
+retrying the request inside the worker cycle. Interactive Teams requests retain their configured
+retry behavior. Timeouts, transport failures, and Graph `5xx` responses use the shorter
 `target_transient_backoff_initial_seconds` (default `5`) and
 `target_transient_backoff_max_seconds` (default `30`) progression. Graph `429` responses honor
 `Retry-After`, while authentication and other non-transient failures retain the longer cooldown.
 `max_concurrent_target_polls` in that same worker configuration bounds concurrent channel and chat
-polls across the worker (range `1`–`32`, default `1`). Directory selection, sender resolution, and
-direct-chat discovery remain serial; directories are processed one at a time, so the configured
-limit is global to the worker cycle. Choose a limit that fits the deployment's Graph quota and workload; restart
+polls across the worker (range `1`–`32`, default `4`). Completed target polls are ingested and wake
+the trigger worker while slower targets are still running. An explicit value of `1` selects serial
+polling. Directory selection, sender resolution, and direct-chat discovery remain serial;
+directories are processed one at a time, so the configured limit is global to the worker cycle.
+Choose a limit that fits the deployment's Graph quota and workload; restart
 `evander-teams-ingest.service` after changing this worker setting.
 
 `publish_trigger_events_directly` defaults to `true`. Each Teams ingest cycle captures one compiled

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from typing import Any
 
 from .sqlite_codec import (
@@ -20,7 +21,13 @@ class GitStoreMixin:
     def _read_dispatches(
         connection: sqlite3.Connection,
         payload: dict[str, Any],
+        *,
+        dispatch_ids: Sequence[str] | None = None,
     ) -> None:
+        parameters = tuple(dispatch_ids or ())
+        placeholders = ",".join("?" for _ in parameters)
+        scope_where = f" WHERE dispatch_id IN ({placeholders})" if dispatch_ids is not None else ""
+        dispatch_where = f" WHERE id IN ({placeholders})" if dispatch_ids is not None else ""
         scope_values: dict[str, dict[str, list[str]]] = {}
         for field_name, table_name, value_column in (
             ("task_ids", "team_dispatch_tasks", "task_id"),
@@ -34,10 +41,13 @@ class GitStoreMixin:
                 connection,
                 (
                     f"SELECT dispatch_id AS owner_id, {value_column} AS value "
-                    f"FROM {table_name} ORDER BY dispatch_id, position"
+                    f"FROM {table_name}{scope_where} ORDER BY dispatch_id, position"
                 ),
+                parameters,
             )
-        for row in connection.execute("SELECT * FROM team_dispatches ORDER BY id"):
+        for row in connection.execute(
+            f"SELECT * FROM team_dispatches{dispatch_where} ORDER BY id", parameters
+        ):
             dispatch_id = row["id"]
             payload["dispatches"][dispatch_id] = {
                 "id": dispatch_id,

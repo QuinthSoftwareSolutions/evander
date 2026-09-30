@@ -62,7 +62,10 @@ from evander.triggers.providers._cursor_state import TriggerCursorStore
 from evander.triggers.providers.pull_request_new_feedback import _parse_dt
 from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.workflow.node_state import workflow_node_is_enabled
-from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+from evander.workflow.runtime_config import (
+    TriggerOrchestratorWorkerGlobalConfigCache,
+    load_trigger_orchestrator_worker_global_config,
+)
 
 _LOG = logging.getLogger(__name__)
 _ADO_WORKER_CONFIG_RELATIVE_PATH = Path("config") / "ado-worker" / "config.json"
@@ -191,7 +194,12 @@ def _trigger_orchestrator_config_path(config: WorkerConfig) -> Path:
 def _load_ado_pr_feedback_triggers(
     config: WorkerConfig,
 ) -> list[PullRequestNewFeedbackTriggerDefinition]:
-    worker_config = _load_trigger_orchestrator_worker_config(config)
+    return _ado_pr_feedback_triggers(_load_trigger_orchestrator_worker_config(config))
+
+
+def _ado_pr_feedback_triggers(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig | None,
+) -> list[PullRequestNewFeedbackTriggerDefinition]:
     if worker_config is None:
         return []
     triggers: list[PullRequestNewFeedbackTriggerDefinition] = []
@@ -210,7 +218,12 @@ def _load_ado_pr_feedback_triggers(
 def _load_ado_pr_completed_triggers(
     config: WorkerConfig,
 ) -> list[PullRequestCompletedTriggerDefinition]:
-    worker_config = _load_trigger_orchestrator_worker_config(config)
+    return _ado_pr_completed_triggers(_load_trigger_orchestrator_worker_config(config))
+
+
+def _ado_pr_completed_triggers(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig | None,
+) -> list[PullRequestCompletedTriggerDefinition]:
     if worker_config is None:
         return []
     triggers: list[PullRequestCompletedTriggerDefinition] = []
@@ -228,10 +241,14 @@ def _load_ado_pr_completed_triggers(
 
 def _load_trigger_orchestrator_worker_config(
     config: WorkerConfig,
+    *,
+    config_cache: TriggerOrchestratorWorkerGlobalConfigCache | None = None,
 ) -> TriggerOrchestratorWorkerGlobalConfig | None:
     config_path = _trigger_orchestrator_config_path(config)
     if not config_path.exists():
         return None
+    if config_cache is not None:
+        return config_cache.get_latest()
     return load_trigger_orchestrator_worker_global_config(
         config_path.parents[2],
         base_config=GatewayConfig(runtime_dir=config.runtime_dir),
@@ -509,8 +526,14 @@ def _publish_directory_pr_feedback_events(
     config: WorkerConfig,
     runtime_gateway_config: GatewayConfig,
     directory_path: str,
+    config_cache: TriggerOrchestratorWorkerGlobalConfigCache | None = None,
 ) -> int:
-    triggers = _load_ado_pr_feedback_triggers(config)
+    trigger_worker_config = (
+        _load_trigger_orchestrator_worker_config(config, config_cache=config_cache)
+        if config_cache is not None
+        else _load_trigger_orchestrator_worker_config(config)
+    )
+    triggers = _ado_pr_feedback_triggers(trigger_worker_config)
     if not triggers:
         return 0
 
@@ -533,7 +556,6 @@ def _publish_directory_pr_feedback_events(
         return 0
 
     cursor_store = TriggerCursorStore(config.runtime_dir / "trigger-cursors-pr-feedback.json")
-    trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
     event_queue = _build_trigger_event_queue_for_worker_config(config, trigger_worker_config)
     effect_wake_lock_path = _effect_lock_path_for_worker_config(config, trigger_worker_config)
     feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
@@ -738,9 +760,15 @@ def _publish_directory_pr_completion_events(
     config: WorkerConfig,
     runtime_gateway_config: GatewayConfig,
     directory_path: str,
+    config_cache: TriggerOrchestratorWorkerGlobalConfigCache | None = None,
 ) -> int:
     _ = client
-    triggers = _load_ado_pr_completed_triggers(config)
+    trigger_worker_config = (
+        _load_trigger_orchestrator_worker_config(config, config_cache=config_cache)
+        if config_cache is not None
+        else _load_trigger_orchestrator_worker_config(config)
+    )
+    triggers = _ado_pr_completed_triggers(trigger_worker_config)
     if not triggers:
         return 0
 
@@ -762,7 +790,6 @@ def _publish_directory_pr_completion_events(
         )
         return 0
 
-    trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
     event_queue = _build_trigger_event_queue_for_worker_config(config, trigger_worker_config)
     effect_wake_lock_path = _effect_lock_path_for_worker_config(config, trigger_worker_config)
     pr_map_store = PrMapStore(runtime_gateway_config.pr_map_path)
@@ -933,6 +960,10 @@ def run_worker(config: WorkerConfig) -> None:
             time.sleep(config.poll_interval_seconds)
 
     runtime_gateway_config = _worker_runtime_config(config)
+    config_cache = TriggerOrchestratorWorkerGlobalConfigCache(
+        project_dir=_trigger_orchestrator_config_path(config).parents[2],
+        base_config=GatewayConfig(runtime_dir=config.runtime_dir),
+    )
 
     timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
     with httpx.Client(timeout=timeout) as client:
@@ -946,12 +977,14 @@ def run_worker(config: WorkerConfig) -> None:
                             config=config,
                             runtime_gateway_config=runtime_gateway_config,
                             directory_path=directory_path,
+                            config_cache=config_cache,
                         )
                         _publish_directory_pr_completion_events(
                             client=client,
                             config=config,
                             runtime_gateway_config=runtime_gateway_config,
                             directory_path=directory_path,
+                            config_cache=config_cache,
                         )
                     except httpx.HTTPError as exc:
                         logging.warning(
