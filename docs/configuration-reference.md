@@ -569,6 +569,10 @@ does not publish to other event listeners. The session-authenticated endpoint is
 `event_id` and `trace_id`. Retries with the same operator, node, and request ID
 reuse the queued event; use a new request ID for an intentional new run. A fixed
 trigger correlation key is used automatically and conflicting values are rejected.
+Accepted attempts are resolved before checking the current workflow revision, so
+an unchanged retry can recover its original run after a save or lost response.
+Retry payload comparison ignores object-key order and distinguishes booleans from
+numbers; changing the payload while reusing a request ID is rejected.
 Execution uses the existing runtime configuration behavior; the revision check
 does not pin downstream execution to a snapshot. Event catalog entries currently
 provide names and descriptions rather than payload validation schemas.

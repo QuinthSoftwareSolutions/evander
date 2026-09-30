@@ -128,6 +128,79 @@ def test_manual_event_retries_are_idempotent_and_new_requests_run_again(manual_t
     assert len({first.json()["event_id"], new.json()["event_id"], other_node.json()["event_id"]}) == 3
 
 
+def test_manual_event_recovers_accepted_attempt_after_workflow_save(manual_trigger):
+    service, _app, client = manual_trigger
+    body = _request(service, payload={"publish": True, "options": {"count": 2, "label": "demo"}})
+    first = client.post("/api/workflow-editor/nodes/alpha/trigger", json=body)
+    assert first.status_code == 202
+    config = load_trigger_orchestrator_worker_global_config(service.project_dir, base_config=service.config)
+    worker = EffectOrchestratorWorker(config=service.config, worker_config=config, runtime=None)
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+    state = WorkflowStateStore(service.config.runtime_dir)
+    assert state.get("root", "graph-alpha", "manual", "result").record.version == 1
+    # The caller lost the first response, and another operator then saved the layout.
+    document = service.workflow_config_admin.read_workflow_editor_document()
+    service.workflow_config_admin.save_workflow_editor_document(
+        config=document.config, layout={"nodes": {"alpha": {"x": 100, "y": 200}}},
+        graphs=[graph.model_dump(mode="json") for graph in document.graphs],
+        expected_revision=document.revision,
+    )
+    updated = service.workflow_config_admin.read_workflow_editor_document()
+    assert updated.revision != body["expected_revision"]
+    # Recovery works for stale requests and for a reloaded editor; JSON key order is irrelevant.
+    for revision in (body["expected_revision"], updated.revision):
+        recovered = client.post("/api/workflow-editor/nodes/alpha/trigger", json={
+            **body, "expected_revision": revision,
+            "payload": {"options": {"label": "demo", "count": 2}, "publish": True},
+        })
+        assert recovered.status_code == 202, recovered.text
+        assert recovered.json() == first.json()
+    fresh_stale = client.post("/api/workflow-editor/nodes/alpha/trigger", json={
+        **body, "request_id": "unaccepted-stale-attempt",
+    })
+    assert fresh_stale.status_code == 409
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+    source_records = [record for record in _queue(service).read_all().values() if record.trigger_id == "alpha"]
+    assert len(source_records) == 1
+    assert source_records[0].delivery_state == "delivered"
+    assert state.get("root", "graph-alpha", "manual", "result").record.version == 1
+
+
+@pytest.mark.parametrize("original,replacement", [
+    ({"publish": True}, {"publish": 1}),
+    ({"publish": False}, {"publish": 0}),
+    ({"options": {"items": [True]}}, {"options": {"items": [1]}}),
+])
+def test_manual_event_retry_distinguishes_boolean_and_numeric_payloads(manual_trigger, original, replacement):
+    service, _app, client = manual_trigger
+    body = _request(service, payload=original)
+    assert client.post("/api/workflow-editor/nodes/alpha/trigger", json=body).status_code == 202
+    mismatch = client.post("/api/workflow-editor/nodes/alpha/trigger", json={**body, "payload": replacement})
+    assert mismatch.status_code == 400
+    assert "different event" in mismatch.json()["error"]
+    records = _queue(service).list_pending()
+    assert len(records) == 1
+    assert json.dumps(records[0].payload["payload"], sort_keys=True) == json.dumps(original, sort_keys=True)
+
+
+def test_manual_event_recovery_keeps_directory_authorization(manual_trigger, monkeypatch):
+    service, app, client = manual_trigger
+    body = _request(service)
+    assert client.post("/api/workflow-editor/nodes/alpha/trigger", json=body).status_code == 202
+
+    def deny(_request, _permission, *, directory_path):
+        raise PermissionError(f"Run control denied in {directory_path}")
+
+    monkeypatch.setattr(app.state.auth, "require_permission", deny)
+    recovered = client.post("/api/workflow-editor/nodes/alpha/trigger", json=body)
+    assert recovered.status_code == 403
+    assert len(_queue(service).list_pending()) == 1
+
+
 @pytest.mark.parametrize("change", [
     {"payload": []}, {"payload": None}, {"payload": "hello"},
     {"request_id": " "}, {"correlation_key": "wrong-filter"},

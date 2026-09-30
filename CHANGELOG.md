@@ -6,6 +6,8 @@
   payload and optional correlation key, without broadcasting to other listeners.
 - Check workflow run-control permissions and saved revisions, record the operator,
   and deduplicate retries before showing the queued run in existing run history.
+- Preserve accepted attempts across workflow revision changes and compare retry
+  payloads as canonical JSON, keeping boolean and numeric values distinct.
 
 ## 2026-09-30 - Bound control-plane system log storage (0.74.1)
 

@@ -4,6 +4,15 @@ import { fetchJson } from "./editorApi";
 
 type QueuedRun = { event_id: string; trace_id: string };
 
+function requestFingerprint(body: { workflow_pack?: string | null; payload: unknown; correlation_key?: string | null }) {
+  return JSON.stringify({
+    workflow_pack: body.workflow_pack ?? null,
+    payload: body.payload,
+    correlation_key: body.correlation_key ?? null,
+  }, (_key, value: unknown) => value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : value);
+}
+
 type Inputs = {
   node: WorkflowNodeConfig | undefined;
   savedDocument: WorkflowEditorDocument | null;
@@ -79,12 +88,17 @@ export function useManualEventTrigger({
         payload,
         correlation_key: configuredCorrelationKey || correlationKey.trim() || null,
       };
-      const fingerprint = JSON.stringify(body);
+      const fingerprint = requestFingerprint(body);
       const storageKey = `evander:manual-event-trigger:${JSON.stringify([userId, pack, node.id])}`;
       const storedText = sessionStorage.getItem(storageKey);
       let stored: { fingerprint?: string; requestId?: string } | null = null;
       try { stored = storedText ? JSON.parse(storedText) : null; } catch { /* Replace an invalid retry entry. */ }
-      const requestId = stored?.fingerprint === fingerprint && typeof stored.requestId === "string"
+      let storedFingerprint: string | null = null;
+      try {
+        // Existing retry entries included expected_revision; normalize them without losing the ID.
+        if (typeof stored?.fingerprint === "string") storedFingerprint = requestFingerprint(JSON.parse(stored.fingerprint));
+      } catch { /* Replace an invalid retry fingerprint. */ }
+      const requestId = storedFingerprint === fingerprint && typeof stored?.requestId === "string"
         ? stored.requestId : Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
       // Persist before sending so a lost response or reload can safely retry the same submission.
       sessionStorage.setItem(storageKey, JSON.stringify({ fingerprint, requestId }));

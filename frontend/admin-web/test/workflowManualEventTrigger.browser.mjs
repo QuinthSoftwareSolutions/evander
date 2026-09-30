@@ -85,11 +85,14 @@ async function editor(t, { control = true } = {}) {
   await page.goto(`http://127.0.0.1:${listeningAddress(server).port}/#workflow`, { waitUntil: "domcontentloaded" });
   await page.locator('.react-flow__node[data-id="alpha"]').click();
   await page.getByRole("button", { name: "Trigger manually", exact: true }).waitFor();
-  return { page, requests, runLookups, setReply: (next) => { reply = next; } };
+  return { page, requests, runLookups, setReply: (next) => { reply = next; }, saveRevision: (revision) => {
+    document.revision = revision;
+    document.layout.nodes.alpha.x += 20;
+  } };
 }
 
 test("event-node inspector validates payloads, retries safely, and opens the queued run", { timeout: browserTestTimeout }, async (t) => {
-  const { page, requests, runLookups, setReply } = await editor(t);
+  const { page, requests, runLookups, setReply, saveRevision } = await editor(t);
   await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
   assert.equal(await dialog.getByLabel("Event type", { exact: true }).inputValue(), "custom.answer");
@@ -102,13 +105,19 @@ test("event-node inspector validates payloads, retries safely, and opens the que
     assert.equal(await submit.isDisabled(), true);
     assert.equal(requests.length, 0);
   }
-  await payload.fill('{"answer":"yes"}');
+  await payload.fill('{"answer":"yes","options":{"publish":true,"count":2}}');
   setReply(async (route) => route.abort("failed"));
   await submit.click();
   await dialog.getByRole("alert").waitFor();
-  assert.equal(await payload.inputValue(), '{"answer":"yes"}');
+  assert.equal(await payload.inputValue(), '{"answer":"yes","options":{"publish":true,"count":2}}');
   assert.equal(requests.length, 1);
   assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some((key) => key.startsWith("evander:manual-event-trigger:"))), true);
+
+  saveRevision("revision-2");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator('.react-flow__node[data-id="alpha"]').click();
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  await payload.fill('{"options":{"count":2,"publish":true},"answer":"yes"}');
 
   let release;
   setReply(async (route) => {
@@ -121,9 +130,9 @@ test("event-node inspector validates payloads, retries safely, and opens the que
   assert.equal(await dialog.getByRole("button", { name: "Queuing…" }).isDisabled(), true);
   assert.equal(requests.length, 2);
   assert.equal(requests[0].body.request_id, requests[1].body.request_id);
-  assert.deepEqual(requests[1].body.payload, { answer: "yes" });
+  assert.deepEqual(requests[1].body.payload, { answer: "yes", options: { publish: true, count: 2 } });
   assert.equal(requests[1].path, "/api/workflow-editor/nodes/alpha/trigger");
-  assert.equal(requests[1].body.expected_revision, "revision-1");
+  assert.equal(requests[1].body.expected_revision, "revision-2");
   release();
   await dialog.getByText("Run queued", { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some((key) => key.startsWith("evander:manual-event-trigger:"))), false);
@@ -136,6 +145,31 @@ test("event-node inspector validates payloads, retries safely, and opens the que
     dialog.getByRole("button", { name: "Inspect run" }).click(),
   ]);
   assert.equal(runLookups.at(-1), "alpha:second-event");
+});
+
+test("manual retries retain request IDs from older persisted fingerprints after a save", { timeout: browserTestTimeout }, async (t) => {
+  const { page, requests, setReply, saveRevision } = await editor(t);
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Trigger event manually" });
+  await dialog.getByLabel("Event payload JSON").fill('{"answer":"yes"}');
+  setReply(async (route) => route.abort("failed"));
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByRole("alert").waitFor();
+  const { request_id: requestId, ...body } = requests[0].body;
+  await page.evaluate(({ body, requestId }) => {
+    const key = Object.keys(sessionStorage).find((key) => key.startsWith("evander:manual-event-trigger:"));
+    sessionStorage.setItem(key, JSON.stringify({ fingerprint: JSON.stringify(body), requestId }));
+  }, { body, requestId });
+  saveRevision("revision-2");
+  setReply(async (route) => route.fulfill(json({ event_id: "alpha:recovered-event", trace_id: "trace-1" }, 202)));
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator('.react-flow__node[data-id="alpha"]').click();
+  await page.getByRole("button", { name: "Trigger manually", exact: true }).click();
+  await dialog.getByLabel("Event payload JSON").fill('{"answer":"yes"}');
+  await dialog.getByRole("button", { name: "Trigger node", exact: true }).click();
+  await dialog.getByText("Run queued", { exact: true }).waitFor();
+  assert.equal(requests[1].body.request_id, requestId);
+  assert.equal(requests[1].body.expected_revision, "revision-2");
 });
 
 test("manual action respects disabled nodes, node type, and unsaved edits", { timeout: browserTestTimeout }, async (t) => {

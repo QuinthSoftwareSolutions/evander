@@ -630,6 +630,30 @@ class WorkflowConfigAdminService:
             } or {"root"}
             for directory in sorted(directories):
                 authorize_directory(directory)
+            idempotency_key = "workflow-manual:" + self._stable_json_revision(
+                [source.user_id or source.user_login, node_id, request.request_id]
+            )
+            stores = self._workflow_run_store_paths()
+            queue = SqliteTriggerEventQueue(
+                stores["orchestration_store_path"],
+                retention_days=stores["orchestration_retention_days"],
+                compact_history_retention_days=stores["orchestration_compact_history_retention_days"],
+            )
+            existing = queue.get_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                authorize_directory(existing.directory_path or "root")
+                correlation_key = str(request.correlation_key or "").strip() or None
+                if correlation_key is None:
+                    correlation_key = str(node.get("config", {}).get("correlation_key") or "").strip() or None
+                if (
+                    self._stable_json_revision(existing.payload.get("payload"))
+                    != self._stable_json_revision(request.payload)
+                    or existing.payload.get("correlation_key") != correlation_key
+                ):
+                    raise ValueError("request_id was already used for a different event")
+                # Reconcile an accepted attempt even when its original revision is now stale.
+                notify_wake_socket_for_lock(stores["effect_lock_path"])
+                return WorkflowNodeTriggerPayload(event_id=existing.event_id, trace_id=existing.trace_id)
             if document.revision != request.expected_revision:
                 raise AdminRevisionConflict(
                     "Workflow changed. Reload it before triggering the node.",
@@ -652,9 +676,6 @@ class WorkflowConfigAdminService:
                 if correlation_key is not None and correlation_key != trigger.correlation_key:
                     raise ValueError("correlation_key must match the trigger's configured value")
                 correlation_key = trigger.correlation_key
-            idempotency_key = "workflow-manual:" + self._stable_json_revision(
-                [source.user_id or source.user_login, node_id, request.request_id]
-            )
             internal_event = InternalEvent(
                 event_id=str(uuid4()),
                 event_type=trigger.event_type,
@@ -662,12 +683,6 @@ class WorkflowConfigAdminService:
                 correlation_key=correlation_key,
                 source=source.model_copy(update={"node_id": node_id, "node_type": trigger.type}),
                 idempotency_key=idempotency_key,
-            )
-            stores = self._workflow_run_store_paths()
-            queue = SqliteTriggerEventQueue(
-                stores["orchestration_store_path"],
-                retention_days=stores["orchestration_retention_days"],
-                compact_history_retention_days=stores["orchestration_compact_history_retention_days"],
             )
             record = queue.publish(
                 TriggerEvent(
@@ -682,7 +697,8 @@ class WorkflowConfigAdminService:
                 directory_path=sorted(directories)[0],
             )
             if (
-                record.payload.get("payload") != request.payload
+                self._stable_json_revision(record.payload.get("payload"))
+                != self._stable_json_revision(request.payload)
                 or record.payload.get("correlation_key") != correlation_key
                 or record.payload.get("event_type") != trigger.event_type
             ):
