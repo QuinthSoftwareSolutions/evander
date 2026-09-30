@@ -47,6 +47,9 @@
 - Create libvirt VMs through named session, policy, setup, and recovery stages.
   Check setup exit status for both privileged-helper and subprocess execution so
   helper failures report failure and retain only recoverable VM or session state.
+- Build workflow run searches through separate event selection, activity grouping,
+  session enrichment, filtering, and pagination stages, retaining SQLite counts,
+  bounded record hydration, shared-trace sessions, and the patchable report clock.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

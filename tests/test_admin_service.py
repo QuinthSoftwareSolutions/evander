@@ -12466,6 +12466,115 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
     assert active_only_search.runs == []
 
 
+def test_workflow_run_search_enriches_sessions_before_filtering_and_pagination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    workflow_admin = service.workflow_reports_admin
+    runtime_dir = tmp_path / "runtime"
+    stores = {
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "await_agent_store_path": runtime_dir / "await-agent-pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "legacy-await-agent-pending.json",
+    }
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin,
+        "_read_composed_workflow_editor_document",
+        lambda: SimpleNamespace(
+            graphs=[
+                SimpleNamespace(
+                    id="graph-search", name="Search", node_ids=["effect-search", "gate-search"]
+                )
+            ]
+        ),
+    )
+    now = datetime(2026, 9, 30, 12, tzinfo=UTC)
+    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
+    artifact = CommunicationArtifactStore(runtime_dir).stage(
+        provider="teams",
+        session_id="session-artifact",
+        content=b"search fixture",
+        original_filename="search.txt",
+        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    service.runtime.approvals.put(
+        "approval-search",
+        ApprovalRequest(
+            request_id="approval-search",
+            session_id="session-approval",
+            action_type="effect:test",
+            payload_digest="search-digest",
+            human_summary="Approve synthetic search work.",
+            payload={},
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        ),
+    )
+    effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
+    for index, (event_id, trace_id, outputs) in enumerate(
+        [
+            ("evt-artifact", "trace-shared", {"artifact_ids": [artifact.artifact_id]}),
+            ("evt-peer", "trace-shared", {}),
+            ("evt-approval", "trace-approval", {"approval_request_id": "approval-search"}),
+            (
+                "evt-unbound",
+                "trace-unbound",
+                {"artifact_ids": ["comm_00000000000000000000000000000000"]},
+            ),
+        ]
+    ):
+        started_at = now + timedelta(minutes=index)
+        effect_store.record_execution(
+            EffectExecutionRecord(
+                execution_id=f"exec-{event_id}",
+                idempotency_key=f"{event_id}::effect-search",
+                event_id=event_id,
+                trace_id=trace_id,
+                source_node_id="trigger-search",
+                source_trigger_type="trigger:test",
+                effect_id="effect-search",
+                effect_type="effect:test",
+                status="succeeded",
+                started_at=started_at,
+                finished_at=started_at + timedelta(seconds=1),
+                resolved_config_hash="search-hash",
+                resolved_config={},
+                input_payload={},
+                outputs=outputs,
+            )
+        )
+    stores["await_agent_store_path"].write_text(
+        json.dumps(
+            {
+                "await-search": {
+                    "prompt_event_id": "evt-await",
+                    "gate_id": "gate-search",
+                    "session_id": "session-await",
+                    "occurred_at": (now + timedelta(minutes=4)).isoformat(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    search = service.workflow_config_admin.read_workflow_run_search(graph_id="graph-search")
+    runs = {run.event_id: run for run in search.runs}
+    assert search.generated_at == now
+    assert runs["evt-artifact"].session_ids == ["session-artifact"]
+    assert runs["evt-peer"].session_ids == ["session-artifact"]
+    assert runs["evt-approval"].session_ids == ["session-approval"]
+    assert runs["evt-await"].session_ids == ["session-await"]
+    assert runs["evt-await"].run_state == "active"
+    assert runs["evt-unbound"].session_ids == []
+
+    filtered = service.workflow_config_admin.read_workflow_run_search(
+        graph_id="graph-search", without_session=True, limit=1
+    )
+    assert [run.event_id for run in filtered.runs] == ["evt-unbound"]
+    assert filtered.matched == filtered.returned == 1
+    assert filtered.has_more is False
+
+
 def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_sqlite_stores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
