@@ -56,6 +56,9 @@
 - Plan manager fallback through separate team eligibility, lineage selection,
   authority, scope, reservation, and runtime stages. Replace positional work tuples
   with named fields while retaining full work fingerprints and wake suppression.
+- Execute release verification through explicit run recovery, workspace, command,
+  evidence, persistence, and cleanup stages. Keep generation checks, single-flight
+  execution, infrastructure precedence, and cleanup of partial setup in their order.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
