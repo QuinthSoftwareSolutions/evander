@@ -11,6 +11,9 @@
 - Build release packages through explicit lineage, provenance, input, destination,
   persistence, and promotion stages shared by agent and operator requests, keeping
   duplicate reuse and correction failure cleanup in their established order.
+- Separate task-update validation, edits, preparation invalidation, and response
+  projection, removing unreachable direct blocker-transition handling while
+  preserving blocker reassignment events and command response fields.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
