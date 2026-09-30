@@ -8,6 +8,9 @@
 - Split ordinary dispatch leasing into eligibility, work selection, wake timing,
   lineage selection, reservation, and payload phases while retaining role
   allocation recovery, manager fallback order, and revision-conflict retries.
+- Build release packages through explicit lineage, provenance, input, destination,
+  persistence, and promotion stages shared by agent and operator requests, keeping
+  duplicate reuse and correction failure cleanup in their established order.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
