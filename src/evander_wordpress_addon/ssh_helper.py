@@ -189,15 +189,27 @@ class Helper:
             action = payload["action"]
             if state["state"] == "deploying":
                 if current == state["release_version"]:
-                    self.activate()
-                    state["state"] = "deployed"
+                    # Undo must not depend on activating the broken candidate first.
+                    if action != "restore":
+                        try:
+                            self.activate()
+                        except Exception:
+                            if action != "status":
+                                raise
+                            return {"protocol_version": 1, **state, "current_release": current}
+                        state["state"] = "deployed"
                 elif current == state["expected_release"]:
                     state["state"] = "prepared"
                 else:
                     return {"protocol_version": 1, "conflict": True}
                 atomic_json(path, state)
             if state["state"] == "restoring" and current == state["previous_release"]:
-                self.activate()
+                try:
+                    self.activate()
+                except Exception:
+                    if action != "status":
+                        raise
+                    return {"protocol_version": 1, **state, "current_release": current}
                 state["state"] = "restored"
                 atomic_json(path, state)
             if action == "probe":

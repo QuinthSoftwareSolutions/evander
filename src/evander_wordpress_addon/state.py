@@ -16,7 +16,7 @@ from uuid import uuid4
 from evander.credentials.store import protected_read, secure_directory, write_private
 from evander.models import DirectoryPath
 
-from .models import ADDON_ID, Conflict, Settings, UNRESOLVED, digest
+from .models import ADDON_ID, Conflict, Settings, UNRESOLVED, digest, owns_browser
 
 
 class Store:
@@ -90,7 +90,7 @@ class Store:
                 if (
                     change["state"] == "prepared"
                     and change.get("ready")
-                    and not change.get("browser_ready")
+                    and not owns_browser(change)
                 ):
                     continue
                 old, new = previous.sites.get(record["site"]), settings.sites.get(record["site"])
@@ -280,8 +280,7 @@ class Store:
                 "SELECT id,payload FROM changes WHERE origin=? AND state='prepared'", (origin,)
             ).fetchall()
         if any(
-            row["id"] != change_id and json.loads(row["payload"]).get("browser_ready")
-            for row in prepared
+            row["id"] != change_id and owns_browser(json.loads(row["payload"])) for row in prepared
         ):
             raise Conflict("A prepared browser change owns this website")
 
@@ -316,7 +315,7 @@ class Store:
         for change in changes:
             if (
                 change["state"] in UNRESOLVED
-                or (change["state"] == "prepared" and change.get("browser_ready"))
+                or (change["state"] == "prepared" and owns_browser(change))
                 or latest.get(change["site_id"]) == change["change_id"]
                 or change.get("updated_at", change["created_at"]) >= cutoff
             ):

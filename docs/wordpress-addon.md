@@ -179,6 +179,10 @@ additional inspected resources. Their snapshots are saved durably before the
 plugin adds them to browser coverage. Existing coverage is retained; an extension
 cannot replace an already covered resource or change the pinned source/checks.
 Do not edit the new resources until the receipt reports `ready` and `browser_ready`.
+While coverage is pending, the original browser change continues to own the site
+and its recovery data is retained. An operator can still undo it; expiration,
+site disablement or revoked session authorization restores the existing edits
+without requiring the extension to finish first.
 
 The host exchanges its application password for a 60-second, single-use ticket.
 The plugin redeems it into scoped, temporary, HttpOnly HTTPS cookies. Sessions last
@@ -307,7 +311,8 @@ When PHP's OPcache/realpath cache or a frontend cache retains old files, configu
 `post_switch_command` as a fixed, absolute argv list in the protected helper JSON,
 for example a narrowly authorized PHP-FPM reload/cache-purge helper. It runs without
 a shell after deploy, restore and the recovery probe; the caller cannot supply or
-change it. A failed activation remains a durable pending operation. The HTTPS
+change it. A failed activation remains a durable pending operation, readable through
+`status`; undo switches back without first activating the failed candidate. The HTTPS
 hosting adapter must likewise finish cache/runtime activation before reporting a
 release as deployed or restored. Otherwise immediate verification could see an old
 release while a newly deployed PHP error is waiting for cache expiry.
@@ -329,8 +334,10 @@ connectivity uncertainty do not trigger automatic undo. Form probes inspect cont
 without submitting production data. Human review remains responsible for appearance.
 
 Source recovery runs before CMS recovery, restoring PHP availability when necessary.
-Recovery itself is checked. A conflict or failed recovery stops further changes to
-that site and reports `recovery_required`. Investigate the recorded release/resource
+Recovery itself is checked. Lost replies, pending restores and incomplete verification
+remain `uncertain` and retry with the same change ID, retaining the site's reservation.
+A conflict or confirmed failed recovery stops further changes to that site and reports
+`recovery_required`. Investigate the recorded release/resource
 versions and restore through the original adapter; do not overwrite a human edit
 or deploy through another adapter to clear an unknown result.
 

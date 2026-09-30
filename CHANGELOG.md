@@ -12,6 +12,9 @@
   regressions, and preserve concurrent human edits for explicit conflict resolution.
 - Register workflow providers that resume publication, reconciliation and recovery after
   worker restarts, with installation and recovery documentation and integration fixtures.
+- Keep undo available after failed SSH activation and retry interrupted restores with the
+  original change ID. Preserve browser ownership and recovery during coverage extensions,
+  including when the site is disabled or the agent session expires or loses authorization.
 
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 

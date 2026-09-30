@@ -7,6 +7,8 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 import zipfile
 
@@ -189,6 +191,85 @@ def queue(rig, change, restore=False, **extra):
             restore=restore,
         )
     )
+
+
+@pytest.fixture
+def pending_browser_extension(rig):
+    revision, settings = rig.store.settings("root/design")
+    site = settings.sites["main"]
+    site.capabilities.add("browser")
+    site.browser_target = "editor"
+    site.recovery_verified = site.binding()
+    rig.store.save_settings("root/design", revision, settings)
+    prepared = prepare(rig, browser=True)
+    # Browser requests have already published an edit covered by the original snapshot.
+    rig.remote.value = dict(rig.remote.desired)
+    rig.remote.state = "browser_open"
+
+    def handle(request):
+        if request.url.path.endswith("/prepare-extend"):
+            return httpx.Response(
+                200,
+                json={
+                    "snapshot": {
+                        "meta:7:builder": {
+                            "before": [],
+                            "before_version": digest([]),
+                            "value": ["New builder data"],
+                        }
+                    }
+                },
+            )
+        if request.url.path.endswith("/arm-extend"):
+            rig.remote.calls.append(("arm-extend", json.loads(request.content)))
+            return httpx.Response(503)
+        return rig.remote.handle(request)
+
+    rig.service.transport_factory = lambda origin: httpx.MockTransport(handle)
+    pending = run(
+        rig.service.prepare(
+            {
+                "site_id": "main",
+                "summary": "Cover builder metadata",
+                "idempotency_key": "extend-builder",
+                "browser": True,
+                "change_id": prepared["change_id"],
+                "expected_revision": prepared["revision"],
+                "resources": [
+                    {
+                        "key": "meta:7:builder",
+                        "expected_version": digest([]),
+                        "value": ["New builder data"],
+                    }
+                ],
+            }
+        )
+    )
+    return rig, pending
+
+
+def resumed_service(rig, *, operator=False):
+    return Service(
+        rig.store.runtime_dir,
+        Actor("root/design", "operator:reviewer", True) if operator else rig.service.actor,
+        rig.host,
+        authorize=None if operator else rig.service.authorize,
+        checks=rig.probe,
+        wait=rig.service.wait,
+        transport_factory=rig.service.transport_factory,
+    )
+
+
+def pending_events(rig):
+    trigger = WordPressReadyProvider()
+    trigger.initialize(
+        ReadyDefinition(id="ready", display_name="Ready", type="trigger:wordpress:change-ready"),
+        SimpleNamespace(
+            metadata={"directory_path": "root/design"},
+            resolved_config=SimpleNamespace(runtime_dir=rig.store.runtime_dir),
+        ),
+    )
+    return trigger.poll()
 
 
 def test_publish_then_conditional_undo_has_private_durable_snapshots(rig):
@@ -429,6 +510,112 @@ def test_lost_apply_reply_reconciles_after_new_service_process_without_duplicate
     assert rig.remote.writes == 1
 
 
+@pytest.mark.parametrize("interruption", ["lost_reply", "pending", "verification"])
+def test_restore_retry_survives_worker_restart_without_another_request(rig, interruption):
+    published = run(rig.service.execute("main", queue(rig, prepare(rig))["change_id"]))
+    queued = queue(rig, published, restore=True)
+    interrupted = False
+
+    def handle(request):
+        nonlocal interrupted
+        if request.url.path.endswith("/restore") and not interrupted:
+            interrupted = True
+            if interruption == "pending":
+                return httpx.Response(200, json={"state": "restoring"})
+            response = rig.remote.handle(request)
+            return httpx.Response(503) if interruption == "lost_reply" else response
+        return rig.remote.handle(request)
+
+    rig.service.transport_factory = lambda origin: httpx.MockTransport(handle)
+    if interruption == "verification":
+        rig.probe.results = [{"uncertain": True}, {"uncertain": True}]
+    uncertain = run(rig.service.execute("main", queued["change_id"]))
+    assert uncertain["state"] == "uncertain"
+    assert uncertain["phase"] == "restore"
+    events = pending_events(rig)
+    assert len(events) == 1 and events[0].payload["change_id"] == queued["change_id"]
+    rig.revoked[0] = True
+    restored = run(resumed_service(rig).execute("main", events[0].payload["change_id"]))
+    assert restored["state"] == "restored"
+    assert rig.remote.value["post_title"] == "Before"
+    assert not pending_events(rig)
+
+
+@pytest.mark.parametrize("stop", ["expired", "disabled", "revoked"])
+def test_pending_browser_extension_recovers_existing_edits(
+    pending_browser_extension, monkeypatch, stop
+):
+    rig, pending = pending_browser_extension
+    if stop == "expired":
+        now = time.time() + 91 * 86400
+        monkeypatch.setattr(time, "time", lambda: now)
+        rig.store.prune("root/design", 90)
+    elif stop == "disabled":
+        revision, settings = rig.store.settings("root/design")
+        settings.sites["main"].enabled = False
+        rig.store.save_settings("root/design", revision, settings)
+    else:
+        rig.revoked[0] = True
+    assert pending_events(rig)
+    restored = run(resumed_service(rig).execute("main", pending["change_id"]))
+    assert restored["state"] == "restored"
+    assert rig.remote.value["post_title"] == "Before"
+    assert len([name for name, _ in rig.remote.calls if name == "arm-extend"]) == 1
+    assert not pending_events(rig)
+
+
+def test_operator_can_undo_pending_browser_extension(pending_browser_extension):
+    rig, pending = pending_browser_extension
+    rig.revoked[0] = True
+    operator = resumed_service(rig, operator=True)
+    queued = run(
+        operator.queue(
+            {
+                "site_id": "main",
+                "change_id": pending["change_id"],
+                "expected_revision": pending["revision"],
+                "idempotency_key": "operator-undo",
+            },
+            restore=True,
+        )
+    )
+    restored = run(resumed_service(rig).execute("main", queued["change_id"]))
+    assert restored["state"] == "restored"
+    assert rig.remote.value["post_title"] == "Before"
+
+
+@pytest.mark.parametrize("directory", ["root/design", "root/other"])
+def test_pending_browser_extension_reserves_origin_across_directories(
+    pending_browser_extension, directory
+):
+    rig, pending = pending_browser_extension
+    if directory != "root/design":
+        _, settings = rig.store.settings("root/design")
+        rig.store.save_settings(directory, 0, settings)
+    other = resumed_service(rig)
+    other.directory = directory
+    other.actor = Actor(directory, "another-session")
+    with pytest.raises(Conflict):
+        run(
+            other.prepare(
+                {
+                    "site_id": "main",
+                    "summary": "Competing edit",
+                    "idempotency_key": "competing-edit",
+                    "resources": [
+                        {
+                            "key": "post:7",
+                            "expected_version": digest(rig.remote.value),
+                            "value": {"post_title": "Competing heading"},
+                        }
+                    ],
+                }
+            )
+        )
+    assert rig.remote.value["post_title"] == "After"
+    assert rig.service.status("main", pending["change_id"])["state"] == "prepared"
+
+
 def failure(id, objective=True):
     return {"failures": [{"id": id, "objective": objective}], "screenshots": []}
 
@@ -570,7 +757,8 @@ def test_example_workflow_imports_and_routes_queued_change_to_publication(rig, m
     edge = pack.ir.edges[0]
     assert (edge.source_id, edge.target_id) == (event.trigger_id, effect_node.id)
     bound = resolve_workflow_bindings(
-        effect_node.config, {event.trigger_id: {"payload": event.payload}},
+        effect_node.config,
+        {event.trigger_id: {"payload": event.payload}},
         {event.trigger_id: {"payload"}},
     )
     monkeypatch.setattr(
@@ -661,6 +849,82 @@ def test_ssh_helper_switches_and_restores_without_running_php(hosting):
         restored["state"] == "restored"
         and (root / "current" / "index.php").read_text() == "<?php echo 'Before';"
     )
+
+
+def test_ssh_helper_can_undo_a_release_whose_activation_fails(hosting):
+    helper, root = hosting
+    activation = root / "activate.py"
+    activation.write_text(
+        "import pathlib, sys\n"
+        "live = pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.exit(0 if live.name == 'initial' else 1)\n"
+    )
+    helper.config["post_switch_command"] = [sys.executable, str(activation), str(root / "current")]
+    archive = archive_bytes({"index.php": "<?php missing_function();"})
+    payload = {
+        "protocol_version": 1,
+        "component": "theme",
+        "operation_id": "activation-failure",
+        "fence": 1,
+        "artifact_sha256": sha256(archive).hexdigest(),
+        "artifact_archive": base64.b64encode(archive).decode(),
+    }
+    baseline = helper.execute({**payload, "action": "prepare"})
+    with pytest.raises(subprocess.CalledProcessError):
+        helper.execute(
+            {**payload, "action": "deploy", "expected_release": baseline["expected_release"]}
+        )
+    restarted = Helper(helper.config)
+    status = restarted.execute({**payload, "action": "status"})
+    assert status["state"] == "deploying"
+    assert "missing_function" in (root / "current/index.php").read_text()
+    restored = restarted.execute(
+        {**payload, "action": "restore", "expected_release": status["release_version"]}
+    )
+    assert restored["state"] == "restored"
+    assert (root / "current/index.php").read_text() == "<?php echo 'Before';"
+
+
+@pytest.mark.parametrize(
+    "action, pending_state, finished_state",
+    [
+        ("deploy", "deploying", "deployed"),
+        ("restore", "restoring", "restored"),
+    ],
+)
+def test_ssh_helper_status_retries_interrupted_activation(
+    hosting, action, pending_state, finished_state
+):
+    helper, root = hosting
+    blocked = root / "activation-blocked"
+    activation = root / "activate.py"
+    activation.write_text(
+        "import pathlib, sys\nsys.exit(1 if pathlib.Path(sys.argv[1]).exists() else 0)\n"
+    )
+    helper.config["post_switch_command"] = [sys.executable, str(activation), str(blocked)]
+    archive = archive_bytes({"index.php": "<?php echo 'After';"})
+    payload = {
+        "protocol_version": 1,
+        "component": "theme",
+        "operation_id": "activation-retry",
+        "fence": 1,
+        "artifact_sha256": sha256(archive).hexdigest(),
+        "artifact_archive": base64.b64encode(archive).decode(),
+    }
+    baseline = helper.execute({**payload, "action": "prepare"})
+    expected = baseline["expected_release"]
+    if action == "restore":
+        deployed = helper.execute({**payload, "action": "deploy", "expected_release": expected})
+        expected = deployed["release_version"]
+    blocked.touch()
+    with pytest.raises(subprocess.CalledProcessError):
+        helper.execute({**payload, "action": action, "expected_release": expected})
+    restarted = Helper(helper.config)
+    assert restarted.execute({**payload, "action": "status"})["state"] == pending_state
+    blocked.unlink()
+    assert restarted.execute({**payload, "action": "status"})["state"] == finished_state
+    expected_content = "<?php echo 'After';" if action == "deploy" else "<?php echo 'Before';"
+    assert (root / "current/index.php").read_text() == expected_content
 
 
 @pytest.mark.parametrize("name", ["../escape.php", "/absolute.php", "dir/../../escape", "a\\b"])
@@ -756,9 +1020,9 @@ def test_admin_settings_and_restore_enforce_directory_permissions_and_server_own
     run(exercise())
 
 
-@pytest.mark.parametrize("manual_edit", [False, True])
+@pytest.mark.parametrize("scenario", ["fatal", "manual_edit", "restore_conflict"])
 def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
-    rig, hosting, tmp_path, manual_edit
+    rig, hosting, tmp_path, scenario
 ):
     from evander.admin.services.managed_git_service import ManagedGitAdminService
 
@@ -848,6 +1112,8 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
                     "artifact_archive": base64.b64encode(artifact).decode(),
                 },
             )
+        if action == "restore" and scenario == "restore_conflict":
+            (root / "current/index.php").write_text("Human edit during recovery")
         return httpx.Response(
             200, json=helper.execute({"protocol_version": 1, "action": action, **payload})
         )
@@ -868,15 +1134,21 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
     }
     prepared = run(rig.service.prepare(request))
     assert prepared["build_pending"]
-    if manual_edit:
+    if scenario == "manual_edit":
         (root / "current/index.php").write_text("Manual edit during build")
     queued = queue(rig, prepared)
     rig.probe.results = [failure("server"), failure("server"), {"failures": []}, {"failures": []}]
     result = run(rig.service.execute("main", queued["change_id"]))
-    if manual_edit:
+    if scenario == "manual_edit":
         assert result["state"] == "conflict"
         assert (root / "current/index.php").read_text() == "Manual edit during build"
         assert rig.remote.value["post_title"] == "Before"
+        return
+    if scenario == "restore_conflict":
+        assert result["state"] == "recovery_required"
+        assert (root / "current/index.php").read_text() == "Human edit during recovery"
+        assert rig.remote.value["post_title"] == "Before"
+        assert not pending_events(rig)
         return
     assert result["state"] == "restored"
     assert builds[0] == 2

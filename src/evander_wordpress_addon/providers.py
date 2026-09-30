@@ -16,7 +16,7 @@ from evander.workflow.catalog import WorkflowEditorFieldDefinition, WorkflowEdit
 from evander.workflow.contracts import register_node_output_schema
 from evander.workflow.plugins import ProviderPluginRegistration
 
-from .models import ACTIVE, Contract, WordPressError
+from .models import ACTIVE, Contract, WordPressError, owns_browser
 from .service import Actor, Service
 from .state import Store
 
@@ -180,7 +180,7 @@ class WordPressReadyProvider(TriggerProviderBase):
                 change["state"] not in ACTIVE
                 and not (
                     change["state"] == "prepared"
-                    and change.get("browser_ready")
+                    and owns_browser(change)
                     and (
                         change["expires_at"] <= now
                         or not settings.sites.get(change["site_id"])

@@ -45,6 +45,14 @@ class UnknownOutcome(WordPressError):
     """A remote mutation may have happened; its status must be reconciled."""
 
 
+def owns_browser(change):
+    """Existing browser edits still own the site while added coverage is pending."""
+    return bool(
+        change.get("browser_ready")
+        or (change.get("extension_pending") and change.get("request", {}).get("browser"))
+    )
+
+
 def digest(value: Any) -> str:
     return sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()

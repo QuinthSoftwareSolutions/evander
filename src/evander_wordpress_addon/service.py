@@ -20,6 +20,7 @@ from .models import (
     UnknownOutcome,
     WordPressError,
     digest,
+    owns_browser,
 )
 from .state import Store
 from .transport import Client, Companion
@@ -433,7 +434,11 @@ class Service:
             if change["revision"] != request.expected_revision:
                 raise Conflict("Reload the current change revision")
             self.store.require_clear(site.origin, change["change_id"])
-            if not change.get("ready"):
+            # Pending coverage has already persisted the combined recovery manifest.
+            # Undo must remain available even though new editing is not yet ready.
+            if not change.get("ready") and not (
+                restore and change.get("extension_pending") and change.get("snapshot")
+            ):
                 raise WordPressError("Recovery preparation is incomplete")
             if restore:
                 if change["state"] not in {
@@ -590,7 +595,18 @@ class Service:
             change,
             state="recovery_required" if failures else "restored",
             browser_ready=False,
+            extension_pending=None,
             error="Restored website failed verification" if failures else None,
+        )
+
+    def _record_conflict(self, site_id, change_id):
+        current = self.store.get(change_id, self.directory, site_id)
+        return self.receipt(
+            self.store.update(
+                current,
+                state="recovery_required" if current.get("phase") == "restore" else "conflict",
+                error="Concurrent edits or changed configuration require reconciliation",
+            )
         )
 
     async def execute(self, site_id, change_id):
@@ -599,7 +615,7 @@ class Service:
             site_id,
             configure=initial["state"] == "restoring"
             or initial.get("phase") == "restore"
-            or (initial["state"] == "prepared" and initial.get("browser_ready")),
+            or (initial["state"] == "prepared" and owns_browser(initial)),
         )
         if (
             initial["state"] == "prepared"
@@ -619,22 +635,26 @@ class Service:
             }:
                 return self.receipt(change)
             self.store.require_clear(site.origin, change_id)
+            if change["state"] == "prepared" and owns_browser(change):
+                recovery_reason = None
+                if change["expires_at"] <= time.time() or not site.enabled:
+                    recovery_reason = "Browser change expired or site was disabled"
+                elif change.get("extension_pending"):
+                    try:
+                        self.reauthorize()
+                    except Exception:
+                        recovery_reason = "Browser session authorization was revoked"
+                if recovery_reason:
+                    change = self.store.update(
+                        change, state="restoring", phase="restore", error=recovery_reason
+                    )
             if change["state"] == "prepared" and change.get("extension_pending"):
                 try:
                     return self.receipt(await self._finish_extension(site, change, fence))
                 except WordPressError:
                     return self.receipt(change)
             if change["state"] == "prepared":
-                if change.get("browser_ready") and (
-                    change["expires_at"] <= time.time() or not site.enabled
-                ):
-                    change = self.store.update(
-                        change,
-                        state="restoring",
-                        error="Browser change expired or site was disabled",
-                    )
-                else:
-                    return self.receipt(change)
+                return self.receipt(change)
             try:
                 if change["binding"] != await self.binding(site):
                     raise Conflict("Configuration or credential binding changed during execution")
@@ -704,16 +724,7 @@ class Service:
                     self.store.update(change, state="published", browser_ready=False, error=None)
                 )
             except Conflict:
-                current = self.store.get(change_id, self.directory, site_id)
-                return self.receipt(
-                    self.store.update(
-                        current,
-                        state="recovery_required"
-                        if current.get("phase") == "restore"
-                        else "conflict",
-                        error="Concurrent edits or changed configuration require reconciliation",
-                    )
-                )
+                return self._record_conflict(site_id, change_id)
             except (UnknownOutcome, WordPressError):
                 current = self.store.get(change_id, self.directory, site_id)
                 # A broken PHP deployment can prevent REST status reconciliation. Verify
@@ -724,14 +735,14 @@ class Service:
                         if failures:
                             current = self.store.update(current, state="restoring", phase="restore")
                             return self.receipt(await self._restore(site_id, site, current, fence))
+                    except Conflict:
+                        return self._record_conflict(site_id, change_id)
                     except Exception:
                         current = self.store.get(change_id, self.directory, site_id)
                 return self.receipt(
                     self.store.update(
                         current,
-                        state="recovery_required"
-                        if current.get("phase") == "restore"
-                        else "uncertain",
+                        state="uncertain",
                         error="Remote outcome is uncertain; status reconciliation is required",
                     )
                 )
@@ -740,9 +751,7 @@ class Service:
                 return self.receipt(
                     self.store.update(
                         current,
-                        state="recovery_required"
-                        if current.get("phase") == "restore"
-                        else "uncertain",
+                        state="uncertain",
                         error="Execution needs reconciliation; existing recovery data has been retained",
                     )
                 )
