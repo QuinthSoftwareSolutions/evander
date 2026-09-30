@@ -10,6 +10,16 @@
 - Bind redemption to the original worker and account, and retain unresolved attempts
   across tab changes and reloads until the provider returns a definitive outcome.
 
+## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
+
+- Reuse completed gateway activity scans for five minutes and share overlapping
+  queries, with a 64 MiB serialized-data budget and bounded cache entries.
+- Fetch full work-item records in batches while preserving custom fields, activity
+  filtering, candidate omissions, and paging completeness.
+- Recheck policy and provider credentials on each request, invalidate cached scans
+  after gateway work-item and proxy-issue mutations, and expose content-free cache
+  and scan timings.
+
 ## 2026-09-29 - Reduce event and retention writer contention (0.72.7)
 
 - Check pending retention sources through queued history jobs and source primary keys,
