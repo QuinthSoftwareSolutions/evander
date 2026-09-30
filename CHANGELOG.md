@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-30 - Configure Codex Fast mode per session and prompt (0.74.0)
+
+- Add nullable `fast_mode` session defaults and per-prompt overrides to agent creation,
+  workflow nodes, Admin Web, and CLI controls; explicit false selects standard speed.
+- Forward the resolved tier through Codex VM, metered container, and subscription
+  execution, preserving the selection through queues, wakes, context retries, and steering.
+- Restore the session speed on later turns and expose the chosen mode and its source
+  in execution and queue records. Fast requires a supported public OpenAI Codex route.
+- Price metered Fast usage with the returned service tier across HTTP, streaming,
+  and WebSocket responses, falling back to the requested tier when unavailable.
+- Preserve an existing VM session's speed when creation omits the setting, and
+  clear it when an upsert explicitly supplies null, matching container workers.
+
 ## 2026-09-30 - Display and redeem banked subscription resets (0.73.0)
 
 - Show each subscription profile's banked reset count beside remaining weekly usage,

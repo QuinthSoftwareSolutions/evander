@@ -83,7 +83,9 @@ class VmAgentPromptQueueInventoryMixin:
         prompt_preview, prompt_length = self._agent_prompt_queue_preview(prompt)
         return AgentPromptQueueRecord(
             reasoning_effort=getattr(record, "reasoning_effort", None),
+            fast_mode=getattr(record, "fast_mode", None),
             reasoning_effort_source=getattr(record, "reasoning_effort_source", None),
+            fast_mode_source=getattr(record, "fast_mode_source", None),
             queue_key=str(getattr(record, "queue_key", "") or ""),
             effect_id=str(getattr(record, "effect_id", "") or ""),
             dispatch_id=getattr(record, "dispatch_id", None),

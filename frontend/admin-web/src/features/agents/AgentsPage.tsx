@@ -1,3 +1,5 @@
+import { FastModeSelect } from "../admin/FastModeSelect";
+import { fastModeValue } from "../admin/fastMode";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ReasoningEffortSelect } from "../admin/ReasoningEffortSelect";
@@ -706,6 +708,7 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     session_id: sessionId,
     model: hostString(rawPolicy, "model"),
     reasoning_effort: hostString(rawPolicy, "reasoning_effort"),
+    fast_mode: typeof rawPolicy.fast_mode === "boolean" ? rawPolicy.fast_mode : null,
     agent_harness: hostString(rawPolicy, "agent_harness") || undefined,
     effective_model_provider_mode: hostString(rawPolicy, "effective_model_provider_mode") || undefined,
     expires_at: hostString(rawPolicy, "expires_at"),
@@ -921,6 +924,7 @@ export function AgentsPage() {
   const [logReloadNonce, setLogReloadNonce] = useState(0);
   const [agentPrompt, setAgentPrompt] = useState("");
   const [promptReasoningEffort, setPromptReasoningEffort] = useState("");
+  const [promptFastMode, setPromptFastMode] = useState("");
   const [reasoningCatalog, setReasoningCatalog] = useState<ReasoningEffortCatalog | null>(null);
   const [agentPromptResumeThreadId, setAgentPromptResumeThreadId] = useState("");
   const [showPromptForm, setShowPromptForm] = useState(false);
@@ -1770,6 +1774,7 @@ export function AgentsPage() {
     if (!selectedAgent) return;
     setAgentPromptResumeThreadId(promptThreadIdForAgent(selectedAgent));
     setPromptReasoningEffort("");
+    setPromptFastMode("");
     setReasoningCatalog(null);
     void loadAgentCreateOptions(selectedAgent.directory_path, "", selectedAgent.backend === "container_worker_vm" ? selectedAgent.session_id ?? "" : "")
       .then((options) => setReasoningCatalog(options.reasoning_effort_catalog ?? null))
@@ -2637,6 +2642,11 @@ export function AgentsPage() {
                         value={promptReasoningEffort}
                         onChange={setPromptReasoningEffort}
                       />
+                      <FastModeSelect prompt
+                        harness={String(selectedAgentPolicy?.agent_harness || selectedAgentPolicy?.metadata.agent_provider || selectedAgentPolicy?.metadata.agent_harness || "codex")}
+                        route={String(selectedAgentPolicy?.effective_model_provider_mode || selectedAgentPolicy?.metadata.model_provider_mode || "")}
+                        inheritedFastMode={selectedAgentPolicy?.fast_mode}
+                        value={promptFastMode} onChange={setPromptFastMode} />
                       <label className="field-stack">
                         <span>Resume thread ID</span>
                         <input
@@ -2655,6 +2665,7 @@ export function AgentsPage() {
                           void runAgentAction("prompt-agent", {
                             prompt: agentPrompt.trim(),
                             reasoning_effort: promptReasoningEffort || null,
+                            fast_mode: fastModeValue(promptFastMode),
                             resume_thread_id: agentPromptResumeThreadId.trim() || null,
                           })
                         }
@@ -2907,6 +2918,9 @@ export function AgentsPage() {
                                 </span>
                                 {record.subscription_profile_id ? (
                                   <span>Profile: {record.subscription_profile_id}</span>
+                                ) : null}
+                                {record.fast_mode_source ? (
+                                  <span>Speed: {record.fast_mode ? "Fast" : "Standard"} ({record.fast_mode_source})</span>
                                 ) : null}
                                 {record.reasoning_effort_source ? (
                                   <span>Effort: {record.reasoning_effort ?? "Provider default"} ({record.reasoning_effort_source})</span>

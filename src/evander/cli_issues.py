@@ -447,6 +447,13 @@ def create_issue_vm(
         str | None,
         typer.Option("--reasoning-effort", help="Native reasoning effort default for the session."),
     ] = None,
+    fast_mode: Annotated[
+        bool | None,
+        typer.Option(
+            "--fast-mode/--no-fast-mode",
+            help="Codex Fast mode; omit to inherit the session default.",
+        ),
+    ] = None,
     model_provider_mode: Annotated[
         str | None,
         typer.Option(
@@ -477,6 +484,7 @@ def create_issue_vm(
         codex_skills=codex_skill,
         model=model,
         reasoning_effort=reasoning_effort,
+        fast_mode=fast_mode,
         model_provider_mode=model_provider_mode,
     )
     cli_common._echo_action_result_or_exit(result)

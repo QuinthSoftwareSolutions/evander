@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from uuid import uuid4
-from evander.cost_categories import dispatch_with_cost_context
 
-from evander.reasoning_effort import resolve_reasoning_effort, session_agent_harness
 from evander.admin.services.vm_agent.common import (
     Any,
     VmActionResult,
@@ -15,6 +13,9 @@ from evander.admin.services.vm_agent.common import (
     subprocess,
     sys,
 )
+from evander.cost_categories import dispatch_with_cost_context
+from evander.fast_mode import resolve_fast_mode
+from evander.reasoning_effort import resolve_reasoning_effort, session_agent_harness
 
 
 class VmAgentResumeMixin:
@@ -25,7 +26,9 @@ class VmAgentResumeMixin:
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -68,7 +71,9 @@ class VmAgentResumeMixin:
                     "prompt": prompt,
                     "model": model,
                     "reasoning_effort": reasoning_effort,
+                    "fast_mode": fast_mode,
                     "reasoning_effort_source": reasoning_effort_source,
+                    "fast_mode_source": fast_mode_source,
                     "vm_user": vm_user,
                     "dispatch_id": dispatch_id,
                     "resume_thread_id": resume_thread_id,
@@ -86,7 +91,9 @@ class VmAgentResumeMixin:
                 provider="container_worker_vm",
                 thread_id=str(response.get("thread_id") or "") or None,
                 reasoning_effort=response.get("reasoning_effort"),
+                fast_mode=response.get("fast_mode"),
                 reasoning_effort_source=response.get("reasoning_effort_source"),
+                fast_mode_source=response.get("fast_mode_source"),
             )
 
         vm_name = self._resolve_vm_name_from_target(target)
@@ -121,6 +128,16 @@ class VmAgentResumeMixin:
                 session=manifest,
                 harness=agent_provider,
                 model=resolved_model,
+                route=(manifest.metadata or {}).get("model_provider_mode")
+                or effective_config.model_provider_mode,
+            )
+            speed = resolve_fast_mode(
+                {
+                    "fast_mode": fast_mode,
+                    "fast_mode_source": fast_mode_source,
+                },
+                session=manifest,
+                harness=agent_provider,
                 route=(manifest.metadata or {}).get("model_provider_mode")
                 or effective_config.model_provider_mode,
             )
@@ -183,6 +200,7 @@ class VmAgentResumeMixin:
             "AGENT_MODEL": resolved_model,
             "AGENT_REASONING_EFFORT": reasoning.value or "",
             "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
+            "AGENT_FAST_MODE": "true" if speed.value else "false",
             "AGENT_WEB_SEARCH_MODE": web_search_mode,
         }
         if agent_provider:
@@ -255,6 +273,7 @@ class VmAgentResumeMixin:
             thread_id=resolved_thread_id,
             model=resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
         )
 
     def _spawn_agent_completion_watcher(

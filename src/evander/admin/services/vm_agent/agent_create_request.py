@@ -1,17 +1,10 @@
 from __future__ import annotations
 
-from evander.cost_categories import normalize_cost_category
-
-from evander.reasoning_effort import (
-    normalize_reasoning_effort,
-    validate_session_reasoning_effort,
-    reasoning_effort_catalog,
-)
-from evander.provider_config import validate_openrouter_session
+from evander.admin.services.session_helpers import normalize_http_targets_metadata
 from evander.admin.services.vm_agent.common import (
+    MODEL_PROVIDER_MODE_METADATA_KEY,
     Any,
     EffectiveVmDefaultsConfig,
-    MODEL_PROVIDER_MODE_METADATA_KEY,
     Mapping,
     SessionManifest,
     VmActionResult,
@@ -27,17 +20,24 @@ from evander.admin.services.vm_agent.common import (
     resolve_container_worker_image_selector,
     resolve_libvirt_vm_template_selector,
 )
-from evander.session_auth import ensure_session_mcp_auth_token
 from evander.codex_auth import (
     CodexAuthMode,
     normalize_codex_auth_mode,
     normalize_subscription_profile_id,
 )
 from evander.connectors.grants import resolve_and_validate_connector_grants
+from evander.cost_categories import normalize_cost_category
+from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
 from evander.host_directories.grants import (
     resolve_and_validate_host_directory_grants,
 )
-from evander.admin.services.session_helpers import normalize_http_targets_metadata
+from evander.provider_config import validate_openrouter_session
+from evander.reasoning_effort import (
+    normalize_reasoning_effort,
+    reasoning_effort_catalog,
+    validate_session_reasoning_effort,
+)
+from evander.session_auth import ensure_session_mcp_auth_token
 
 
 def _connector_grants_for_admin_agent(
@@ -113,13 +113,20 @@ class VmAgentCreateRequestMixin:
             create_metadata: dict[str, Any] = {
                 **{
                     key: payload[key]
-                    for key in ("dotnet", "nuget", "playwright", "mssql", "mssql_init_root", "vm_user")
+                    for key in (
+                        "dotnet",
+                        "nuget",
+                        "playwright",
+                        "mssql",
+                        "mssql_init_root",
+                        "vm_user",
+                    )
                     if key in payload
                 },
                 "libvirt_vm_template": {
                     "image_ref": vm_image_selection["image_ref"],
                     "template_alias": vm_image_selection["template_alias"],
-                }
+                },
             }
             if agent_provider:
                 create_metadata["agent_provider"] = agent_provider
@@ -168,6 +175,11 @@ class VmAgentCreateRequestMixin:
                 model=self._agent_optional_string(payload, "model"),
                 cost_category=normalize_cost_category(payload.get("cost_category")),
                 reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
+                **(
+                    {"fast_mode": normalize_fast_mode(payload["fast_mode"])}
+                    if "fast_mode" in payload
+                    else {}
+                ),
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
                 ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
@@ -475,6 +487,7 @@ class VmAgentCreateRequestMixin:
                 "model": model,
                 "cost_category": normalize_cost_category(payload.get("cost_category")),
                 "reasoning_effort": normalize_reasoning_effort(payload.get("reasoning_effort")),
+                "fast_mode": normalize_fast_mode(payload.get("fast_mode")),
                 "codex_auth_mode": codex_auth_mode,
                 "subscription_profile_id": subscription_profile_id,
                 "metadata": metadata,
@@ -482,6 +495,7 @@ class VmAgentCreateRequestMixin:
         )
         validate_openrouter_session(backend.config, manifest)
         validate_session_reasoning_effort(manifest, backend.config)
+        validate_session_fast_mode(manifest, backend.config)
         manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,

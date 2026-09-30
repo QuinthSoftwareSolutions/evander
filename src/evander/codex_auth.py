@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
-
+import re
 from datetime import datetime
 from enum import Enum
-import re
 from typing import Literal
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from evander.fast_mode import FastMode, FastModeSource
+from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 
 DEFAULT_SUBSCRIPTION_PROFILE_ID = "default"
 SUBSCRIPTION_PROFILE_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
@@ -106,7 +106,9 @@ class CodexTurnSpec(BaseModel):
     prompt: str = Field(min_length=1)
     model: str = Field(min_length=1)
     reasoning_effort: ReasoningEffort | None = None
+    fast_mode: FastMode | None = None
     reasoning_effort_source: ReasoningEffortSource | None = None
+    fast_mode_source: FastModeSource | None = None
     resume_thread_id: str | None = None
     resume_mode: Literal["new_context", "same_context"] = "new_context"
     mcp_gateway_url: AnyHttpUrl | None = None

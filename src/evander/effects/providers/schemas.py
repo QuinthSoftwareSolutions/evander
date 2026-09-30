@@ -5,14 +5,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from evander.reasoning_effort import LEVELS, normalize_reasoning_effort
-from evander.events.models import ConfigValue, EffectDefinition
 from evander.codex_auth import normalize_subscription_profile_id
-from evander.events.internal import validate_internal_event_type
 from evander.effects.providers.agent_session import (
     normalize_optional_http_url,
     normalize_optional_string,
 )
+from evander.events.internal import validate_internal_event_type
+from evander.events.models import ConfigValue, EffectDefinition
+from evander.fast_mode import normalize_fast_mode
+from evander.reasoning_effort import LEVELS, normalize_reasoning_effort
 
 
 def _normalize_managed_git_access_mode(value: object, *, effect_type: str) -> ConfigValue | None:
@@ -256,6 +257,11 @@ class AgentCreateEffectDefinition(EffectDefinition):
         description="Native reasoning level. Omit to inherit the session default.",
         json_schema_extra={"examples": list(LEVELS)},
     )
+    fast_mode: ConfigValue | None = Field(
+        default=None,
+        description="Codex Fast mode. True enables Fast; false selects standard speed; omit/null inherits the session default.",
+        json_schema_extra={"examples": [True, False]},
+    )
     model_provider_mode: ConfigValue | None = None
     codex_auth_mode: ConfigValue | None = None
     # Profile assignment is an immutable editor selector, never a runtime binding.
@@ -315,6 +321,15 @@ class AgentCreateEffectDefinition(EffectDefinition):
         if isinstance(value, str) and "${{" in value:
             return value
         return normalize_optional_http_url(value, field_name="npm_registry_url")
+
+    @field_validator("fast_mode")
+    @classmethod
+    def validate_fast_mode_value(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" in value:
+            return value
+        if isinstance(value, dict):
+            return value
+        return normalize_fast_mode(value)
 
     @field_validator("reasoning_effort")
     @classmethod
@@ -491,6 +506,11 @@ class AgentPromptEffectDefinition(EffectDefinition):
         description="Native reasoning level. Omit to inherit the session default.",
         json_schema_extra={"examples": list(LEVELS)},
     )
+    fast_mode: ConfigValue | None = Field(
+        default=None,
+        description="Codex Fast mode. True enables Fast; false selects standard speed; omit/null inherits the session default.",
+        json_schema_extra={"examples": [True, False]},
+    )
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
     resume_thread_metadata_key: ConfigValue | None = None
@@ -501,6 +521,15 @@ class AgentPromptEffectDefinition(EffectDefinition):
     agent_context_retry_enabled: ConfigValue | None = None
     agent_context_retry_max_attempts: ConfigValue | None = None
     agent_context_retry_target_chars: ConfigValue | None = None
+
+    @field_validator("fast_mode")
+    @classmethod
+    def validate_fast_mode_value(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" in value:
+            return value
+        if isinstance(value, dict):
+            return value
+        return normalize_fast_mode(value)
 
     @field_validator("reasoning_effort")
     @classmethod
@@ -528,6 +557,11 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
         description="Native reasoning level. Omit to inherit the session default.",
         json_schema_extra={"examples": list(LEVELS)},
     )
+    fast_mode: ConfigValue | None = Field(
+        default=None,
+        description="Codex Fast mode. True enables Fast; false selects standard speed; omit/null inherits the session default.",
+        json_schema_extra={"examples": [True, False]},
+    )
     vm_user: ConfigValue | None = None
     dispatch_id: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
@@ -541,6 +575,15 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     agent_context_retry_enabled: ConfigValue | None = None
     agent_context_retry_max_attempts: ConfigValue | None = None
     agent_context_retry_target_chars: ConfigValue | None = None
+
+    @field_validator("fast_mode")
+    @classmethod
+    def validate_fast_mode_value(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if isinstance(value, str) and "${{" in value:
+            return value
+        if isinstance(value, dict):
+            return value
+        return normalize_fast_mode(value)
 
     @field_validator("reasoning_effort")
     @classmethod

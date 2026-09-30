@@ -14,6 +14,7 @@ from evander.execution.models import (
     ExecutionSpec,
     ExecutionStatusKind,
 )
+from evander.fast_mode import recorded_fast_mode, resolve_fast_mode
 from evander.model_usage.models import ModelUsageCorrelationContext
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.models import SessionManifest
@@ -188,6 +189,12 @@ class OperatorSteeringAdminService:
             model=resolved_model,
             route=effective_config.model_provider_mode,
         )
+        speed = resolve_fast_mode(
+            recorded_fast_mode(record),
+            session=session,
+            harness=agent_harness,
+            route=effective_config.model_provider_mode,
+        )
         approval_lease_id = (
             str(record.resolved_config.get("mcp_tool_approval_lease_id") or "").strip()
             or str(original_outputs.get("mcp_tool_approval_lease_id") or "").strip()
@@ -210,6 +217,7 @@ class OperatorSteeringAdminService:
             prompt=replacement_prompt,
             model=resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
             resume_thread_id=resume_thread_id,
             session=session,
             agent_provider=agent_harness,
@@ -220,6 +228,7 @@ class OperatorSteeringAdminService:
             prompt=replacement_prompt,
             model=resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
             resume_thread_id=resume_thread_id,
             session=session,
             config=effective_config,
@@ -248,6 +257,7 @@ class OperatorSteeringAdminService:
                             "agent_provider": agent_harness,
                             "model": resolved_model,
                             **reasoning.fields(),
+                            **speed.fields(),
                             "model_provider_mode": effective_config.model_provider_mode,
                             **(
                                 {"codex_auth_mode": codex_turn.auth_mode.value}
@@ -309,6 +319,7 @@ class OperatorSteeringAdminService:
                         prompt=replacement_prompt,
                         model=resolved_model,
                         **reasoning.fields(),
+                        **speed.fields(),
                         model_provider_mode=effective_config.model_provider_mode,
                         queue_reason=exc.deferral.queue_reason,
                         subscription_profile_id=exc.deferral.profile_id,
@@ -358,6 +369,7 @@ class OperatorSteeringAdminService:
                     queued_outputs.update(
                         {
                             **reasoning.fields(),
+                            **speed.fields(),
                             "success": True,
                             "queued": True,
                             "execution_backend": "container_worker_vm",
@@ -471,6 +483,7 @@ class OperatorSteeringAdminService:
         replacement_outputs.update(
             {
                 **reasoning.fields(),
+                **speed.fields(),
                 "success": True,
                 "queued": False,
                 "output_mode": "on_completion",

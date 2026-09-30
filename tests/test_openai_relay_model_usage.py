@@ -1362,6 +1362,7 @@ def test_openai_relay_records_websocket_final_usage_without_raw_text(
                 "request_id": "req-websocket",
                 "type": "response",
                 "model": "gpt-5.2-codex",
+                "service_tier": "priority",
                 "output_text": "secret completion text",
                 "usage": {
                     "input_tokens": 13,
@@ -1406,6 +1407,7 @@ def test_openai_relay_records_websocket_final_usage_without_raw_text(
     }
     assert event.raw_usage_metadata["response_metadata"]["websocket"] is True
     assert event.raw_usage_metadata["response_metadata"]["event_type"] == "response.completed"
+    assert event.raw_usage_metadata["response_metadata"]["service_tier"] == "priority"
     assert "secret prompt text" not in event_json
     assert "secret completion text" not in event_json
 

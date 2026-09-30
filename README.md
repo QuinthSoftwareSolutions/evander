@@ -1283,6 +1283,12 @@ and Copilot use their native controls on their supported backends. Queued prompt
 and retries retain the selected effort. See the
 [reasoning effort reference](docs/configuration-reference.md#agent-reasoning-effort).
 
+Codex sessions also have a **Default speed** setting. Set `fast_mode: true` for
+Fast mode on a supported public OpenAI model, `false` for standard speed, or leave
+a prompt override unset to inherit the session default. Queues and retries retain
+the captured speed. See the
+[Fast mode reference](docs/configuration-reference.md#agent-fast-mode).
+
 Connect `effect:agent:prompt` or `effect:agent:enqueue-prompt` to
 `gate:await-agent` through the prompt's `started` source port. Use the
 prompt's `completed` source port for downstream work that should wait for the

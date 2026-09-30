@@ -126,6 +126,7 @@ def _upsert_container_session(
     metadata: dict[str, object] | None = None,
     model: str | None = "gpt-5.4-mini",
     reasoning_effort: str | None = None,
+    fast_mode: bool | None = None,
     vm_provider_id: str | None = None,
     web_search_enabled: bool = False,
     expires_at: datetime | None = None,
@@ -138,6 +139,7 @@ def _upsert_container_session(
         directory_path="root/team-a",
         model=model,
         reasoning_effort=reasoning_effort,
+        fast_mode=fast_mode,
         allowed_tools=[ToolName.SCHEDULE_RESUME],
         web_search_enabled=web_search_enabled,
         expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
@@ -180,9 +182,11 @@ def test_container_target_name_prefers_metadata_then_provider_then_session_id() 
     )
 
 
+@pytest.mark.parametrize("fast_mode", [True, False, None])
 def test_resume_binding_passes_session_settings_to_resume_script(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    fast_mode: bool | None,
 ) -> None:
     dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
     del wake_store
@@ -195,6 +199,7 @@ def test_resume_binding_passes_session_settings_to_resume_script(
             allowed_tools=[ToolName.SCHEDULE_RESUME],
             web_search_enabled=True,
             reasoning_effort="low",
+            fast_mode=fast_mode,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
@@ -231,6 +236,7 @@ def test_resume_binding_passes_session_settings_to_resume_script(
     assert captured["env"]["AGENT_PROVIDER"] == "codex"
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4-mini"
     assert captured["env"]["AGENT_WEB_SEARCH_MODE"] == "live"
+    assert captured["env"]["AGENT_FAST_MODE"] == ("true" if fast_mode else "false")
     assert captured["env"]["AGENT_REASONING_EFFORT"] == "low"
     assert captured["env"]["AGENT_REASONING_EFFORT_SOURCE"] == "session"
     assert watcher_calls == [
@@ -669,8 +675,13 @@ def test_resume_binding_timeout_error_does_not_include_prompt_command(
 
 
 @pytest.mark.parametrize(
-    "model,route,effort",
-    [("gpt-5.4-mini", "openai_public", "low"), ("gpt-4o", "local_openai", "minimal")],
+    "model,route,effort,fast_mode",
+    [
+        ("gpt-5.4-mini", "openai_public", "low", True),
+        ("gpt-5.4-mini", "openai_public", "low", False),
+        ("gpt-5.4-mini", "openai_public", "low", None),
+        ("gpt-4o", "local_openai", "minimal", None),
+    ],
 )
 def test_resume_container_binding_dispatches_idle_session_and_records_success(
     tmp_path: Path,
@@ -678,6 +689,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     model: str,
     route: str,
     effort: str,
+    fast_mode: bool | None,
 ) -> None:
     dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
     config = config.model_copy(update={"model_provider_mode": route})
@@ -686,6 +698,7 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
         session_id="session-1",
         model=model,
         reasoning_effort=effort,
+        fast_mode=fast_mode,
         vm_provider_id="provider-target",
         web_search_enabled=True,
         metadata={"container_worker": {"image": "runner:wake-image"}},
@@ -731,6 +744,9 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     assert "codex exec resume --last" in str(spec.command)
     assert f"--model {model}" in str(spec.command)
     assert f'model_reasoning_effort="{effort}"' in str(spec.command)
+    assert spec.codex_turn.fast_mode is bool(fast_mode)
+    assert spec.codex_turn.fast_mode_source == ("session" if fast_mode is not None else "default")
+    assert f'service_tier="{"fast" if fast_mode else "default"}"' in str(spec.command)
     assert spec.codex_turn.reasoning_effort == effort
     assert spec.codex_turn.reasoning_effort_source == "session"
     assert 'web_search="live"' in str(spec.command)
@@ -756,6 +772,8 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
         "vm_user": config.wake_vm_user,
         "prompt": "Resume work.",
         "model": model,
+        "fast_mode": bool(fast_mode),
+        "fast_mode_source": "session" if fast_mode is not None else "default",
         "reasoning_effort": effort,
         "reasoning_effort_source": "session",
         "model_provider_mode": route,
@@ -766,6 +784,8 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
         "scheduled_for": datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
         "wake_metadata": {
             "schedule_cron": "",
+            "fast_mode": bool(fast_mode),
+            "fast_mode_source": "session" if fast_mode is not None else "default",
             "reasoning_effort": effort,
             "reasoning_effort_source": "session",
         },
@@ -840,7 +860,7 @@ def test_subscription_preflight_deferral_retains_wake_effort(
 ) -> None:
     dispatcher, config, session_repository, _ = _build_dispatcher(tmp_path)
     session = _upsert_container_session(
-        session_repository, session_id="session-1", reasoning_effort="low"
+        session_repository, session_id="session-1", reasoning_effort="low", fast_mode=True
     )
     backend = _ContainerBackendStub(
         start_error=CodexSubscriptionDeferredClientError(
@@ -863,11 +883,15 @@ def test_subscription_preflight_deferral_retains_wake_effort(
     )
     assert result.status == "queued"
     session.reasoning_effort = "high"
+    session.fast_mode = False
     session_repository.upsert_session(session)
     queued = AgentPromptQueueStore(config.runtime_dir / "queued-agent-prompts.json").get(
         "scheduled-wake:wake-deferred"
     )
     assert queued is not None
+    assert queued.fast_mode is True
+    assert queued.fast_mode_source == "session"
+    assert backend.started_specs[0].codex_turn.fast_mode is True
     assert queued.reasoning_effort == "low"
     assert queued.reasoning_effort_source == "session"
     assert queued.queue_reason == "subscription_rate_limited"
@@ -1001,6 +1025,8 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
         vm_user="agent",
         prompt="Resume original work.",
         model="gpt-5.4",
+        fast_mode=True,
+        fast_mode_source="session",
         reasoning_effort="low",
         reasoning_effort_source="session",
         model_provider_mode="openai_public",
@@ -1017,6 +1043,8 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
     )
     assert queued is not None
     assert queued.prompt == "Resume original work."
+    assert queued.fast_mode is True
+    assert queued.fast_mode_source == "session"
     assert queued.reasoning_effort == "low"
     assert queued.reasoning_effort_source == "session"
     assert queued.dispatch_id == "wake-dispatch-rate-limit"

@@ -163,3 +163,15 @@ test("buildCreatePayload gates provider and image fields by backend", () => {
   assert.equal(buildCreatePayload({ ...emptyCreateForm(), mssqlInitRoot: "/unused" }, "root").mssql_init_root,
     null, "disabled MSSQL must omit its init root");
 });
+
+
+test("agent creation preserves explicit standard speed and leaves inheritance unset", () => {
+  for (const backend of ["libvirt_vm", "container_worker_vm"]) {
+    for (const [selection, expected] of [["true", true], ["false", false]]) {
+      const payload = buildCreatePayload({ ...emptyCreateForm(), backend, fastMode: selection }, "root");
+      assert.equal(payload.fast_mode, expected);
+    }
+    const inherited = buildCreatePayload({ ...emptyCreateForm(), backend }, "root");
+    assert.equal(Object.hasOwn(inherited, "fast_mode"), false);
+  }
+});

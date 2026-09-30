@@ -15,6 +15,9 @@ from evander.model_usage.models import ModelUsageCorrelationContext
 from evander.model_usage.runtime import MODEL_USAGE_AGENT_HARNESS
 
 
+_SERVICE_TIERS = frozenset({"auto", "default", "flex", "scale", "priority", "fast", "ultrafast"})
+
+
 class OpenAIUsageAccounting:
     """Model-usage capture and provider request correlation for the OpenAI relay."""
 
@@ -225,6 +228,17 @@ class OpenAIUsageAccounting:
         if not self._is_model_usage_endpoint(upstream_path):
             return
 
+        try:
+            request_payload = json.loads(request_body) if request_body else None
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            request_payload = None
+        request_service_tier = self._service_tier_from_payload(request_payload)
+        if request_service_tier is not None:
+            request_metadata = dict(request_metadata, service_tier=request_service_tier)
+        response_service_tier = self._service_tier_from_payload(response_payload)
+        if response_service_tier is not None:
+            response_metadata = dict(response_metadata, service_tier=response_service_tier)
+
         if provider_name == "openrouter":
             if request_status == "success" and (
                 response_payload.get("type") in {"error", "response.failed"}
@@ -292,6 +306,13 @@ class OpenAIUsageAccounting:
                 }
             )
         self.model_usage_store.upsert_event(event)
+
+    @staticmethod
+    def _service_tier_from_payload(payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        value = payload.get("service_tier")
+        return value if isinstance(value, str) and value in _SERVICE_TIERS else None
 
     @classmethod
     def _provider_request_id_from_response(
@@ -456,6 +477,7 @@ class OpenAIUsageAccounting:
         for key in (
             "id",
             "model",
+            "service_tier",
             "deployment",
             "request_id",
             "requestId",

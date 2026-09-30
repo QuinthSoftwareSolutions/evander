@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from evander.reasoning_effort import reasoning_effort_catalog, session_agent_harness
+from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads
 from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.services.session_helpers import COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 from evander.admin.tool_visibility import _tool_category, _tool_provider
@@ -41,9 +41,8 @@ from evander.models import (
     utc_now,
 )
 from evander.policy import mandatory_approval_required_for_tool
-from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads
 from evander.provider_config import normalize_model_provider_mode_override
-
+from evander.reasoning_effort import reasoning_effort_catalog, session_agent_harness
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.DOCUMENTATION_LIST: (
@@ -1287,9 +1286,13 @@ def session_approval_routes(
             not isinstance(payload["model"], str) or not payload["model"].strip()
         ):
             return json_error("Model is required.")
-        settings = {key: payload[key] for key in ("model", "reasoning_effort") if key in payload}
+        settings = {
+            key: payload[key]
+            for key in ("model", "reasoning_effort", "fast_mode")
+            if key in payload
+        }
         if not settings:
-            return json_error("Provide model and/or reasoning_effort.")
+            return json_error("Provide model, reasoning_effort, and/or fast_mode.")
         try:
             result = service.operations_admin.update_session_model_settings(session_id, settings)
             summary = _get_session_summary(session_id)

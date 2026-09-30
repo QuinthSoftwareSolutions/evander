@@ -865,12 +865,12 @@ Type-specific keys:
 | `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
-| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
+| `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `worker_id`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `reasoning_effort`, `fast_mode`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `image_generation_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:session:set-image-generation-enabled` | one of `target`, `session_id`, `vm_name`; `enabled` | `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
 | `effect:agent:prepare-reference-repositories` | one of `target`, `session_id`, `vm_name`; `directory_path`; `repositories` | `outputs` |
-| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `reasoning_effort`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
-| `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `reasoning_effort`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
+| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `reasoning_effort`, `fast_mode`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
+| `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `reasoning_effort`, `fast_mode`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:install-skills` | `target`, `codex_skills` | `vm_user`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:agent:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `allowed_source_roots`, `outputs` |
@@ -1015,6 +1015,63 @@ The Team project's `release_policy.resource_limits` editor is the normal
 project-wide control for those disposable verifiers and is separate from an
 ordinary persistent agent's session metadata.
 
+### Agent Fast mode
+
+`fast_mode` is an optional boolean on sessions, `effect:agent:create`, and both
+agent prompt effects. A non-null prompt value overrides the session for that
+invocation: `true` selects Fast, `false` explicitly selects standard speed, and
+null or omission inherits the session default. Unconfigured sessions use standard
+speed. It does not change the model, reasoning effort, authentication mode, or
+subscription profile. Fast is supported only for Codex on the public OpenAI route;
+other harnesses and private/local/provider routes reject an enabled setting.
+
+When `effect:agent:create` upserts an existing session, omitting `fast_mode`
+preserves its default, `false` selects standard speed, and null clears the stored
+default. This applies to both libvirt VMs and container workers.
+
+For example, create a session with `fast_mode: false`, run an initial prompt with
+`model: gpt-6.1-sol`, `reasoning_effort: max`, and `fast_mode: true`, then omit the
+speed override on follow-ups to return to standard speed. The later prompts can
+independently select `reasoning_effort: high`.
+
+Admin Web exposes the session default during creation and in **Sessions →
+Settings → Default speed**, and the override in **Agents → Prompt → Speed for
+this prompt**. The owner-authorized, privilege-locked
+`PUT /api/admin/sessions/{session_id}/model` accepts `fast_mode` together with
+model and effort settings and validates them before persisting any change.
+An omitted field preserves the stored value; `"fast_mode": null` clears it.
+CLI creation and resume commands accept `--fast-mode` / `--no-fast-mode`:
+
+```bash
+evander-cli set-session-fast-mode example-session --fast-mode
+evander-cli set-session-fast-mode example-session --no-fast-mode
+evander-cli set-session-fast-mode example-session --clear
+evander-cli resume-agent example-session --message "Review the patch" --reasoning-effort max --fast-mode
+```
+
+Queue and execution records expose the resolved boolean and `fast_mode_source`
+(`prompt`, `session`, or `default`). Queued prompts, capacity deferrals, scheduled
+wakes, reduced-context retries, and operator steering retain their captured value;
+changes to the session affect newly submitted prompts. Legacy queue entries without
+a captured source resolve the current session when dispatched.
+
+Codex CLI runs explicitly set `service_tier="fast"` or `"default"` on every turn,
+including resumes. Subscription app-server runs send the same selection through
+thread configuration and `turn/start.serviceTier`, so a prompt override does not
+keep later control-plane turns in Fast mode. Codex maps Fast to priority requests.
+Metered relay usage records retain the requested and returned service tiers;
+cost estimates use the returned tier when available, then the requested tier.
+Availability and higher allowance or credit usage depend on the model/account;
+see [official Codex speed guidance](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode)
+and the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+The native provider remains authoritative about model and account availability.
+
+Upgrade container worker daemons before the control plane: the structured turn
+contract now includes speed and source. Refresh existing VMs with
+`bootstrap_codex_vm.sh`; new bootstraps start with the standard tier and the host
+sets the requested tier for each run. No live workflow pack is migrated or enabled
+automatically.
+
 ### Agent reasoning effort
 
 Sessions have an optional `reasoning_effort` default. Set it when creating an
@@ -1068,7 +1125,8 @@ evander-cli set-session-reasoning-effort example-session --clear
 
 `create-session`, `create-vm`, and `create-issue-vm` also accept `--reasoning-effort`. The existing
 `PUT /api/admin/sessions/{session_id}/model` endpoint accepts `model`,
-`reasoning_effort`, or both; it validates and persists the pair atomically.
+`reasoning_effort`, and `fast_mode` individually or together; it validates and persists
+the settings atomically.
 An omitted field remains unchanged and `"reasoning_effort": null` clears the
 default. An invalid model/effort pair leaves both stored fields unchanged. These
 updates retain the endpoint's directory ownership and privileged-unlock checks.
