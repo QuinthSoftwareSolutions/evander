@@ -53,6 +53,9 @@
 - Replay queued prompts through explicit batch and VM delivery stages, retaining
   container-first dispatch, maintenance budgets, claim order, and queue replacement
   guards. Keep delivery claims and pending steering when a waiting receipt fails.
+- Plan manager fallback through separate team eligibility, lineage selection,
+  authority, scope, reservation, and runtime stages. Replace positional work tuples
+  with named fields while retaining full work fingerprints and wake suppression.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

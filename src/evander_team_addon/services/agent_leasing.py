@@ -36,6 +36,8 @@ from ..models import (
     TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS,
     TeamInboxPriority,
     TeamState,
+    Team,
+    TeamDispatchReviewRoutingAuthority,
     agent_has_project_assignment,
     external_source_evidence_snapshot_payload,
     wake_work_changed_since_latest_attempt,
@@ -73,6 +75,7 @@ from .domain.context_rotation import (
     _maybe_mark_idle_context_rotation_due,
 )
 from .domain.dispatch_scope import (
+    AgentDispatchScope,
     actionable_dispatch_reviews,
     actionable_dispatch_tasks,
     build_agent_dispatch_scope,
@@ -500,530 +503,635 @@ class _LeasePlanning:
         for team in sorted(state_model.teams.values(), key=lambda item: item.id):
             if self.limit and len(self.leases) >= self.limit:
                 break
-            if (
-                team.archived
-                or team.id in self.blocked_teams
-                or team.id not in teams_with_open_work
-            ):
-                continue
-            if self.team_id is not None and team.id != self.team_id:
-                continue
-            if team.id in teams_with_lease:
-                continue
-            manager = state_model.agents.get(team.manager_agent_id)
-            if manager is None or manager.status != AgentStatus.ACTIVE or (manager.id is None):
-                continue
-            if self.project_id is not None and not agent_has_project_assignment(
-                state_model,
-                manager.id,
-                self.project_id,
-            ):
-                continue
-            if self.agent_id is not None and manager.id != self.agent_id:
-                continue
-            if self.session_is_busy is not None and self.session_is_busy(manager.session_id):
-                continue
-            if (
-                manager.id in state_model.agent_runtimes
-                and state_model.agent_runtimes[manager.id].wake_leased_until
-                and _ensure_utc(state_model.agent_runtimes[manager.id].wake_leased_until)
-                > self.effective_now
-            ):
-                continue
-            if _active_stand_downs_for_agent(state_model, manager.id):
-                continue
-            manager_runtime = state_model.agent_runtimes.setdefault(
-                manager.id,
-                AgentRuntime(agent_id=manager.id),
-            )
-            dispatch_id = f"team-dispatch-{uuid4().hex}"
-            manager_tasks = actionable_dispatch_tasks(
-                state_model,
-                agent=manager,
-            )
-            manager_active_task_ids = {
-                task.id for task in _active_tasks_for_agent(state_model, manager.id)
-            }
-            manager_inbox = _pending_inbox_for_agent(
-                state_model,
-                manager.id,
-            )
-            manager_reviews = actionable_dispatch_reviews(
-                _pending_reviews_for_agent(state_model, manager.id)
-            )
-            manager_blocked_review_ids = mcp_capability_blocked_review_ids(
-                state_model,
-                agent_id=manager.id,
-            )
-            if manager_blocked_review_ids:
-                manager_inbox = [
-                    item
-                    for item in manager_inbox
-                    if not inbox_references_review_ids(
-                        item,
-                        manager_blocked_review_ids,
-                    )
-                ]
-                manager_reviews = [
-                    review
-                    for review in manager_reviews
-                    if review.id not in manager_blocked_review_ids
-                ]
-            manager_low_priority_inbox_ids = {
-                item.id for item in manager_inbox if item.priority == TeamInboxPriority.LOW
-            }
-            manager_blockers = blockers_due_for_agent(
-                state_model,
-                agent_id=manager.id,
-                now=self.effective_now,
-            )
-            manager_scope_blockers = blockers_assigned_to_agent(
-                state_model,
-                agent_id=manager.id,
-            )
-            manager_owned_review_ids = {review.id for review in manager_reviews}
-            manager_owned_inbox_ids = {item.id for item in manager_inbox}
-            manager_owned_action_ids = {
-                record.id
-                for record in state_model.action_records.values()
-                if record.agent_id == manager.id
-            }
-            manager_fallback_selection_summary = _manager_fallback_summary_payload(
-                state_model,
+            _ManagerFallbackCandidate(
+                planner=self,
+                state=state_model,
                 team=team,
-                manager=manager,
-                now=self.effective_now,
-                limit_rows=False,
-                excluded_review_request_ids=(
-                    set(manager_blocked_review_ids) | manager_owned_review_ids
-                ),
-                excluded_inbox_item_ids=manager_owned_inbox_ids,
-                excluded_task_ids=manager_active_task_ids,
-                excluded_action_record_ids=manager_owned_action_ids,
-            )
-            if not _manager_fallback_summary_has_actionable_work(
-                manager_fallback_selection_summary
-            ):
-                continue
-            filter_manager_work_lineage = (
-                manager_runtime.context_clearing_policy == AgentContextClearingPolicy.WORK_LINEAGE
-            )
-            candidate_lineage_ids = (
-                _manager_fallback_lineage_ids(
-                    state_model,
-                    manager_fallback_selection_summary,
-                )
-                if filter_manager_work_lineage
-                else [None]
-            )
-            selected_manager_work: (
-                tuple[
-                    str | None,
-                    list[Any],
-                    list[Any],
-                    list[Any],
-                    list[Any],
-                    list[Any],
-                    dict[str, Any],
-                    str,
-                    dict[str, str],
-                ]
-                | None
-            ) = None
-            for candidate_lineage_id in candidate_lineage_ids:
-                manager_lineage_excluded_task_ids = (
-                    {
-                        task.id
-                        for task in state_model.tasks.values()
-                        if work_lineage_id_for_record(state_model, task) != candidate_lineage_id
-                    }
-                    if filter_manager_work_lineage
-                    else set()
-                )
-                manager_lineage_excluded_review_ids = (
-                    {
-                        review.id
-                        for review in state_model.review_requests.values()
-                        if work_lineage_id_for_record(state_model, review) != candidate_lineage_id
-                    }
-                    if filter_manager_work_lineage
-                    else set()
-                )
-                manager_lineage_excluded_inbox_ids = (
-                    {
-                        item.id
-                        for item in state_model.inbox.values()
-                        if work_lineage_id_for_record(state_model, item) != candidate_lineage_id
-                    }
-                    if filter_manager_work_lineage
-                    else set()
-                )
-                manager_lineage_excluded_action_ids = (
-                    {
-                        record.id
-                        for record in state_model.action_records.values()
-                        if work_lineage_id_for_record(state_model, record) != candidate_lineage_id
-                    }
-                    if filter_manager_work_lineage
-                    else set()
-                )
+                teams_with_open_work=teams_with_open_work,
+                teams_with_lease=teams_with_lease,
+            ).lease()
 
-                def _same_manager_lineage(record: object) -> bool:
-                    return (
-                        not filter_manager_work_lineage
-                        or work_lineage_id_for_record(state_model, record) == candidate_lineage_id
-                    )
 
-                candidate_manager_tasks = [
-                    row for row in manager_tasks if _same_manager_lineage(row)
-                ]
-                candidate_manager_inbox = [
-                    row for row in manager_inbox if _same_manager_lineage(row)
-                ]
-                candidate_manager_reviews = [
-                    row for row in manager_reviews if _same_manager_lineage(row)
-                ]
-                candidate_manager_blockers = [
-                    row for row in manager_blockers if _same_manager_lineage(row)
-                ]
-                candidate_manager_scope_blockers = [
-                    row for row in manager_scope_blockers if _same_manager_lineage(row)
-                ]
-                candidate_manager_fallback_summary = _manager_fallback_summary_payload(
-                    state_model,
-                    team=team,
-                    manager=manager,
-                    now=self.effective_now,
-                    excluded_review_request_ids=(
-                        set(manager_blocked_review_ids) | manager_lineage_excluded_review_ids
-                    ),
-                    excluded_inbox_item_ids=manager_lineage_excluded_inbox_ids,
-                    excluded_task_ids=manager_lineage_excluded_task_ids,
-                    excluded_action_record_ids=manager_lineage_excluded_action_ids,
+@dataclass(frozen=True)
+class _ManagerFallbackWork:
+    lineage_id: str | None
+    tasks: list[AgentTask]
+    inbox: list[AgentInboxItem]
+    reviews: list[ReviewRequest]
+    blockers: list[TeamBlocker]
+    scope_blockers: list[TeamBlocker]
+    summary: dict[str, Any]
+    fingerprint: str
+    record_fingerprints: dict[str, str]
+
+
+class _ManagerFallbackCandidate:
+    """Select and reserve one manager's fallback work in the current planning attempt."""
+
+    manager: PersistentAgent
+    runtime: AgentRuntime
+    dispatch_id: str
+    tasks: list[AgentTask]
+    inbox: list[AgentInboxItem]
+    reviews: list[ReviewRequest]
+    blockers: list[TeamBlocker]
+    scope_blockers: list[TeamBlocker]
+    active_task_ids: set[str]
+    blocked_review_ids: set[str]
+    low_priority_inbox_ids: set[str]
+    owned_review_ids: set[str]
+    owned_inbox_ids: set[str]
+    owned_action_ids: set[str]
+    selection_summary: dict[str, Any]
+    filter_work_lineage: bool
+    work: _ManagerFallbackWork
+    routing_authorities: list[TeamDispatchReviewRoutingAuthority]
+    initial_release_decision_ids: list[str]
+    supervision_task_ids: list[str]
+    reservation_scope: AgentDispatchScope
+    scope: AgentDispatchScope
+    scoped_task_ids: list[str]
+    scoped_project_ids: list[str]
+    scoped_managed_repo_ids: list[str]
+    source_evidence_snapshot_ids: list[str]
+    has_prior_successful_wake: bool
+    dispatch: TeamDispatch
+
+    def __init__(
+        self,
+        *,
+        planner: _LeasePlanning,
+        state: TeamState,
+        team: Team,
+        teams_with_open_work: set[str],
+        teams_with_lease: set[str],
+    ) -> None:
+        self.planner = planner
+        self.state = state
+        self.team = team
+        self.teams_with_open_work = teams_with_open_work
+        self.teams_with_lease = teams_with_lease
+
+    def lease(self) -> None:
+        if not self._eligible():
+            return
+        self._load_owned_work()
+        if not self._select_work():
+            return
+        self._resolve_authorities()
+        self._build_scope()
+        self._reserve_dispatch()
+        self._update_runtime()
+        self._append_lease()
+
+    def _eligible(self) -> bool:
+        if (
+            self.team.archived
+            or self.team.id in self.planner.blocked_teams
+            or self.team.id not in self.teams_with_open_work
+        ):
+            return False
+        if self.planner.team_id is not None and self.team.id != self.planner.team_id:
+            return False
+        if self.team.id in self.teams_with_lease:
+            return False
+        self.manager = self.state.agents.get(self.team.manager_agent_id)
+        if (
+            self.manager is None
+            or self.manager.status != AgentStatus.ACTIVE
+            or (self.manager.id is None)
+        ):
+            return False
+        if self.planner.project_id is not None and not agent_has_project_assignment(
+            self.state,
+            self.manager.id,
+            self.planner.project_id,
+        ):
+            return False
+        if self.planner.agent_id is not None and self.manager.id != self.planner.agent_id:
+            return False
+        if self.planner.session_is_busy is not None and self.planner.session_is_busy(
+            self.manager.session_id
+        ):
+            return False
+        if (
+            self.manager.id in self.state.agent_runtimes
+            and self.state.agent_runtimes[self.manager.id].wake_leased_until
+            and _ensure_utc(self.state.agent_runtimes[self.manager.id].wake_leased_until)
+            > self.planner.effective_now
+        ):
+            return False
+        if _active_stand_downs_for_agent(self.state, self.manager.id):
+            return False
+
+        return True
+
+    def _load_owned_work(self) -> None:
+        self.runtime = self.state.agent_runtimes.setdefault(
+            self.manager.id,
+            AgentRuntime(agent_id=self.manager.id),
+        )
+        self.dispatch_id = f"team-dispatch-{uuid4().hex}"
+        self.tasks = actionable_dispatch_tasks(
+            self.state,
+            agent=self.manager,
+        )
+        self.active_task_ids = {
+            task.id for task in _active_tasks_for_agent(self.state, self.manager.id)
+        }
+        self.inbox = _pending_inbox_for_agent(
+            self.state,
+            self.manager.id,
+        )
+        self.reviews = actionable_dispatch_reviews(
+            _pending_reviews_for_agent(self.state, self.manager.id)
+        )
+        self.blocked_review_ids = mcp_capability_blocked_review_ids(
+            self.state,
+            agent_id=self.manager.id,
+        )
+        if self.blocked_review_ids:
+            self.inbox = [
+                item
+                for item in self.inbox
+                if not inbox_references_review_ids(
+                    item,
+                    self.blocked_review_ids,
                 )
-                candidate_trigger_summary = _manager_fallback_summary_payload(
-                    state_model,
-                    team=team,
-                    manager=manager,
-                    now=self.effective_now,
-                    limit_rows=False,
-                    excluded_review_request_ids=(
-                        set(manager_blocked_review_ids)
-                        | manager_lineage_excluded_review_ids
-                        | manager_owned_review_ids
-                    ),
-                    excluded_inbox_item_ids=(
-                        manager_lineage_excluded_inbox_ids | manager_owned_inbox_ids
-                    ),
-                    excluded_task_ids=(manager_lineage_excluded_task_ids | manager_active_task_ids),
-                    excluded_action_record_ids=(
-                        manager_lineage_excluded_action_ids | manager_owned_action_ids
-                    ),
-                )
-                if not _manager_fallback_summary_has_actionable_work(candidate_trigger_summary):
-                    continue
-                candidate_work_fingerprint = manager_fallback_work_fingerprint(
-                    candidate_trigger_summary,
-                    state=state_model,
-                )
-                candidate_work_record_fingerprints = manager_fallback_work_record_fingerprints(
-                    candidate_trigger_summary,
-                    state=state_model,
-                )
-                latest_manager_attempt = _latest_delivered_wake_work_attempt_for_agent(
-                    state_model,
-                    agent_id=manager.id,
-                    cause_kind="manager_fallback",
-                    work_lineage_id=candidate_lineage_id,
-                    filter_work_lineage=filter_manager_work_lineage,
-                )
-                candidate_work_changed = (
-                    latest_manager_attempt is None
-                    or _wake_record_snapshot_has_additions_or_updates(
-                        current=candidate_work_record_fingerprints,
-                        previous=(latest_manager_attempt.wake_work_record_fingerprints),
-                        current_aggregate=candidate_work_fingerprint,
-                        previous_aggregate=(latest_manager_attempt.wake_work_fingerprint),
-                    )
-                )
-                if (
-                    self.max_no_progress_count >= 0
-                    and manager_runtime.no_progress_count >= self.max_no_progress_count
-                    and not candidate_work_changed
-                ):
-                    continue
-                due_by_time = (
-                    manager_runtime.next_wake_at is None
-                    or _ensure_utc(manager_runtime.next_wake_at) <= self.effective_now
-                )
-                if not due_by_time and not candidate_work_changed:
-                    continue
-                selected_manager_work = (
-                    candidate_lineage_id,
-                    candidate_manager_tasks,
-                    candidate_manager_inbox,
-                    candidate_manager_reviews,
-                    candidate_manager_blockers,
-                    candidate_manager_scope_blockers,
-                    candidate_manager_fallback_summary,
-                    candidate_work_fingerprint,
-                    candidate_work_record_fingerprints,
-                )
-                break
-            if selected_manager_work is None:
-                continue
-            (
-                manager_dispatch_work_lineage_id,
-                manager_tasks,
-                manager_inbox,
-                manager_reviews,
-                manager_blockers,
-                manager_scope_blockers,
-                manager_fallback_summary,
-                manager_work_fingerprint,
-                manager_work_record_fingerprints,
-            ) = selected_manager_work
-            manager_fallback_routing_authorities = _manager_fallback_review_routing_authorities(
-                state_model,
-                summary=manager_fallback_summary,
-            )
-            initial_release_decision_ids = _manager_fallback_initial_release_decision_ids(
-                manager_fallback_summary
-            )
-            manager_fallback_supervision_task_ids = _manager_fallback_supervision_task_ids(
-                state_model,
-                manager=manager,
-                summary=manager_fallback_summary,
-            )
-            manager_reservation_scope = build_agent_dispatch_scope(
-                state_model,
-                agent=manager,
-                tasks=manager_tasks,
-                blockers=manager_blockers,
-                reviews=manager_reviews,
-                inbox_items=manager_inbox,
-            )
-            manager_scope = build_agent_dispatch_scope(
-                state_model,
-                agent=manager,
-                tasks=manager_tasks,
-                blockers=manager_scope_blockers,
-                reviews=manager_reviews,
-                inbox_items=manager_inbox,
-            )
-            initial_release_project_ids = {
-                task.project_id
-                for deliverable_id in initial_release_decision_ids
-                if (deliverable := state_model.deliverables.get(deliverable_id)) is not None
-                if (task := state_model.tasks.get(deliverable.task_id)) is not None
-            }
-            scoped_task_ids = sorted(
-                set(manager_scope.task_ids) | set(manager_fallback_supervision_task_ids)
-            )
-            scoped_project_ids = sorted(
-                set(manager_scope.project_ids) | initial_release_project_ids
-            )
-            scoped_managed_repo_ids = sorted(
-                {
-                    project.git.managed_repo_id
-                    for project_id in scoped_project_ids
-                    if (project := state_model.projects.get(project_id)) is not None
-                    and project.git is not None
-                }
-            )
-            manager_source_evidence_snapshot_ids = (
-                external_source_evidence_snapshot_ids_for_dispatch(
-                    state_model,
-                    agent=manager,
-                    task_ids={
-                        *scoped_task_ids,
-                        *(
-                            state_model.deliverables[deliverable_id].task_id
-                            for deliverable_id in initial_release_decision_ids
-                            if deliverable_id in state_model.deliverables
-                        ),
-                    },
-                    project_ids=scoped_project_ids,
-                    include_team_cases=True,
-                )
-            )
-            has_prior_successful_wake = _has_prior_successful_ordinary_wake(
-                state_model,
-                manager,
-            )
-            durable_dispatch = TeamDispatch(
-                id=dispatch_id,
-                agent_id=manager.id,
-                session_id=manager.session_id,
-                cause_kind="manager_fallback",
-                work_lineage_id=manager_dispatch_work_lineage_id,
-                status=TeamDispatchStatus.PREPARING,
-                review_routing_authorities=manager_fallback_routing_authorities,
-                initial_release_decision_deliverable_ids=(initial_release_decision_ids),
-                project_ids=scoped_project_ids,
-                managed_repo_ids=scoped_managed_repo_ids,
-                created_at=self.effective_now,
-                preparation_expires_at=(
-                    self.effective_now
-                    + timedelta(seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS)
-                    if self.defer_activation
-                    else None
-                ),
-                requested_lease_seconds=max(1, int(self.lease_seconds)),
-                task_ids=scoped_task_ids,
-                blocker_ids=list(manager_scope.blocker_ids),
-                review_request_ids=list(manager_scope.review_request_ids),
-                inbox_item_ids=list(manager_scope.inbox_item_ids),
-                source_evidence_snapshot_ids=list(manager_source_evidence_snapshot_ids),
-                mcp_capability_receipt=_new_review_mcp_capability_receipt(
-                    state_model,
-                    agent_id=manager.id,
-                    review_request_ids=manager_scope.review_request_ids,
-                ),
-                wake_work_fingerprint=manager_work_fingerprint,
-                wake_work_record_fingerprints=manager_work_record_fingerprints,
-            )
-            state_model.dispatches[dispatch_id] = durable_dispatch
-            manager_runtime.active_dispatch_id = dispatch_id
-            prepare_case_context(self.service._repository, state_model, durable_dispatch)
-            manager_runtime.wake_reason = "manager_fallback"
-            manager_runtime.last_wake_at = self.effective_now
-            manager_runtime.wake_leased_until = (
-                None
-                if self.defer_activation
-                else self.effective_now + timedelta(seconds=self.lease_seconds)
-            )
-            manager_runtime.next_wake_at = self.effective_now + timedelta(
-                seconds=self.wake_interval_seconds
-            )
-            manager_runtime.updated_at = self.effective_now
-            if (
-                manager_runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
-                and not manager_runtime.context_rotation_pending
-            ):
-                _mark_context_rotation_pending(
-                    state_model,
-                    agent=manager,
-                    runtime=manager_runtime,
-                    reason="every_wake",
-                    requested_by=None,
-                    requested_at=self.effective_now,
-                    request_note=None,
-                )
-            if (
-                not manager_low_priority_inbox_ids
-                or {item.id for item in manager_inbox if item.priority == TeamInboxPriority.LOW}
-                == manager_low_priority_inbox_ids
-            ):
-                _clear_low_priority_batch(manager_runtime)
-            assign_blockers_to_dispatch(
-                state_model,
-                agent_id=manager.id,
-                dispatch_id=dispatch_id,
-                blocker_ids=manager_reservation_scope.blocker_ids,
-                now=self.effective_now,
-            )
-            scoped_blockers = [
-                state_model.blockers[blocker_id].model_dump(mode="json")
-                for blocker_id in durable_dispatch.blocker_ids
             ]
-            dispatch_assessments = TaskAssessmentService(state_model)
-            manager_payload = _agent_payload(state_model, manager)
-            role_description_fingerprint = agent_role_description_fingerprint(manager_payload)
-            durable_dispatch.role_description_fingerprint = role_description_fingerprint
-            teams_with_lease.add(team.id)
-            self.leases.append(
-                {
-                    "agent": manager_payload,
-                    "supervisory_overview": TeamReadService(
-                        state=state_model,
-                        actor=manager,
-                    ).supervisory_overview(),
-                    "runtime": manager_runtime.model_dump(mode="json"),
-                    "role_description_changed": (
-                        manager_runtime.last_delivered_role_description_fingerprint
-                        != role_description_fingerprint
-                    ),
-                    "role_description_fingerprint": role_description_fingerprint,
-                    "dispatch_id": dispatch_id,
-                    "has_prior_successful_wake": has_prior_successful_wake,
-                    "reason": "manager_fallback",
-                    "dispatch": durable_dispatch.model_dump(mode="json"),
-                    "tasks": [
-                        task_payload_with_assessment(
-                            state_model,
-                            task,
-                            assessment_service=dispatch_assessments,
-                        )
-                        for task in manager_tasks
-                    ],
-                    **_dispatch_case_payloads(
-                        state_model,
-                        agent=manager,
-                        dispatch=durable_dispatch,
-                    ),
-                    "external_source_evidence_snapshots": [
-                        external_source_evidence_snapshot_payload(
-                            state_model.external_source_evidence_snapshots[snapshot_id],
-                            now=self.effective_now,
-                        )
-                        for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
-                        if snapshot_id in state_model.external_source_evidence_snapshots
-                    ],
-                    "case_contexts": dispatch_case_contexts(state_model, dispatch_id),
-                    "case_contexts_delta": dispatch_case_contexts(
-                        state_model, dispatch_id, delta=True
-                    ),
-                    "inbox": [item.model_dump(mode="json") for item in manager_inbox],
-                    "blockers": scoped_blockers,
-                    "reviews": [review.model_dump(mode="json") for review in manager_reviews],
-                    "release_packages": _release_package_payloads_for_dispatch(
-                        state_model,
-                        manager,
-                        work_lineage_id=durable_dispatch.work_lineage_id,
-                        filter_work_lineage=filter_manager_work_lineage,
-                    ),
-                    "runtime_attention": _runtime_attention_payloads_for_dispatch(
-                        state_model,
-                        manager,
-                        work_lineage_id=durable_dispatch.work_lineage_id,
-                        filter_work_lineage=filter_manager_work_lineage,
-                    ),
-                    "recent_action_feedback": _action_feedback_for_dispatch(
-                        state_model,
-                        agent_id=manager.id,
-                        work_lineage_id=durable_dispatch.work_lineage_id,
-                        filter_work_lineage=filter_manager_work_lineage,
-                    ),
-                    "work_lineage_chat_sources": (
-                        [
-                            ref.model_dump(mode="json")
-                            for ref in lineage.chat_source_refs
-                            if (
-                                (conversation := state_model.conversations.get(ref.conversation_id))
-                                is not None
-                                and conversation.agent_id == manager.id
-                            )
-                        ]
-                        if durable_dispatch.work_lineage_id is not None
-                        and (
-                            lineage := state_model.work_lineages.get(
-                                durable_dispatch.work_lineage_id
-                            )
-                        )
-                        is not None
-                        else []
-                    ),
-                    "manager_fallback_summary": manager_fallback_summary,
-                    "operator_chat_participants": _operator_chat_participant_payloads(
-                        state_model,
-                        agent_id=manager.id,
-                    ),
-                    "superior_agent_id": manager.reports_to_agent_id,
-                    "subordinate_agent_ids": list(manager.subordinate_agent_ids),
-                    "subordinates": _subordinate_agent_payloads(state_model, manager),
-                }
+            self.reviews = [
+                review for review in self.reviews if review.id not in self.blocked_review_ids
+            ]
+        self.low_priority_inbox_ids = {
+            item.id for item in self.inbox if item.priority == TeamInboxPriority.LOW
+        }
+        self.blockers = blockers_due_for_agent(
+            self.state,
+            agent_id=self.manager.id,
+            now=self.planner.effective_now,
+        )
+        self.scope_blockers = blockers_assigned_to_agent(
+            self.state,
+            agent_id=self.manager.id,
+        )
+        self.owned_review_ids = {review.id for review in self.reviews}
+        self.owned_inbox_ids = {item.id for item in self.inbox}
+        self.owned_action_ids = {
+            record.id
+            for record in self.state.action_records.values()
+            if record.agent_id == self.manager.id
+        }
+        self.selection_summary = _manager_fallback_summary_payload(
+            self.state,
+            team=self.team,
+            manager=self.manager,
+            now=self.planner.effective_now,
+            limit_rows=False,
+            excluded_review_request_ids=(set(self.blocked_review_ids) | self.owned_review_ids),
+            excluded_inbox_item_ids=self.owned_inbox_ids,
+            excluded_task_ids=self.active_task_ids,
+            excluded_action_record_ids=self.owned_action_ids,
+        )
+
+    def _select_work(self) -> bool:
+        if not _manager_fallback_summary_has_actionable_work(self.selection_summary):
+            return False
+        self.filter_work_lineage = (
+            self.runtime.context_clearing_policy == AgentContextClearingPolicy.WORK_LINEAGE
+        )
+        candidate_lineage_ids = (
+            _manager_fallback_lineage_ids(
+                self.state,
+                self.selection_summary,
             )
+            if self.filter_work_lineage
+            else [None]
+        )
+        for lineage_id in candidate_lineage_ids:
+            selected_work = _ManagerFallbackLineageCandidate(
+                candidate=self,
+                lineage_id=lineage_id,
+            ).select()
+            if selected_work is not None:
+                self.work = selected_work
+                return True
+        return False
+
+    def _resolve_authorities(self) -> None:
+        self.routing_authorities = _manager_fallback_review_routing_authorities(
+            self.state,
+            summary=self.work.summary,
+        )
+        self.initial_release_decision_ids = _manager_fallback_initial_release_decision_ids(
+            self.work.summary
+        )
+        self.supervision_task_ids = _manager_fallback_supervision_task_ids(
+            self.state,
+            manager=self.manager,
+            summary=self.work.summary,
+        )
+
+    def _build_scope(self) -> None:
+        self.reservation_scope = build_agent_dispatch_scope(
+            self.state,
+            agent=self.manager,
+            tasks=self.work.tasks,
+            blockers=self.work.blockers,
+            reviews=self.work.reviews,
+            inbox_items=self.work.inbox,
+        )
+        self.scope = build_agent_dispatch_scope(
+            self.state,
+            agent=self.manager,
+            tasks=self.work.tasks,
+            blockers=self.work.scope_blockers,
+            reviews=self.work.reviews,
+            inbox_items=self.work.inbox,
+        )
+        initial_release_project_ids = {
+            task.project_id
+            for deliverable_id in self.initial_release_decision_ids
+            if (deliverable := self.state.deliverables.get(deliverable_id)) is not None
+            if (task := self.state.tasks.get(deliverable.task_id)) is not None
+        }
+        self.scoped_task_ids = sorted(set(self.scope.task_ids) | set(self.supervision_task_ids))
+        self.scoped_project_ids = sorted(set(self.scope.project_ids) | initial_release_project_ids)
+        self.scoped_managed_repo_ids = sorted(
+            {
+                project.git.managed_repo_id
+                for project_id in self.scoped_project_ids
+                if (project := self.state.projects.get(project_id)) is not None
+                and project.git is not None
+            }
+        )
+        self.source_evidence_snapshot_ids = external_source_evidence_snapshot_ids_for_dispatch(
+            self.state,
+            agent=self.manager,
+            task_ids={
+                *self.scoped_task_ids,
+                *(
+                    self.state.deliverables[deliverable_id].task_id
+                    for deliverable_id in self.initial_release_decision_ids
+                    if deliverable_id in self.state.deliverables
+                ),
+            },
+            project_ids=self.scoped_project_ids,
+            include_team_cases=True,
+        )
+
+    def _reserve_dispatch(self) -> None:
+        self.has_prior_successful_wake = _has_prior_successful_ordinary_wake(
+            self.state,
+            self.manager,
+        )
+        self.dispatch = TeamDispatch(
+            id=self.dispatch_id,
+            agent_id=self.manager.id,
+            session_id=self.manager.session_id,
+            cause_kind="manager_fallback",
+            work_lineage_id=self.work.lineage_id,
+            status=TeamDispatchStatus.PREPARING,
+            review_routing_authorities=self.routing_authorities,
+            initial_release_decision_deliverable_ids=(self.initial_release_decision_ids),
+            project_ids=self.scoped_project_ids,
+            managed_repo_ids=self.scoped_managed_repo_ids,
+            created_at=self.planner.effective_now,
+            preparation_expires_at=(
+                self.planner.effective_now
+                + timedelta(seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS)
+                if self.planner.defer_activation
+                else None
+            ),
+            requested_lease_seconds=max(1, int(self.planner.lease_seconds)),
+            task_ids=self.scoped_task_ids,
+            blocker_ids=list(self.scope.blocker_ids),
+            review_request_ids=list(self.scope.review_request_ids),
+            inbox_item_ids=list(self.scope.inbox_item_ids),
+            source_evidence_snapshot_ids=list(self.source_evidence_snapshot_ids),
+            mcp_capability_receipt=_new_review_mcp_capability_receipt(
+                self.state,
+                agent_id=self.manager.id,
+                review_request_ids=self.scope.review_request_ids,
+            ),
+            wake_work_fingerprint=self.work.fingerprint,
+            wake_work_record_fingerprints=self.work.record_fingerprints,
+        )
+        self.state.dispatches[self.dispatch_id] = self.dispatch
+        self.runtime.active_dispatch_id = self.dispatch_id
+        prepare_case_context(self.planner.service._repository, self.state, self.dispatch)
+
+    def _update_runtime(self) -> None:
+        self.runtime.wake_reason = "manager_fallback"
+        self.runtime.last_wake_at = self.planner.effective_now
+        self.runtime.wake_leased_until = (
+            None
+            if self.planner.defer_activation
+            else self.planner.effective_now + timedelta(seconds=self.planner.lease_seconds)
+        )
+        self.runtime.next_wake_at = self.planner.effective_now + timedelta(
+            seconds=self.planner.wake_interval_seconds
+        )
+        self.runtime.updated_at = self.planner.effective_now
+        if (
+            self.runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
+            and not self.runtime.context_rotation_pending
+        ):
+            _mark_context_rotation_pending(
+                self.state,
+                agent=self.manager,
+                runtime=self.runtime,
+                reason="every_wake",
+                requested_by=None,
+                requested_at=self.planner.effective_now,
+                request_note=None,
+            )
+        if (
+            not self.low_priority_inbox_ids
+            or {item.id for item in self.work.inbox if item.priority == TeamInboxPriority.LOW}
+            == self.low_priority_inbox_ids
+        ):
+            _clear_low_priority_batch(self.runtime)
+        assign_blockers_to_dispatch(
+            self.state,
+            agent_id=self.manager.id,
+            dispatch_id=self.dispatch_id,
+            blocker_ids=self.reservation_scope.blocker_ids,
+            now=self.planner.effective_now,
+        )
+
+    def _append_lease(self) -> None:
+        scoped_blockers = [
+            self.state.blockers[blocker_id].model_dump(mode="json")
+            for blocker_id in self.dispatch.blocker_ids
+        ]
+        dispatch_assessments = TaskAssessmentService(self.state)
+        manager_payload = _agent_payload(self.state, self.manager)
+        role_description_fingerprint = agent_role_description_fingerprint(manager_payload)
+        self.dispatch.role_description_fingerprint = role_description_fingerprint
+        self.teams_with_lease.add(self.team.id)
+        self.planner.leases.append(
+            {
+                "agent": manager_payload,
+                "supervisory_overview": TeamReadService(
+                    state=self.state,
+                    actor=self.manager,
+                ).supervisory_overview(),
+                "runtime": self.runtime.model_dump(mode="json"),
+                "role_description_changed": (
+                    self.runtime.last_delivered_role_description_fingerprint
+                    != role_description_fingerprint
+                ),
+                "role_description_fingerprint": role_description_fingerprint,
+                "dispatch_id": self.dispatch_id,
+                "has_prior_successful_wake": self.has_prior_successful_wake,
+                "reason": "manager_fallback",
+                "dispatch": self.dispatch.model_dump(mode="json"),
+                "tasks": [
+                    task_payload_with_assessment(
+                        self.state,
+                        task,
+                        assessment_service=dispatch_assessments,
+                    )
+                    for task in self.work.tasks
+                ],
+                **_dispatch_case_payloads(
+                    self.state,
+                    agent=self.manager,
+                    dispatch=self.dispatch,
+                ),
+                "external_source_evidence_snapshots": [
+                    external_source_evidence_snapshot_payload(
+                        self.state.external_source_evidence_snapshots[snapshot_id],
+                        now=self.planner.effective_now,
+                    )
+                    for snapshot_id in self.dispatch.source_evidence_snapshot_ids
+                    if snapshot_id in self.state.external_source_evidence_snapshots
+                ],
+                "case_contexts": dispatch_case_contexts(self.state, self.dispatch_id),
+                "case_contexts_delta": dispatch_case_contexts(
+                    self.state, self.dispatch_id, delta=True
+                ),
+                "inbox": [item.model_dump(mode="json") for item in self.work.inbox],
+                "blockers": scoped_blockers,
+                "reviews": [review.model_dump(mode="json") for review in self.work.reviews],
+                "release_packages": _release_package_payloads_for_dispatch(
+                    self.state,
+                    self.manager,
+                    work_lineage_id=self.dispatch.work_lineage_id,
+                    filter_work_lineage=self.filter_work_lineage,
+                ),
+                "runtime_attention": _runtime_attention_payloads_for_dispatch(
+                    self.state,
+                    self.manager,
+                    work_lineage_id=self.dispatch.work_lineage_id,
+                    filter_work_lineage=self.filter_work_lineage,
+                ),
+                "recent_action_feedback": _action_feedback_for_dispatch(
+                    self.state,
+                    agent_id=self.manager.id,
+                    work_lineage_id=self.dispatch.work_lineage_id,
+                    filter_work_lineage=self.filter_work_lineage,
+                ),
+                "work_lineage_chat_sources": (
+                    [
+                        ref.model_dump(mode="json")
+                        for ref in lineage.chat_source_refs
+                        if (
+                            (conversation := self.state.conversations.get(ref.conversation_id))
+                            is not None
+                            and conversation.agent_id == self.manager.id
+                        )
+                    ]
+                    if self.dispatch.work_lineage_id is not None
+                    and (lineage := self.state.work_lineages.get(self.dispatch.work_lineage_id))
+                    is not None
+                    else []
+                ),
+                "manager_fallback_summary": self.work.summary,
+                "operator_chat_participants": _operator_chat_participant_payloads(
+                    self.state,
+                    agent_id=self.manager.id,
+                ),
+                "superior_agent_id": self.manager.reports_to_agent_id,
+                "subordinate_agent_ids": list(self.manager.subordinate_agent_ids),
+                "subordinates": _subordinate_agent_payloads(self.state, self.manager),
+            }
+        )
+
+
+class _ManagerFallbackLineageCandidate:
+    """Keep each lineage's exclusions and fingerprints local to its evaluation."""
+
+    excluded_task_ids: set[str]
+    excluded_review_ids: set[str]
+    excluded_inbox_ids: set[str]
+    excluded_action_ids: set[str]
+    tasks: list[AgentTask]
+    inbox: list[AgentInboxItem]
+    reviews: list[ReviewRequest]
+    blockers: list[TeamBlocker]
+    scope_blockers: list[TeamBlocker]
+    summary: dict[str, Any]
+    fingerprint: str
+    record_fingerprints: dict[str, str]
+    work_changed: bool
+
+    def __init__(
+        self,
+        *,
+        candidate: _ManagerFallbackCandidate,
+        lineage_id: str | None,
+    ) -> None:
+        self.candidate = candidate
+        self.lineage_id = lineage_id
+
+    def select(self) -> _ManagerFallbackWork | None:
+        self._exclude_other_lineages()
+        self._collect_work()
+        if not self._prepare_trigger():
+            return None
+        if not self._can_wake():
+            return None
+        return _ManagerFallbackWork(
+            lineage_id=self.lineage_id,
+            tasks=self.tasks,
+            inbox=self.inbox,
+            reviews=self.reviews,
+            blockers=self.blockers,
+            scope_blockers=self.scope_blockers,
+            summary=self.summary,
+            fingerprint=self.fingerprint,
+            record_fingerprints=self.record_fingerprints,
+        )
+
+    def _exclude_other_lineages(self) -> None:
+        self.excluded_task_ids = (
+            {
+                task.id
+                for task in self.candidate.state.tasks.values()
+                if work_lineage_id_for_record(self.candidate.state, task) != self.lineage_id
+            }
+            if self.candidate.filter_work_lineage
+            else set()
+        )
+        self.excluded_review_ids = (
+            {
+                review.id
+                for review in self.candidate.state.review_requests.values()
+                if work_lineage_id_for_record(self.candidate.state, review) != self.lineage_id
+            }
+            if self.candidate.filter_work_lineage
+            else set()
+        )
+        self.excluded_inbox_ids = (
+            {
+                item.id
+                for item in self.candidate.state.inbox.values()
+                if work_lineage_id_for_record(self.candidate.state, item) != self.lineage_id
+            }
+            if self.candidate.filter_work_lineage
+            else set()
+        )
+        self.excluded_action_ids = (
+            {
+                record.id
+                for record in self.candidate.state.action_records.values()
+                if work_lineage_id_for_record(self.candidate.state, record) != self.lineage_id
+            }
+            if self.candidate.filter_work_lineage
+            else set()
+        )
+
+    def _collect_work(self) -> None:
+        self.tasks = [row for row in self.candidate.tasks if self._same_lineage(row)]
+        self.inbox = [row for row in self.candidate.inbox if self._same_lineage(row)]
+        self.reviews = [row for row in self.candidate.reviews if self._same_lineage(row)]
+        self.blockers = [row for row in self.candidate.blockers if self._same_lineage(row)]
+        self.scope_blockers = [
+            row for row in self.candidate.scope_blockers if self._same_lineage(row)
+        ]
+        self.summary = _manager_fallback_summary_payload(
+            self.candidate.state,
+            team=self.candidate.team,
+            manager=self.candidate.manager,
+            now=self.candidate.planner.effective_now,
+            excluded_review_request_ids=(
+                set(self.candidate.blocked_review_ids) | self.excluded_review_ids
+            ),
+            excluded_inbox_item_ids=self.excluded_inbox_ids,
+            excluded_task_ids=self.excluded_task_ids,
+            excluded_action_record_ids=self.excluded_action_ids,
+        )
+
+    def _prepare_trigger(self) -> bool:
+        # Fingerprint all fallback work, including rows outside the displayed summary.
+        candidate_trigger_summary = _manager_fallback_summary_payload(
+            self.candidate.state,
+            team=self.candidate.team,
+            manager=self.candidate.manager,
+            now=self.candidate.planner.effective_now,
+            limit_rows=False,
+            excluded_review_request_ids=(
+                set(self.candidate.blocked_review_ids)
+                | self.excluded_review_ids
+                | self.candidate.owned_review_ids
+            ),
+            excluded_inbox_item_ids=(self.excluded_inbox_ids | self.candidate.owned_inbox_ids),
+            excluded_task_ids=(self.excluded_task_ids | self.candidate.active_task_ids),
+            excluded_action_record_ids=(self.excluded_action_ids | self.candidate.owned_action_ids),
+        )
+        if not _manager_fallback_summary_has_actionable_work(candidate_trigger_summary):
+            return False
+        self.fingerprint = manager_fallback_work_fingerprint(
+            candidate_trigger_summary,
+            state=self.candidate.state,
+        )
+        self.record_fingerprints = manager_fallback_work_record_fingerprints(
+            candidate_trigger_summary,
+            state=self.candidate.state,
+        )
+        latest_manager_attempt = _latest_delivered_wake_work_attempt_for_agent(
+            self.candidate.state,
+            agent_id=self.candidate.manager.id,
+            cause_kind="manager_fallback",
+            work_lineage_id=self.lineage_id,
+            filter_work_lineage=self.candidate.filter_work_lineage,
+        )
+        self.work_changed = (
+            latest_manager_attempt is None
+            or _wake_record_snapshot_has_additions_or_updates(
+                current=self.record_fingerprints,
+                previous=(latest_manager_attempt.wake_work_record_fingerprints),
+                current_aggregate=self.fingerprint,
+                previous_aggregate=(latest_manager_attempt.wake_work_fingerprint),
+            )
+        )
+
+        return True
+
+    def _can_wake(self) -> bool:
+        if (
+            self.candidate.planner.max_no_progress_count >= 0
+            and self.candidate.runtime.no_progress_count
+            >= self.candidate.planner.max_no_progress_count
+            and not self.work_changed
+        ):
+            return False
+        due_by_time = (
+            self.candidate.runtime.next_wake_at is None
+            or _ensure_utc(self.candidate.runtime.next_wake_at)
+            <= self.candidate.planner.effective_now
+        )
+        if not due_by_time and not self.work_changed:
+            return False
+
+        return True
+
+    def _same_lineage(self, record: object) -> bool:
+        return (
+            not self.candidate.filter_work_lineage
+            or work_lineage_id_for_record(self.candidate.state, record) == self.lineage_id
+        )
 
 
 class _OrdinaryLeaseCandidate:
