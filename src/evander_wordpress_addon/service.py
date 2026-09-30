@@ -165,6 +165,20 @@ class Service:
             "resolution",
         }
         value = {key: item for key, item in change.items() if key in allowed}
+        resources = (change.get("cms_result") or {}).get("resources", {})
+        value["resources"] = (
+            {
+                key: {
+                    field: row[field]
+                    for field in ("resolved_key", "version")
+                    if isinstance(row.get(field), str)
+                }
+                for key, row in resources.items()
+                if isinstance(row, dict)
+            }
+            if isinstance(resources, dict)
+            else {}
+        )
         for field in ("release", "recovery"):
             if field in value:
 

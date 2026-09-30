@@ -156,8 +156,12 @@ class Helper:
                     raise ValueError("immutable release already exists with different content")
             else:
                 os.rename(temporary, release)
-                release.chmod(0o755)
-                fsync(release.parent)
+            # Artifact directories must be traversable by the web runtime even
+            # under a private SSH umask, including previously retained releases.
+            for directory in [release, *(path for path in release.rglob("*") if path.is_dir())]:
+                directory.chmod(0o755)
+                fsync(directory)
+            fsync(release.parent)
             return version
         finally:
             if temporary.exists():

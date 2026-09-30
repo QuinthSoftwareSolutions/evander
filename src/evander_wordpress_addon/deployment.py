@@ -207,7 +207,11 @@ class Deployments:
         if len(source) > 50 * 1024**2:
             raise WordPressError("Source archive exceeds the deployment limit")
         builder_id = site.source.build_connector_id or site.deployment.connector_id
-        builder = await self.pipeline(builder_id)
+        builder = (
+            adapter
+            if isinstance(site.deployment, Pipeline) and builder_id == site.deployment.connector_id
+            else await self.pipeline(builder_id)
+        )
         built = await builder.call(
             "prepare",
             {

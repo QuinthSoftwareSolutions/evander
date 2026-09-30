@@ -227,6 +227,51 @@ def test_real_wp_protocol_atomic_apply_replay_and_undo_preserve_other_record(wor
     assert call(client, "probe", {"change_id": "wp_" + uuid4().hex}).json()["restore_verified"]
 
 
+def test_created_post_receipt_exposes_assigned_key_for_subsequent_edit(wordpress):
+    from evander_wordpress_addon.service import Service
+
+    client, _, _ = wordpress
+    symbolic = "post:new-" + uuid4().hex
+    creation, snapshot = prepare(client, {symbolic: {"post_title": "Created page"}})
+    response = call(client, "apply", {"change_id": creation, "fence": 100})
+    assert response.status_code == 200, response.text
+    cms_result = response.json()
+    cms_result["browser_token"] = "private-browser-state"
+    cms_result["resources"][symbolic]["before"] = {"post_content": "private-recovery-data"}
+    receipt = Service.receipt(
+        {
+            "change_id": creation,
+            "state": "published",
+            "cms_result": cms_result,
+            "snapshot": snapshot,
+        }
+    )
+    resource = receipt["resources"][symbolic]
+    assert set(resource) == {"resolved_key", "version"}
+    key = resource["resolved_key"]
+    assert key.startswith("post:") and key.split(":")[1].isdigit()
+    created = inspect(client, key)
+    assert created["value"]["post_title"] == "Created page"
+    assert created["version"] == resource["version"]
+    assert "cms_result" not in receipt and "snapshot" not in receipt
+    assert "private-browser-state" not in json.dumps(receipt)
+    assert "private-recovery-data" not in json.dumps(receipt)
+    edit, original = prepare(client, {key: {"post_title": "Edited created page"}})
+    assert call(client, "apply", {"change_id": edit, "fence": 100}).status_code == 200
+    assert inspect(client, key)["value"]["post_title"] == "Edited created page"
+    assert (
+        call(client, "restore", {"change_id": edit, "fence": 100, "snapshot": original}).status_code
+        == 200
+    )
+    assert (
+        call(
+            client, "restore", {"change_id": creation, "fence": 100, "snapshot": snapshot}
+        ).status_code
+        == 200
+    )
+    assert inspect(client, key)["value"] is None
+
+
 def test_concurrent_compare_and_swap_allows_one_writer_and_refuses_stale_undo(wordpress):
     client, data, wp = wordpress
     key = "post:" + str(data["post"])

@@ -1632,6 +1632,62 @@ def test_ssh_helper_switches_and_restores_without_running_php(hosting):
     )
 
 
+@pytest.mark.parametrize("retained", [False, True])
+def test_ssh_helper_publishes_traversable_directories_under_private_umask(hosting, retained):
+    import stat
+
+    helper, root = hosting
+    archive = archive_bytes(
+        {
+            "index.php": "<?php echo 'After';",
+            "inc/bootstrap.php": "<?php echo 'Included';",
+            "assets/css/site.css": "body { color: navy; }",
+            "images/icons/empty/": "",
+        }
+    )
+    payload = {
+        "protocol_version": 1,
+        "component": "theme",
+        "operation_id": "private-umask",
+        "fence": 1,
+        "artifact_sha256": sha256(archive).hexdigest(),
+        "artifact_archive": base64.b64encode(archive).decode(),
+    }
+    script = """import json, os, sys
+from evander_wordpress_addon.ssh_helper import Helper
+config, payload = json.load(sys.stdin)
+os.umask(0o077)
+helper = Helper(config)
+prepared = helper.execute({**payload, 'action': 'prepare'})
+print(json.dumps(helper.execute({**payload, 'action': 'deploy',
+                                'expected_release': prepared['expected_release']})))
+"""
+
+    def deploy():
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            input=json.dumps([helper.config, payload]),
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        assert json.loads(result.stdout)["state"] == "deployed"
+
+    deploy()
+    release = (root / "current").resolve()
+    if retained:
+        # Reusing an artifact created by an older helper must repair its modes too.
+        for path in [release, *(row for row in release.rglob("*") if row.is_dir())]:
+            path.chmod(0o700)
+        payload.update(operation_id="retained-umask", fence=2)
+        deploy()
+    for path in [release, *release.rglob("*")]:
+        assert stat.S_IMODE(path.stat().st_mode) == (0o755 if path.is_dir() else 0o644)
+    assert stat.S_IMODE((root / "state").stat().st_mode) == 0o700
+    assert (root / "current/assets/css/site.css").read_text() == "body { color: navy; }"
+
+
 def test_ssh_helper_can_undo_a_release_whose_activation_fails(hosting):
     helper, root = hosting
     activation = root / "activate.py"
@@ -1817,6 +1873,9 @@ def test_admin_settings_and_restore_enforce_directory_permissions_and_server_own
         "expiry_applied_reply",
         "expiry_source_only",
         "expiry_unexpired_control",
+        "custom_prefix_hosted",
+        "custom_prefix_explicit_hosted",
+        "custom_prefix_dedicated_builder",
     ],
 )
 def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
@@ -1826,7 +1885,11 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
 
     helper, root = hosting
     expiry_scenario = scenario.startswith("expiry_")
-    candidate = "<?php echo 'After';" if expiry_scenario else "<?php missing_function();"
+    prefix_scenario = scenario.startswith("custom_prefix_")
+    prefix = "/design-releases/v2" if prefix_scenario else "/evander-releases/v1"
+    candidate = (
+        "<?php echo 'After';" if expiry_scenario or prefix_scenario else "<?php missing_function();"
+    )
     clock = [time.time()]
     if expiry_scenario:
         monkeypatch.setattr(time, "time", lambda: clock[0])
@@ -1860,8 +1923,15 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
             "managed_repo_id": repo["managed_repo_id"],
             "component": "theme",
             "required_checks": ["php-lint"],
+            "build_connector_id": (
+                "builder"
+                if scenario == "custom_prefix_dedicated_builder"
+                else "hosting"
+                if scenario == "custom_prefix_explicit_hosted"
+                else None
+            ),
         },
-        deployment={"kind": "pipeline", "connector_id": "hosting"},
+        deployment={"kind": "pipeline", "connector_id": "hosting", "prefix": prefix},
     )
     settings.sites["main"].recovery_verified = settings.sites["main"].binding()
     rig.store.save_settings("root/design", revision, settings)
@@ -1875,11 +1945,15 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
         config={"base_url": "https://hosting.example.test"},
         operations={
             "status": operation_definitions()["discover"].model_copy(
-                update={"config": {"method": "POST", "path": "/evander-releases/v1/status"}}
+                update={"config": {"method": "POST", "path": prefix + "/status"}}
             )
         },
     )
     config = ConnectorDirectoryConfig(connectors={"website": website, "hosting": pipeline})
+    if scenario == "custom_prefix_dedicated_builder":
+        config.connectors["builder"] = pipeline.model_copy(
+            update={"config": {"base_url": "https://build.example.test"}}
+        )
     rig.host.provider_config.resolve_connectors_for_directory = lambda directory: config
 
     async def auth(directory, connector):
@@ -1910,6 +1984,11 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
             return response
         payload = json.loads(request.content)
         action = request.url.path.rsplit("/", 1)[-1]
+        expected_prefix = (
+            "/evander-releases/v1" if request.url.host == "build.example.test" else prefix
+        )
+        if request.url.path != expected_prefix + "/" + action:
+            return httpx.Response(404)
         if scenario == "hosting_unavailable":
             return httpx.Response(503)
         if action == "prepare" and payload["operation_id"].endswith(":build"):
@@ -2003,6 +2082,13 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
     if scenario == "manual_edit":
         (root / "current/index.php").write_text("Manual edit during build")
     queued = queue(rig, prepared)
+    if prefix_scenario:
+        result = run(resumed_service(rig).execute("main", queued["change_id"]))
+        assert result["state"] == "published"
+        assert builds[0] == 2 and len(deployments) == 1
+        assert (root / "current/index.php").read_text() == candidate
+        assert rig.remote.value["post_title"] == "After"
+        return
     if expiry_scenario:
         if scenario in {"expiry_before_build", "expiry_source_only"}:
             clock[0] = expiry[0] + 1

@@ -29,6 +29,9 @@
   source/CMS publications before deployment or after an in-flight expiration.
 - Verify required navigation against the complete resolved site URL, including its
   origin, query and fragment, and probe the matched link's destination.
+- Return assigned CMS resource keys and versions in public change receipts, honor
+  custom hosting prefixes for shared builds, and normalize extracted release
+  directory permissions for web runtimes using a different account.
 
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 

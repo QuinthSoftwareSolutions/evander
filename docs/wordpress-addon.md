@@ -108,6 +108,9 @@ are patches of supported fields. Metadata values are arrays of individual stored
 values. ACF values contain `value`, `reference` and `exists`, capturing both the
 field value and its reference. Use `post:new-unique-name` to create a post; inspection
 returns a null value and its version until publication assigns a real ID.
+Publication and change-status receipts expose `resources["post:new-unique-name"]`
+with `resolved_key` and the recorded `version`. Use that real key to inspect or
+prepare subsequent edits; private snapshots and browser state remain on the host.
 Option values contain `value` and `autoload`, so undo preserves the option's cache
 metadata too. Relationship values are lists of `term_taxonomy_id` and `term_order`;
 they cover one object's associations in the named taxonomy and preserve other
@@ -262,6 +265,9 @@ Its fixed prefix defaults to `/evander-releases/v1`. Implement POST endpoints
 `prepare`, `deploy`, `status`, `restore` and `probe`. Each response includes
 `protocol_version: 1`. `operation_id` is durable and idempotent; a reused ID with a
 different source/artifact conflicts. Return HTTP 409 for version conflicts.
+When the hosting connector also performs the build, all build requests use
+`deployment.prefix`, including resumed builds. A separate `source.build_connector_id`
+uses the default build prefix.
 
 For `prepare` with a source archive, the request contains commit/tree/source digest,
 base64 ZIP, component, source path and required checks. Return the matching commit,
@@ -317,6 +323,9 @@ atomically updates `current`. It retains the previous release and verifies its
 content hash before restore. Keys and paths never reach the guest. Do not configure
 this key for arbitrary shell access. Reconcile interrupted switches through
 `status`; PHP execution is not needed for recovery.
+Artifact files use mode 0644 and every release directory uses 0755, regardless of
+the SSH account's umask; the helper's state directory remains private. Provision
+the component root and `releases/` so the web runtime can traverse them too.
 
 When PHP's OPcache/realpath cache or a frontend cache retains old files, configure
 `post_switch_command` as a fixed, absolute argv list in the protected helper JSON,
