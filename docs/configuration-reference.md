@@ -558,6 +558,21 @@ cursors in `runtime/trigger-cursors-remote-issues.json`; the comment trigger sto
 caller-supplied event names under the reserved `external.` prefix, so a POST with
 `event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
 
+The editor's **Trigger manually** action queues only the selected saved, enabled
+`trigger:event` node, using its configured event type without adding a prefix. It
+uses the normal event envelope (`payload` contains the entered JSON object) and
+does not publish to other event listeners. The session-authenticated endpoint is
+`POST /api/workflow-editor/nodes/{node_id}/trigger`; its body requires
+`expected_revision`, a JSON-object `payload`, and a non-empty `request_id` (up to
+128 characters), with optional `workflow_pack` and `correlation_key`. It checks
+`workflow_runs.control` in the saved workflow directory and returns HTTP 202 with
+`event_id` and `trace_id`. Retries with the same operator, node, and request ID
+reuse the queued event; use a new request ID for an intentional new run. A fixed
+trigger correlation key is used automatically and conflicting values are rejected.
+Execution uses the existing runtime configuration behavior; the revision check
+does not pin downstream execution to a snapshot. Event catalog entries currently
+provide names and descriptions rather than payload validation schemas.
+
 `trigger:agent:artifact-staged` consumes only the durable event written by a successful agent
 `stage_artifact` gateway call. It can filter on one exact relative `artifact_path` or a
 `path_prefix`; the two filters are mutually exclusive. Its payload includes the originating
