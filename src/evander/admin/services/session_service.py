@@ -4,26 +4,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services import git_helpers, session_helpers
+from evander.admin.services.ports import DirectoryOwnershipPort
+from evander.admin.services.vm_agent.common_helpers import (
+    _admin_agent_communication_allowlists,
+    _resolve_session_approval_notification_target_ids,
+    _revoke_managed_git_access_for_session,
+)
 from evander.codex_auth import (
     CodexAuthMode,
     normalize_codex_auth_mode,
 )
-from evander.admin.services.ports import DirectoryOwnershipPort
-from evander.admin.services.vm_agent.common_helpers import (
-    _admin_agent_communication_allowlists,
-    _revoke_managed_git_access_for_session,
-    _resolve_session_approval_notification_target_ids,
-)
 from evander.connectors.grants import resolve_and_validate_connector_grants
-from evander.host_directories.grants import (
-    host_directory_tool_names_for_grants,
-    resolve_and_validate_host_directory_grants,
-)
 from evander.email.grants import (
     email_mailbox_grant_policy_update,
     validate_email_mailbox_grants,
+)
+from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
+from evander.host_directories.grants import (
+    host_directory_tool_names_for_grants,
+    resolve_and_validate_host_directory_grants,
 )
 from evander.models import (
     McpToolName,
@@ -33,6 +33,7 @@ from evander.models import (
     normalize_tool_name,
     tool_name_value,
 )
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 
 
 @dataclass(frozen=True)
@@ -332,6 +333,10 @@ class SessionAdminService:
         if update:
             previous_manifest = manifest
             manifest = manifest.model_copy(update=update)
+            validate_session_fast_mode(
+                manifest,
+                self._deps.runtime.provider_config.resolve_for_directory(manifest.directory_path),
+            )
             self._session_repository().upsert_session(manifest)
             session_helpers.sync_added_discord_session_cursors(
                 self._deps.runtime,
@@ -351,8 +356,8 @@ class SessionAdminService:
         session_id, manifest = session_helpers.resolve_session_target(
             target, self._sessions_by_id()
         )
-        if not settings or set(settings) - {"model", "reasoning_effort"}:
-            raise ValueError("Provide model and/or reasoning_effort")
+        if not settings or set(settings) - {"model", "reasoning_effort", "fast_mode"}:
+            raise ValueError("Provide model, reasoning_effort, and/or fast_mode")
         update: dict[str, Any] = {}
         if "model" in settings:
             model = settings["model"]
@@ -361,6 +366,8 @@ class SessionAdminService:
             update["model"] = model.strip() if model is not None else None
         if "reasoning_effort" in settings:
             update["reasoning_effort"] = normalize_reasoning_effort(settings["reasoning_effort"])
+        if "fast_mode" in settings:
+            update["fast_mode"] = normalize_fast_mode(settings["fast_mode"])
         updated = manifest.model_copy(update=update)
         resolver = getattr(self._deps.runtime, "provider_config", None)
         config = (
@@ -369,12 +376,13 @@ class SessionAdminService:
             else self._deps.config
         )
         validate_session_reasoning_effort(updated, config)
+        validate_session_fast_mode(updated, config)
         self._session_repository().upsert_session(updated)
         return SessionActionResult(
             success=True,
             session_id=session_id,
             action="set_session_model",
-            message=f"Updated model for session {session_id}",
+            message=f"Updated model settings for session {session_id}",
         )
 
     def set_session_model(self, target: str, model: str) -> SessionActionResult:

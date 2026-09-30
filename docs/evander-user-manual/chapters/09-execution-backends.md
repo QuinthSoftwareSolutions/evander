@@ -282,6 +282,14 @@ worker egress policies allow only the configured control-plane subscription prox
 OpenAI/ChatGPT hostname allowlist is current. Do not copy the broker's account file into a job for
 diagnosis; a missing login is meant to fail closed.
 
+The same page shows remaining weekly usage and banked resets. With privileged operations unlocked,
+expand an enabled, signed-in profile and choose **Redeem one reset** to use an available reset.
+The page refreshes its counts and usage, and recovered capacity makes queued work eligible again.
+If the response fails, **Retry reset redemption** checks the same attempt without consuming a
+second reset, including after leaving the page or reloading it. Retry information is saved before
+submission and retained until a definitive response. A changed directory worker or account cannot
+receive the original redemption. **Unavailable** is distinct from a reported count of zero.
+
 When cleanup fails:
 
 1. Record the session ID, execution ID, worker job ID, last observed status, and cleanup error.

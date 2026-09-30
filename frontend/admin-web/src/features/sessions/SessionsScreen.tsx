@@ -1,3 +1,5 @@
+import { FastModeSelect } from "../admin/FastModeSelect";
+import { fastModeSelection, fastModeValue } from "../admin/fastMode";
 import { CostCategoryInput } from "../reports/CostCategoryInput";
 import { useEffect, useMemo, useState } from "react";
 
@@ -67,6 +69,7 @@ type SessionRecord = {
   vm_provider_id?: string | null;
   model: string | null;
   reasoning_effort?: string | null;
+  fast_mode?: boolean | null;
   cost_category?: string | null;
   agent_harness?: string;
   effective_model_provider_mode?: string;
@@ -816,6 +819,7 @@ export function SessionsScreen() {
   const [showRenewModal, setShowRenewModal] = useState(false);
   const [modelDraft, setModelDraft] = useState("");
   const [reasoningEffortDraft, setReasoningEffortDraft] = useState("");
+  const [fastModeDraft, setFastModeDraft] = useState("");
   const [modelDirty, setModelDirty] = useState(false);
   const [modelBoundSessionId, setModelBoundSessionId] = useState("");
   const [toolsDraft, setToolsDraft] = useState<string[]>([]);
@@ -1016,11 +1020,13 @@ export function SessionsScreen() {
         if (modelBoundSessionId !== sessionId) {
           setModelDraft(payload.session.model ?? "");
           setReasoningEffortDraft(payload.session.reasoning_effort ?? "");
+          setFastModeDraft(fastModeSelection(payload.session.fast_mode));
           setModelDirty(false);
           setModelBoundSessionId(sessionId);
         } else if (!modelDirty) {
           setModelDraft(payload.session.model ?? "");
           setReasoningEffortDraft(payload.session.reasoning_effort ?? "");
+          setFastModeDraft(fastModeSelection(payload.session.fast_mode));
         }
         if (toolsBoundSessionId !== sessionId) {
           setToolsDraft(sortTools(payload.session.allowed_tools ?? []));
@@ -1612,6 +1618,7 @@ export function SessionsScreen() {
             body: JSON.stringify({
               ...(modelDraft.trim() ? { model: modelDraft.trim() } : {}),
               reasoning_effort: reasoningEffortDraft || null,
+              fast_mode: fastModeValue(fastModeDraft),
             }),
           },
         );
@@ -2012,6 +2019,8 @@ export function SessionsScreen() {
                       <dd>{selectedSession.cost_category ?? "Uncategorized"}</dd>
                       <dt>Reasoning effort</dt>
                       <dd>{selectedSession.reasoning_effort ?? (selectedSession.agent_harness === "codex" ? "Default (high)" : "Provider default")}</dd>
+                      <dt>Default speed</dt>
+                      <dd>{selectedSession.fast_mode ? "Fast" : "Standard"}</dd>
                     </div>
                     {selectedSession.runtime_image ? (
                       selectedSession.runtime_image.backend === "container_worker_vm" ? (
@@ -2256,6 +2265,10 @@ export function SessionsScreen() {
                         route={selectedSession.effective_model_provider_mode}
                         value={reasoningEffortDraft} disabled={mutationLocked}
                         onChange={(value) => { setReasoningEffortDraft(value); setModelDirty(true); setStatus(null); }} />
+                      <FastModeSelect harness={selectedSession.agent_harness || "codex"}
+                        route={selectedSession.effective_model_provider_mode}
+                        value={fastModeDraft} disabled={mutationLocked}
+                        onChange={(value) => { setFastModeDraft(value); setModelDirty(true); setStatus(null); }} />
                       <label className="field-stack">
                         <span>Model relay</span>
                         <p className="field-description">

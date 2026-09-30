@@ -51,6 +51,8 @@ def test_mid_turn_subscription_deferral_preserves_replay_metadata(tmp_path) -> N
             "execution_id": "worker-execution-1",
             "reasoning_effort": "low",
             "reasoning_effort_source": "session",
+            "fast_mode": False,
+            "fast_mode_source": "prompt",
         },
     )
     stored_records: list[object] = []
@@ -89,6 +91,8 @@ def test_mid_turn_subscription_deferral_preserves_replay_metadata(tmp_path) -> N
     assert queued is not None
     assert queued.reasoning_effort == "low"
     assert queued.reasoning_effort_source == "session"
+    assert queued.fast_mode is False
+    assert queued.fast_mode_source == "prompt"
     assert queued.dispatch_id == "dispatch-1"
     assert queued.subscription_profile_id == "team-a"
     assert queued.retry_not_before == retry_at

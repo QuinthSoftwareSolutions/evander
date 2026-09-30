@@ -1,3 +1,4 @@
+import { FastModeSelect } from "../admin/FastModeSelect";
 import { CostCategoryInput } from "../reports/CostCategoryInput";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -505,6 +506,10 @@ export function AgentCreateDialog({
               model={createForm.model} route={effectiveCreateModelProviderMode}
               value={createForm.reasoningEffort}
               onChange={(value) => setCreateForm((current) => ({ ...current, reasoningEffort: value }))} />
+            <FastModeSelect
+              harness={createForm.agentProvider || (effectiveCreateModelProviderMode === "anthropic" ? "claude" : "codex")}
+              route={effectiveCreateModelProviderMode} value={createForm.fastMode}
+              onChange={(value) => setCreateForm((current) => ({ ...current, fastMode: value }))} />
             {createForm.backend === "libvirt_vm" ? (
               <>
                 <label className="field-stack">

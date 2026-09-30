@@ -737,6 +737,7 @@ export function createFieldRenderers({
     }
 
     if (field.kind === "boolean") {
+      const nullable = field.metadata?.nullable === true;
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
@@ -746,13 +747,23 @@ export function createFieldRenderers({
               if (nextMode === "bind") {
                 updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
               } else {
-                updateKnownField(field.key, Boolean(value));
+                updateKnownField(field.key, typeof value === "boolean" ? value : nullable ? undefined : Boolean(value));
               }
             }, isDisabled)}
           </div>
           {mode === "bind"
             ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
-            : (
+            : nullable ? (
+              <select
+                value={typeof value === "boolean" ? String(value) : ""}
+                onChange={(event) => updateKnownField(field.key, event.target.value === "" ? undefined : event.target.value === "true")}
+                disabled={isDisabled}
+              >
+                <option value="">{String(field.metadata?.unset_label ?? "Default")}</option>
+                <option value="true">{String(field.metadata?.true_label ?? "Enabled")}</option>
+                <option value="false">{String(field.metadata?.false_label ?? "Disabled")}</option>
+              </select>
+            ) : (
               <label className="checkbox-row">
                 <input
                   type="checkbox"

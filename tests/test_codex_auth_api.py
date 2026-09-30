@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
-from evander.codex_auth import CodexSubscriptionDeferral, CodexSubscriptionDeferredError
+from evander.codex_auth import (
+    CodexRateLimitResetRequest,
+    CodexSubscriptionDeferral,
+    CodexSubscriptionDeferredError,
+)
 from evander.worker.api import create_app
 from evander.worker.codex_auth_broker import CodexAuthBrokerError
 
@@ -43,6 +48,8 @@ class FakeProfileRegistry:
         self.closed = False
         self.defer_jobs = False
         self.device_login_error: str | None = None
+        self.reset_requests: list[tuple[str, CodexRateLimitResetRequest]] = []
+        self.reset_error: Exception | None = None
         self.profiles = {
             "default": {
                 "profile_id": "default",
@@ -87,6 +94,12 @@ class FakeProfileRegistry:
     def logout(self, profile_id):
         self.profiles[profile_id]["signed_in"] = False
         return dict(self.profiles[profile_id])
+
+    def consume_reset_credit(self, profile_id, request):
+        if self.reset_error is not None:
+            raise self.reset_error
+        self.reset_requests.append((profile_id, request))
+        return {"outcome": "reset", "profile": dict(self.profiles[profile_id])}
 
     def preflight(self, profile_id):
         if self.defer_jobs:
@@ -216,6 +229,55 @@ def test_worker_profile_device_login_returns_actionable_gateway_error(tmp_path: 
 
     assert response.status_code == 502
     assert response.json() == {"error": "failed to request device code"}
+
+
+def test_worker_reset_redemption_requires_bearer_and_valid_retry_identity(tmp_path: Path) -> None:
+    registry = FakeProfileRegistry()
+    registry.create_profile({"profile_id": "team-a", "display_name": "Team A"})
+    app = create_app(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=object(),  # type: ignore[arg-type]
+        codex_auth_registry=registry,  # type: ignore[arg-type]
+        token="worker-secret",
+    )
+    path = "/v1/codex-auth/profiles/team-a/reset-credits/consume"
+    payload = {"idempotency_key": "attempt-1", "credit_id": "credit-1"}
+    headers = {"Authorization": "Bearer worker-secret"}
+    with TestClient(app) as client:
+        assert client.post(path, json=payload).status_code == 401
+        for invalid in ({}, {"idempotency_key": " "}, {"idempotency_key": 123}):
+            assert client.post(path, headers=headers, json=invalid).status_code == 400
+        assert registry.reset_requests == []
+        response = client.post(path, headers=headers, json=payload)
+    assert response.status_code == 200
+    assert response.json()["profile"]["profile_id"] == "team-a"
+    assert response.json()["profile"]["active_job_count"] == 0
+    assert registry.reset_requests == [("team-a", CodexRateLimitResetRequest(**payload))]
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_worker_reset_redemption_reports_broker_failures(tmp_path: Path, disabled: bool) -> None:
+    registry = FakeProfileRegistry()
+    registry.reset_error = (
+        CodexSubscriptionDeferredError(CodexSubscriptionDeferral(profile_id="default", reason="disabled"))
+        if disabled else CodexAuthBrokerError("reset redemption is unavailable")
+    )
+    app = create_app(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=object(),  # type: ignore[arg-type]
+        codex_auth_registry=registry,  # type: ignore[arg-type]
+        token="worker-secret",
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/codex-auth/profiles/default/reset-credits/consume",
+            headers={"Authorization": "Bearer worker-secret"},
+            json={"idempotency_key": "attempt-1"},
+        )
+    assert response.status_code == (409 if disabled else 502)
+    assert registry.reset_requests == []
 
 
 def test_worker_subscription_preflight_defers_without_starting_a_metered_job(

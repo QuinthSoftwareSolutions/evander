@@ -1,7 +1,7 @@
 # WordPress Add-on
 
 This optional Evander add-on publishes and recovers WordPress content, browser
-edits and managed Git source changes. It requires Evander 0.73.0 or later.
+edits and managed Git source changes. It requires Evander 0.76.0 or later.
 The companion plugin, browser runner, UI, documentation, examples, tests and
 fixtures are owned by this project. Installing Evander alone does not install it.
 

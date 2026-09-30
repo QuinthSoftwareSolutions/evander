@@ -143,6 +143,7 @@ exit 0
     env["USER"] = env.get("USER", "root")
     env["AGENT_MODEL"] = "gpt-5.3-codex"
     env["AGENT_REASONING_EFFORT"] = "low"
+    env["AGENT_FAST_MODE"] = "true"
     env["AGENT_REASONING_EFFORT_SOURCE"] = "prompt"
 
     result = subprocess.run(
@@ -163,6 +164,7 @@ exit 0
     assert "agent-admin@192.168.122.11" in run_call
     assert "AGENT_MODEL=gpt-5.3-codex" in run_call
     assert "AGENT_REASONING_EFFORT=low" in run_call
+    assert "AGENT_FAST_MODE=true" in run_call
     assert "AGENT_REASONING_EFFORT_SOURCE=prompt" in run_call
     assert "AGENT_WEB_SEARCH_MODE=disabled" in run_call
     assert "bash -s" in run_call

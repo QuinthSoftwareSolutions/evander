@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-from evander.agent_threads import usable_agent_thread_id
-
-from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
-
 from evander.admin.services.vm_agent.common import (
+    UTC,
     AgentEnqueuePromptEffectDefinition,
     Any,
     EffectProviderFactory,
     Mapping,
     Path,
-    UTC,
     datetime,
     hashlib,
     timedelta,
 )
+from evander.agent_threads import usable_agent_thread_id
+from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
 
 
 class VmAgentPromptMixin:
@@ -25,7 +23,9 @@ class VmAgentPromptMixin:
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -53,7 +53,9 @@ class VmAgentPromptMixin:
                 "prompt": prompt,
                 "model": model,
                 "reasoning_effort": reasoning_effort,
+                "fast_mode": fast_mode,
                 "reasoning_effort_source": reasoning_effort_source,
+                "fast_mode_source": fast_mode_source,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -77,7 +79,9 @@ class VmAgentPromptMixin:
             session_id=str(response.get("session_id") or "").strip() or None,
             model=str(response.get("model") or model or "").strip() or None,
             reasoning_effort=response.get("reasoning_effort"),
+            fast_mode=response.get("fast_mode"),
             reasoning_effort_source=response.get("reasoning_effort_source"),
+            fast_mode_source=response.get("fast_mode_source"),
             model_provider_mode=(str(response.get("model_provider_mode") or "").strip() or None),
             local_inference_capacity_enabled=bool(response.get("local_inference_capacity_enabled")),
             local_inference_active_count=int(response.get("local_inference_active_count") or 0),
@@ -103,6 +107,7 @@ class VmAgentPromptMixin:
             raise ValueError("prompt-agent requires a non-empty prompt")
         model = self._agent_optional_string(payload, "model")
         reasoning_effort = payload.get("reasoning_effort")
+        fast_mode = payload.get("fast_mode")
         dispatch_id = self._agent_optional_string(payload, "dispatch_id")
         resume_thread_id = self._agent_optional_string(payload, "resume_thread_id")
         resume_mode = self._agent_optional_string(payload, "resume_mode")
@@ -157,6 +162,7 @@ class VmAgentPromptMixin:
             model=model,
             cost_category=payload.get("cost_category"),
             reasoning_effort=reasoning_effort,
+            fast_mode=fast_mode,
             resume_thread_id=resume_thread_id,
             resume_mode=resume_mode,
             dispatch_id=dispatch_id,
@@ -173,6 +179,7 @@ class VmAgentPromptMixin:
             result = provider.execute(
                 resolved_config={
                     "reasoning_effort_source": payload.get("reasoning_effort_source"),
+                    "fast_mode_source": payload.get("fast_mode_source"),
                 }
             )
         except RuntimeError as exc:
@@ -331,7 +338,9 @@ class VmAgentPromptMixin:
             "prompt": prompt,
             "model": result.get("model"),
             "reasoning_effort": result.get("reasoning_effort"),
+            "fast_mode": result.get("fast_mode"),
             "reasoning_effort_source": result.get("reasoning_effort_source"),
+            "fast_mode_source": result.get("fast_mode_source"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
             "resume_mode": resume_mode,
@@ -347,7 +356,9 @@ class VmAgentPromptMixin:
             "prompt": prompt,
             "model": result.get("model"),
             "reasoning_effort": result.get("reasoning_effort"),
+            "fast_mode": result.get("fast_mode"),
             "reasoning_effort_source": result.get("reasoning_effort_source"),
+            "fast_mode_source": result.get("fast_mode_source"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
             "resume_mode": resume_mode,
@@ -431,7 +442,9 @@ class VmAgentPromptMixin:
             "prompt": prompt,
             "model": result.get("model"),
             "reasoning_effort": result.get("reasoning_effort"),
+            "fast_mode": result.get("fast_mode"),
             "reasoning_effort_source": result.get("reasoning_effort_source"),
+            "fast_mode_source": result.get("fast_mode_source"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
             "directory_path": directory_path,
@@ -445,7 +458,9 @@ class VmAgentPromptMixin:
             "prompt": prompt,
             "model": result.get("model"),
             "reasoning_effort": result.get("reasoning_effort"),
+            "fast_mode": result.get("fast_mode"),
             "reasoning_effort_source": result.get("reasoning_effort_source"),
+            "fast_mode_source": result.get("fast_mode_source"),
             "vm_user": vm_user,
             "resume_thread_id": resume_thread_id,
             "queue_key": effect_id,

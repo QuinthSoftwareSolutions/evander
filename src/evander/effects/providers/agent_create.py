@@ -4,9 +4,6 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from evander.cost_categories import normalize_cost_category
-from evander.reasoning_effort import normalize_reasoning_effort
-from evander.container_worker_images import resolve_container_worker_image_selector
 from evander.codex_auth import (
     CodexAuthMode,
     normalize_codex_auth_mode,
@@ -14,22 +11,26 @@ from evander.codex_auth import (
 )
 from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
+from evander.container_worker_images import resolve_container_worker_image_selector
+from evander.cost_categories import normalize_cost_category
 from evander.directories import DirectoryStore
+from evander.email.grants import (
+    normalize_email_mailbox_grants,
+    validate_email_mailbox_grants,
+)
 from evander.events.provider_models import AgentCreateEffectDefinition
+from evander.fast_mode import normalize_fast_mode
 from evander.host_directories.grants import resolve_and_validate_host_directory_grants
 from evander.messaging.targets import load_communication_targets_config
+from evander.models import EmailMailboxGrant
 from evander.provider_config import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
     normalize_model_provider_mode_override,
     validate_openrouter_session,
 )
+from evander.reasoning_effort import normalize_reasoning_effort
 from evander.services import parse_teams_target
 from evander.session_auth import ensure_session_mcp_auth_token
-from evander.email.grants import (
-    normalize_email_mailbox_grants,
-    validate_email_mailbox_grants,
-)
-from evander.models import EmailMailboxGrant
 from evander.vm.templates import resolve_libvirt_vm_template_selector
 
 from .agent_session import (
@@ -40,8 +41,8 @@ from .agent_session import (
     as_string_mapping,
     build_container_session_files,
     build_container_session_manifest,
-    container_backend,
     contacts_config_for_directory,
+    container_backend,
     default_agent_provider_for_config,
     effective_config_for_directory,
     normalize_existing_agent_behavior,
@@ -117,6 +118,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             payload["cost_category"] = effect.cost_category
         if "reasoning_effort" in effect_fields_set:
             payload["reasoning_effort"] = effect.reasoning_effort
+        if "fast_mode" in effect_fields_set:
+            payload["fast_mode"] = effect.fast_mode
         if codex_auth_mode_provided:
             payload["codex_auth_mode"] = effect.codex_auth_mode
         if subscription_profile_id_provided:
@@ -287,6 +290,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             model=normalize_optional_string(payload.get("model")),
             cost_category=normalize_cost_category(payload.get("cost_category")),
             reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
+            **(
+                {"fast_mode": normalize_fast_mode(payload["fast_mode"])}
+                if "fast_mode" in payload
+                else {}
+            ),
             vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=as_string_list(payload.get("allowed_tools")),
@@ -597,6 +605,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
             reasoning_effort=normalize_reasoning_effort(
                 payload.get("reasoning_effort", getattr(existing_session, "reasoning_effort", None))
             ),
+            fast_mode=normalize_fast_mode(
+                payload.get("fast_mode", getattr(existing_session, "fast_mode", None))
+            ),
             codex_auth_mode=codex_auth_mode,
             subscription_profile_id=subscription_profile_id,
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
@@ -667,9 +678,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         ):
             from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 
-            AgentPromptQueueStore(
-                config.runtime_dir / "queued-agent-prompts.json"
-            ).reroute_session(
+            AgentPromptQueueStore(config.runtime_dir / "queued-agent-prompts.json").reroute_session(
                 manifest.session_id,
                 subscription_profile_id=manifest.subscription_profile_id,
             )

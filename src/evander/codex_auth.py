@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
-
+import re
 from datetime import datetime
 from enum import Enum
-import re
 from typing import Literal
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from evander.fast_mode import FastMode, FastModeSource
+from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 
 DEFAULT_SUBSCRIPTION_PROFILE_ID = "default"
 SUBSCRIPTION_PROFILE_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
@@ -39,6 +39,37 @@ def normalize_subscription_profile_id(
 class CodexAuthMode(str, Enum):
     METERED_API = "metered_api"
     CHATGPT_SUBSCRIPTION = "chatgpt_subscription"
+
+
+class CodexRateLimitResetRequest(BaseModel):
+    """One logical redemption; retries must retain the same idempotency key."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+    idempotency_key: str
+    credit_id: str | None = None
+    expected_account_id: str | None = None
+
+    @field_validator("idempotency_key", "credit_id", "expected_account_id")
+    @classmethod
+    def validate_nonempty_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+
+class CodexSubscriptionResetRequest(CodexRateLimitResetRequest):
+    """Bind Admin Web redemption to the worker and account the operator saw."""
+
+    expected_worker_url: str
+    expected_account_id: str
+
+    @field_validator("expected_worker_url")
+    @classmethod
+    def validate_worker_url(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
 
 
 def normalize_codex_auth_mode(
@@ -75,7 +106,9 @@ class CodexTurnSpec(BaseModel):
     prompt: str = Field(min_length=1)
     model: str = Field(min_length=1)
     reasoning_effort: ReasoningEffort | None = None
+    fast_mode: FastMode | None = None
     reasoning_effort_source: ReasoningEffortSource | None = None
+    fast_mode_source: FastModeSource | None = None
     resume_thread_id: str | None = None
     resume_mode: Literal["new_context", "same_context"] = "new_context"
     mcp_gateway_url: AnyHttpUrl | None = None

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-30 - Independent add-on projects and website login adapters (0.73.0)
+## 2026-09-30 - Independent add-on projects and website login adapters (0.76.0)
 
 - Establish self-contained, independently installed add-on projects under `packages/`.
   Include their tests in repository collection and document ownership for future add-ons.
@@ -20,6 +20,45 @@
 - Discover website adapters only when needed so unrelated add-on imports cannot interrupt
   ordinary logins. Align frozen installation metadata with this release without changing
   dependency versions.
+
+## 2026-09-30 - Manually trigger workflow event nodes (0.75.0)
+
+- Run a saved, enabled `trigger:event` node from its inspector with a JSON-object
+  payload and optional correlation key, without broadcasting to other listeners.
+- Check workflow run-control permissions and saved revisions, record the operator,
+  and deduplicate retries before showing the queued run in existing run history.
+- Preserve accepted attempts across workflow revision changes and compare retry
+  payloads as canonical JSON, keeping boolean and numeric values distinct.
+
+## 2026-09-30 - Bound control-plane system log storage (0.74.1)
+
+- Manage daily rsyslog rotation in Ansible with 28 archives and delayed compression,
+  preserving about four weeks of system log history while reducing uncompressed storage.
+- Validate and back up the rotation policy before replacement without forcing rotation
+  or restarting the logging service.
+
+## 2026-09-30 - Configure Codex Fast mode per session and prompt (0.74.0)
+
+- Add nullable `fast_mode` session defaults and per-prompt overrides to agent creation,
+  workflow nodes, Admin Web, and CLI controls; explicit false selects standard speed.
+- Forward the resolved tier through Codex VM, metered container, and subscription
+  execution, preserving the selection through queues, wakes, context retries, and steering.
+- Restore the session speed on later turns and expose the chosen mode and its source
+  in execution and queue records. Fast requires a supported public OpenAI Codex route.
+- Price metered Fast usage with the returned service tier across HTTP, streaming,
+  and WebSocket responses, falling back to the requested tier when unavailable.
+- Preserve an existing VM session's speed when creation omits the setting, and
+  clear it when an upsert explicitly supplies null, matching container workers.
+
+## 2026-09-30 - Display and redeem banked subscription resets (0.73.0)
+
+- Show each subscription profile's banked reset count beside remaining weekly usage,
+  distinguishing unavailable telemetry from zero available resets.
+- Let privileged root owners redeem one reset, refresh account limits, and wake queued
+  work when capacity recovers. Preserve account pins and retry identity to avoid
+  consuming another reset after an uncertain response.
+- Bind redemption to the original worker and account, and retain unresolved attempts
+  across tab changes and reloads until the provider returns a definitive outcome.
 
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 

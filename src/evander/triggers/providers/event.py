@@ -54,7 +54,7 @@ class EventTriggerProvider(TriggerProviderBase):
                     trigger_type=trigger.type,
                     occurred_at=event.created_at.astimezone(UTC),
                     trace_id=(event.source.workflow_trace_id if event.source is not None else None),
-                    payload=_trigger_payload(event),
+                    payload=event_trigger_payload(event),
                 )
             )
 
@@ -115,7 +115,7 @@ def _matches(trigger: EventTriggerDefinition, event: InternalEvent) -> bool:
     return True
 
 
-def _trigger_payload(event: InternalEvent) -> dict[str, Any]:
+def event_trigger_payload(event: InternalEvent) -> dict[str, Any]:
     source = event.source.model_dump(mode="json") if event.source is not None else None
     return {
         "event_id": event.event_id,

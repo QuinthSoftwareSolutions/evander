@@ -165,8 +165,13 @@ class DiskQuotaTurnProcess(FakeTurnProcess):
 
 
 @pytest.mark.parametrize("effort", ["low", None])
+@pytest.mark.parametrize("fast_mode,tier", [(True, "fast"), (False, "default"), (None, "default")])
 def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, effort: str | None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    effort: str | None,
+    fast_mode: bool | None,
+    tier: str,
 ) -> None:
     ticks = iter([0.0, 0.1, 1.0, 1.2, 2.0, 2.3, 3.0, 3.4])
     monkeypatch.setattr("evander.worker.codex_subscription.time.perf_counter", lambda: next(ticks))
@@ -180,6 +185,7 @@ def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(
             prompt="Continue the task",
             model="gpt-5.4",
             reasoning_effort=effort,
+            fast_mode=fast_mode,
             resume_mode="same_context",
             mcp_gateway_url="http://gateway.internal:8000/mcp",
         ),
@@ -214,6 +220,8 @@ def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(
     assert "dynamicTools" not in resume
     turn_start = next(params for method, params in process.requests if method == "turn/start")
     assert turn_start["effort"] == (effort or "high")
+    assert turn_start["serviceTier"] == tier
+    assert resume["config"]["service_tier"] == tier
     assert resume["config"]["model_reasoning_effort"] == (effort or "high")
     assert resume["config"].get("model_supports_reasoning_summaries", False) == (effort is not None)
     assert "dynamicTools" not in turn_start

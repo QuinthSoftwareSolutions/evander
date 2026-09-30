@@ -37,6 +37,8 @@ from evander.admin.payloads import (
     WorkflowPackHistoryDetailPayload,
     WorkflowPackHistoryListPayload,
     WorkflowNodeFailuresDismissPayload,
+    WorkflowNodeTriggerPayload,
+    WorkflowNodeTriggerRequestPayload,
     WorkflowRunClearPayload,
     WorkflowRunResumePayload,
 )
@@ -73,6 +75,7 @@ from evander.admin.workflow_catalog import (
 from evander.config import TriggerOrchestratorWorkerGlobalConfig
 from evander.events.internal import (
     EXTERNAL_WORKFLOW_EVENT_PREFIX,
+    InternalEvent,
     InternalEventSource,
     validate_internal_event_type,
 )
@@ -91,16 +94,19 @@ from evander.triggers.providers._new_message_baselines import (
     seed_new_message_trigger_cursors,
 )
 from evander.triggers.queue import SqliteTriggerEventQueue
+from evander.triggers.providers.event import EventTriggerProvider, event_trigger_payload
 from evander.workflow.catalog import (
     WorkflowEditorCatalogPayload,
     WorkflowInternalEventCatalogEntry,
 )
 from evander.workflow.events import SqliteWorkflowEventJournal
+from evander.workflow.node_state import workflow_node_is_enabled
 from evander.workflow.packs import WorkflowPack, compose_workflow_ir, load_workflow_pack
 from evander.workflow.runtime_config import (
     _append_builtin_hidden_workflows,
     _compose_configured_workflow_ir,
     compile_worker_global_config_with_diagnostics,
+    load_trigger_orchestrator_worker_global_config,
 )
 from evander.workflow.validation import derive_workflow_output_schemas
 
@@ -604,6 +610,101 @@ class WorkflowConfigAdminService:
         )
         notify_wake_socket_for_lock(worker_config.lock_path)
         return event.model_dump(mode="json")
+
+    def trigger_workflow_event_node(
+        self,
+        node_id: str,
+        request: WorkflowNodeTriggerRequestPayload,
+        *,
+        source: InternalEventSource,
+        authorize_directory: Callable[[str], None],
+    ) -> WorkflowNodeTriggerPayload:
+        """Queue one saved event trigger without broadcasting on the internal event bus."""
+        with self.admin_config_mutation_lock():
+            document = self.read_workflow_editor_document(workflow_pack=request.workflow_pack)
+            node = self._workflow_editor_nodes_by_id(document.config).get(node_id)
+            if node is None:
+                raise ValueError("Workflow node not found in the saved document")
+            directories = {
+                graph.directory_path for graph in document.graphs if node_id in graph.node_ids
+            } or {"root"}
+            for directory in sorted(directories):
+                authorize_directory(directory)
+            idempotency_key = "workflow-manual:" + self._stable_json_revision(
+                [source.user_id or source.user_login, node_id, request.request_id]
+            )
+            stores = self._workflow_run_store_paths()
+            queue = SqliteTriggerEventQueue(
+                stores["orchestration_store_path"],
+                retention_days=stores["orchestration_retention_days"],
+                compact_history_retention_days=stores["orchestration_compact_history_retention_days"],
+            )
+            existing = queue.get_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                authorize_directory(existing.directory_path or "root")
+                correlation_key = str(request.correlation_key or "").strip() or None
+                if correlation_key is None:
+                    correlation_key = str(node.get("config", {}).get("correlation_key") or "").strip() or None
+                if (
+                    self._stable_json_revision(existing.payload.get("payload"))
+                    != self._stable_json_revision(request.payload)
+                    or existing.payload.get("correlation_key") != correlation_key
+                ):
+                    raise ValueError("request_id was already used for a different event")
+                # Reconcile an accepted attempt even when its original revision is now stale.
+                notify_wake_socket_for_lock(stores["effect_lock_path"])
+                return WorkflowNodeTriggerPayload(event_id=existing.event_id, trace_id=existing.trace_id)
+            if document.revision != request.expected_revision:
+                raise AdminRevisionConflict(
+                    "Workflow changed. Reload it before triggering the node.",
+                    details={"current_revision": document.revision},
+                )
+            if node.get("type") != "trigger:event":
+                raise ValueError("Only trigger:event nodes can be triggered manually")
+            if not document.config_exists or not workflow_node_is_enabled(node):
+                raise ValueError("Manual triggering requires a saved, enabled trigger")
+
+            worker_config = load_trigger_orchestrator_worker_global_config(
+                self.project_dir, base_config=self.config
+            )
+            trigger = next((item for item in worker_config.triggers if item.id == node_id), None)
+            if trigger is None or trigger.type != "trigger:event" or not workflow_node_is_enabled(trigger):
+                raise ValueError("Workflow trigger is not active")
+            trigger = EventTriggerProvider.validate_definition(trigger)
+            correlation_key = str(request.correlation_key or "").strip() or None
+            if trigger.correlation_key is not None:
+                if correlation_key is not None and correlation_key != trigger.correlation_key:
+                    raise ValueError("correlation_key must match the trigger's configured value")
+                correlation_key = trigger.correlation_key
+            internal_event = InternalEvent(
+                event_id=str(uuid4()),
+                event_type=trigger.event_type,
+                payload=request.payload,
+                correlation_key=correlation_key,
+                source=source.model_copy(update={"node_id": node_id, "node_type": trigger.type}),
+                idempotency_key=idempotency_key,
+            )
+            record = queue.publish(
+                TriggerEvent(
+                    event_id=f"{node_id}:{internal_event.event_id}",
+                    trigger_id=node_id,
+                    trigger_type=trigger.type,
+                    occurred_at=internal_event.created_at,
+                    payload=event_trigger_payload(internal_event),
+                ),
+                idempotency_key=idempotency_key,
+                config_revision=self._stable_json_revision(worker_config.model_dump(mode="json")),
+                directory_path=sorted(directories)[0],
+            )
+            if (
+                self._stable_json_revision(record.payload.get("payload"))
+                != self._stable_json_revision(request.payload)
+                or record.payload.get("correlation_key") != correlation_key
+                or record.payload.get("event_type") != trigger.event_type
+            ):
+                raise ValueError("request_id was already used for a different event")
+        notify_wake_socket_for_lock(stores["effect_lock_path"])
+        return WorkflowNodeTriggerPayload(event_id=record.event_id, trace_id=record.trace_id)
 
     def _workflow_editor_default_layout_path(self) -> Path:
         return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"

@@ -365,6 +365,13 @@ def resume_agent(
         str | None,
         typer.Option("--reasoning-effort", help="Native reasoning level; omit to inherit."),
     ] = None,
+    fast_mode: Annotated[
+        bool | None,
+        typer.Option(
+            "--fast-mode/--no-fast-mode",
+            help="Codex Fast mode; omit to inherit the session default.",
+        ),
+    ] = None,
 ) -> None:
     normalized = target.strip()
     cfg = cli_runtime._load_runtime_config_from_option(config)
@@ -408,6 +415,7 @@ def resume_agent(
             message,
             model=agent_model,
             reasoning_effort=reasoning_effort,
+            fast_mode=fast_mode,
             vm_user=vm_user,
             resume_mode="same_context",
         )
@@ -589,6 +597,13 @@ def create_vm(
         str | None,
         typer.Option("--reasoning-effort", help="Native reasoning level; omit to inherit."),
     ] = None,
+    fast_mode: Annotated[
+        bool | None,
+        typer.Option(
+            "--fast-mode/--no-fast-mode",
+            help="Codex Fast mode; omit to inherit the session default.",
+        ),
+    ] = None,
 ) -> None:
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
@@ -610,6 +625,7 @@ def create_vm(
         directory_path=directory_path,
         model=model,
         reasoning_effort=reasoning_effort,
+        fast_mode=fast_mode,
         model_provider_mode=model_provider_mode,
     )
     cli_common._echo_action_result_or_exit(result)

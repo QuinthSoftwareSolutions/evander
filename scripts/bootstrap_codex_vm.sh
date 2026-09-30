@@ -310,6 +310,7 @@ cat > "${CODEX_CONFIG_PATH}" <<CONFIG
 model = "gpt-6-sol"
 model_provider = "evander_openai_relay"
 model_reasoning_effort = "high"
+service_tier = "default"
 personality = "pragmatic"
 web_search = "disabled"
 

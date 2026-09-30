@@ -5,6 +5,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -17,6 +18,10 @@ from evander.directory_config import DirectoryConfigStore
 from evander.directories import DirectoryService, DirectoryStore
 from evander.models import SessionManifest
 from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.model_usage.pricing import (
+    estimate_model_usage_cost,
+    load_model_pricing_catalog_payload,
+)
 from evander.relays.openai import (
     OpenAIRelay,
     _websocket_message_declares_image_generation,
@@ -304,6 +309,102 @@ def request_asgi(app, method: str, path: str, **kwargs) -> httpx.Response:
             return await client.request(method, path, **kwargs)
 
     return asyncio.run(run())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("requested_tier", "returned_tier", "expected_rule", "expected_cost"),
+    [
+        ("priority", "priority", "priority", "8.00"),
+        ("auto", "priority", "priority", "8.00"),
+        ("priority", "default", "standard", "2.00"),
+        ("priority", None, "priority", "8.00"),
+        (None, "priority", "priority", "8.00"),
+        (None, None, "standard", "2.00"),
+    ],
+)
+def test_relay_prices_usage_with_the_returned_service_tier(
+    tmp_path: Path,
+    monkeypatch,
+    stream: bool,
+    requested_tier: str | None,
+    returned_tier: str | None,
+    expected_rule: str,
+    expected_cost: str,
+) -> None:
+    response_payload = {
+        "id": "tier-response",
+        "model": "tier-model",
+        "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+    }
+    if returned_tier is not None:
+        response_payload["service_tier"] = returned_tier
+
+    class UsageStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            event = {"type": "response.completed", "response": response_payload}
+            yield f"data: {json.dumps(event)}\n\n".encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content).get("service_tier") == requested_tier
+        if stream:
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, stream=UsageStream()
+            )
+        return httpx.Response(200, json=response_payload)
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="tier-session", model="tier-model")
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    monkeypatch.setenv("OPENAI_API_KEY", "host-key")
+    request_payload = {"model": "tier-model", "input": "private-prompt-marker", "stream": stream}
+    if requested_tier is not None:
+        request_payload["service_tier"] = requested_tier
+
+    response = request_asgi(
+        relay.create_app(),
+        "POST",
+        "/v1/session/tier-session/responses",
+        headers={"accept": "text/event-stream" if stream else "application/json"},
+        json=request_payload,
+    )
+
+    assert response.status_code == 200
+    events = relay.model_usage_store.list_events(session_id="tier-session")
+    assert len(events) == 1
+    event = events[0]
+    assert event.raw_usage_metadata["request_metadata"].get("service_tier") == requested_tier
+    assert event.raw_usage_metadata["response_metadata"].get("service_tier") == returned_tier
+    assert "private-prompt-marker" not in event.model_dump_json()
+    catalog = load_model_pricing_catalog_payload(
+        {
+            "version": "tier-test-pricing",
+            "currency": "usd",
+            "rules": [
+                {
+                    "id": "standard",
+                    "provider": "openai",
+                    "models": ["tier-model"],
+                    "effective_from": "2020-01-01T00:00:00Z",
+                    "currency": "usd",
+                    "rates_per_1m_tokens": {"input": "1.00", "output": "1.00"},
+                },
+                {
+                    "id": "priority",
+                    "provider": "openai",
+                    "models": ["tier-model"],
+                    "effective_from": "2020-01-01T00:00:00Z",
+                    "currency": "usd",
+                    "rates_per_1m_tokens": {"input": "3.00", "output": "5.00"},
+                    "service_tier": "priority",
+                },
+            ],
+        }
+    )
+    estimate = estimate_model_usage_cost(event, catalog)
+    assert estimate.status == "estimated"
+    assert estimate.pricing_rule_id == expected_rule
+    assert estimate.estimated_total == Decimal(expected_cost)
 
 
 def test_relay_returns_503_without_api_key(tmp_path: Path) -> None:
@@ -621,7 +722,12 @@ def test_relay_enforces_image_generation_request_limit_before_upstream(
     assert called is False
 
 
-def test_image_usage_audit_does_not_persist_prompt_or_generated_data(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "service_tier", [None, "private-tier-marker", {"private-tier-marker": True}]
+)
+def test_image_usage_audit_does_not_persist_prompt_or_generated_data(
+    tmp_path: Path, service_tier: object
+) -> None:
     config = make_config(tmp_path)
     register_model_usage_correlation_context(
         runtime_dir=config.runtime_dir,
@@ -631,12 +737,13 @@ def test_image_usage_audit_does_not_persist_prompt_or_generated_data(tmp_path: P
     )
     relay = OpenAIRelay(config)
     request_body = json.dumps(
-        {"model": "gpt-image-2", "prompt": "private-prompt-marker"}
+        {"model": "gpt-image-2", "prompt": "private-prompt-marker", "service_tier": service_tier}
     ).encode("utf-8")
     response = httpx.Response(
         200,
         json={
             "data": [{"b64_json": "private-image-marker"}],
+            "service_tier": service_tier,
             "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
         },
     )
@@ -657,6 +764,7 @@ def test_image_usage_audit_does_not_persist_prompt_or_generated_data(tmp_path: P
     assert events[0].total_tokens == 5
     assert "private-prompt-marker" not in serialized
     assert "private-image-marker" not in serialized
+    assert "private-tier-marker" not in serialized
 
 
 def test_relay_rejects_missing_session_id(tmp_path: Path) -> None:
