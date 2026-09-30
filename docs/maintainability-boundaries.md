@@ -31,6 +31,7 @@ in the original entry point when existing callers use them.
 | Session policy UI | `features/sessions/SessionsScreen.tsx` | `sessionApprovalSettings.ts` owns typed approval policy normalization; `SessionPolicyModals.tsx` owns renewal and approval-settings dialogs. The screen retains data loading and mutation orchestration. |
 | Realtime voice origin queries | `DidwwSipBridgeService` | `didww_origin_queries.DidwwOriginQueryHandling` owns delegated origin-query calls, polling, acknowledgement, timeout, and terminal response handling. |
 | OpenAI usage accounting | `OpenAIRelay` | `relays.openai_usage.OpenAIUsageAccounting` owns usage extraction, stream aggregation, and provider request correlation. The relay retains transport and policy orchestration. |
+| Teams credential migration | `credentials.migration.migrate_teams` | A fresh `_TeamsCredentialMigration` inspects identity bindings and legacy sources before mutation. Input revalidation, all credential imports, the encrypted recovery snapshot, reference switches, and source retirement remain in that order under one configuration mutation lock; partial switches reuse durable migration markers. |
 
 ## Contracts to preserve
 

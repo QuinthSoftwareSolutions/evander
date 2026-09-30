@@ -35,6 +35,9 @@
 - Apply administrative task edits through a typed request and ordered graph,
   contract, lifecycle, preparation, blocker-repair, and wake stages, preserving
   explicit clears and revision-checked transactional events.
+- Separate Teams credential migration inspection, import, reference switching,
+  and source retirement, retaining one maintenance lock and the encrypted backup
+  boundary so interrupted migrations reuse durable imports safely.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

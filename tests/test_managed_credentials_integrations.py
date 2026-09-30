@@ -805,6 +805,35 @@ def legacy_teams_source(admin):
     return source
 
 
+def test_teams_migration_backup_failure_preserves_source_and_references_for_retry(
+    admin, monkeypatch
+):
+    import evander.credentials.migration as migration
+
+    source = legacy_teams_source(admin)
+    before = source.read_bytes()
+
+    def fail_backup(*args):
+        raise OSError("synthetic backup failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(migration, "encrypted_backup", fail_backup)
+        with pytest.raises(OSError, match="synthetic backup failure"):
+            migrate_teams(admin, apply=True, maintenance=True)
+
+    config = admin.runtime.provider_config.resolve_for_directory("root")
+    assert not config.teams_delegated_credential_ref
+    assert source.read_bytes() == before
+    imported = admin.credential_admin.store.list_metadata()
+    assert len(imported) == 1
+
+    result = migrate_teams(admin, apply=True, maintenance=True)
+    config = admin.runtime.provider_config.resolve_for_directory("root")
+    assert result["applied"] and not source.exists()
+    assert config.teams_delegated_credential_ref == imported[0]["id"]
+    assert len(admin.credential_admin.store.list_metadata()) == 1
+
+
 def test_teams_migration_resumes_after_interrupted_config_switch(admin, monkeypatch):
     import evander.credentials.migration as migration
 
