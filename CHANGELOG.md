@@ -67,6 +67,10 @@
   rendering, and action handlers. Keep the entry point focused on composition,
   preserve delegated event order and mutation guards, and remove unused legacy
   renderers. Verify module publication and exercise the actual controllers.
+- Extract Team copying and template materialization into typed requests and
+  ordered application stages. Keep revision checks and managed repository binding
+  locks in the admin facade, retaining configuration selection, ID allocation,
+  reporting links, cost budgets, and atomic graph creation.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

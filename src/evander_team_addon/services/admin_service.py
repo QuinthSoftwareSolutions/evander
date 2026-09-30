@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
-import json
 import os
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -28,7 +26,6 @@ from ..models import (
     AgentProjectAssignmentKind,
     AgentRuntime as AgentRuntime,
     AgentStatus,
-    AgentTask,
     AgentVoiceProfile,
     Deliverable,
     DeliverableOutcome,
@@ -69,7 +66,6 @@ from ..models import (
     TeamCase,
     TeamCaseStatus,
     TeamCostBudgetRenewalMode,
-    TeamCostBudgetWindow,
     TeamCostBudgetWindowKind,
     TeamInboxPriority,
     TeamGitPreparationAttemptState,
@@ -83,14 +79,12 @@ from ..models import (
     TeamState,
     TaskCompletion,
     TeamTaskKind,
-    _ensure_unique,
     _unique_text_list,
     agent_project_ids,
     external_source_evidence_content_digest,
     outcome_kind_snapshots,
     release_package_payload_with_derived,
 )
-from ..templates import get_template
 from .domain.agent_access import (
     _agent_for_session,
     _agent_governs_team,
@@ -128,18 +122,12 @@ from .domain.common import (
     _cost_warning_ratio,
     _generated_id,
     _mapping,
-    _materialize_role_inputs,
-    _materialized_template_record_id,
-    _optional_bool,
     _optional_cost_limit,
     _optional_text,
-    _ordered_template_roles,
-    _project_git_config,
     _project_goals_with_generated_ids,
     _remove_value,
     _require_absent,
     _require_present,
-    _required_mapping,
     _required_text,
     _unique_id_from_base,
 )
@@ -150,7 +138,6 @@ from .domain.context_rotation import (
     _set_context_clearing_idle_grace_seconds as _set_context_clearing_idle_grace_seconds,
     _set_context_clearing_policy as _set_context_clearing_policy,
 )
-from .domain.work_lineage import ensure_task_work_lineages
 from .domain.deliverables import (
     _superseded_deliverable_for_rework,
     _validate_deliverable_outcomes_against_task_contract,
@@ -219,107 +206,25 @@ from .candidate_correction_reconciliation_service import (
 )
 from .task_administration import TeamTaskAdministration
 from .agent_update_application import AgentUpdateApplication, AgentUpdateRequest
+from .team_copy_application import TeamCopyApplication, TeamCopyRequest
+from .template_materialization_application import (
+    TemplateMaterializationApplication,
+    TemplateMaterializationRequest,
+)
+from .domain.team_copy import team_copy_configuration_token as team_copy_configuration_token
+from .domain.team_cost_budget import (
+    _cost_budget_renewal_mode,
+    _active_team_cost_budget_window,
+    _close_active_team_cost_budget_window,
+    _open_team_cost_budget_window,
+    _next_utc_month_start,
+    _advance_team_cost_budget_window,
+    _team_cost_budget_window_advance_due,
+)
 
 
 def utc_now() -> datetime:
     return _team_common.utc_now()
-
-
-def _cost_budget_renewal_mode(value: object) -> TeamCostBudgetRenewalMode:
-    text = _optional_text(value)
-    if text is None:
-        return TeamCostBudgetRenewalMode.MANUAL
-    try:
-        return TeamCostBudgetRenewalMode(text)
-    except ValueError:
-        allowed = ", ".join(item.value for item in TeamCostBudgetRenewalMode)
-        raise ValueError(f"cost_budget_renewal_mode must be one of: {allowed}") from None
-
-
-def _active_team_cost_budget_window(team: Team) -> TeamCostBudgetWindow | None:
-    return next((window for window in team.cost_budget_windows if window.ended_at is None), None)
-
-
-def _close_active_team_cost_budget_window(team: Team, *, ended_at: datetime) -> None:
-    active_window = _active_team_cost_budget_window(team)
-    if active_window is not None:
-        active_window.ended_at = ended_at
-
-
-def _open_team_cost_budget_window(
-    team: Team,
-    *,
-    now: datetime,
-    kind: TeamCostBudgetWindowKind,
-    actor: str,
-    reason: str,
-) -> TeamCostBudgetWindow:
-    if team.max_cost_usd is None:
-        raise ValueError("a cost budget window requires max_cost_usd")
-    _close_active_team_cost_budget_window(team, ended_at=now)
-    window = TeamCostBudgetWindow(
-        id=f"team-cost-budget-{uuid4().hex}",
-        started_at=now,
-        kind=kind,
-        actor=actor,
-        reason=reason,
-        max_cost_usd=team.max_cost_usd,
-    )
-    team.cost_budget_windows.append(window)
-    return window
-
-
-def _next_utc_month_start(value: datetime) -> datetime:
-    normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    if normalized.month == 12:
-        return datetime(normalized.year + 1, 1, 1, tzinfo=UTC)
-    return datetime(normalized.year, normalized.month + 1, 1, tzinfo=UTC)
-
-
-def _advance_team_cost_budget_window(team: Team, *, now: datetime) -> bool:
-    if (
-        team.max_cost_usd is None
-        or team.cost_budget_renewal_mode != TeamCostBudgetRenewalMode.MONTHLY_UTC
-    ):
-        return False
-    active_window = _active_team_cost_budget_window(team)
-    if active_window is None:
-        # A pre-window Team stays lifetime-based until an operator resets it.
-        return False
-    effective_now = now.astimezone(UTC) if now.tzinfo is not None else now.replace(tzinfo=UTC)
-    next_boundary = _next_utc_month_start(active_window.started_at)
-    if active_window.monthly_renewal_not_before is not None:
-        next_boundary = max(next_boundary, active_window.monthly_renewal_not_before)
-    advanced = False
-    while next_boundary <= effective_now:
-        _open_team_cost_budget_window(
-            team,
-            now=next_boundary,
-            kind=TeamCostBudgetWindowKind.MONTHLY_RENEWAL,
-            actor="system:team-cost-budget-renewal",
-            reason="UTC monthly cost budget renewal.",
-        )
-        next_boundary = _next_utc_month_start(next_boundary)
-        advanced = True
-    return advanced
-
-
-def _team_cost_budget_window_advance_due(team: Team, *, now: datetime) -> bool:
-    """Return whether advancing this Team would open a new monthly window."""
-
-    if (
-        team.max_cost_usd is None
-        or team.cost_budget_renewal_mode != TeamCostBudgetRenewalMode.MONTHLY_UTC
-    ):
-        return False
-    active_window = _active_team_cost_budget_window(team)
-    if active_window is None:
-        return False
-    effective_now = now.astimezone(UTC) if now.tzinfo is not None else now.replace(tzinfo=UTC)
-    next_boundary = _next_utc_month_start(active_window.started_at)
-    if active_window.monthly_renewal_not_before is not None:
-        next_boundary = max(next_boundary, active_window.monthly_renewal_not_before)
-    return next_boundary <= effective_now
 
 
 def _default_memory_scope(project_id: str | None, agent_id: str | None) -> str:
@@ -518,225 +423,6 @@ def _git_work_context_session_id_for_cleanup_scope(
         return dispatch.session_id
     agent = state.agents.get(context.agent_id)
     return agent.session_id if agent is not None else None
-
-
-def _team_copy_source_configuration(
-    state: TeamState,
-    source_team_id: str,
-) -> dict[str, Any]:
-    source_team = _require_present(state.teams, source_team_id, "source team")
-    if source_team.archived:
-        raise ValueError("archived source teams cannot be copied")
-    included_projects = {
-        project.id: project
-        for project in state.projects.values()
-        if project.team_id == source_team.id
-        and project.status in {ProjectStatus.ACTIVE, ProjectStatus.BLOCKED}
-    }
-    ordered_included_project_ids = [
-        project_id
-        for project_id in source_team.project_ids
-        if project_id in included_projects
-    ]
-    ordered_included_project_ids.extend(
-        sorted(set(included_projects) - set(ordered_included_project_ids))
-    )
-    included_roles = {
-        role.id: role
-        for role in state.roles.values()
-        if role.team_id == source_team.id
-        and not role.archived
-        and (role.project_id is None or role.project_id in included_projects)
-    }
-    included_agents = {
-        agent.id: agent
-        for agent in state.agents.values()
-        if agent.team_id == source_team.id
-        and agent.status != AgentStatus.ARCHIVED
-        and agent.role_id in included_roles
-    }
-    included_outcome_kinds = {
-        definition.id: definition
-        for definition in state.outcome_kind_definitions.values()
-        if definition.team_id == source_team.id
-        and not definition.archived
-        and (definition.project_id is None or definition.project_id in included_projects)
-    }
-    included_review_profiles = {
-        profile.id: profile
-        for profile in state.review_profiles.values()
-        if profile.team_id == source_team.id
-        and not profile.archived
-        and (profile.project_id is None or profile.project_id in included_projects)
-    }
-
-    def require_included(
-        record_id: str | None,
-        collection: Mapping[str, Any],
-        label: str,
-    ) -> None:
-        if record_id is not None and record_id not in collection:
-            raise ValueError(
-                f"source team current configuration depends on excluded {label} {record_id}"
-            )
-
-    require_included(source_team.manager_agent_id, included_agents, "agent")
-    for project in included_projects.values():
-        require_included(project.lead_agent_id, included_agents, "agent")
-        if project.release_policy is not None:
-            for requirement in project.release_policy.review_requirements:
-                require_included(requirement.reviewer_agent_id, included_agents, "agent")
-                require_included(
-                    requirement.review_profile_id,
-                    included_review_profiles,
-                    "review profile",
-                )
-    for agent in included_agents.values():
-        require_included(agent.role_id, included_roles, "role")
-        require_included(agent.reports_to_agent_id, included_agents, "superior agent")
-    for profile in included_review_profiles.values():
-        for role_id in profile.applicable_role_ids:
-            require_included(role_id, included_roles, "role")
-
-    included_assignments = {
-        assignment.id: assignment
-        for assignment in state.project_assignments.values()
-        if assignment.team_id == source_team.id
-        and assignment.project_id in included_projects
-        and assignment.agent_id in included_agents
-        and (assignment.role_id is None or assignment.role_id in included_roles)
-    }
-    for assignment in included_assignments.values():
-        require_included(assignment.agent_id, included_agents, "agent")
-        require_included(assignment.role_id, included_roles, "role")
-
-    return {
-        "team": source_team,
-        "projects": included_projects,
-        "ordered_project_ids": ordered_included_project_ids,
-        "roles": included_roles,
-        "agents": included_agents,
-        "outcome_kinds": included_outcome_kinds,
-        "review_profiles": included_review_profiles,
-        "assignments": included_assignments,
-    }
-
-
-def team_copy_configuration_token(state: TeamState, source_team_id: str) -> str:
-    """Fingerprint only the stable source graph that a clean Team copy consumes."""
-
-    configuration = _team_copy_source_configuration(state, source_team_id)
-    source_team: Team = configuration["team"]
-    team_payload = source_team.model_dump(
-        mode="json",
-        exclude={
-            "cost_budget_windows",
-            "created_at",
-            "updated_at",
-            "escalate_to_governance",
-            "project_ids",
-        },
-    )
-    project_payloads: list[dict[str, Any]] = []
-    for project in sorted(configuration["projects"].values(), key=lambda item: item.id):
-        project_payload = project.model_dump(
-            mode="json",
-            exclude={"created_at", "updated_at", "goals", "status"},
-        )
-        project_payload["goals"] = [
-            {"description": goal.description}
-            for goal in project.goals
-        ]
-        project_payloads.append(project_payload)
-
-    def stable_records(collection: str) -> list[dict[str, Any]]:
-        return [
-            record.model_dump(
-                mode="json",
-                exclude={"created_at", "updated_at", "archived"},
-            )
-            for record in sorted(
-                configuration[collection].values(),
-                key=lambda item: item.id,
-            )
-        ]
-
-    included_agent_ids = set(configuration["agents"])
-    agent_payloads: list[dict[str, Any]] = []
-    for agent in sorted(configuration["agents"].values(), key=lambda item: item.id):
-        agent_payload = agent.model_dump(
-            mode="json",
-            exclude={"status", "retired_team_id", "subordinate_agent_ids"},
-        )
-        agent_payload["subordinate_agent_ids"] = [
-            subordinate_id
-            for subordinate_id in agent.subordinate_agent_ids
-            if subordinate_id in included_agent_ids
-        ]
-        agent_payloads.append(agent_payload)
-    assignment_payloads = [
-        assignment.model_dump(
-            mode="json",
-            exclude={"id", "created_at", "updated_at"},
-        )
-        for assignment in sorted(
-            configuration["assignments"].values(),
-            key=lambda item: item.id,
-        )
-    ]
-    payload = {
-        "team": team_payload,
-        "ordered_project_ids": configuration["ordered_project_ids"],
-        "projects": project_payloads,
-        "roles": stable_records("roles"),
-        "agents": agent_payloads,
-        "assignments": assignment_payloads,
-        "review_profiles": stable_records("review_profiles"),
-        "outcome_kinds": stable_records("outcome_kinds"),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
-
-
-def _validated_team_copy_session_ids(
-    agent_session_ids: Mapping[str, object],
-    included_agents: Mapping[str, PersistentAgent],
-    current_state: TeamState,
-) -> dict[str, str]:
-    """Require one new, distinct session for every agent in a team copy."""
-    normalized_session_ids = {
-        _required_text(source_agent_id, "agent_session_ids key"): _required_text(
-            session_id,
-            f"agent_session_ids.{source_agent_id}",
-        )
-        for source_agent_id, session_id in agent_session_ids.items()
-    }
-    expected_agent_ids = set(included_agents)
-    supplied_agent_ids = set(normalized_session_ids)
-    missing_agent_ids = sorted(expected_agent_ids - supplied_agent_ids)
-    extra_agent_ids = sorted(supplied_agent_ids - expected_agent_ids)
-    if missing_agent_ids or extra_agent_ids:
-        details: list[str] = []
-        if missing_agent_ids:
-            details.append("missing: " + ", ".join(missing_agent_ids))
-        if extra_agent_ids:
-            details.append("unexpected: " + ", ".join(extra_agent_ids))
-        raise ValueError(
-            "agent_session_ids must exactly match copied agents (" + "; ".join(details) + ")"
-        )
-    session_values = list(normalized_session_ids.values())
-    if len(session_values) != len(set(session_values)):
-        raise ValueError("agent_session_ids must assign a distinct session to every copied agent")
-    bound_sessions = {
-        agent.session_id: agent.id for agent in current_state.agents.values() if agent.session_id
-    }
-    reused_sessions = sorted(set(session_values) & set(bound_sessions))
-    if reused_sessions:
-        bindings = ", ".join(
-            f"{session_id} ({bound_sessions[session_id]})" for session_id in reused_sessions
-        )
-        raise ValueError(f"agent sessions are already bound to Team agents: {bindings}")
-    return normalized_session_ids
 
 
 class TeamAdminService(TeamTaskAdministration):
@@ -1767,324 +1453,24 @@ class TeamAdminService(TeamTaskAdministration):
     ) -> tuple[TeamState, dict[str, Any]]:
         """Create a clean configuration clone of an existing agent team."""
 
-        normalized_source_team_id = _required_text(source_team_id, "source_team_id")
-        normalized_team_id = _optional_text(team_id)
-        normalized_name = _required_text(name, "name")
-        if not isinstance(agent_session_ids, Mapping):
-            raise ValueError("agent_session_ids must be a JSON object")
-
+        request = TeamCopyRequest.from_inputs(
+            source_team_id=source_team_id,
+            team_id=team_id,
+            name=name,
+            agent_session_ids=agent_session_ids,
+        )
         current_state = self._repository.read()
-        configuration = _team_copy_source_configuration(
-            current_state,
-            normalized_source_team_id,
-        )
-        source_team = configuration["team"]
-        included_projects = configuration["projects"]
-        ordered_included_project_ids = configuration["ordered_project_ids"]
-        included_roles = configuration["roles"]
-        included_agents = configuration["agents"]
-        included_outcome_kinds = configuration["outcome_kinds"]
-        included_review_profiles = configuration["review_profiles"]
-        included_assignments = configuration["assignments"]
-
-        normalized_session_ids = _validated_team_copy_session_ids(
-            agent_session_ids,
-            included_agents,
-            current_state,
-        )
-
-        effective_team_id = normalized_team_id or _generated_id(
-            prefix="team",
-            labels=[normalized_name],
-            existing_ids=current_state.teams,
-        )
-        _require_absent(current_state.teams, effective_team_id, "team")
-
-        used_project_ids = set(current_state.projects)
-        project_ids: dict[str, str] = {}
-        for source_project in sorted(included_projects.values(), key=lambda item: item.id):
-            copied_id = _generated_id(
-                prefix="project",
-                labels=[effective_team_id, source_project.name],
-                existing_ids=used_project_ids,
-            )
-            project_ids[source_project.id] = copied_id
-            used_project_ids.add(copied_id)
-
-        used_role_ids = set(current_state.roles)
-        role_ids: dict[str, str] = {}
-        for source_role in sorted(included_roles.values(), key=lambda item: item.id):
-            copied_id = _generated_id(
-                prefix="role",
-                labels=[
-                    project_ids.get(source_role.project_id or "", effective_team_id),
-                    source_role.name,
-                ],
-                existing_ids=used_role_ids,
-            )
-            role_ids[source_role.id] = copied_id
-            used_role_ids.add(copied_id)
-
-        used_agent_ids = set(current_state.agents)
-        agent_ids: dict[str, str] = {}
-        for source_agent in sorted(included_agents.values(), key=lambda item: item.id):
-            source_role = current_state.roles.get(source_agent.role_id or "")
-            copied_id = _generated_id(
-                prefix="agent",
-                labels=[
-                    effective_team_id,
-                    source_agent.display_name
-                    or (source_role.name if source_role else source_agent.id),
-                ],
-                existing_ids=used_agent_ids,
-            )
-            agent_ids[source_agent.id] = copied_id
-            used_agent_ids.add(copied_id)
-
-        used_outcome_kind_ids = set(current_state.outcome_kind_definitions)
-        outcome_kind_ids: dict[str, str] = {}
-        for definition in sorted(included_outcome_kinds.values(), key=lambda item: item.id):
-            copied_id = _generated_id(
-                prefix="outcome-kind",
-                labels=[
-                    project_ids.get(definition.project_id or "", effective_team_id),
-                    definition.kind,
-                ],
-                existing_ids=used_outcome_kind_ids,
-            )
-            outcome_kind_ids[definition.id] = copied_id
-            used_outcome_kind_ids.add(copied_id)
-
-        used_profile_ids = set(current_state.review_profiles)
-        review_profile_ids: dict[str, str] = {}
-        for profile in sorted(included_review_profiles.values(), key=lambda item: item.id):
-            copied_id = _generated_id(
-                prefix="profile",
-                labels=[
-                    project_ids.get(profile.project_id or "", effective_team_id),
-                    profile.name,
-                ],
-                existing_ids=used_profile_ids,
-            )
-            review_profile_ids[profile.id] = copied_id
-            used_profile_ids.add(copied_id)
-
-        result: dict[str, Any] = {
-            "source_team_id": source_team.id,
-            "team_id": effective_team_id,
-            "project_ids": project_ids,
-            "role_ids": role_ids,
-            "agent_ids": agent_ids,
-            "outcome_kind_definition_ids": outcome_kind_ids,
-            "review_profile_ids": review_profile_ids,
-        }
-
-        def _mutate(state: TeamState) -> TeamState:
-            _require_present(state.teams, source_team.id, "source team")
-            _require_absent(state.teams, effective_team_id, "team")
-            for copied_id in project_ids.values():
-                _require_absent(state.projects, copied_id, "project")
-            for copied_id in role_ids.values():
-                _require_absent(state.roles, copied_id, "role")
-            for copied_id in agent_ids.values():
-                _require_absent(state.agents, copied_id, "agent")
-            for copied_id in outcome_kind_ids.values():
-                _require_absent(
-                    state.outcome_kind_definitions,
-                    copied_id,
-                    "outcome kind definition",
-                )
-            for copied_id in review_profile_ids.values():
-                _require_absent(state.review_profiles, copied_id, "review profile")
-            now = utc_now()
-
-            for source_role in included_roles.values():
-                copied_role = source_role.model_copy(
-                    update={
-                        "id": role_ids[source_role.id],
-                        "team_id": effective_team_id,
-                        "project_id": project_ids.get(source_role.project_id or ""),
-                        "archived": False,
-                        "created_at": now,
-                        "updated_at": now,
-                    },
-                    deep=True,
-                )
-                state.roles[copied_role.id] = copied_role
-
-            for source_agent in included_agents.values():
-                copied_agent = source_agent.model_copy(
-                    update={
-                        "id": agent_ids[source_agent.id],
-                        "team_id": effective_team_id,
-                        "role_id": role_ids[source_agent.role_id],
-                        "session_id": normalized_session_ids[source_agent.id],
-                        "reports_to_agent_id": agent_ids.get(
-                            source_agent.reports_to_agent_id or ""
-                        ),
-                        "retired_team_id": None,
-                        "subordinate_agent_ids": [
-                            agent_ids[subordinate_id]
-                            for subordinate_id in source_agent.subordinate_agent_ids
-                            if subordinate_id in agent_ids
-                        ],
-                        "status": AgentStatus.ACTIVE,
-                    },
-                    deep=True,
-                )
-                state.agents[copied_agent.id] = copied_agent
-
-            copied_team = source_team.model_copy(
-                update={
-                    "id": effective_team_id,
-                    "name": normalized_name,
-                    "manager_agent_id": agent_ids[source_team.manager_agent_id],
-                    "project_ids": [
-                        project_ids[project_id] for project_id in ordered_included_project_ids
-                    ],
-                    "cost_budget_windows": [],
-                    "escalate_to_governance": False,
-                    "archived": False,
-                    "created_at": now,
-                    "updated_at": now,
-                },
-                deep=True,
-            )
-            if copied_team.max_cost_usd is not None:
-                _open_team_cost_budget_window(
-                    copied_team,
-                    now=now,
-                    kind=TeamCostBudgetWindowKind.CONFIGURED,
-                    actor="operator:team-copy",
-                    reason=f"Initial cost budget copied from Team {source_team.id}.",
-                )
-            state.teams[copied_team.id] = copied_team
-
-            copied_goals_by_project: dict[str, list[ProjectGoal]] = {}
-            for source_project in included_projects.values():
-                copied_project_id = project_ids[source_project.id]
-                used_goal_ids: set[str] = set()
-                copied_goals: list[ProjectGoal] = []
-                for source_goal in source_project.goals:
-                    goal_id = _generated_id(
-                        prefix="goal",
-                        labels=[copied_project_id, source_goal.description],
-                        existing_ids=used_goal_ids,
-                    )
-                    used_goal_ids.add(goal_id)
-                    copied_goals.append(
-                        source_goal.model_copy(
-                            update={"id": goal_id, "state": TeamRecordState.PENDING},
-                            deep=True,
-                        )
-                    )
-                copied_goals_by_project[source_project.id] = copied_goals
-
-            for source_profile in included_review_profiles.values():
-                copied_profile = source_profile.model_copy(
-                    update={
-                        "id": review_profile_ids[source_profile.id],
-                        "team_id": effective_team_id,
-                        "project_id": project_ids.get(source_profile.project_id or ""),
-                        "applicable_role_ids": [
-                            role_ids[role_id] for role_id in source_profile.applicable_role_ids
-                        ],
-                        "archived": False,
-                        "created_at": now,
-                        "updated_at": now,
-                    },
-                    deep=True,
-                )
-                state.review_profiles[copied_profile.id] = copied_profile
-
-            for source_definition in included_outcome_kinds.values():
-                copied_definition = source_definition.model_copy(
-                    update={
-                        "id": outcome_kind_ids[source_definition.id],
-                        "team_id": effective_team_id,
-                        "project_id": project_ids.get(source_definition.project_id or ""),
-                        "archived": False,
-                        "created_at": now,
-                        "updated_at": now,
-                    },
-                    deep=True,
-                )
-                state.outcome_kind_definitions[copied_definition.id] = copied_definition
-
-            for source_project in included_projects.values():
-                release_policy = source_project.release_policy
-                if release_policy is not None:
-                    release_policy = release_policy.model_copy(
-                        update={
-                            "review_requirements": [
-                                requirement.model_copy(
-                                    update={
-                                        "reviewer_agent_id": agent_ids[
-                                            requirement.reviewer_agent_id
-                                        ],
-                                        "review_profile_id": review_profile_ids[
-                                            requirement.review_profile_id
-                                        ],
-                                    },
-                                    deep=True,
-                                )
-                                for requirement in release_policy.review_requirements
-                            ]
-                        },
-                        deep=True,
-                    )
-                copied_project = source_project.model_copy(
-                    update={
-                        "id": project_ids[source_project.id],
-                        "team_id": effective_team_id,
-                        "lead_agent_id": agent_ids[source_project.lead_agent_id],
-                        "goals": copied_goals_by_project[source_project.id],
-                        "release_policy": release_policy,
-                        "status": ProjectStatus.ACTIVE,
-                        "created_at": now,
-                        "updated_at": now,
-                    },
-                    deep=True,
-                )
-                state.projects[copied_project.id] = copied_project
-
-            for source_assignment in included_assignments.values():
-                copied_project_id = project_ids[source_assignment.project_id]
-                copied_agent_id = agent_ids[source_assignment.agent_id]
-                copied_assignment_id = _project_assignment_id(
-                    copied_project_id,
-                    copied_agent_id,
-                    source_assignment.kind,
-                    existing_ids=state.project_assignments,
-                )
-                state.project_assignments[copied_assignment_id] = source_assignment.model_copy(
-                    update={
-                        "id": copied_assignment_id,
-                        "team_id": effective_team_id,
-                        "project_id": copied_project_id,
-                        "agent_id": copied_agent_id,
-                        "role_id": role_ids.get(source_assignment.role_id or ""),
-                        "created_at": now,
-                        "updated_at": now,
-                    },
-                    deep=True,
-                )
-            return state
-
-        project_bindings = {
-            project_ids[source_project.id]: source_project.git.managed_repo_id
-            for source_project in included_projects.values()
-            if source_project.git is not None
-        }
+        application = TeamCopyApplication(snapshot=current_state, request=request, clock=utc_now)
+        application.prepare()
         state = self._update_with_new_project_repository_bindings(
-            _mutate,
-            project_bindings=project_bindings,
+            application.apply,
+            project_bindings=application.project_bindings,
             expected_revision=(
                 current_state.revision if expected_revision is None else expected_revision
             ),
         )
-        result["revision"] = state.revision
-        return state, result
+        application.result["revision"] = state.revision
+        return state, application.result
 
     def update_team(
         self,
@@ -4522,383 +3908,27 @@ class TeamAdminService(TeamTaskAdministration):
         inputs: Mapping[str, Any],
         expected_revision: int | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
-        normalized_template_id = _required_text(template_id, "template_id")
-        template = get_template(normalized_template_id)
-        if template is None:
-            raise ValueError(f"template {normalized_template_id} does not exist")
-
-        normalized_inputs = _mapping(inputs, "inputs")
-        team_input = _required_mapping(normalized_inputs, "team")
-        project_input = _required_mapping(normalized_inputs, "project")
-        team_name = _required_text(team_input.get("name"), "team.name")
-        operator_communication_target_id = _optional_text(
-            team_input.get("operator_communication_target_id")
+        request = TemplateMaterializationRequest.from_inputs(template_id, inputs=inputs)
+        application = TemplateMaterializationApplication(
+            snapshot=self._repository.read(),
+            request=request,
+            clock=utc_now,
+            git_default_branch_resolver=self._resolve_managed_git_default_branch,
         )
-        escalate_to_governance = _optional_bool(
-            team_input.get("escalate_to_governance"),
-            "team.escalate_to_governance",
-        )
-        max_cost_usd = team_input.get("max_cost_usd") if "max_cost_usd" in team_input else None
-        cost_warning_ratio = _cost_warning_ratio(team_input.get("cost_warning_ratio"))
-        cost_budget_renewal_mode = _cost_budget_renewal_mode(
-            team_input.get("cost_budget_renewal_mode")
-        )
-        project_name = _required_text(project_input.get("name"), "project.name")
-        git = _project_git_config(project_input.get("git"))
-
-        role_inputs = _materialize_role_inputs(
-            template, normalized_inputs, team_input, project_input
-        )
-        current_state = self._repository.read()
-        team_id = _optional_text(team_input.get("id")) or _generated_id(
-            prefix="team",
-            labels=[team_name],
-            existing_ids=current_state.teams,
-        )
-        project_id = _optional_text(project_input.get("id")) or _generated_id(
-            prefix="project",
-            labels=[team_id, project_name],
-            existing_ids=current_state.projects,
-        )
-        goal_ids = {
-            goal.id: _unique_id_from_base(
-                _materialized_template_record_id(project_id, goal.id),
-                existing_ids=set(),
-            )
-            for goal in template.project_goals
-        }
-        used_review_profile_ids = set(current_state.review_profiles)
-        review_profile_ids = {
-            profile.id: _unique_id_from_base(
-                _materialized_template_record_id(project_id, profile.id),
-                existing_ids=used_review_profile_ids,
-            )
-            for profile in template.review_profiles
-        }
-        used_review_profile_ids.update(review_profile_ids.values())
-        used_outcome_kind_ids = set(current_state.outcome_kind_definitions)
-        outcome_kind_ids = {
-            definition.kind: _unique_id_from_base(
-                _materialized_template_record_id(
-                    project_id if definition.project_scoped else team_id,
-                    f"outcome-kind-{definition.kind}",
-                ),
-                existing_ids=used_outcome_kind_ids,
-            )
-            for definition in template.outcome_kinds
-        }
-        used_outcome_kind_ids.update(outcome_kind_ids.values())
-        used_task_ids = set(current_state.tasks)
-        task_ids = {
-            task.id: _unique_id_from_base(
-                _materialized_template_record_id(project_id, task.id),
-                existing_ids=used_task_ids,
-            )
-            for task in template.tasks
-        }
-        used_task_ids.update(task_ids.values())
-        used_role_ids = set(current_state.roles)
-        role_ids: dict[str, str] = {}
-        for role in template.roles:
-            role_id = _unique_id_from_base(
-                _default_role_id(
-                    team_id=team_id,
-                    project_id=None if role.key == template.root_role_key else project_id,
-                    role_key=role.key,
-                ),
-                existing_ids=used_role_ids,
-            )
-            used_role_ids.add(role_id)
-            role_ids[role.key] = role_id
-        used_agent_ids = set(current_state.agents)
-        for role in template.roles:
-            role_input = role_inputs[role.key]
-            agent_id = _optional_text(role_input.get("agent_id", role_input.get("id")))
-            if agent_id is None:
-                agent_id = _generated_id(
-                    prefix="agent",
-                    labels=[
-                        team_id if role.key == template.root_role_key else project_id,
-                        role.label,
-                    ],
-                    existing_ids=used_agent_ids,
-                )
-            role_input["agent_id"] = agent_id
-            used_agent_ids.add(agent_id)
-        concrete_ids = [
-            team_id,
-            project_id,
-            *role_ids.values(),
-            *[role_input["agent_id"] for role_input in role_inputs.values()],
-            *goal_ids.values(),
-            *outcome_kind_ids.values(),
-            *review_profile_ids.values(),
-            *task_ids.values(),
-        ]
-        _ensure_unique(concrete_ids, "materialization ids")
-        _ensure_unique(
-            [role_input["session_id"] for role_input in role_inputs.values()],
-            "materialization session ids",
-        )
-
-        result: dict[str, Any] = {
-            "success": False,
-            "template_id": template.id,
-            "template_name": template.name,
-            "team_id": team_id,
-            "project_id": project_id,
-            "role_ids": role_ids,
-            "agent_ids": {key: value["agent_id"] for key, value in role_inputs.items()},
-            "goal_ids": [goal_ids[goal.id] for goal in template.project_goals],
-            "outcome_kind_definition_ids": [
-                outcome_kind_ids[definition.kind] for definition in template.outcome_kinds
-            ],
-            "review_profile_ids": [
-                review_profile_ids[profile.id] for profile in template.review_profiles
-            ],
-            "task_ids": [task_ids[task.id] for task in template.tasks],
-            "errors": [],
-        }
-
-        role_agent_ids = {role.key: role_inputs[role.key]["agent_id"] for role in template.roles}
-        root_role_key = template.root_role_key
-        root_role = next(role for role in template.roles if role.key == root_role_key)
-        if root_role.reports_to_role_key is not None:
-            raise ValueError(f"template {template.id} root role must not report upward")
-
-        def _mutate(state: TeamState) -> TeamState:
-            _require_absent(state.teams, team_id, "team")
-            _require_absent(state.projects, project_id, "project")
-            for role_key, role_id in role_ids.items():
-                _require_absent(state.roles, role_id, "role")
-            for role_key, role_input in role_inputs.items():
-                _require_absent(state.agents, role_input["agent_id"], "agent")
-            for profile in template.review_profiles:
-                _require_absent(
-                    state.review_profiles,
-                    review_profile_ids[profile.id],
-                    "review profile",
-                )
-            for definition in template.outcome_kinds:
-                _require_absent(
-                    state.outcome_kind_definitions,
-                    outcome_kind_ids[definition.kind],
-                    "outcome kind definition",
-                )
-            for task in template.tasks:
-                _require_absent(state.tasks, task_ids[task.id], "task")
-
-            now = utc_now()
-            for role in template.roles:
-                role_project_id = None if role.key == root_role_key else project_id
-                state.roles[role_ids[role.key]] = TeamRole(
-                    id=role_ids[role.key],
-                    team_id=team_id,
-                    project_id=role_project_id,
-                    name=role.label,
-                    description=role.description,
-                    permissions=_normalize_role_permissions(role.permissions),
-                    ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
-                    created_at=now,
-                    updated_at=now,
-                )
-            manager_role_input = role_inputs[root_role_key]
-            manager = PersistentAgent(
-                id=manager_role_input["agent_id"],
-                team_id=team_id,
-                role_id=role_ids[root_role_key],
-                session_id=manager_role_input["session_id"],
-                reports_to_agent_id=None,
-                ephemeral_policy=root_role.ephemeral_policy.model_copy(deep=True),
-            )
-            state.agents[manager.id] = manager
-            team = Team(
-                id=team_id,
-                name=team_name,
-                manager_agent_id=manager.id,
-                operator_communication_target_id=operator_communication_target_id,
-                escalate_to_governance=escalate_to_governance or False,
-                max_cost_usd=max_cost_usd,
-                cost_warning_ratio=cost_warning_ratio,
-                cost_budget_renewal_mode=cost_budget_renewal_mode,
-                created_at=now,
-                updated_at=now,
-            )
-            if team.max_cost_usd is not None:
-                _open_team_cost_budget_window(
-                    team,
-                    now=now,
-                    kind=TeamCostBudgetWindowKind.CONFIGURED,
-                    actor="operator:team-template",
-                    reason="Initial cost budget configured from Team template.",
-                )
-            state.teams[team_id] = team
-
-            project_goals = [
-                goal.model_copy(update={"id": goal_ids[goal.id]}, deep=True)
-                for goal in template.project_goals
-            ]
-            state.projects[project_id] = Project(
-                id=project_id,
-                team_id=team_id,
-                name=project_name,
-                lead_agent_id=role_agent_ids["project_lead"],
-                goals=project_goals,
-                git=git,
-                created_at=now,
-                updated_at=now,
-            )
-            state.teams[team_id].project_ids = _append_unique(
-                state.teams[team_id].project_ids,
-                project_id,
-            )
-
-            role_objects: dict[str, PersistentAgent] = {
-                root_role_key: manager,
-            }
-            ordered_roles = _ordered_template_roles(template)
-            for role in ordered_roles:
-                if role.key == root_role_key:
-                    continue
-                superior_role_key = role.reports_to_role_key
-                if superior_role_key is None:
-                    raise ValueError(
-                        f"template {template.id} role {role.key} is missing reports_to_role_key"
-                    )
-                superior = role_objects.get(superior_role_key)
-                if superior is None:
-                    raise ValueError(
-                        f"template {template.id} role {role.key} reports to missing role "
-                        f"{superior_role_key}"
-                    )
-                role_agent = PersistentAgent(
-                    id=role_agent_ids[role.key],
-                    team_id=team_id,
-                    role_id=role_ids[role.key],
-                    session_id=role_inputs[role.key]["session_id"],
-                    reports_to_agent_id=superior.id,
-                    ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
-                )
-                state.agents[role_agent.id] = role_agent
-                assignment_kind = (
-                    AgentProjectAssignmentKind.PROJECT_LEAD
-                    if role.key == "project_lead"
-                    else AgentProjectAssignmentKind.PROJECT_MEMBER
-                )
-                assignment_id = _project_assignment_id(
-                    project_id,
-                    role_agent.id,
-                    assignment_kind,
-                    existing_ids=state.project_assignments,
-                )
-                state.project_assignments[assignment_id] = AgentProjectAssignment(
-                    id=assignment_id,
-                    team_id=team_id,
-                    project_id=project_id,
-                    agent_id=role_agent.id,
-                    role_id=role_ids[role.key],
-                    kind=assignment_kind,
-                    created_at=now,
-                    updated_at=now,
-                )
-                superior.subordinate_agent_ids = _append_unique(
-                    superior.subordinate_agent_ids,
-                    role_agent.id,
-                )
-                role_objects[role.key] = role_agent
-            state.projects[project_id].lead_agent_id = role_agent_ids["project_lead"]
-            state.projects[project_id].updated_at = now
-            state.teams[team_id].updated_at = now
-
-            for definition_template in template.outcome_kinds:
-                definition = OutcomeKindDefinition(
-                    id=outcome_kind_ids[definition_template.kind],
-                    team_id=team_id,
-                    project_id=(project_id if definition_template.project_scoped else None),
-                    kind=definition_template.kind,
-                    name=definition_template.name,
-                    description=definition_template.description,
-                    reference_requirements=(definition_template.reference_requirements),
-                    evidence_requirements=(definition_template.evidence_requirements),
-                    created_at=now,
-                    updated_at=now,
-                )
-                state.outcome_kind_definitions[definition.id] = definition
-
-            for profile_template in template.review_profiles:
-                profile = ReviewProfile(
-                    id=review_profile_ids[profile_template.id],
-                    team_id=team_id,
-                    project_id=project_id if profile_template.project_scoped else None,
-                    name=profile_template.name,
-                    description=profile_template.description,
-                    applicable_role_ids=[
-                        role_ids[role_key] for role_key in profile_template.applicable_role_keys
-                    ],
-                    criteria=[
-                        criterion.model_copy(deep=True) for criterion in profile_template.criteria
-                    ],
-                    required_outcome_kinds=list(profile_template.required_outcome_kinds),
-                    created_at=now,
-                    updated_at=now,
-                )
-                state.review_profiles[profile.id] = profile
-
-            template_git_base_branch = (
-                _resolve_new_task_git_base_branch(
-                    state,
-                    project_id=project_id,
-                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
-                )
-                if template.tasks
-                else None
-            )
-            materialized_tasks: list[AgentTask] = []
-            for task_template in template.tasks:
-                owner_agent_id = role_agent_ids[task_template.owner_role_key]
-                created_by_agent_id = role_agent_ids[task_template.created_by_role_key]
-                dependency_task_ids = [
-                    task_ids[dependency_id] for dependency_id in task_template.dependency_task_ids
-                ]
-                state.tasks[task_ids[task_template.id]] = AgentTask(
-                    id=task_ids[task_template.id],
-                    owner_agent_id=owner_agent_id,
-                    project_id=project_id,
-                    git_base_branch=template_git_base_branch,
-                    priority=task_template.priority,
-                    state=task_template.state,
-                    title=task_template.title,
-                    description=task_template.description,
-                    created_by_agent_id=created_by_agent_id,
-                    parent_task_id=(
-                        task_ids[task_template.parent_task_id]
-                        if task_template.parent_task_id is not None
-                        else None
-                    ),
-                    dependency_task_ids=dependency_task_ids,
-                    created_at=now,
-                    updated_at=now,
-                )
-                materialized_tasks.append(state.tasks[task_ids[task_template.id]])
-            ensure_task_work_lineages(state, materialized_tasks)
-
-            result["success"] = True
-            result["created_agent_ids"] = dict(result["agent_ids"])
-            return state
-
-        if git is None:
-            state = self._repository.update(_mutate, expected_revision=expected_revision)
+        application.prepare()
+        if request.git is None:
+            state = self._repository.update(application.apply, expected_revision=expected_revision)
         else:
             state = self._update_with_project_repository_binding(
-                _mutate,
-                project_id=project_id,
-                next_managed_repo_id=git.managed_repo_id,
+                application.apply,
+                project_id=application.project_id,
+                next_managed_repo_id=request.git.managed_repo_id,
                 expected_revision=expected_revision,
             )
-        result["revision"] = state.revision
-        result["created_team_id"] = team_id
-        result["created_project_id"] = project_id
-        return state, result
+        application.result["revision"] = state.revision
+        application.result["created_team_id"] = application.team_id
+        application.result["created_project_id"] = application.project_id
+        return state, application.result
 
     def record_review_request(
         self,
