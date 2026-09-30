@@ -23,6 +23,9 @@
 - Project scoped Team state through ordered membership, work, delivery, dispatch,
   assessment, and reference-closure stages, removing a superseded task projection
   while retaining scope intersections and globally derived task assessments.
+- Consolidate agent role updates so explicit role clearing uses a defined value:
+  teamless agents may clear it, while team members receive the existing validation
+  error with their attempted edits rolled back.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

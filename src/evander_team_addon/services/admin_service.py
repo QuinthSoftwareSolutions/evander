@@ -3573,34 +3573,22 @@ class TeamAdminService(TeamTaskAdministration):
                         ),
                         kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
                     )
-            if set_role_id and not detached_from_team:
-                if normalized_role_id is not None:
-                    if agent.team_id is None:
+            if not detached_from_team and (set_role_id or role_id is not None):
+                requested_role_id = (
+                    normalized_role_id if set_role_id else normalized_role_id or role_id
+                )
+                role: TeamRole | None = None
+                if requested_role_id is not None:
+                    if set_role_id and agent.team_id is None:
                         raise ValueError("role_id cannot be set for a teamless agent")
-                    role = _require_present(state.roles, normalized_role_id, "role")
+                    role = _require_present(state.roles, requested_role_id, "role")
                     _validate_role_assignment(
                         role,
                         team_id=agent.team_id,
                         project_ids=agent_project_ids(state, agent.id),
                     )
-                agent.role_id = normalized_role_id
+                agent.role_id = requested_role_id
                 if role is not None and role.project_id is not None:
-                    for assignment in state.project_assignments.values():
-                        if (
-                            assignment.agent_id == agent.id
-                            and assignment.project_id == role.project_id
-                        ):
-                            assignment.role_id = role.id
-                            assignment.updated_at = now
-            elif role_id is not None and not detached_from_team:
-                role = _require_present(state.roles, normalized_role_id or role_id, "role")
-                _validate_role_assignment(
-                    role,
-                    team_id=agent.team_id,
-                    project_ids=agent_project_ids(state, agent.id),
-                )
-                agent.role_id = role.id
-                if role.project_id is not None:
                     for assignment in state.project_assignments.values():
                         if (
                             assignment.agent_id == agent.id
