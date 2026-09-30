@@ -16,6 +16,7 @@ from evander.admin.payloads import (
     AdminRevisionConflict,
     WorkflowNodeExecutionFieldsRequestPayload,
     WorkflowNodeExecutionSearchRequestPayload,
+    WorkflowNodeTriggerRequestPayload,
 )
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.admin.web.cache import AdminWebJsonResponseCache
@@ -28,6 +29,7 @@ from evander.admin.web.rbac import (
 )
 from evander.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from evander.admin.web.shared import json_error
+from evander.events.internal import InternalEventSource
 
 
 async def json_body(request: Request) -> dict[str, Any]:
@@ -935,6 +937,35 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
+    async def trigger_node(request: Request) -> JSONResponse:
+        try:
+            session = auth.require(request)
+            body = await json_body(request)
+            expected_revision_from_payload(body)
+            trigger_request = WorkflowNodeTriggerRequestPayload.model_validate(body)
+            result = await run_in_threadpool(
+                service.workflow_config_admin.trigger_workflow_event_node,
+                request.path_params["node_id"],
+                trigger_request,
+                source=InternalEventSource(
+                    source_type="workflow_editor_manual",
+                    user_id=str(session.get("sub") or ""),
+                    user_login=str(session.get("login") or ""),
+                ),
+                authorize_directory=lambda directory: auth.require_permission(
+                    request, WORKFLOW_RUNS_CONTROL_PERMISSION, directory_path=directory
+                ),
+            )
+        except KeyError as exc:
+            return json_error(str(exc).strip("'"), status_code=428)
+        except AdminRevisionConflict as exc:
+            return json_error(str(exc), status_code=409, details=exc.details)
+        except ValueError as exc:
+            return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(result.model_dump(mode="json"), status_code=202)
+
     async def dismiss_node_failures(request: Request) -> JSONResponse:
         node_id = request.path_params.get("node_id", "")
         try:
@@ -1250,6 +1281,7 @@ def workflow_routes(
             methods=["GET"],
         ),
         Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),
+        Route("/api/workflow-editor/nodes/{node_id:path}/trigger", trigger_node, methods=["POST"]),
         Route(
             "/api/workflow-editor/node-failures/{node_id:path}",
             dismiss_node_failures,
