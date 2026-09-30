@@ -29,6 +29,9 @@
 - Prepare task Git contexts through named base-selection, worktree, receipt,
   provenance, and commit stages, making recovery strategy priority explicit while
   retaining cleanup locks, durable receipts, and state-conflict retry metrics.
+- Collect case-history evidence through ordered scope, source, note, artifact,
+  review, conversation, and temporal-annotation phases, preserving record and
+  warning order and removing an unused review-ID accumulator.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

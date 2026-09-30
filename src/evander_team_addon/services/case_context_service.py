@@ -10,7 +10,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 import hashlib
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from evander.models import DirectoryPath
 
@@ -443,213 +443,292 @@ def collect_evidence(
     release_package_id=None,
     artifact_reader: Callable | None = None,
 ):
-    cases, tasks, deliverables, releases = resolve_scope(
+    return _CaseEvidenceCollection(
         state,
+        access=access,
         case_ids=case_ids,
         task_id=task_id,
         release_package_id=release_package_id,
-    )
-    if any(not access.case_visible(c) for c in case_ids):
-        raise PermissionError("case context is unavailable in this scope")
-    if task_id and not access.task_visible(task_id):
-        raise PermissionError("task context is unavailable in this scope")
-    if release_package_id and not access.release_visible(release_package_id):
-        raise PermissionError("release context is unavailable in this scope")
-    warnings = []
-    # Filter roots before using them to select any associated review/verification evidence.
-    visible_releases = {rid for rid in releases if access.release_visible(rid)}
-    if visible_releases != releases:
-        warnings.append({"kind": "restricted", "section": "verification"})
-    releases = visible_releases
-    visible_cases = {c for c in cases if access.case_visible(c)}
-    if visible_cases != cases:
-        warnings.append({"kind": "restricted", "section": "request"})
-    cases = visible_cases
-    if not cases:
-        raise PermissionError("case context is unavailable in this scope")
-    visible_tasks = {t for t in tasks if access.task_visible(t)}
-    if visible_tasks != tasks:
-        warnings.append({"kind": "restricted", "section": "tasks"})
-    tasks = visible_tasks
-    visible_deliverables = {
-        did
-        for did in deliverables
-        if did in state.deliverables and state.deliverables[did].task_id in tasks
-    }
-    if visible_deliverables != deliverables:
-        warnings.append({"kind": "unavailable", "section": "delivery"})
-    deliverables = visible_deliverables
-    evidence = {s: [] for s in SECTION_NAMES}
-    sources = set()
-    for cid in sorted(cases):
-        case = state.cases[cid]
-        evidence["request"].append(_row("case", case))
-        sources.update(case.source_evidence_snapshot_ids)
-        if case.source and not case.source_evidence_snapshot_ids:
-            warnings.append({"kind": "missing", "section": "sources", "case_id": cid})
-        capture = case.metadata.get("case_source_capture") or {}
-        if capture.get("status") == "unavailable":
-            warnings.append({"kind": "capture_unavailable", "section": "sources", "case_id": cid})
-    for tid in sorted(tasks):
-        task = state.tasks[tid]
-        evidence["plans"].append(
-            _row(
-                "task",
-                task,
-                {
-                    k: v
-                    for k, v in task.model_dump(mode="json").items()
-                    if k
-                    in {
-                        "id",
-                        "case_id",
-                        "title",
-                        "description",
-                        "state",
-                        "parent_task_id",
-                        "originating_task_id",
-                        "dependency_task_ids",
-                        "created_at",
-                        "updated_at",
-                    }
-                },
-            )
+        artifact_reader=artifact_reader,
+    ).collect()
+
+
+class _CaseEvidenceCollection:
+    """Collect one visible history, preserving evidence and warning order."""
+
+    cases: set[str]
+    tasks: set[str]
+    deliverables: set[str]
+    releases: set[str]
+    warnings: list[dict[str, Any]]
+    evidence: dict[str, list[dict[str, Any]]]
+    sources: set[str]
+
+    def __init__(
+        self,
+        state: TeamState,
+        *,
+        access: CaseContextAccess,
+        case_ids: Sequence[str],
+        task_id: str | None,
+        release_package_id: str | None,
+        artifact_reader: Callable | None,
+    ) -> None:
+        self.state = state
+        self.access = access
+        self.case_ids = case_ids
+        self.task_id = task_id
+        self.release_package_id = release_package_id
+        self.artifact_reader = artifact_reader
+
+    def collect(self) -> tuple[dict[str, list[dict[str, Any]]], list[str], list[dict[str, Any]]]:
+        self._select_visible_scope()
+        self.evidence = {section: [] for section in SECTION_NAMES}
+        self.sources = set()
+        self._collect_request_and_plans()
+        self._collect_sources()
+        self._collect_notes()
+        self._collect_delivery_and_artifacts()
+        self._collect_reviews_and_verification()
+        self._collect_release_summaries()
+        self._collect_conversation()
+        self._deduplicate_and_annotate()
+        return self.evidence, sorted(self.cases), self.warnings
+
+    def _select_visible_scope(self) -> None:
+        self.cases, self.tasks, self.deliverables, self.releases = resolve_scope(
+            self.state,
+            case_ids=self.case_ids,
+            task_id=self.task_id,
+            release_package_id=self.release_package_id,
         )
-        sources.update(task.source_evidence_snapshot_ids)
-    for sid in sorted(sources):
-        if not access.source_visible(sid):
-            warnings.append({"kind": "unavailable", "section": "sources"})
-            continue
-        source = state.external_source_evidence_snapshots[sid]
-        payload = external_source_evidence_snapshot_payload(source)
-        evidence["sources"].append(_row("source", source, payload))
-        if payload.get("effective_freshness_status") != "current":
-            warnings.append({"kind": "stale", "section": "sources", "source_id": sid})
-        discussion_capture = source.metadata.get("discussion_capture")
-        if discussion_capture is not None and not discussion_capture.get("complete"):
-            warnings.append(
-                {"kind": "incomplete_discussion", "section": "sources", "source_id": sid}
-            )
-    notes = legacy_notes(state)
-    superseded = {n.supersedes_note_id for n in notes.values() if access.note_visible(n)}
-    for note in sorted(notes.values(), key=lambda n: (n.created_at, n.id)):
-        relevant = (note.case_id in cases and not note.task_ids) or bool(set(note.task_ids) & tasks)
-        if relevant and access.note_visible(note):
-            content = note.model_dump(mode="json")
-            content["status"] = "superseded" if note.id in superseded else "active"
-            evidence["decisions"].append(_row("note", note, content))
-    artifact_deliverables = {did for tid in tasks for did in state.tasks[tid].deliverable_ids}
-    for did in sorted(deliverables | artifact_deliverables):
-        item = state.deliverables.get(did)
-        if not item or item.task_id not in tasks:
-            warnings.append({"kind": "unavailable", "section": "delivery"})
-            continue
-        if did in deliverables:
-            evidence["delivery"].append(_row("deliverable", item))
-        for ref in item.artifact_refs:
-            if artifact_reader:
-                document = artifact_reader(ref, item)
-                if document:
-                    document = {
-                        **document,
-                        "relationship": (
-                            "selected_deliverable_artifact"
-                            if did in deliverables
-                            else "supporting_task_artifact"
-                        ),
-                    }
-                    evidence["plans"].append(_row("artifact", document))
-                    warnings.extend(
-                        {
-                            "kind": "artifact_omission",
-                            "section": "plans",
-                            "artifact_ref": ref,
-                            "detail": str(omission),
+        if any(not self.access.case_visible(c) for c in self.case_ids):
+            raise PermissionError("case context is unavailable in this scope")
+        if self.task_id and not self.access.task_visible(self.task_id):
+            raise PermissionError("task context is unavailable in this scope")
+        if self.release_package_id and not self.access.release_visible(self.release_package_id):
+            raise PermissionError("release context is unavailable in this scope")
+        self.warnings = []
+        # Filter roots before using them to select any associated review/verification evidence.
+        visible_releases = {rid for rid in self.releases if self.access.release_visible(rid)}
+        if visible_releases != self.releases:
+            self.warnings.append({"kind": "restricted", "section": "verification"})
+        self.releases = visible_releases
+        visible_cases = {c for c in self.cases if self.access.case_visible(c)}
+        if visible_cases != self.cases:
+            self.warnings.append({"kind": "restricted", "section": "request"})
+        self.cases = visible_cases
+        if not self.cases:
+            raise PermissionError("case context is unavailable in this scope")
+        visible_tasks = {t for t in self.tasks if self.access.task_visible(t)}
+        if visible_tasks != self.tasks:
+            self.warnings.append({"kind": "restricted", "section": "tasks"})
+        self.tasks = visible_tasks
+        visible_deliverables = {
+            did
+            for did in self.deliverables
+            if did in self.state.deliverables and self.state.deliverables[did].task_id in self.tasks
+        }
+        if visible_deliverables != self.deliverables:
+            self.warnings.append({"kind": "unavailable", "section": "delivery"})
+        self.deliverables = visible_deliverables
+
+    def _collect_request_and_plans(self) -> None:
+        for cid in sorted(self.cases):
+            case = self.state.cases[cid]
+            self.evidence["request"].append(_row("case", case))
+            self.sources.update(case.source_evidence_snapshot_ids)
+            if case.source and not case.source_evidence_snapshot_ids:
+                self.warnings.append({"kind": "missing", "section": "sources", "case_id": cid})
+            capture = case.metadata.get("case_source_capture") or {}
+            if capture.get("status") == "unavailable":
+                self.warnings.append(
+                    {"kind": "capture_unavailable", "section": "sources", "case_id": cid}
+                )
+        for tid in sorted(self.tasks):
+            task = self.state.tasks[tid]
+            self.evidence["plans"].append(
+                _row(
+                    "task",
+                    task,
+                    {
+                        k: v
+                        for k, v in task.model_dump(mode="json").items()
+                        if k
+                        in {
+                            "id",
+                            "case_id",
+                            "title",
+                            "description",
+                            "state",
+                            "parent_task_id",
+                            "originating_task_id",
+                            "dependency_task_ids",
+                            "created_at",
+                            "updated_at",
                         }
-                        for omission in document.get("omissions", [])
-                    )
-                    continue
-            warnings.append({"kind": "unavailable", "section": "plans", "artifact_ref": ref})
-    review_ids = set()
-    for review in state.review_requests.values():
-        if review.deliverable_id in deliverables or review.release_package_id in releases:
-            if access.reader and access.reader.get_review_request(review.id) is None:
-                continue
-            review_ids.add(review.id)
-            evidence["review"].append(_row("review", review))
-    for collection, kind, section in (
-        (state.release_verification_runs, "verification", "verification"),
-        (state.human_review_requests, "human_review", "review"),
-    ):
-        for item in collection.values():
-            if item.release_package_id in releases:
-                # Full human-review identities require the operator surface.
-                if kind == "human_review" and access.reader:
-                    warnings.append({"kind": "restricted", "section": "review"})
-                    continue
-                evidence[section].append(_row(kind, item))
-    human_ids = {r["id"] for r in evidence["review"] if r["entity_type"] == "human_review"}
-    for item in state.human_review_findings.values():
-        if item.source_human_review_request_id in human_ids:
-            evidence["review"].append(_row("human_finding", item))
-    for item in state.human_review_decisions.values():
-        if item.human_review_request_id in human_ids:
-            evidence["review"].append(_row("human_decision", item))
-    for rid in sorted(releases):
-        release = state.release_packages[rid]
-        payload = (
-            access.reader.get_release_package(rid)
-            if access.reader
-            else release.model_dump(mode="json")
-        )
-        if payload is None or not access.project_visible(release.project_id):
-            warnings.append({"kind": "restricted", "section": "verification"})
-            continue
-        evidence["verification"].append(
-            _row(
-                "release",
-                release,
-                {
-                    key: payload.get(key)
-                    for key in ("id", "state", "summary", "candidate_commit_sha", "manifest")
-                },
+                    },
+                )
             )
-        )
-    for item in state.inbox.values():
-        if item.task_id in tasks and (access.reader is None or access.reader._inbox_visible(item)):
-            evidence["conversation"].append(_row("inbox", item))
-    # Linked Chat anchors are selected explicitly; unrelated conversations stay private.
-    lineages = {state.tasks[t].work_lineage_id for t in tasks}
-    for lid in sorted(value for value in lineages if value):
-        lineage = state.work_lineages.get(lid)
-        if not lineage:
-            continue
-        for ref in lineage.chat_source_refs:
-            conversation = state.conversations.get(ref.conversation_id)
-            if not conversation or (access.actor_id and conversation.agent_id != access.actor_id):
+            self.sources.update(task.source_evidence_snapshot_ids)
+
+    def _collect_sources(self) -> None:
+        for sid in sorted(self.sources):
+            if not self.access.source_visible(sid):
+                self.warnings.append({"kind": "unavailable", "section": "sources"})
                 continue
-            for mid in ref.message_ids:
-                message = state.conversation_messages.get(mid)
-                if message and message.conversation_id == conversation.id:
-                    evidence["conversation"].append(_row("chat_message", message))
-    for name, records in evidence.items():
-        evidence[name] = list({(r["entity_type"], r["id"]): r for r in records}.values())
-    if release_package_id:
-        release = state.release_packages[release_package_id]
-        cutoff = release.manifest.created_at if release.manifest else release.created_at
-        for rows in evidence.values():
-            for record in rows:
-                created = record["provenance"].get("created_at")
-                if created:
-                    record["content"] = {
-                        **record["content"],
-                        "temporal_relation": (
-                            "after_candidate_manifest"
-                            if datetime.fromisoformat(created) > cutoff
-                            else "at_or_before_candidate_manifest"
-                        ),
-                    }
-    return evidence, sorted(cases), warnings
+            source = self.state.external_source_evidence_snapshots[sid]
+            payload = external_source_evidence_snapshot_payload(source)
+            self.evidence["sources"].append(_row("source", source, payload))
+            if payload.get("effective_freshness_status") != "current":
+                self.warnings.append({"kind": "stale", "section": "sources", "source_id": sid})
+            discussion_capture = source.metadata.get("discussion_capture")
+            if discussion_capture is not None and not discussion_capture.get("complete"):
+                self.warnings.append(
+                    {"kind": "incomplete_discussion", "section": "sources", "source_id": sid}
+                )
+
+    def _collect_notes(self) -> None:
+        notes = legacy_notes(self.state)
+        superseded = {n.supersedes_note_id for n in notes.values() if self.access.note_visible(n)}
+        for note in sorted(notes.values(), key=lambda n: (n.created_at, n.id)):
+            relevant = (note.case_id in self.cases and not note.task_ids) or bool(
+                set(note.task_ids) & self.tasks
+            )
+            if relevant and self.access.note_visible(note):
+                content = note.model_dump(mode="json")
+                content["status"] = "superseded" if note.id in superseded else "active"
+                self.evidence["decisions"].append(_row("note", note, content))
+
+    def _collect_delivery_and_artifacts(self) -> None:
+        artifact_deliverables = {
+            did for tid in self.tasks for did in self.state.tasks[tid].deliverable_ids
+        }
+        for did in sorted(self.deliverables | artifact_deliverables):
+            item = self.state.deliverables.get(did)
+            if not item or item.task_id not in self.tasks:
+                self.warnings.append({"kind": "unavailable", "section": "delivery"})
+                continue
+            if did in self.deliverables:
+                self.evidence["delivery"].append(_row("deliverable", item))
+            for ref in item.artifact_refs:
+                if self.artifact_reader:
+                    document = self.artifact_reader(ref, item)
+                    if document:
+                        document = {
+                            **document,
+                            "relationship": (
+                                "selected_deliverable_artifact"
+                                if did in self.deliverables
+                                else "supporting_task_artifact"
+                            ),
+                        }
+                        self.evidence["plans"].append(_row("artifact", document))
+                        self.warnings.extend(
+                            {
+                                "kind": "artifact_omission",
+                                "section": "plans",
+                                "artifact_ref": ref,
+                                "detail": str(omission),
+                            }
+                            for omission in document.get("omissions", [])
+                        )
+                        continue
+                self.warnings.append(
+                    {"kind": "unavailable", "section": "plans", "artifact_ref": ref}
+                )
+
+    def _collect_reviews_and_verification(self) -> None:
+        for review in self.state.review_requests.values():
+            if (
+                review.deliverable_id in self.deliverables
+                or review.release_package_id in self.releases
+            ):
+                if self.access.reader and self.access.reader.get_review_request(review.id) is None:
+                    continue
+                self.evidence["review"].append(_row("review", review))
+        for collection, kind, section in (
+            (self.state.release_verification_runs, "verification", "verification"),
+            (self.state.human_review_requests, "human_review", "review"),
+        ):
+            for item in collection.values():
+                if item.release_package_id in self.releases:
+                    # Full human-review identities require the operator surface.
+                    if kind == "human_review" and self.access.reader:
+                        self.warnings.append({"kind": "restricted", "section": "review"})
+                        continue
+                    self.evidence[section].append(_row(kind, item))
+        human_ids = {r["id"] for r in self.evidence["review"] if r["entity_type"] == "human_review"}
+        for item in self.state.human_review_findings.values():
+            if item.source_human_review_request_id in human_ids:
+                self.evidence["review"].append(_row("human_finding", item))
+        for item in self.state.human_review_decisions.values():
+            if item.human_review_request_id in human_ids:
+                self.evidence["review"].append(_row("human_decision", item))
+
+    def _collect_release_summaries(self) -> None:
+        for rid in sorted(self.releases):
+            release = self.state.release_packages[rid]
+            payload = (
+                self.access.reader.get_release_package(rid)
+                if self.access.reader
+                else release.model_dump(mode="json")
+            )
+            if payload is None or not self.access.project_visible(release.project_id):
+                self.warnings.append({"kind": "restricted", "section": "verification"})
+                continue
+            self.evidence["verification"].append(
+                _row(
+                    "release",
+                    release,
+                    {
+                        key: payload.get(key)
+                        for key in ("id", "state", "summary", "candidate_commit_sha", "manifest")
+                    },
+                )
+            )
+
+    def _collect_conversation(self) -> None:
+        for item in self.state.inbox.values():
+            if item.task_id in self.tasks and (
+                self.access.reader is None or self.access.reader._inbox_visible(item)
+            ):
+                self.evidence["conversation"].append(_row("inbox", item))
+        # Linked Chat anchors are selected explicitly; unrelated conversations stay private.
+        lineages = {self.state.tasks[t].work_lineage_id for t in self.tasks}
+        for lid in sorted(value for value in lineages if value):
+            lineage = self.state.work_lineages.get(lid)
+            if not lineage:
+                continue
+            for ref in lineage.chat_source_refs:
+                conversation = self.state.conversations.get(ref.conversation_id)
+                if not conversation or (
+                    self.access.actor_id and conversation.agent_id != self.access.actor_id
+                ):
+                    continue
+                for mid in ref.message_ids:
+                    message = self.state.conversation_messages.get(mid)
+                    if message and message.conversation_id == conversation.id:
+                        self.evidence["conversation"].append(_row("chat_message", message))
+
+    def _deduplicate_and_annotate(self) -> None:
+        for name, records in self.evidence.items():
+            self.evidence[name] = list({(r["entity_type"], r["id"]): r for r in records}.values())
+        if self.release_package_id:
+            release = self.state.release_packages[self.release_package_id]
+            cutoff = release.manifest.created_at if release.manifest else release.created_at
+            for rows in self.evidence.values():
+                for record in rows:
+                    created = record["provenance"].get("created_at")
+                    if created:
+                        record["content"] = {
+                            **record["content"],
+                            "temporal_relation": (
+                                "after_candidate_manifest"
+                                if datetime.fromisoformat(created) > cutoff
+                                else "at_or_before_candidate_manifest"
+                            ),
+                        }
 
 
 def select_records(records, spec):
