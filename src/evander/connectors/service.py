@@ -113,6 +113,8 @@ class ConnectorService:
         environ: Mapping[str, str] | None = None,
         auth_transport: httpx.AsyncBaseTransport | None = None,
         credential_store: CredentialStore | None = None,
+        session_authorizer: Any | None = None,
+        host_services: Mapping[str, Any] | None = None,
     ) -> None:
         self.credentials = credential_store or CredentialStore(runtime_dir)
         self.runtime_dir = runtime_dir
@@ -123,6 +125,26 @@ class ConnectorService:
         self.auth_transport = auth_transport
         self._oauth_tokens: dict[tuple[str, str], _OAuthToken] = {}
         self._oauth_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self.session_authorizer = session_authorizer
+        self.host_services = dict(host_services or {})
+
+    def authorize_current(self, session_id, connector_id, operation_name, arguments):
+        """Recheck grants and policy between steps of a durable host operation."""
+        from datetime import UTC, datetime
+        session = (self.session_authorizer(session_id) if self.session_authorizer else
+                   self.provider_config.get_session_manifest(session_id))
+        if session.expires_at <= datetime.now(UTC):
+            raise ConnectorPolicyError("Connector session has expired")
+        return self.require_operation(session, connector_id, operation_name, arguments)
+
+    async def host_auth(self, directory_path, connector_id):
+        """Resolve a configured binding for trusted domain code, never an MCP result."""
+        config = self.provider_config.resolve_connectors_for_directory(directory_path)
+        connector = config.connectors.get(connector_id)
+        if connector is None or connector.disabled:
+            raise ConnectorPolicyError("Host connector binding is unavailable")
+        headers = await self._auth_headers(directory_path=directory_path, config=config, connector=connector)
+        return connector, headers
 
     def config_for_session(self, session: SessionManifest) -> ConnectorDirectoryConfig:
         return self.provider_config.resolve_connectors_for_directory(session.directory_path)
@@ -261,6 +283,9 @@ class ConnectorService:
             artifact_store=self.artifact_store_factory(),
             auth_headers=auth_headers,
             sensitive_values=_MANAGED_VALUES.get(),
+            host_service=self,
+            authorize=lambda: self.authorize_current(session.session_id,
+                normalized_id, normalized_operation, arguments),
         )
         driver = self.registry.require(connector.driver)
         try:
@@ -300,6 +325,8 @@ class ConnectorService:
                         connector=connector,
                     ),
                     sensitive_values=_MANAGED_VALUES.get(),
+                    host_service=self,
+                    authorize=context.authorize,
                 )
                 result = await driver.invoke(
                     context=retry_context,

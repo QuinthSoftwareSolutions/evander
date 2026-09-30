@@ -254,6 +254,7 @@ class AdminRuntimeComponents:
     capacity_health_admin: CapacityHealthAdminService
     credential_admin: CredentialAdminService
     connector_admin: ConnectorAdminService
+    connector_service: ConnectorService
     website_session_admin: WebsiteSessionAdminService
     classification_admin: ClassificationAdminService
     privacy_admin: PrivacyAdminService
@@ -679,6 +680,8 @@ def _build_admin_runtime_components(
         provider_config=runtime.provider_config,
         artifact_store_factory=lambda: CommunicationArtifactStore(config.runtime_dir),
         registry=connector_registry_from_catalog(addon_catalog),
+        session_authorizer=lambda sid: runtime.policy.require_tool(sid, "call_connector"),
+        host_services={"managed_git": lambda: managed_git_admin},
     )
     connector_admin = ConnectorAdminService(
         ConnectorAdminDependencies(
@@ -840,6 +843,7 @@ def _build_admin_runtime_components(
             provider_config=runtime.provider_config, operations_admin=operations_admin,
             connector_admin=connector_admin, audit=runtime.audit, directories=runtime.directories),
         connector_admin=connector_admin,
+        connector_service=connector_service,
         website_session_admin=WebsiteSessionAdminService(
             operations_admin, runtime.provider_config, runtime.audit
         ),

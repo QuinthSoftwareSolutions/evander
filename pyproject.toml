@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander"
-version = "0.72.8"
+version = "0.73.0"
 description = "Host-side MCP gateway and libvirt orchestration for isolated agent VMs."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -48,6 +48,7 @@ elastic_stack = "evander_elastic_stack_addon:register_addon"
 freshservice = "evander_freshservice_addon:register_addon"
 miro = "evander_miro_addon:register_addon"
 figma = "evander_figma_addon:register_addon"
+wordpress = "evander_wordpress_addon:register_addon"
 
 [project.scripts]
 evander-gateway = "evander.gateway:main"
@@ -89,6 +90,7 @@ evander_elastic_stack_addon = ["addon.json"]
 evander_freshservice_addon = ["addon.json"]
 evander_miro_addon = ["addon.json", "ui_static/*"]
 evander_figma_addon = ["addon.json", "canvas.js", "ui_static/*"]
+evander_wordpress_addon = ["addon.json", "checks.mjs", "companion/*.php", "ui_static/*", "ssh_helper.py"]
 
 [tool.ruff]
 line-length = 100

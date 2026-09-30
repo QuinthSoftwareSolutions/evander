@@ -470,6 +470,7 @@ configure_credential_delivery() {
     fi
   fi
   for unit in evander-gateway.service evander-admin-web.service \
+      evander-http-target-relay.service \
       evander-effect-orchestrator.service evander-trigger-orchestrator.service \
       evander-teams-ingest.service evander-teams-notifications.service \
       evander-teams-meeting-ingest.service; do

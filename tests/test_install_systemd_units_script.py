@@ -335,6 +335,7 @@ def test_credential_delivery_renders_only_the_explicit_host_consumers(tmp_path):
         "evander-gateway.service", "evander-admin-web.service", "evander-effect-orchestrator.service",
         "evander-trigger-orchestrator.service", "evander-teams-ingest.service",
         "evander-teams-notifications.service", "evander-teams-meeting-ingest.service",
+        "evander-http-target-relay.service",
     }
     for path in unit_dir.glob("*/30-credential-store.conf"):
         assert path.read_text() == "[Service]\nImportCredential=evander-credentials-key\n"

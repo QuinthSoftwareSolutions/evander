@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-30 - Recoverable WordPress website changes (0.73.0)
+
+- Add a disabled-by-default WordPress Add-on with directory-scoped site profiles,
+  standard connector grants, prepared changes, durable recovery data and operator history.
+- Include a versioned companion plugin for conditional content, blocks, templates,
+  styles, navigation, metadata, ACF and covered builder edits through short browser sessions.
+- Publish pinned Git artifacts through HTTPS pipelines or a restricted SSH release helper,
+  keeping external code recovery available when WordPress cannot boot.
+- Verify desktop/mobile pages against a recorded baseline, recover confirmed functional
+  regressions, and preserve concurrent human edits for explicit conflict resolution.
+- Register workflow providers that resume publication, reconciliation and recovery after
+  worker restarts, with installation and recovery documentation and integration fixtures.
+
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 
 - Reuse completed gateway activity scans for five minutes and share overlapping

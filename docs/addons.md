@@ -12,6 +12,7 @@ the [Team setup chapter](evander-user-manual/chapters/17-team-setup-ui.md).
 - [Loading and enablement](#loading), [extension contract](#boundary-contract),
   and [private storage](#storage)
 - [Miro](miro-addon.md), [Figma](figma.md),
+  [WordPress](wordpress-addon.md),
   [Freshservice](#freshservice-add-on-guidance),
   [Azure DevOps activity](#azure-devops-activity-add-on-guidance),
   [Elastic Stack](#elastic-stack-add-on-guidance),
@@ -44,6 +45,7 @@ Add-ons may register generic integration points:
 - Connector drivers registered by type name and invoked only through the core connector service,
   preserving directory resolution, exact session grants, approvals, auth handling, and audit
 - Private runtime state under `runtime/addons/<addon_id>/`
+- Managed website login adapters that return only origin-scoped temporary browser state
 
 Add-ons must not add domain-specific fields to core models such as
 `SessionManifest`, nor should they require existing workflows, workflow packs,

@@ -194,6 +194,35 @@ def test_environment_profile_rejects_names_not_approved_by_host(setup, monkeypat
     assert "not host-approved" in response.text
 
 
+def test_addon_login_profiles_use_their_declared_binding_without_environment_credentials(setup):
+    service, client, _ = setup
+    checked=[]
+
+    class Adapter:
+        def validate_profile(self, scope, value):
+            if value.adapter_config != {"site_id":"main"}:
+                raise WebsiteSessionError("binding_mismatch")
+            checked.append(scope)
+
+    service.website_session_admin.broker.adapters["fixture"] = Adapter()
+    client.post("/api/admin/privileged/unlock")
+    initial=client.get("/api/managed-website-sessions").json()
+    value={"adapter":"fixture","adapter_config":{"site_id":"main"},
+        "browser_origin":"https://design.example.test","login_url":"https://design.example.test/index.php?rest_route=/fixture/ticket"}
+    response=save(client,initial["revision"],value,{})
+    assert response.status_code==200,response.text
+    result=response.json()
+    assert result["profiles"][0]["credentials"]["managed_by"]=="fixture"
+    tested=client.post("/api/managed-website-sessions/training/test",json={"expected_revision":result["revision"]})
+    assert tested.status_code==200,tested.text
+    assert tested.json()["profiles"][0]["last_test"]["status"]=="adapter_configured"
+    assert checked==["root","root"]
+    value["adapter_config"]["site_id"]="other"
+    rejected=save(client,result["revision"],value,{})
+    assert rejected.status_code==400
+    assert "does not match" in rejected.text
+
+
 def test_environment_profile_grant_cannot_be_reused_by_sibling_or_new_destination(
     setup, monkeypatch,
 ):

@@ -46,7 +46,10 @@ class WebsiteSessionAdminService:
         profiles = []
         for profile_id, profile in sorted(self._effective(scope).items()):
             payload = profile.model_dump(mode="json")
-            if profile.credential_source == "stored":
+            if profile.adapter != "json":
+                status = {"configured_fields": [], "managed_by": profile.adapter,
+                          "updated_at": None, "owner_directory": None}
+            elif profile.credential_source == "stored":
                 status = self.credentials.status(scope, profile_id, profile)
             else:
                 try:
@@ -94,7 +97,18 @@ class WebsiteSessionAdminService:
             raise ValueError("Credential values must be nonempty strings for configured login fields")
         if supplied and profile.credential_source != "stored":
             raise ValueError("Choose stored credentials before entering credential values")
-        validate_environment_credentials(scope, profile_id, profile)
+        if profile.adapter == "json":
+            validate_environment_credentials(scope, profile_id, profile)
+        else:
+            adapter = self.broker.adapters.get(profile.adapter)
+            if adapter is None or not callable(getattr(adapter, "validate_profile", None)):
+                raise ValueError("Enable the website login adapter before configuring its profile")
+            if supplied or profile.credential_fields or profile.credential_source == "stored" or profile.credential_ref:
+                raise ValueError("This login adapter manages its own host credential binding")
+            try:
+                adapter.validate_profile(scope, profile)
+            except WebsiteSessionError:
+                raise ValueError("Website login adapter configuration does not match its site") from None
         with self.operations.admin_config_mutation_lock():
             overlay = self._check_revision(scope, payload.get("expected_revision"))
             previous = self._effective(scope).get(profile_id)
@@ -161,9 +175,16 @@ class WebsiteSessionAdminService:
         status = "ok"
         expiry = None
         try:
-            values = self.broker.credentials(scope, profile_id, profile)
-            state = await self.broker._login(profile, values)
-            expiry = state["expiresAt"]
+            if profile.adapter == "json":
+                values = self.broker.credentials(scope, profile_id, profile)
+                state = await self.broker._login(profile, values)
+                expiry = state["expiresAt"]
+            else:
+                adapter = self.broker.adapters.get(profile.adapter)
+                if adapter is None:
+                    raise WebsiteSessionError("website_login_adapter_unavailable")
+                adapter.validate_profile(scope, profile)
+                status = "adapter_configured"
         except WebsiteSessionError as exc:
             status = exc.code
         with self.operations.admin_config_mutation_lock():
