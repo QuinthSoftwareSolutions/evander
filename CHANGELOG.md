@@ -5,6 +5,9 @@
 - Apply Team agent action batches through named stages with invocation-local
   progress and project-recalculation state, preserving stage order, partial-error
   handling, transactional events, and dispatch completion.
+- Split ordinary dispatch leasing into eligibility, work selection, wake timing,
+  lineage selection, reservation, and payload phases while retaining role
+  allocation recovery, manager fallback order, and revision-conflict retries.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
