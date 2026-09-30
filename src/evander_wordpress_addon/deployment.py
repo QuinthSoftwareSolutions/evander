@@ -129,6 +129,7 @@ class Deployments:
         client = Client(
             definition.config["base_url"],
             lambda: self.service.headers(connector_id),
+            auth_material=lambda: self.service.auth_material(connector_id),
             transport_factory=self.service.transport_factory,
             max_response_bytes=140 * 1024**2,
         )

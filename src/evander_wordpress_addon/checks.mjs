@@ -36,12 +36,15 @@ try {
           if (!await form.isVisible() || !await form.locator('input, textarea, select, button').count()) fail('form',true,check.form_selector);
         }
         for (const link of check.links) {
-          if (!await page.locator('a').evaluateAll((items, target) => items.some(a=>new URL(a.href).pathname===target),link)) fail('link:'+link);
+          const expected = new URL(link, config.origin).href;
+          const matched = await page.locator('a').evaluateAll((items, target) =>
+            items.find(a=>a.href===target)?.href ?? null, expected);
+          if (!matched) { fail('link:'+link); continue; }
           // Use Chromium's pinned DNS and origin guard for destinations too.
           const destination = await context.newPage();
           try {
-            const target = await destination.goto(config.origin+link,{waitUntil:'domcontentloaded',timeout:10000});
-            if (!target || target.status()>=400 || new URL(destination.url()).origin!==config.origin) fail('destination:'+link);
+            const target = await destination.goto(matched,{waitUntil:'domcontentloaded',timeout:10000});
+            if (!target || target.status()>=400 || new URL(destination.url()).href!==expected) fail('destination:'+link);
           } finally { await destination.close(); }
         }
         const shot = await page.screenshot({fullPage:false,timeout:10000});

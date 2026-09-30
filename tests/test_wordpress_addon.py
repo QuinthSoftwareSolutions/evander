@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote, quote_plus
 import zipfile
 
 import httpx
@@ -519,6 +519,234 @@ def test_managed_browser_cache_rechecks_connector_and_tool_grants(browser_grant,
     with pytest.raises(WebsiteSessionError):
         run(broker.acquire(session.session_id, "editor", "fixture-proof"))
     assert len(calls) == 1
+
+
+def configure_real_browser_login(
+    fixture,
+    monkeypatch,
+    secret,
+    *,
+    protocol="basic",
+    environment=False,
+    on_redeem=None,
+    wire_encode=None,
+):
+    from evander.connectors.models import ConnectorAuthProfile
+    from evander.credentials.bindings import connector_binding
+    from evander_wordpress_addon.browser import WordPressBrowserAdapter
+
+    monkeypatch.setenv(
+        "EVANDER_CREDENTIALS_KEY_FILE", str(fixture.store.runtime_dir.parent / "credential-key")
+    )
+    connector = fixture.config.connectors["website"]
+    connector.auth_profile = "website-login"
+    if protocol == "bearer":
+        profile = ConnectorAuthProfile(type="bearer_env", token_env="WP_FIXTURE_TOKEN")
+        values = {"token": secret}
+        monkeypatch.setenv("WP_FIXTURE_TOKEN", secret)
+    else:
+        profile = ConnectorAuthProfile(
+            type="basic_env", username_env="WP_FIXTURE_USER", password_env="WP_FIXTURE_PASSWORD"
+        )
+        values = {
+            "username": secret if protocol == "basic-key" else "public-designer",
+            "password": "X" if protocol == "basic-key" else secret,
+        }
+        monkeypatch.setenv("WP_FIXTURE_USER", values["username"])
+        monkeypatch.setenv("WP_FIXTURE_PASSWORD", values["password"])
+    adapter = fixture.broker.adapters["wordpress"]
+    record = None
+    if not environment:
+        adapter.host.credentials.initialize()
+        record = adapter.host.credentials.create(
+            owner="root",
+            kind="connector",
+            label="Website",
+            bindings=[connector_binding("website-login", "website", profile, connector)],
+            values=values,
+        )
+        profile = ConnectorAuthProfile(
+            type="bearer" if protocol == "bearer" else "basic", credential_ref=record["id"]
+        )
+    fixture.config.auth_profiles["website-login"] = profile
+    fixture.store.update(
+        fixture.change, binding=Service.config_binding(fixture.site, fixture.config)
+    )
+    state = {
+        "origin": fixture.site.origin,
+        "expiresAt": time.time() + 600,
+        "storageState": {
+            "cookies": [
+                {
+                    "name": "wordpress_logged_in_fixture",
+                    "value": "temporary-cookie",
+                    "domain": "design.example.test",
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": True,
+                    "sameSite": "Lax",
+                    "expires": time.time() + 600,
+                }
+            ],
+            "origins": [],
+        },
+        "sessionStorage": {},
+    }
+    calls = []
+
+    def handle(request):
+        route = parse_qs(request.url.query.decode())["rest_route"][0]
+        calls.append(route)
+        assert request.headers["authorization"].startswith(
+            "Bearer " if protocol == "bearer" else "Basic "
+        )
+        if route.endswith("/redeem") and on_redeem:
+            on_redeem(adapter.host, record)
+        if route.endswith("/redeem") and wire_encode:
+            return httpx.Response(
+                200, content=wire_encode(state), headers={"Content-Type": "application/json"}
+            )
+        return httpx.Response(
+            200,
+            json={"ticket": "single-use-fixture-ticket"} if route.endswith("/ticket") else state,
+        )
+
+    class BrowserService(Service):
+        def __init__(self, *args, **kwargs):
+            super().__init__(
+                *args, **kwargs, transport_factory=lambda _: httpx.MockTransport(handle)
+            )
+
+    monkeypatch.setattr("evander_wordpress_addon.browser.Service", BrowserService)
+    monkeypatch.setattr(adapter, "login", WordPressBrowserAdapter.login.__get__(adapter))
+    return state, calls
+
+
+@pytest.mark.parametrize(
+    "encoding",
+    [
+        "raw",
+        "percent",
+        "percent-lower",
+        "percent-unreserved",
+        "percent-all",
+        "form",
+        "base64",
+        "base64-unpadded",
+        "base64url",
+        "base64url-unpadded",
+        "json",
+        "numeric",
+        "numeric-exponent",
+        "boolean",
+        "null",
+    ],
+)
+def test_real_browser_login_rejects_managed_secret_reflection(browser_grant, monkeypatch, encoding):
+    secret = {
+        "numeric": "735246815",
+        "numeric-exponent": "735246815",
+        "boolean": "true",
+        "null": "null",
+    }.get(encoding, 'host-"secret\\ with?/ÿ')
+    state, calls = configure_real_browser_login(
+        browser_grant,
+        monkeypatch,
+        secret,
+        wire_encode=(lambda value: json.dumps(value).replace("735246815.0", "7.35246815e8"))
+        if encoding == "numeric-exponent"
+        else None,
+    )
+    reflected = {
+        "raw": lambda: secret,
+        "percent": lambda: quote(secret, safe=""),
+        "percent-lower": lambda: quote(secret, safe="").replace("%3F", "%3f").replace("%2F", "%2f"),
+        "percent-unreserved": lambda: "%68" + secret[1:],
+        "percent-all": lambda: "".join(f"%{byte:02x}" for byte in secret.encode()),
+        "form": lambda: quote_plus(secret, safe=""),
+        "json": lambda: json.dumps(secret)[1:-1],
+        "base64": lambda: base64.b64encode(secret.encode()).decode(),
+        "base64-unpadded": lambda: base64.b64encode(secret.encode()).decode().rstrip("="),
+        "base64url": lambda: base64.urlsafe_b64encode(secret.encode()).decode(),
+        "base64url-unpadded": lambda: (
+            base64.urlsafe_b64encode(secret.encode()).decode().rstrip("=")
+        ),
+        "numeric": lambda: int(secret),
+        "numeric-exponent": lambda: float(secret),
+        "boolean": lambda: True,
+        "null": lambda: None,
+    }[encoding]()
+    cookie = state["storageState"]["cookies"][0]
+    if isinstance(reflected, str):
+        cookie["value"] = reflected
+    else:
+        cookie["extra"] = [{"reflected": reflected}]
+    with pytest.raises(WebsiteSessionError, match="wordpress_browser_login_failed") as error:
+        run(
+            browser_grant.broker.acquire(
+                browser_grant.session.session_id, "editor", "fixture-proof"
+            )
+        )
+    assert secret not in str(error.value)
+    assert not browser_grant.broker._cache
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "protocol, environment",
+    [("basic", True), ("basic-key", False), ("bearer", False), ("bearer", True)],
+)
+def test_real_browser_login_protects_raw_authentication_variants(
+    browser_grant, monkeypatch, protocol, environment
+):
+    secret = "synthetic-persistent-secret"
+    state, _ = configure_real_browser_login(
+        browser_grant, monkeypatch, secret, protocol=protocol, environment=environment
+    )
+    state["storageState"]["cookies"][0]["value"] = secret
+    with pytest.raises(WebsiteSessionError, match="wordpress_browser_login_failed"):
+        run(
+            browser_grant.broker.acquire(
+                browser_grant.session.session_id, "editor", "fixture-proof"
+            )
+        )
+    assert not browser_grant.broker._cache
+
+
+@pytest.mark.parametrize("protocol", ["basic", "basic-key", "bearer"])
+def test_real_browser_login_preserves_temporary_authentication_and_public_identifiers(
+    browser_grant, monkeypatch, protocol
+):
+    state, _ = configure_real_browser_login(
+        browser_grant, monkeypatch, "synthetic-persistent-secret", protocol=protocol
+    )
+    state["sessionStorage"] = {"currentUser": "public-designer", "sentinel": "X"}
+    acquired = run(
+        browser_grant.broker.acquire(browser_grant.session.session_id, "editor", "fixture-proof")
+    )
+    assert acquired["storageState"]["cookies"][0]["value"] == "temporary-cookie"
+    assert acquired["sessionStorage"]["currentUser"] == "public-designer"
+
+
+def test_real_browser_login_checks_request_secret_after_rotation(browser_grant, monkeypatch):
+    old = "synthetic-original-password"
+
+    def rotate(host, record):
+        host.credentials.update(
+            record["id"],
+            expected_revision=record["revision"],
+            values={"username": "public-designer", "password": "synthetic-rotated-password"},
+        )
+
+    state, _ = configure_real_browser_login(browser_grant, monkeypatch, old, on_redeem=rotate)
+    state["storageState"]["cookies"][0]["value"] = old
+    with pytest.raises(WebsiteSessionError, match="wordpress_browser_login_failed"):
+        run(
+            browser_grant.broker.acquire(
+                browser_grant.session.session_id, "editor", "fixture-proof"
+            )
+        )
+    assert not browser_grant.broker._cache
 
 
 @pytest.mark.parametrize("operation", ["prepare_change", "apply_change", "call_connector"])
@@ -1575,7 +1803,21 @@ def test_admin_settings_and_restore_enforce_directory_permissions_and_server_own
 
 @pytest.mark.parametrize(
     "scenario",
-    ["fatal", "manual_edit", "restore_conflict", "adapter_unavailable", "hosting_unavailable"],
+    [
+        "fatal",
+        "manual_edit",
+        "restore_conflict",
+        "adapter_unavailable",
+        "hosting_unavailable",
+        "expiry_before_build",
+        "expiry_during_build",
+        "expiry_during_deploy",
+        "expiry_apply_race",
+        "expiry_uncertain_deploy",
+        "expiry_applied_reply",
+        "expiry_source_only",
+        "expiry_unexpired_control",
+    ],
 )
 def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
     rig, hosting, tmp_path, scenario, monkeypatch
@@ -1583,6 +1825,12 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
     from evander.admin.services.managed_git_service import ManagedGitAdminService
 
     helper, root = hosting
+    expiry_scenario = scenario.startswith("expiry_")
+    candidate = "<?php echo 'After';" if expiry_scenario else "<?php missing_function();"
+    clock = [time.time()]
+    if expiry_scenario:
+        monkeypatch.setattr(time, "time", lambda: clock[0])
+    expiry, deployments = [None], []
     source = tmp_path / "source"
     source.mkdir()
 
@@ -1594,7 +1842,7 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
     git("init", "-b", "main")
     git("config", "user.name", "Synthetic designer")
     git("config", "user.email", "designer@example.test")
-    (source / "functions.php").write_text("<?php missing_function();")
+    (source / "functions.php").write_text(candidate)
     git("add", "functions.php")
     git("commit", "-m", "Synthetic pinned candidate")
     sha, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
@@ -1639,14 +1887,27 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
 
     rig.host.host_auth = auth
     rig.host.host_services["managed_git"] = lambda: managed
-    artifact = archive_bytes({"index.php": "<?php missing_function();"})
+    artifact = archive_bytes({"index.php": candidate})
     builds = [0]
 
     def handle(request):
         if request.url.host == "design.example.test":
             if "missing_function" in (root / "current/index.php").read_text():
                 return httpx.Response(503)
-            return rig.remote.handle(request)
+            operation = request.url.path.rsplit("/", 1)[-1]
+            if expiry_scenario and operation == "apply":
+                if scenario == "expiry_apply_race":
+                    clock[0] = expiry[0] + 1
+                if clock[0] >= expiry[0] and rig.remote.state != "applied":
+                    return httpx.Response(409)
+            response = rig.remote.handle(request)
+            if (
+                scenario == "expiry_applied_reply"
+                and operation == "apply"
+                and response.status_code == 500
+            ):
+                clock[0] = expiry[0] + 1
+            return response
         payload = json.loads(request.content)
         action = request.url.path.rsplit("/", 1)[-1]
         if scenario == "hosting_unavailable":
@@ -1656,9 +1917,11 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
             submitted = base64.b64decode(payload["source_archive"])
             assert sha256(submitted).hexdigest() == payload["source_sha256"]
             with zipfile.ZipFile(io.BytesIO(submitted)) as archive:
-                assert archive.read("functions.php") == b"<?php missing_function();"
+                assert archive.read("functions.php") == candidate.encode()
             if builds[0] == 1:
                 return httpx.Response(200, json={"protocol_version": 1, "state": "building"})
+            if scenario == "expiry_during_build":
+                clock[0] = expiry[0] + 1
             return httpx.Response(
                 200,
                 json={
@@ -1672,9 +1935,14 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
             )
         if action == "restore" and scenario == "restore_conflict":
             (root / "current/index.php").write_text("Human edit during recovery")
-        return httpx.Response(
-            200, json=helper.execute({"protocol_version": 1, "action": action, **payload})
-        )
+        result = helper.execute({"protocol_version": 1, "action": action, **payload})
+        if action == "deploy":
+            deployments.append(result)
+            if scenario in {"expiry_during_deploy", "expiry_uncertain_deploy"}:
+                clock[0] = expiry[0] + 1
+                if scenario == "expiry_uncertain_deploy":
+                    return httpx.Response(503)
+        return httpx.Response(200, json=result)
 
     rig.service.transport_factory = lambda origin: httpx.MockTransport(handle)
     if scenario == "adapter_unavailable":
@@ -1696,6 +1964,8 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
             }
         ],
     }
+    if scenario == "expiry_source_only":
+        request["resources"] = []
     if scenario in {"adapter_unavailable", "hosting_unavailable"}:
         with pytest.raises(WordPressError):
             run(rig.service.prepare(request))
@@ -1729,9 +1999,37 @@ def test_pinned_git_build_can_resume_and_recover_a_broken_deployment(
         return
     prepared = run(rig.service.prepare(request))
     assert prepared["build_pending"]
+    expiry[0] = int(prepared["expires_at"])
     if scenario == "manual_edit":
         (root / "current/index.php").write_text("Manual edit during build")
     queued = queue(rig, prepared)
+    if expiry_scenario:
+        if scenario in {"expiry_before_build", "expiry_source_only"}:
+            clock[0] = expiry[0] + 1
+        if scenario == "expiry_applied_reply":
+            rig.remote.lost_reply = True
+        result = run(rig.service.execute("main", queued["change_id"]))
+        if scenario in {"expiry_uncertain_deploy", "expiry_applied_reply"}:
+            assert result["state"] == "uncertain"
+            result = run(resumed_service(rig).execute("main", queued["change_id"]))
+        publishes = scenario in {
+            "expiry_unexpired_control",
+            "expiry_applied_reply",
+            "expiry_source_only",
+        }
+        assert result["state"] == ("published" if publishes else "restored")
+        assert (root / "current/index.php").read_text() == (
+            candidate if publishes else "<?php echo 'Before';"
+        )
+        assert rig.remote.value["post_title"] == (
+            "After" if publishes and scenario != "expiry_source_only" else "Before"
+        )
+        if scenario in {"expiry_before_build", "expiry_during_build"}:
+            assert not deployments
+        else:
+            assert len(deployments) == 1
+        assert builds[0] == (1 if scenario == "expiry_before_build" else 2)
+        return
     rig.probe.results = [failure("server"), failure("server"), {"failures": []}, {"failures": []}]
     result = run(rig.service.execute("main", queued["change_id"]))
     if scenario == "manual_edit":

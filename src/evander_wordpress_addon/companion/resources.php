@@ -36,7 +36,7 @@ final class Evander_Core_Resources implements Evander_Resource_Adapter {
         if ($kind === 'post' && $value !== null) {
             if (!is_array($value) || array_diff(array_keys($value),$this->post_fields())) { throw new RuntimeException('Unsupported post fields',400); }
             if (isset($value['post_type']) && !get_post_type_object($value['post_type'])) { throw new RuntimeException('Unknown post type',400); }
-            if (isset($value['post_status']) && !in_array($value['post_status'],['publish','draft','pending','private','trash'],true)) { throw new RuntimeException('Unsupported post status',400); }
+            if (isset($value['post_status']) && !get_post_status_object($value['post_status'])) { throw new RuntimeException('Unsupported post status',400); }
         }
         if ($kind === 'term' && $value !== null && (!is_array($value) || array_diff(array_keys($value),['name','slug','term_group']))) { throw new RuntimeException('Unsupported term fields',400); }
         if ($kind === 'acf' && !function_exists('get_field_object')) { throw new RuntimeException('ACF adapter unavailable',400); }

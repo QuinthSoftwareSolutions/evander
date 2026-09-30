@@ -83,7 +83,7 @@ def test_real_browser_probes_detect_confirmed_server_regression_and_capture_both
     wrapper.chmod(0o700)
     monkeypatch.setenv("PLAYWRIGHT_MCP_EXECUTABLE_PATH", str(wrapper))
     requests = []
-    state = {"broken": False, "missing_main_and_form": False}
+    state = {"broken": False, "missing_main_and_form": False, "link": "/contact/"}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -94,9 +94,13 @@ def test_real_browser_probes_detect_confirmed_server_regression_and_capture_both
             if state["missing_main_and_form"]:
                 self.wfile.write(b"<!doctype html><section><h1>Synthetic website</h1></section>")
                 return
-            self.wfile.write(b"""<!doctype html><main><h1>Synthetic website</h1>
+            self.wfile.write(
+                b"""<!doctype html><main><h1>Synthetic website</h1>
 <a href="/contact/">Contact</a><form><input required name="email"><button>Send</button></form></main>
-<script>new WebSocket(location.origin.replace('https:','wss:')+'/socket/')</script>""")
+<script>new WebSocket(location.origin.replace('https:','wss:')+'/socket/')</script>""".replace(
+                    b'href="/contact/"', ('href="' + state["link"] + '"').encode()
+                )
+            )
 
         def log_message(self, *args):
             pass
@@ -140,6 +144,24 @@ def test_real_browser_probes_detect_confirmed_server_regression_and_capture_both
         assert "/contact/" in requests and "/socket/" not in requests
 
         state["broken"] = False
+        for href in [
+            "https://other.example/contact/",
+            origin + "/contact/?destination=other",
+            origin + "/contact/#other",
+        ]:
+            state["link"] = href
+            after = await checker.run(site, specifications, "link-after")
+            confirmed = await checker.run(site, specifications, "link-confirm")
+            assert not after["uncertain"] and not confirmed["uncertain"]
+            regressions = probes.confirmed_regressions(before, after, confirmed)
+            assert len(regressions) == 2 and all(
+                id.endswith(":link:/contact/") for id in regressions
+            )
+        for href in [origin + "/contact/", "contact/"]:
+            state["link"] = href
+            healthy = await checker.run(site, specifications, "link-control")
+            assert not healthy["failures"] and not healthy["uncertain"]
+        state["link"] = "/contact/"
         same_path_checks = [
             Check(selector="header"),
             Check(selector="main"),

@@ -153,12 +153,26 @@ class ConnectorService:
 
     async def host_auth(self, directory_path, connector_id):
         """Resolve a configured binding for trusted domain code, never an MCP result."""
+        connector, headers, _ = await self.host_auth_material(directory_path, connector_id)
+        return connector, headers
+
+    async def host_auth_material(self, directory_path, connector_id):
+        """Keep request headers and their secret snapshot inside the host boundary."""
         config = self.provider_config.resolve_connectors_for_directory(directory_path)
         connector = config.connectors.get(connector_id)
         if connector is None or connector.disabled:
             raise ConnectorPolicyError("Host connector binding is unavailable")
-        headers = await self._auth_headers(directory_path=directory_path, config=config, connector=connector)
-        return connector, headers
+        context_token = _MANAGED_VALUES.set(())
+        try:
+            headers = await self._auth_headers(
+                directory_path=directory_path,
+                config=config,
+                connector=connector,
+                capture_sensitive_values=True,
+            )
+            return connector, headers, _MANAGED_VALUES.get()
+        finally:
+            _MANAGED_VALUES.reset(context_token)
 
     def config_for_session(self, session: SessionManifest) -> ConnectorDirectoryConfig:
         return self.provider_config.resolve_connectors_for_directory(session.directory_path)
@@ -391,6 +405,7 @@ class ConnectorService:
         directory_path: str,
         config: ConnectorDirectoryConfig,
         connector: ConnectorDefinition,
+        capture_sensitive_values: bool = False,
     ) -> dict[str, str]:
         if connector.auth_profile is None:
             return {}
@@ -425,24 +440,41 @@ class ConnectorService:
                 _MANAGED_VALUES.set((*_MANAGED_VALUES.get(), encoded))
                 return {"Authorization": "Basic " + encoded}
         if profile.type == "bearer_env":
-            return {"Authorization": f"Bearer {self._secret(profile.token_env)}"}
+            token = self._secret(profile.token_env)
+            if capture_sensitive_values:
+                _MANAGED_VALUES.set((token,))
+            return {"Authorization": f"Bearer {token}"}
         if profile.type == "api_key_header_env":
-            return {str(profile.header_name): self._secret(profile.token_env)}
+            token = self._secret(profile.token_env)
+            if capture_sensitive_values:
+                _MANAGED_VALUES.set((token,))
+            return {str(profile.header_name): token}
         if profile.type == "basic_env":
-            raw = f"{self._secret(profile.username_env)}:{self._secret(profile.password_env)}"
-            return {"Authorization": f"Basic {base64.b64encode(raw.encode()).decode()}"}
+            username = self._secret(profile.username_env)
+            password = self._secret(profile.password_env)
+            encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+            if capture_sensitive_values:
+                _MANAGED_VALUES.set((username if password == "X" else password, encoded))
+            return {"Authorization": f"Basic {encoded}"}
+        if capture_sensitive_values and managed is None:
+            managed = {
+                "client_id": self._secret(profile.client_id_env),
+                "client_secret": self._secret(profile.client_secret_env),
+            }
+            _MANAGED_VALUES.set((managed["client_secret"],))
         token = await self._oauth_token(
             directory_path=directory_path,
             profile_id=str(connector.auth_profile),
             profile=profile,
             managed=managed,
-            credential_revision=metadata["revision"] if managed is not None else None,
+            credential_revision=metadata["revision"] if profile.credential_ref else None,
         )
-        if managed is not None:
+        if profile.credential_ref:
             # A rotation/disable during token acquisition invalidates the result.
             if self.credentials.metadata(profile.credential_ref)["revision"] != metadata["revision"]:
                 self._oauth_tokens.pop((directory_path, str(connector.auth_profile)), None)
                 raise ConnectorPolicyError("Managed connector credentials changed")
+        if managed is not None:
             _MANAGED_VALUES.set((*_MANAGED_VALUES.get(), token))
         return {"Authorization": f"Bearer {token}"}
 

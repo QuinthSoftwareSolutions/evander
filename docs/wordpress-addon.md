@@ -200,6 +200,10 @@ Renewal revokes the previous token and unredeemed tickets. Cached state rechecks
 current tool/operation grants, connector configuration and host credential approval;
 credential revisions invalidate the cache. Disabling a site prevents new editing
 while preserving undo and scheduling recovery of open browser changes.
+Protocol responses are checked before returning or caching them for raw credential
+material and common JSON, URL and Base64 representations. Each check uses the
+credential snapshot that authenticated the request, so rotation during a request
+cannot allow the previous credential to be exported.
 
 The plugin wraps browser writes in a transaction, locks the prepared resources,
 checks their versions and rejects SQL outside the recovery manifest. File editors,
@@ -332,6 +336,10 @@ serialize a physical site across processes/directories; persisted fencing tokens
 reject stale remote owners. Configuration, credentials and current session grants
 are rechecked before new writes. Private snapshots, pinned artifacts and step
 state remain available after worker or host-process restarts.
+Mixed source/CMS changes must still have an unexpired CMS preparation before code
+deployment. If preparation expires during deployment or CMS application, recovery
+restores the previous release and captured content. An already applied CMS request
+remains eligible for reconciliation after expiration, including after a lost reply.
 
 Checks cover affected URLs plus configured shared-template samples/navigation and
 forms. Screenshots use 1280×800 and 390×844 viewports. Two probes ten seconds apart
@@ -339,6 +347,8 @@ must confirm a newly introduced objective server, rendering, navigation or requi
 form failure before automatic undo. Existing failures, cosmetic differences and
 connectivity uncertainty do not trigger automatic undo. Form probes inspect controls
 without submitting production data. Human review remains responsible for appearance.
+Required navigation links must match the complete resolved site URL, including
+origin, query and fragment; destination checks visit that matched link.
 
 Source recovery runs before CMS recovery, restoring PHP availability when necessary.
 Recovery itself is checked. Lost replies, pending restores and incomplete verification

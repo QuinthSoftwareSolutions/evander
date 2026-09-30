@@ -23,6 +23,12 @@
 - Roll back failed resource writes, validate metadata lists before preparation, distinguish
   selector and form check failures, support adapter-managed website login profiles in the
   editor, and include the HTTP target relay in adapter add-on restart requirements.
+- Reject raw and encoded credential reflections in browser and hosting responses using
+  the credential snapshot that authenticated each request, including during rotation.
+- Restore captured scheduled-post and attachment statuses, and recover expired mixed
+  source/CMS publications before deployment or after an in-flight expiration.
+- Verify required navigation against the complete resolved site URL, including its
+  origin, query and fragment, and probe the matched link's destination.
 
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 

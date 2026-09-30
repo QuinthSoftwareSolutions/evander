@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 
 import httpx
@@ -15,17 +16,43 @@ from .models import Conflict, UnknownOutcome, WordPressError
 
 class Client:
     def __init__(
-        self, origin, auth, *, transport_factory=_public_transport, max_response_bytes=16 * 1024**2
+        self,
+        origin,
+        auth,
+        *,
+        auth_material=None,
+        transport_factory=_public_transport,
+        max_response_bytes=16 * 1024**2,
     ):
         self.origin = website_origin(origin)
         self.auth = auth
+        self.auth_material = auth_material
         self.transport_factory = transport_factory
         self.max_response_bytes = max_response_bytes
 
     async def call(self, path, payload=None, *, mutation=False):
         if not path.startswith("/") or path.startswith("//") or ".." in path or "\\" in path:
             raise WordPressError("Invalid protocol path")
-        headers = await self.auth()
+        if self.auth_material is None:
+            headers, secrets = await self.auth(), ()
+        else:
+            headers, secrets = await self.auth_material()
+        secrets = [*headers.values(), *secrets]
+        # Preserve safety for trusted header-only callers as well as managed bindings.
+        for name, value in headers.items():
+            if name.lower() == "authorization":
+                scheme, _, encoded = value.partition(" ")
+                if scheme.lower() == "basic":
+                    try:
+                        username, password = (
+                            base64.b64decode(encoded, validate=True).decode().split(":", 1)
+                        )
+                    except (ValueError, UnicodeError):
+                        raise WordPressError("Invalid host authentication") from None
+                    secrets.extend((encoded, username if password == "X" else password))
+                elif scheme.lower() == "bearer":
+                    secrets.append(encoded)
+        secrets = tuple(secrets)
         try:
             async with asyncio.timeout(60):
                 transport = self.transport_factory(self.origin)
@@ -55,9 +82,9 @@ class Client:
                             raise UnknownOutcome("Remote mutation outcome needs reconciliation")
                         if not 200 <= response.status_code < 300:
                             raise WordPressError("Remote protocol request was rejected")
+                        reject_reflected_credentials(bytes(data), secrets)
                         value = json.loads(data)
-                        # An upstream must not echo an Authorization value into any receipt.
-                        reject_reflected_credentials(value, tuple(headers.values()))
+                        reject_reflected_credentials(value, secrets)
                         return value
         except (Conflict, WordPressError):
             raise

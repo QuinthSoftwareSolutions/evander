@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
-from urllib.parse import quote
+import math
+from decimal import Decimal
+from urllib.parse import unquote, unquote_plus
 
 from .store import CredentialError
 
@@ -26,14 +28,29 @@ def reject_reflected_credentials(value, secrets: tuple[str, ...]) -> None:
         for item in value:
             reject_reflected_credentials(item, secrets)
         return
+    elif value is None or isinstance(value, (bool, int, float)):
+        text = json.dumps(value)
+        if isinstance(value, float) and math.isfinite(value):
+            # Parsed JSON can hide a numeric credential behind exponent notation.
+            text += " " + format(Decimal(str(value)), "f")
     else:
         return
+    # Decode percent escapes, including unreserved bytes and form-encoded spaces.
+    representations = (text, unquote(text), unquote_plus(text))
     for secret in secrets:
+        encoded = base64.b64encode(secret.encode()).decode()
+        url_encoded = base64.urlsafe_b64encode(secret.encode()).decode()
         variants = (
             secret,
-            quote(secret, safe=""),
             json.dumps(secret)[1:-1],
-            base64.b64encode(secret.encode()).decode(),
+            encoded,
+            encoded.rstrip("="),
+            url_encoded,
+            url_encoded.rstrip("="),
         )
-        if any(candidate and candidate in text for candidate in variants):
+        if any(
+            candidate and candidate in representation
+            for representation in representations
+            for candidate in variants
+        ):
             raise CredentialError("Connector response contains managed credential material")

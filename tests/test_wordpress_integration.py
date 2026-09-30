@@ -475,6 +475,22 @@ def test_database_write_failure_rolls_back_all_resources_and_receipt(wordpress, 
     assert call(client, "status", {"change_id": id}).json()["state"] == "armed"
 
 
+@pytest.mark.parametrize(
+    "record, status", [("future", "future"), ("attachment", "inherit"), ("autodraft", "auto-draft")]
+)
+def test_post_restore_preserves_captured_standard_statuses(wordpress, record, status):
+    client, data, _ = wordpress
+    key = "post:" + str(data[record])
+    before = inspect(client, key)
+    assert before["value"]["post_status"] == status
+    id, snapshot = prepare(client, {key: {"post_title": "Edited metadata"}})
+    assert call(client, "apply", {"change_id": id, "fence": 100}).status_code == 200
+    assert inspect(client, key)["value"]["post_title"] == "Edited metadata"
+    response = call(client, "restore", {"change_id": id, "fence": 100, "snapshot": snapshot})
+    assert response.status_code == 200, response.text
+    assert inspect(client, key) == before
+
+
 @pytest.mark.parametrize("kind", ["meta", "termmeta"])
 @pytest.mark.parametrize("value", ["scalar", 42, {"caption": "object"}])
 def test_metadata_preparation_rejects_nonlist_values_without_deleting_existing_data(

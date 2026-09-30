@@ -63,6 +63,19 @@ class Service:
     async def headers(self, connector_id):
         return (await self.host_auth(connector_id))[1]
 
+    async def auth_material(self, connector_id):
+        resolve = getattr(self.host_service, "host_auth_material", None)
+        if callable(resolve):
+            try:
+                _, headers, secrets = await resolve(self.directory, connector_id)
+                return headers, secrets
+            except Exception:
+                raise WordPressError("Host connector binding is unavailable") from None
+        definition, headers = await self.host_auth(connector_id)
+        if definition.auth_profile:
+            raise WordPressError("Host credential material is unavailable")
+        return headers, ()
+
     def site(self, site_id, *, configure=False):
         _, settings = self.store.settings(self.directory)
         site = settings.sites.get(site_id)
@@ -83,6 +96,7 @@ class Service:
             Client(
                 site.origin,
                 lambda: self.headers(site.connector_id),
+                auth_material=lambda: self.auth_material(site.connector_id),
                 transport_factory=self.transport_factory,
             ),
             site.rest_path,
@@ -614,6 +628,27 @@ class Service:
             )
         )
 
+    async def _recover_expired_cms(self, site_id, site, change, fence):
+        if (
+            not change.get("snapshot")
+            or change["request"]["browser"]
+            or int(change["expires_at"]) > time.time()
+        ):
+            return None
+        status = await (await self.companion(site)).call(
+            "status", {"change_id": change["change_id"]}
+        )
+        # An applied request remains idempotent after expiry, including a lost reply.
+        if status.get("state") == "applied":
+            return None
+        change = self.store.update(
+            change,
+            state="restoring",
+            phase="restore",
+            error="CMS preparation expired before publication",
+        )
+        return self.receipt(await self._restore(site_id, site, change, fence))
+
     async def execute(self, site_id, change_id):
         initial = self.store.get(change_id, self.directory, site_id)
         site = self.site(
@@ -672,6 +707,9 @@ class Service:
                     change = self.store.update(change, state="restoring", phase="restore")
                     return self.receipt(await self._restore(site_id, site, change, fence))
                 self.reauthorize()
+                recovered = await self._recover_expired_cms(site_id, site, change, fence)
+                if recovered is not None:
+                    return recovered
                 change = self.store.update(change, state="applying")
                 if change["request"]["browser"] and not change.get("browser_closed"):
                     plugin = await self.companion(site)
@@ -690,12 +728,18 @@ class Service:
                     change = self.store.update(
                         change, deployment=deployment, build_pending=None, phase="deploy"
                     )
+                recovered = await self._recover_expired_cms(site_id, site, change, fence)
+                if recovered is not None:
+                    return recovered
                 if change.get("deployment") and change.get("phase") not in {"cms", "verify"}:
                     change = self.store.update(change, phase="deploy")
                     release = await self.deployments.apply(site_id, site, change, fence)
                     if release.get("state") != "deployed":
                         raise UnknownOutcome("Deployment is not confirmed")
                     change = self.store.update(change, release=release, phase="cms")
+                recovered = await self._recover_expired_cms(site_id, site, change, fence)
+                if recovered is not None:
+                    return recovered
                 self.reauthorize()
                 plugin = await self.companion(site)
                 if change.get("snapshot") and change.get("phase") != "verify":
@@ -734,6 +778,22 @@ class Service:
                     self.store.update(change, state="published", browser_ready=False, error=None)
                 )
             except Conflict:
+                current = self.store.get(change_id, self.directory, site_id)
+                try:
+                    recovered = await self._recover_expired_cms(site_id, site, current, fence)
+                    if recovered is not None:
+                        return recovered
+                except Conflict:
+                    return self._record_conflict(site_id, change_id)
+                except Exception:
+                    current = self.store.get(change_id, self.directory, site_id)
+                    return self.receipt(
+                        self.store.update(
+                            current,
+                            state="uncertain",
+                            error="Expired publication needs recovery reconciliation",
+                        )
+                    )
                 return self._record_conflict(site_id, change_id)
             except (UnknownOutcome, WordPressError):
                 current = self.store.get(change_id, self.directory, site_id)
