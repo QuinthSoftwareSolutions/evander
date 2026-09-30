@@ -17,6 +17,9 @@
 - Apply administrative task upserts through a typed request with explicit edit
   flags and separate existing-task and new-task stages, preserving graph policy,
   inherited provenance, immutable Git base checks, and transactional wake events.
+- Dispatch wake reservations through separate repository, capability, artifact,
+  prompt, delivery, and recovery stages with fresh state for each lease, retaining
+  queue activation rules and durable failure and conflict retries.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
