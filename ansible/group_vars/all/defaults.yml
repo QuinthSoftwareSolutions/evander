@@ -65,6 +65,9 @@ evander_deployment_status_message: "Control plane update in progress."
 evander_deployment_status_ttl_seconds: 21600
 evander_run_user: "evander"
 evander_manage_run_user: true
+# Control-plane syslog: about four weeks of daily archives, compressed after one day.
+evander_manage_system_log_rotation: true
+evander_system_log_rotate_count: 28
 evander_service_profile: "full"
 evander_run_user_supplementary_groups: >-
   {{
