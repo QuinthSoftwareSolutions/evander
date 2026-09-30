@@ -3,6 +3,50 @@
 Classification is a core Evander capability for evaluating supplied input against named
 questions. Jev, hosted by TypeSafe, is the first provider. Workflows and agents use the same
 service, provider registry, directory configuration, validation, and usage recording.
+The reserved `openai_decisions` provider prepares this same service for OpenAI Decisions;
+its transport remains unavailable until a supported API contract is implemented.
+
+## Decisions preparation
+
+OpenAI [announced Decisions API on September 29, 2026](https://openai.com/index/devday-2026-recap/)
+in limited preview, with broader release planned in the following days. The announcement
+describes text/image context and questions with finite, predefined answers. It does not publish
+an endpoint, model identifier, request/response schema, probability contract, or pricing.
+
+Evander reserves provider ID `openai_decisions` alongside Jev across Classification evaluate,
+Smart switch, agent tools, and Admin Web sample evaluations. Its provider settings default to
+disabled, `api_key_env: "OPENAI_API_KEY"`, and `default_model: null`. That environment-variable
+name is an Evander host configuration choice, not a claim about the unpublished API's auth
+contract. Jev remains the directory default. Admin Web shows the pending integration and lets
+operators prepare disabled profiles without copying Jev's model or credential setting.
+Unavailable profiles are excluded from agent profile discovery. Enabling the provider through
+advanced configuration still fails before secret resolution or outbound dispatch.
+
+The internal finite-answer mapping preserves choice IDs, maps score rubric levels to string
+indices (`"0"`, `"1"`, ...), and maps booleans to `"true"`/`"false"` selections. These are
+Evander's adapter objects, not an OpenAI HTTP payload. A selection becomes `choice`, a discrete
+rubric `score`, or a boolean `value`. It never creates confidence, probability distributions,
+or `probability_true`. Jev keeps its existing fractional scores and boolean probabilities.
+Workflows using `probability_true` must keep a probability-producing provider or explicitly
+change their bindings to consume `value`. A Smart switch without a cutoff can consume finite
+choices; a probability cutoff is rejected before calling a provider known not to supply them.
+
+To activate Decisions after documentation and access become available:
+
+1. Implement its fixed host-side endpoint, authentication, schema translation, bounded requests,
+   responses, retries, and usage parsing using the published contract. Reuse the internal finite
+   mapping where it fits. Verify probability support before changing the capability flag.
+2. Set the documented model and integration availability only after adapter conformance tests
+   pass. Keep provider/model snapshots, privacy dispatch checks, native OpenAI usage attribution,
+   and host-owned credentials on the existing shared service path.
+3. Provision host credentials and complete an explicit live check with synthetic input, then
+   enable the provider and selected directory profiles through revisioned Admin Web/API saves.
+   Check downstream probability bindings and cutoffs before switching existing Jev profiles.
+
+Current automated coverage exercises the shared paths with a synthetic finite provider; it
+does not establish OpenAI access, latency, accuracy, billing, or a live Decisions integration.
+Image transport will be added once its documented input representation is known; the current
+public classification input remains text/JSON.
 
 ## Enable and configure
 
@@ -83,12 +127,13 @@ questions.
 | --- | --- | --- |
 | `choice` | At least two named options in `criteria` | `choice`: one of the supplied option IDs |
 | `score` | At least two ordered levels in `criteria` | `score`: number from zero to the last level index; can be fractional; `legend` maps indices to levels |
-| `boolean` | Optional `criteria` descriptions under `true` and `false` | `probability_true`: number from zero to one |
+| `boolean` | Optional `criteria` descriptions under `true` and `false` | `value`: boolean for finite-answer providers, or `probability_true`: number from zero to one for probability-producing providers |
 
 Every question has `instructions`, which may be text or structured JSON. Answer maps use the
 same question IDs as the request. Jev returns `confidence` and `probabilities` for choice and
 score answers; other providers may omit them. Confidence is a separate provider metric, not the
-winning option's probability. Boolean probabilities are not thresholded by the service. Choose
+winning option's probability. Discrete boolean values are not converted to probabilities.
+Boolean probabilities are not thresholded by the service. Choose
 thresholds explicitly in the consuming workflow or agent. There is no automatic model fallback.
 
 The result also includes `success`, `provider`, upstream `model`, `usage.input_tokens`,
@@ -113,7 +158,9 @@ state to upstream data, and select a profile or edit inline questions. A persist
 ```
 
 Use `${{classify.answers.route.choice}}`, `${{classify.answers.severity.score}}`, and
-`${{classify.answers.urgent.probability_true}}` in downstream gates or effects. The editor offers
+`${{classify.answers.urgent.probability_true}}` in downstream gates or effects. Use
+`${{classify.answers.urgent.value}}` for providers that return a discrete boolean.
+Only bind fields that your selected provider actually returns. The editor offers
 known answer fields as binding suggestions. After a saved profile changes, use **Refresh answer
 suggestions** to update that node's hints. Dynamic definitions retain the generic `answers`
 object contract. Use simple question IDs such as `route` or `is_urgent` for convenient bindings.
@@ -196,7 +243,8 @@ Mocked tests verify routing and recovery, not the accuracy of the provider on th
 
 Grant `classification_evaluate` and, optionally, `classification_list_profiles` through ordinary
 session tool grants. Tools are available to any granted agent. No grants are added automatically.
-Profile listing is restricted to enabled profiles in the caller's resolved directory. Evaluation
+Profile listing is restricted to enabled profiles with available integrations in the caller's
+resolved directory; pending providers are excluded from discovery. Evaluation
 also uses the authenticated session's directory; callers cannot choose a different directory or
 supply provider credentials.
 
@@ -236,5 +284,6 @@ Automated tests use fake providers and HTTP transports. An explicit live check i
 This makes a billable request with synthetic input using the selected directory's saved settings;
 it neither edits configuration nor runs workflows. Enable/configure the directory first.
 
-Provider contract references: [TypeSafe API](https://docs.typesafe.ai/api),
+Provider contract references: [OpenAI Decisions announcement](https://openai.com/index/devday-2026-recap/),
+[TypeSafe API](https://docs.typesafe.ai/api),
 [models](https://docs.typesafe.ai/models), and [confidence](https://docs.typesafe.ai/confidence).

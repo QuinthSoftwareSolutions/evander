@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inlineEvaluation, profileEvaluation, mergeClassification, isEditableConfig, renameKey } from "../src/features/classification/classificationDraft.ts";
+import { inlineEvaluation, profileEvaluation, mergeClassification, isEditableConfig, renameKey, providerSettings, profileForProvider } from "../src/features/classification/classificationDraft.ts";
 import { classificationAnswerSchema, deriveWorkflowOutputSchemas, flattenOutputPaths } from "../src/workflowNodeOutputs.ts";
 import { configurationDestinationsForTab } from "../src/features/configuration/configurationNavigation.ts";
 
@@ -31,6 +31,8 @@ test("known answers appear in workflow bindings without losing generic output me
   let schemas = deriveWorkflowOutputSchemas(config, {classify: {provider: {type: "string"}, answers: {type: "object"}}});
   assert.ok(paths(schemas.classify).includes("answers.route.choice"));
   assert.ok(paths(schemas.classify).includes("answers.urgent.probability_true"));
+  assert.ok(paths(schemas.classify).includes("answers.urgent.value"));
+  assert.deepEqual(schemas.classify.answers.properties.urgent.properties.value, {type: "boolean"});
   assert.ok(paths(schemas.classify).includes("answers.severity.score"));
   assert.ok(paths(schemas.classify).includes("provider"));
   config.queries[0].config = {profile_id: "triage"};
@@ -44,5 +46,17 @@ test("malformed advanced configuration cannot enter the structured editor", () =
     assert.equal(isEditableConfig(value), false);
   }
   assert.equal(isEditableConfig({profiles: {triage: {questions: {q: {type: "choice", instructions: {structured: "kept"}}}}}}), true);
+  assert.equal(isEditableConfig({providers: {openai_decisions: {default_model: null}}, profiles: {pending: {model: null}}}), true);
   assert.ok(configurationDestinationsForTab({key: "models_assistant_knowledge", sections: []}).some(d => d.key === "classification"));
+});
+
+test("pending provider profiles use their own defaults and cannot inherit Jev's model or enablement", () => {
+  const providers = [{id: "openai_decisions", available: false, defaults: {enabled: false, default_model: null, api_key_env: "OPENAI_API_KEY"}}];
+  const settings = providerSettings({providers: {openai_decisions: {max_retries: 0}}}, providers, "openai_decisions");
+  assert.deepEqual(settings, {enabled: false, default_model: null, api_key_env: "OPENAI_API_KEY", max_retries: 0});
+  const profile = profileForProvider({enabled: true, provider: "jev", model: "jev-1.13.0", questions: {route: {type: "choice"}}}, "openai_decisions", settings, false);
+  assert.equal(profile.provider, "openai_decisions");
+  assert.equal(profile.model, null);
+  assert.equal(profile.enabled, false);
+  assert.deepEqual(profile.questions, {route: {type: "choice"}});
 });

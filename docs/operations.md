@@ -193,6 +193,9 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 For the opt-in core classification capability, host credential setup, provider enablement,
 and an explicit live smoke command, see [Classification](classification.md). It uses the
 existing gateway, effect orchestrator, and Admin Web processes with no new guest ports.
+OpenAI Decisions profiles can be prepared through that same configuration surface, but the
+reserved integration remains disabled pending its published API contract. See
+[Decisions preparation](classification.md#decisions-preparation) before changing Jev profiles.
 
 Before debugging individual scripts or services, run the consolidated host status command:
 

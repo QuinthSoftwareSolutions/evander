@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-30 - Prepare shared classification for OpenAI Decisions (0.75.0)
+
+- Reserve a disabled Decisions provider across workflows, Smart switches, agent tools, and
+  Admin Web, with explicit availability and provider-specific model/credential defaults.
+- Map finite selections to existing choice and rubric answers plus discrete boolean values,
+  keeping Jev probabilities intact and rejecting incompatible switch cutoffs before dispatch.
+- Verify shared execution, snapshots, inheritance, and OpenAI usage attribution with a synthetic
+  provider. Activation awaits the published API contract, supported transport, and account access.
+
 ## 2026-09-30 - Configure Codex Fast mode per session and prompt (0.74.0)
 
 - Add nullable `fast_mode` session defaults and per-prompt overrides to agent creation,

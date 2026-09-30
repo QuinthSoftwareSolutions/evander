@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { fetchJson } from "../admin/api";
 import { QuestionsEditor } from "./QuestionsEditor";
 import { EvaluationTest } from "./EvaluationTest";
-import { isEditableConfig, mergeClassification, nextId, type ClassificationConfig, type ClassificationSnapshot, type Profile, type ProviderSettings } from "./classificationDraft";
+import { isEditableConfig, mergeClassification, nextId, profileForProvider, providerSettings, type ClassificationConfig, type ClassificationSnapshot, type Profile, type ProviderSettings } from "./classificationDraft";
 import "./classification.css";
 
 export function ClassificationConfiguration({directoryPath, disabled, onDirtyChange}: {
@@ -30,6 +30,8 @@ export function ClassificationConfiguration({directoryPath, disabled, onDirtyCha
   const effective = mergeClassification(snapshot?.parent_config ?? {}, draft);
   const profiles = effective.profiles ?? {};
   const profile = profiles[selected];
+  const profileProviderId = profile?.provider ?? effective.default_provider ?? "jev";
+  const profileProvider = snapshot?.providers.find(p => p.id === profileProviderId);
   const local = selected in (draft.profiles ?? {});
   const locked = disabled || busy;
   function change(next: ClassificationConfig) {setDraft(next); setNotice("");}
@@ -75,15 +77,16 @@ export function ClassificationConfiguration({directoryPath, disabled, onDirtyCha
       }} />{invalidJson && <span role="alert">Enter a configuration object with valid provider and profile fields before saving.</span>}</label> : <>
         <label><input type="checkbox" disabled={locked} checked={effective.enabled === true} onChange={e => change({...draft, enabled: e.target.checked})} /> Enable classification in this directory</label>
         <label className="field-stack"><span>Default provider</span><select aria-label="Default provider" disabled={locked} value={effective.default_provider ?? "jev"} onChange={e => change({...draft, default_provider: e.target.value})}>
-          {snapshot.providers.map(p => <option key={p.id} value={p.id}>{p.id}</option>)}
+          {snapshot.providers.map(p => <option key={p.id} value={p.id} disabled={p.available === false}>{p.label ?? p.id}{p.available === false ? " (unavailable)" : ""}</option>)}
         </select></label>
         {snapshot.providers.map(provider => {
-          const settings = effective.providers?.[provider.id] ?? {};
-          return <fieldset key={provider.id} disabled={locked}><legend>{provider.id} provider</legend>
+          const settings = providerSettings(effective, snapshot.providers, provider.id);
+          return <fieldset key={provider.id} disabled={locked}><legend>{provider.label ?? provider.id} provider</legend>
+            {provider.available === false && <p>{provider.unavailable_reason}</p>}
             <p>{provider.credential_configured ? "Host credential configured" : "Host credential missing"} · Supports {provider.supported_question_types.join(", ")}</p>
-            <label><input type="checkbox" checked={settings.enabled !== false} onChange={e => updateProvider(provider.id, {enabled: e.target.checked})} /> Provider enabled</label>
-            <label className="field-stack"><span>Default model</span><input value={settings.default_model ?? "jev-1.13.0"} onChange={e => updateProvider(provider.id, {default_model: e.target.value})} /></label>
-            <label className="field-stack"><span>Host credential environment variable</span><input value={settings.api_key_env ?? "TYPESAFE_API_KEY"} onChange={e => updateProvider(provider.id, {api_key_env: e.target.value})} /></label>
+            <label><input type="checkbox" disabled={provider.available === false} checked={settings.enabled !== false} onChange={e => updateProvider(provider.id, {enabled: e.target.checked})} /> Provider enabled</label>
+            <label className="field-stack"><span>Default model</span><input value={settings.default_model ?? ""} placeholder="Provider model ID" onChange={e => updateProvider(provider.id, {default_model: e.target.value || null})} /></label>
+            <label className="field-stack"><span>Host credential environment variable</span><input value={settings.api_key_env ?? ""} onChange={e => updateProvider(provider.id, {api_key_env: e.target.value})} /></label>
             <label className="field-stack"><span>Timeout in seconds</span><input type="number" min="1" max="300" value={settings.timeout_seconds ?? 30} onChange={e => updateProvider(provider.id, {timeout_seconds: Number(e.target.value)})} /></label>
             <label className="field-stack"><span>Retries</span><input type="number" min="0" max="5" value={settings.max_retries ?? 2} onChange={e => updateProvider(provider.id, {max_retries: Number(e.target.value)})} /></label>
             <button type="button" onClick={() => {const providers = {...draft.providers}; delete providers[provider.id]; change({...draft, providers});}}>Revert provider overrides</button>
@@ -99,17 +102,17 @@ export function ClassificationConfiguration({directoryPath, disabled, onDirtyCha
             const id = newId.trim() || nextId(profiles, "profile");
             if (id in profiles) {setError("This profile ID already exists."); return;}
             const provider = effective.default_provider ?? "jev";
-            change({...draft, profiles: {...draft.profiles, [id]: {label: id, enabled: true, provider, model: effective.providers?.[provider]?.default_model ?? "jev-1.13.0", questions: {}}}});
+            change({...draft, profiles: {...draft.profiles, [id]: profileForProvider({label: id, questions: {}}, provider, providerSettings(effective, snapshot.providers, provider), snapshot.providers.find(p => p.id === provider)?.available)}});
             setSelected(id); setNewId(""); setError("");
           }}>Add profile</button></div>
         {profile && <section className="classification-profile">
           <p>{local ? "Local definition. Saving replaces this entire profile in this directory." : "Inherited definition. Editing creates a complete local override."}</p>
           <fieldset disabled={locked}><legend>{selected}</legend>
-            <label><input type="checkbox" checked={profile.enabled !== false} onChange={e => updateProfile({enabled: e.target.checked})} /> Profile enabled</label>
+            <label><input type="checkbox" disabled={profileProvider?.available === false} checked={profile.enabled !== false} onChange={e => updateProfile({enabled: e.target.checked})} /> Profile enabled</label>
             <label className="field-stack"><span>Label</span><input value={profile.label ?? ""} onChange={e => updateProfile({label: e.target.value})} /></label>
             <label className="field-stack"><span>Description</span><textarea value={profile.description ?? ""} onChange={e => updateProfile({description: e.target.value})} /></label>
-            <label className="field-stack"><span>Profile provider</span><select value={profile.provider ?? "jev"} onChange={e => updateProfile({provider: e.target.value})}>{snapshot.providers.map(p => <option key={p.id} value={p.id}>{p.id}</option>)}</select></label>
-            <label className="field-stack"><span>Profile model</span><input value={profile.model ?? "jev-1.13.0"} onChange={e => updateProfile({model: e.target.value})} /></label>
+            <label className="field-stack"><span>Profile provider</span><select aria-label="Profile provider" value={profileProviderId} onChange={e => updateProfile(profileForProvider(profile, e.target.value, providerSettings(effective, snapshot.providers, e.target.value), snapshot.providers.find(p => p.id === e.target.value)?.available))}>{snapshot.providers.map(p => <option key={p.id} value={p.id}>{p.label ?? p.id}{p.available === false ? " (unavailable)" : ""}</option>)}</select></label>
+            <label className="field-stack"><span>Profile model</span><input value={profile.model ?? ""} placeholder="Provider default" onChange={e => updateProfile({model: e.target.value || null})} /></label>
           </fieldset>
           <QuestionsEditor key={selected} value={profile.questions} disabled={locked} onChange={questions => updateProfile({questions})} />
           <div className="classification-actions">
@@ -117,8 +120,9 @@ export function ClassificationConfiguration({directoryPath, disabled, onDirtyCha
             <button type="button" disabled={locked || !local} onClick={() => {const next = {...draft.profiles}; delete next[selected]; change({...draft, profiles: next});}}>Delete local override / restore inherited profile</button>
           </div>
           {!snapshot.effective_config.enabled && <p>Save enabled provider settings before testing.</p>}
-          <EvaluationTest key={directoryPath + selected} directoryPath={directoryPath} disabled={locked || profile.enabled === false || !snapshot.effective_config.enabled}
-            definition={local ? {questions: profile.questions, provider: profile.provider ?? "jev", model: profile.model ?? "jev-1.13.0"} : {profile_id: selected}} />
+          {profileProvider?.available === false && <p>{profileProvider.unavailable_reason}</p>}
+          <EvaluationTest key={directoryPath + selected} directoryPath={directoryPath} disabled={locked || profile.enabled === false || profileProvider?.available === false || !snapshot.effective_config.enabled}
+            definition={local ? {questions: profile.questions, provider: profileProviderId, model: profile.model ?? undefined} : {profile_id: selected}} />
         </section>}
       </>}
     </>}

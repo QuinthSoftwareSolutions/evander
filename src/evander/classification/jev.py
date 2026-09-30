@@ -14,6 +14,9 @@ from evander.privacy.providers import check_provider_dispatch
 
 
 class JevProvider:
+    display_name = "Jev (TypeSafe)"
+    reports_option_probabilities = True
+    usage_endpoint_identifier = "systemone"
     supported_question_types = frozenset({"choice", "score", "boolean"})
     endpoint = "https://api.typesafe.ai/v1/systemone"
 

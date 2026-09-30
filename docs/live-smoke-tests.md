@@ -45,6 +45,9 @@ The assistant-level routing corpus has a separate opt-in check: `./.venv/bin/pyt
 scripts/smoke_classifier_switch.py --live --runtime-dir runtime --directory-path root`. It makes
 one billable call per labeled sample and does not edit workflows or assistant settings.
 See [Classification](classification.md) for profile setup and verification details.
+The reserved OpenAI Decisions integration is not callable yet; synthetic adapter tests establish
+shared-path compatibility only. Run an explicit provider smoke after a documented transport and
+account access are available, before switching live Jev profiles.
 
 ## Optional Codex Subscription Egress Smoke
 

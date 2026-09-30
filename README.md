@@ -36,7 +36,8 @@ Git, and HTTP surfaces.
 - Session cost categories with per-prompt overrides, a dashboard cost chart, and
   [inference cost reports](docs/operations.md#inference-cost-reports) by provider, API key, category, and day
 - Core [classification](docs/classification.md) for workflows and agents, with reusable profiles,
-  choice/score/boolean evaluations, Smart switch routing, a structured editor, and Jev as the first provider
+  choice/score/boolean evaluations, Smart switch routing, a structured editor, Jev, and a
+  disabled [OpenAI Decisions integration preparation](docs/classification.md#decisions-preparation)
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests

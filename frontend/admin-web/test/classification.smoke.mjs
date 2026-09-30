@@ -97,6 +97,48 @@ test("classification profiles preserve failed edits, test samples, and honor inh
   assert.deepEqual(errors, []);
 });
 
+test("pending Decisions profiles save disabled without inheriting Jev's model or making a sample call", {timeout: 30000}, async t => {
+  const {page, errors, baseUrl} = await browserFixture(t);
+  let snapshot = JSON.parse(JSON.stringify(initialSnapshot()));
+  const defaults = {enabled: false, default_model: null, api_key_env: "OPENAI_API_KEY"};
+  snapshot.parent_config.providers.openai_decisions = defaults;
+  snapshot.effective_config.providers.openai_decisions = defaults;
+  snapshot.providers.push({id: "openai_decisions", label: "OpenAI Decisions", available: false,
+    unavailable_reason: "The Decisions integration is not available yet.", defaults,
+    supported_question_types: ["choice", "score", "boolean"], credential_configured: false});
+  const saves = [], samples = [];
+  await page.route("**/api/classification**", async route => {
+    const request = route.request();
+    if (request.method() === "GET") return route.fulfill({json: snapshot});
+    const payload = request.postDataJSON();
+    if (request.method() === "POST") {samples.push(payload); return route.fulfill({status: 400, json: {error: "Unavailable"}});}
+    saves.push(payload);
+    snapshot = {...snapshot, revision: "r2", config: payload.config,
+      effective_config: {...snapshot.parent_config, ...payload.config, profiles: {...snapshot.parent_config.profiles, ...payload.config.profiles}}};
+    return route.fulfill({json: snapshot});
+  });
+  await page.goto(baseUrl + "/classification-fixture");
+  const pending = page.getByRole("group", {name: "OpenAI Decisions provider", exact: true});
+  assert.equal(await pending.getByLabel("Provider enabled").isDisabled(), true);
+  assert.equal(await pending.getByLabel("Provider enabled").isChecked(), false);
+  assert.equal(await pending.getByLabel("Default model").inputValue(), "");
+  assert.equal(await pending.getByLabel("Host credential environment variable").inputValue(), "OPENAI_API_KEY");
+  await page.getByLabel("Profile", {exact: true}).selectOption("triage");
+  await page.getByLabel("Profile provider", {exact: true}).selectOption("openai_decisions");
+  assert.equal(await page.getByLabel("Profile model", {exact: true}).inputValue(), "");
+  assert.equal(await page.getByLabel("Profile enabled", {exact: true}).isChecked(), false);
+  assert.equal(await page.getByLabel("Profile enabled", {exact: true}).isDisabled(), true);
+  await page.getByText("Test with sample input", {exact: true}).click();
+  await page.getByLabel("Sample input", {exact: true}).fill("A new purchase");
+  assert.equal(await page.getByRole("button", {name: "Test evaluation", exact: true}).isDisabled(), true);
+  await page.getByRole("button", {name: "Save classification", exact: true}).click();
+  await page.getByRole("status").filter({hasText: "saved"}).waitFor();
+  assert.equal(saves.length, 1);
+  assert.deepEqual(saves[0].config.profiles.triage, {...profile, enabled: false, provider: "openai_decisions", model: null});
+  assert.equal(samples.length, 0);
+  assert.deepEqual(errors, []);
+});
+
 test("workflow inspector saves inline questions and switches to a fixed profile without stale JSON", {timeout: 60000}, async t => {
   const {page, errors, baseUrl} = await browserFixture(t);
   const field = (key, kind) => ({key, label: key === "state" ? "State" : key, kind, required: key === "state", bindable: true, read_only: false, options: [], item_fields: []});
