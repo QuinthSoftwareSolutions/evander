@@ -26,6 +26,9 @@
 - Consolidate agent role updates so explicit role clearing uses a defined value:
   teamless agents may clear it, while team members receive the existing validation
   error with their attempted edits rolled back.
+- Prepare task Git contexts through named base-selection, worktree, receipt,
+  provenance, and commit stages, making recovery strategy priority explicit while
+  retaining cleanup locks, durable receipts, and state-conflict retry metrics.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
