@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-30 - Bound control-plane system log storage (0.74.1)
+
+- Manage daily rsyslog rotation in Ansible with 28 archives and delayed compression,
+  preserving about four weeks of system log history while reducing uncompressed storage.
+- Validate and back up the rotation policy before replacement without forcing rotation
+  or restarting the logging service.
+
 ## 2026-09-30 - Configure Codex Fast mode per session and prompt (0.74.0)
 
 - Add nullable `fast_mode` session defaults and per-prompt overrides to agent creation,

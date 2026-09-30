@@ -12,6 +12,7 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
 
     for role_name in [
         "host_prereqs",
+        "system_log_rotation",
         "repo_checkout",
         "python_env",
         "runtime_bootstrap",
@@ -40,6 +41,7 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "evander_services.firewall must be false for control_plane_only deployments" in site
     assert "evander_runtime_dir == evander_expected_runtime_dir" in site
     assert "- role: host_prereqs" in site
+    assert "- role: system_log_rotation" in site
     assert "- role: apt_cache_relay" in site
     assert "- role: repo_checkout" in site
     assert "- role: python_env" in site
@@ -54,7 +56,8 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: package_cache_nexus" in site
     assert "- role: semantic_store_qdrant" in site
     assert "- role: verification" in site
-    assert site.index("- role: host_prereqs") < site.index("- role: apt_cache_relay")
+    assert site.index("- role: host_prereqs") < site.index("- role: system_log_rotation")
+    assert site.index("- role: system_log_rotation") < site.index("- role: apt_cache_relay")
     assert site.index("- role: apt_cache_relay") < site.index("- role: repo_checkout")
     assert site.index("- role: service_config") < site.index("- role: asterisk_didww")
     assert site.index("- role: asterisk_didww") < site.index("- role: systemd_install")
