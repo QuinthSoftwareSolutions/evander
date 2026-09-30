@@ -26,7 +26,7 @@ from ..models import (
     AgentInboxItem,
     AgentProjectAssignment,
     AgentProjectAssignmentKind,
-    AgentRuntime,
+    AgentRuntime as AgentRuntime,
     AgentStatus,
     AgentTask,
     AgentVoiceProfile,
@@ -94,7 +94,7 @@ from ..templates import get_template
 from .domain.agent_access import (
     _agent_for_session,
     _agent_governs_team,
-    _agent_team_removal_blockers,
+    _agent_team_removal_blockers as _agent_team_removal_blockers,
     _default_role_id,
     _normalize_role_permissions,
     _project_assignment_id,
@@ -147,8 +147,8 @@ from .domain.context_rotation import (
     _context_clearing_idle_grace_seconds_from_value,
     _maybe_mark_idle_context_rotation_due,
     _resolved_context_clearing_policy,
-    _set_context_clearing_idle_grace_seconds,
-    _set_context_clearing_policy,
+    _set_context_clearing_idle_grace_seconds as _set_context_clearing_idle_grace_seconds,
+    _set_context_clearing_policy as _set_context_clearing_policy,
 )
 from .domain.work_lineage import ensure_task_work_lineages
 from .domain.deliverables import (
@@ -218,6 +218,7 @@ from .candidate_correction_reconciliation_service import (
     recover_candidate_correction_successor,
 )
 from .task_administration import TeamTaskAdministration
+from .agent_update_application import AgentUpdateApplication, AgentUpdateRequest
 
 
 def utc_now() -> datetime:
@@ -3434,272 +3435,38 @@ class TeamAdminService(TeamTaskAdministration):
         )
         idle_rotation_result: dict[str, Any] = {"events": []}
 
+        update_request = AgentUpdateRequest(
+            agent_id=normalized_agent_id,
+            team_id=normalized_team_id,
+            project_id=normalized_project_id,
+            project_ids=normalized_project_ids,
+            role_id=normalized_role_id,
+            raw_role_id=role_id,
+            superior_id=normalized_reports_to_agent_id,
+            session_id=session_id,
+            display_name=display_name,
+            ephemeral_policy=ephemeral_policy,
+            status=status,
+            voice_profile=voice_profile,
+            context_clearing_policy=normalized_context_clearing_policy,
+            idle_grace_seconds=normalized_context_clearing_idle_grace_seconds,
+            edit_team=set_team_id,
+            edit_project=set_project_id,
+            edit_projects=set_project_ids,
+            explicit_role=set_role_id,
+            edit_role=set_role_id or role_id is not None,
+            edit_superior=set_reports_to_agent_id,
+            edit_display_name=set_display_name,
+            edit_voice_profile=set_voice_profile,
+        )
+
         def _mutate(state: TeamState) -> TeamState:
-            now = utc_now()
-            agent = _require_present(state.agents, normalized_agent_id, "agent")
-            detached_from_team = False
-            if set_project_id and set_project_ids:
-                raise ValueError("project_id and project_ids cannot be set together")
-            if set_team_id:
-                if normalized_team_id is None:
-                    blockers = _agent_team_removal_blockers(state, agent)
-                    if blockers:
-                        raise ValueError(
-                            f"agent {agent.id} cannot be removed from team: " + "; ".join(blockers)
-                        )
-                    old_superior_id = agent.reports_to_agent_id
-                    if old_superior_id and old_superior_id in state.agents:
-                        old_superior = state.agents[old_superior_id]
-                        old_superior.subordinate_agent_ids = _remove_value(
-                            old_superior.subordinate_agent_ids,
-                            agent.id,
-                        )
-                    for assignment_id in [
-                        assignment.id
-                        for assignment in state.project_assignments.values()
-                        if assignment.agent_id == agent.id
-                    ]:
-                        state.project_assignments.pop(assignment_id, None)
-                    agent.team_id = None
-                    agent.role_id = None
-                    agent.reports_to_agent_id = None
-                    agent.subordinate_agent_ids = []
-                    detached_from_team = True
-                else:
-                    _require_present(state.teams, normalized_team_id, "team")
-                    agent.team_id = normalized_team_id
-            if set_project_id and not detached_from_team:
-                if agent.team_id is None:
-                    raise ValueError("project_id cannot be set for a teamless agent")
-                for assignment_id in [
-                    assignment.id
-                    for assignment in state.project_assignments.values()
-                    if assignment.agent_id == agent.id
-                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_MEMBER
-                ]:
-                    state.project_assignments.pop(assignment_id, None)
-                if normalized_project_id is not None:
-                    project = _require_present(state.projects, normalized_project_id, "project")
-                    if project.team_id != agent.team_id:
-                        raise ValueError(
-                            f"project {normalized_project_id} does not belong to team {agent.team_id}"
-                        )
-                    assignment_id = _project_assignment_id(
-                        normalized_project_id,
-                        agent.id,
-                        AgentProjectAssignmentKind.PROJECT_MEMBER,
-                        existing_ids=state.project_assignments,
-                    )
-                    state.project_assignments[assignment_id] = AgentProjectAssignment(
-                        id=assignment_id,
-                        team_id=agent.team_id,
-                        project_id=normalized_project_id,
-                        agent_id=agent.id,
-                        role_id=agent.role_id,
-                        kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
-                    )
-            elif set_project_ids and not detached_from_team:
-                if agent.team_id is None:
-                    raise ValueError("project_ids cannot be set for a teamless agent")
-                for requested_project_id in normalized_project_ids:
-                    project = _require_present(
-                        state.projects,
-                        requested_project_id,
-                        "project",
-                    )
-                    if project.team_id != agent.team_id:
-                        raise ValueError(
-                            f"project {requested_project_id} does not belong to team {agent.team_id}"
-                        )
-
-                lead_project_ids = {
-                    assignment.project_id
-                    for assignment in state.project_assignments.values()
-                    if assignment.agent_id == agent.id
-                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_LEAD
-                }
-                missing_lead_project_ids = sorted(
-                    lead_project_ids.difference(normalized_project_ids)
-                )
-                if missing_lead_project_ids:
-                    raise ValueError(
-                        "project_ids cannot remove project lead assignments; transfer the "
-                        "project lead first: " + ", ".join(missing_lead_project_ids)
-                    )
-
-                for assignment_id in [
-                    assignment.id
-                    for assignment in state.project_assignments.values()
-                    if assignment.agent_id == agent.id
-                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_MEMBER
-                    and assignment.project_id not in normalized_project_ids
-                ]:
-                    state.project_assignments.pop(assignment_id, None)
-
-                member_project_ids = {
-                    assignment.project_id
-                    for assignment in state.project_assignments.values()
-                    if assignment.agent_id == agent.id
-                    and assignment.kind == AgentProjectAssignmentKind.PROJECT_MEMBER
-                }
-                assignment_role_id = (
-                    normalized_role_id if set_role_id or role_id is not None else agent.role_id
-                )
-                assignment_role = (
-                    state.roles.get(assignment_role_id) if assignment_role_id is not None else None
-                )
-                for requested_project_id in normalized_project_ids:
-                    if (
-                        requested_project_id in lead_project_ids
-                        or requested_project_id in member_project_ids
-                    ):
-                        continue
-                    assignment_id = _project_assignment_id(
-                        requested_project_id,
-                        agent.id,
-                        AgentProjectAssignmentKind.PROJECT_MEMBER,
-                        existing_ids=state.project_assignments,
-                    )
-                    state.project_assignments[assignment_id] = AgentProjectAssignment(
-                        id=assignment_id,
-                        team_id=agent.team_id,
-                        project_id=requested_project_id,
-                        agent_id=agent.id,
-                        role_id=(
-                            assignment_role_id
-                            if assignment_role is not None
-                            and assignment_role.project_id in {None, requested_project_id}
-                            else None
-                        ),
-                        kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
-                    )
-            if not detached_from_team and (set_role_id or role_id is not None):
-                requested_role_id = (
-                    normalized_role_id if set_role_id else normalized_role_id or role_id
-                )
-                role: TeamRole | None = None
-                if requested_role_id is not None:
-                    if set_role_id and agent.team_id is None:
-                        raise ValueError("role_id cannot be set for a teamless agent")
-                    role = _require_present(state.roles, requested_role_id, "role")
-                    _validate_role_assignment(
-                        role,
-                        team_id=agent.team_id,
-                        project_ids=agent_project_ids(state, agent.id),
-                    )
-                agent.role_id = requested_role_id
-                if role is not None and role.project_id is not None:
-                    for assignment in state.project_assignments.values():
-                        if (
-                            assignment.agent_id == agent.id
-                            and assignment.project_id == role.project_id
-                        ):
-                            assignment.role_id = role.id
-                            assignment.updated_at = now
-            if session_id is not None:
-                session_changed = session_id != agent.session_id
-                agent.session_id = session_id
-                if session_changed:
-                    runtime = state.agent_runtimes.setdefault(
-                        agent.id,
-                        AgentRuntime(agent_id=agent.id),
-                    )
-                    runtime.last_context_rotated_at = now
-                    runtime.work_lineage_thread_ids = {}
-                    runtime.work_lineage_thread_dispatch_ids = {}
-                    runtime.updated_at = now
-            if set_display_name:
-                agent.display_name = display_name
-            if ephemeral_policy is not None:
-                agent.ephemeral_policy = ephemeral_policy
-            if status is not None:
-                agent.status = status
-            if set_voice_profile:
-                agent.voice_profile = (
-                    voice_profile
-                    if voice_profile is not None and voice_profile.configured
-                    else None
-                )
-            if (
-                normalized_context_clearing_policy is not None
-                or normalized_context_clearing_idle_grace_seconds is not None
-            ):
-                runtime = state.agent_runtimes.setdefault(
-                    agent.id,
-                    AgentRuntime(agent_id=agent.id),
-                )
-                if normalized_context_clearing_idle_grace_seconds is not None:
-                    _set_context_clearing_idle_grace_seconds(
-                        state,
-                        agent=agent,
-                        runtime=runtime,
-                        grace_seconds=normalized_context_clearing_idle_grace_seconds,
-                        now=now,
-                        result=idle_rotation_result,
-                    )
-            if normalized_context_clearing_policy is not None:
-                _set_context_clearing_policy(
-                    state,
-                    agent=agent,
-                    runtime=runtime,
-                    policy=normalized_context_clearing_policy,
-                    now=now,
-                    result=idle_rotation_result,
-                )
-            if set_reports_to_agent_id and not detached_from_team:
-                old_superior_id = agent.reports_to_agent_id
-                if normalized_reports_to_agent_id is not None:
-                    if agent.team_id is None:
-                        raise ValueError("reports_to_agent_id cannot be set for a teamless agent")
-                    superior = _require_present(
-                        state.agents, normalized_reports_to_agent_id, "superior agent"
-                    )
-                    if superior.team_id != agent.team_id:
-                        raise ValueError(
-                            f"superior agent {normalized_reports_to_agent_id} is not in team {agent.team_id}"
-                        )
-                if old_superior_id and old_superior_id in state.agents:
-                    old_superior = state.agents[old_superior_id]
-                    old_superior.subordinate_agent_ids = _remove_value(
-                        old_superior.subordinate_agent_ids, agent.id
-                    )
-                agent.reports_to_agent_id = normalized_reports_to_agent_id
-                if (
-                    normalized_reports_to_agent_id
-                    and normalized_reports_to_agent_id in state.agents
-                ):
-                    superior = state.agents[normalized_reports_to_agent_id]
-                    superior.subordinate_agent_ids = _append_unique(
-                        superior.subordinate_agent_ids, agent.id
-                    )
-            if agent.team_id is None:
-                if agent.role_id is not None:
-                    raise ValueError("teamless agent cannot have a team-scoped role")
-                if agent.reports_to_agent_id is not None:
-                    raise ValueError("teamless agent cannot report to another agent")
-                if agent.subordinate_agent_ids:
-                    raise ValueError("teamless agent cannot have subordinate agents")
-            else:
-                if agent.role_id is None:
-                    raise ValueError("role_id is required when assigning an agent to a team")
-                role = _require_present(state.roles, agent.role_id, "role")
-                _validate_role_assignment(
-                    role,
-                    team_id=agent.team_id,
-                    project_ids=agent_project_ids(state, agent.id),
-                )
-            if (
-                status is not None
-                or set_role_id
-                or set_project_id
-                or set_project_ids
-                or set_team_id
-                or set_reports_to_agent_id
-            ):
-                from .domain.role_task_queue import append_role_queue_wake_events
-
-                append_role_queue_wake_events(state, result=idle_rotation_result, now=now)
-            return state
+            return AgentUpdateApplication(
+                state=state,
+                request=update_request,
+                wake_result=idle_rotation_result,
+                clock=utc_now,
+            ).apply()
 
         return self._repository.update_with_outbox(
             _mutate,

@@ -38,6 +38,9 @@
 - Separate Teams credential migration inspection, import, reference switching,
   and source retirement, retaining one maintenance lock and the encrypted backup
   boundary so interrupted migrations reuse durable imports safely.
+- Apply administrative agent edits through a typed request and named team,
+  project, role, session, context-policy, and reporting stages, retaining explicit
+  clear rules, membership validation, the patchable clock, and wake-event outbox.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
