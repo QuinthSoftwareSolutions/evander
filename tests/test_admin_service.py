@@ -11539,6 +11539,74 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
     assert empty_period.has_more is False
 
 
+def test_workflow_failure_clusters_classifies_and_sorts_before_limiting_results(
+    tmp_path: Path,
+) -> None:
+    write_failure_cluster_config(tmp_path)
+    service = build_admin_runtime(write_config(tmp_path))
+    store = SqliteExecutionStore(tmp_path / "runtime" / "orchestration.db")
+    for execution_id, effect_id, status, hour in [
+        ("old-active", "effect-push-branch", "failed", 9),
+        ("active-first", "effect-active-new", "failed", 10),
+        ("active-second", "effect-active-new", "failed", 11),
+        ("active-third", "effect-active-new", "failed", 12),
+        ("active-latest", "effect-active-new", "failed", 13),
+        ("recent", "effect-recent", "error_routed", 15),
+        ("historical", "effect-historical", "error_routed", 6),
+        ("resolved-failure", "effect-resolved", "failed", 14),
+        ("resolved-success", "effect-resolved", "succeeded", 16),
+    ]:
+        occurred_at = datetime(2026, 6, 12, hour, tzinfo=UTC)
+        store.record_execution(
+            EffectExecutionRecord(
+                execution_id=execution_id,
+                idempotency_key=execution_id,
+                event_id=f"event-{execution_id}",
+                trace_id="trace",
+                source_node_id="trigger-ticket",
+                source_trigger_type="trigger:ticket:created",
+                effect_id=effect_id,
+                effect_type="effect:git:push-branch",
+                status=status,
+                started_at=occurred_at,
+                finished_at=occurred_at,
+                resolved_config_hash="hash",
+                error="Provider is unavailable" if status != "succeeded" else None,
+            )
+        )
+
+    arguments = {
+        "period_start": datetime(2026, 6, 12, 5, tzinfo=UTC),
+        "period_end": datetime(2026, 6, 12, 17, tzinfo=UTC),
+        "recent_threshold_seconds": 3 * 60 * 60,
+    }
+    report = service.workflow_reports_admin.read_workflow_failure_clusters_report(
+        **arguments, limit=10
+    )
+    assert [(cluster.node_id, cluster.state, cluster.count) for cluster in report.clusters] == [
+        ("effect-active-new", "active", 4),
+        ("effect-push-branch", "active", 1),
+        ("effect-recent", "recent", 1),
+        ("effect-resolved", "resolved", 1),
+        ("effect-historical", "historical", 1),
+    ]
+    assert report.has_more is False
+    assert [example.event_id for example in report.clusters[0].examples] == [
+        "event-active-latest",
+        "event-active-third",
+        "event-active-second",
+    ]
+
+    limited = service.workflow_reports_admin.read_workflow_failure_clusters_report(
+        **arguments, limit=2
+    )
+    assert [cluster.node_id for cluster in limited.clusters] == [
+        "effect-active-new",
+        "effect-push-branch",
+    ]
+    assert limited.has_more is True
+
+
 def test_read_workflow_failure_clusters_report_initializes_missing_sqlite_store(
     tmp_path: Path,
 ) -> None:
