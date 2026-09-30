@@ -44,6 +44,9 @@
 - Build workflow failure reports through explicit metadata, activity, clustering,
   classification, and pagination phases, preserving one SQLite read transaction,
   state priority, newest-first examples, and the operational-payload loader seam.
+- Create libvirt VMs through named session, policy, setup, and recovery stages.
+  Check setup exit status for both privileged-helper and subprocess execution so
+  helper failures report failure and retain only recoverable VM or session state.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

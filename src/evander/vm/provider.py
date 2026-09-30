@@ -885,6 +885,428 @@ class VmProviderRegistry:
         return self.get("libvirt"), target, None
 
 
+@dataclass(frozen=True)
+class _LibvirtVmCreationRequest:
+    vm_name: str
+    session_id: str | None
+    labels: dict[str, str] | None
+    model: str | None
+    cost_category: str | None
+    reasoning_effort: str | None
+    vm_user: str
+    ttl_seconds: int | None
+    ttl_hours: int | None
+    allowed_tools: list[str | Any] | None
+    connector_grants: dict[str, list[str]] | None
+    host_directory_grants: dict[str, list[str]] | None
+    tool_argument_policies: dict[str, list[Any]] | None
+    allowed_script_names: list[str] | None
+    allowed_contact_ids: list[str] | None
+    discord_channels: list[str] | None
+    teams_channel_allowlist: list[str] | None
+    teams_chat_allowlist: list[str] | None
+    teams_user_allowlist: list[str] | None
+    communication_target_ids: list[str] | None
+    email_mailbox_grants: list[Any] | None
+    email_mailboxes: list[str] | None
+    email_folders: list[str] | None
+    communication_file_receive_enabled: bool | None
+    communication_file_send_enabled: bool | None
+    communication_file_max_bytes: int | None
+    communication_file_require_approval_for_send: bool | None
+    web_search_enabled: bool | None
+    image_generation_enabled: bool | None
+    dotnet: bool
+    nuget: bool
+    mssql: bool
+    mssql_init_root: str | None
+    playwright: bool
+    codex_skills: list[str] | None
+    directory_path: str
+    metadata: Mapping[str, Any] | None
+    provider: str | None
+    allow_existing_session: bool
+
+
+@dataclass(frozen=True)
+class _VmSetupResult:
+    returncode: int
+    message: str
+
+
+class _LibvirtVmCreation:
+    """Provision one VM while retaining its recoverable session on setup failure."""
+
+    resolved_vm_name: str
+    normalized_directory_path: str
+    policy: Any
+    resolved_session_id: str
+    session_repository: SessionManifestRepository
+    existing_session: SessionManifest | None
+    had_existing_session: bool
+    normalized_codex_skills: list[str]
+    manifest: SessionManifest
+    agent_provider: str
+    mcp_session_token: str
+    setup_script: Path
+    run_env: dict[str, str]
+    libvirt_base_image: str | None
+
+    def __init__(self, deps: Any, request: _LibvirtVmCreationRequest) -> None:
+        self.deps = deps
+        self.request = request
+
+    def create(self) -> VmActionResult:
+        rejection = self._validate_request()
+        if rejection is not None:
+            return rejection
+        self._build_manifest()
+        self._apply_manifest_metadata()
+        self._validate_session_model()
+        self._persist_manifest()
+        self._prepare_setup_environment()
+        try:
+            message = self._run_setup()
+        except Exception as exc:
+            return self._creation_failure(exc)
+        return self._finish_creation(message)
+
+    def _validate_request(self) -> VmActionResult | None:
+        self.resolved_vm_name = self.request.vm_name.strip()
+        if not self.resolved_vm_name:
+            return VmActionResult(
+                success=False, vm_name="", action="create_vm", message="VM name is required."
+            )
+        if vm_helpers.dominfo_field(self.resolved_vm_name, "State") is not None:
+            return VmActionResult(
+                success=False,
+                vm_name=self.resolved_vm_name,
+                action="create_vm",
+                message=f"VM already exists: {self.resolved_vm_name}",
+            )
+
+        self.normalized_directory_path = self.deps.normalize_directory_path(
+            self.request.directory_path
+        )
+        self.policy = self.deps.runtime.policy_config.resolve_for_directory(
+            self.normalized_directory_path
+        )
+        self.resolved_session_id = (
+            self.request.session_id.strip()
+            if self.request.session_id and self.request.session_id.strip()
+            else session_helpers.default_vm_session_id(self.resolved_vm_name)
+        )
+        self.session_repository = _runtime_session_repository(self.deps.runtime)
+        self.existing_session = self.session_repository.get_session(self.resolved_session_id)
+        self.had_existing_session = self.existing_session is not None
+        if self.existing_session is not None and not self.request.allow_existing_session:
+            return VmActionResult(
+                success=False,
+                vm_name=self.resolved_vm_name,
+                action="create_vm",
+                message=f"Session already exists: {self.resolved_session_id}",
+            )
+        self.normalized_codex_skills = [
+            item.strip() for item in (self.request.codex_skills or []) if item and item.strip()
+        ]
+        if self.request.mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
+            return VmActionResult(
+                success=False,
+                vm_name=self.resolved_vm_name,
+                action="create_vm",
+                message="MSSQL_SA_PASSWORD must be set when MSSQL bootstrap is enabled.",
+            )
+
+        return None
+
+    def _build_manifest(self) -> None:
+        if self.existing_session is not None:
+            self._reuse_existing_session()
+        else:
+            self._build_new_session()
+
+    def _reuse_existing_session(self) -> None:
+        policy_update: dict[str, Any] = {}
+        if self.request.connector_grants is not None:
+            policy_update["connector_grants"] = self.request.connector_grants
+        elif self.existing_session.directory_path != self.normalized_directory_path:
+            policy_update["connector_grants"] = {}
+        if self.request.host_directory_grants is not None:
+            policy_update["host_directory_grants"] = self.request.host_directory_grants
+            policy_update["allowed_tools"] = session_helpers.normalize_allowed_tools(
+                [
+                    *self.existing_session.allowed_tools,
+                    *host_directory_tool_names_for_grants(self.request.host_directory_grants),
+                ]
+            )
+        elif self.existing_session.directory_path != self.normalized_directory_path:
+            policy_update["host_directory_grants"] = {}
+        if self.request.tool_argument_policies is not None:
+            policy_update["tool_argument_policies"] = (
+                session_helpers.session_tool_argument_policies_from_payload(
+                    self.existing_session,
+                    self.request.tool_argument_policies,
+                )
+            )
+        if self.request.web_search_enabled is not None:
+            policy_update["web_search_enabled"] = self.request.web_search_enabled
+        if self.request.image_generation_enabled is not None:
+            policy_update["image_generation_enabled"] = self.request.image_generation_enabled
+        if self.request.allowed_contact_ids is not None:
+            policy_update["allowed_contact_ids"] = self.request.allowed_contact_ids
+        self.manifest = self.existing_session.model_copy(
+            update={
+                "vm_id": self.resolved_vm_name,
+                "vm_provider": self.request.provider or "libvirt",
+                "vm_provider_id": self.resolved_vm_name,
+                "directory_path": self.normalized_directory_path,
+                **policy_update,
+            }
+        )
+
+    def _build_new_session(self) -> None:
+        self.manifest = session_helpers.build_issue_session_manifest(
+            policy=self.policy,
+            session_id=self.resolved_session_id,
+            vm_id=self.resolved_vm_name,
+            issue_number=None,
+            directory_path=self.normalized_directory_path,
+            ttl_hours=self.request.ttl_hours,
+            ttl_seconds=self.request.ttl_seconds,
+            extra_allowed_tools=self.request.allowed_tools,
+            connector_grants=self.request.connector_grants,
+            host_directory_grants=self.request.host_directory_grants,
+            tool_argument_policies=self.request.tool_argument_policies,
+            allowed_script_names=self.request.allowed_script_names,
+            allowed_contact_ids=self.request.allowed_contact_ids,
+            discord_channels=self.request.discord_channels or [],
+            teams_channel_allowlist=self.request.teams_channel_allowlist or [],
+            teams_chat_allowlist=self.request.teams_chat_allowlist or [],
+            teams_user_allowlist=self.request.teams_user_allowlist or [],
+            communication_target_ids=self.request.communication_target_ids,
+            email_mailbox_grants=self.request.email_mailbox_grants,
+            email_mailboxes=self.request.email_mailboxes or [],
+            email_folders=self.request.email_folders or [],
+            communication_file_receive_enabled=self.request.communication_file_receive_enabled,
+            communication_file_send_enabled=self.request.communication_file_send_enabled,
+            communication_file_max_bytes=self.request.communication_file_max_bytes,
+            communication_file_require_approval_for_send=(
+                self.request.communication_file_require_approval_for_send
+            ),
+            web_search_enabled=bool(self.request.web_search_enabled),
+            image_generation_enabled=bool(self.request.image_generation_enabled),
+        )
+
+    def _apply_manifest_metadata(self) -> None:
+        normalized_labels = session_helpers.normalize_session_labels(self.request.labels or {})
+        if normalized_labels:
+            self.manifest.metadata = dict(self.manifest.metadata)
+            self.manifest.metadata["labels"] = normalized_labels
+        if self.request.metadata:
+            self.manifest.metadata = session_helpers.deep_merge_mapping(
+                self.manifest.metadata,
+                self.request.metadata,
+            )
+        if self.normalized_codex_skills:
+            self.manifest.metadata = record_codex_skill_installations(
+                self.manifest.metadata,
+                self.normalized_codex_skills,
+                backend="libvirt_vm",
+                vm_user=self.request.vm_user,
+            )
+        self.manifest.vm_provider = self.request.provider or "libvirt"
+        self.manifest.vm_provider_id = self.resolved_vm_name
+
+    def _validate_session_model(self) -> None:
+        self.agent_provider = _agent_provider_from_manifest_metadata(self.manifest)
+        normalized_model = (self.request.model or "").strip() or None
+        if normalized_model is not None:
+            self.manifest.model = normalized_model
+        elif self.agent_provider:
+            provider_default_model = _default_model_for_explicit_agent_provider(self.agent_provider)
+            if provider_default_model is not None:
+                self.manifest.model = provider_default_model
+            else:
+                try:
+                    self.manifest.model = self.deps.resolve_agent_model_for_session(self.manifest)
+                except ValueError:
+                    self.manifest.model = None
+        else:
+            try:
+                self.manifest.model = self.deps.resolve_agent_model_for_session(self.manifest)
+            except ValueError:
+                self.manifest.model = None
+        from evander.provider_config import validate_openrouter_session
+        from evander.cost_categories import normalize_cost_category
+
+        if self.request.cost_category is not None:
+            self.manifest.cost_category = normalize_cost_category(self.request.cost_category)
+        if self.request.reasoning_effort is not None:
+            self.manifest.reasoning_effort = normalize_reasoning_effort(
+                self.request.reasoning_effort
+            )
+        validate_session_reasoning_effort(
+            self.manifest,
+            self.deps.runtime.provider_config.resolve_for_directory(self.manifest.directory_path),
+        )
+        validate_openrouter_session(
+            self.deps.runtime.provider_config.resolve_for_directory(self.normalized_directory_path),
+            self.manifest,
+        )
+
+    def _persist_manifest(self) -> None:
+        self.manifest, self.mcp_session_token = ensure_session_mcp_auth_token(self.manifest)
+        self.session_repository.upsert_session(self.manifest)
+        sync_added_discord_session_cursors = getattr(
+            self.deps, "sync_added_discord_session_cursors", None
+        )
+        if callable(sync_added_discord_session_cursors):
+            sync_added_discord_session_cursors(
+                previous_session=self.existing_session,
+                updated_session=self.manifest,
+            )
+
+    def _prepare_setup_environment(self) -> None:
+        root_dir = Path(__file__).resolve().parents[3]
+        vm_defaults = self.deps.resolve_vm_defaults(self.normalized_directory_path)
+        self.setup_script = root_dir / "scripts" / "setup_vm.sh"
+        self.run_env = os.environ.copy()
+        self.run_env.update(vm_defaults.guest_environment())
+        if self.manifest.model:
+            self.run_env["AGENT_MODEL"] = self.manifest.model
+        self.run_env["EVANDER_MCP_SESSION_TOKEN"] = self.mcp_session_token
+        if self.agent_provider:
+            self.run_env["AGENT_PROVIDER"] = self.agent_provider
+        managed_skills_root = _managed_codex_skills_root(self.deps, self.normalized_codex_skills)
+        if managed_skills_root is not None:
+            self.run_env["HOST_REPO_CODEX_SKILLS_DIR"] = str(managed_skills_root)
+        self.libvirt_base_image = _libvirt_base_image_from_manifest_metadata(self.manifest)
+        if self.libvirt_base_image is not None:
+            self.run_env["LIBVIRT_BASE_IMAGE"] = self.libvirt_base_image
+
+    def _run_setup(self) -> str:
+        helper = (
+            self.deps.get_privileged_helper() if self.deps.get_use_privileged_helper() else None
+        )
+        if helper is not None and not helper.is_running():
+            helper.start()
+        setup_args = self._setup_arguments()
+        if helper is not None:
+            result = self._run_helper_setup(helper, setup_args)
+        else:
+            result = self._run_process_setup(setup_args)
+        if result.returncode != 0:
+            raise RuntimeError(
+                result.message or f"{self.setup_script.name} exited with code {result.returncode}"
+            )
+        return result.message
+
+    def _setup_arguments(self) -> list[str]:
+        setup_args: list[str] = []
+        _append_setup_vm_selection_args(
+            setup_args,
+            agent_provider=self.agent_provider,
+            libvirt_base_image=self.libvirt_base_image,
+        )
+        if self.request.dotnet:
+            setup_args.append("--dotnet")
+        if self.request.nuget:
+            setup_args.append("--nuget")
+        if self.request.mssql:
+            setup_args.append("--mssql")
+            if self.request.mssql_init_root is not None:
+                setup_args.extend(["--mssql-init-root", self.request.mssql_init_root])
+        if self.request.playwright:
+            setup_args.append("--playwright")
+        for skill_name in self.normalized_codex_skills:
+            setup_args.extend(["--codex-skill", skill_name])
+        setup_args.extend([self.resolved_vm_name, self.resolved_session_id, self.request.vm_user])
+
+        return setup_args
+
+    def _run_helper_setup(self, helper: Any, setup_args: list[str]) -> _VmSetupResult:
+        response = helper.call(
+            "run_script", script_path=str(self.setup_script), args=setup_args, env=self.run_env
+        )
+        message = process_helpers.combined_process_message(
+            str(response.get("stdout") or ""),
+            str(response.get("stderr") or ""),
+        )
+        return _VmSetupResult(returncode=int(response.get("returncode") or 0), message=message)
+
+    def _run_process_setup(self, setup_args: list[str]) -> _VmSetupResult:
+        allowed_env_keys = (
+            "SSH_PUBLIC_KEY_FILE",
+            "SSH_PRIVATE_KEY_PATH",
+            "GATEWAY_URL",
+            "LLM_BASE_URL",
+            "AGENT_MODEL",
+            "BASE_IMAGE",
+            "HOST_CLAUDE_BIN",
+            "NUGET_RELAY_BASE_URL",
+            "EVANDER_RUNTIME_DIR",
+            "VM_STORAGE_DIR",
+            "SHARED_NUGET_CACHE_DIR",
+            "SHARED_NUGET_CACHE_TAG",
+            "SHARED_NUGET_CACHE_MODE",
+            "RAM_MB",
+            "VCPUS",
+            "DISK_SIZE_GB",
+            "VM_WAIT_IP_TIMEOUT_SECONDS",
+            "VM_WAIT_SSH_TIMEOUT_SECONDS",
+            "MSSQL_SA_PASSWORD",
+            "HOST_REPO_CODEX_SKILLS_DIR",
+            "EVANDER_MCP_SESSION_TOKEN",
+            "HTTP_TARGET_BROWSER_PROXY_URL",
+        )
+        launch_step = process_helpers.sudo_env_command(
+            [str(self.setup_script), *setup_args], self.run_env, allowed_env_keys
+        )
+        completed = process_helpers.run_subprocess(
+            launch_step, capture_output=True, text=True, env=self.run_env
+        )
+        message = process_helpers.combined_process_message(completed.stdout, completed.stderr)
+        if completed.returncode != 0 and process_helpers.can_prompt_for_privileges():
+            launch_step = process_helpers.pkexec_env_command(
+                [str(self.setup_script), *setup_args], self.run_env, allowed_env_keys
+            )
+            completed = process_helpers.run_subprocess(
+                launch_step, capture_output=True, text=True, env=self.run_env
+            )
+            message = process_helpers.combined_process_message(completed.stdout, completed.stderr)
+        return _VmSetupResult(returncode=completed.returncode, message=message)
+
+    def _creation_failure(self, exc: Exception) -> VmActionResult:
+        preserved_vm = vm_helpers.dominfo_field(self.resolved_vm_name, "State") is not None
+        if not preserved_vm and not self.had_existing_session:
+            self.session_repository.delete_session(self.resolved_session_id)
+        detail = f"Failed to create VM {self.resolved_vm_name}: {exc}"
+        if preserved_vm:
+            detail = f"{detail}\nVM {self.resolved_vm_name} and session {self.resolved_session_id} were preserved for inspection."
+        return VmActionResult(
+            success=False, vm_name=self.resolved_vm_name, action="create_vm", message=detail
+        )
+
+    def _finish_creation(self, message: str) -> VmActionResult:
+        setup_vm_ip = _extract_setup_guest_ipv4(message)
+        if setup_vm_ip:
+            _persist_session_last_known_vm_ip(
+                self.session_repository,
+                session_id=self.resolved_session_id,
+                vm_ip=setup_vm_ip,
+            )
+
+        summary = message or f"Created VM {self.resolved_vm_name}"
+        provider_details = {"ip_address": setup_vm_ip} if setup_vm_ip else {}
+        return VmActionResult(
+            success=True,
+            vm_name=self.resolved_vm_name,
+            action="create_vm",
+            message=summary,
+            provider_details=provider_details,
+        )
+
+
 def _libvirt_create_vm(
     deps: Any,
     *,
@@ -928,301 +1350,48 @@ def _libvirt_create_vm(
     provider: str | None = None,
     allow_existing_session: bool = False,
 ) -> VmActionResult:
-    resolved_vm_name = vm_name.strip()
-    if not resolved_vm_name:
-        return VmActionResult(
-            success=False, vm_name="", action="create_vm", message="VM name is required."
-        )
-    if vm_helpers.dominfo_field(resolved_vm_name, "State") is not None:
-        return VmActionResult(
-            success=False,
-            vm_name=resolved_vm_name,
-            action="create_vm",
-            message=f"VM already exists: {resolved_vm_name}",
-        )
-
-    normalized_directory_path = deps.normalize_directory_path(directory_path)
-    policy = deps.runtime.policy_config.resolve_for_directory(normalized_directory_path)
-    resolved_session_id = (
-        session_id.strip()
-        if session_id and session_id.strip()
-        else session_helpers.default_vm_session_id(resolved_vm_name)
+    request = _LibvirtVmCreationRequest(
+        vm_name=vm_name,
+        session_id=session_id,
+        labels=labels,
+        model=model,
+        cost_category=cost_category,
+        reasoning_effort=reasoning_effort,
+        vm_user=vm_user,
+        ttl_seconds=ttl_seconds,
+        ttl_hours=ttl_hours,
+        allowed_tools=allowed_tools,
+        connector_grants=connector_grants,
+        host_directory_grants=host_directory_grants,
+        tool_argument_policies=tool_argument_policies,
+        allowed_script_names=allowed_script_names,
+        allowed_contact_ids=allowed_contact_ids,
+        discord_channels=discord_channels,
+        teams_channel_allowlist=teams_channel_allowlist,
+        teams_chat_allowlist=teams_chat_allowlist,
+        teams_user_allowlist=teams_user_allowlist,
+        communication_target_ids=communication_target_ids,
+        email_mailbox_grants=email_mailbox_grants,
+        email_mailboxes=email_mailboxes,
+        email_folders=email_folders,
+        communication_file_receive_enabled=communication_file_receive_enabled,
+        communication_file_send_enabled=communication_file_send_enabled,
+        communication_file_max_bytes=communication_file_max_bytes,
+        communication_file_require_approval_for_send=communication_file_require_approval_for_send,
+        web_search_enabled=web_search_enabled,
+        image_generation_enabled=image_generation_enabled,
+        dotnet=dotnet,
+        nuget=nuget,
+        mssql=mssql,
+        mssql_init_root=mssql_init_root,
+        playwright=playwright,
+        codex_skills=codex_skills,
+        directory_path=directory_path,
+        metadata=metadata,
+        provider=provider,
+        allow_existing_session=allow_existing_session,
     )
-    session_repository = _runtime_session_repository(deps.runtime)
-    existing_session = session_repository.get_session(resolved_session_id)
-    had_existing_session = existing_session is not None
-    if existing_session is not None and not allow_existing_session:
-        return VmActionResult(
-            success=False,
-            vm_name=resolved_vm_name,
-            action="create_vm",
-            message=f"Session already exists: {resolved_session_id}",
-        )
-    normalized_codex_skills = [
-        item.strip() for item in (codex_skills or []) if item and item.strip()
-    ]
-    if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
-        return VmActionResult(
-            success=False,
-            vm_name=resolved_vm_name,
-            action="create_vm",
-            message="MSSQL_SA_PASSWORD must be set when MSSQL bootstrap is enabled.",
-        )
-
-    if existing_session is not None:
-        policy_update: dict[str, Any] = {}
-        if connector_grants is not None:
-            policy_update["connector_grants"] = connector_grants
-        elif existing_session.directory_path != normalized_directory_path:
-            policy_update["connector_grants"] = {}
-        if host_directory_grants is not None:
-            policy_update["host_directory_grants"] = host_directory_grants
-            policy_update["allowed_tools"] = session_helpers.normalize_allowed_tools(
-                [
-                    *existing_session.allowed_tools,
-                    *host_directory_tool_names_for_grants(host_directory_grants),
-                ]
-            )
-        elif existing_session.directory_path != normalized_directory_path:
-            policy_update["host_directory_grants"] = {}
-        if tool_argument_policies is not None:
-            policy_update["tool_argument_policies"] = (
-                session_helpers.session_tool_argument_policies_from_payload(
-                    existing_session,
-                    tool_argument_policies,
-                )
-            )
-        if web_search_enabled is not None:
-            policy_update["web_search_enabled"] = web_search_enabled
-        if image_generation_enabled is not None:
-            policy_update["image_generation_enabled"] = image_generation_enabled
-        if allowed_contact_ids is not None:
-            policy_update["allowed_contact_ids"] = allowed_contact_ids
-        manifest = existing_session.model_copy(
-            update={
-                "vm_id": resolved_vm_name,
-                "vm_provider": provider or "libvirt",
-                "vm_provider_id": resolved_vm_name,
-                "directory_path": normalized_directory_path,
-                **policy_update,
-            }
-        )
-    else:
-        manifest = session_helpers.build_issue_session_manifest(
-            policy=policy,
-            session_id=resolved_session_id,
-            vm_id=resolved_vm_name,
-            issue_number=None,
-            directory_path=normalized_directory_path,
-            ttl_hours=ttl_hours,
-            ttl_seconds=ttl_seconds,
-            extra_allowed_tools=allowed_tools,
-            connector_grants=connector_grants,
-            host_directory_grants=host_directory_grants,
-            tool_argument_policies=tool_argument_policies,
-            allowed_script_names=allowed_script_names,
-            allowed_contact_ids=allowed_contact_ids,
-            discord_channels=discord_channels or [],
-            teams_channel_allowlist=teams_channel_allowlist or [],
-            teams_chat_allowlist=teams_chat_allowlist or [],
-            teams_user_allowlist=teams_user_allowlist or [],
-            communication_target_ids=communication_target_ids,
-            email_mailbox_grants=email_mailbox_grants,
-            email_mailboxes=email_mailboxes or [],
-            email_folders=email_folders or [],
-            communication_file_receive_enabled=communication_file_receive_enabled,
-            communication_file_send_enabled=communication_file_send_enabled,
-            communication_file_max_bytes=communication_file_max_bytes,
-            communication_file_require_approval_for_send=(
-                communication_file_require_approval_for_send
-            ),
-            web_search_enabled=bool(web_search_enabled),
-            image_generation_enabled=bool(image_generation_enabled),
-        )
-    normalized_labels = session_helpers.normalize_session_labels(labels or {})
-    if normalized_labels:
-        manifest.metadata = dict(manifest.metadata)
-        manifest.metadata["labels"] = normalized_labels
-    if metadata:
-        manifest.metadata = session_helpers.deep_merge_mapping(
-            manifest.metadata,
-            metadata,
-        )
-    if normalized_codex_skills:
-        manifest.metadata = record_codex_skill_installations(
-            manifest.metadata,
-            normalized_codex_skills,
-            backend="libvirt_vm",
-            vm_user=vm_user,
-        )
-    manifest.vm_provider = provider or "libvirt"
-    manifest.vm_provider_id = resolved_vm_name
-    agent_provider = _agent_provider_from_manifest_metadata(manifest)
-    normalized_model = (model or "").strip() or None
-    if normalized_model is not None:
-        manifest.model = normalized_model
-    elif agent_provider:
-        provider_default_model = _default_model_for_explicit_agent_provider(agent_provider)
-        if provider_default_model is not None:
-            manifest.model = provider_default_model
-        else:
-            try:
-                manifest.model = deps.resolve_agent_model_for_session(manifest)
-            except ValueError:
-                manifest.model = None
-    else:
-        try:
-            manifest.model = deps.resolve_agent_model_for_session(manifest)
-        except ValueError:
-            manifest.model = None
-    from evander.provider_config import validate_openrouter_session
-    from evander.cost_categories import normalize_cost_category
-
-    if cost_category is not None:
-        manifest.cost_category = normalize_cost_category(cost_category)
-    if reasoning_effort is not None:
-        manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
-    validate_session_reasoning_effort(
-        manifest, deps.runtime.provider_config.resolve_for_directory(manifest.directory_path)
-    )
-    validate_openrouter_session(
-        deps.runtime.provider_config.resolve_for_directory(normalized_directory_path),
-        manifest,
-    )
-    manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)
-    session_repository.upsert_session(manifest)
-    sync_added_discord_session_cursors = getattr(deps, "sync_added_discord_session_cursors", None)
-    if callable(sync_added_discord_session_cursors):
-        sync_added_discord_session_cursors(
-            previous_session=existing_session,
-            updated_session=manifest,
-        )
-
-    root_dir = Path(__file__).resolve().parents[3]
-    vm_defaults = deps.resolve_vm_defaults(normalized_directory_path)
-    setup_script = root_dir / "scripts" / "setup_vm.sh"
-    run_env = os.environ.copy()
-    run_env.update(vm_defaults.guest_environment())
-    if manifest.model:
-        run_env["AGENT_MODEL"] = manifest.model
-    run_env["EVANDER_MCP_SESSION_TOKEN"] = mcp_session_token
-    if agent_provider:
-        run_env["AGENT_PROVIDER"] = agent_provider
-    managed_skills_root = _managed_codex_skills_root(deps, normalized_codex_skills)
-    if managed_skills_root is not None:
-        run_env["HOST_REPO_CODEX_SKILLS_DIR"] = str(managed_skills_root)
-    libvirt_base_image = _libvirt_base_image_from_manifest_metadata(manifest)
-    if libvirt_base_image is not None:
-        run_env["LIBVIRT_BASE_IMAGE"] = libvirt_base_image
-
-    try:
-        helper = deps.get_privileged_helper() if deps.get_use_privileged_helper() else None
-        if helper is not None and not helper.is_running():
-            helper.start()
-        setup_args: list[str] = []
-        _append_setup_vm_selection_args(
-            setup_args,
-            agent_provider=agent_provider,
-            libvirt_base_image=libvirt_base_image,
-        )
-        if dotnet:
-            setup_args.append("--dotnet")
-        if nuget:
-            setup_args.append("--nuget")
-        if mssql:
-            setup_args.append("--mssql")
-            if mssql_init_root is not None:
-                setup_args.extend(["--mssql-init-root", mssql_init_root])
-        if playwright:
-            setup_args.append("--playwright")
-        for skill_name in normalized_codex_skills:
-            setup_args.extend(["--codex-skill", skill_name])
-        setup_args.extend([resolved_vm_name, resolved_session_id, vm_user])
-        if helper is not None:
-            response = helper.call(
-                "run_script", script_path=str(setup_script), args=setup_args, env=run_env
-            )
-            message = process_helpers.combined_process_message(
-                str(response.get("stdout") or ""),
-                str(response.get("stderr") or ""),
-            )
-            completed = type(
-                "Completed", (), {"returncode": int(response.get("returncode") or 0)}
-            )()
-        else:
-            allowed_env_keys = (
-                "SSH_PUBLIC_KEY_FILE",
-                "SSH_PRIVATE_KEY_PATH",
-                "GATEWAY_URL",
-                "LLM_BASE_URL",
-                "AGENT_MODEL",
-                "BASE_IMAGE",
-                "HOST_CLAUDE_BIN",
-                "NUGET_RELAY_BASE_URL",
-                "EVANDER_RUNTIME_DIR",
-                "VM_STORAGE_DIR",
-                "SHARED_NUGET_CACHE_DIR",
-                "SHARED_NUGET_CACHE_TAG",
-                "SHARED_NUGET_CACHE_MODE",
-                "RAM_MB",
-                "VCPUS",
-                "DISK_SIZE_GB",
-                "VM_WAIT_IP_TIMEOUT_SECONDS",
-                "VM_WAIT_SSH_TIMEOUT_SECONDS",
-                "MSSQL_SA_PASSWORD",
-                "HOST_REPO_CODEX_SKILLS_DIR",
-                "EVANDER_MCP_SESSION_TOKEN",
-                "HTTP_TARGET_BROWSER_PROXY_URL",
-            )
-            launch_step = process_helpers.sudo_env_command(
-                [str(setup_script), *setup_args], run_env, allowed_env_keys
-            )
-            completed = process_helpers.run_subprocess(
-                launch_step, capture_output=True, text=True, env=run_env
-            )
-            message = process_helpers.combined_process_message(completed.stdout, completed.stderr)
-            if completed.returncode != 0 and process_helpers.can_prompt_for_privileges():
-                launch_step = process_helpers.pkexec_env_command(
-                    [str(setup_script), *setup_args], run_env, allowed_env_keys
-                )
-                completed = process_helpers.run_subprocess(
-                    launch_step, capture_output=True, text=True, env=run_env
-                )
-                message = process_helpers.combined_process_message(
-                    completed.stdout, completed.stderr
-                )
-            if completed.returncode != 0:
-                raise RuntimeError(
-                    message or f"{setup_script.name} exited with code {completed.returncode}"
-                )
-    except Exception as exc:
-        preserved_vm = vm_helpers.dominfo_field(resolved_vm_name, "State") is not None
-        if not preserved_vm and not had_existing_session:
-            session_repository.delete_session(resolved_session_id)
-        detail = f"Failed to create VM {resolved_vm_name}: {exc}"
-        if preserved_vm:
-            detail = f"{detail}\nVM {resolved_vm_name} and session {resolved_session_id} were preserved for inspection."
-        return VmActionResult(
-            success=False, vm_name=resolved_vm_name, action="create_vm", message=detail
-        )
-
-    setup_vm_ip = _extract_setup_guest_ipv4(message)
-    if setup_vm_ip:
-        _persist_session_last_known_vm_ip(
-            session_repository,
-            session_id=resolved_session_id,
-            vm_ip=setup_vm_ip,
-        )
-
-    summary = message or f"Created VM {resolved_vm_name}"
-    provider_details = {"ip_address": setup_vm_ip} if setup_vm_ip else {}
-    return VmActionResult(
-        success=True,
-        vm_name=resolved_vm_name,
-        action="create_vm",
-        message=summary,
-        provider_details=provider_details,
-    )
+    return _LibvirtVmCreation(deps, request).create()
 
 
 def _extract_setup_guest_ipv4(message: str) -> str | None:
