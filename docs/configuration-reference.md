@@ -28,6 +28,10 @@ sources and reference their environment-variable names in provider configuration
 
 ### Related feature configuration
 
+Independent add-ons own their configuration guides. See the
+[WordPress Add-on configuration](../packages/wordpress-addon/docs/operations.md)
+and the [add-on project convention](addons.md#project-ownership).
+
 Project release policies support `reintegration`, `verification_max_generations`,
 `verification_log_retention_days` and opt-in per-command `result_protocol`,
 `allow_baseline_exceptions`, and `command_failure_action`. See

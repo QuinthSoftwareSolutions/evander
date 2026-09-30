@@ -1,5 +1,9 @@
 # Operations
 
+For website design changes, use the optional [WordPress Add-on](../packages/wordpress-addon/docs/operations.md).
+Its setup verifies recovery before enabling writes, and its directory-scoped workflow
+resumes publication, live checks and conditional restore after a worker restart.
+
 Use this reference for setup, ongoing administration, and recovery. For a first deployment, begin
 with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 [systemd services](#systemd-services). For an existing deployment, start with

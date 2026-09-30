@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-09-30 - Independent add-on projects and website login adapters (0.76.0)
+
+- Establish self-contained, independently installed add-on projects under `packages/`.
+  Include their tests in repository collection and document ownership for future add-ons.
+  [WordPress 0.1.0](packages/wordpress-addon/CHANGELOG.md) is the first project;
+  installing core alone does not install it or grant the relay credential-key access.
+- Add generic website-session adapter registration, adapter-managed profile editing
+  and adapter-aware restart metadata, with ordinary JSON profiles remaining the default.
+- Supply trusted connector drivers with host services and callbacks that recheck current
+  session, tool, argument and connector policy before durable host operations.
+- Provide host-only connector authentication snapshots and reject reflected raw or encoded
+  managed credentials before returning protocol responses or persisting results.
+- Support optional temporary cookies in generic JSON logins while retaining existing
+  JSON-login storage limits and positional add-on registration compatibility.
+- Reject encoded host credentials in JSON-login cookies and storage through the
+  shared credential sanitizer, preserving explicitly public storage identifiers.
+  Check composite Basic/JWT values without buffering complete decoded artifacts.
+- Discover website adapters only when needed so unrelated add-on imports cannot interrupt
+  ordinary logins. Align frozen installation metadata with this release without changing
+  dependency versions.
+
 ## 2026-09-30 - Manually trigger workflow event nodes (0.75.0)
 
 - Run a saved, enabled `trigger:event` node from its inspector with a JSON-object

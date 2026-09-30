@@ -5,7 +5,9 @@ import base64
 from datetime import UTC, datetime, timedelta
 import json
 import ipaddress
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote, quote_plus
 
 import httpx
 import httpcore
@@ -25,6 +27,7 @@ from evander.relays.http_target import HttpTargetRelay
 from evander.session_auth import session_mcp_auth_metadata
 from evander.website_sessions import (
     ManagedWebsiteSessionProfile, ManagedWebsiteSessionService, WebsiteSessionError,
+    WebsiteStorageBinding,
     _public_transport,
 )
 
@@ -112,6 +115,34 @@ def test_eight_hour_expiry_renews_before_next_browser_context(rig):
     assert second["storageState"] != first["storageState"]
     assert "password" not in json.dumps(second)
     assert rig.calls[0].headers.get("x-evander-mcp-session-token") is None
+
+
+def test_json_login_preserves_utf8_storage_limit(rig):
+    rig.profile.local_storage = {
+        name: WebsiteStorageBinding(response_pointer="/payload", encoding="string")
+        for name in ("primary", "secondary")
+    }
+    rig.profile.jwt_response_pointer = None
+    payload = "é" * 100_000
+    rig.handler = lambda request: httpx.Response(200, json={"payload": payload})
+    result = acquire(rig)
+    stored = result["storageState"]["origins"][0]["localStorage"]
+    assert {item["name"] for item in stored} == {"primary", "secondary"}
+    assert all(item["value"] == payload for item in stored)
+
+
+def test_json_login_does_not_import_unrelated_addons(rig):
+    from evander.addons import AddonLoaderConfig
+
+    rig.resolver.config = SimpleNamespace(
+        addon_loader=AddonLoaderConfig(modules=["synthetic_missing_optional_addon"]),
+        runtime_dir=Path("/tmp/synthetic-runtime"),
+    )
+    rig.service = ManagedWebsiteSessionService(
+        rig.resolver, clock=lambda: rig.now[0],
+        transport_factory=lambda url: httpx.MockTransport(lambda request: rig.handler(request)),
+    )
+    assert acquire(rig)["origin"] == "https://app.example.test:8443"
 
 
 def test_renewal_margin_and_concurrent_callers_share_login(rig):
@@ -288,6 +319,110 @@ def test_failures_are_sanitized_and_never_return_stale_state(rig, case, monkeypa
     with pytest.raises(WebsiteSessionError):
         acquire(rig)
     assert len(rig.calls) == 3
+
+
+@pytest.mark.parametrize("secret", ['host-"password', "host-\\password", "host-\npassword"])
+@pytest.mark.parametrize("location", ["value", "key", "nested"])
+def test_cookie_export_rejects_decoded_credentials(rig, monkeypatch, secret, location):
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    rig.profile.local_storage = {}
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "session-token", "domain": "app.example.test",
+              "path": "/", "secure": True, "sameSite": "Lax"}
+    if location == "value":
+        cookie["value"] = "prefix:" + secret + ":suffix"
+    elif location == "key":
+        cookie[secret] = "attribute"
+    else:
+        cookie["extra"] = [{"attribute": secret}]
+    rig.handler = lambda request: httpx.Response(
+        200, json={"token": jwt(rig.now[0] + 3600), "cookies": [cookie]})
+    with pytest.raises(WebsiteSessionError, match="website_login_unsafe_response"):
+        acquire(rig)
+    assert not rig.service._cache
+
+
+def test_cookie_export_accepts_unrelated_temporary_authentication(rig):
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "session-token", "domain": "app.example.test",
+              "path": "/", "secure": True, "sameSite": "Lax"}
+    rig.handler = lambda request: httpx.Response(
+        200, json={"token": jwt(rig.now[0] + 3600), "cookies": [cookie]})
+    state = acquire(rig)
+    assert state["storageState"]["cookies"][0]["value"] == "session-token"
+
+
+@pytest.mark.parametrize("encoding", ["base64", "url_base64", "percent", "form", "json", "basic", "percent_basic", "form_basic", "jwt", "nested_basic", "base64_boundary"])
+@pytest.mark.parametrize("location", ["cookie", "local_storage", "session_storage"])
+def test_broker_rejects_encoded_host_credentials(rig, monkeypatch, encoding, location):
+    secret = 'private-host-"password\\with spaces\nü'
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    reflected = {
+        "base64": base64.b64encode(secret.encode()).decode(),
+        "url_base64": base64.urlsafe_b64encode(secret.encode()).decode().rstrip("="),
+        "percent": quote(secret, safe=""),
+        "form": quote_plus(secret, safe=""),
+        "json": json.dumps(secret)[1:-1],
+        "basic": "Basic " + base64.b64encode(("unrelated-user:" + secret).encode()).decode(),
+        "percent_basic": quote("Basic " + base64.b64encode(("u:" + secret).encode()).decode(), safe=""),
+        "form_basic": quote_plus("Basic " + base64.b64encode(("u:" + secret).encode()).decode(), safe=""),
+        "jwt": "header." + base64.urlsafe_b64encode(json.dumps({"persistent": secret}).encode()).decode().rstrip("=") + ".signature",
+        "nested_basic": base64.b64encode(json.dumps({"header": "Basic " + base64.b64encode(("u:" + secret).encode()).decode()}).encode()).decode(),
+        "base64_boundary": base64.b64encode(("x" * 49140 + secret).encode()).decode(),
+    }[encoding]
+    rig.profile.local_storage = {}
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "temporary-session-token",
+              "domain": "app.example.test", "path": "/", "secure": True, "sameSite": "Lax"}
+    if location == "cookie":
+        cookie["value"] = "prefix:" + reflected
+    else:
+        getattr(rig.profile, location)["private"] = WebsiteStorageBinding(
+            response_pointer="/reflected", encoding="string")
+    rig.handler = lambda request: httpx.Response(200, json={
+        "token": jwt(rig.now[0] + 3600), "cookies": [cookie], "reflected": reflected})
+    app = HttpTargetRelay(rig.config, provider_config_resolver=rig.resolver,
+                          website_sessions=rig.service).create_app()
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://relay.test") as client:
+            response = await client.post("/session/s1/website-session/app",
+                                        headers={"x-evander-mcp-session-token": "proof"})
+            assert response.status_code == 503
+            assert response.json()["error"] == "website_login_unsafe_response"
+            assert reflected not in response.text
+            assert not rig.service._cache
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("secret, reflected", [
+    ("123456789", 123456789), ("true", True), ("null", None),
+    ("123456789", "header." + base64.urlsafe_b64encode(b'{"credential":1.23456789e8}').decode().rstrip("=") + ".signature"),
+])
+def test_cookie_export_preserves_serialized_credential_rejection(rig, monkeypatch, secret, reflected):
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    rig.profile.local_storage = {}
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "session-token", "domain": "app.example.test",
+              "path": "/", "secure": True, "sameSite": "Lax", "extra": [{"reflected": reflected}]}
+    rig.handler = lambda request: httpx.Response(
+        200, json={"token": jwt(rig.now[0] + 3600), "cookies": [cookie]})
+    with pytest.raises(WebsiteSessionError, match="website_login_unsafe_response"):
+        acquire(rig)
+    assert not rig.service._cache
+
+
+def test_cookie_export_preserves_rejection_of_public_login_identifiers(rig):
+    rig.profile.local_storage = {}
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "operator@example.test", "domain": "app.example.test",
+              "path": "/", "secure": True, "sameSite": "Lax"}
+    rig.handler = lambda request: httpx.Response(
+        200, json={"token": jwt(rig.now[0] + 3600), "cookies": [cookie]})
+    with pytest.raises(WebsiteSessionError, match="website_login_unsafe_response"):
+        acquire(rig)
 
 
 @pytest.mark.parametrize("address", ["127.0.0.1", "10.2.0.4", "169.254.169.254", "100.100.100.200", "::ffff:127.0.0.1", "::ffff:224.0.0.1"])

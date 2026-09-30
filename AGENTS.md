@@ -411,6 +411,13 @@ Do not leave stalled test processes running while continuing work.
 
 ## Guidance For Future Changes
 
+- New add-ons belong in self-contained projects under `packages/<addon-id>/`, with
+  their own Python packaging metadata, runtime package, documentation, examples,
+  tests and fixtures. Keep add-on-specific Node dependencies and deployment assets
+  there too. The core distribution must not install these projects implicitly.
+  Shared tests should use synthetic adapters rather than import an optional add-on.
+  `addons/` remains ignored operator-local storage. Existing bundled add-ons can
+  migrate separately; do not migrate unrelated add-ons as part of a new feature.
 - Keep this repository customer-neutral. Customer-specific names, identifiers,
   verifier scripts, policies, tests, incident notes and evidence belong in
   operator-owned storage outside the repository, never in tracked or ignored files.

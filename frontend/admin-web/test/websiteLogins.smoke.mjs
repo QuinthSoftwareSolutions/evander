@@ -43,7 +43,7 @@ test("website login UI edits profiles, keeps failed inputs, rotates secrets, tes
     }}],
   });
   await server.listen(); t.after(() => server.close());
-  const browser = await chromium.launch({headless: true}); t.after(() => browser.close());
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH || undefined}); t.after(() => browser.close());
   const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
   page.setDefaultTimeout(7000);
   const errors = []; page.on("pageerror", e => errors.push(e.message));
@@ -60,8 +60,9 @@ test("website login UI edits profiles, keeps failed inputs, rotates secrets, tes
     if (request.method() === "PUT") {
       submissions.push(payload);
       if (failSave) {failSave = false; return route.fulfill({status:409,json:{error:"Website configuration changed. Reload before saving."}});}
-      snapshot = {...snapshot, revision: `r${submissions.length}`, profiles: [{id: "training", profile: payload.profile, local: true,
-        credentials: {configured_fields: Object.keys(payload.profile.credential_fields), updated_at:Date.now()/1000, owner_directory:"root"}, last_test:null}]};
+      snapshot = {...snapshot, revision: `r${submissions.length}`, profiles: [{id: decodeURIComponent(url.pathname.split('/').at(-1)), profile: payload.profile, local: true,
+        credentials: {configured_fields: Object.keys(payload.profile.credential_fields), managed_by: payload.profile.adapter === 'wordpress' ? 'wordpress' : undefined,
+          updated_at:Date.now()/1000, owner_directory:"root"}, last_test:null}]};
     } else if (request.method() === "POST") {
       snapshot.profiles[0].last_test = {status: "ok", checked_at:Date.now()/1000, expires_at:Date.now()/1000+3600};
     } else if (url.pathname.endsWith("/credentials")) {
@@ -127,5 +128,24 @@ test("website login UI edits profiles, keeps failed inputs, rotates secrets, tes
   await page.getByText("Credentials missing",{exact:true}).waitFor();
   await page.getByRole("button",{name:"Remove local profile",exact:true}).click();
   await page.getByText("No website logins configured.",{exact:true}).waitFor();
+
+  const adapterProfile = {enabled:true, adapter:'wordpress', adapter_config:{site_id:'main'},
+    browser_origin:'https://design.example.test', login_url:'https://design.example.test/wp-json/evander/v1/browser/ticket',
+    credential_source:'environment', credential_ref:null, credential_fields:{}, public_credential_fields:[],
+    static_fields:{}, local_storage:{}, session_storage:{}, cookies_response_pointer:null,
+    jwt_response_pointer:null, expires_in_response_pointer:null,
+    max_age_seconds:900, renew_before_seconds:60, timeout_seconds:20, max_response_bytes:262144};
+  snapshot = {directory_path:'root', revision:'adapter-r0', profiles:[{id:'wordpress', profile:adapterProfile, local:true,
+    credentials:{configured_fields:[], managed_by:'wordpress', updated_at:null, owner_directory:null}, last_test:null}]};
+  await page.getByRole('button',{name:'Reload website logins',exact:true}).click();
+  await page.getByRole('button',{name:'wordpress',exact:true}).click();
+  await page.getByRole('checkbox',{name:'Enabled',exact:true}).uncheck();
+  await page.getByLabel('Maximum age (seconds)',{exact:true}).fill('600');
+  await page.getByRole('button',{name:'Save website login',exact:true}).click();
+  await page.getByRole('status').filter({hasText:'Website login saved'}).waitFor();
+  assert.deepEqual(submissions.at(-1).profile, {...adapterProfile, enabled:false, max_age_seconds:600});
+  assert.deepEqual(submissions.at(-1).credentials, {});
+  assert.equal(await page.getByRole('button',{name:'Add login field',exact:true}).count(), 0);
+  assert.equal(await page.getByLabel('Credential source',{exact:true}).count(), 0);
   assert.deepEqual(errors,[]);
 });

@@ -18,6 +18,10 @@ class ConnectorCallContext:
     artifact_store: Any
     auth_headers: dict[str, str] = field(default_factory=dict, repr=False)
     sensitive_values: tuple[str, ...] = field(default=(), repr=False)
+    # Host-only capabilities for domain drivers that execute durable operations.
+    # These objects never cross the connector result boundary.
+    host_service: Any = field(default=None, repr=False)
+    authorize: Any = field(default=None, repr=False)
 
 
 class ConnectorDriver(Protocol):

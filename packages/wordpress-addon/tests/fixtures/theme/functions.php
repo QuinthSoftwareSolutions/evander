@@ -1,0 +1,1 @@
+<?php // Initial, working release.
