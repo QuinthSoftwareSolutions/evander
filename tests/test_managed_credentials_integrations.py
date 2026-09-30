@@ -197,11 +197,10 @@ def test_managed_connector_field_aware_checks_still_reject_secrets(custody, mode
 @pytest.mark.parametrize(
     "protocol", ["basic", "bearer", "api_key_header", "oauth-secret", "oauth-token"]
 )
-def test_host_protocol_auth_material_protects_secrets_and_preserves_public_ids(
+def test_host_auth_material_captures_private_values_and_allows_public_ids(
     custody, managed, protocol
 ):
-    from evander_wordpress_addon.models import UnknownOutcome
-    from evander_wordpress_addon.transport import Client
+    from evander.credentials.sanitize import reject_reflected_credentials
 
     secret, public = "synthetic-host-credential", "public-designer"
     if protocol == "basic":
@@ -240,25 +239,15 @@ def test_host_protocol_auth_material_protects_secrets_and_preserves_public_ids(
     )
     response = {"value": "synthetic-derived-token" if protocol == "oauth-token" else secret}
 
-    async def material():
-        _, headers, sensitive = await service.host_auth_material("root/team", "documents")
-        return headers, sensitive
-
-    client = Client(
-        "https://files.example.test",
-        lambda: None,
-        auth_material=material,
-        transport_factory=lambda _: httpx.MockTransport(
-            lambda request: httpx.Response(200, json=response)
-        ),
-    )
-
     async def exercise():
-        with pytest.raises(UnknownOutcome) as error:
-            await client.call("/browser/redeem", {"ticket": "synthetic-ticket"}, mutation=True)
-        assert secret not in str(error.value)
-        response["value"] = public
-        assert (await client.call("/receipt"))["value"] == public
+        _, headers, sensitive = await service.host_auth_material("root/team", "documents")
+        assert headers
+        with pytest.raises(CredentialError):
+            reject_reflected_credentials(response, sensitive)
+        reject_reflected_credentials({"value": public}, sensitive)
+        _, _, cached_sensitive = await service.host_auth_material("root/team", "documents")
+        with pytest.raises(CredentialError):
+            reject_reflected_credentials(response, cached_sensitive)
         if protocol.startswith("oauth"):
             assert len(token_requests) == 1, "Cached OAuth tokens still need their secret snapshot"
 

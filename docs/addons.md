@@ -12,7 +12,7 @@ the [Team setup chapter](evander-user-manual/chapters/17-team-setup-ui.md).
 - [Loading and enablement](#loading), [extension contract](#boundary-contract),
   and [private storage](#storage)
 - [Miro](miro-addon.md), [Figma](figma.md),
-  [WordPress](wordpress-addon.md),
+  [WordPress](../packages/wordpress-addon/docs/operations.md),
   [Freshservice](#freshservice-add-on-guidance),
   [Azure DevOps activity](#azure-devops-activity-add-on-guidance),
   [Elastic Stack](#elastic-stack-add-on-guidance),
@@ -27,6 +27,35 @@ Detailed operational companions cover [wake decisions](team-addon-wake-decision-
 [context policies](team-context-reduction-runbook.md),
 [release recovery](release-recovery-and-verifier-policy.md), and
 [model and persistence boundaries](team-data-boundaries.md).
+
+## Project ownership
+
+New add-ons are independent projects under `packages/<addon-id>/`. WordPress is
+the first example; existing bundled add-ons keep their current layout until they
+are migrated separately. Each project owns:
+
+```text
+packages/<addon-id>/
+  pyproject.toml             # independent Python distribution and entry point
+  addon.json                # source-project discovery manifest
+  <python_package>/         # runtime code and assets, including its addon.json
+  README.md
+  docs/
+  examples/
+  tests/
+    fixtures/
+```
+
+Add-on-specific Node manifests, lockfiles, deployment examples and other support
+files also live in the project. The core Python distribution does not include
+these projects or register their entry points. Install an add-on separately, then
+enable it through the normal loader and Admin Web controls.
+
+The repository's default pytest collection and complete runner include project
+tests. A project can also run its own suite against an installed Evander. Core
+tests cover generic extension contracts using synthetic add-ons; they must work
+without optional projects installed. Global documentation links to project-owned
+guides, and the repository release notes record shared platform changes.
 
 ## Boundary Contract
 
@@ -59,17 +88,17 @@ Add-on discovery is configured with `addon_loader`:
 {
   "addon_loader": {
     "modules": [],
-    "package_dirs": ["addons", "src"],
+    "package_dirs": ["addons", "src", "packages"],
     "enabled_entry_points": false,
     "enabled_addon_ids": null
   }
 }
 ```
 
-Evander scans local add-on package directories. By default, `addons/` and
-`src/` at the project root are scanned. `addons/` is operator-local and ignored
-by Git; `src/` lets bundled add-ons use the same manifest shape as copied
-packages. Each immediate child directory is treated as a package candidate when
+Evander scans local add-on package directories. By default, `addons/`, `src/` and
+`packages/` at the project root are scanned. `addons/` is operator-local and ignored
+by Git; `src/` contains legacy bundled add-ons, and `packages/` contains independent
+add-on projects. Each immediate child directory is treated as a package candidate when
 it contains `addon.json`:
 
 ```json

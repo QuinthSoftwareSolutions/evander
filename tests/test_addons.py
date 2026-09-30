@@ -38,7 +38,6 @@ BUNDLED_ADDON_MANIFESTS = {
     "freshservice-addon": "evander_freshservice_addon",
     "miro-addon": "evander_miro_addon",
     "figma-addon": "evander_figma_addon",
-    "wordpress-addon": "evander_wordpress_addon",
 }
 BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_team_addon": ["addon.json", "ui_static/*"],
@@ -50,7 +49,6 @@ BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_freshservice_addon": ["addon.json"],
     "evander_miro_addon": ["addon.json", "ui_static/*"],
     "evander_figma_addon": ["addon.json", "canvas.js", "ui_static/*"],
-    "evander_wordpress_addon": ["addon.json", "checks.mjs", "companion/*.php", "ui_static/*", "ssh_helper.py"],
 }
 
 
@@ -61,6 +59,17 @@ def test_load_addons_defaults_to_empty_catalog(tmp_path: Path, monkeypatch) -> N
 
     assert catalog.registrations == ()
     assert catalog.loaded_addons == ()
+
+
+def test_registration_preserves_legacy_positional_identity_resolver() -> None:
+    resolver = lambda context: "synthetic-identity"
+    registration = AddonRegistration(
+        "legacy-addon", "Legacy Add-on", None, (), (), None, (), None, {}, resolver,
+        {"source": "legacy"},
+    )
+    assert registration.outbound_identity_resolver is resolver
+    assert registration.metadata == {"source": "legacy"}
+    assert registration.website_session_adapters == {}
 
 
 def test_bundled_team_addon_packaging_contract_is_declared() -> None:

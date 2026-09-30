@@ -35,7 +35,7 @@ class BrowserChecks:
             await transport.aclose()
         path = Path(__file__).with_name("checks.mjs")
         module = self.module_path or str(
-            Path(__file__).parents[2] / "frontend/admin-web/node_modules/playwright/index.mjs"
+            Path(__file__).parent.parent / "node_modules/playwright/index.mjs"
         )
         payload = {
             "origin": site.origin,

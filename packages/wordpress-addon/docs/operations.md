@@ -12,7 +12,8 @@ explicit; adding the package never connects to or modifies an existing website.
 
 ## Install and verify recovery
 
-1. Enable **WordPress Add-on** in Admin Web's **Add-ons** page and restart the
+1. [Install this add-on project](../README.md#install) separately from Evander.
+   Enable **WordPress Add-on** in Admin Web's **Add-ons** page and restart the
    listed control-plane services, including the HTTP target relay for browser use.
 2. Open `/addons/wordpress-addon/` and download `evander-wordpress.zip`. Install and
    activate that companion plugin in WordPress. Use HTTPS and InnoDB for the
@@ -36,7 +37,7 @@ explicit; adding the package never connects to or modifies an existing website.
 
 5. Install Node.js and a seeded Playwright/Chromium runtime on the control plane.
    Set `EVANDER_WORDPRESS_PLAYWRIGHT_MODULE` to its absolute `playwright/index.mjs`
-   path when it is outside `frontend/admin-web/node_modules/`. Set
+   path for an installed wheel. Source-loaded packages use this project's `node_modules/`. Set
    `PLAYWRIGHT_MCP_EXECUTABLE_PATH` when Chromium is operator-provisioned elsewhere.
    Probes run as bounded subprocesses against approved public HTTPS origins.
    Playwright must support [WebSocket routing](https://playwright.dev/docs/api/class-browsercontext#browser-context-route-web-socket)
@@ -66,7 +67,7 @@ explicit; adding the package never connects to or modifies an existing website.
    plugin coverage. Setup runs browser probes. A successful test records a stamp
    for the exact profile; API clients cannot forge that stamp. Then enable the site.
    Configuration changes invalidate the stamp and require another test.
-8. Import `config/workflow-packs/wordpress.v1-example.json` through the supported
+8. Import `packages/wordpress-addon/examples/workflow-packs/wordpress.v1-example.json` through the supported
    workflow configuration UI/API. Set its graph's directory to the site's directory
    and keep the existing trigger/effect workers running. Pending operations retry
    independently of a chat turn. Confirm this graph is enabled before granting edits.
@@ -75,10 +76,23 @@ explicit; adding the package never connects to or modifies an existing website.
    `change_status`; publication requires explicit write grants. Existing connector
    policy can require an additional approval before a mutation is queued.
 
-The systemd installer imports the existing named credential-store key into the
-HTTP target relay as well as the gateway, Admin Web and workflow workers. There is
-no new service, guest port, SSH tool or secret export. See [Credentials](credentials.md),
-[Connectors](connectors.md) and [managed browser sessions](managed-website-sessions.md).
+Browser editing needs the relay to use the site's managed connector credentials.
+The core installer keeps credential-key access unchanged for ordinary deployments.
+For WordPress browser editing, explicitly install this add-on's relay drop-in after
+initializing the existing credential store and running the core service installer:
+
+```bash
+sudo install -D -m 0644 \
+  packages/wordpress-addon/examples/systemd/30-credential-store.conf \
+  /etc/systemd/system/evander-http-target-relay.service.d/30-credential-store.conf
+sudo systemctl daemon-reload
+sudo systemctl restart evander-http-target-relay.service
+```
+
+This grants that host process access to `evander-credentials-key`; no key reaches
+the browser. Remove the drop-in and restart the relay when withdrawing this access.
+See [Credentials](../../../docs/credentials.md), [Connectors](../../../docs/connectors.md)
+and [managed browser sessions](../../../docs/managed-website-sessions.md).
 
 `origin` remains an HTTPS origin. For WordPress in a subdirectory, configure
 `rest_path: "/wordpress/wp-json/"`. For plain permalinks use
@@ -388,16 +402,16 @@ Run the focused Python suites, and opt in to the disposable real WordPress/Maria
 fixture when Docker is available:
 
 ```bash
-PYTHONPATH=src timeout 120 ./.venv/bin/pytest -q tests/test_wordpress_addon.py
+PYTHONPATH=src timeout 120 ./.venv/bin/pytest -q packages/wordpress-addon/tests/test_wordpress_addon.py
 PYTHONPATH=src EVANDER_RUN_WORDPRESS_INTEGRATION=1 timeout 240 \
-  ./.venv/bin/pytest -q tests/test_wordpress_integration.py
+  ./.venv/bin/pytest -q packages/wordpress-addon/tests/test_wordpress_integration.py
 ```
 
 The integration fixture needs locally available `wordpress:php8.3-apache` and
 `mariadb:11` images. It uses synthetic data, an internal network, no published ports,
 container-local HTTP and cleanup in a `finally` block.
 
-The separate `tests/test_wordpress_browser_checks.py` fixture exercises the actual
+The separate `packages/wordpress-addon/tests/test_wordpress_browser_checks.py` fixture exercises the actual
 desktop/mobile Chromium runner, HTTPS, links, forms, screenshots and confirmed
 server failures without public internet. Run it with
 `EVANDER_RUN_WORDPRESS_BROWSER_CHECKS=1` and the seeded module/executable settings

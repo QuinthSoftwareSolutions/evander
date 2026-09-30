@@ -1,12 +1,12 @@
 # Managed website sessions
 
-Enabled add-ons can supply additional login adapters. The
-[WordPress adapter](wordpress-addon.md#browser-and-builder-editing) exchanges a
-host-managed application password for short-lived cookies bound to a prepared change.
-All adapters use the same session proof, target origin, directory policy and broker
-expiry checks. Generic JSON profiles can map temporary cookies with
-`cookies_response_pointer`; exported cookies must be secure, scoped to the granted
-host and expire within the broker's lifetime.
+Enabled add-ons can supply additional login adapters. All adapters use the same
+session proof, target origin, directory policy and broker expiry checks. Their
+configuration and credential bindings are owned by the add-on; see the
+[WordPress adapter](../packages/wordpress-addon/docs/operations.md#browser-and-builder-editing).
+Generic JSON profiles can map temporary cookies with `cookies_response_pointer`;
+exported cookies must be secure, scoped to the granted host and expire within the
+broker's lifetime.
 
 An operator can grant an assistant authenticated browser access to a website without
 putting the website password in its VM or container. The existing HTTP target relay

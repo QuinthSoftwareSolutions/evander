@@ -20,7 +20,7 @@ from evander.storage import JsonObjectStore
 
 _ADDON_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _ADDON_PACKAGE_MANIFEST = "addon.json"
-DEFAULT_ADDON_PACKAGE_DIRS = ("addons", "src")
+DEFAULT_ADDON_PACKAGE_DIRS = ("addons", "src", "packages")
 
 
 class AddonLoaderConfig(BaseModel):
@@ -141,9 +141,9 @@ class AddonRegistration:
     mcp_tool_catalog: Sequence[AddonMcpTool | Mapping[str, Any]] = field(default_factory=tuple)
     workflow_providers: Any | None = None
     connector_drivers: Mapping[str, Any] = field(default_factory=dict)
-    website_session_adapters: Mapping[str, Any] = field(default_factory=dict)
     outbound_identity_resolver: OutboundIdentityResolverFactory | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    website_session_adapters: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "addon_id", validate_addon_id(self.addon_id))

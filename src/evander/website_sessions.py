@@ -240,12 +240,19 @@ class ManagedWebsiteSessionService:
         self.resolver = resolver
         self.transport_factory = transport_factory
         self.clock = clock
-        self.adapters = adapters if adapters is not None else website_session_adapters(resolver)
+        self._adapters = adapters
         # Duplicate callers share a login without blocking other session/target pairs.
         # Weak entries disappear when the last caller releases its lock.
         self._locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
         self._cache: OrderedDict[tuple[str, str], tuple[str, dict[str, Any]]] = OrderedDict()
         self._failures: OrderedDict[str, float] = OrderedDict()
+
+    @property
+    def adapters(self) -> dict[str, Any]:
+        # Ordinary JSON logins do not depend on optional add-on imports.
+        if self._adapters is None:
+            self._adapters = website_session_adapters(self.resolver)
+        return self._adapters
 
     def _grant(self, sid: str, alias: str, proof: str | None):
         try:
@@ -317,8 +324,9 @@ class ManagedWebsiteSessionService:
             try:
                 state = (await self._login(profile, credentials) if profile.adapter == "json" else
                          await self.adapters[profile.adapter].login(sid, profile, credentials, session_expiry))
-                state = validate_browser_state(state, profile.browser_origin, self.clock(),
-                    min(session_expiry, self.clock() + profile.max_age_seconds))
+                if profile.adapter != "json" or profile.cookies_response_pointer is not None:
+                    state = validate_browser_state(state, profile.browser_origin, self.clock(),
+                        min(session_expiry, self.clock() + profile.max_age_seconds))
                 # A revocation or credential/config change during login must prevent delivery.
                 if self._grant(sid, alias, proof)[2] != fingerprint:
                     raise WebsiteSessionError("website_session_changed", 409)
@@ -478,7 +486,7 @@ def validate_browser_state(state, origin, now, expiry_limit):
                 raise ValueError
         if any(item.get("origin") != origin for item in storage.get("origins", [])):
             raise ValueError
-        if len(json.dumps(state).encode()) > 1048576:
+        if len(json.dumps(state, ensure_ascii=False).encode()) > 1048576:
             raise ValueError
         state["expiresAt"] = expiry
         return state

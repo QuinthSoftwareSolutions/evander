@@ -5,6 +5,7 @@ import base64
 from datetime import UTC, datetime, timedelta
 import json
 import ipaddress
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -25,6 +26,7 @@ from evander.relays.http_target import HttpTargetRelay
 from evander.session_auth import session_mcp_auth_metadata
 from evander.website_sessions import (
     ManagedWebsiteSessionProfile, ManagedWebsiteSessionService, WebsiteSessionError,
+    WebsiteStorageBinding,
     _public_transport,
 )
 
@@ -112,6 +114,34 @@ def test_eight_hour_expiry_renews_before_next_browser_context(rig):
     assert second["storageState"] != first["storageState"]
     assert "password" not in json.dumps(second)
     assert rig.calls[0].headers.get("x-evander-mcp-session-token") is None
+
+
+def test_json_login_preserves_utf8_storage_limit(rig):
+    rig.profile.local_storage = {
+        name: WebsiteStorageBinding(response_pointer="/payload", encoding="string")
+        for name in ("primary", "secondary")
+    }
+    rig.profile.jwt_response_pointer = None
+    payload = "é" * 100_000
+    rig.handler = lambda request: httpx.Response(200, json={"payload": payload})
+    result = acquire(rig)
+    stored = result["storageState"]["origins"][0]["localStorage"]
+    assert {item["name"] for item in stored} == {"primary", "secondary"}
+    assert all(item["value"] == payload for item in stored)
+
+
+def test_json_login_does_not_import_unrelated_addons(rig):
+    from evander.addons import AddonLoaderConfig
+
+    rig.resolver.config = SimpleNamespace(
+        addon_loader=AddonLoaderConfig(modules=["synthetic_missing_optional_addon"]),
+        runtime_dir=Path("/tmp/synthetic-runtime"),
+    )
+    rig.service = ManagedWebsiteSessionService(
+        rig.resolver, clock=lambda: rig.now[0],
+        transport_factory=lambda url: httpx.MockTransport(lambda request: rig.handler(request)),
+    )
+    assert acquire(rig)["origin"] == "https://app.example.test:8443"
 
 
 def test_renewal_margin_and_concurrent_callers_share_login(rig):

@@ -1,6 +1,6 @@
 # Operations
 
-For website design changes, use the optional [WordPress Add-on](wordpress-addon.md).
+For website design changes, use the optional [WordPress Add-on](../packages/wordpress-addon/docs/operations.md).
 Its setup verifies recovery before enabling writes, and its directory-scoped workflow
 resumes publication, live checks and conditional restore after a worker restart.
 

@@ -28,14 +28,9 @@ sources and reference their environment-variable names in provider configuration
 
 ### Related feature configuration
 
-The optional [WordPress Add-on](wordpress-addon.md) stores revisioned site profiles
-per exact directory through `/addons/wordpress-addon/`. Profiles bind an HTTPS origin,
-managed connector, declared CMS/browser/source capabilities, critical page checks,
-managed repository and a selected pipeline/SSH recovery adapter. Browser profiles use
-the generic managed website `adapter: wordpress` extension. The host-only
-`EVANDER_WORDPRESS_PLAYWRIGHT_MODULE` selects the Playwright module path for probes.
-SSH profiles and pinned trust files are operator-provisioned under
-`/etc/evander/wordpress-ssh/`; secret values do not belong in site JSON.
+Independent add-ons own their configuration guides. See the
+[WordPress Add-on configuration](../packages/wordpress-addon/docs/operations.md)
+and the [add-on project convention](addons.md#project-ownership).
 
 Project release policies support `reintegration`, `verification_max_generations`,
 `verification_log_retention_days` and opt-in per-command `result_protocol`,

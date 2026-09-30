@@ -730,21 +730,31 @@ def test_admin_web_addon_management_disables_addon_after_restart(
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_website_session_adapter_enablement_requires_relay_restart(tmp_path, enabled):
+def test_website_session_adapter_enablement_requires_relay_restart(tmp_path, monkeypatch, enabled):
+    module_root = tmp_path / "adapter_modules"
+    module_root.mkdir()
+    (module_root / "synthetic_session_adapter.py").write_text(
+        "from evander.addons import AddonRegistration\n"
+        "def register_addon():\n"
+        "    return AddonRegistration(addon_id='session-adapter-addon', "
+        "display_name='Session Adapter', "
+        "website_session_adapters={'synthetic': lambda resolver: object()})\n"
+    )
+    monkeypatch.syspath_prepend(str(module_root))
     runtime_dir = write_runtime_config(tmp_path, addon_loader={
-        "modules": ["evander_wordpress_addon"],
-        "enabled_addon_ids": ["wordpress-addon"] if enabled else [],
+        "modules": ["synthetic_session_adapter"],
+        "enabled_addon_ids": ["session-adapter-addon"] if enabled else [],
     })
     with TestClient(create_app(build_admin_runtime(runtime_dir))) as client:
         state = client.get("/api/admin/addons").json()
         client.post("/api/admin/privileged/unlock")
         response = client.put("/api/admin/addons/enabled", json={
             "expected_revision": state["revision"],
-            "enabled_addon_ids": [] if enabled else ["wordpress-addon"],
+            "enabled_addon_ids": [] if enabled else ["session-adapter-addon"],
         })
         assert response.status_code == 200, response.text
         saved = response.json()
-        addon = next(item for item in saved["addons"] if item["addon_id"] == "wordpress-addon")
+        addon = next(item for item in saved["addons"] if item["addon_id"] == "session-adapter-addon")
         assert addon["pending_disable" if enabled else "pending_enable"]
         assert "evander-http-target-relay" in addon["required_restart_services"]
         assert "evander-http-target-relay" in saved["required_restart_services"]

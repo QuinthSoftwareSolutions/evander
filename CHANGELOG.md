@@ -1,37 +1,22 @@
 # Changelog
 
-## 2026-09-30 - Recoverable WordPress website changes (0.73.0)
+## 2026-09-30 - Independent add-on projects and website login adapters (0.73.0)
 
-- Add a disabled-by-default WordPress Add-on with directory-scoped site profiles,
-  standard connector grants, prepared changes, durable recovery data and operator history.
-- Include a versioned companion plugin for conditional content, blocks, templates,
-  styles, navigation, metadata, ACF and covered builder edits through short browser sessions.
-- Publish pinned Git artifacts through HTTPS pipelines or a restricted SSH release helper,
-  keeping external code recovery available when WordPress cannot boot.
-- Verify desktop/mobile pages against a recorded baseline, recover confirmed functional
-  regressions, and preserve concurrent human edits for explicit conflict resolution.
-- Register workflow providers that resume publication, reconciliation and recovery after
-  worker restarts, with installation and recovery documentation and integration fixtures.
-- Keep undo available after failed SSH activation and retry interrupted restores with the
-  original change ID. Preserve browser ownership and recovery during coverage extensions,
-  including when the site is disabled or the agent session expires or loses authorization.
-- Reject reflected host credentials in parsed cookies, require browser-write authorization
-  without approval, and recheck current argument policies before background publication.
-- Recover queued browser edits after authorization is lost, preserve each site's undo
-  retention period, resume pending jobs beyond inactive drafts, and retain source pins
-  before contacting hosting services.
-- Roll back failed resource writes, validate metadata lists before preparation, distinguish
-  selector and form check failures, support adapter-managed website login profiles in the
-  editor, and include the HTTP target relay in adapter add-on restart requirements.
-- Reject raw and encoded credential reflections in browser and hosting responses using
-  the credential snapshot that authenticated each request, including during rotation.
-- Restore captured scheduled-post and attachment statuses, and recover expired mixed
-  source/CMS publications before deployment or after an in-flight expiration.
-- Verify required navigation against the complete resolved site URL, including its
-  origin, query and fragment, and probe the matched link's destination.
-- Return assigned CMS resource keys and versions in public change receipts, honor
-  custom hosting prefixes for shared builds, and normalize extracted release
-  directory permissions for web runtimes using a different account.
+- Establish self-contained, independently installed add-on projects under `packages/`.
+  Include their tests in repository collection and document ownership for future add-ons.
+  [WordPress 0.1.0](packages/wordpress-addon/CHANGELOG.md) is the first project;
+  installing core alone does not install it or grant the relay credential-key access.
+- Add generic website-session adapter registration, adapter-managed profile editing
+  and adapter-aware restart metadata, with ordinary JSON profiles remaining the default.
+- Supply trusted connector drivers with host services and callbacks that recheck current
+  session, tool, argument and connector policy before durable host operations.
+- Provide host-only connector authentication snapshots and reject reflected raw or encoded
+  managed credentials before returning protocol responses or persisting results.
+- Support optional temporary cookies in generic JSON logins while retaining existing
+  JSON-login storage limits and positional add-on registration compatibility.
+- Discover website adapters only when needed so unrelated add-on imports cannot interrupt
+  ordinary logins. Align frozen installation metadata with this release without changing
+  dependency versions.
 
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 

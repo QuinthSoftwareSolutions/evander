@@ -350,7 +350,7 @@ print(r.binding())
 def browser_grant(tmp_path, monkeypatch):
     from datetime import UTC, datetime, timedelta
     import time
-    from config_helpers import write_runtime_config
+    from runtime_support import write_runtime_config
     from evander.addons import AddonLoaderConfig
     from evander.models import SessionManifest
     from evander.admin.composition import build_admin_runtime
@@ -1524,7 +1524,7 @@ def test_site_retention_does_not_shorten_another_sites_undo_window(rig, monkeypa
 
 def test_example_workflow_imports_and_routes_queued_change_to_publication(rig, monkeypatch):
     pack = WorkflowPack.model_validate_json(
-        (Path(__file__).parents[1] / "config/workflow-packs/wordpress.v1-example.json").read_text()
+        (Path(__file__).parents[1] / "examples/workflow-packs/wordpress.v1-example.json").read_text()
     )
     trigger_node, effect_node = (entry.node for entry in pack.ir.nodes)
     context = SimpleNamespace(

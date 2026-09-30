@@ -31,7 +31,7 @@ sudo /opt/evander/scripts/install_systemd_units.sh
 ```
 
 The installer registers the protected key under `/etc/credstore/evander-credentials-key` and
-adds `ImportCredential=evander-credentials-key` only to gateway, Admin Web, HTTP target relay, trigger/effect
+adds `ImportCredential=evander-credentials-key` only to gateway, Admin Web, trigger/effect
 orchestrators, Teams ingest, Teams notifications and Teams meeting ingest. Ubuntu 24.04's
 systemd supports this mechanism. No credential port or new host daemon is added, and worker
 containers receive neither the store nor its key. Restart the affected units after installation

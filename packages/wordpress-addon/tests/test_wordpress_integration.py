@@ -1,6 +1,6 @@
 """Opt-in real WordPress/PHP/MariaDB tests; resources are removed even on failure.
 
-EVANDER_RUN_WORDPRESS_INTEGRATION=1 pytest -q tests/test_wordpress_integration.py
+EVANDER_RUN_WORDPRESS_INTEGRATION=1 pytest -q packages/wordpress-addon/tests/test_wordpress_integration.py
 Images must be available locally. The fixture uses an internal Docker network and
 synthetic data only; no production website, credential or deployment is involved.
 """
@@ -94,7 +94,7 @@ def wordpress():
     releases = Path(temporary.name) / "theme"
     initial = releases / "releases/initial"
     initial.mkdir(parents=True)
-    for path in (ROOT / "tests/fixtures/wordpress/theme").iterdir():
+    for path in (ROOT / "tests/fixtures/theme").iterdir():
         (initial / path.name).write_bytes(path.read_bytes())
     (releases / "current").symlink_to("releases/initial")
     try:
@@ -138,9 +138,9 @@ def wordpress():
             "-v",
             str(releases) + ":/theme-releases:ro",
             "-v",
-            str(ROOT / "src/evander_wordpress_addon/companion") + ":/companion:ro",
+            str(ROOT / "evander_wordpress_addon/companion") + ":/companion:ro",
             "-v",
-            str(ROOT / "tests/fixtures/wordpress") + ":/fixtures:ro",
+            str(ROOT / "tests/fixtures") + ":/fixtures:ro",
             "wordpress:php8.3-apache",
         )
         # Bounded readiness, independent of a browser's networkidle heuristics.
