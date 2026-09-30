@@ -33,7 +33,11 @@ from evander.capacity_health import (
     collect_disk_usage,
     top_session_storage,
 )
-from evander.codex_auth import DEFAULT_SUBSCRIPTION_PROFILE_ID, CodexAuthMode
+from evander.codex_auth import (
+    DEFAULT_SUBSCRIPTION_PROFILE_ID,
+    CodexAuthMode,
+    CodexRateLimitResetRequest,
+)
 from evander.managed_sections import merge_managed_section
 from evander.session_artifacts import (
     open_relative_regular_file_no_follow,
@@ -466,6 +470,13 @@ class WorkerDaemon(GitWorkspaceOperations):
 
     def start_codex_profile_device_login(self, profile_id: str) -> dict[str, Any]:
         return self.codex_auth_profiles.start_device_login(profile_id)
+
+    def consume_codex_profile_reset_credit(
+        self, profile_id: str, request: CodexRateLimitResetRequest
+    ) -> dict[str, Any]:
+        result = self.codex_auth_profiles.consume_reset_credit(profile_id, request)
+        result["profile"]["active_job_count"] = self._active_subscription_jobs_for_profile(profile_id)
+        return result
 
     def codex_profile_device_login_status(self, profile_id: str, login_id: str) -> dict[str, Any]:
         return self.codex_auth_profiles.device_login_status(profile_id, login_id)

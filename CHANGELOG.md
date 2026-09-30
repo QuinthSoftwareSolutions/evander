@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-30 - Display and redeem banked subscription resets (0.73.0)
+
+- Show each subscription profile's banked reset count beside remaining weekly usage,
+  distinguishing unavailable telemetry from zero available resets.
+- Let privileged root owners redeem one reset, refresh account limits, and wake queued
+  work when capacity recovers. Preserve account pins and retry identity to avoid
+  consuming another reset after an uncertain response.
+- Bind redemption to the original worker and account, and retain unresolved attempts
+  across tab changes and reloads until the provider returns a definitive outcome.
+
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 
 - Reuse completed gateway activity scans for five minutes and share overlapping

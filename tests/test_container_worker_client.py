@@ -40,6 +40,30 @@ def _job_payload(status: str = "running") -> dict[str, object]:
     }
 
 
+def test_reset_redemption_client_preserves_profile_and_retry_identity(monkeypatch) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"outcome": "alreadyRedeemed", "profile": {}})
+
+    payload = {"idempotency_key": "attempt-1", "credit_id": "credit-1"}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        worker = ContainerWorkerClient(
+            base_url="http://worker.test", token_env="WORKER_TOKEN", client=client,
+        )
+        worker.consume_codex_profile_reset_credit("team-a", payload)
+        worker.consume_codex_profile_reset_credit("team-a", payload)
+
+    assert len(requests) == 2
+    for request in requests:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/codex-auth/profiles/team-a/reset-credits/consume"
+        assert request.headers["Authorization"] == "Bearer secret-token"
+        assert json.loads(request.content) == {"idempotency_key": "attempt-1", "credit_id": "credit-1"}
+
+
 def test_bounded_artifact_reader_sends_limit_and_stops_oversized_stream(monkeypatch):
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
     chunks = []
