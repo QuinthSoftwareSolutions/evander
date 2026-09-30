@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-30 - Clarify control-plane transaction stages (0.72.6)
+
+- Apply Team agent action batches through named stages with invocation-local
+  progress and project-recalculation state, preserving stage order, partial-error
+  handling, transactional events, and dispatch completion.
+
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
 - Remove rounded corners from Admin Web and standalone add-on surfaces, dialogs,
