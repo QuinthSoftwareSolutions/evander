@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-30 - Reload worker code during deployment (0.74.1)
+
+- Restart container worker daemons when their running revision differs from the deployed
+  checkout, including retries after an interrupted deployment.
+- Verify the running revision and Codex Fast mode support before accepting a worker
+  deployment, preventing stale request schemas from rejecting new turn fields.
+
 ## 2026-09-30 - Configure Codex Fast mode per session and prompt (0.74.0)
 
 - Add nullable `fast_mode` session defaults and per-prompt overrides to agent creation,

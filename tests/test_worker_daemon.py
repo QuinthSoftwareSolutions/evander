@@ -1071,6 +1071,41 @@ def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token
     assert response.status_code == 201
 
 
+def test_worker_health_reports_loaded_revision_and_accepts_fast_mode_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EVANDER_WORKER_DEPLOY_REVISION", "loaded-revision")
+    runtime = FakeContainerRuntime()
+    with _client(tmp_path, runtime=runtime) as client:
+        # A later checkout/environment change cannot relabel the running app.
+        monkeypatch.setenv("EVANDER_WORKER_DEPLOY_REVISION", "next-revision")
+        health = client.get("/healthz").json()
+        assert health["deployment_revision"] == "loaded-revision"
+        assert health["capabilities"]["codex_fast_mode"] == 1
+        response = client.post(
+            "/v1/jobs",
+            headers=_auth(),
+            json={
+                "session_id": "fast-assistant",
+                "job_id": "fast-job",
+                "image": "codex:latest",
+                "command": ["true"],
+                "codex_turn": {
+                    "prompt": "Continue",
+                    "model": "gpt-6.1-sol",
+                    "fast_mode": True,
+                    "fast_mode_source": "prompt",
+                },
+            },
+        )
+        assert response.status_code == 201, response.text
+        assert len(runtime.started) == 1
+        turn = runtime.started[0][0].codex_turn
+        assert turn is not None
+        assert turn.fast_mode is True
+        assert turn.fast_mode_source == "prompt"
+
+
 @pytest.mark.parametrize("session_id", [".", ".."])
 def test_worker_session_paths_reject_dot_segments_before_creating_directories(
     tmp_path: Path,

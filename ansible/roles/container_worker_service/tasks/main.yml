@@ -7,6 +7,32 @@
         and (evander_worker_mssql_enabled | bool)
       }}
 
+- name: Resolve deployed worker code revision
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ evander_deploy_path }}"
+      - rev-parse
+      - --verify
+      - HEAD
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  check_mode: false
+  register: evander_worker_deployed_revision
+
+- name: Read running worker code revision
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ evander_worker_port }}/healthz"
+    method: GET
+    return_content: true
+    use_proxy: false
+    timeout: 5
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  register: evander_worker_current_health
+
 - name: Render worker daemon environment
   ansible.builtin.template:
     src: worker-daemon.env.j2
@@ -37,6 +63,8 @@
           evander_worker_env_render.changed
           or evander_worker_unit_render.changed
           or (evander_run_user_membership_changed | default(false))
+          or (evander_worker_current_health.json | default({})).get('deployment_revision')
+             != evander_worker_deployed_revision.stdout
         )
         else 'started'
       }}

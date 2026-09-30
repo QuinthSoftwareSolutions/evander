@@ -105,6 +105,19 @@
     method: GET
     return_content: true
     status_code: 200
+    use_proxy: false
+    timeout: 5
+  register: evander_worker_health
+  until:
+    - evander_worker_health.status == 200
+    - >-
+      (evander_worker_health.json | default({})).get('deployment_revision')
+      == evander_worker_deployed_revision.stdout
+    - >-
+      (evander_worker_health.json | default({})).get('capabilities', {}).get('codex_fast_mode', 0)
+      | int >= 1
+  retries: 10
+  delay: 1
 
 - name: Resolve Codex egress proxy verification endpoint
   ansible.builtin.set_fact:
