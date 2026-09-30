@@ -20,6 +20,9 @@ explicit; adding the package never connects to or modifies an existing website.
    WordPress tables and companion journal. The host and plugin use protocol v1.
 3. Create a dedicated WordPress service account with the capabilities needed for
    the intended resources, including `edit_theme_options` for the companion API.
+   New post HTML must satisfy WordPress KSES unless that account has
+   `unfiltered_html`; unsafe proposals are rejected before publication. Conditional
+   undo can still restore the exact captured baseline after that capability is removed.
    Create an application password and place it in a **managed Basic connector
    credential**, using the existing Credentials and Connectors admin pages. Approve
    its exact current consumer binding. The username/password stays on the host.
@@ -40,6 +43,10 @@ explicit; adding the package never connects to or modifies an existing website.
    path for an installed wheel. Source-loaded packages use this project's `node_modules/`. Set
    `PLAYWRIGHT_MCP_EXECUTABLE_PATH` when Chromium is operator-provisioned elsewhere.
    Probes run as bounded subprocesses against approved public HTTPS origins.
+   Chromium's sandbox must work for the service user. Verification fails closed if
+   it cannot launch with the sandbox; run the opt-in browser fixture below under
+   that user before enabling a site. Do not use an executable wrapper that disables
+   the sandbox or run the verifier as root.
    Playwright must support [WebSocket routing](https://playwright.dev/docs/api/class-browsercontext#browser-context-route-web-socket)
    (v1.48 or later). Verification blocks WebSockets and service workers.
 6. Save a disabled site profile in the correct directory. Example:
@@ -224,7 +231,12 @@ cannot allow the previous credential to be exported.
 
 The plugin wraps browser writes in a transaction, locks the prepared resources,
 checks their versions and rejects SQL outside the recovery manifest. File editors,
-installers and account administration are denied. Active plugins must be explicitly
+installers, general settings administration and account administration are denied.
+Temporary sessions do not receive `manage_options`, including for approved builder
+plugins. Use covered design screens or the CMS option adapter for allowlisted
+settings; the All Settings page and general REST settings are unavailable.
+Ticket redemption is rejected inside an existing scoped browser request.
+Active plugins must be explicitly
 declared compatible through `evander_browser_compatible_plugins`, including on
 multisite installations. An operator must verify that each compatible plugin's
 write paths are covered. A builder's custom tables/files need a dedicated adapter
@@ -390,7 +402,10 @@ human content, erase recovery artifacts, or let an agent clear its own quarantin
 Configuration cannot remove or rebind a site while recovery is active.
 
 History and screenshots are readable through directory-scoped admin permissions;
-configuration, test and restore require administrator ownership. Snapshots are
+configuration, test, restore and recovery resolution require administrator ownership
+and **Privileged operations** unlocked in Admin Web. Mutation requests must use
+`application/json`; browser requests must come from the Admin Web origin. Direct
+authenticated API clients may omit the Origin header. Snapshots are
 private host files/SQLite data under `runtime/addons/wordpress-addon/`, with no
 browser state or long-term credentials in the ledger. Default retention is 90 days;
 unresolved changes and the latest published recovery baseline are always retained.

@@ -2,6 +2,15 @@
 
 ## 2026-09-30 - Initial release (0.1.0)
 
+- Require privileged unlock and same-origin JSON requests for operator mutations;
+  run verification with Chromium's sandbox enabled and fail closed when unavailable.
+- Remove general settings administration from temporary browser sessions and
+  enforce the restriction for multisite super-admins. Preserve recovery locks
+  during rejected nested ticket redemption and avoid cache flushes
+  for rejected anonymous tickets. Honor service-account HTML permissions for new
+  content while preserving exact captured restoration.
+- Bound SSH helper output while streaming, terminate and reap failed helpers, and
+  preserve reconciliation for uncertain deployment and restoration outcomes.
 - Add a disabled-by-default WordPress Add-on with directory-scoped site profiles,
   standard connector grants, prepared changes, durable recovery data and operator history.
 - Include a versioned companion plugin for conditional content, blocks, templates,

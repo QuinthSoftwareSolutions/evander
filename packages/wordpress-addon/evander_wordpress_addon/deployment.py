@@ -93,20 +93,52 @@ class SSHAdapter:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        async def send():
+            try:
+                process.stdin.write(json.dumps({"protocol_version": 1, "action": action, **payload}).encode())
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                process.stdin.close()
+
+        async def receive():
+            output = bytearray()
+            while chunk := await process.stdout.read(65536):
+                if len(output) + len(chunk) > 128 * 1024:
+                    raise WordPressError("SSH helper response exceeds the size limit")
+                output.extend(chunk)
+            return bytes(output)
+
         try:
-            stdout, _ = await asyncio.wait_for(
-                process.communicate(
-                    json.dumps({"protocol_version": 1, "action": action, **payload}).encode()
-                ),
-                120,
-            )
+            async with asyncio.timeout(120):
+                # A helper may produce output before reading a large artifact payload.
+                async with asyncio.TaskGroup() as tasks:
+                    tasks.create_task(send())
+                    response = tasks.create_task(receive())
+                stdout = response.result()
+                await process.wait()
         except BaseException:
-            process.kill()
-            await process.wait()
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            if not process.stdin.is_closing() or process.stdin.transport.get_write_buffer_size():
+                process.stdin.transport.abort()
+            # Releasing a paused stdout pipe is necessary for asyncio to reap a
+            # killed child. Discard remaining bounded pipe buffers, never collect them.
+            async def discard():
+                while await process.stdout.read(65536):
+                    pass
+
+            try:
+                await asyncio.wait_for(asyncio.gather(discard(), process.wait()), 5)
+            except (TimeoutError, OSError):
+                pass
             if action in {"deploy", "restore"}:
                 raise UnknownOutcome("SSH operation needs status reconciliation") from None
             raise WordPressError("SSH helper is unavailable") from None
-        if process.returncode or len(stdout) > 128 * 1024:
+        if process.returncode:
             if action in {"deploy", "restore"}:
                 raise UnknownOutcome("SSH operation needs status reconciliation")
             raise WordPressError("SSH helper is unavailable")

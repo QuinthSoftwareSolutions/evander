@@ -24,11 +24,13 @@ from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.packs import WorkflowPack
 from evander_wordpress_addon import register_addon
 from evander_wordpress_addon.api import admin_api_routes, plugin_zip
+from evander_wordpress_addon.deployment import SSHAdapter
 from evander_wordpress_addon.models import (
     Conflict,
     Settings,
     Site,
     WordPressError,
+    UnknownOutcome,
     digest,
     operation_definitions,
 )
@@ -1804,6 +1806,7 @@ def test_ssh_helper_preserves_intervening_manual_file_edit(hosting):
 def test_admin_settings_and_restore_enforce_directory_permissions_and_server_owned_probe(tmp_path):
     class Auth:
         allowed = False
+        unlocked = False
 
         def require(self, request):
             return {"login": "operator"}
@@ -1811,6 +1814,9 @@ def test_admin_settings_and_restore_enforce_directory_permissions_and_server_own
         def require_permission(self, request, permission, directory_path):
             if not self.allowed:
                 raise PermissionError
+
+        def privileged_for_request(self, request):
+            return self.unlocked
 
     auth = Auth()
     context = AddonContext(
@@ -1828,6 +1834,16 @@ def test_admin_settings_and_restore_enforce_directory_permissions_and_server_own
         ) as client:
             assert (await client.get("/settings?directory=root/design")).status_code == 403
             auth.allowed = True
+            assert (await client.get("/settings?directory=root/design")).status_code == 200
+            for path, method, body in [
+                ("/settings", "PUT", {"expected_revision": 0, "settings": {"sites": {}}}),
+                ("/test", "POST", {"site_id": "main"}),
+                ("/changes/wp_" + "a" * 32 + "/restore", "POST", {"site_id": "main"}),
+                ("/changes/wp_" + "a" * 32 + "/resolve", "POST", {"site_id": "main"}),
+            ]:
+                assert (await client.request(method, path + "?directory=root/design", json=body)).status_code == 403
+            assert (await client.get("/settings?directory=root/design")).json()["revision"] == 0
+            auth.unlocked = True
             payload = {
                 "expected_revision": 0,
                 "settings": {
@@ -1853,6 +1869,125 @@ def test_admin_settings_and_restore_enforce_directory_permissions_and_server_own
             ).status_code == 409
             result = (await client.get("/settings?directory=root/design")).json()
             assert result["settings"]["sites"]["main"]["recovery_verified"] is None
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("endpoint", ["test", "restore", "resolve"])
+@pytest.mark.parametrize("attack", ["text_plain", "foreign_origin", "foreign_json", "null_origin"])
+def test_admin_recovery_rejects_cross_origin_and_simple_requests(rig, monkeypatch, endpoint, attack):
+    from evander_wordpress_addon import api
+
+    prepared = prepare(rig)
+    published = run(rig.service.execute("main", queue(rig, prepared)["change_id"]))
+    if endpoint == "resolve":
+        stored = rig.store.get(published["change_id"], "root/design")
+        published = rig.service.receipt(rig.store.update(stored, state="conflict"))
+    operator = resumed_service(rig, operator=True)
+    monkeypatch.setattr(api, "Service", lambda *args: operator)
+    original = rig.remote.handle
+
+    def remote(request):
+        if request.url.path.endswith("/probe"):
+            return httpx.Response(200, json={"protocol_version": 1, "restore_verified": True})
+        return original(request)
+
+    operator.transport_factory = lambda origin: httpx.MockTransport(remote)
+    auth = SimpleNamespace(require=lambda request: {"login": "operator"},
+        require_permission=lambda *args, **kwargs: None, privileged_for_request=lambda request: True)
+    context = AddonContext("wordpress-addon", rig.store.runtime_dir, rig.store.runtime_dir / "addons",
+                           auth=auth, service=SimpleNamespace(connector_service=rig.host))
+    app = Starlette(routes=admin_api_routes(context))
+    path = "/test" if endpoint == "test" else "/changes/" + published["change_id"] + "/" + endpoint
+    payload = {"site_id": "main", "expected_revision": published["revision"], "idempotency_key": "operator-recovery"}
+    headers = {"Content-Type": "text/plain" if attack in {"text_plain", "foreign_origin"} else "application/json"}
+    if attack != "text_plain":
+        headers["Origin"] = "null" if attack == "null_origin" else "https://evil.example.test"
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="https://admin.example.test") as client:
+            response = await client.post(path + "?directory=root/design", content=json.dumps(payload), headers=headers)
+            assert response.status_code == 403
+            assert rig.store.get(published["change_id"], "root/design")["revision"] == published["revision"]
+            response = await client.post(path + "?directory=root/design", content=json.dumps(payload),
+                headers={"Content-Type": "Application/JSON; charset=utf-8", "Origin": "https://admin.example.test:443"})
+            assert response.status_code == 200, response.text
+            if endpoint != "test":
+                assert response.json()["state"] == ("restoring" if endpoint == "restore" else "resolved")
+
+    run(exercise())
+
+
+@pytest.mark.parametrize("action", ["prepare", "deploy", "restore"])
+def test_ssh_response_limit_stops_and_reaps_streaming_helper(monkeypatch, action):
+    from evander_wordpress_addon import deployment
+
+    create = asyncio.create_subprocess_exec
+    processes = []
+
+    async def helper(*args, **kwargs):
+        process = await create(sys.executable, "-c",
+            "import sys,time; sys.stdout.write('x' * 262144); sys.stdout.flush(); time.sleep(60)", **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(deployment.asyncio, "create_subprocess_exec", helper)
+    adapter = SSHAdapter.__new__(SSHAdapter)
+    adapter.config = {"host": "hosting.example.test", "user": "publisher",
+                      "key_file": "/synthetic/key", "known_hosts_file": "/synthetic/known_hosts"}
+
+    async def exercise():
+        expected = UnknownOutcome if action in {"deploy", "restore"} else WordPressError
+        with pytest.raises(expected):
+            await asyncio.wait_for(adapter.call(action, {"artifact_archive": "a" * 1024**2}), 5)
+        assert processes[0].returncode is not None
+
+    run(exercise())
+
+
+def test_ssh_reads_output_while_sending_large_artifact(monkeypatch):
+    from evander_wordpress_addon import deployment
+
+    create = asyncio.create_subprocess_exec
+
+    async def helper(*args, **kwargs):
+        return await create(sys.executable, "-c", """import json,sys
+sys.stdout.write(' ' * 100000); sys.stdout.flush()
+payload = json.load(sys.stdin)
+print(json.dumps({'protocol_version':1,'state':'prepared','received':len(payload['artifact_archive'])}))
+""", **kwargs)
+
+    monkeypatch.setattr(deployment.asyncio, "create_subprocess_exec", helper)
+    adapter = SSHAdapter.__new__(SSHAdapter)
+    adapter.config = {"host": "hosting.example.test", "user": "publisher",
+                      "key_file": "/synthetic/key", "known_hosts_file": "/synthetic/known_hosts"}
+    result = run(asyncio.wait_for(adapter.call("prepare", {"artifact_archive": "a" * 1024**2}), 5))
+    assert result == {"protocol_version": 1, "state": "prepared", "received": 1024**2}
+
+
+@pytest.mark.parametrize("action", ["prepare", "deploy"])
+def test_ssh_timeout_reaps_helper_and_keeps_mutation_reconciliation(monkeypatch, action):
+    from evander_wordpress_addon import deployment
+
+    create, timeout = asyncio.create_subprocess_exec, asyncio.timeout
+    processes = []
+
+    async def helper(*args, **kwargs):
+        process = await create(sys.executable, "-c", "import time; time.sleep(60)", **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(deployment.asyncio, "create_subprocess_exec", helper)
+    monkeypatch.setattr(deployment.asyncio, "timeout", lambda seconds: timeout(0.1))
+    adapter = SSHAdapter.__new__(SSHAdapter)
+    adapter.config = {"host": "hosting.example.test", "user": "publisher",
+                      "key_file": "/synthetic/key", "known_hosts_file": "/synthetic/known_hosts"}
+
+    async def exercise():
+        with pytest.raises(UnknownOutcome if action == "deploy" else WordPressError):
+            await adapter.call(action, {})
+        assert processes[0].returncode is not None
 
     run(exercise())
 

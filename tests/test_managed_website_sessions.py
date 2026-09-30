@@ -7,6 +7,7 @@ import json
 import ipaddress
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote, quote_plus
 
 import httpx
 import httpcore
@@ -351,7 +352,55 @@ def test_cookie_export_accepts_unrelated_temporary_authentication(rig):
     assert state["storageState"]["cookies"][0]["value"] == "session-token"
 
 
-@pytest.mark.parametrize("secret, reflected", [("123456789", 123456789), ("true", True), ("null", None)])
+@pytest.mark.parametrize("encoding", ["base64", "url_base64", "percent", "form", "json", "basic", "percent_basic", "form_basic", "jwt", "nested_basic", "base64_boundary"])
+@pytest.mark.parametrize("location", ["cookie", "local_storage", "session_storage"])
+def test_broker_rejects_encoded_host_credentials(rig, monkeypatch, encoding, location):
+    secret = 'private-host-"password\\with spaces\nü'
+    monkeypatch.setenv("WEBSITE_PASSWORD", secret)
+    reflected = {
+        "base64": base64.b64encode(secret.encode()).decode(),
+        "url_base64": base64.urlsafe_b64encode(secret.encode()).decode().rstrip("="),
+        "percent": quote(secret, safe=""),
+        "form": quote_plus(secret, safe=""),
+        "json": json.dumps(secret)[1:-1],
+        "basic": "Basic " + base64.b64encode(("unrelated-user:" + secret).encode()).decode(),
+        "percent_basic": quote("Basic " + base64.b64encode(("u:" + secret).encode()).decode(), safe=""),
+        "form_basic": quote_plus("Basic " + base64.b64encode(("u:" + secret).encode()).decode(), safe=""),
+        "jwt": "header." + base64.urlsafe_b64encode(json.dumps({"persistent": secret}).encode()).decode().rstrip("=") + ".signature",
+        "nested_basic": base64.b64encode(json.dumps({"header": "Basic " + base64.b64encode(("u:" + secret).encode()).decode()}).encode()).decode(),
+        "base64_boundary": base64.b64encode(("x" * 49140 + secret).encode()).decode(),
+    }[encoding]
+    rig.profile.local_storage = {}
+    rig.profile.cookies_response_pointer = "/cookies"
+    cookie = {"name": "temporary", "value": "temporary-session-token",
+              "domain": "app.example.test", "path": "/", "secure": True, "sameSite": "Lax"}
+    if location == "cookie":
+        cookie["value"] = "prefix:" + reflected
+    else:
+        getattr(rig.profile, location)["private"] = WebsiteStorageBinding(
+            response_pointer="/reflected", encoding="string")
+    rig.handler = lambda request: httpx.Response(200, json={
+        "token": jwt(rig.now[0] + 3600), "cookies": [cookie], "reflected": reflected})
+    app = HttpTargetRelay(rig.config, provider_config_resolver=rig.resolver,
+                          website_sessions=rig.service).create_app()
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://relay.test") as client:
+            response = await client.post("/session/s1/website-session/app",
+                                        headers={"x-evander-mcp-session-token": "proof"})
+            assert response.status_code == 503
+            assert response.json()["error"] == "website_login_unsafe_response"
+            assert reflected not in response.text
+            assert not rig.service._cache
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("secret, reflected", [
+    ("123456789", 123456789), ("true", True), ("null", None),
+    ("123456789", "header." + base64.urlsafe_b64encode(b'{"credential":1.23456789e8}').decode().rstrip("=") + ".signature"),
+])
 def test_cookie_export_preserves_serialized_credential_rejection(rig, monkeypatch, secret, reflected):
     monkeypatch.setenv("WEBSITE_PASSWORD", secret)
     rig.profile.local_storage = {}

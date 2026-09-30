@@ -61,7 +61,7 @@ class BrowserChecks:
             raise
         if process.returncode:
             raise WordPressError(
-                "Browser checks are unavailable; install the operator Playwright runtime"
+                "Browser checks are unavailable; verify the operator Playwright runtime and Chromium sandbox"
             )
         result = json.loads(stdout)
         import base64

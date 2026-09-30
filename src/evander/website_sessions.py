@@ -27,6 +27,8 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from evander.credentials.sanitize import reject_reflected_credentials
+from evander.credentials.store import CredentialError
 from evander.http_transport import _PinnedAddressAsyncHTTPTransport
 from evander.models import DirectoryPath
 from evander.session_auth import verify_mcp_session_proof_token
@@ -391,17 +393,12 @@ class ManagedWebsiteSessionService:
                 raise WebsiteSessionError("website_login_expiry_too_short")
 
             def check_secret(candidate, *, include_public=False):
-                if isinstance(candidate, str):
-                    for field, secret in credentials.items():
-                        if (include_public or field not in profile.public_credential_fields) and secret in candidate:
-                            raise WebsiteSessionError("website_login_unsafe_response")
-                elif isinstance(candidate, dict):
-                    for key, value in candidate.items():
-                        check_secret(key, include_public=include_public)
-                        check_secret(value, include_public=include_public)
-                elif isinstance(candidate, list):
-                    for item in candidate:
-                        check_secret(item, include_public=include_public)
+                secrets = tuple(secret for field, secret in credentials.items()
+                                if include_public or field not in profile.public_credential_fields)
+                try:
+                    reject_reflected_credentials(candidate, secrets)
+                except CredentialError:
+                    raise WebsiteSessionError("website_login_unsafe_response") from None
 
             def render(bindings):
                 result = {}
@@ -420,17 +417,9 @@ class ManagedWebsiteSessionService:
             rendered = json.dumps([local, temporary], ensure_ascii=False)
             if len(rendered.encode("utf-8")) > 1048576:
                 raise WebsiteSessionError("website_login_response_limit")
-            for field, value in credentials.items():
-                if field not in profile.public_credential_fields and (
-                    value in rendered or json.dumps(value, ensure_ascii=False)[1:-1] in rendered
-                    or any(value in text for text in [*local.values(), *temporary.values()])
-                ):
-                    raise WebsiteSessionError("website_login_unsafe_response")
+            check_secret([local, temporary])
             cookies = _pointer(data, profile.cookies_response_pointer) if profile.cookies_response_pointer is not None else []
             check_secret(cookies, include_public=True)
-            rendered_cookies = json.dumps(cookies, ensure_ascii=False)
-            if any(secret and secret in rendered_cookies for secret in credentials.values()):
-                raise WebsiteSessionError("website_login_unsafe_response")
             return {"origin": profile.browser_origin, "expiresAt": expiry,
                     "storageState": {"cookies": cookies, "origins": [{"origin": profile.browser_origin,
                         "localStorage": [{"name": k, "value": v} for k, v in local.items()]}]},

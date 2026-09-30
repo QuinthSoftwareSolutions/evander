@@ -74,7 +74,9 @@ def test_real_browser_probes_detect_confirmed_server_regression_and_capture_both
     ).decode()
     wrapper = tmp_path / "chromium-fixture"
     wrapper.write_text(
-        "#!/bin/sh\nexec "
+        '#!/bin/sh\nfor fixture_arg in "$@"; do\n'
+        '  if [ "$fixture_arg" = "--no-sandbox" ]; then exit 84; fi\n'
+        'done\nexec '
         + shlex.quote(executable)
         + " --ignore-certificate-errors-spki-list="
         + shlex.quote(fingerprint)

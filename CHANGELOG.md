@@ -14,6 +14,9 @@
   managed credentials before returning protocol responses or persisting results.
 - Support optional temporary cookies in generic JSON logins while retaining existing
   JSON-login storage limits and positional add-on registration compatibility.
+- Reject encoded host credentials in JSON-login cookies and storage through the
+  shared credential sanitizer, preserving explicitly public storage identifiers.
+  Check composite Basic/JWT values without buffering complete decoded artifacts.
 - Discover website adapters only when needed so unrelated add-on imports cannot interrupt
   ordinary logins. Align frozen installation metadata with this release without changing
   dependency versions.

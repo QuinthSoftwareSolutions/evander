@@ -227,6 +227,175 @@ def test_real_wp_protocol_atomic_apply_replay_and_undo_preserve_other_record(wor
     assert call(client, "probe", {"change_id": "wp_" + uuid4().hex}).json()["restore_verified"]
 
 
+def test_anonymous_invalid_redemption_does_not_flush_cache_but_real_rollback_does(wordpress):
+    client, data, wp = wordpress
+    result = json.loads(docker("exec", wp, "php", "-r", """
+require '/var/www/html/wp-load.php';
+class Evander_Fixture_Flush_Counter extends WP_Object_Cache {
+    public $calls=0;
+    public function flush() { ++$this->calls; return parent::flush(); }
+}
+global $wp_object_cache; $wp_object_cache=new Evander_Fixture_Flush_Counter();
+wp_set_current_user(0); $results=[];
+foreach (['','malformed',str_repeat('0',64)] as $ticket) {
+    $request=new WP_REST_Request('POST','/evander/v1/browser/redeem');
+    $request->set_header('content-type','application/json'); $request->set_body(wp_json_encode(['ticket'=>$ticket]));
+    $response=rest_do_request($request);
+    $results[]=['status'=>$response->get_status(),'flushes'=>$wp_object_cache->calls];
+}
+wp_set_current_user(get_user_by('login','designer')->ID); Evander_WordPress::application_login();
+$request=new WP_REST_Request('POST','/evander/v1/probe');
+$request->set_header('content-type','application/json');
+$request->set_body(wp_json_encode(['change_id'=>'wp_'.str_repeat('a',32)]));
+$response=rest_do_request($request);
+echo wp_json_encode(['invalid'=>$results,'probe_status'=>$response->get_status(),'flushes'=>$wp_object_cache->calls]);
+"""))
+    assert [row["status"] for row in result["invalid"]] == [403, 403, 409]
+    assert all(row["flushes"] == 0 for row in result["invalid"])
+    assert result["probe_status"] == 200 and result["flushes"] == 1
+
+
+@pytest.mark.parametrize("address", ["existing", "explicit", "symbolic"])
+@pytest.mark.parametrize("html", ['<script>window.fixtureUnsafe=true</script>', '<img src="x" onerror="window.fixtureUnsafe=true">'])
+def test_restricted_cms_account_cannot_prepare_executable_post_html(wordpress, address, html):
+    client, data, wp = wordpress
+    key = {"existing": "post:" + str(data["post"]), "explicit": "post:987654",
+           "symbolic": "post:new-restricted"}[address]
+    before = inspect(client, key)
+    with ContainerClient(wp, auth=("restricted-designer", data["restricted_password"])) as restricted:
+        response = call(restricted, "prepare", {"change_id": "wp_" + uuid4().hex,
+            "expires_at": int(time.time() + 3600), "resources": [{"key": key,
+                "expected_version": before["version"], "value": {"post_content": html}}]})
+        assert response.status_code == 403, response.text
+    assert inspect(client, key) == before
+
+
+def test_restricted_cms_edits_and_undo_preserve_exact_captured_html(wordpress):
+    client, data, wp = wordpress
+    key = "post:" + str(data["captured_html"])
+    before = inspect(client, key)
+    assert "<script>" in before["value"]["post_content"]
+    with ContainerClient(wp, auth=("restricted-designer", data["restricted_password"])) as restricted:
+        safe = '<p><strong>Safe content</strong> & text <a href="https://example.test/?a=1&b=2">Link</a></p>'
+        id, snapshot = prepare(restricted, {key: {"post_title": "Research & Development", "post_content": safe}})
+        assert call(restricted, "apply", {"change_id": id, "fence": 100}).status_code == 200
+        current = inspect(client, key)["value"]
+        assert current["post_content"] == safe and current["post_title"] == "Research & Development"
+        assert call(restricted, "restore", {"change_id": id, "fence": 100, "snapshot": snapshot}).status_code == 200
+    assert inspect(client, key) == before
+
+
+def test_cms_rechecks_html_capability_on_apply_and_extension(wordpress):
+    client, data, wp = wordpress
+    key = "post:" + str(data["post"])
+    before = inspect(client, key)
+    docker("exec", wp, "php", "-r", "require '/var/www/html/wp-load.php'; (new WP_User(" + str(data["restricted_user"]) + "))->add_cap('unfiltered_html');")
+    with ContainerClient(wp, auth=("restricted-designer", data["restricted_password"])) as restricted:
+        try:
+            id, snapshot = prepare(restricted, {key: {"post_content": "<script>window.authorizedFixture=true</script>"}})
+        finally:
+            docker("exec", wp, "php", "-r", "require '/var/www/html/wp-load.php'; (new WP_User(" + str(data["restricted_user"]) + "))->remove_cap('unfiltered_html');")
+        assert call(restricted, "apply", {"change_id": id, "fence": 100}).status_code == 403
+        other = "post:" + str(data["other"])
+        extended = call(restricted, "prepare-extend", {"change_id": id,
+            "idempotency_key": "unsafe-extension", "resources": [{"key": other,
+                "expected_version": inspect(client, other)["version"],
+                "value": {"post_excerpt": '<img src="x" onerror="alert(1)">'}}]})
+        assert extended.status_code == 403
+    assert inspect(client, key) == before
+
+
+def test_authorized_unfiltered_cms_html_remains_supported(wordpress):
+    client, data, wp = wordpress
+    key = "post:" + str(data["post"])
+    before = inspect(client, key)
+    html = "<script>window.authorizedFixture=true</script><p>Authorized content</p>"
+    id, snapshot = prepare(client, {key: {"post_content": html}})
+    assert call(client, "apply", {"change_id": id, "fence": 100}).status_code == 200
+    assert inspect(client, key)["value"]["post_content"] == html
+    assert call(client, "restore", {"change_id": id, "fence": 100, "snapshot": snapshot}).status_code == 200
+    assert inspect(client, key) == before
+
+
+def test_scoped_redemption_preserves_locks_and_does_not_attribute_human_edit(wordpress):
+    client, data, wp = wordpress
+    key = "post:" + str(data["post"])
+    id, snapshot = prepare(client, {key: {"post_title": "Browser proposal"}})
+    ticket = call(client, "browser/ticket", {"change_id": id, "fence": 100,
+        "expires_at": int(time.time() + 900)}).json()["ticket"]
+    cookies = call(client, "browser/redeem", {"ticket": ticket}).json()["storageState"]["cookies"]
+    cookie = "; ".join(row["name"] + "=" + row["value"] for row in cookies if row["path"] == "/")
+    marker = uuid4().hex
+    with ContainerClient(wp, headers={"Cookie": cookie}) as browser, ThreadPoolExecutor(max_workers=2) as pool:
+        response = pool.submit(browser.post, "/wp-admin/admin-ajax.php",
+            data={"action": "evander_fixture_nested_redeem", "marker": marker})
+        for attempt in range(50):
+            if docker("exec", wp, "php", "-r", "echo is_file('/tmp/evander-fixture-nested-" + marker + "') ? 'ready' : 'waiting';") == "ready":
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("Scoped request did not reach the transaction barrier")
+        human = pool.submit(docker, "exec", wp, "php", "-r",
+            "require '/var/www/html/wp-load.php'; global $wpdb; $wpdb->update($wpdb->posts,['post_title'=>'Concurrent human edit'],['ID'=>" + str(data["post"]) + "]);", timeout=15)
+        assert response.result(timeout=10).json()["status"] == 403
+        human.result(timeout=15)
+    assert call(client, "close", {"change_id": id}).status_code == 200
+    assert call(client, "restore", {"change_id": id, "fence": 100, "snapshot": snapshot}).status_code == 409
+    assert inspect(client, key)["value"]["post_title"] == "Concurrent human edit"
+
+
+def test_scoped_cookie_denies_wordpress_super_admin_capability_shortcut(wordpress):
+    client, data, wp = wordpress
+    key = "post:" + str(data["post"])
+    id, snapshot = prepare(client, {key: {"post_title": "Scoped administrator"}})
+    ticket = call(client, "browser/ticket", {"change_id": id, "fence": 100,
+        "expires_at": int(time.time() + 900)}).json()["ticket"]
+    cookies = call(client, "browser/redeem", {"ticket": ticket}).json()["storageState"]["cookies"]
+    # Create the real network tables, then bootstrap this request in multisite
+    # mode. Other fixture requests continue using their single-site configuration.
+    docker("exec", wp, "php", "-r", """
+require '/var/www/html/wp-load.php';
+wp_set_current_user(get_user_by('login','designer')->ID);
+require_once ABSPATH.'wp-admin/includes/upgrade.php';
+foreach ($wpdb->tables('ms_global') as $table=>$name) { $wpdb->$table=$name; }
+$permalink=get_option('permalink_structure'); install_network();
+$result=populate_network(1,'design.example.test','designer@example.test','Synthetic network');
+if (is_wp_error($result)) { throw new RuntimeException('Fixture network setup failed'); }
+update_option('permalink_structure',$permalink);
+""")
+    bootstrap = """
+$_SERVER['HTTP_HOST']='design.example.test'; $_SERVER['HTTPS']='on';
+$_SERVER['REQUEST_URI']='/';
+define('MULTISITE',true); define('SUBDOMAIN_INSTALL',false);
+define('DOMAIN_CURRENT_SITE','design.example.test'); define('PATH_CURRENT_SITE','/');
+define('SITE_ID_CURRENT_SITE',1); define('BLOG_ID_CURRENT_SITE',1);
+$GLOBALS['super_admins']=['designer'];
+"""
+    # Multisite derives different cookie names from its network URL. Preserve
+    # the real signed scope tokens while using the names from its native bootstrap.
+    names = json.loads(docker("exec", wp, "php", "-r", bootstrap + """
+require '/var/www/html/wp-load.php';
+echo wp_json_encode(['logged'=>LOGGED_IN_COOKIE,'secure'=>SECURE_AUTH_COOKIE]);
+"""))
+    cookie_data = base64.b64encode(json.dumps({
+        names["logged"]: next(row["value"] for row in cookies if row["path"] == "/"),
+        names["secure"]: next(row["value"] for row in cookies if row["path"] != "/"),
+    }).encode()).decode()
+    script = "<?php\n" + bootstrap + """
+$_COOKIE=json_decode(base64_decode('""" + cookie_data + """'),true);
+require '/var/www/html/wp-load.php';
+echo wp_json_encode(['super_admin'=>is_super_admin(),'settings'=>current_user_can('manage_options'),
+    'design'=>current_user_can('edit_theme_options'),'read'=>current_user_can('read')]);
+"""
+    result = subprocess.run(["docker", "exec", "-i", wp, "php"], input=script,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr[-1000:]
+    capabilities = json.loads(result.stdout)
+    assert capabilities == {"super_admin": True, "settings": False, "design": True, "read": True}
+    assert call(client, "close", {"change_id": id}).status_code == 200
+    assert call(client, "restore", {"change_id": id, "fence": 100, "snapshot": snapshot}).status_code == 200
+
+
 def test_created_post_receipt_exposes_assigned_key_for_subsequent_edit(wordpress):
     from evander_wordpress_addon.service import Service
 
@@ -322,6 +491,11 @@ def test_short_browser_ticket_is_single_use_and_rejects_uncovered_writes(wordpre
     admin_cookie = "; ".join(
         row["name"] + "=" + row["value"] for row in cookies if row["path"].endswith("/wp-admin")
     )
+    for scoped_cookie in [cookie + "; " + admin_cookie, admin_cookie]:
+        with ContainerClient(client.container, headers={"Cookie": scoped_cookie}) as browser:
+            settings = browser.request("GET", "/wp-admin/options.php")
+            assert settings.status_code == 403
+            assert "synthetic-persistent-payment-secret" not in settings.text
     # The fixture forces HTTPS inside its isolated container. This client explicitly
     # presents the scoped cookie to exercise normal WP browser request hooks.
     with ContainerClient(client.container, headers={"Cookie": cookie}) as browser:

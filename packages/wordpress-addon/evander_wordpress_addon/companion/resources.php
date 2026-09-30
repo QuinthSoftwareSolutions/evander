@@ -55,6 +55,18 @@ final class Evander_Core_Resources implements Evander_Resource_Adapter {
         }
         if (in_array($kind,['meta','termmeta','acf'],true) && ($field === '_wp_attached_file' || preg_match('/password|secret|token|api_key/i',$field))) { throw new RuntimeException('Protected metadata',400); }
     }
+    public function validate_edit($key, $value) {
+        [$kind] = $this->split($key);
+        if ($kind !== 'post' || $value === null || current_user_can('unfiltered_html')) { return; }
+        foreach (['post_title','post_content','post_excerpt','post_content_filtered'] as $field) {
+            // Entity normalization is harmless (for example R&D -> R&amp;D).
+            // Reject removed tags, attributes and protocols without changing the proposal.
+            if (isset($value[$field]) && (!is_string($value[$field]) ||
+                wp_kses_post($value[$field]) !== wp_kses_normalize_entities($value[$field]))) {
+                throw new RuntimeException('Post HTML exceeds the service account permissions',403);
+            }
+        }
+    }
     public function read($key) {
         global $wpdb; [$kind,$id,$field] = $this->split($key); $this->validate($key,null);
         if ($kind === 'post') {

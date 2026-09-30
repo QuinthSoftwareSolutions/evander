@@ -4,7 +4,7 @@ let raw = '';
 for await (const chunk of process.stdin) raw += chunk;
 const config = JSON.parse(raw);
 const { chromium } = await import(pathToFileURL(config.module));
-const browser = await chromium.launch({headless:true, args:[
+const browser = await chromium.launch({headless:true, chromiumSandbox:true, args:[
   `--host-resolver-rules=${Object.entries(config.hosts).map(([host,ip])=>`MAP ${host} ${ip}`).join(',')},EXCLUDE localhost`,
   '--disable-background-networking','--no-proxy-server','--disable-quic'], executablePath:process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH||undefined});
 const result = {failures:[], images:[], observations:[], uncertain:false};

@@ -14,6 +14,8 @@ final class Evander_WordPress {
     private static $internal = false;
     private static $browser = null;
     private static $browser_transaction = false;
+    private static $transaction = false;
+    private static $cache_dirty = false;
     private static $application_authenticated = false;
 
     public static function application_login() { self::$application_authenticated = true; }
@@ -53,9 +55,25 @@ final class Evander_WordPress {
             throw new RuntimeException('Could not persist recovery journal');
         }
     }
-    private static function begin() { global $wpdb; self::$internal = true; $wpdb->query('START TRANSACTION'); }
-    private static function commit() { global $wpdb; $wpdb->query('COMMIT'); self::$internal = false; }
-    private static function rollback() { global $wpdb; self::$internal = true; $wpdb->query('ROLLBACK'); self::$internal = false; wp_cache_flush(); }
+    private static function begin($cache_dirty = true) {
+        if (self::$transaction) { throw new RuntimeException('A request transaction is already active',409); }
+        global $wpdb; self::$internal = true;
+        if (false === $wpdb->query('START TRANSACTION')) { self::$internal = false; throw new RuntimeException('Could not start transaction'); }
+        self::$transaction = true; self::$cache_dirty = $cache_dirty;
+    }
+    private static function commit() {
+        global $wpdb;
+        if (false === $wpdb->query('COMMIT')) { throw new RuntimeException('Could not commit transaction'); }
+        self::$transaction = false; self::$browser_transaction = false; self::$cache_dirty = false; self::$internal = false;
+    }
+    private static function rollback() {
+        self::$browser_transaction = false;
+        if (!self::$transaction) { return; }
+        global $wpdb; self::$internal = true; $wpdb->query('ROLLBACK');
+        self::$transaction = false; self::$internal = false;
+        $dirty = self::$cache_dirty; self::$cache_dirty = false;
+        if ($dirty) { wp_cache_flush(); }
+    }
     private static function fence($token) {
         global $wpdb;
         $current = $wpdb->get_var($wpdb->prepare("SELECT option_value FROM $wpdb->options WHERE option_name=%s FOR UPDATE", 'evander_fence'));
@@ -88,6 +106,10 @@ final class Evander_WordPress {
         foreach (self::adapters() as $adapter) { if ($adapter->supports($key)) { return $adapter; } }
         throw new RuntimeException('Resource has no recovery adapter', 400);
     }
+    private static function validate_edit($adapter, $key, $value) {
+        $adapter->validate($key, $value);
+        if ($adapter instanceof Evander_Core_Resources) { $adapter->validate_edit($key, $value); }
+    }
     private static function resources($data) {
         foreach ($data['resources'] as $key => $row) {
             $adapter = self::adapter($row['resolved_key'] ?? $key);
@@ -107,6 +129,10 @@ final class Evander_WordPress {
                 'browser_expires_at' => $data['browser_expires_at'] ?? null];
     }
     public static function handle($name, $request) {
+        // Redemption must not replace or roll back the scoped request's transaction.
+        if ($name === 'browser/redeem' && self::$browser) {
+            return new WP_Error('evander_operation_failed', 'Browser sessions cannot redeem tickets.', ['status'=>403]);
+        }
         try {
             if (strlen($request->get_body()) > 16 * 1024 * 1024) { throw new RuntimeException('Request too large', 413); }
             $args = $request->get_json_params() ?: $request->get_params();
@@ -148,7 +174,7 @@ final class Evander_WordPress {
                         $key = (string)$row['key'];
                         if (isset($data['resources'][$key])) { throw new RuntimeException('Duplicate resource', 400); }
                         $adapter = self::adapter($key); $adapter->lock($key); $before = $adapter->read($key);
-                        $adapter->validate($key, $row['value']);
+                        self::validate_edit($adapter, $key, $row['value']);
                         if (self::hash($before) !== $row['expected_version']) { throw new RuntimeException('Resource changed', 409); }
                         $data['resources'][$key] = ['before' => $before, 'before_version' => self::hash($before), 'value' => $row['value']];
                     }
@@ -180,7 +206,7 @@ final class Evander_WordPress {
                     foreach ($args['resources'] as $row) {
                         $key = $row['key'];
                         if (isset($data['resources'][$key]) || isset($snapshot[$key])) { throw new RuntimeException('Resource is already covered',409); }
-                        $adapter = self::adapter($key); $adapter->lock($key); $before = $adapter->read($key); $adapter->validate($key,$row['value']);
+                        $adapter = self::adapter($key); $adapter->lock($key); $before = $adapter->read($key); self::validate_edit($adapter,$key,$row['value']);
                         if (self::hash($before) !== $row['expected_version']) { throw new RuntimeException('Extension resource changed',409); }
                         $snapshot[$key] = ['before'=>$before,'before_version'=>self::hash($before),'value'=>$row['value']];
                     }
@@ -215,6 +241,7 @@ final class Evander_WordPress {
                     foreach ($data['resources'] as $key => &$row) {
                         $adapter = self::adapter($key);
                         if (self::hash($adapter->read($key)) !== $row['before_version']) { throw new RuntimeException('Resource changed', 409); }
+                        self::validate_edit($adapter, $key, $row['value']);
                         $resolved = $adapter->write($key, $row['value']);
                         $row['resolved_key'] = $resolved ?: $key;
                         $row['result_version'] = self::hash($adapter->read($row['resolved_key']));
@@ -276,13 +303,13 @@ final class Evander_WordPress {
     }
     private static function redeem($args) {
         if (!is_ssl() || !preg_match('/^[a-f0-9]{64}$/D', $args['ticket'] ?? '')) { throw new RuntimeException('Ticket denied', 403); }
-        self::begin();
+        self::begin(false);
         $key = 'ticket:' . hash('sha256', $args['ticket']); $ticket = self::record($key, true);
         if ($ticket['expires_at'] <= time()) { throw new RuntimeException('Ticket expired', 403); }
         global $wpdb; $wpdb->delete(self::table(), ['id' => $key]);
         $data = self::record($ticket['change_id'], true);
         if ($data['state'] !== 'browser_open' || $data['expires_at'] <= time() || ($ticket['generation']??'') !== ($data['ticket_generation']??null)) { throw new RuntimeException('Change expired', 403); }
-        $expires = $ticket['browser_expiry'];
+        $expires = $ticket['browser_expiry']; self::$cache_dirty = true;
         $marker = function($session) use ($ticket) {
             $session['evander_change_id'] = $ticket['change_id'];
             $session['evander_blog_id'] = get_current_blog_id();
@@ -337,7 +364,7 @@ final class Evander_WordPress {
         $binding = self::$browser;
         if ($owner !== $binding['owner']) { wp_die('Browser cookie denied', '', ['response'=>403]); }
         if ($binding['expires_at'] <= time()) { wp_die('Browser change session expired', '', ['response' => 403]); }
-        self::begin();
+        self::begin(false);
         $data = self::record($binding['change_id'], true);
         if ($data['state'] !== 'browser_open' || $data['browser_token'] !== $cookie['token']) { self::rollback(); wp_die('Browser change session closed', '', ['response'=>403]); }
         self::resources($data);
@@ -356,23 +383,32 @@ final class Evander_WordPress {
         add_action('shutdown', [self::class, 'browser_commit'], PHP_INT_MAX);
         add_filter('wp_revisions_to_keep', '__return_zero', PHP_INT_MAX);
     }
+    private static function browser_allowed_caps() {
+        return ['exist','read','edit_posts','edit_pages','edit_published_posts','edit_published_pages','publish_posts','publish_pages',
+                'edit_others_posts','edit_others_pages','edit_theme_options'];
+    }
+    public static function browser_meta_caps($caps) {
+        // Multisite super-admins bypass user_has_cap unless map_meta_cap denies
+        // the operation with do_not_allow. Temporary cookies must remain scoped.
+        if (self::$browser && array_diff($caps, self::browser_allowed_caps())) { return ['do_not_allow']; }
+        return $caps;
+    }
     public static function browser_caps($caps) {
         if (!self::$browser) { return $caps; }
-        $allowed = ['read','edit_posts','edit_pages','edit_published_posts','edit_published_pages','publish_posts','publish_pages',
-                    'edit_others_posts','edit_others_pages','edit_theme_options','manage_options'];
+        $allowed = self::browser_allowed_caps();
         foreach ($caps as $key => $value) { if (!in_array($key, $allowed, true)) { $caps[$key] = false; } }
         return $caps;
     }
     public static function guard_query($sql) {
         if (self::$internal || !preg_match('/^\s*(UPDATE|INSERT|REPLACE|DELETE|ALTER|CREATE|DROP|TRUNCATE|COMMIT|ROLLBACK|START|SET)\b/i', $sql)) { return $sql; }
         foreach (self::$browser['data']['resources'] as $key => $row) {
-            if (self::adapter($key)->allows_query($key, $sql)) { return $sql; }
+            if (self::adapter($key)->allows_query($key, $sql)) { self::$cache_dirty = true; return $sql; }
         }
         self::rollback(); self::$browser_transaction = false;
         wp_die('This write is outside the prepared recovery manifest', '', ['response'=>409]);
     }
     public static function browser_commit() {
-        if (!self::$browser_transaction) { return; }
+        if (!self::$browser_transaction || !self::$transaction) { return; }
         self::$internal = true;
         $error = error_get_last();
         if ($error && in_array($error['type'], [E_ERROR,E_PARSE,E_CORE_ERROR,E_COMPILE_ERROR])) { self::rollback(); return; }
@@ -385,5 +421,6 @@ register_activation_hook(__FILE__, [Evander_WordPress::class, 'install']);
 add_action('rest_api_init', [Evander_WordPress::class, 'routes']);
 add_action('init', [Evander_WordPress::class, 'browser_init'], -100);
 add_filter('user_has_cap', [Evander_WordPress::class, 'browser_caps'], PHP_INT_MAX);
+add_filter('map_meta_cap', [Evander_WordPress::class, 'browser_meta_caps'], PHP_INT_MAX);
 add_action('application_password_did_authenticate', [Evander_WordPress::class, 'application_login']);
 add_action('auth_cookie_valid', [Evander_WordPress::class, 'browser_cookie'], PHP_INT_MAX, 2);

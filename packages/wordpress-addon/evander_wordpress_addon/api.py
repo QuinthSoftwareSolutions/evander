@@ -1,6 +1,7 @@
 import io
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 import zipfile
 
 from pydantic import ValidationError
@@ -8,10 +9,15 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION, WORKFLOWS_READ_PERMISSION
+from evander.admin.web.shared import request_has_privileged_operations
 from evander.models import DirectoryPath
 
 from .models import Conflict, Settings, WordPressError
 from .service import Actor, Service
+
+
+class PrivilegedOperationsLocked(PermissionError):
+    pass
 
 
 def plugin_zip():
@@ -40,6 +46,25 @@ def admin_api_routes(context):
             ADMIN_OWNER_PERMISSION if write else WORKFLOWS_READ_PERMISSION,
             directory_path=directory,
         )
+        if write:
+            if not request_has_privileged_operations(auth=auth, service=context.service, request=request):
+                raise PrivilegedOperationsLocked
+            # JSON requires a preflight for cross-origin browser requests. Also reject
+            # foreign origins explicitly; direct authenticated API clients may omit Origin.
+            if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+                raise PermissionError
+            origin = request.headers.get("origin")
+            if origin is not None:
+                def authority(url):
+                    parsed = urlsplit(url)
+                    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+                        raise PermissionError
+                    port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+                    return parsed.scheme, parsed.hostname, port
+
+                parsed = urlsplit(origin)
+                if parsed.path or parsed.query or parsed.fragment or authority(origin) != authority(str(request.url)):
+                    raise PermissionError
         return Service(
             context.runtime_dir,
             Actor(directory, "operator:" + login, True),
@@ -133,6 +158,8 @@ def admin_api_routes(context):
         async def endpoint(request):
             try:
                 return await handler(request)
+            except PrivilegedOperationsLocked:
+                return JSONResponse({"error": "Privileged operations are locked."}, status_code=403)
             except PermissionError:
                 return JSONResponse(
                     {"error": "Permission denied for this directory"}, status_code=403

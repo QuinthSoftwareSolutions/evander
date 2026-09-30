@@ -28,3 +28,15 @@ add_action('wp_ajax_evander_fixture_move_meta',function(){
     $wpdb->update($wpdb->postmeta,['post_id'=>(int)$_POST['other']],['meta_id'=>$meta_id]);
     wp_send_json(['saved'=>true]);
 });
+add_action('wp_ajax_evander_fixture_nested_redeem',function(){
+    $marker=$_POST['marker']??'';
+    if (!preg_match('/^[a-f0-9]{32}$/D',$marker)) { wp_die('Denied','',['response'=>403]); }
+    $request=new WP_REST_Request('POST','/evander/v1/browser/redeem');
+    $request->set_header('content-type','application/json');
+    $request->set_body(wp_json_encode(['ticket'=>str_repeat('0',64)]));
+    $result=Evander_WordPress::handle('browser/redeem',$request);
+    file_put_contents('/tmp/evander-fixture-nested-'.$marker,'ready');
+    // A separate database connection attempts a human edit during this window.
+    usleep(500000);
+    wp_send_json(['status'=>is_wp_error($result) ? $result->get_error_data()['status'] : 200]);
+});
