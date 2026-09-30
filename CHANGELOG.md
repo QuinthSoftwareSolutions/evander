@@ -14,6 +14,9 @@
 - Separate task-update validation, edits, preparation invalidation, and response
   projection, removing unreachable direct blocker-transition handling while
   preserving blocker reassignment events and command response fields.
+- Apply administrative task upserts through a typed request with explicit edit
+  flags and separate existing-task and new-task stages, preserving graph policy,
+  inherited provenance, immutable Git base checks, and transactional wake events.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
