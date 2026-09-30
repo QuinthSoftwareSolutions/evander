@@ -8,6 +8,10 @@
   execution, preserving the selection through queues, wakes, context retries, and steering.
 - Restore the session speed on later turns and expose the chosen mode and its source
   in execution and queue records. Fast requires a supported public OpenAI Codex route.
+- Price metered Fast usage with the returned service tier across HTTP, streaming,
+  and WebSocket responses, falling back to the requested tier when unavailable.
+- Preserve an existing VM session's speed when creation omits the setting, and
+  clear it when an upsert explicitly supplies null, matching container workers.
 
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 

@@ -175,7 +175,11 @@ class VmAgentCreateRequestMixin:
                 model=self._agent_optional_string(payload, "model"),
                 cost_category=normalize_cost_category(payload.get("cost_category")),
                 reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
-                fast_mode=normalize_fast_mode(payload.get("fast_mode")),
+                **(
+                    {"fast_mode": normalize_fast_mode(payload["fast_mode"])}
+                    if "fast_mode" in payload
+                    else {}
+                ),
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
                 ttl_seconds=self._agent_int_or_none(payload, "ttl_seconds"),
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),

@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
-from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
+from evander.fast_mode import FAST_MODE_UNSET, normalize_fast_mode, validate_session_fast_mode
 from evander.host_directories.grants import host_directory_tool_names_for_grants
 from evander.managed_sections import normalize_managed_section_id
 from evander.models import SessionManifest, VmActionResult, VmSummary
@@ -895,7 +895,7 @@ def _libvirt_create_vm(
     model: str | None = None,
     cost_category: str | None = None,
     reasoning_effort: str | None = None,
-    fast_mode: bool | None = None,
+    fast_mode: bool | None | object = FAST_MODE_UNSET,
     vm_user: str = "agent",
     ttl_seconds: int | None = None,
     ttl_hours: int | None = None,
@@ -1084,7 +1084,7 @@ def _libvirt_create_vm(
         manifest.cost_category = normalize_cost_category(cost_category)
     if reasoning_effort is not None:
         manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
-    if fast_mode is not None:
+    if fast_mode is not FAST_MODE_UNSET:
         manifest.fast_mode = normalize_fast_mode(fast_mode)
     validate_session_reasoning_effort(
         manifest, deps.runtime.provider_config.resolve_for_directory(manifest.directory_path)

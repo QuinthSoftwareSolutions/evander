@@ -11,6 +11,10 @@ from pydantic import BeforeValidator
 from evander.reasoning_effort import session_agent_harness
 
 
+# Creation upserts must distinguish an omitted default from an explicit null reset.
+FAST_MODE_UNSET = object()
+
+
 def normalize_fast_mode(value: Any) -> bool | None:
     if value is None or isinstance(value, bool):
         return value

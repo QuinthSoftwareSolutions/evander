@@ -38,6 +38,7 @@ from evander.config import (
 )
 from evander.effects.registry import EffectProviderFactory
 from evander.effects.providers.schemas import AgentCreateEffectDefinition
+from evander.fast_mode import resolve_fast_mode
 from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -17558,6 +17559,68 @@ def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.web_search_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("speed_options", "expected_default", "expected_speed", "expected_source"),
+    [
+        ({}, True, True, "session"),
+        ({"fast_mode": False}, False, False, "session"),
+        ({"fast_mode": None}, None, False, "default"),
+    ],
+)
+def test_effect_agent_create_upsert_preserves_or_clears_vm_session_speed(
+    tmp_path: Path,
+    monkeypatch: Any,
+    speed_options: dict[str, Any],
+    expected_default: bool | None,
+    expected_speed: bool,
+    expected_source: str,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="speed-session",
+            vm_id="speed-vm",
+            model="gpt-6.1-sol",
+            fast_mode=True,
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+    monkeypatch.setattr("evander.admin.services.vm_helpers.dominfo_field", lambda *_: None)
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda *_: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.process_helpers.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=ProviderConfigResolver(service.config), admin_service=service
+    )
+    effect = AgentCreateEffectDefinition(
+        id="create-speed-session",
+        display_name="Create speed session",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="speed-vm",
+        session_id="speed-session",
+        existing_agent_behavior="upsert",
+        **speed_options,
+    )
+
+    result = factory.build(effect).execute()
+
+    assert result["success"] is True
+    manifest = service.runtime.session_repository.get_session("speed-session")
+    assert manifest is not None
+    assert manifest.fast_mode is expected_default
+    speed = resolve_fast_mode({}, session=manifest, harness="codex", route="openai_public")
+    assert speed.value is expected_speed
+    assert speed.source == expected_source
 
 
 def test_create_vm_upsert_enables_tools_for_host_directory_grants(

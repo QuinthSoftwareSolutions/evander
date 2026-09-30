@@ -1025,6 +1025,10 @@ speed. It does not change the model, reasoning effort, authentication mode, or
 subscription profile. Fast is supported only for Codex on the public OpenAI route;
 other harnesses and private/local/provider routes reject an enabled setting.
 
+When `effect:agent:create` upserts an existing session, omitting `fast_mode`
+preserves its default, `false` selects standard speed, and null clears the stored
+default. This applies to both libvirt VMs and container workers.
+
 For example, create a session with `fast_mode: false`, run an initial prompt with
 `model: gpt-6.1-sol`, `reasoning_effort: max`, and `fast_mode: true`, then omit the
 speed override on follow-ups to return to standard speed. The later prompts can
@@ -1055,6 +1059,8 @@ Codex CLI runs explicitly set `service_tier="fast"` or `"default"` on every turn
 including resumes. Subscription app-server runs send the same selection through
 thread configuration and `turn/start.serviceTier`, so a prompt override does not
 keep later control-plane turns in Fast mode. Codex maps Fast to priority requests.
+Metered relay usage records retain the requested and returned service tiers;
+cost estimates use the returned tier when available, then the requested tier.
 Availability and higher allowance or credit usage depend on the model/account;
 see [official Codex speed guidance](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode)
 and the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).

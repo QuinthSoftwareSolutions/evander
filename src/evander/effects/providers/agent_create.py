@@ -290,7 +290,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             model=normalize_optional_string(payload.get("model")),
             cost_category=normalize_cost_category(payload.get("cost_category")),
             reasoning_effort=normalize_reasoning_effort(payload.get("reasoning_effort")),
-            fast_mode=normalize_fast_mode(payload.get("fast_mode")),
+            **(
+                {"fast_mode": normalize_fast_mode(payload["fast_mode"])}
+                if "fast_mode" in payload
+                else {}
+            ),
             vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=as_string_list(payload.get("allowed_tools")),

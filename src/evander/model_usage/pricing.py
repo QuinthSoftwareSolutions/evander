@@ -659,7 +659,7 @@ def _is_batch_event(event: ModelInferenceUsageEvent) -> bool:
 
 
 def _service_tier_from_event(event: ModelInferenceUsageEvent) -> str | None:
-    for metadata_key in ("request_metadata", "response_metadata"):
+    for metadata_key in ("response_metadata", "request_metadata"):
         metadata = event.raw_usage_metadata.get(metadata_key)
         if not isinstance(metadata, dict):
             continue

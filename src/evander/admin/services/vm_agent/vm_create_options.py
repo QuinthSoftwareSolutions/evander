@@ -10,6 +10,7 @@ from evander.admin.services.vm_agent.common import (
     normalize_model_provider_mode_override,
     validate_allowed_contact_ids_for_directory,
 )
+from evander.fast_mode import FAST_MODE_UNSET
 
 
 class VmAgentCreateOptionsMixin:
@@ -108,7 +109,7 @@ class VmAgentCreateOptionsMixin:
         model: str | None = None,
         cost_category: str | None = None,
         reasoning_effort: str | None = None,
-        fast_mode: bool | None = None,
+        fast_mode: bool | None | object = FAST_MODE_UNSET,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
         ttl_seconds: int | None = None,
