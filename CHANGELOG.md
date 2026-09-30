@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-30 - Configure Codex Fast mode per session and prompt (0.73.0)
+
+- Add nullable `fast_mode` session defaults and per-prompt overrides to agent creation,
+  workflow nodes, Admin Web, and CLI controls; explicit false selects standard speed.
+- Forward the resolved tier through Codex VM, metered container, and subscription
+  execution, preserving the selection through queues, wakes, context retries, and steering.
+- Restore the session speed on later turns and expose the chosen mode and its source
+  in execution and queue records. Fast requires a supported public OpenAI Codex route.
+
 ## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
 
 - Reuse completed gateway activity scans for five minutes and share overlapping

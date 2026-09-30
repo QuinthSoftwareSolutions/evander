@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
-from evander.provider_config import validate_openrouter_session
 from evander.admin.services.vm_agent.common import (
-    Any,
     MODEL_PROVIDER_MODE_METADATA_KEY,
+    Any,
     Path,
     SimpleNamespace,
     VmActionResult,
@@ -16,6 +14,9 @@ from evander.admin.services.vm_agent.common import (
     session_helpers,
     vm_helpers,
 )
+from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
+from evander.provider_config import validate_openrouter_session
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.repositories.skills_library import record_codex_skill_installations
 
 
@@ -28,6 +29,7 @@ class VmAgentIssueCreateMixin:
         model: str | None = None,
         cost_category: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
@@ -135,7 +137,13 @@ class VmAgentIssueCreateMixin:
         manifest.cost_category = normalize_cost_category(cost_category)
         if reasoning_effort is not None:
             manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+        if fast_mode is not None:
+            manifest.fast_mode = normalize_fast_mode(fast_mode)
         validate_session_reasoning_effort(
+            manifest,
+            self._deps.runtime.provider_config.resolve_for_directory(manifest.directory_path),
+        )
+        validate_session_fast_mode(
             manifest,
             self._deps.runtime.provider_config.resolve_for_directory(manifest.directory_path),
         )
@@ -305,6 +313,7 @@ class VmAgentIssueCreateMixin:
         model: str | None = None,
         cost_category: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
         dotnet: bool = False,
@@ -328,6 +337,7 @@ class VmAgentIssueCreateMixin:
             model=model,
             cost_category=cost_category,
             reasoning_effort=reasoning_effort,
+            fast_mode=fast_mode,
             model_provider_mode=model_provider_mode,
             vm_user=vm_user,
             dotnet=dotnet,

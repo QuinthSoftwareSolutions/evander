@@ -711,6 +711,14 @@ The daemon does not rewrite commands into `codex resume`. Callers must send the 
 
 Prompt effects invoke Codex with `codex exec --json` and translate the JSONL event stream back into the legacy human-readable job log. The control plane emits `session id: <thread_id>` as soon as Codex reports either `session_meta` or the older `thread.started` event, then prints assistant messages from the current `event_msg` / `response_item` stream and the older `item.completed` event. This keeps existing log consumers on the old text shape while using Codex's supported non-interactive thread-id contract.
 
+Codex `fast_mode` session defaults and per-prompt overrides apply to both metered
+CLI turns and subscription app-server turns on public OpenAI. Every turn sets
+Fast or standard explicitly, including resumes; queue replay, context retries,
+and steering retain the captured setting. `fast_mode: false` overrides a Fast
+session default. Upgrade worker daemons before sending these new structured turn
+fields from the control plane. See the
+[Fast mode reference](configuration-reference.md#agent-fast-mode).
+
 Scheduled wake dispatches and queued prompt records follow the same container prompt construction rules. When a wake request is marked `same_context` and no usable explicit thread id is present, the host emits `codex exec resume --last`; when the request is `new_context`, the host emits a fresh `codex exec` run instead. That keeps container wake behavior aligned with the persisted session home while preserving backwards compatibility for older queued prompt records.
 
 Expired container sessions are not queued or started. Wake dispatch records a

@@ -511,6 +511,11 @@ def test_workflow_catalog_effect_agent_prompt(catalog_payload) -> None:
         field["key"] == "resume_thread_metadata_collection" and field["bindable"]
         for field in agent_prompt["fields"]
     )
+    speed = next(field for field in agent_prompt["fields"] if field["key"] == "fast_mode")
+    assert speed["kind"] == "boolean"
+    assert speed["bindable"] is True
+    assert speed["required"] is False
+    assert speed["metadata"]["nullable"] is True
     assert all(field["key"] != "output_mode" for field in agent_prompt["fields"])
     assert agent_prompt["output_ports"] == [
         {
@@ -546,6 +551,7 @@ def test_workflow_catalog_effect_agent_enqueue_prompt(catalog_payload) -> None:
         "model",
         "cost_category",
         "reasoning_effort",
+        "fast_mode",
         "vm_user",
         "dispatch_id",
         "resume_thread_id",
@@ -1503,6 +1509,7 @@ def test_workflow_catalog_effect_agent_create(catalog_payload) -> None:
         "model",
         "cost_category",
         "reasoning_effort",
+        "fast_mode",
         "model_provider_mode",
         "codex_auth_mode",
         "subscription_profile_id",

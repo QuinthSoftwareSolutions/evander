@@ -1831,6 +1831,7 @@ def test_create_issue_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None
         "codex_skills": [],
         "model": "gpt-5.2-codex",
         "reasoning_effort": "medium",
+        "fast_mode": None,
         "model_provider_mode": None,
     }
 
@@ -2071,6 +2072,7 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(
         "session_id": "lab-session",
         "model": None,
         "reasoning_effort": "low",
+        "fast_mode": None,
         "vm_user": "agent",
         "ttl_hours": None,
         "discord_channels": [],
@@ -4230,6 +4232,7 @@ def test_resume_agent_routes_issue_target_through_queue_aware_admin_service(
             str(config_path),
             "--reasoning-effort",
             "low",
+            "--no-fast-mode",
             "--message",
             "Continue from the failing restore",
         ],
@@ -4241,6 +4244,7 @@ def test_resume_agent_routes_issue_target_through_queue_aware_admin_service(
         "prompt": "Continue from the failing restore",
         "model": "gpt-5.2-codex",
         "reasoning_effort": "low",
+        "fast_mode": False,
         "vm_user": "agent",
         "resume_mode": "same_context",
     }
@@ -4374,6 +4378,7 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
         "prompt": "Continue from Discord",
         "model": "gpt-5.4",
         "reasoning_effort": None,
+        "fast_mode": None,
         "vm_user": "agent",
         "resume_mode": "same_context",
     }
@@ -5215,3 +5220,37 @@ def test_session_reasoning_effort_cli_create_update_and_clear(tmp_path: Path) ->
     cleared = runner.invoke(app, [*base, "--clear"])
     assert cleared.exit_code == 0, cleared.output
     assert json.loads(path.read_text())["effort-session"]["reasoning_effort"] is None
+
+
+@pytest.mark.parametrize("flag,default", [("--fast-mode", True), ("--no-fast-mode", False)])
+def test_session_fast_mode_cli_create_update_clear_and_validate_route(
+    tmp_path: Path, flag: str, default: bool
+) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    created = runner.invoke(
+        app, ["create-session", "--config", str(config_path), flag, "speed-session"]
+    )
+    assert created.exit_code == 0, created.output
+    path = tmp_path / "runtime" / "sessions.json"
+    assert json.loads(path.read_text())["speed-session"]["fast_mode"] is default
+    base = ["set-session-fast-mode", "--config", str(config_path), "speed-session"]
+    enabled = runner.invoke(app, [*base, "--fast-mode"])
+    assert enabled.exit_code == 0, enabled.output
+    rejected = runner.invoke(app, [
+        "set-session-model-provider-mode", "--config", str(config_path),
+        "--mode", "local_openai", "speed-session",
+    ])
+    assert rejected.exit_code != 0
+    saved = json.loads(path.read_text())["speed-session"]
+    assert saved["fast_mode"] is True
+    assert saved["metadata"].get("model_provider_mode") is None
+    assert runner.invoke(app, [*base, "--clear", "--fast-mode"]).exit_code != 0
+    assert json.loads(path.read_text())["speed-session"]["fast_mode"] is True
+    disabled = runner.invoke(app, [*base, "--no-fast-mode"])
+    assert disabled.exit_code == 0, disabled.output
+    assert json.loads(path.read_text())["speed-session"]["fast_mode"] is False
+    cleared = runner.invoke(app, [*base, "--clear"])
+    assert cleared.exit_code == 0, cleared.output
+    assert json.loads(path.read_text())["speed-session"]["fast_mode"] is None

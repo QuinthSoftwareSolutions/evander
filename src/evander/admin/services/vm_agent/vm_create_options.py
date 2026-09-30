@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from evander.admin.services.vm_agent.common import (
-    Any,
     MODEL_PROVIDER_MODE_METADATA_KEY,
+    Any,
     NormalizedVmCreationOptions,
     ToolName,
     VmActionResult,
@@ -108,6 +108,7 @@ class VmAgentCreateOptionsMixin:
         model: str | None = None,
         cost_category: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         model_provider_mode: str | None = None,
         vm_user: str = "agent",
         ttl_seconds: int | None = None,
@@ -178,6 +179,7 @@ class VmAgentCreateOptionsMixin:
                 model=model,
                 cost_category=cost_category,
                 reasoning_effort=reasoning_effort,
+                fast_mode=fast_mode,
                 vm_user=vm_user,
                 ttl_seconds=ttl_seconds,
                 ttl_hours=ttl_hours,

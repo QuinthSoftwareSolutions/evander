@@ -1,3 +1,4 @@
+import { fastModeValue } from "../admin/fastMode";
 import { fetchJson } from "../admin/api";
 import type {
   AgentBackend,
@@ -21,6 +22,7 @@ export type AgentCreateFormState = {
   ttlDuration: string;
   model: string;
   reasoningEffort: string;
+  fastMode: string;
   costCategory: string;
   provider: string;
   vmUser: string;
@@ -65,6 +67,7 @@ export function emptyCreateForm(): AgentCreateFormState {
     ttlDuration: "7d",
     model: "",
     reasoningEffort: "",
+    fastMode: "",
     costCategory: "",
     provider: "",
     vmUser: "agent",
@@ -168,6 +171,7 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   const model = optionalText(form.model);
   if (model) payload.model = model;
   if (form.reasoningEffort) payload.reasoning_effort = form.reasoningEffort;
+  if (form.fastMode) payload.fast_mode = fastModeValue(form.fastMode);
   if (form.costCategory.trim()) payload.cost_category = form.costCategory.trim();
   const agentProvider = optionalText(form.agentProvider);
   if (agentProvider) payload.agent_provider = agentProvider;

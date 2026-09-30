@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
-from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
+from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
 from evander.host_directories.grants import host_directory_tool_names_for_grants
+from evander.managed_sections import normalize_managed_section_id
 from evander.models import SessionManifest, VmActionResult, VmSummary
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.repositories.session_manifests import (
     SessionManifestRepository,
     as_session_manifest_repository,
@@ -26,7 +28,6 @@ from evander.repositories.skills_library import (
     record_codex_skill_installations,
 )
 from evander.session_auth import ensure_session_mcp_auth_token
-from evander.managed_sections import normalize_managed_section_id
 from evander.vm.power_state import normalize_power_state
 
 
@@ -894,6 +895,7 @@ def _libvirt_create_vm(
     model: str | None = None,
     cost_category: str | None = None,
     reasoning_effort: str | None = None,
+    fast_mode: bool | None = None,
     vm_user: str = "agent",
     ttl_seconds: int | None = None,
     ttl_hours: int | None = None,
@@ -1075,14 +1077,19 @@ def _libvirt_create_vm(
             manifest.model = deps.resolve_agent_model_for_session(manifest)
         except ValueError:
             manifest.model = None
-    from evander.provider_config import validate_openrouter_session
     from evander.cost_categories import normalize_cost_category
+    from evander.provider_config import validate_openrouter_session
 
     if cost_category is not None:
         manifest.cost_category = normalize_cost_category(cost_category)
     if reasoning_effort is not None:
         manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    if fast_mode is not None:
+        manifest.fast_mode = normalize_fast_mode(fast_mode)
     validate_session_reasoning_effort(
+        manifest, deps.runtime.provider_config.resolve_for_directory(manifest.directory_path)
+    )
+    validate_session_fast_mode(
         manifest, deps.runtime.provider_config.resolve_for_directory(manifest.directory_path)
     )
     validate_openrouter_session(

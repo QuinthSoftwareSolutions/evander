@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-from evander.reasoning_effort import session_agent_harness
-from evander.codex_auth import (
-    CodexAuthMode,
-    effective_codex_auth_mode,
-    effective_subscription_profile_id,
-)
 from evander.admin.services.vm_agent.common import (
     Any,
     SessionManifest,
@@ -13,6 +7,12 @@ from evander.admin.services.vm_agent.common import (
     _normalize_session_labels,
     tool_name_value,
 )
+from evander.codex_auth import (
+    CodexAuthMode,
+    effective_codex_auth_mode,
+    effective_subscription_profile_id,
+)
+from evander.reasoning_effort import session_agent_harness
 
 
 class VmAgentContainerSessionPolicyMixin:
@@ -73,6 +73,7 @@ class VmAgentContainerSessionPolicyMixin:
             "session_id": session.session_id,
             "model": session.model,
             "reasoning_effort": session.reasoning_effort,
+            "fast_mode": session.fast_mode,
             "expires_at": session.expires_at,
             "allowed_tools": [tool_name_value(tool) for tool in session.allowed_tools],
             "connector_grants": {

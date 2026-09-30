@@ -873,6 +873,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "copied_paths": {"type": "array"},
     },
     "effect:agent:prompt": {
+        "fast_mode": {"type": "boolean"},
+        "fast_mode_source": {"type": "string"},
         "reasoning_effort": {"type": ["string", "null"]},
         "reasoning_effort_source": {"type": ["string", "null"]},
         "dispatch_id": {"type": "string"},
@@ -901,6 +903,8 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "failed_phase": {"type": "string"},
     },
     "effect:agent:enqueue-prompt": {
+        "fast_mode": {"type": "boolean"},
+        "fast_mode_source": {"type": "string"},
         "reasoning_effort": {"type": ["string", "null"]},
         "reasoning_effort_source": {"type": ["string", "null"]},
         "dispatch_id": {"type": "string"},

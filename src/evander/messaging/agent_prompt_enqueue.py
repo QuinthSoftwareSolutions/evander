@@ -4,17 +4,18 @@ import json
 import logging
 import time
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-from datetime import datetime
 
-from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
+from evander.fast_mode import FastMode, FastModeSource
 from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     AgentPromptRetryLimitExceeded,
     QueuedAgentPromptRecord,
 )
+from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,9 @@ def enqueue_agent_prompt(
     prompt: str,
     model: str | None,
     reasoning_effort: ReasoningEffort | None = None,
+    fast_mode: FastMode | None = None,
     reasoning_effort_source: ReasoningEffortSource | None = None,
+    fast_mode_source: FastModeSource | None = None,
     vm_user: str,
     dispatch_id: str | None,
     resume_thread_id: str | None,
@@ -131,7 +134,9 @@ def enqueue_agent_prompt(
             prompt=prompt,
             model=model,
             reasoning_effort=reasoning_effort,
+            fast_mode=fast_mode,
             reasoning_effort_source=reasoning_effort_source,
+            fast_mode_source=fast_mode_source,
             model_provider_mode=model_provider_mode,
             queue_reason=queue_reason,
             subscription_profile_id=subscription_profile_id,

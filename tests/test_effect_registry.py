@@ -476,7 +476,9 @@ class _AdminServiceStub:
         prompt: str,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -490,7 +492,9 @@ class _AdminServiceStub:
                 "prompt": prompt,
                 "model": model,
                 "reasoning_effort": reasoning_effort,
+                "fast_mode": fast_mode,
                 "reasoning_effort_source": reasoning_effort_source,
+                "fast_mode_source": fast_mode_source,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -4727,6 +4731,8 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
         outputs={
             "reasoning_effort": "low",
             "reasoning_effort_source": "prompt",
+            "fast_mode": False,
+            "fast_mode_source": "prompt",
             "dispatch_id": "dispatch-1",
             "thread_id": "thread-1",
             "execution_backend": "container_worker_vm",
@@ -4765,6 +4771,10 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
     assert started.session_id == "session-1"
     assert started.metadata["context_retry_attempt"] == 1
     assert started.codex_turn is not None
+    assert started.codex_turn.fast_mode is False
+    assert started.codex_turn.fast_mode_source == "prompt"
+    assert record.outputs["fast_mode"] is False
+    assert record.outputs["fast_mode_source"] == "prompt"
     assert started.codex_turn.reasoning_effort == "low"
     assert started.codex_turn.reasoning_effort_source == "prompt"
     assert started.codex_turn.auth_mode is CodexAuthMode.METERED_API
@@ -5007,8 +5017,10 @@ def test_context_exhausted_container_completion_does_not_retry_after_limit(
     assert record.outputs["context_retry_skipped_reason"] == "attempts_exhausted"
 
 
+@pytest.mark.parametrize("fast_mode", [True, False])
 def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
     tmp_path,
+    fast_mode,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = GatewayConfig(
@@ -5027,6 +5039,7 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
             vm_provider_id="evander",
             model="gpt-5.4-mini",
             reasoning_effort="medium",
+            fast_mode=fast_mode,
             metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
@@ -5100,6 +5113,8 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
     assert queued is not None
     assert queued.reasoning_effort == "medium"
     assert queued.reasoning_effort_source == "session"
+    assert queued.fast_mode is fast_mode
+    assert queued.fast_mode_source == "session"
     assert queued.dispatch_id == "caller-dispatch-1"
     assert queued.metadata["reduced_context_prompt"] == "continue from the compact handoff"
     assert queued.metadata["agent_context_retry_enabled"] == "False"

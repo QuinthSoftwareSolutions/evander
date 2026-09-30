@@ -7,22 +7,23 @@ from pathlib import Path
 from types import MethodType
 
 import pytest
+from config_helpers import write_runtime_config
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION, OWNER_GROUP_ID
-from evander.admin.web.shared import AdminWebAuth, AdminWebConfig
 from evander.admin.web.sessions_approvals import session_approval_routes
-from evander.messaging.targets import (
-    SqliteCommunicationTargetsRepository,
-    communication_targets_db_path,
-)
+from evander.admin.web.shared import AdminWebAuth, AdminWebConfig
 from evander.execution.container_worker_client import ContainerWorkerClientError
 from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
+)
+from evander.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
 )
 from evander.models import (
     ApprovalNotificationDeliveryRecord,
@@ -30,13 +31,12 @@ from evander.models import (
     ApprovalNotificationStatus,
     ApprovalRequest,
     ApprovalStatus,
-    SessionManifest,
     SessionActionResult,
+    SessionManifest,
     ToolName,
     WakeDispatchRecord,
     WakeResumePromptPayload,
 )
-from config_helpers import write_runtime_config
 
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
@@ -2522,7 +2522,9 @@ def test_admin_web_rejects_invalid_tool_argument_policy_updates(tmp_path: Path) 
     assert "operator" in agent_response.json()["error"]
 
 
-def test_session_effort_update_is_authorized_atomic_and_clearable(tmp_path, monkeypatch) -> None:
+def test_session_model_settings_update_is_authorized_atomic_and_clearable(
+    tmp_path, monkeypatch
+) -> None:
     service, owner, operator = _authenticated_owner_and_operator_clients(tmp_path, monkeypatch)
     session = SessionManifest(
         session_id="effort-session",
@@ -2530,23 +2532,36 @@ def test_session_effort_update_is_authorized_atomic_and_clearable(tmp_path, monk
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         model="gpt-6-astra",
         reasoning_effort="ultra",
+        fast_mode=True,
         metadata={"agent_provider": "codex"},
     )
     service.runtime.session_repository.upsert_session(session)
     endpoint = "/api/admin/sessions/effort-session/model"
-    assert operator.put(endpoint, json={"reasoning_effort": "low"}).status_code == 403
-    assert owner.put(endpoint, json={"reasoning_effort": "low"}).status_code == 403
+    assert operator.put(endpoint, json={"fast_mode": False}).status_code == 403
+    assert owner.put(endpoint, json={"fast_mode": False}).status_code == 403
     _unlock_privileged_operations(owner)
 
+    rejected_route = owner.patch(
+        "/api/admin/sessions/effort-session",
+        json={"model_provider_mode": "local_openai"},
+    )
+    assert rejected_route.status_code == 400
+    assert service.runtime.session_repository.get_session("effort-session").metadata.get(
+        "model_provider_mode"
+    ) is None
+
     # Changing just the model must not silently clamp the saved effort.
-    rejected = owner.put(endpoint, json={"model": "gpt-4o"})
+    rejected = owner.put(endpoint, json={"model": "gpt-4o", "fast_mode": False})
     assert rejected.status_code == 400
     saved = service.runtime.session_repository.get_session("effort-session")
-    assert (saved.model, saved.reasoning_effort) == ("gpt-6-astra", "ultra")
+    assert (saved.model, saved.reasoning_effort, saved.fast_mode) == ("gpt-6-astra", "ultra", True)
 
-    updated = owner.put(endpoint, json={"model": "gpt-6-luna", "reasoning_effort": "low"})
+    updated = owner.put(
+        endpoint, json={"model": "gpt-6-luna", "reasoning_effort": "low", "fast_mode": False}
+    )
     assert updated.status_code == 200
     assert updated.json()["session"]["reasoning_effort"] == "low"
+    assert updated.json()["session"]["fast_mode"] is False
     saved = service.runtime.session_repository.get_session("effort-session")
     assert (saved.model, saved.reasoning_effort) == ("gpt-6-luna", "low")
 
@@ -2555,10 +2570,14 @@ def test_session_effort_update_is_authorized_atomic_and_clearable(tmp_path, monk
     assert (
         service.runtime.session_repository.get_session("effort-session").reasoning_effort == "low"
     )
-    assert owner.put(endpoint, json={"reasoning_effort": None}).status_code == 200
+    assert (
+        owner.put(endpoint, json={"reasoning_effort": None, "fast_mode": None}).status_code == 200
+    )
     assert service.runtime.session_repository.get_session("effort-session").reasoning_effort is None
     assert owner.put(endpoint, json={"reasoning_effort": "fastest"}).status_code == 400
     assert owner.put(endpoint, json={"reasoning_effort": {"level": "high"}}).status_code == 400
     detail = owner.get("/api/admin/sessions/effort-session").json()["session"]
     assert detail["reasoning_effort"] is None
+    assert detail["fast_mode"] is None
+    assert owner.put(endpoint, json={"fast_mode": "false"}).status_code == 400
     assert detail["agent_harness"] == "codex"
