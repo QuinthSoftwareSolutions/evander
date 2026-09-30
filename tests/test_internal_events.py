@@ -17,7 +17,11 @@ from evander.orchestration.internal_events import (
     build_internal_event_bus,
     build_scheduled_internal_event_store,
 )
-from evander.repositories.orchestration_db import run_orchestration_retention
+from evander.repositories.orchestration_db import (
+    connect_orchestration_db_read_only,
+    run_orchestration_retention,
+)
+from evander.repositories.sqlite_runtime import foreground_storage_wait_budget
 from evander.workflow.events import SqliteWorkflowEventJournal
 
 
@@ -163,6 +167,67 @@ def test_changed_subscription_starts_at_current_tail(tmp_path: Path) -> None:
         correlation_key="two",
     )
     assert bus.poll_subscription(changed, matcher=lambda _event: True) == [new_event]
+
+
+def test_unchanged_subscription_polls_succeed_while_another_writer_is_active(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "orchestration.db"
+    bus = InternalEventBus(path)
+    spec = _subscription()
+    bus.reconcile_subscription(spec, config_revision="revision-1")
+
+    writer = sqlite3.connect(path)
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        with foreground_storage_wait_budget(0.02):
+            for _ in range(10):
+                bus.reconcile_subscription(spec, config_revision="revision-1")
+                bus.reconcile_subscription(spec, config_revision=None)
+                assert bus.poll_subscription(spec, matcher=lambda _event: True) == []
+    finally:
+        writer.close()
+
+    event = bus.publish(event_type=spec.event_type, payload={"value": "after-contention"})
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == [event]
+    bus.acknowledge_delivery(spec.trigger_id, event.event_id)
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == []
+
+
+def test_subscription_revision_changes_and_reactivation_preserve_cursor(tmp_path: Path) -> None:
+    path = tmp_path / "orchestration.db"
+    bus = InternalEventBus(path)
+    spec = _subscription()
+    bus.reconcile_subscription(spec, config_revision="revision-1")
+    event = bus.publish(event_type=spec.event_type)
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == [event]
+
+    bus.reconcile_subscription(spec, config_revision="revision-2")
+    with connect_orchestration_db_read_only(path) as connection:
+        before = dict(
+            connection.execute(
+                "SELECT * FROM internal_event_subscriptions WHERE trigger_id=?", (spec.trigger_id,)
+            ).fetchone()
+        )
+    assert before["config_revision"] == "revision-2"
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == [event]
+    bus.acknowledge_delivery(spec.trigger_id, event.event_id)
+
+    bus.deactivate_missing_subscriptions(set(), config_revision="revision-2")
+    next_event = bus.publish(event_type=spec.event_type)
+    bus.reconcile_subscription(spec, config_revision=None)
+    with connect_orchestration_db_read_only(path) as connection:
+        after = dict(
+            connection.execute(
+                "SELECT * FROM internal_event_subscriptions WHERE trigger_id=?", (spec.trigger_id,)
+            ).fetchone()
+        )
+    assert after["active"] == 1
+    assert after["config_revision"] == "revision-2"
+    assert after["scan_cursor_row_id"] == before["scan_cursor_row_id"]
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == [next_event]
+    bus.acknowledge_delivery(spec.trigger_id, next_event.event_id)
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == []
 
 
 def test_duplicate_schedule_idempotency_returns_original_record_without_mutation(

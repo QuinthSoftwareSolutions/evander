@@ -7,9 +7,8 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from evander.cost_categories import dispatch_with_cost_context
-from evander.reasoning_effort import resolve_reasoning_effort
 from evander.agent_threads import usable_agent_thread_id
+from evander.cost_categories import dispatch_with_cost_context
 from evander.effects.providers.agent_session import (
     container_codex_turn_spec,
     container_prompt_command,
@@ -33,6 +32,7 @@ from evander.execution import ExecutionBackendKind, ExecutionSpec, build_executi
 from evander.execution.container_worker_client import (
     CodexSubscriptionDeferredClientError,
 )
+from evander.fast_mode import resolve_fast_mode
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -61,6 +61,7 @@ from evander.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
     resolve_agent_prompt_dispatch_port,
 )
+from evander.reasoning_effort import resolve_reasoning_effort
 from evander.session_auth import session_mcp_auth_token
 from evander.session_expiry import (
     SessionExpiredError,
@@ -939,12 +940,21 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 model=model,
                 route=config.model_provider_mode,
             )
+            speed = resolve_fast_mode(
+                record.model_dump(),
+                session=session,
+                harness=agent_harness,
+                route=config.model_provider_mode,
+            )
             record.reasoning_effort = reasoning.value
             record.reasoning_effort_source = reasoning.source
+            record.fast_mode = speed.value
+            record.fast_mode_source = speed.source
             codex_turn = container_codex_turn_spec(
                 prompt=record.prompt,
                 model=model,
                 **reasoning.fields(),
+                **speed.fields(),
                 resume_thread_id=effective_resume_thread_id,
                 session=session,
                 config=config,
@@ -973,6 +983,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                                     prompt=record.prompt,
                                     model=model,
                                     **reasoning.fields(),
+                                    **speed.fields(),
                                     resume_thread_id=effective_resume_thread_id,
                                     session=session,
                                     agent_provider=agent_harness,
@@ -989,6 +1000,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                                     "agent_provider": agent_harness,
                                     "model": model,
                                     **reasoning.fields(),
+                                    **speed.fields(),
                                     "model_provider_mode": config.model_provider_mode,
                                     **(
                                         {"codex_auth_mode": codex_turn.auth_mode.value}
@@ -1331,7 +1343,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "prompt": record.prompt,
             "model": model,
             "reasoning_effort": record.reasoning_effort,
+            "fast_mode": record.fast_mode,
             "reasoning_effort_source": record.reasoning_effort_source,
+            "fast_mode_source": record.fast_mode_source,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_mode": getattr(record, "resume_mode", None),
@@ -1348,7 +1362,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         }
         outputs = {
             "reasoning_effort": record.reasoning_effort,
+            "fast_mode": record.fast_mode,
             "reasoning_effort_source": record.reasoning_effort_source,
+            "fast_mode_source": record.fast_mode_source,
             "dispatch_id": dispatch_id,
             "thread_id": None,
             "native_thread_id": None,
@@ -1374,7 +1390,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "prompt": record.prompt,
             "model": model,
             "reasoning_effort": record.reasoning_effort,
+            "fast_mode": record.fast_mode,
             "reasoning_effort_source": record.reasoning_effort_source,
+            "fast_mode_source": record.fast_mode_source,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_mode": getattr(record, "resume_mode", None),
@@ -1520,7 +1538,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "prompt": record.prompt,
             "model": record.model,
             "reasoning_effort": record.reasoning_effort,
+            "fast_mode": record.fast_mode,
             "reasoning_effort_source": record.reasoning_effort_source,
+            "fast_mode_source": record.fast_mode_source,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_mode": getattr(record, "resume_mode", None),
@@ -1535,7 +1555,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         }
         outputs = {
             "reasoning_effort": record.reasoning_effort,
+            "fast_mode": record.fast_mode,
             "reasoning_effort_source": record.reasoning_effort_source,
+            "fast_mode_source": record.fast_mode_source,
             "dispatch_id": dispatch_id,
             "success": True,
             "queued": False,
@@ -1558,7 +1580,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "prompt": record.prompt,
             "model": record.model,
             "reasoning_effort": record.reasoning_effort,
+            "fast_mode": record.fast_mode,
             "reasoning_effort_source": record.reasoning_effort_source,
+            "fast_mode_source": record.fast_mode_source,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_mode": getattr(record, "resume_mode", None),
@@ -2520,7 +2544,9 @@ class _LibvirtQueuedPromptReplay:
                     prompt=self.record.prompt,
                     model=self.record.model,
                     reasoning_effort=self.record.reasoning_effort,
+                    fast_mode=self.record.fast_mode,
                     reasoning_effort_source=self.record.reasoning_effort_source,
+                    fast_mode_source=self.record.fast_mode_source,
                     vm_user=self.record.vm_user,
                     dispatch_id=self.dispatch_id,
                     resume_thread_id=self.effective_resume_thread_id,
@@ -2553,6 +2579,9 @@ class _LibvirtQueuedPromptReplay:
         if getattr(result, "reasoning_effort_source", None) is not None:
             self.record.reasoning_effort = result.reasoning_effort
             self.record.reasoning_effort_source = result.reasoning_effort_source
+        if getattr(result, "fast_mode_source", None) is not None:
+            self.record.fast_mode = result.fast_mode
+            self.record.fast_mode_source = result.fast_mode_source
         self.hook._mark_local_inference_running(
             worker=self.worker,
             admission=self.capacity_admission,

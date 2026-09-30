@@ -49,6 +49,8 @@ Git, and HTTP surfaces.
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - Optional host-local Qdrant semantic store primitives for workflow-visible health, collection setup, and explicit-ID text point upsert/search/get/delete
 - Durable JSON and SQLite stores for sessions, approvals, audit, workflow execution, and add-ons
+- A separately installed [WordPress Add-on](packages/wordpress-addon/README.md) for recoverable content,
+  builder and source design changes, scoped browser editing and external release recovery
 - Admin Web and CLI surfaces for setup, sessions, policy, approvals, workflows, and recovery
 - Additive directory ownership and directory-scoped configuration support with inherited overrides
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network
@@ -1282,6 +1284,12 @@ Set a session **Reasoning effort** default in Admin Web, or override
 and Copilot use their native controls on their supported backends. Queued prompts
 and retries retain the selected effort. See the
 [reasoning effort reference](docs/configuration-reference.md#agent-reasoning-effort).
+
+Codex sessions also have a **Default speed** setting. Set `fast_mode: true` for
+Fast mode on a supported public OpenAI model, `false` for standard speed, or leave
+a prompt override unset to inherit the session default. Queues and retries retain
+the captured speed. See the
+[Fast mode reference](docs/configuration-reference.md#agent-fast-mode).
 
 Connect `effect:agent:prompt` or `effect:agent:enqueue-prompt` to
 `gate:await-agent` through the prompt's `started` source port. Use the

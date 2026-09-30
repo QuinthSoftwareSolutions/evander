@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services.vm_agent.common import (
-    Any,
     COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
+    Any,
     Mapping,
     SessionManifest,
-    _normalize_allowed_tools,
     _admin_agent_communication_allowlists,
     _admin_agent_email_mailbox_grants,
+    _normalize_allowed_tools,
     _normalize_session_labels,
     _prune_approvals_for_sessions,
     _prune_pr_feedback_store,
     _prune_pr_map,
-    _revoke_container_git_write_access_for_session,
     _resolve_session_approval_notification_target_ids,
+    _revoke_container_git_write_access_for_session,
     _session_policy_update_from_payload,
     _sync_added_discord_session_cursors,
     timedelta,
@@ -27,10 +26,12 @@ from evander.codex_auth import (
     normalize_subscription_profile_id,
 )
 from evander.connectors.grants import resolve_and_validate_connector_grants
+from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
 from evander.host_directories.grants import (
     host_directory_tool_names_for_grants,
     resolve_and_validate_host_directory_grants,
 )
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 
 
 class VmAgentMutationMixin:
@@ -46,6 +47,7 @@ class VmAgentMutationMixin:
         allowed_fields = {
             "model",
             "reasoning_effort",
+            "fast_mode",
             "ttl_hours",
             "allowed_tools",
             "connector_grants",
@@ -91,6 +93,8 @@ class VmAgentMutationMixin:
         update: dict[str, Any] = {}
         if "reasoning_effort" in body:
             update["reasoning_effort"] = normalize_reasoning_effort(body["reasoning_effort"])
+        if "fast_mode" in body:
+            update["fast_mode"] = normalize_fast_mode(body["fast_mode"])
         if "model" in body:
             update["model"] = self._agent_optional_string(body, "model")
         if "ttl_hours" in body:
@@ -279,14 +283,11 @@ class VmAgentMutationMixin:
                 raise ValueError(
                     "subscription_profile_id is supported only for container worker agents"
                 )
-            profile_id = normalize_subscription_profile_id(
-                body.get("subscription_profile_id")
-            )
+            profile_id = normalize_subscription_profile_id(body.get("subscription_profile_id"))
             effective_mode = update.get("codex_auth_mode", session.codex_auth_mode)
             if effective_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION:
                 raise ValueError(
-                    "subscription_profile_id requires "
-                    "codex_auth_mode='chatgpt_subscription'"
+                    "subscription_profile_id requires codex_auth_mode='chatgpt_subscription'"
                 )
             if profile_id is None:
                 raise ValueError("subscription_profile_id is required")
@@ -316,6 +317,10 @@ class VmAgentMutationMixin:
 
         updated = session.model_copy(update=update)
         validate_session_reasoning_effort(
+            updated,
+            self.runtime.provider_config.resolve_for_directory(updated.directory_path),
+        )
+        validate_session_fast_mode(
             updated,
             self.runtime.provider_config.resolve_for_directory(updated.directory_path),
         )
@@ -516,6 +521,7 @@ class VmAgentMutationMixin:
                     prompt,
                     model=str(body.get("model") or "").strip() or None,
                     reasoning_effort=normalize_reasoning_effort(body.get("reasoning_effort")),
+                    fast_mode=normalize_fast_mode(body.get("fast_mode")),
                     resume_mode=str(body.get("resume_mode") or "same_context").strip()
                     or "same_context",
                 )

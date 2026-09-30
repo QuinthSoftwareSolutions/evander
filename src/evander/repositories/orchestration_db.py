@@ -1070,24 +1070,32 @@ def _run_orchestration_retention_slice(
 
 
 def _has_pending_retention_sources(connection: sqlite3.Connection, cutoff: str) -> bool:
+    # Drive primary-key lookups from queued jobs while retention holds the writer lock.
     return (
         connection.execute(
-            """SELECT 1 FROM trigger_events t JOIN workflow_history_index_jobs j
-             ON j.execution_key='trigger:' || t.event_id
-           WHERE t.delivery_state='delivered' AND COALESCE(t.delivered_at,t.occurred_at) < ?
-           UNION ALL
-           SELECT 1 FROM effect_executions e JOIN workflow_history_index_jobs j
-             ON j.execution_key='effect:' || e.execution_id
-           WHERE (e.status IN ('succeeded','skipped','dropped') AND COALESCE(e.finished_at,e.started_at) < ?)
-              OR (e.status='failed' AND (e.dismissed_at IS NOT NULL OR e.cleared_at IS NOT NULL)
-                  AND COALESCE(e.dismissed_at,e.cleared_at,e.finished_at,e.started_at) < ?)
-           UNION ALL
-           SELECT 1 FROM gate_executions g JOIN workflow_history_index_jobs j
-             ON j.execution_key='gate:' || g.execution_id
-           WHERE (g.status IN ('succeeded','skipped','dropped') AND COALESCE(g.finished_at,g.started_at) < ?)
-              OR (g.status='failed' AND (g.dismissed_at IS NOT NULL OR g.cleared_at IS NOT NULL)
-                  AND COALESCE(g.dismissed_at,g.cleared_at,g.finished_at,g.started_at) < ?)
-           LIMIT 1""",
+            """SELECT 1 FROM workflow_history_index_jobs j
+           WHERE (j.execution_key GLOB 'trigger:*' AND EXISTS (
+               SELECT 1 FROM trigger_events t
+               WHERE t.event_id=substr(j.execution_key,9)
+                 AND t.delivery_state='delivered'
+                 AND COALESCE(t.delivered_at,t.occurred_at) < ?
+           )) OR (j.execution_key GLOB 'effect:*' AND EXISTS (
+               SELECT 1 FROM effect_executions e
+               WHERE e.execution_id=substr(j.execution_key,8)
+                 AND ((e.status IN ('succeeded','skipped','dropped')
+                       AND COALESCE(e.finished_at,e.started_at) < ?)
+                   OR (e.status='failed'
+                       AND (e.dismissed_at IS NOT NULL OR e.cleared_at IS NOT NULL)
+                       AND COALESCE(e.dismissed_at,e.cleared_at,e.finished_at,e.started_at) < ?))
+           )) OR (j.execution_key GLOB 'gate:*' AND EXISTS (
+               SELECT 1 FROM gate_executions g
+               WHERE g.execution_id=substr(j.execution_key,6)
+                 AND ((g.status IN ('succeeded','skipped','dropped')
+                       AND COALESCE(g.finished_at,g.started_at) < ?)
+                   OR (g.status='failed'
+                       AND (g.dismissed_at IS NOT NULL OR g.cleared_at IS NOT NULL)
+                       AND COALESCE(g.dismissed_at,g.cleared_at,g.finished_at,g.started_at) < ?))
+           )) LIMIT 1""",
             (cutoff, cutoff, cutoff, cutoff, cutoff),
         ).fetchone()
         is not None

@@ -19,6 +19,7 @@ runtime/
 /sessions.json
 *.pyc
 *.egg-info/
+build/
 .codex
 .worktrees/
 AGENT_TASK.yaml

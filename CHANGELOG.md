@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-30 - Clarify control-plane transaction stages (0.72.6)
+## 2026-09-30 - Clarify control-plane transaction stages (0.76.1)
 
 - Apply Team agent action batches through named stages with invocation-local
   progress and project-recalculation state, preserving stage order, partial-error
@@ -71,6 +71,95 @@
   ordered application stages. Keep revision checks and managed repository binding
   locks in the admin facade, retaining configuration selection, ID allocation,
   reporting links, cost budgets, and atomic graph creation.
+
+## 2026-09-30 - Independent add-on projects and website login adapters (0.76.0)
+
+- Establish self-contained, independently installed add-on projects under `packages/`.
+  Include their tests in repository collection and document ownership for future add-ons.
+  [WordPress 0.1.0](packages/wordpress-addon/CHANGELOG.md) is the first project;
+  installing core alone does not install it or grant the relay credential-key access.
+- Add generic website-session adapter registration, adapter-managed profile editing
+  and adapter-aware restart metadata, with ordinary JSON profiles remaining the default.
+- Supply trusted connector drivers with host services and callbacks that recheck current
+  session, tool, argument and connector policy before durable host operations.
+- Provide host-only connector authentication snapshots and reject reflected raw or encoded
+  managed credentials before returning protocol responses or persisting results.
+- Support optional temporary cookies in generic JSON logins while retaining existing
+  JSON-login storage limits and positional add-on registration compatibility.
+- Reject encoded host credentials in JSON-login cookies and storage through the
+  shared credential sanitizer, preserving explicitly public storage identifiers.
+  Check composite Basic/JWT values without buffering complete decoded artifacts.
+- Discover website adapters only when needed so unrelated add-on imports cannot interrupt
+  ordinary logins. Align frozen installation metadata with this release without changing
+  dependency versions.
+
+## 2026-09-30 - Manually trigger workflow event nodes (0.75.0)
+
+- Run a saved, enabled `trigger:event` node from its inspector with a JSON-object
+  payload and optional correlation key, without broadcasting to other listeners.
+- Check workflow run-control permissions and saved revisions, record the operator,
+  and deduplicate retries before showing the queued run in existing run history.
+- Preserve accepted attempts across workflow revision changes and compare retry
+  payloads as canonical JSON, keeping boolean and numeric values distinct.
+
+## 2026-09-30 - Bound control-plane system log storage (0.74.1)
+
+- Manage daily rsyslog rotation in Ansible with 28 archives and delayed compression,
+  preserving about four weeks of system log history while reducing uncompressed storage.
+- Validate and back up the rotation policy before replacement without forcing rotation
+  or restarting the logging service.
+
+## 2026-09-30 - Configure Codex Fast mode per session and prompt (0.74.0)
+
+- Add nullable `fast_mode` session defaults and per-prompt overrides to agent creation,
+  workflow nodes, Admin Web, and CLI controls; explicit false selects standard speed.
+- Forward the resolved tier through Codex VM, metered container, and subscription
+  execution, preserving the selection through queues, wakes, context retries, and steering.
+- Restore the session speed on later turns and expose the chosen mode and its source
+  in execution and queue records. Fast requires a supported public OpenAI Codex route.
+- Price metered Fast usage with the returned service tier across HTTP, streaming,
+  and WebSocket responses, falling back to the requested tier when unavailable.
+- Preserve an existing VM session's speed when creation omits the setting, and
+  clear it when an upsert explicitly supplies null, matching container workers.
+
+## 2026-09-30 - Display and redeem banked subscription resets (0.73.0)
+
+- Show each subscription profile's banked reset count beside remaining weekly usage,
+  distinguishing unavailable telemetry from zero available resets.
+- Let privileged root owners redeem one reset, refresh account limits, and wake queued
+  work when capacity recovers. Preserve account pins and retry identity to avoid
+  consuming another reset after an uncertain response.
+- Bind redemption to the original worker and account, and retain unresolved attempts
+  across tab changes and reloads until the provider returns a definitive outcome.
+
+## 2026-09-29 - Reuse Azure DevOps activity scans across pages (0.72.8)
+
+- Reuse completed gateway activity scans for five minutes and share overlapping
+  queries, with a 64 MiB serialized-data budget and bounded cache entries.
+- Fetch full work-item records in batches while preserving custom fields, activity
+  filtering, candidate omissions, and paging completeness.
+- Recheck policy and provider credentials on each request, invalidate cached scans
+  after gateway work-item and proxy-issue mutations, and expose content-free cache
+  and scan timings.
+
+## 2026-09-29 - Reduce event and retention writer contention (0.72.7)
+
+- Check pending retention sources through queued history jobs and source primary keys,
+  keeping maintenance work proportional to pending jobs instead of execution history.
+- Skip unchanged subscription updates during event polling and retain known configuration
+  revisions, while preserving filter changes, reactivation, and durable event delivery.
+- Retry contended event-delivery writes through the worker's bounded storage retry path.
+
+## 2026-09-29 - Bound Team case-history memory during lifecycle work (0.72.6)
+
+- Read immutable case-context snapshots through indexed history queries instead of
+  loading their payloads into every Team state read, validation, and mutation.
+- Commit new snapshots atomically with dispatch state, command receipts, and outbox
+  records; retain snapshot IDs, evidence, grants, and bounded retrieval contracts.
+- Backfill history indexes in bounded batches and recover metadata after rollback
+  to older writers. Preserve archived snapshots during operational state replacement.
+- Use narrow completion and Git-index reads, and skip empty global chat planning
+  while retaining expired preparation recovery.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 

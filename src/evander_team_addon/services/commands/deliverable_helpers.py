@@ -776,6 +776,7 @@ def _apply_command_deliverable_submission(
     deliverable_id: str,
     published_records: Sequence[Mapping[str, Any]],
     suppress_superior_notice: bool,
+    context_snapshot_ids: Sequence[str],
 ) -> list[str]:
     if deliverable_id in state.deliverables:
         raise TeamCommandValidationError(
@@ -896,11 +897,7 @@ def _apply_command_deliverable_submission(
             if task.id in n.task_ids
             or (task.case_id and n.case_id == task.case_id and not n.task_ids)
         ),
-        context_snapshot_ids=sorted(
-            s.id
-            for s in state.case_context_snapshots.values()
-            if s.dispatch_id == state.agent_runtimes[agent.id].active_dispatch_id
-        ),
+        context_snapshot_ids=sorted(context_snapshot_ids),
         git_refs=git_refs,
         verification=verification,
         outcomes=outcomes,

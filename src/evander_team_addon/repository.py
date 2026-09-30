@@ -7,6 +7,8 @@ from typing import Any
 
 from evander.models import utc_now
 
+from .case_context_history import CaseContextSnapshotRepository
+
 from .models import (
     TeamDispatchActivity,
     TeamIdempotencyRecord,
@@ -46,6 +48,7 @@ class TeamStateRepository:
         self.runtime_dir = Path(runtime_dir)
         self.maintenance = maintenance
         self.store = TeamStateSqliteStore(self.runtime_dir, maintenance=maintenance)
+        self.snapshots = CaseContextSnapshotRepository(self.store)
         self._dispatch_activity_repository = TeamDispatchActivityRepository(self.store)
         self._idempotency_repository = TeamIdempotencyRepository(self.store)
         self._outbox_repository = TeamOutboxRepository(self.store)

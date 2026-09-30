@@ -5,7 +5,6 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from evander.reasoning_effort import LEVELS
 from evander.admin.payloads import WorkflowEditorGraphMetadata
 from evander.admin.services import vm_agent_service
 from evander.events.models import (
@@ -16,6 +15,7 @@ from evander.events.models import (
     TriggerDefinitionDiscriminated,
 )
 from evander.models import ToolName
+from evander.reasoning_effort import LEVELS
 from evander.services import parse_teams_target
 from evander.workflow.catalog import (
     WorkflowEditorFieldDefinition,
@@ -28,11 +28,11 @@ from evander.workflow.lifecycle_ports import (
     AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
+from evander.workflow.system_nodes import is_system_managed_workflow_node_id
 from evander.workflow.validation import (
     WorkflowValidationDiagnostic,
     validate_workflow_binding_diagnostics,
 )
-from evander.workflow.system_nodes import is_system_managed_workflow_node_id
 
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
 _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
@@ -450,6 +450,22 @@ def _reasoning_effort_field() -> WorkflowEditorFieldDefinition:
             "The runtime validates support for the selected harness and model."
         ),
         options=[_field_option(level, level) for level in LEVELS],
+    )
+
+
+def _fast_mode_field() -> WorkflowEditorFieldDefinition:
+    return _field(
+        "fast_mode",
+        "Fast mode",
+        "boolean",
+        bindable=True,
+        description="Codex speed: true selects Fast, false selects standard; omit/null inherits the session default. Fast availability and usage depend on the model and account.",
+        metadata={
+            "nullable": True,
+            "unset_label": "Session default",
+            "true_label": "Fast",
+            "false_label": "Standard",
+        },
     )
 
 
@@ -2495,6 +2511,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Default inference cost category for the session. Leave blank for Uncategorized.",
             ),
             _reasoning_effort_field(),
+            _fast_mode_field(),
             _field(
                 "model_provider_mode",
                 "Model relay",
@@ -3328,6 +3345,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Use the session category, override it for this prompt, or choose Uncategorized.",
             ),
             _reasoning_effort_field(),
+            _fast_mode_field(),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
             _field(
@@ -3392,6 +3410,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Use the session category, override it for this prompt, or choose Uncategorized.",
             ),
             _reasoning_effort_field(),
+            _fast_mode_field(),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("dispatch_id", "Dispatch ID", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),

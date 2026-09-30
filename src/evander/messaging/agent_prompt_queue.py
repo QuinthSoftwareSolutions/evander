@@ -9,8 +9,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
+from evander.fast_mode import FastMode, FastModeSource
 from evander.models import utc_now
+from evander.reasoning_effort import ReasoningEffort, ReasoningEffortSource
 from evander.storage import JsonStore
 
 
@@ -92,7 +93,9 @@ class QueuedAgentPromptRecord(BaseModel):
     prompt: str = Field(min_length=1)
     model: str | None = None
     reasoning_effort: ReasoningEffort | None = None
+    fast_mode: FastMode | None = None
     reasoning_effort_source: ReasoningEffortSource | None = None
+    fast_mode_source: FastModeSource | None = None
     model_provider_mode: str | None = None
     queue_reason: str | None = None
     subscription_profile_id: str | None = None

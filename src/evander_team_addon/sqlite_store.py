@@ -19,6 +19,8 @@ from evander.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
 from evander.repositories.sqlite_runtime import ensure_sqlite_initialized, open_sqlite_connection
 
 from .case_context_store import CaseContextStoreMixin
+from .case_context_models import CaseContextSnapshot
+from .case_context_history import write_snapshots
 from .lifecycle_candidates import LifecycleCandidate, LifecycleCandidatePage
 from .models import (
     SCHEMA_VERSION,
@@ -263,7 +265,6 @@ _STATE_FIELD_ADAPTERS = {
 _STATE_GROUP_READERS = {
     "notes": "_read_case_context",
     "case_context_views": "_read_case_context",
-    "case_context_snapshots": "_read_case_context",
     "human_review_requests": "_read_human_reviews",
     "human_review_decisions": "_read_human_reviews",
     "human_review_findings": "_read_human_reviews",
@@ -492,11 +493,21 @@ class TeamStateSqliteStore(
         )
 
     def write_object(self, payload: dict[str, Any]) -> None:
-        state = TeamState.model_validate(payload)
+        """Replace operational state, preserving history; explicitly merge legacy history if supplied."""
+        operational = dict(payload)
+        archive = operational.pop("case_context_snapshots", {})
+        snapshots = []
+        for snapshot_id, data in archive.items():
+            snapshot = CaseContextSnapshot.model_validate(data)
+            if snapshot.id != snapshot_id:
+                raise ValueError("snapshot key does not match its ID")
+            snapshots.append(snapshot)
+        state = TeamState.model_validate(operational)
         with self._lock:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._write_state(connection, state)
+                write_snapshots(connection, snapshots)
 
     def renew_dispatch_lease(
         self,
@@ -719,6 +730,7 @@ class TeamStateSqliteStore(
                         state=prepared.state,
                         changed_by_field=prepared.changed_by_field,
                     )
+                write_snapshots(connection, prepared.snapshots)
                 return True, current_revision, prepared.state
 
     def _persist_updated_payload(
@@ -783,6 +795,7 @@ class TeamStateSqliteStore(
                 state=prepared.state,
                 changed_by_field=prepared.changed_by_field,
             )
+        write_snapshots(connection, prepared.snapshots)
         return prepared.state
 
     def _prepare_updated_state(
@@ -802,7 +815,11 @@ class TeamStateSqliteStore(
         candidate_payload["updated_at"] = candidate_updated_at.isoformat()
         validated = TeamState.model_validate(candidate_payload)
         current_payload = validated.model_dump(mode="json")
-        state_changed = _state_content_changed(previous_payload, current_payload)
+        snapshots = tuple(
+            CaseContextSnapshot.model_validate(snapshot.model_dump(mode="json"))
+            for snapshot in candidate._case_context_snapshot_writes.values()
+        )
+        state_changed = bool(snapshots) or _state_content_changed(previous_payload, current_payload)
         if not state_changed:
             return _PreparedTeamStateUpdate(
                 state=validated.model_copy(
@@ -815,6 +832,7 @@ class TeamStateSqliteStore(
                 current_payload=current_payload,
                 changed_by_field={},
                 state_changed=False,
+                snapshots=(),
             )
         state = validated.model_copy(
             update={
@@ -838,6 +856,7 @@ class TeamStateSqliteStore(
                 current=current_payload,
             ),
             state_changed=True,
+            snapshots=snapshots,
         )
 
     @staticmethod
@@ -875,6 +894,10 @@ class TeamStateSqliteStore(
             int(rows.get("sqlite_schema_version", 0)) >= SQLITE_SCHEMA_VERSION
             and int(rows.get("state_schema_version", 0)) >= SCHEMA_VERSION
             and "revision" in rows
+            and connection.execute(
+                "SELECT 1 FROM team_case_context_snapshot_pending LIMIT 1"
+            ).fetchone()
+            is None
         )
 
     def ensure_schema(self) -> None:
@@ -1061,7 +1084,6 @@ class TeamStateSqliteStore(
         self._write_action_records(connection, payload["action_records"])
         self._write_notes(connection, payload["notes"])
         self._write_case_context_views(connection, payload["case_context_views"])
-        self._write_case_context_snapshots(connection, payload["case_context_snapshots"])
         self._write_memories(connection, payload["memories"])
         self._write_conversations(connection, payload["conversations"])
         self._write_conversation_messages(connection, payload["conversation_messages"])
@@ -1204,6 +1226,7 @@ class _PreparedTeamStateUpdate:
     current_payload: dict[str, Any]
     changed_by_field: dict[str, set[str]]
     state_changed: bool
+    snapshots: tuple[CaseContextSnapshot, ...]
 
 
 class TeamStateSqliteCommandTransaction:

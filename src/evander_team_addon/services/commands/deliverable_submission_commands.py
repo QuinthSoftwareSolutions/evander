@@ -423,6 +423,9 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 deliverable_id=deliverable_id,
                 published_records=published_records,
                 suppress_superior_notice=False,
+                context_snapshot_ids=self._repository.snapshots.ids_for_dispatch(
+                    state.agent_runtimes[agent.id].active_dispatch_id, state=state
+                ),
             )
             submission_events: dict[str, Any] = {"events": []}
             for inbox_id in created_inbox_ids:
@@ -958,6 +961,9 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 deliverable_id=deliverable_id,
                 published_records=published_records,
                 suppress_superior_notice=True,
+                context_snapshot_ids=self._repository.snapshots.ids_for_dispatch(
+                    state.agent_runtimes[agent.id].active_dispatch_id, state=state
+                ),
             )
             submitted_deliverable = state.deliverables[deliverable_id]
             review_cohort_id = f"review-cohort-{deliverable_id}"

@@ -43,6 +43,7 @@ from evander.execution import (
 from evander.execution.container_worker_client import (
     CodexSubscriptionDeferredClientError,
 )
+from evander.fast_mode import resolve_fast_mode
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -530,7 +531,13 @@ class HostWakeDispatcher:
             model=resolved_model,
             route=worker_config.model_provider_mode,
         )
-        wake_metadata = {**(wake_metadata or {}), **reasoning.fields()}
+        speed = resolve_fast_mode(
+            {},
+            session=session,
+            harness=agent_provider or default_agent_provider_for_config(worker_config),
+            route=worker_config.model_provider_mode,
+        )
+        wake_metadata = {**(wake_metadata or {}), **reasoning.fields(), **speed.fields()}
         capacity_admission = self._claim_local_inference_capacity(
             config=worker_config,
             dispatch_id=dispatch_id,
@@ -564,6 +571,7 @@ class HostWakeDispatcher:
                     prompt=prompt,
                     model=resolved_model,
                     **reasoning.fields(),
+                    **speed.fields(),
                     model_provider_mode=worker_config.model_provider_mode,
                     queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
                     vm_user=worker_config.wake_vm_user,
@@ -628,6 +636,7 @@ class HostWakeDispatcher:
             "AGENT_WEB_SEARCH_MODE": self._web_search_mode_for_session(binding.session_id),
             "AGENT_REASONING_EFFORT": reasoning.value or "",
             "AGENT_REASONING_EFFORT_SOURCE": reasoning.source,
+            "AGENT_FAST_MODE": "true" if speed.value else "false",
         }
         if agent_provider:
             agent_env["AGENT_PROVIDER"] = agent_provider
@@ -865,7 +874,13 @@ class HostWakeDispatcher:
                 model=resolved_model,
                 route=base_config.model_provider_mode,
             )
-            wake_metadata = {**(wake_metadata or {}), **reasoning.fields()}
+            speed = resolve_fast_mode(
+                {},
+                session=session,
+                harness=agent_provider or default_agent_provider_for_config(base_config),
+                route=base_config.model_provider_mode,
+            )
+            wake_metadata = {**(wake_metadata or {}), **reasoning.fields(), **speed.fields()}
             backend = build_execution_backend(
                 base_config,
                 admin_service=getattr(self.runtime, "admin_service", None),
@@ -940,6 +955,7 @@ class HostWakeDispatcher:
                     prompt=prompt,
                     model=resolved_model,
                     **reasoning.fields(),
+                    **speed.fields(),
                     model_provider_mode=base_config.model_provider_mode,
                     queue_reason=queue_reason,
                     vm_user=base_config.wake_vm_user,
@@ -1009,6 +1025,7 @@ class HostWakeDispatcher:
             prompt=prompt,
             model=resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
             resume_thread_id=None,
             session=session,
             agent_provider=agent_provider,
@@ -1020,6 +1037,7 @@ class HostWakeDispatcher:
             prompt=prompt,
             model=resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
             resume_thread_id=None,
             session=session,
             config=base_config,
@@ -1051,6 +1069,7 @@ class HostWakeDispatcher:
                                 "agent_provider": agent_provider,
                                 "model": resolved_model,
                                 **reasoning.fields(),
+                                **speed.fields(),
                                 "model_provider_mode": base_config.model_provider_mode,
                                 **(
                                     {"codex_auth_mode": codex_turn.auth_mode.value}
@@ -1097,6 +1116,7 @@ class HostWakeDispatcher:
                     prompt=prompt,
                     model=resolved_model,
                     **reasoning.fields(),
+                    **speed.fields(),
                     model_provider_mode=base_config.model_provider_mode,
                     queue_reason=exc.deferral.queue_reason,
                     subscription_profile_id=exc.deferral.profile_id,
@@ -1200,6 +1220,7 @@ class HostWakeDispatcher:
             "prompt": prompt,
             "model": resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
             "model_provider_mode": base_config.model_provider_mode,
             "request_id": request_id,
             "resume_mode": effective_resume_mode,
@@ -1283,7 +1304,9 @@ class HostWakeDispatcher:
         prompt: str = "",
         model: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         model_provider_mode: str | None = None,
         request_id: str | None = None,
         resume_mode: str = "same_context",
@@ -1306,7 +1329,9 @@ class HostWakeDispatcher:
                 "prompt": prompt,
                 "model": model,
                 "reasoning_effort": reasoning_effort,
+                "fast_mode": fast_mode,
                 "reasoning_effort_source": reasoning_effort_source,
+                "fast_mode_source": fast_mode_source,
                 "model_provider_mode": model_provider_mode,
                 "request_id": request_id,
                 "resume_mode": resume_mode,
@@ -1334,7 +1359,9 @@ class HostWakeDispatcher:
         prompt: str = "",
         model: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         model_provider_mode: str | None = None,
         request_id: str | None = None,
         resume_mode: str = "same_context",
@@ -1410,7 +1437,9 @@ class HostWakeDispatcher:
                         prompt=prompt,
                         model=model,
                         reasoning_effort=reasoning_effort,
+                        fast_mode=fast_mode,
                         reasoning_effort_source=reasoning_effort_source,
+                        fast_mode_source=fast_mode_source,
                         model_provider_mode=(
                             model_provider_mode or self.config.model_provider_mode
                         ),

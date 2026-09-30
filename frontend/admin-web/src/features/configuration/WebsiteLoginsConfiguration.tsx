@@ -4,6 +4,7 @@ import { fetchJson } from "../admin/api";
 type Binding = {response_pointer: string; encoding: "json" | "string"};
 type Profile = {
   enabled: boolean; browser_origin: string; login_url: string;
+  adapter?: string; adapter_config?: Record<string, unknown>; cookies_response_pointer?: string | null;
   credential_source: "stored" | "environment"; credential_ref?: string | null;
   credential_fields: Record<string, string>; public_credential_fields: string[];
   static_fields: Record<string, unknown>; local_storage: Record<string, Binding>; session_storage: Record<string, Binding>;
@@ -11,7 +12,7 @@ type Profile = {
   max_age_seconds: number; renew_before_seconds: number; timeout_seconds: number; max_response_bytes: number;
 };
 type Entry = {id: string; profile: Profile; local: boolean;
-  credentials: {configured_fields: string[]; updated_at: number | null; owner_directory: string | null};
+  credentials: {configured_fields: string[]; managed_by?: string; updated_at: number | null; owner_directory: string | null};
   last_test: {status: string; checked_at: number; expires_at: number | null} | null};
 type Snapshot = {directory_path: string; revision: string; profiles: Entry[]};
 type Credential = {name: string; reference: string; value: string; public: boolean};
@@ -82,6 +83,7 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
       } else {
         const result = data.profiles.find(p => p.id === id)?.last_test;
         if (result?.status === "ok") setMessage("Login succeeded. Temporary authentication state was checked on the host.");
+        else if (result?.status === "adapter_configured") setMessage("Website login adapter configuration verified.");
         else setError(`Login test failed: ${result?.status ?? "no result"}. Check the saved credentials and login configuration.`);
       }
     } catch (reason) {
@@ -91,6 +93,10 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
   function save() {
     if (!draft) return;
     try {
+      if (draft.profile.adapter && draft.profile.adapter !== "json") {
+        void mutate(draft.id.trim(), "PUT", "", {profile: {...draft.profile, credential_ref: null}, credentials: {}});
+        return;
+      }
       const names = draft.credentials.map(c => c.name.trim());
       if (!names.length || names.some(n => !n) || new Set(names).size !== names.length) throw new Error("Login fields need unique, nonempty names.");
       const staticFields: unknown = JSON.parse(draft.staticJson);
@@ -111,9 +117,10 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
   }
   const locked = disabled || busy || !snapshot;
   const selected = snapshot?.profiles.find(p => p.id === draft?.id);
+  const adapterManaged = Boolean(draft?.profile.adapter && draft.profile.adapter !== "json");
   return <article className="panel website-logins-panel">
     <p>Create reusable website logins for this directory and its children. Grant a profile to an assistant in its HTTP targets.</p>
-    <p className="muted-text">Credentials stay encrypted on the host. The browser receives temporary authentication state. This adapter supports JSON login APIs.</p>
+    <p className="muted-text">Credentials stay on the host. The browser receives temporary authentication state.</p>
     {error ? <div role="alert" className="callout error-callout">{error}</div> : null}
     {message ? <div role="status" className="callout success-callout">{message}</div> : null}
     <div className="inline-actions">
@@ -132,7 +139,8 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
         <button type="button" onClick={() => choose(entry)} disabled={busy}>{entry.id}</button>
         <span>{entry.profile.browser_origin}</span>
         <span>{entry.profile.enabled ? "Enabled" : "Disabled"} · {entry.local ? "Local profile" : "Inherited profile"}</span>
-        <span>{entry.credentials.configured_fields.length === Object.keys(entry.profile.credential_fields).length ? "Credentials configured" : "Credentials missing"}</span>
+        <span>{entry.profile.adapter && entry.profile.adapter !== "json" ? `Managed by ${entry.credentials.managed_by ?? entry.profile.adapter}` :
+          entry.credentials.configured_fields.length === Object.keys(entry.profile.credential_fields).length ? "Credentials configured" : "Credentials missing"}</span>
         {entry.last_test ? <span>Last test: {entry.last_test.status} · {new Date(entry.last_test.checked_at * 1000).toLocaleString()}</span> : <span>Not tested for current settings</span>}
         {entry.last_test?.expires_at ? <span>Tested session valid until {new Date(entry.last_test.expires_at * 1000).toLocaleString()}</span> : null}
       </div>)}
@@ -146,10 +154,11 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
           <label className="field-stack"><span>Website origin</span><input required type="url" placeholder="https://training.example.org" value={draft.profile.browser_origin} onChange={e => profile({browser_origin: e.target.value})} /></label>
           <label className="field-stack"><span>Login endpoint</span><input required type="url" placeholder="https://training.example.org/api/login" value={draft.profile.login_url} onChange={e => profile({login_url: e.target.value})} /></label>
           <label className="checkbox-row"><input type="checkbox" checked={draft.profile.enabled} onChange={e => profile({enabled: e.target.checked})} /><span>Enabled</span></label>
-          <label className="field-stack"><span>Credential source</span><select value={draft.profile.credential_source} onChange={e => {
+          {!adapterManaged ? <label className="field-stack"><span>Credential source</span><select value={draft.profile.credential_source} onChange={e => {
             update({profile: {...draft.profile, credential_source: e.target.value as Profile["credential_source"]}, credentials: draft.credentials.map(c => ({...c, value: ""}))});
-          }}><option value="stored">Encrypted host storage</option><option value="environment">Existing host environment variables</option></select></label>
+          }}><option value="stored">Encrypted host storage</option><option value="environment">Existing host environment variables</option></select></label> : null}
         </div>
+        {adapterManaged ? <p className="field-description">Credentials and browser authentication state are managed by {draft.profile.adapter}.</p> : <>
         <h3>Login fields and credentials</h3>
         <p className="field-description">Leave a saved value blank to keep it. Changing the website, login endpoint, login fields or public identifiers requires entering all credentials again. Never mark a password as a public identifier.</p>
         {draft.credentials.map((credential, index) => <div className="website-login-grid website-login-row" key={index}>
@@ -172,21 +181,23 @@ export function WebsiteLoginsConfiguration({directoryPath, disabled, onDirtyChan
           <button type="button" onClick={() => update({storage: draft.storage.filter((_, i) => i !== index)})}>Remove storage mapping {index + 1}</button>
         </div>)}
         <button type="button" onClick={() => update({storage: [...draft.storage, {name: "", location: "local", pointer: "", encoding: "string"}]})}>Add storage mapping</button>
+        </>}
         <h3>Expiry and renewal</h3>
         <div className="website-login-grid">
-          <label className="field-stack"><span>Expiry source</span><select aria-label="Expiry source" value={draft.profile.jwt_response_pointer !== null ? "jwt" : draft.profile.expires_in_response_pointer !== null ? "lifetime" : "age"}
+          {!adapterManaged ? <><label className="field-stack"><span>Expiry source</span><select aria-label="Expiry source" value={draft.profile.jwt_response_pointer !== null ? "jwt" : draft.profile.expires_in_response_pointer !== null ? "lifetime" : "age"}
             onChange={e => profile({jwt_response_pointer: e.target.value === "jwt" ? "/token" : null, expires_in_response_pointer: e.target.value === "lifetime" ? "/expires_in" : null})}>
             <option value="age">Maximum age only</option><option value="jwt">JWT expiry in login response</option><option value="lifetime">Lifetime in seconds in login response</option></select></label>
           {draft.profile.jwt_response_pointer !== null ? <label className="field-stack"><span>JWT response pointer</span><input value={draft.profile.jwt_response_pointer} onChange={e => profile({jwt_response_pointer: e.target.value})} /></label> : null}
           {draft.profile.expires_in_response_pointer !== null ? <label className="field-stack"><span>Lifetime response pointer</span><input value={draft.profile.expires_in_response_pointer} onChange={e => profile({expires_in_response_pointer: e.target.value})} /></label> : null}
+          </> : null}
           {([ ["max_age_seconds", "Maximum age (seconds)", 60, 86400], ["renew_before_seconds", "Renew before expiry (seconds)", 5, 3600], ["timeout_seconds", "Login timeout (seconds)", 1, 60], ["max_response_bytes", "Maximum response (bytes)", 1024, 1048576] ] as const).map(([key, label, min, max]) =>
             <label className="field-stack" key={key}><span>{label}</span><input type="number" min={min} max={max} required value={draft.profile[key]} onChange={e => profile({[key]: Number(e.target.value)})} /></label>)}
         </div>
-        <details><summary>Fixed login fields</summary><p>Additional nonsecret JSON values sent with the login request, such as a tenant name.</p><textarea aria-label="Fixed login fields JSON" rows={5} value={draft.staticJson} onChange={e => update({staticJson: e.target.value})} /></details>
+        {!adapterManaged ? <details><summary>Fixed login fields</summary><p>Additional nonsecret JSON values sent with the login request, such as a tenant name.</p><textarea aria-label="Fixed login fields JSON" rows={5} value={draft.staticJson} onChange={e => update({staticJson: e.target.value})} /></details> : null}
         <div className="inline-actions website-login-actions">
           <button type="submit" className="primary" disabled={!dirty || !draft.id.trim()}>Save website login</button>
           <button type="button" disabled={!selected || dirty || !draft.profile.enabled} onClick={() => void mutate(draft.id, "POST", "/test", {})}>Test saved login</button>
-          <button type="button" disabled={!selected?.local || dirty || selected.profile.credential_source !== "stored"} onClick={() => {
+          <button type="button" disabled={adapterManaged || !selected?.local || dirty || selected.profile.credential_source !== "stored"} onClick={() => {
             if (window.confirm("Remove the saved credentials? New browser sessions will fail until credentials are configured again.")) void mutate(draft.id, "DELETE", "/credentials", {});
           }}>Remove saved credentials</button>
           <button type="button" className="danger" disabled={!selected?.local || dirty} onClick={() => {

@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
-from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services import process_helpers, session_helpers, vm_helpers
+from evander.fast_mode import FAST_MODE_UNSET, normalize_fast_mode, validate_session_fast_mode
 from evander.host_directories.grants import host_directory_tool_names_for_grants
+from evander.managed_sections import normalize_managed_section_id
 from evander.models import SessionManifest, VmActionResult, VmSummary
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.repositories.session_manifests import (
     SessionManifestRepository,
     as_session_manifest_repository,
@@ -26,7 +28,6 @@ from evander.repositories.skills_library import (
     record_codex_skill_installations,
 )
 from evander.session_auth import ensure_session_mcp_auth_token
-from evander.managed_sections import normalize_managed_section_id
 from evander.vm.power_state import normalize_power_state
 
 
@@ -893,6 +894,7 @@ class _LibvirtVmCreationRequest:
     model: str | None
     cost_category: str | None
     reasoning_effort: str | None
+    fast_mode: bool | None | object
     vm_user: str
     ttl_seconds: int | None
     ttl_hours: int | None
@@ -1145,7 +1147,13 @@ class _LibvirtVmCreation:
             self.manifest.reasoning_effort = normalize_reasoning_effort(
                 self.request.reasoning_effort
             )
+        if self.request.fast_mode is not FAST_MODE_UNSET:
+            self.manifest.fast_mode = normalize_fast_mode(self.request.fast_mode)
         validate_session_reasoning_effort(
+            self.manifest,
+            self.deps.runtime.provider_config.resolve_for_directory(self.manifest.directory_path),
+        )
+        validate_session_fast_mode(
             self.manifest,
             self.deps.runtime.provider_config.resolve_for_directory(self.manifest.directory_path),
         )
@@ -1316,6 +1324,7 @@ def _libvirt_create_vm(
     model: str | None = None,
     cost_category: str | None = None,
     reasoning_effort: str | None = None,
+    fast_mode: bool | None | object = FAST_MODE_UNSET,
     vm_user: str = "agent",
     ttl_seconds: int | None = None,
     ttl_hours: int | None = None,
@@ -1357,6 +1366,7 @@ def _libvirt_create_vm(
         model=model,
         cost_category=cost_category,
         reasoning_effort=reasoning_effort,
+        fast_mode=fast_mode,
         vm_user=vm_user,
         ttl_seconds=ttl_seconds,
         ttl_hours=ttl_hours,

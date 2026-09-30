@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from evander.reasoning_effort import validate_session_reasoning_effort
-from evander.reasoning_effort import resolve_reasoning_effort, ResolvedReasoningEffort
-
 import html
 import json
 import re
@@ -25,18 +22,13 @@ from evander.codex_auth import (
 )
 from evander.config import GatewayConfig
 from evander.directory_config import ContactDirectoryConfig
-from evander.host_directories.models import normalize_host_directory_grants
-from evander.runtime import allowed_tools_for_capability_profile
-from evander.services import (
-    normalize_teams_chat_or_target_refs,
-    normalize_teams_channel_or_target_refs,
-    normalize_teams_user_or_target_refs,
-)
 from evander.execution import (
     ExecutionBackendKind,
     ExecutionStatusKind,
     build_execution_backend,
 )
+from evander.fast_mode import resolve_fast_mode, validate_session_fast_mode
+from evander.host_directories.models import normalize_host_directory_grants
 from evander.models import (
     EmailMailboxAccess,
     EmailMailboxGrant,
@@ -46,19 +38,36 @@ from evander.models import (
     normalize_tool_name,
     tool_name_value,
 )
+from evander.reasoning_effort import (
+    ResolvedReasoningEffort,
+    resolve_reasoning_effort,
+    validate_session_reasoning_effort,
+)
 from evander.repositories.session_manifests import (
     JsonSessionManifestRepository,
     as_session_manifest_repository,
 )
-from evander.session_expiry import ensure_session_not_expired
+from evander.runtime import allowed_tools_for_capability_profile
+from evander.services import (
+    normalize_teams_channel_or_target_refs,
+    normalize_teams_chat_or_target_refs,
+    normalize_teams_user_or_target_refs,
+)
 from evander.session_auth import MCP_SESSION_TOKEN_QUERY_PARAM_NAMES
+from evander.session_expiry import ensure_session_not_expired
 from evander.worker.models import WorkerResourceLimits
 
 from .base import EffectRuntimeContext
 from .vm_targeting import (
     read_all_sessions as _read_all_sessions_canonical,
+)
+from .vm_targeting import (
     resolve_session_id_from_vm_name as _resolve_session_id_from_vm_name_canonical,
+)
+from .vm_targeting import (
     resolve_vm_name_from_session as _resolve_vm_name_from_session_canonical,
+)
+from .vm_targeting import (
     resolve_vm_target as _resolve_vm_target_canonical,
 )
 
@@ -252,11 +261,11 @@ def effective_config_for_session(
     *,
     fallback_directory_path: str | None = None,
 ) -> GatewayConfig:
-    from evander.provider_config import OpenRouterSessionError
     from evander.admin.services.container_worker_assignment_service import (
         ContainerWorkerAssignmentError,
         ContainerWorkerAssignmentService,
     )
+    from evander.provider_config import OpenRouterSessionError
 
     for resolver in _provider_config_resolvers(context):
         resolve_for_session_id = getattr(resolver, "resolve_for_session_id", None)
@@ -528,6 +537,7 @@ def build_container_session_manifest(
     model: str | None,
     cost_category: str | None = None,
     reasoning_effort: str | None = None,
+    fast_mode: bool | None = None,
     codex_auth_mode: CodexAuthMode | None = None,
     subscription_profile_id: str | None = None,
     ttl_hours: int | None,
@@ -646,6 +656,7 @@ def build_container_session_manifest(
         model=model,
         cost_category=cost_category,
         reasoning_effort=reasoning_effort,
+        fast_mode=fast_mode,
         codex_auth_mode=codex_auth_mode,
         subscription_profile_id=subscription_profile_id,
         directory_path=directory_path,
@@ -698,6 +709,7 @@ def build_container_session_manifest(
     )
 
     validate_session_reasoning_effort(manifest, config)
+    validate_session_fast_mode(manifest, config)
     return manifest
 
 
@@ -1115,6 +1127,8 @@ def container_prompt_command(
     model: str,
     reasoning_effort: str | None = None,
     reasoning_effort_source: str | None = None,
+    fast_mode: bool | None = None,
+    fast_mode_source: str | None = None,
     resume_thread_id: str | None,
     session: object | None = None,
     agent_provider: str | None = None,
@@ -1134,6 +1148,12 @@ def container_prompt_command(
     )
     prompt = container_prompt_with_session_capabilities(prompt, session)
     provider = normalize_optional_string(agent_provider) or "codex"
+    speed = resolve_fast_mode(
+        {"fast_mode": fast_mode, "fast_mode_source": fast_mode_source},
+        session=session,
+        harness=provider,
+        route=(getattr(session, "metadata", {}) or {}).get("model_provider_mode"),
+    )
     if provider == "claude":
         return _container_claude_prompt_command(
             prompt=prompt,
@@ -1161,6 +1181,10 @@ def container_prompt_command(
         common_args.extend(["-c", f"model_reasoning_effort={_toml_string(reasoning.value)}"])
         if reasoning.source != "default":
             common_args.extend(["-c", "model_supports_reasoning_summaries=true"])
+    # Always select a tier so a resumed Fast turn cannot change later defaults.
+    common_args.extend(["-c", f"service_tier={_toml_string(speed.service_tier)}"])
+    if speed.value:
+        common_args.extend(["-c", "features.fast_mode=true"])
     if mcp_gateway_url:
         common_args.extend(
             [
@@ -1201,6 +1225,8 @@ def container_codex_turn_spec(
     model: str,
     reasoning_effort: str | None = None,
     reasoning_effort_source: str | None = None,
+    fast_mode: bool | None = None,
+    fast_mode_source: str | None = None,
     resume_thread_id: str | None,
     session: object | None,
     config: GatewayConfig,
@@ -1211,6 +1237,13 @@ def container_codex_turn_spec(
 ) -> CodexTurnSpec | None:
     prompt = container_prompt_with_session_capabilities(prompt, session)
     provider = normalize_optional_string(agent_provider) or "codex"
+    speed = resolve_fast_mode(
+        {"fast_mode": fast_mode, "fast_mode_source": fast_mode_source},
+        session=session,
+        harness=provider,
+        route=(getattr(session, "metadata", {}) or {}).get("model_provider_mode")
+        or getattr(config, "model_provider_mode", None),
+    )
     if provider != "codex":
         # Directory Codex defaults do not apply to other agent harnesses. A
         # session-level value is an explicit override and remains invalid.
@@ -1252,6 +1285,7 @@ def container_codex_turn_spec(
         prompt=prompt,
         model=model,
         **reasoning.fields(),
+        **speed.fields(),
         resume_thread_id=_container_resume_thread_id(resume_thread_id),
         resume_mode=("same_context" if resume_mode == "same_context" else "new_context"),
         mcp_gateway_url=mcp_gateway_url,

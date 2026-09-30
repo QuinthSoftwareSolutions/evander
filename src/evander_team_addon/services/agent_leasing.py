@@ -869,6 +869,9 @@ class _ManagerFallbackCandidate:
         role_description_fingerprint = agent_role_description_fingerprint(manager_payload)
         self.dispatch.role_description_fingerprint = role_description_fingerprint
         self.teams_with_lease.add(self.team.id)
+        context_snapshots = self.planner.service._repository.snapshots.for_dispatch(
+            self.dispatch_id, state=self.state
+        )
         self.planner.leases.append(
             {
                 "agent": manager_payload,
@@ -907,9 +910,11 @@ class _ManagerFallbackCandidate:
                     for snapshot_id in self.dispatch.source_evidence_snapshot_ids
                     if snapshot_id in self.state.external_source_evidence_snapshots
                 ],
-                "case_contexts": dispatch_case_contexts(self.state, self.dispatch_id),
+                "case_contexts": dispatch_case_contexts(
+                    self.state, self.dispatch_id, snapshots=context_snapshots
+                ),
                 "case_contexts_delta": dispatch_case_contexts(
-                    self.state, self.dispatch_id, delta=True
+                    self.state, self.dispatch_id, snapshots=context_snapshots, delta=True
                 ),
                 "inbox": [item.model_dump(mode="json") for item in self.work.inbox],
                 "blockers": scoped_blockers,
@@ -1720,6 +1725,9 @@ class _OrdinaryLeaseCandidate:
         agent_payload = _agent_payload(self.state, self.agent)
         role_description_fingerprint = agent_role_description_fingerprint(agent_payload)
         self.durable_dispatch.role_description_fingerprint = role_description_fingerprint
+        context_snapshots = self.planning.service._repository.snapshots.for_dispatch(
+            self.dispatch_id, state=self.state
+        )
         self.planning.leases.append(
             {
                 "agent": agent_payload,
@@ -1790,9 +1798,11 @@ class _OrdinaryLeaseCandidate:
                     for snapshot_id in self.durable_dispatch.source_evidence_snapshot_ids
                     if snapshot_id in self.state.external_source_evidence_snapshots
                 ],
-                "case_contexts": dispatch_case_contexts(self.state, self.dispatch_id),
+                "case_contexts": dispatch_case_contexts(
+                    self.state, self.dispatch_id, snapshots=context_snapshots
+                ),
                 "case_contexts_delta": dispatch_case_contexts(
-                    self.state, self.dispatch_id, delta=True
+                    self.state, self.dispatch_id, snapshots=context_snapshots, delta=True
                 ),
                 "inbox": [item.model_dump(mode="json") for item in self.pending_inbox],
                 "blockers": scoped_blockers,

@@ -12,6 +12,8 @@ from pathlib import Path
 from queue import Empty, SimpleQueue
 from typing import Any, Callable, Protocol
 
+from evander.codex_auth import CodexRateLimitResetRequest
+
 from .codex_app_server import CodexAppServerError, CodexAppServerProcess
 
 
@@ -202,6 +204,27 @@ class CodexAuthBroker:
         with self._lock:
             self._request("account/logout", {})
             return self.status()
+
+    def consume_reset_credit(
+        self,
+        request: CodexRateLimitResetRequest,
+        *,
+        expected_account_id: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            tokens = self.external_tokens()
+            if tokens.account_id != expected_account_id:
+                raise CodexAuthBrokerError("Codex account changed before reset redemption")
+            params = {"idempotencyKey": request.idempotency_key}
+            if request.credit_id is not None:
+                params["creditId"] = request.credit_id
+            result = self._request("account/rateLimitResetCredit/consume", params)
+            outcome = result.get("outcome")
+            if not isinstance(outcome, str) or outcome not in {
+                "reset", "alreadyRedeemed", "nothingToReset", "noCredit"
+            }:
+                raise CodexAuthBrokerError("Codex returned an unknown reset redemption outcome")
+            return {"outcome": outcome}
 
     def external_tokens(
         self,

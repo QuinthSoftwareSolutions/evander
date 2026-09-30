@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 from datetime import datetime
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from evander.models import utc_now
 
@@ -121,7 +121,10 @@ class TeamState(TeamModel):
     action_records: dict[str, AgentActionRecord] = Field(default_factory=dict)
     notes: dict[str, TeamNote] = Field(default_factory=dict)
     case_context_views: dict[str, CaseContextView] = Field(default_factory=dict)
-    case_context_snapshots: dict[str, CaseContextSnapshot] = Field(default_factory=dict)
+    # Transaction-local additions only; persisted history is read through the repository.
+    _case_context_snapshot_writes: dict[str, CaseContextSnapshot] = PrivateAttr(
+        default_factory=dict
+    )
     memories: dict[str, TeamMemoryRecord] = Field(default_factory=dict)
     conversations: dict[str, TeamConversation] = Field(default_factory=dict)
     conversation_messages: dict[str, TeamConversationMessage] = Field(default_factory=dict)
@@ -376,7 +379,6 @@ class TeamState(TeamModel):
             "action_records",
             "notes",
             "case_context_views",
-            "case_context_snapshots",
             "memories",
             "conversations",
             "conversation_messages",

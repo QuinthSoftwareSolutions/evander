@@ -60,7 +60,7 @@
 }
 [data-admin-design] :is(.subscription-columns, .subscription-profile-summary) {
   display: grid;
-  grid-template-columns: minmax(160px, 1.15fr) minmax(170px, 1fr) minmax(80px, 0.5fr) minmax(125px, 0.7fr) minmax(115px, 0.55fr);
+  grid-template-columns: minmax(140px, 1.15fr) minmax(150px, 1fr) minmax(70px, 0.5fr) minmax(115px, 0.7fr) minmax(105px, 0.55fr) minmax(90px, 0.5fr);
   gap: 16px;
   padding: 12px 16px;
   align-items: center;
@@ -103,7 +103,7 @@
 [data-admin-design] .subscription-profile-summary .status-pill {
   margin-top: 4px;
 }
-[data-admin-design] .subscription-weekly-remaining {
+[data-admin-design] :is(.subscription-weekly-remaining, .subscription-banked-resets) {
   font-weight: 600;
 }
 [data-admin-design] .subscription-profile[open] > summary {
@@ -607,9 +607,6 @@
   [data-admin-design] .subscription-profile-summary {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 8px;
-  }
-  [data-admin-design] .subscription-weekly-remaining {
-    grid-column: 1 / -1;
   }
   [data-admin-design] .tool-calls-grid.has-inspector {
     grid-template-columns: minmax(0, 1fr);

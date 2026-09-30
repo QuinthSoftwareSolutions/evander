@@ -342,6 +342,10 @@ def register_issue_tools(
                 state="Approved",
                 fields=fields,
             )
+            if result.get("source_type") == "proxy":
+                deps.ado_activity_cache.invalidate_directory(
+                    result.get("directory_path") or session.directory_path
+                )
             audit_success(
                 session_id,
                 ToolName.APPROVE_ISSUE,
@@ -480,6 +484,10 @@ def register_issue_tools(
                 state="Closed",
                 fields=fields,
             )
+            if result.get("source_type") == "proxy":
+                deps.ado_activity_cache.invalidate_directory(
+                    result.get("directory_path") or session.directory_path
+                )
             audit_success(
                 session_id,
                 ToolName.REJECT_ISSUE,
@@ -530,6 +538,10 @@ def register_issue_tools(
                 state="Committed",
                 fields=fields,
             )
+            if result.get("source_type") == "proxy":
+                deps.ado_activity_cache.invalidate_directory(
+                    result.get("directory_path") or session.directory_path
+                )
             audit_success(
                 resolved_session_id,
                 ToolName.COMMIT_ISSUE,

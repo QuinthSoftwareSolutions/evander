@@ -12,9 +12,13 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TEST_PATHS = tomllib.loads((ROOT / "pyproject.toml").read_text())[
+    "tool"
+]["pytest"]["ini_options"]["testpaths"]
 
 
 class SuiteCancelled(Exception):
@@ -140,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--artifacts-dir", type=Path, help="preserve ledgers and conformance reports here"
     )
-    parser.add_argument("paths", nargs="*", default=["tests"], help="pytest paths or node IDs")
+    parser.add_argument("paths", nargs="*", default=DEFAULT_TEST_PATHS, help="pytest paths or node IDs")
     args = parser.parse_args(argv)
     if args.workers < 0 or args.timeout <= 0:
         parser.error("workers must be nonnegative and timeout must be positive")
@@ -159,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     ledgers = []
     exitcode = 0
-    full_selection = args.paths == ["tests"]
+    full_selection = args.paths == ["tests"] or args.paths == DEFAULT_TEST_PATHS
     for name, options in phases(args.workers):
         ledger_path = artifacts / f"{name}.json"
         ledger_path.unlink(missing_ok=True)

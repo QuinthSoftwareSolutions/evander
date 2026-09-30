@@ -28,6 +28,11 @@ across workers, including cases from large modules. After those workers exit, ev
 `performance` runs serially. Those tests assert real elapsed-time limits, so they
 run outside the parallel pool. Documentation checks remain in the complete run.
 
+Default collection includes both core `tests/` and independent add-on projects
+under `packages/`. Add-on tests and fixtures live with their project; running only
+core tests does not require an optional add-on to be installed. See the
+[add-on project convention](addons.md#project-ownership) for packaging and ownership.
+
 ```bash
 # The same complete selection in one process, for debugging or comparison.
 ./.venv/bin/python scripts/run_tests.py --workers 0

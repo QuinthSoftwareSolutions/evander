@@ -137,6 +137,7 @@ import {
   workflowValuesEqual,
 } from "./features/workflow-editor/graphModel";
 import { createInspectorPanelRenderers } from "./features/workflow-editor/inspectorPanelRenderers";
+import { useManualEventTrigger } from "./features/workflow-editor/useManualEventTrigger";
 import { createNodeDraftActions } from "./features/workflow-editor/nodeDraftActions";
 import { createNodeFieldActions } from "./features/workflow-editor/nodeFieldActions";
 import { createPackPanelRenderers } from "./features/workflow-editor/packPanelRenderers";
@@ -235,6 +236,7 @@ export default function App() {
     canWriteWorkflows,
     canManageWorkflowPacks,
     canControlWorkflowRuns,
+    currentUserId,
   } = useAdminUi();
   const initialWorkflowRunLookup = workflowRunLookupFromHash();
   const initialWorkflowPack = hashQueryParam(
@@ -624,6 +626,17 @@ export default function App() {
   );
   const dirtyNodeIdSet = useMemo(() => new Set(dirtyNodeIds), [dirtyNodeIds]);
   const selectedNodeHasUnsavedChanges = Boolean(selectedNodeId && dirtyNodeIdSet.has(selectedNodeId));
+  const manualEventTrigger = useManualEventTrigger({
+    node: selectedNode,
+    savedDocument,
+    hasUnsavedChanges: hasUnsavedWorkflowChanges || Boolean(inspectorDraftError) || saveState === "saving",
+    canControl: canControlWorkflowRuns,
+    canReadRuns: canReadWorkflowRuns,
+    userId: currentUserId,
+    unavailableReason: isTutorialMode ? "Manual triggering is unavailable in tutorials."
+      : workflowGeneratorOpen ? "Close the workflow generator before triggering a node." : null,
+    inspectRun: inspectWorkflowRun,
+  });
   const dirtyNodeSummary = useMemo(() => {
     if (dirtyNodeIds.length === 0) return null;
     const dirtyNodeLabels = dirtyNodeIds
@@ -2976,6 +2989,7 @@ export default function App() {
     inspectWorkflowRun,
     selectedNodeDiagnostics,
     renderSelectedTriggerToggle,
+    manualEventTriggerButton: manualEventTrigger.button,
     inspectorDisplayName,
     setInspectorDisplayName,
     stageInspectorDraft,
@@ -3208,6 +3222,7 @@ export default function App() {
 
         {renderWorkflowTutorialChooser()}
         {renderWorkflowPackModal()}
+        {manualEventTrigger.dialog}
           <div
             className="workflow-sidebar-resize-handle"
             role="separator"

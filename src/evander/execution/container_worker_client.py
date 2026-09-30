@@ -128,6 +128,15 @@ class ContainerWorkerClient:
         response = self._request("POST", f"/v1/codex-auth/profiles/{encoded}/device-login")
         return self._json_dict(response, operation="start Codex profile device login")
 
+    def consume_codex_profile_reset_credit(
+        self, profile_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        encoded = quote(str(profile_id), safe="")
+        response = self._request(
+            "POST", f"/v1/codex-auth/profiles/{encoded}/reset-credits/consume", json=payload
+        )
+        return self._json_dict(response, operation="redeem Codex reset credit")
+
     def codex_profile_device_login_status(self, profile_id: str, login_id: str) -> dict[str, Any]:
         profile = quote(str(profile_id), safe="")
         login = quote(str(login_id), safe="")

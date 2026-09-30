@@ -5,14 +5,14 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from evander.cost_categories import freeze_prompt_cost_category, dispatch_with_cost_context
-from evander.reasoning_effort import resolve_reasoning_effort
 from evander.agent_threads import usable_agent_thread_id
+from evander.cost_categories import dispatch_with_cost_context, freeze_prompt_cost_category
 from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
 from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from evander.execution.container_worker_client import (
     CodexSubscriptionDeferredClientError,
 )
+from evander.fast_mode import resolve_fast_mode
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -40,6 +40,7 @@ from evander.model_usage.runtime import (
 from evander.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
 )
+from evander.reasoning_effort import resolve_reasoning_effort
 from evander.session_auth import session_mcp_auth_token
 from evander.workflow.contracts import FOR_EXECUTION_IDS_CONTEXT_KEY, NODE_OUTPUTS_CONTEXT_KEY
 from evander.workflow.lifecycle_ports import (
@@ -162,6 +163,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "prompt": effect.prompt,
             "model": effect.model,
             "reasoning_effort": effect.reasoning_effort,
+            "fast_mode": effect.fast_mode,
             "cost_category": effect.cost_category,
             "vm_user": effect.vm_user,
             "dispatch_id": effect.dispatch_id,
@@ -278,6 +280,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             model=resolved_model,
             route=effective_config.model_provider_mode,
         )
+        speed = resolve_fast_mode(
+            payload,
+            session=active_session,
+            harness=agent_harness,
+            route=effective_config.model_provider_mode,
+        )
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
@@ -306,6 +314,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -323,6 +332,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             )
             return {
                 **reasoning.fields(),
+                **speed.fields(),
                 "success": True,
                 "queued": True,
                 "queue_key": record.queue_key,
@@ -350,6 +360,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -367,6 +378,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             )
             return {
                 **reasoning.fields(),
+                **speed.fields(),
                 "success": True,
                 "queued": True,
                 "queue_key": record.queue_key,
@@ -396,6 +408,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -425,6 +438,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "session_id": effective_session_id,
                 "model": resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 "model_provider_mode": effective_config.model_provider_mode,
                 "coalesced_count": record.coalesced_count,
                 "retry_count": record.retry_count,
@@ -445,6 +459,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     prompt=prompt,
                     model=resolved_model,
                     **reasoning.fields(),
+                    **speed.fields(),
                     vm_user=vm_user,
                     dispatch_id=dispatch_id,
                     resume_thread_id=effective_resume_thread_id,
@@ -478,6 +493,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -583,6 +599,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "session_id": effective_session_id,
             "model": resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
             "model_provider_mode": effective_config.model_provider_mode,
             **capacity_admission.output_metadata(),
             **self._prompt_lock_metadata(prompt_lock_claim),
@@ -643,6 +660,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             model=resolved_model,
             route=effective_config.model_provider_mode,
         )
+        speed = resolve_fast_mode(
+            payload,
+            session=session,
+            harness=agent_harness,
+            route=effective_config.model_provider_mode,
+        )
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
@@ -666,6 +689,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -683,6 +707,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             )
             return {
                 **reasoning.fields(),
+                **speed.fields(),
                 "success": True,
                 "queued": True,
                 "queue_key": record.queue_key,
@@ -711,6 +736,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -728,6 +754,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             )
             return {
                 **reasoning.fields(),
+                **speed.fields(),
                 "success": True,
                 "queued": True,
                 "queue_key": record.queue_key,
@@ -758,6 +785,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -787,6 +815,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "session_id": session_id,
                 "model": resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 "model_provider_mode": effective_config.model_provider_mode,
                 "coalesced_count": record.coalesced_count,
                 "retry_count": record.retry_count,
@@ -807,6 +836,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             prompt=prompt,
             model=resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
             resume_thread_id=effective_resume_thread_id,
             session=session,
             config=effective_config,
@@ -839,6 +869,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                                     prompt=prompt,
                                     model=resolved_model,
                                     **reasoning.fields(),
+                                    **speed.fields(),
                                     resume_thread_id=effective_resume_thread_id,
                                     session=session,
                                     agent_provider=agent_harness,
@@ -856,6 +887,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                                     "agent_provider": agent_harness,
                                     "model": resolved_model,
                                     **reasoning.fields(),
+                                    **speed.fields(),
                                     "model_provider_mode": effective_config.model_provider_mode,
                                     **(
                                         {"codex_auth_mode": codex_turn.auth_mode.value}
@@ -899,6 +931,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     prompt=prompt,
                     model=resolved_model,
                     **reasoning.fields(),
+                    **speed.fields(),
                     vm_user=vm_user,
                     dispatch_id=dispatch_id,
                     resume_thread_id=resume_thread_id,
@@ -924,6 +957,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 )
                 return {
                     **reasoning.fields(),
+                    **speed.fields(),
                     "success": True,
                     "queued": True,
                     "queue_key": record.queue_key,
@@ -942,6 +976,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=resolved_model,
                 **reasoning.fields(),
+                **speed.fields(),
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -1013,6 +1048,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "execution_id": handle.execution_id,
             "model": resolved_model,
             **reasoning.fields(),
+            **speed.fields(),
             "model_provider_mode": effective_config.model_provider_mode,
             **capacity_admission.output_metadata(),
             **self._prompt_lock_metadata(prompt_lock_claim),
@@ -1549,7 +1585,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         prompt: str,
         model: str | None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         vm_user: str,
         dispatch_id: str | None,
         resume_thread_id: str | None,
@@ -1592,7 +1630,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 prompt=prompt,
                 model=model,
                 reasoning_effort=reasoning_effort,
+                fast_mode=fast_mode,
                 reasoning_effort_source=reasoning_effort_source,
+                fast_mode_source=fast_mode_source,
                 model_provider_mode=(
                     model_provider_mode
                     or self._normalize_optional_string(

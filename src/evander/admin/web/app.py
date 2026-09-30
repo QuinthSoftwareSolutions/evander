@@ -122,6 +122,11 @@ class AdminWebAddonServiceAdapter:
         """Expose the managed-Git domain only to trusted in-process add-ons."""
         return self._components.managed_git_admin
 
+    @property
+    def connector_service(self) -> Any:
+        """Expose host connector bindings to trusted in-process domain add-ons."""
+        return self._components.connector_service
+
     def list_agents(self, **kwargs: Any) -> Any:
         return self._components.vm_agent_admin.list_agents(**kwargs)
 

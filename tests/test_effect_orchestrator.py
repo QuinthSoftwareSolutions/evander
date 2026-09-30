@@ -342,7 +342,9 @@ class _AgentPromptDispatchPortStub:
         prompt: str,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -356,7 +358,9 @@ class _AgentPromptDispatchPortStub:
                 "prompt": prompt,
                 "model": model,
                 "reasoning_effort": reasoning_effort,
+                "fast_mode": fast_mode,
                 "reasoning_effort_source": reasoning_effort_source,
+                "fast_mode_source": fast_mode_source,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -8451,8 +8455,9 @@ def test_container_prompt_completion_without_agent_output_fails_without_persisti
     )
 
 
+@pytest.mark.parametrize("fast_mode", [True, False])
 def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_mode: bool
 ) -> None:
     config = GatewayConfig(
         runtime_dir=tmp_path,
@@ -8471,6 +8476,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             vm_provider_id="evander",
             model="gpt-5.4-mini",
             reasoning_effort="high",
+            fast_mode=not fast_mode,
             metadata={"execution_backend": "container_worker_vm", "target_name": "evander"},
         )
     )
@@ -8492,6 +8498,8 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             model=None,
             reasoning_effort="low",
             reasoning_effort_source="session",
+            fast_mode=fast_mode,
+            fast_mode_source="session",
             dispatch_id="dispatch-queued-steering",
             vm_user="agent",
             resume_thread_id=None,
@@ -8544,12 +8552,18 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     assert backend.started_specs[0].codex_turn.reasoning_effort == "low"
     assert backend.started_specs[0].codex_turn.reasoning_effort_source == "session"
     command = str(backend.started_specs[0].command)
+    assert backend.started_specs[0].codex_turn.fast_mode is fast_mode
+    assert backend.started_specs[0].codex_turn.fast_mode_source == "session"
+    assert f'service_tier="{"fast" if fast_mode else "default"}"' in command
     assert "codex exec resume --last" in command
     assert "resume scheduled work" in command
     assert "mcp_servers.evander.url" in command
     assert "workflow_run_id=run-1" in command
     assert "mcp_tool_approval_lease_id=lease-1" in command
     waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].outputs["fast_mode"] is fast_mode
+    assert waiting_records[0].resolved_config["fast_mode_source"] == "session"
+    assert waiting_records[0].input_payload["fast_mode"] is fast_mode
     assert waiting_records[0].outputs["reasoning_effort"] == "low"
     assert waiting_records[0].resolved_config["reasoning_effort_source"] == "session"
     assert waiting_records[0].resolved_config["resume_mode"] == "same_context"

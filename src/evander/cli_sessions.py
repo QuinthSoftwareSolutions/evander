@@ -9,17 +9,18 @@ from typing import Annotated
 
 import typer
 
-from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 from evander.admin.services.issue_setup_helpers import (
     resolve_agent_model_for_manifest,
     resolve_effective_issue_setup_config,
 )
 from evander.directories import DirectoryService
+from evander.fast_mode import normalize_fast_mode, validate_session_fast_mode
 from evander.models import ApprovalStatus, SessionManifest, ToolName
 from evander.provider_config import (
     MODEL_PROVIDER_MODE_METADATA_KEY,
     normalize_model_provider_mode_override,
 )
+from evander.reasoning_effort import normalize_reasoning_effort, validate_session_reasoning_effort
 
 from . import cli_app, cli_common, cli_runtime, cli_session_support
 
@@ -59,6 +60,13 @@ def create_session(
     reasoning_effort: Annotated[
         str | None,
         typer.Option("--reasoning-effort", help="Native agent reasoning level; omit to inherit."),
+    ] = None,
+    fast_mode: Annotated[
+        bool | None,
+        typer.Option(
+            "--fast-mode/--no-fast-mode",
+            help="Codex Fast mode; omit to inherit the session default.",
+        ),
     ] = None,
 ) -> None:
     cfg = cli_runtime._load_runtime_config_from_option(config)
@@ -125,7 +133,11 @@ def create_session(
         except ValueError:
             manifest.model = None
     manifest.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    manifest.fast_mode = normalize_fast_mode(fast_mode)
     validate_session_reasoning_effort(
+        manifest, runtime.provider_config.resolve_for_directory(manifest.directory_path)
+    )
+    validate_session_fast_mode(
         manifest, runtime.provider_config.resolve_for_directory(manifest.directory_path)
     )
     if manifest.email_send_enabled:
@@ -376,6 +388,9 @@ def set_session_model(
     validate_session_reasoning_effort(
         manifest, runtime.provider_config.resolve_for_directory(manifest.directory_path)
     )
+    validate_session_fast_mode(
+        manifest, runtime.provider_config.resolve_for_directory(manifest.directory_path)
+    )
     session_repository.upsert_session(manifest)
     if clear:
         typer.echo(f"Cleared model override for session {session_id}")
@@ -398,6 +413,28 @@ def set_session_reasoning_effort(
         ).session_admin.update_session_model_settings(
             target,
             {"reasoning_effort": None if clear else effort},
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(result.message)
+
+
+@cli_app.app.command("set-session-fast-mode", rich_help_panel="Sessions and Feedback")
+def set_session_fast_mode(
+    target: str,
+    fast_mode: Annotated[bool | None, typer.Option("--fast-mode/--no-fast-mode")] = None,
+    clear: Annotated[
+        bool, typer.Option("--clear", help="Restore standard-speed defaults.")
+    ] = False,
+    config: cli_common.ConfigOption = cli_common.CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    if clear == (fast_mode is not None):
+        raise typer.BadParameter("Provide --fast-mode, --no-fast-mode, or --clear, exclusively.")
+    try:
+        result = cli_runtime.build_admin_runtime(
+            config
+        ).session_admin.update_session_model_settings(
+            target, {"fast_mode": None if clear else fast_mode}
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -440,6 +477,9 @@ def set_session_model_provider_mode(
     metadata = dict(manifest.metadata)
     metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = value
     manifest.metadata = metadata
+    validate_session_fast_mode(
+        manifest, runtime.provider_config.resolve_for_directory(manifest.directory_path)
+    )
     session_repository.upsert_session(manifest)
     if clear:
         typer.echo(f"Cleared model provider mode override for session {session_id}")

@@ -1,5 +1,9 @@
 # Operations
 
+For website design changes, use the optional [WordPress Add-on](../packages/wordpress-addon/docs/operations.md).
+Its setup verifies recovery before enabling writes, and its directory-scoped workflow
+resumes publication, live checks and conditional restore after a worker restart.
+
 Use this reference for setup, ongoing administration, and recovery. For a first deployment, begin
 with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 [systemd services](#systemd-services). For an existing deployment, start with
@@ -858,6 +862,15 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
   changes**, and leaving the workflow view or switching directories prompts for confirmation while
   any workflow changes remain unsaved.
+- To run an event workflow manually, select its `trigger:event` node and click
+  **Trigger manually** in the inspector. Save or discard any workflow changes first,
+  and enable and save the trigger if it is disabled. Enter a JSON object containing
+  the event payload; the dialog displays the saved event type and supplies event
+  metadata automatically. A configured correlation key is fixed; otherwise one may
+  be entered. **Trigger node** queues only the selected node and its downstream flow.
+  **Inspect run** opens the queued run when you have run-read access. This action
+  requires `workflow_runs.control` in the workflow's directory. Payload schemas and
+  generated forms are not available yet.
 - Admin Web and workflow API pack mutations write internal change history under
   `runtime/workflow-pack-history/`. `changes.jsonl` is the append-only ledger, and
   `snapshots/<change-id>/` stores before/after copies of the touched pack, layout, and trigger
@@ -1114,6 +1127,15 @@ until explicitly configured. Resumed turns use the current session setting; queu
 prompts and retries retain the value captured at submission. See
 [reasoning effort configuration](configuration-reference.md#agent-reasoning-effort)
 for native levels, CLI/API examples, provider support, and worker upgrade order.
+
+Codex Fast mode is configured in **Sessions → Settings → Default speed**, at
+agent creation, or for one run in **Agents → Prompt → Speed for this prompt**.
+`fast_mode: false` explicitly restores standard speed even when the session
+default is Fast. Workflow prompt effects accept the same override. It requires
+public OpenAI and a supported model; availability and allowance or credit usage
+come from the configured account. Upgrade container workers before enabling the
+new control-plane fields, and rerun the Codex bootstrap for existing VMs. See
+[Fast mode configuration](configuration-reference.md#agent-fast-mode).
 
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user, seeds `~/bin/rg`, and verifies Codex.
 - The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-6-sol"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `EVANDER_LLM_BASE_URL` from `~/.agent/config.env`; it registers the host relay as `[model_providers.evander_openai_relay]` with `supports_websockets = false` so Codex does not run websocket prewarm against the HTTP/SSE relay. It also registers the host MCP gateway as a required `[mcp_servers.evander]` connection using `EVANDER_GATEWAY_URL`, preventing model turns from racing tool discovery, and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
@@ -1605,6 +1627,18 @@ A transport-terminated warning without client-visible failure can be expected fo
 - By default the tool bounds the number of matching candidate work items it expands into detailed
   activity records. Set `exhaustive=true` only when exact totals are needed and the wider ADO scan
   cost is acceptable.
+- Identical gateway queries in the same session reuse a completed scan for five minutes;
+  `top` and `skip` select pages from that result set. Overlapping identical queries share
+  one scan. Expiry, eviction, or a successful work-item mutation through this gateway
+  refreshes the affected result set. External changes can remain unseen until expiry.
+- Each gateway instance retains at most 64 MiB of serialized scan data and 128 entries.
+  Oversized results are returned without retention; active scans and decoded responses
+  use additional memory. Restarting the gateway clears the cache.
+- Cold scans fetch full work-item records in batches of up to 200, followed by concurrent
+  comment and update-history reads. The cache does not change exhaustive or bounded
+  completeness semantics. Policy and current provider credentials are checked on hits.
+- `ado_activity_cache` and `ado_activity_scan` logs expose cache outcomes, retained bytes,
+  candidate counts, and scan phases without logging work-item contents or credentials.
 - Update-history records use the semantic `System.ChangedBy.newValue` and
   `System.ChangedDate.newValue` fields when ADO provides them, and metadata-only revisions are
   omitted from the default activity output.

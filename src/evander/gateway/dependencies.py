@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import sys
 
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
@@ -14,6 +14,7 @@ from evander.code_consultation_service import (
 )
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.issues.service import IssueService
+from evander.issues.activity_cache import AdoActivityScanCache
 from evander.runtime import RuntimeContext
 from evander.semantic.gateway_adapter import GatewaySemanticAdapter
 from evander.classification.runtime import service_for_runtime
@@ -42,6 +43,8 @@ class GatewayToolDependencies:
     classification_service_factory: Callable[[], ClassificationService]
     communication_artifact_store_factory: Callable[[], CommunicationArtifactStore]
     code_consultation_service_factory: CodeConsultationServiceFactoryPort
+
+    ado_activity_cache: AdoActivityScanCache = field(default_factory=AdoActivityScanCache)
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "GatewayToolDependencies":

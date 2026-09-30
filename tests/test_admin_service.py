@@ -38,6 +38,7 @@ from evander.config import (
 )
 from evander.effects.registry import EffectProviderFactory
 from evander.effects.providers.schemas import AgentCreateEffectDefinition
+from evander.fast_mode import resolve_fast_mode
 from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -3637,7 +3638,9 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -3651,7 +3654,9 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
                 "prompt": prompt,
                 "model": model,
                 "reasoning_effort": reasoning_effort,
+                "fast_mode": fast_mode,
                 "reasoning_effort_source": reasoning_effort_source,
+                "fast_mode_source": fast_mode_source,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -4054,7 +4059,9 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        fast_mode: bool | None = None,
         reasoning_effort_source: str | None = None,
+        fast_mode_source: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -4312,6 +4319,7 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
             session_id="container-session",
             model=model,
             reasoning_effort="high" if captured_effort else effort,
+            fast_mode=bool(captured_effort),
             vm_provider="container_worker_vm",
             vm_provider_id="container-target",
             allowed_tools=[],
@@ -4367,6 +4375,8 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
             input_payload={"prompt": "Original workflow prompt"},
             outputs={
                 **captured_effort,
+                "fast_mode": False,
+                "fast_mode_source": "prompt",
                 "dispatch_id": "dispatch-steer",
                 "thread_id": "dispatch-steer",
                 "success": True,
@@ -4454,6 +4464,9 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     assert backend.stopped == ["agent-old-1"]
     assert len(backend.started_specs) == 1
     started_spec = backend.started_specs[0]
+    assert started_spec.codex_turn.fast_mode is False
+    assert started_spec.codex_turn.fast_mode_source == "prompt"
+    assert 'service_tier="default"' in str(started_spec.command)
     assert started_spec.codex_turn.reasoning_effort == effort
     assert f'model_reasoning_effort="{effort}"' in str(started_spec.command)
     assert started_spec.session_id == "container-session"
@@ -4466,6 +4479,8 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     assert "thread-steer-real" in str(started_spec.command)
     assert refreshed is not None
     assert refreshed.status == "waiting"
+    assert refreshed.outputs["fast_mode"] is False
+    assert refreshed.outputs["fast_mode_source"] == "prompt"
     assert refreshed.outputs["reasoning_effort"] == effort
     assert refreshed.outputs["reasoning_effort_source"] == (
         "prompt" if captured_effort else "session"
@@ -17721,6 +17736,68 @@ def test_create_vm_upsert_preserves_web_search_policy_unless_supplied(
     manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.web_search_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("speed_options", "expected_default", "expected_speed", "expected_source"),
+    [
+        ({}, True, True, "session"),
+        ({"fast_mode": False}, False, False, "session"),
+        ({"fast_mode": None}, None, False, "default"),
+    ],
+)
+def test_effect_agent_create_upsert_preserves_or_clears_vm_session_speed(
+    tmp_path: Path,
+    monkeypatch: Any,
+    speed_options: dict[str, Any],
+    expected_default: bool | None,
+    expected_speed: bool,
+    expected_source: str,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="speed-session",
+            vm_id="speed-vm",
+            model="gpt-6.1-sol",
+            fast_mode=True,
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+    monkeypatch.setattr("evander.admin.services.vm_helpers.dominfo_field", lambda *_: None)
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda *_: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.process_helpers.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=ProviderConfigResolver(service.config), admin_service=service
+    )
+    effect = AgentCreateEffectDefinition(
+        id="create-speed-session",
+        display_name="Create speed session",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="speed-vm",
+        session_id="speed-session",
+        existing_agent_behavior="upsert",
+        **speed_options,
+    )
+
+    result = factory.build(effect).execute()
+
+    assert result["success"] is True
+    manifest = service.runtime.session_repository.get_session("speed-session")
+    assert manifest is not None
+    assert manifest.fast_mode is expected_default
+    speed = resolve_fast_mode({}, session=manifest, harness="codex", route="openai_public")
+    assert speed.value is expected_speed
+    assert speed.source == expected_source
 
 
 def test_create_vm_upsert_enables_tools_for_host_directory_grants(

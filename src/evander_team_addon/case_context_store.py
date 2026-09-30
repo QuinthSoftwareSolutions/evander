@@ -7,11 +7,10 @@ from typing import Any
 CONTEXT_TABLES = {
     "notes": "team_notes",
     "case_context_views": "team_case_context_views",
-    "case_context_snapshots": "team_case_context_snapshots",
 }
 CONTEXT_SCHEMA_SQL = "\n".join(
     f"CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);"
-    for table in CONTEXT_TABLES.values()
+    for table in (*CONTEXT_TABLES.values(), "team_case_context_snapshots")
 )
 
 
@@ -41,6 +40,3 @@ class CaseContextStoreMixin:
 
     def _write_case_context_views(self, connection, records):
         self._write_context_records(connection, records, "team_case_context_views")
-
-    def _write_case_context_snapshots(self, connection, records):
-        self._write_context_records(connection, records, "team_case_context_snapshots")
