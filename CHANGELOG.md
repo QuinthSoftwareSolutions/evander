@@ -32,6 +32,9 @@
 - Collect case-history evidence through ordered scope, source, note, artifact,
   review, conversation, and temporal-annotation phases, preserving record and
   warning order and removing an unused review-ID accumulator.
+- Apply administrative task edits through a typed request and ordered graph,
+  contract, lifecycle, preparation, blocker-repair, and wake stages, preserving
+  explicit clears and revision-checked transactional events.
 
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
