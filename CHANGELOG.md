@@ -63,6 +63,11 @@
   cohorts, inputs, verification, reviews, and frozen evidence. Report missing runs
   and reviews as validation errors and continue collecting later diagnostics.
 
+- Refactor the standalone Team UI into feature controllers with local state,
+  rendering, and action handlers. Keep the entry point focused on composition,
+  preserve delegated event order and mutation guards, and remove unused legacy
+  renderers. Verify module publication and exercise the actual controllers.
+
 ## 2026-09-29 - Use square corners throughout Admin Web (0.72.5)
 
 - Remove rounded corners from Admin Web and standalone add-on surfaces, dialogs,

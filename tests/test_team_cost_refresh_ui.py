@@ -1,21 +1,15 @@
-from pathlib import Path
 import shutil
 import subprocess
 
 import pytest
+
+from team_ui_controller_harness import controller_script
 
 
 def test_cost_refresh_coalesces_events_and_keeps_deferred_and_explicit_updates():
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required to exercise Team UI refresh scheduling")
-    source = (
-        Path(__file__).resolve().parents[1] / "src/evander_team_addon/ui_static/team-ui.js"
-    ).read_text()
-    declarations = source[source.index("let costsRequestId =") : source.index("let showArchived =")]
-    functions = source[
-        source.index("function scheduleCostsRefresh(") : source.index("function normalizeState(")
-    ]
     script = (
         r"""
 const assert = require("node:assert/strict");
@@ -27,6 +21,7 @@ const window = {
   setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
   clearTimeout(id) { timers.delete(id); },
 };
+const COSTS_REFRESH_INTERVAL_MS = 15000;
 const pending = [];
 function teamFetch(url) { return new Promise(resolve => pending.push({url, resolve})); }
 const API_BASE = "/team";
@@ -43,8 +38,7 @@ const responseText = async response => "request failed";
 function finish(index, payload) { pending[index].resolve({ok: true, json: async () => payload}); }
 async function tick() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
 """
-        + declarations
-        + functions
+        + "// CONTROLLER"
         + r"""
 (async () => {
   const first = loadCosts();
@@ -53,7 +47,7 @@ async function tick() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
   assert.equal(pending.length, 1);
   finish(0, {version: 1});
   await first;
-  assert.equal(costState.version, 1);
+  assert.equal(controller.costState.version, 1);
   assert.equal(timers.size, 1);
   await loadCosts();
   assert.equal(pending.length, 1);
@@ -64,8 +58,8 @@ async function tick() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
   timer.callback();
   assert.equal(pending.length, 2);
   finish(1, {version: 2});
-  await costsInFlight;
-  assert.equal(costState.version, 2);
+  await tick();
+  assert.equal(controller.costState.version, 2);
   assert.equal(timers.size, 0);
 
   // A forced refresh observes a post-mutation read, even if a prior GET exists.
@@ -81,7 +75,7 @@ async function tick() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
   finish(3, {version: 4});
   await afterMutation;
   await afterAnotherMutation;
-  assert.equal(costState.version, 4);
+  assert.equal(controller.costState.version, 4);
 
   // An old GET cannot overwrite the result of an explicit transcript backfill.
   const stale = loadCosts({force: true});
@@ -95,14 +89,30 @@ async function tick() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
   await backfill;
   finish(4, {version: 5});
   await stale;
-  assert.equal(costState.version, 6);
+  assert.equal(controller.costState.version, 6);
   await tick();
   assert.equal(pending.length, 7);
   finish(6, {version: 7});
   await resetDuringBackfill;
-  assert.equal(costState.version, 7);
+  assert.equal(controller.costState.version, 7);
+
+  // A second UI instance has its own requests and cost snapshot.
+  const independent = createTeamCostsController(controllerPeers);
+  assert.notEqual(independent.costState, controller.costState);
+  const independentLoad = independent.loadCosts();
+  assert.equal(pending.length, 8);
+  finish(7, {version: 8});
+  await independentLoad;
+  assert.equal(independent.costState.version, 8);
+  assert.equal(controller.costState.version, 7);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
+    )
+    script = controller_script(
+        "costs",
+        script,
+        "{app: {activeTeamView, teamViewUsesCostState, render, setStatus}, access: {teamFetch}, drafts: {captureFormDrafts, restoreFormDrafts}}",
+        ["loadCosts", "refreshCostBackfill"],
     )
     result = subprocess.run(
         [node, "--input-type=commonjs"],

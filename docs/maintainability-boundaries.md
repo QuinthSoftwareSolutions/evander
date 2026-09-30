@@ -32,7 +32,7 @@ in the original entry point when existing callers use them.
 | Team task update commands | `TeamTaskUpdateCommandService.update_task_command` | `commands.task_update_execution.execute_task_update_command` owns normalization and executor integration; `_TaskUpdateApplication` owns validation, edits, preparation invalidation, and response projection within one command transaction. The command service delegates through its existing signature. |
 | Team MCP registration | `evander_team_addon.mcp.register_mcp_tools` | Named collaboration, work-management, delivery-review, Git-release, and ephemeral-worker registration functions preserve the existing tool order and definitions. |
 | Worker Git workspaces | `evander.worker.service.WorkerDaemon` | `worker.git_workspace.GitWorkspaceOperations` owns reference checkout preparation, task worktree preparation, dependency composition, cleanup, and hardened Git subprocess helpers. The service module re-exports established exception and helper imports. |
-| Team standalone UI state | `ui_static/team-ui.js` | `team-ui-state.js` owns initial state contracts, Team-view normalization, persisted view selection, and deep-link parsing. `ui.py` serves it as an explicit module asset. |
+| Team standalone UI | `ui_static/team-ui.js` | The entry point composes feature controllers. `team-ui-app.js` owns navigation, aggregate state, scoped loads, and the state stream. Chat, task board, projects, releases, human reviews, and other controllers own feature state, rendering, and actions. `team-ui-events.js` retains delegated listener order and stops after a handler consumes an event. `team-ui-state.js` retains initial contracts and deep links; `ui.py` explicitly publishes every module. |
 | Session policy UI | `features/sessions/SessionsScreen.tsx` | `sessionApprovalSettings.ts` owns typed approval policy normalization; `SessionPolicyModals.tsx` owns renewal and approval-settings dialogs. The screen retains data loading and mutation orchestration. |
 | Libvirt VM creation | `vm.provider._libvirt_create_vm` | `_LibvirtVmCreationRequest` carries the existing options; a fresh `_LibvirtVmCreation` validates the request, builds or reuses a session, applies metadata, validates the model, persists the manifest, prepares setup, and handles recovery. Helper and subprocess execution return `_VmSetupResult` to one exit-status check. Setup failures delete only newly created sessions when no VM survives. |
 | Realtime voice origin queries | `DidwwSipBridgeService` | `didww_origin_queries.DidwwOriginQueryHandling` owns delegated origin-query calls, polling, acknowledgement, timeout, and terminal response handling. |
@@ -67,3 +67,35 @@ in the original entry point when existing callers use them.
 For more detail, see [Team data ownership](team-data-boundaries.md),
 [CLI module ownership](cli-module-boundaries.md), and the
 [workflow editor module guide](../frontend/admin-web/src/features/workflow-editor/README.md).
+
+## Team standalone UI
+
+The entry point builds the controller graph before registering DOM listeners.
+Controller constructors initialize local state; peer calls run after composition.
+Keep cross-feature calls on the named controller interfaces and use owner methods
+for updates. Request counters, refresh timers, streams, selections, and drafts
+belong to the controller that manages their lifecycle.
+
+- `team-ui-app.js` coordinates shared state, view loading, and rendering dispatch.
+- `team-ui-chat.js`, `team-ui-voice.js`, and `team-ui-costs.js` own their asynchronous
+  lifecycles, request fencing, cleanup, and presentation.
+- `team-ui-board.js`, `team-ui-cases.js`, `team-ui-planning.js`, and `team-ui-tasks.js`
+  own task navigation, readiness, work hierarchy, and recovery controls.
+- `team-ui-people.js`, `team-ui-projects.js`, `team-ui-org.js`, and
+  `team-ui-governance.js` own record selection, focused views, and their editors.
+- `team-ui-delivery.js`, `team-ui-reviews.js`, `team-ui-releases.js`,
+  `team-ui-evidence.js`, and `team-ui-human-reviews.js` own delivery and review views.
+- Form creation, record dialogs, policy editors, drafts, revisions, and privilege
+  checks have separate `forms`, `editor`, `policy`, `drafts`, `mutations`, and
+  `access` controllers. Shared `config`, `dom`, and `format` modules contain options,
+  element references, and formatting helpers.
+
+When splitting delegated event handlers, preserve listener order and return
+`true` when a branch consumes an event, including when a privilege guard rejects
+it. Return `false` to let the next handler inspect the event. Preserve modal
+containment barriers, request generations, conflict metadata, and form drafts.
+
+Add new browser imports to `ui.py`'s explicit asset allowlist. The API publication
+test walks the real import graph; browser regressions exercise the composed UI.
+Controller tests import the actual modules through `team_ui_controller_harness`
+instead of copying source snippets from the entry point.

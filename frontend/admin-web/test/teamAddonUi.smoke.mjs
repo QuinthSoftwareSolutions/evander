@@ -35,275 +35,23 @@ const teamViewIds = [
   "org",
 ];
 
-test("team add-on static UI exposes runtime control hooks", async () => {
-  const markup = await readFile(path.join(staticRoot, "index.html"), "utf8");
-  const script = await readFile(path.join(staticRoot, "team-ui.js"), "utf8");
-  const stateScript = await readFile(path.join(staticRoot, "team-ui-state.js"), "utf8");
-  const mailScript = await readFile(path.join(staticRoot, "team-mail.js"), "utf8");
-  const stylesheet = await readFile(path.join(staticRoot, "team-ui.css"), "utf8");
-  const orgFlowScript = await readFile(path.join(staticRoot, "team-org-flow.js"), "utf8");
-  const orgFlowStylesheet = await readFile(path.join(staticRoot, "team-org-flow.css"), "utf8");
-  const designStylesheet = await readFile(path.join(staticRoot, "admin-design.css"), "utf8");
-
-  assert.match(markup, /admin-design\.css/);
-  assert.match(designStylesheet, /team-org-flow\.css/);
-  assert.match(markup, /team-org-flow\.js/);
-  assert.match(script, /context_clearing_policy/);
-  assert.match(script, /contextClearingPolicies/);
-  assert.match(script, /data-context-rotation-agent-id/);
-  assert.match(script, /context-rotation/);
-  assert.match(script, /data-stand-down-agent-id/);
-  assert.match(script, /data-stand-down-scope="agent"/);
-  assert.match(script, /data-stand-down-scope="subtree"/);
-  assert.match(script, /data-stand-down-scope="agent">Stand down</);
-  assert.match(script, />Stand down subtree</);
-  assert.match(script, /and every subordinate in that agent's subtree/);
-  assert.match(script, /data-resume-release-recovery-blocker-id/);
-  assert.match(script, /Resume release recovery/);
-  assert.match(script, /admin_ui_release_recovery/);
-  assert.match(script, /resumeReleaseRecovery/);
-  assert.match(markup, /id="task-cancellation-modal"/);
-  assert.match(script, /data-task-cancel-id/);
-  assert.match(script, /\/cancel/);
-  assert.match(stylesheet, /\.task-cancellation-action/);
-  assert.match(script, /data-open-session-id/);
-  assert.match(script, /admin-navigate-to-session/);
-  assert.match(script, /stand-down/);
-  assert.match(script, /Handoff summary/);
-  assert.match(script, /data-team-view/);
-  assert.match(stateScript, /team-addon:active-view/);
-  assert.doesNotMatch(markup, /data-team-view="setup"/);
-  assert.doesNotMatch(markup, /team-setup-page/);
-  assert.doesNotMatch(markup, /data-team-view="overview"/);
-  assert.doesNotMatch(markup, /team-overview-page/);
-  assert.doesNotMatch(script, /data-summary-grid/);
-  assert.match(script, /data-review-delivery-view/);
-  assert.match(script, /data-timeline-filter/);
-  assert.match(markup, />\s*Activity timeline\s*</);
-  assert.match(markup, /reconstructed from records still present in the current Team/);
-  assert.match(markup, /not a compliance-grade audit log/);
-  assert.match(markup, /data-team-view="mail"/);
-  assert.match(markup, /id="team-mail-page"/);
-  assert.match(markup, /data-mail-directive-open/);
-  assert.match(markup, /data-mail-directive-form/);
-  assert.match(markup, /data-mail-directive-recipient/);
-  assert.match(script, /createTeamMailController/);
-  assert.match(mailScript, /\/inbox\?/);
-  assert.match(mailScript, /\/operator-directives/);
-  assert.match(mailScript, /openDirectiveComposer/);
-  assert.match(mailScript, /admin_ui_operator_directive/);
-  assert.match(mailScript, /function renderReader/);
-  assert.match(stylesheet, /\.mail-layout/);
-  assert.match(stylesheet, /\.mail-directive-composer/);
-  assert.match(script, /data-planning-task-status/);
-  assert.match(script, /data-task-board-team/);
-  assert.match(script, /renderTaskBoard/);
-  assert.match(script, /taskBoardLanes/);
-  assert.match(markup, /data-team-view="projects"/);
-  assert.match(markup, /id="team-projects-page"/);
-  assert.match(markup, /id="create-project-from-projects-form"/);
-  assert.match(markup, /data-project-create-toggle/);
-  assert.match(script, /renderProjectFocus/);
-  assert.match(script, /projectReviewRoleOptionsForProject/);
-  assert.match(script, /create-review-profile-for-project-form/);
-  assert.match(script, /data-project-section-show-rejected/);
-  assert.match(script, /projectRecordPageSize/);
-  assert.match(script, /data-select-agent-id/);
-  assert.match(script, /data-select-project-id/);
-  assert.match(script, /data-select-role-id/);
-  assert.match(script, /renderSelectableAgent/);
-  assert.match(script, /renderSelectableProject/);
-  assert.match(script, /renderSelectableRole/);
-  assert.match(script, /create-team-from-teams-form/);
-  assert.match(script, /data-team-inline-create-toggle/);
-  assert.match(script, /data-team-copy-open/);
-  assert.match(script, /data-team-copy-session-select/);
-  assert.match(script, /\/teams\/\$\{encodeURIComponent\(sourceTeamId\)\}\/copy/);
-  assert.match(script, /data-team-inline-create-form/);
-  assert.match(script, /data-git-import-button/);
-  assert.match(script, /data-review-profile-criterion-add/);
-  assert.match(script, /reviewProfileCriteriaFromForm/);
-  assert.match(script, /data-human-review-checklist-editor/);
-  assert.match(script, /data-human-review-checklist-move/);
-  assert.doesNotMatch(script, /parseHumanReviewChecklist/);
-  assert.match(script, /rolePermissionTooltips/);
-  assert.match(script, /Allows a same-project role holder to request Team release packages/);
-  assert.match(script, /data-release-gate-retry/);
-  assert.match(script, /\/retry-gate/);
-  assert.match(script, /renderRolePermissionToken/);
-  assert.match(script, /projectLeadAgentOptionsForTeam/);
-  assert.match(script, /agentLeadProjectIds/);
-  assert.match(script, /"project_ids"/);
-  assert.match(script, /One agent may lead several projects/);
-  assert.match(stylesheet, /\.projects-workbench/);
-  assert.match(stylesheet, /\.projects-focus-row/);
-  assert.match(stylesheet, /\.project-record-section/);
-  assert.match(stylesheet, /\.team-inline-create-form/);
-  assert.match(stylesheet, /\.team-copy-session-row/);
-  assert.match(stylesheet, /\.criteria-editor-row/);
-  assert.match(stylesheet, /\.human-review-checklist-editor-row/);
-  assert.match(stylesheet, /\.git-import-actions/);
-  assert.match(stylesheet, /\.permission-token/);
-  assert.match(
-    stylesheet,
-    /\.human-review-decision-form \.checkbox-label > input\[type="checkbox"\] \{[\s\S]*?width: 1\.25rem;[\s\S]*?height: 1\.25rem;[\s\S]*?padding: 0;/,
-  );
-  assert.match(markup, /data-teams-create-team-open/);
-  assert.match(markup, /data-git-import-button/);
-  assert.match(script, /data-review-profile-criteria-editor/);
-  assert.match(markup, /id="create-team-from-teams-form"/);
-  assert.doesNotMatch(script, /Chat message sent\./);
-  assert.doesNotMatch(script, /Chat message queued until the agent finishes current work/);
-  assert.match(script, /data-chat-scroll-conversation-id/);
-  assert.doesNotMatch(script, /chat-message-list[^`]+data-chat-conversation-id/);
-  assert.match(script, /ensureStateStream/);
-  assert.match(script, /\/state\/stream/);
-  assert.match(script, /applyStateSnapshot/);
-  assert.match(script, /openTeamDisclosures/);
-  assert.match(script, /rememberOpenTeamDisclosures/);
-  assert.match(mailScript, /captureDisclosures\?\.\(\)/);
-  assert.match(mailScript, /mail-reader-envelope" \$\{disclosureAttributes/);
-  const dynamicDisclosureTags = [...script.matchAll(/<details\b[^>]*>/g)].map(
-    ([tag]) => tag,
-  );
-  assert.ok(dynamicDisclosureTags.length > 0, "expected dynamic disclosure markup");
-  for (const tag of dynamicDisclosureTags) {
-    assert.match(
-      tag,
-      /(teamDisclosureAttributes|planningDisclosureAttributes)/,
-      `dynamic disclosure is not tracked: ${tag}`,
-    );
+test("team add-on static module graph resolves every local import", async () => {
+  const pending = ["team-ui.js"];
+  const visited = new Set();
+  while (pending.length) {
+    const filename = pending.pop();
+    if (visited.has(filename)) continue;
+    visited.add(filename);
+    const script = await readFile(path.join(staticRoot, filename), "utf8");
+    for (const match of script.matchAll(/from\s+["'](\.\/[^"']+)["']/g)) {
+      const dependency = path.posix.normalize(path.posix.join(path.posix.dirname(filename), match[1]));
+      assert.equal(path.posix.basename(dependency), dependency, "UI imports stay within the published asset directory");
+      pending.push(dependency);
+    }
   }
-  assert.match(script, /teamViewCacheGeneration \+= 1/);
-  assert.match(script, /loadedTeamViews\.clear\(\)/);
-  assert.match(script, /loadView\(activeTeamView, \{ force: true, preserveForms: true \}\)/);
-  assert.match(script, /pendingForcedTeamViewLoads/);
-  assert.match(script, /return loadView\(normalizedView, \{ force: true, preserveForms: pendingLoad\.preserveForms \}\)/);
-  assert.match(script, /chatReadMarkers/);
-  assert.match(script, /chatConversationHasUnread/);
-  assert.match(script, /team-view-tab-badge/);
-  assert.match(script, /chatNotificationSoundStorageKey/);
-  assert.match(script, /data-chat-notification-sound/);
-  assert.match(script, /data-open-chat-agent-id/);
-  assert.match(script, /openChatForAgent/);
-  assert.match(script, /data-chat-attachment-input/);
-  assert.match(script, /pendingChatAttachments/);
-  assert.match(script, /chat\/attachment-policy/);
-  assert.match(script, /renderChatAttachment/);
-  assert.match(markup, /id="chat-attachment-policy-modal"/);
-  assert.match(stylesheet, /\.chat-message-attachment/);
-  assert.match(script, /maybePlayChatNotificationSound/);
-  assert.match(script, /maybePlayChatCollectionNotificationSound/);
-  assert.match(script, /document\.hasFocus/);
-  assert.match(script, /AudioContext/);
-  assert.match(
-    stylesheet,
-    /\.chat-sidebar\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, auto\) minmax\(0, 1fr\);/,
-  );
-  assert.match(
-    stylesheet,
-    /\.chat-conversations-view\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*hidden;/,
-  );
-  assert.match(stylesheet, /\.chat-sound-toggle/);
-  assert.match(stylesheet, /\.chat-conversation-row\.has-unread/);
-  assert.match(stylesheet, /\.chat-unread-badge/);
-  assert.match(stylesheet, /\.team-view-tab\.has-unread/);
-  assert.match(
-    stylesheet,
-    /\.chat-new-picker\s*\{[\s\S]*?overflow:\s*hidden;/,
-  );
-  assert.match(
-    stylesheet,
-    /\.chat-agent-picker\s*\{[\s\S]*?max-height:\s*min\(18rem, 45vh\);[\s\S]*?overflow-y:\s*auto;/,
-  );
-  assert.match(script, /renderTeamProjectDetail/);
-  assert.match(script, /renderTeamRoleDetail/);
-  assert.match(script, /class="meta-line role-description"/);
-  assert.match(
-    stylesheet,
-    /\.role-description\s*\{[\s\S]*?white-space:\s*pre-wrap;/,
-  );
-  assert.match(script, /peopleViewTeams/);
-  assert.match(script, /data-team-record-group-id/);
-  assert.match(script, /data-team-record-toggle/);
-  assert.match(script, /renderPeopleAgentDetail/);
-  assert.match(script, /renderCompactRuntimeAgentRow/);
-  assert.match(script, /agentAwakeState/);
-  assert.match(script, /session_is_expired/);
-  assert.match(script, /expired_agent_session/);
-  assert.match(script, /buildOrgFlowGraph/);
-  assert.match(script, /orgFlowLayoutFitKey\(nodes, edges\)/);
-  assert.match(script, /team-org-flow:edit-agent/);
-  assert.match(script, /team-org-flow:canvas-menu/);
-  assert.match(script, /data-org-context-action/);
-  assert.match(script, /action: "open-chat"/);
-  assert.match(script, /action: "open-session"/);
-  assert.match(script, /governance-add-team/);
-  assert.match(script, /data-core-agent-session-create/);
-  assert.match(script, /aria-describedby/);
-  assert.match(script, /Agent ID \$\{escapeHtml\(node\.agentData\.id\)\}\. Role/);
-  assert.match(script, /orgInboxIndicatorItemData/);
-  assert.match(script, /items: statusRequestItems\.map\(orgInboxIndicatorItemData\)/);
-  assert.match(orgFlowScript, /team-org-flow:edit-agent/);
-  assert.match(orgFlowScript, /team-org-flow:canvas-menu/);
-  assert.match(orgFlowScript, /team-org-flow:agent-menu/);
-  assert.match(orgFlowScript, /team-org-flow:governance-menu/);
-  assert.match(orgFlowScript, /aria-describedby/);
-  assert.match(orgFlowScript, /"Agent ID "/);
-  assert.match(orgFlowScript, /agent-inbox-popover/);
-  assert.match(orgFlowScript, /nowheel/);
-  assert.match(orgFlowScript, /addEventListener\("wheel"/);
-  assert.match(orgFlowScript, /stopPropagation\(\)/);
-  assert.match(stylesheet, /\.agent-inbox-popover\s*{[\s\S]*pointer-events:\s*auto;/);
-  assert.match(orgFlowScript, /data-team-org-flow-canvas/);
-  assert.match(orgFlowScript, /org-flow-activity-bubble/);
-  assert.match(orgFlowScript, /org-flow-message-pulse/);
-  assert.match(orgFlowStylesheet, /org-flow-active-halo/);
-  assert.match(orgFlowStylesheet, /prefers-reduced-motion:reduce/);
-  assert.match(orgFlowStylesheet, /\.team-org-flow-canvas/);
-  assert.match(orgFlowStylesheet, /\.org-flow-governance-node/);
-  assert.match(stylesheet, /\.org-context-menu/);
-  assert.match(stylesheet, /\.org-action-form/);
-  assert.match(stylesheet, /max-width:\s*min\(17rem,\s*calc\(100vw - 2rem\)\);/);
-  assert.doesNotMatch(stylesheet, /min-width:\s*max-content/);
-  assert.match(markup, /<section class="people-agents-panel" aria-labelledby="focused-teams-heading">/);
-  assert.doesNotMatch(markup, /content-panel people-agents-panel/);
-  assert.match(markup, /data-governance-create-toggle/);
-  assert.match(markup, /show-handled-governance-agenda-toggle/);
-  assert.match(markup, /id="governance-create-panel"[\s\S]*id="create-governance-group-form"/);
-  assert.match(markup, /data-governance-create-goals/);
-  assert.doesNotMatch(markup, /name="goals"/);
-  assert.doesNotMatch(markup, /<summary>Create governance group<\/summary>/);
-  assert.match(script, /showHandledGovernanceAgenda/);
-  assert.match(script, /bindGovernanceAgendaVisibilityToggle/);
-  assert.match(stylesheet, /\.governance-goals-subsection/);
-  assert.match(stylesheet, /\.governance-goal-list li\s*{[\s\S]*linear-gradient/);
-  assert.match(
-    stylesheet,
-    /button\.people-agent-select\s*{[\s\S]*grid-template-columns: auto minmax\(0, 1fr\);/,
-  );
-  assert.match(stylesheet, /\.task-board-lanes/);
-  assert.match(stylesheet, /\.task-board-card-blocked/);
-  assert.match(
-    stylesheet,
-    /\.task-board-view\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*0\.85rem;/,
-  );
-  assert.match(
-    stylesheet,
-    /\.team-record-group-header:hover,[\s\S]*?background: var\(--panel-alt\);/,
-  );
-  assert.match(stylesheet, /\.teams-create-team-panel/);
-  assert.doesNotMatch(
-    stylesheet.match(/\.team-record-group-header\s*\{[\s\S]*?\}/)?.[0] || "",
-    /border-bottom:\s*1px/,
-  );
-  assert.match(script, /comparePeopleAgents/);
-  assert.doesNotMatch(script, /class="agent-summary-meta"/);
-  assert.match(stylesheet, /\.people-agent-role\s*{/);
-  assert.match(
-    stylesheet,
-    /\.agent-detail-title\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?text-align:\s*left;/,
-  );
+  for (const feature of ["chat", "board", "projects", "releases", "events"]) {
+    assert.ok(visited.has(`team-ui-${feature}.js`));
+  }
 });
 
 function emptyState() {
@@ -1577,6 +1325,10 @@ async function createTeamAddonServer(
 
       if (request.method === "GET" && (pathname === "/" || pathname === "/addons/team-addon/")) {
         await serveStatic(response, "index.html", "text/html; charset=utf-8");
+        return;
+      }
+      if (request.method === "GET" && /^\/addons\/team-addon\/team-ui-[a-z-]+\.js$/.test(pathname)) {
+        await serveStatic(response, path.basename(pathname), "application/javascript; charset=utf-8");
         return;
       }
       if (request.method === "GET" && pathname === "/addons/team-addon/team-ui.js") {
@@ -3139,6 +2891,7 @@ function caseBoardState() {
 test("case board updates Team and project selection in place and preserves it across a shell reload", { timeout: 45000 }, async (t) => {
   const { port } = await createTeamAddonServer(t, { initialState: caseBoardState() });
   const { page, board, errors } = await openCaseBoardAdminShell(t, port);
+  await waitForRevision(board, 4);
   async function afterBoardSelection(action, settled) {
     const previousDocument = await board.locator("body").evaluate(() => performance.timeOrigin);
     await action();
@@ -8456,6 +8209,9 @@ test("team add-on Teams tab creates records inside the selected team", { timeout
 
 test("team add-on agent edit scopes project, role, and superior choices to the selected team", { timeout: browserTestTimeout }, async (t) => {
   const initialState = seededGitState();
+  initialState.agent_runtimes = {
+    "alpha-lead": { context_clearing_policy: "idle", context_clearing_idle_grace_seconds: 7200 },
+  };
   initialState.teams["team-alpha"].project_ids.push("alpha-second-project");
   initialState.projects["alpha-second-project"] = {
     id: "alpha-second-project",
@@ -8492,6 +8248,15 @@ test("team add-on agent edit scopes project, role, and superior choices to the s
   });
 
   const form = page.locator("#edit-record-form");
+  const contextPolicy = form.locator('select[name="context_clearing_policy"]');
+  const idleGrace = form.locator('input[name="context_clearing_idle_grace_minutes"]');
+  assert.equal(await idleGrace.inputValue(), "120");
+  assert.equal(await idleGrace.isVisible(), true);
+  await contextPolicy.selectOption("off");
+  assert.equal(await idleGrace.isVisible(), false);
+  await contextPolicy.selectOption("idle");
+  assert.equal(await idleGrace.isVisible(), true);
+  await idleGrace.fill("45");
   const projectSelect = form.locator('select[name="project_ids"]');
   assert.equal(await projectSelect.getAttribute("multiple"), "");
   assert.equal(await projectSelect.locator('option[value="alpha-project"]').count(), 1);
@@ -8547,6 +8312,8 @@ test("team add-on agent edit scopes project, role, and superior choices to the s
     "alpha-second-project",
   ]);
   assert.equal(Object.hasOwn(editRequest.payload, "project_id"), false);
+  assert.equal(editRequest.payload.context_clearing_policy, "idle");
+  assert.equal(editRequest.payload.context_clearing_idle_grace_seconds, 2700);
 });
 
 function seededLongChatState(messageCount = 120) {

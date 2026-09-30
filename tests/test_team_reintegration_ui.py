@@ -1,16 +1,9 @@
-from pathlib import Path
 import subprocess
+
+from team_ui_controller_harness import controller_script
 
 
 def test_reintegration_dialog_fences_preview_races_and_reuses_submission_request():
-    source = (
-        Path(__file__).resolve().parents[1] / "src/evander_team_addon/ui_static/team-ui.js"
-    ).read_text()
-    function = source[
-        source.index("async function previewReleaseReintegration(") : source.index(
-            "async function startDependencyCompositionRecovery("
-        )
-    ]
     script = r"""
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -40,7 +33,7 @@ const teamFetch = async (url, options) => {
   const body = JSON.parse(options.body);
   if (body.action === "submit") {
     submitted.push(body);
-    if (failSubmit) return {ok: false, error: "Network failed after commit"};
+    if (failSubmit) return {ok: false, text: async () => "Network failed after commit"};
     return {ok: true, json: async () => ({})};
   }
   if (requests++ === 0) return response("initial");
@@ -48,7 +41,7 @@ const teamFetch = async (url, options) => {
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 """
-    script += function
+    script += "// CONTROLLER"
     script += r"""
 (async () => {
   await previewReleaseReintegration("release");
@@ -68,6 +61,12 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(dialog.open, false);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
+    script = controller_script(
+        "recovery",
+        script,
+        "{access: {guardTeamMutation, teamFetch}, mutations: {applyMutationResultPayload}, app: {state, setStatus}}",
+        ["previewReleaseReintegration"],
+    )
     result = subprocess.run(
         ["node", "--input-type=commonjs"], input=script, text=True, capture_output=True, timeout=15
     )
