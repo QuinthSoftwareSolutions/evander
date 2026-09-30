@@ -499,6 +499,11 @@ export type CodexSubscriptionProfilesResponse = {
   profiles: CodexSubscriptionProfile[];
 };
 
+export type CodexSubscriptionResetResponse = {
+  outcome: "reset" | "alreadyRedeemed" | "nothingToReset" | "noCredit";
+  profile: CodexSubscriptionProfile;
+};
+
 export type AgentListResponse = {
   items: AgentRecord[];
   directory_path: string;

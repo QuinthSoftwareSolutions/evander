@@ -5,7 +5,16 @@ import { useAdminUi } from "../admin/AdminContext";
 import type {
   CodexSubscriptionProfile,
   CodexSubscriptionProfilesResponse,
+  CodexSubscriptionResetResponse,
 } from "../admin/types";
+import {
+  forgetResetRedemptionAttempt,
+  loadResetRedemptionAttempts,
+  rememberResetRedemptionAttempt,
+  RESET_REDEMPTION_STORAGE_EVENT,
+  resetRedemptionKey,
+  type ResetRedemptionAttempts,
+} from "./resetRedemption";
 
 type DeviceLogin = {
   login_id: string;
@@ -37,6 +46,24 @@ function weeklyRemainingPercent(rateLimits: Record<string, unknown> | null): num
 
 const percentFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 
+function bankedResetCount(rateLimits: Record<string, unknown> | null): number | null {
+  const credits = rateLimits?.reset_credits;
+  if (!credits || typeof credits !== "object") return null;
+  const count = (credits as Record<string, unknown>).available_count;
+  return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
+function newRedemptionId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  // Admin Web can also run over HTTP on a private host, where randomUUID is
+  // unavailable. getRandomValues still provides a UUID for retry identity.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function SubscriptionsPage() {
   const { selectedDirectoryPath, privilegedUnlocked } = useAdminUi();
   const refreshGeneration = useRef(0);
@@ -48,6 +75,29 @@ export function SubscriptionsPage() {
   const [pendingLogins, setPendingLogins] = useState<Record<string, DeviceLogin>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [resetAttempts, setResetAttempts] = useState<ResetRedemptionAttempts>({});
+  const [resetStorageError, setResetStorageError] = useState<string | null>(null);
+  const redemptionInFlight = useRef(false);
+
+  const syncResetAttempts = useCallback(() => {
+    try {
+      setResetAttempts(loadResetRedemptionAttempts());
+      setResetStorageError(null);
+    } catch (reason: unknown) {
+      setResetStorageError(`Reset redemption is unavailable because saved retry information cannot be read: ${reason instanceof Error ? reason.message : String(reason)}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    syncResetAttempts();
+    window.addEventListener("storage", syncResetAttempts);
+    window.addEventListener(RESET_REDEMPTION_STORAGE_EVENT, syncResetAttempts);
+    return () => {
+      window.removeEventListener("storage", syncResetAttempts);
+      window.removeEventListener(RESET_REDEMPTION_STORAGE_EVENT, syncResetAttempts);
+    };
+  }, [syncResetAttempts]);
 
   const query = useCallback(() => {
     const params = new URLSearchParams({ directory_path: selectedDirectoryPath || "root" });
@@ -76,6 +126,7 @@ export function SubscriptionsPage() {
     setProfiles([]);
     setWorkerUrl(null);
     setPendingLogins({});
+    setNotice(null);
     void refresh();
     return () => { refreshGeneration.current += 1; };
   }, [refresh]);
@@ -171,6 +222,64 @@ export function SubscriptionsPage() {
     }
   }
 
+  function resetAttemptKey(profile: CodexSubscriptionProfile): string {
+    return resetRedemptionKey(workerUrl, profile.profile_id, profile.account_id);
+  }
+
+  async function redeemReset(profile: CodexSubscriptionProfile) {
+    if (redemptionInFlight.current || !privilegedUnlocked || !workerUrl || !profile.account_id) return;
+    redemptionInFlight.current = true;
+    const generation = refreshGeneration.current;
+    let submitted = false;
+    try {
+      const previousAttempt = loadResetRedemptionAttempts()[resetAttemptKey(profile)];
+      if (!previousAttempt && !window.confirm(`Redeem one banked reset for ${profile.display_name}? This consumes one available reset.`)) return;
+      const attempt = rememberResetRedemptionAttempt(previousAttempt ?? {
+        worker_url: workerUrl, profile_id: profile.profile_id,
+        account_id: profile.account_id, idempotency_key: newRedemptionId(),
+      });
+      setBusy(`reset:${profile.profile_id}`);
+      setError(null);
+      setNotice(null);
+      submitted = true;
+      const result = await fetchJson<CodexSubscriptionResetResponse>(
+        `/api/admin/codex-subscriptions/${encodeURIComponent(profile.profile_id)}/reset-credits/consume${query()}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            idempotency_key: attempt.idempotency_key,
+            expected_worker_url: attempt.worker_url,
+            expected_account_id: attempt.account_id,
+          }),
+        },
+      );
+      if (!["reset", "alreadyRedeemed", "nothingToReset", "noCredit"].includes(result?.outcome) || result?.profile?.profile_id !== profile.profile_id) {
+        throw new Error("Reset redemption returned an incomplete response");
+      }
+      forgetResetRedemptionAttempt(attempt);
+      if (generation !== refreshGeneration.current) return;
+      setProfiles((current) => current.map((item) => item.profile_id === profile.profile_id ? result.profile : item));
+      const message = {
+        reset: "One banked reset redeemed. Usage and reset count refreshed.",
+        alreadyRedeemed: "This reset was already redeemed. Usage and reset count refreshed.",
+        nothingToReset: "There is no eligible usage window to reset. No reset was consumed.",
+        noCredit: "There are no banked resets available.",
+      }[result.outcome];
+      setNotice(`${profile.display_name}: ${message}`);
+    } catch (reason: unknown) {
+      if (generation === refreshGeneration.current) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setError(submitted
+          ? `${message}. Retry reset redemption to check the same attempt.`
+          : `Reset redemption was not submitted: ${message}`);
+      }
+    } finally {
+      redemptionInFlight.current = false;
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="feature-page subscriptions-page">
       <section className="feature-content">
@@ -184,7 +293,9 @@ export function SubscriptionsPage() {
           </button>
         </div>
         {error ? <div className="callout error-callout">{error}</div> : null}
-        {!privilegedUnlocked ? <p className="callout warning-callout">Unlock privileged operations to create profiles or change account connections.</p> : null}
+        {resetStorageError ? <div className="callout error-callout" role="alert">{resetStorageError}</div> : null}
+        {notice ? <div className="callout" role="status">{notice}</div> : null}
+        {!privilegedUnlocked ? <p className="callout warning-callout">Unlock privileged operations to create profiles, change account connections, or redeem resets.</p> : null}
 
         <details className="subscription-create">
           <summary>Create profile</summary>
@@ -209,10 +320,12 @@ export function SubscriptionsPage() {
         </details>
 
         <div className="subscription-profiles">
-          <div className="subscription-columns" aria-hidden="true"><span>Profile</span><span>Account</span><span>Plan</span><span>Activity</span><span>7-day remaining</span></div>
+          <div className="subscription-columns" aria-hidden="true"><span>Profile</span><span>Account</span><span>Plan</span><span>Activity</span><span>7-day remaining</span><span>Banked resets</span></div>
           {profiles.map((profile) => {
             const login = pendingLogins[profile.profile_id];
             const remainingPercent = weeklyRemainingPercent(profile.rate_limits);
+            const resetCount = bankedResetCount(profile.rate_limits);
+            const retryReset = Boolean(resetAttempts[resetAttemptKey(profile)]);
             return (
               <details className="subscription-profile" key={profile.profile_id}>
                 <summary className="subscription-profile-summary">
@@ -234,6 +347,10 @@ export function SubscriptionsPage() {
                   <span className="subscription-weekly-remaining">
                     {remainingPercent === null ? "Unavailable" : `${percentFormatter.format(remainingPercent)}%`}
                     <small>7-day remaining</small>
+                  </span>
+                  <span className="subscription-banked-resets">
+                    {resetCount === null ? "Unavailable" : resetCount}
+                    <small>Banked resets</small>
                   </span>
                 </summary>
                 <div className="subscription-profile-body">
@@ -289,6 +406,14 @@ export function SubscriptionsPage() {
                     </details>
                   ) : null}
                   <div className="inline-actions compact-actions">
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || !profile.enabled || !profile.signed_in || !profile.available || !workerUrl || !profile.account_id || resetStorageError !== null || busy !== null || loading || (!retryReset && (resetCount === null || resetCount === 0))}
+                      onClick={() => void redeemReset(profile)}
+                    >
+                      {busy === `reset:${profile.profile_id}` ? "Redeeming…" : retryReset ? "Retry reset redemption" : "Redeem one reset"}
+                    </button>
                     <button
                       className="admin-action-button compact"
                       type="button"
