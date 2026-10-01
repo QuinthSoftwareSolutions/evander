@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -222,6 +224,85 @@ def test_reload_now_applies_new_valid_payload(tmp_path: Path) -> None:
 
     assert changed is True
     assert latest.poll_interval_seconds == 11
+
+
+def test_cached_config_ignores_reader_shared_memory_and_revalidates_policy_and_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    from evander.workflow.runtime_config import TriggerOrchestratorWorkerGlobalConfigCache
+    from config_helpers import canonical_workflow_payload
+
+    runtime_dir = tmp_path / "runtime"
+    base_config = GatewayConfig(runtime_dir=runtime_dir)
+    directory_store = DirectoryStore(base_config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    target = {
+        "id": "teams-cache",
+        "provider": "teams",
+        "kind": "teams",
+        "address": "team-a/channel-a",
+        "policy": {"capabilities": ["read"]},
+    }
+    _write_communication_targets(runtime_dir, [target])
+    path = _config_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            canonical_workflow_payload(
+                {"triggers": [{
+                    "id": "communication-cache",
+                    "display_name": "Communication",
+                    "type": "trigger:communication:new-message",
+                    "communication_target_ids": ["teams-cache"],
+                }]}
+            )
+        ),
+        encoding="utf-8",
+    )
+    db_path = communication_targets_db_path(runtime_dir)
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute("SELECT COUNT(*) FROM communication_target_overlays").fetchone()
+        cache = TriggerOrchestratorWorkerGlobalConfigCache(
+            project_dir=tmp_path, base_config=base_config
+        )
+        initial = cache.get_latest()
+        cache.get_latest()
+        reloader = cache._reloader
+        assert reloader is not None
+        reload_calls = []
+        real_load = reloader._load_from_path
+
+        def load_config():
+            reload_calls.append(True)
+            return real_load()
+
+        monkeypatch.setattr(reloader, "_load_from_path", load_config)
+        shm_path = db_path.with_name(f"{db_path.name}-shm")
+        stat = shm_path.stat()
+        os.utime(shm_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+        assert cache.get_latest() is initial
+        assert reload_calls == []
+
+        _write_communication_targets(
+            runtime_dir, [{**target, "policy": {"capabilities": ["write"]}}]
+        )
+        # Keep a connection open so the committed edit is observed through the WAL.
+        assert db_path.with_name(f"{db_path.name}-wal").stat().st_size > 0
+        assert cache.get_latest() is initial
+        assert len(reload_calls) == 1
+        assert "does not allow read capability" in caplog.text
+
+        _write_communication_targets(runtime_dir, [target])
+        assert cache.get_latest() is initial
+        assert len(reload_calls) == 2
+        directory_service.create(parent="root", name="ops")
+        assert cache.get_latest() is initial
+        assert len(reload_calls) == 3
+    finally:
+        connection.close()
 
 
 def test_reload_preserves_custom_directory_store_for_communication_triggers(

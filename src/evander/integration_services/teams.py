@@ -976,6 +976,7 @@ class GraphTeamsService:
         user_chat_cache_namespace: str = "default",
         read_reaction_emoji: str = "👀",
         defer_retry_after: bool = False,
+        defer_timeout_retry: bool = False,
     ) -> None:
         self.message_store = message_store
         self.token = str(token or "").strip()
@@ -1000,6 +1001,7 @@ class GraphTeamsService:
         self.user_chat_cache_namespace = str(user_chat_cache_namespace or "default")
         self.read_reaction_emoji = read_reaction_emoji
         self.defer_retry_after = defer_retry_after
+        self.defer_timeout_retry = defer_timeout_retry
 
     def _resolve_token(self) -> str:
         try:
@@ -1356,7 +1358,10 @@ class GraphTeamsService:
                 timed_out_unacknowledged_write = (
                     isinstance(exc, httpx.TimeoutException) and not is_idempotent_request
                 )
-                if timed_out_unacknowledged_write or attempt >= self.retry_count:
+                defer_timeout = (
+                    isinstance(exc, httpx.TimeoutException) and self.defer_timeout_retry
+                )
+                if defer_timeout or timed_out_unacknowledged_write or attempt >= self.retry_count:
                     _LOGGER.warning(
                         "Teams Graph request failed method=%s path=%s attempts=%d "
                         "duration_seconds=%.3f error=%s",

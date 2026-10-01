@@ -467,13 +467,13 @@ def test_handled_missing_thread_receipts_do_not_open_state_transactions(
 
     before = env.repo.read()
     transactions = []
-    update_state = TeamStateSqliteStore.commit_prepared_state_with_command_transaction
+    connect = TeamStateSqliteStore._connect
 
     def track_update(store, *args, **kwargs):
         transactions.append(store.path)
-        return update_state(store, *args, **kwargs)
+        return connect(store, *args, **kwargs)
 
-    monkeypatch.setattr(TeamStateSqliteStore, "commit_prepared_state_with_command_transaction", track_update)
+    monkeypatch.setattr(TeamStateSqliteStore, "_connect", track_update)
     # The failed execution remains available for all of these polling cycles.
     # An unchanged revision alone would miss the expensive no-op transactions.
     for _ in range(3):
@@ -583,13 +583,13 @@ def test_historical_native_reconciliation_is_batched_restart_safe_and_eventually
         lambda worker: [_receipt_record(receipt) for receipt in receipts],
     )
     transactions = []
-    update_state = TeamStateSqliteStore.commit_prepared_state_with_command_transaction
+    connect = TeamStateSqliteStore._connect
 
     def track_update(store, *args, **kwargs):
         transactions.append(store.path)
-        return update_state(store, *args, **kwargs)
+        return connect(store, *args, **kwargs)
 
-    monkeypatch.setattr(TeamStateSqliteStore, "commit_prepared_state_with_command_transaction", track_update)
+    monkeypatch.setattr(TeamStateSqliteStore, "_connect", track_update)
     # Candidate pages use a cooperative time/item budget. Restart once during
     # recovery: already persisted observations must not be rewritten or lost.
     hook = TeamAgentPromptCompletionFinalizeHook()

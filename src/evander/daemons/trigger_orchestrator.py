@@ -61,7 +61,7 @@ from evander.orchestration.internal_events import (
 )
 from evander.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from evander.orchestration.wiring.trigger import build_trigger_provider_runtime_wiring
-from evander.repositories.orchestration import GateCursorRepository
+from evander.repositories.orchestration import GateCursorRepository, TriggerPollCheckpoint
 from evander.repositories.sqlite_runtime import foreground_storage_wait_budget, is_storage_busy
 
 logger = logging.getLogger(__name__)
@@ -286,6 +286,17 @@ class TriggerOrchestratorWorker:
         def _poll_triggers(
             triggers: list[TriggerDefinitionDiscriminated],
         ):
+            empty_polls: list[TriggerPollCheckpoint] = []
+
+            def record_empty_poll(trigger, discovered, event_ids):
+                empty_polls.append(TriggerPollCheckpoint(
+                    trigger_id=trigger.id,
+                    trigger_type=trigger.type,
+                    discovered=discovered,
+                    event_ids=list(event_ids),
+                    polled_at=datetime.now(UTC),
+                ))
+
             loop = OrchestrationLoop[
                 TriggerDefinitionDiscriminated,
                 Any,
@@ -294,13 +305,7 @@ class TriggerOrchestratorWorker:
                 event_fetcher=TriggerEventFetcherAdapter(triggers=triggers),
                 dependency_resolver=TriggerDependencyResolverAdapter(
                     providers_by_id=providers,
-                    update_cursor_state=lambda trigger, discovered, event_ids: (
-                        self._update_cursor_state(
-                            trigger=trigger,
-                            discovered=discovered,
-                            event_ids=event_ids,
-                        )
-                    ),
+                    update_cursor_state=record_empty_poll,
                     on_poll_error=lambda trigger: logger.exception(
                         "Trigger poll failed trigger_id=%s trigger_type=%s",
                         trigger.id,
@@ -310,7 +315,35 @@ class TriggerOrchestratorWorker:
                 execution_recorder=TriggerExecutionRecorderAdapter(),
                 completion_publisher=TriggerCompletionPublisherAdapter(),
             )
-            return loop.run_once(max_events=len(triggers), resolve_and_execute=_resolve_and_execute)
+            def flush_empty_polls():
+                # Only empty-poll telemetry is deferred. Published events keep
+                # their immediate durable checkpoint before the next provider.
+                record_batch = getattr(self.cursor_repository, "record_trigger_polls", None)
+                if record_batch is not None:
+                    record_batch(empty_polls)
+                else:
+                    for poll in empty_polls:
+                        self.cursor_repository.record_trigger_poll(
+                            trigger_id=poll.trigger_id,
+                            trigger_type=poll.trigger_type,
+                            discovered=poll.discovered,
+                            event_ids=poll.event_ids,
+                            polled_at=poll.polled_at,
+                        )
+            try:
+                result = loop.run_once(
+                    max_events=len(triggers), resolve_and_execute=_resolve_and_execute
+                )
+            except Exception:
+                try:
+                    flush_empty_polls()
+                except Exception:
+                    # Preserve the original failure, including its storage-busy
+                    # retry classification, when deferred telemetry also fails.
+                    logger.warning("Failed to flush empty trigger polls after cycle failure", exc_info=True)
+                raise
+            flush_empty_polls()
+            return result
 
         loop_result = _poll_triggers(configured_triggers)
         events_discovered = loop_result.dependencies_resolved
