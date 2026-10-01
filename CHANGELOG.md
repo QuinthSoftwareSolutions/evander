@@ -7,7 +7,8 @@
   assessment across pending events from the same SQLite read snapshot.
 - Add opt-in `record_fields` to `query:team:state` for compact task and case
   results. Read only required state collections, preserve scope and assessment
-  dependencies, and retain the existing full response when selection is omitted.
+  dependencies, support nested workflow bindings with strict resolved-selector
+  validation, and retain the existing full response when selection is omitted.
 - Reuse one directory-bound HTTP client throughout ADO comment polling and
   obtain complete work-item fields and relations through the existing batch,
   removing individual detail requests while preserving comment cursors and retries.

@@ -7,6 +7,7 @@ import pytest
 
 from evander.events.models import WorkflowNodeEnvelope
 from evander.queries.providers.base import QueryRuntimeContext
+from evander.workflow.binding import resolve_workflow_bindings
 from evander_team_addon import activity_projections, attention_projections, runtime_projections
 from evander_team_addon import provider_queries
 from evander_team_addon.models import TeamCase
@@ -146,3 +147,54 @@ def test_envelope_materializes_projection_and_exposes_case_output(repository) ->
     assert result["cases"] == {"alpha-case": {"id": "alpha-case", "status": "open"}}
     assert result["tasks"] == {}
     assert TEAM_OUTPUT_SCHEMAS["query:team:state"]["cases"] == {"type": "object"}
+
+
+def _bound_query(repository, record_fields, upstream):
+    config = {"agent_id": "alpha-dev", "record_fields": record_fields}
+    provider = TeamStateQueryProvider()
+    provider.initialize(
+        WorkflowNodeEnvelope(
+            id="state", display_name="State", type="query:team:state", config=config,
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(repository.runtime_dir)}),
+    )
+    resolved = resolve_workflow_bindings(
+        config, {"shape": upstream}, {"shape": set(upstream)},
+    ).resolved_config
+    return provider, resolved
+
+
+@pytest.mark.parametrize("record_fields", [
+    "${{shape.record_fields}}",
+    {"tasks": "${{shape.task_fields}}"},
+    {"tasks": ["id", "${{shape.field}}"]},
+    {"${{shape.collection}}": ["id", "state"]},
+    {"tasks": ["id", "${{shape.field_prefix}}ate"]},
+])
+def test_projection_materializes_and_executes_recursive_workflow_bindings(repository, record_fields):
+    provider, resolved = _bound_query(repository, record_fields, {
+        "record_fields": {"tasks": ["id", "state"]},
+        "task_fields": ["id", "state"],
+        "field": "state",
+        "collection": "tasks",
+        "field_prefix": "st",
+    })
+    result = provider.execute(resolved_config=resolved)
+    assert result["state"] == {
+        "tasks": {"alpha-task": {"id": "alpha-task", "state": "pending"}},
+    }
+
+
+@pytest.mark.parametrize(("record_fields", "value"), [
+    ({"tasks": "${{shape.value}}"}, "id"),
+    ({"tasks": "${{shape.value}}"}, []),
+    ({"tasks": ["id", "${{shape.value}}"]}, "unknown_field"),
+    ({"${{shape.value}}": ["id"]}, "memories"),
+    ({"tasks": "${{shape.value}}", "cases": ["unknown_field"]}, ["id", "state"]),
+])
+def test_projection_rejects_invalid_selectors_after_workflow_binding_resolution(
+    repository, record_fields, value,
+):
+    provider, resolved = _bound_query(repository, record_fields, {"value": value})
+    with pytest.raises(ValueError):
+        provider.execute(resolved_config=resolved)

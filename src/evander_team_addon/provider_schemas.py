@@ -538,9 +538,18 @@ class TeamStateQueryDefinition(QueryDefinition):
     @field_validator("record_fields")
     @classmethod
     def validate_record_fields(cls, value: ConfigValue | None) -> ConfigValue | None:
-        # An output reference is resolved before execution; validate literal
-        # projections now and always validate the resolved object at dispatch.
-        if isinstance(value, str):
+        def has_binding(item: ConfigValue) -> bool:
+            if isinstance(item, str):
+                return "${{" in item
+            if isinstance(item, Mapping):
+                return any(has_binding(key) or has_binding(child) for key, child in item.items())
+            if isinstance(item, list):
+                return any(has_binding(child) for child in item)
+            return False
+
+        # Bindings can supply collection names, field lists or individual fields.
+        # Validate static selectors now and every resolved selector at dispatch.
+        if isinstance(value, str) or has_binding(value):
             return value
         from .provider_query_projection import validate_record_fields
 
