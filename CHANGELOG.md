@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-01 - Recover retention batch limits after successful cleanup (0.76.5)
+
+- Gradually restore persisted record and index-row batch limits after fully used
+  batches finish with time to spare, preventing retention from remaining at one
+  row per batch after earlier deadlines.
+- Commit recovery with cleanup, retain existing batch caps and deadline backoff,
+  and preserve concurrent reductions without growing empty or deferred phases.
+
 ## 2026-10-01 - Reload worker code during deployment (0.76.4)
 
 - Restart container worker daemons when their running revision differs from the deployed
