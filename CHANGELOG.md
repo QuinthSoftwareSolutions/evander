@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-02 - Enforce WordPress resource permissions (0.78.2)
+
+- Release WordPress Add-on 0.1.3 and companion 1.0.2 with object, operation,
+  metadata and taxonomy authorization for inspection, publication and browser edits.
+- Reject ACF aliases of protected metadata and mismatched field references while
+  preserving conditional restoration after editing permissions are revoked.
+- Core runtime behavior is unchanged; the add-on remains separately installed and enabled.
+
 ## 2026-10-01 - Bound retention candidate searches with dedicated indexes (0.78.1)
 
 - Select the oldest eligible sources through five limited partial-index ranges,

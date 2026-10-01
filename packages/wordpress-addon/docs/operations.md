@@ -20,9 +20,24 @@ explicit; adding the package never connects to or modifies an existing website.
    WordPress tables and companion journal. The host and plugin use protocol v1.
 3. Create a dedicated WordPress service account with the capabilities needed for
    the intended resources, including `edit_theme_options` for the companion API.
+   That API capability alone does not authorize content access. Raw inspection
+   requires editing permission for the addressed post or term. New posts require
+   the post type's creation capability; publication, deletion and changes to the
+   author or post type require their corresponding WordPress capabilities.
+   Metadata requires parent-object editing permission and honors registered
+   metadata authorization callbacks, including replacement's add/delete steps.
+   Unregistered protected builder keys must be explicitly approved as design
+   metadata using the `evander_design_metadata` filter. Only `_edit_lock` and
+   `_edit_last` are approved by default; registered callbacks and per-object
+   policies still apply to approved keys. WordPress trash metadata is never
+   exempted from its normal metadata permission checks.
+   Relationships also require the taxonomy's assignment capability. Permissions
+   are rechecked before publication and when browser writes are admitted.
    New post HTML must satisfy WordPress KSES unless that account has
    `unfiltered_html`; unsafe proposals are rejected before publication. Conditional
-   undo can still restore the exact captured baseline after that capability is removed.
+   undo can still restore the exact captured baseline after editing or HTML
+   capabilities are removed, provided the original account retains companion API
+   access and the live record still matches the captured publication result.
    Create an application password and place it in a **managed Basic connector
    credential**, using the existing Credentials and Connectors admin pages. Approve
    its exact current consumer binding. The username/password stays on the host.
@@ -135,6 +150,16 @@ returns a null value and its version until publication assigns a real ID.
 Publication and change-status receipts expose `resources["post:new-unique-name"]`
 with `resolved_key` and the recorded `version`. Use that real key to inspect or
 prepare subsequent edits; private snapshots and browser state remain on the host.
+Both symbolic and unused numeric post IDs default to a draft page owned by the
+service account. Term keys address existing taxonomy-associated records; creating
+terms needs a dedicated adapter that also captures their taxonomy records.
+ACF forward edits require a registered field definition with the requested name
+and matching field-key reference, including the first value of a previously empty
+field. Both the visible value key and hidden reference key must pass the protected
+metadata check. Exact undo does not depend on the field definition still existing.
+Existing nested fields retain their captured field-key binding. Use the `acf:`
+resource for compound field edits; generic metadata access to a field's hidden
+reference is subject to the same binding checks.
 Option values contain `value` and `autoload`, so undo preserves the option's cache
 metadata too. Relationship values are lists of `term_taxonomy_id` and `term_order`;
 they cover one object's associations in the named taxonomy and preserve other
@@ -150,6 +175,23 @@ resource adapter; the generic metadata adapter rejects `_wp_attached_file` and
 secret-bearing metadata. Only approved design options are writable. The default
 option allowlist contains the active theme's modifications, plus the private
 restore probe; extend it with `evander_design_options`.
+
+For a known protected builder field, a site-owned plugin can approve that exact
+key for its intended post type:
+
+```php
+add_filter('evander_design_metadata', function ($keys, $type, $subtype) {
+    if ($type === 'post' && $subtype === 'page') {
+        $keys[] = '_builder_data';
+    }
+    return $keys;
+}, 10, 3);
+```
+
+This approval lifts WordPress's default underscore protection for that design
+key. The account's object permissions, metadata authorization callbacks and
+prepared browser manifest still apply. Approve only storage that the site's
+builder uses for design content.
 
 For example, prepare an edit after inspecting `post:123`:
 

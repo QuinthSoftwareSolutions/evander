@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Evander WordPress Companion
  * Description: Versioned resources, prepared edits, scoped browser sessions and conditional undo.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Requires PHP: 8.1
  * License: GPL-2.0-or-later
  */
@@ -110,6 +110,16 @@ final class Evander_WordPress {
         $adapter->validate($key, $value);
         if ($adapter instanceof Evander_Core_Resources) { $adapter->validate_edit($key, $value); }
     }
+    private static function authorize_read($adapter,$key,$require_existing=false) {
+        if ($adapter instanceof Evander_Core_Resources) { $adapter->authorize_read($key,$require_existing); }
+    }
+    private static function authorize_snapshot($snapshot) {
+        foreach ($snapshot as $key=>$row) {
+            $address=$row['resolved_key']??$key; $adapter=self::adapter($address);
+            self::authorize_read($adapter,$address,$row['before']!==null);
+            self::validate_edit($adapter,$key,$row['value']);
+        }
+    }
     private static function resources($data) {
         foreach ($data['resources'] as $key => $row) {
             $adapter = self::adapter($row['resolved_key'] ?? $key);
@@ -153,7 +163,8 @@ final class Evander_WordPress {
                     'translation_policy' => 'Only explicitly addressed records are changed; language relationships are preserved.'];
             }
             if ($name === 'inspect') {
-                $key = (string)($args['key'] ?? ''); $value = self::adapter($key)->read($key);
+                $key = (string)($args['key'] ?? ''); $adapter=self::adapter($key);
+                self::authorize_read($adapter,$key); $value = $adapter->read($key);
                 return ['protocol_version' => 1, 'key' => $key, 'value' => $value, 'version' => self::hash($value)];
             }
             if ($name === 'browser/redeem') { return self::redeem($args); }
@@ -167,13 +178,14 @@ final class Evander_WordPress {
                 if ($existing) {
                     $data = self::record($id, true); self::owned($data);
                     if ($data['request_hash'] !== self::hash($args['resources'])) { throw new RuntimeException('Change ID already used', 409); }
+                    self::authorize_snapshot($data['resources']);
                 } else {
                     $data = ['owner' => get_current_user_id(), 'state' => 'prepared', 'resources' => [],
                         'request_hash' => self::hash($args['resources']), 'expires_at' => min(time() + 86400, (int)$args['expires_at'])];
                     foreach ($args['resources'] as $row) {
                         $key = (string)$row['key'];
                         if (isset($data['resources'][$key])) { throw new RuntimeException('Duplicate resource', 400); }
-                        $adapter = self::adapter($key); $adapter->lock($key); $before = $adapter->read($key);
+                        $adapter = self::adapter($key); $adapter->lock($key); self::authorize_read($adapter,$key); $before = $adapter->read($key);
                         self::validate_edit($adapter, $key, $row['value']);
                         if (self::hash($before) !== $row['expected_version']) { throw new RuntimeException('Resource changed', 409); }
                         $data['resources'][$key] = ['before' => $before, 'before_version' => self::hash($before), 'value' => $row['value']];
@@ -201,12 +213,14 @@ final class Evander_WordPress {
                 if (isset($data['extensions'][$extension])) {
                     if ($data['extensions'][$extension]['hash'] !== $hash) { throw new RuntimeException('Extension key already used',409); }
                     $snapshot = $data['extensions'][$extension]['snapshot'];
+                    self::authorize_snapshot($snapshot);
                 } else {
                     $snapshot = [];
                     foreach ($args['resources'] as $row) {
                         $key = $row['key'];
                         if (isset($data['resources'][$key]) || isset($snapshot[$key])) { throw new RuntimeException('Resource is already covered',409); }
-                        $adapter = self::adapter($key); $adapter->lock($key); $before = $adapter->read($key); self::validate_edit($adapter,$key,$row['value']);
+                        $adapter = self::adapter($key); $adapter->lock($key); self::authorize_read($adapter,$key);
+                        $before = $adapter->read($key); self::validate_edit($adapter,$key,$row['value']);
                         if (self::hash($before) !== $row['expected_version']) { throw new RuntimeException('Extension resource changed',409); }
                         $snapshot[$key] = ['before'=>$before,'before_version'=>self::hash($before),'value'=>$row['value']];
                     }
@@ -221,6 +235,7 @@ final class Evander_WordPress {
                 $extension = $args['idempotency_key'];
                 if (empty($data['extensions'][$extension]) || empty($args['snapshot_digest'])) { throw new RuntimeException('Extension has no durable snapshot',409); }
                 if (!$data['extensions'][$extension]['armed']) {
+                    self::authorize_snapshot($data['extensions'][$extension]['snapshot']);
                     foreach ($data['extensions'][$extension]['snapshot'] as $key=>$row) {
                         $adapter = self::adapter($key); $adapter->lock($key);
                         if (self::hash($adapter->read($key)) !== $row['before_version']) { throw new RuntimeException('Extension resource changed',409); }
@@ -233,6 +248,7 @@ final class Evander_WordPress {
                 self::fence($args['fence']);
                 if (empty($args['snapshot_digest'])) { throw new RuntimeException('Host snapshot is not durable', 400); }
                 if (!in_array($data['state'], ['prepared','armed','browser_open'])) { throw new RuntimeException('Change cannot be armed', 409); }
+                self::authorize_snapshot($data['resources']);
                 $data['snapshot_digest'] = $args['snapshot_digest']; $data['state'] = 'armed';
             } elseif ($name === 'apply') {
                 self::fence($args['fence']); self::resources($data);
@@ -270,6 +286,7 @@ final class Evander_WordPress {
             } elseif ($name === 'browser/ticket') {
                 if (!self::browser_compatible() || !in_array($data['state'],['armed','browser_open'],true) || $data['expires_at'] <= time()) { throw new RuntimeException('Browser recovery coverage is unavailable', 409); }
                 self::fence($args['fence']);
+                self::authorize_snapshot($data['resources']);
                 self::revoke($data);
                 $ticket = bin2hex(random_bytes(32));
                 $data['ticket_generation'] = hash('sha256',$ticket);
@@ -385,6 +402,9 @@ final class Evander_WordPress {
         foreach (['_maybe_update_core','_maybe_update_plugins','_maybe_update_themes'] as $callback) { remove_action('admin_init', $callback); }
         add_filter('pre_update_option_cron', function($new, $old) { return $old; }, PHP_INT_MAX, 2);
         add_filter('query', [self::class, 'guard_query'], PHP_INT_MAX);
+        // Keep locks/SQL enforcement active during init, then authorize after
+        // plugins have registered their custom post types and field definitions.
+        add_action('wp_loaded',[self::class,'browser_authorize'],PHP_INT_MIN);
         add_action('shutdown', [self::class, 'browser_commit'], PHP_INT_MAX);
         add_filter('wp_revisions_to_keep', '__return_zero', PHP_INT_MAX);
         // The block editor lazily creates an empty theme-global styles post even
@@ -402,6 +422,11 @@ final class Evander_WordPress {
                 'no_found_rows'=>true, 'update_post_meta_cache'=>false, 'update_post_term_cache'=>false]);
             return $posts ? (int)$posts[0] : -1;
         }, PHP_INT_MAX);
+    }
+    public static function browser_authorize() {
+        if (!self::$browser_transaction) { return; }
+        try { self::authorize_snapshot(self::$browser['data']['resources']); }
+        catch (Throwable $error) { self::rollback(); self::$browser_transaction=false; wp_die('Resource permission denied', '', ['response'=>403]); }
     }
     private static function browser_allowed_caps() {
         return ['exist','read','edit_posts','edit_pages','edit_published_posts','edit_published_pages','publish_posts','publish_pages',
@@ -421,8 +446,13 @@ final class Evander_WordPress {
     }
     public static function guard_query($sql) {
         if (self::$internal || !preg_match('/^\s*(UPDATE|INSERT|REPLACE|DELETE|ALTER|CREATE|DROP|TRUNCATE|COMMIT|ROLLBACK|START|SET)\b/i', $sql)) { return $sql; }
-        foreach (self::$browser['data']['resources'] as $key => $row) {
-            if (self::adapter($key)->allows_query($key, $sql)) { self::$cache_dirty = true; return $sql; }
+        try {
+            foreach (self::$browser['data']['resources'] as $key => $row) {
+                if (self::adapter($key)->allows_query($key, $sql)) { self::$cache_dirty = true; return $sql; }
+            }
+        } catch (Throwable $error) {
+            self::rollback(); self::$browser_transaction = false;
+            wp_die('Resource permission denied', '', ['response'=>403]);
         }
         self::rollback(); self::$browser_transaction = false;
         wp_die('This write is outside the prepared recovery manifest', '', ['response'=>409]);
@@ -433,7 +463,13 @@ final class Evander_WordPress {
         $error = error_get_last();
         if ($error && in_array($error['type'], [E_ERROR,E_PARSE,E_CORE_ERROR,E_COMPILE_ERROR])) { self::rollback(); return; }
         $data = self::$browser['data'];
-        foreach ($data['resources'] as $key => &$row) { $row['result_version'] = self::hash(self::adapter($key)->read($key)); } unset($row);
+        try {
+            foreach ($data['resources'] as $key => &$row) {
+                $adapter=self::adapter($key); $value=$adapter->read($key);
+                if ($adapter instanceof Evander_Core_Resources && str_starts_with($key,'acf:')) { self::validate_edit($adapter,$key,$value); }
+                $row['result_version'] = self::hash($value);
+            } unset($row);
+        } catch (Throwable $error) { self::rollback(); return; }
         self::save(self::$browser['change_id'], $data); self::commit();
     }
 }
