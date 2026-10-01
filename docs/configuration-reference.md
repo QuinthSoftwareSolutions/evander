@@ -987,7 +987,9 @@ checkout and the checkout is an ancestor of the cached configured-branch tip. A 
 explicitly advances the worker trust record, allowing an assistant-requested fetch or pull to
 survive even if the control-plane cache has since advanced farther along the same branch. Divergent
 or arbitrary local commits remain rejected. Preparation still validates the repository source,
-clean working tree, detached read-only configuration, and session access. If both the worker
+unchanged tracked and staged files, detached read-only configuration, and session access.
+Unrelated untracked files are preserved and do not block reuse or refresh. A checkout update
+fails if it would overwrite a local untracked file, including an ignored file. If both the worker
 checkout and a cached managed-mirror commit are missing, preparation fails clearly instead of
 silently initializing the mirror from upstream. Materializing a missing worker checkout still uses
 the managed Git read endpoint and therefore its normal freshness enforcement; after that mandatory
