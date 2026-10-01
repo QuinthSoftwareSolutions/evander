@@ -1,5 +1,15 @@
 # WordPress Add-on changelog
 
+## 2026-10-01 - Scoped block editor compatibility (0.1.1)
+
+- Ship companion 1.0.1: retain the locked recovery manifest when WordPress
+  reauthenticates an admin request, and reject switching change ownership.
+- Defer uncovered global-styles initialization and resolve the editor's custom-CSS
+  lookup without writing unrelated theme options. Existing styles still render;
+  explicitly covered resources remain editable and recoverable.
+- Exercise actual block-editor loading, native REST saves, write restrictions and
+  exact undo with fresh and initialized block-theme styles in the Docker fixture.
+
 ## 2026-09-30 - Initial release (0.1.0)
 
 - Require privileged unlock and same-origin JSON requests for operator mutations;

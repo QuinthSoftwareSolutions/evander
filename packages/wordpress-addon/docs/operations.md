@@ -198,6 +198,14 @@ CMS changes when publication requires approval. Current session and directory
 argument policies apply to browser access as well as background publication.
 
 Prepare a change with `browser: true` and all resources that the screen can write.
+For the standard post/page block editor, include the `post:<ID>` record and its
+`meta:<ID>:_edit_lock` and `meta:<ID>:_edit_last` resources, plus any template,
+taxonomy or plugin metadata the chosen screen saves. Loading the editor preserves
+this coverage across repeated cookie authentication. Scoped requests defer creation
+of an absent theme-global styles record and avoid persisting the custom-CSS lookup
+cache; existing theme styles and CSS still render. Editing those existing resources
+requires explicit preparation. Ordinary operator sessions keep normal WordPress
+initialization behavior.
 Recovery is captured before the managed browser broker can issue a session. Use
 the seeded `createManagedWebsiteContext(browser, targetAlias)` helper. After editing,
 queue `apply_change`; publication closes the browser session, records its actual
