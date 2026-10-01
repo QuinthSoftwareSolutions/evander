@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Evander WordPress Companion
  * Description: Versioned resources, prepared edits, scoped browser sessions and conditional undo.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Requires PHP: 8.1
  * License: GPL-2.0-or-later
  */
@@ -352,8 +352,13 @@ final class Evander_WordPress {
             if ($binding['owner'] !== (int)$user->ID || $binding['change_id'] !== $session['evander_change_id'] ||
                 $binding['expires_at'] <= time() || $data['state'] !== 'browser_open' ||
                 ($data['browser_token'] ?? '') !== $cookie['token']) { throw new RuntimeException(); }
-            self::$browser = $binding;
-        } catch (Throwable $ignored) { wp_die('Browser change session denied', '', ['response'=>403]); }
+            // Admin pages authenticate again after init. Retain the locked manifest
+            // for the same session, and never switch change ownership mid-request.
+            if (self::$browser && ($binding['owner'] !== self::$browser['owner'] ||
+                $binding['change_id'] !== self::$browser['change_id'] ||
+                $binding['expires_at'] !== self::$browser['expires_at'])) { throw new RuntimeException(); }
+            if (!self::$browser) { self::$browser = $binding; }
+        } catch (Throwable $ignored) { self::rollback(); wp_die('Browser change session denied', '', ['response'=>403]); }
     }
     public static function browser_init() {
         // An admin cookie alone must enforce the same scope as a logged-in cookie.
@@ -382,6 +387,21 @@ final class Evander_WordPress {
         add_filter('query', [self::class, 'guard_query'], PHP_INT_MAX);
         add_action('shutdown', [self::class, 'browser_commit'], PHP_INT_MAX);
         add_filter('wp_revisions_to_keep', '__return_zero', PHP_INT_MAX);
+        // The block editor lazily creates an empty theme-global styles post even
+        // when editing a page. Defer that unrelated initialization; existing,
+        // explicitly covered styles records still use the normal write guard.
+        add_filter('wp_insert_post_empty_content', function($empty, $post) {
+            return $empty || (empty($post['ID']) && ($post['post_type'] ?? '') === 'wp_global_styles');
+        }, PHP_INT_MAX, 2);
+        // Resolve an uncached custom-CSS lookup without persisting a theme-mod
+        // cache entry. Keep both existing CSS and the captured options unchanged.
+        add_filter('theme_mod_custom_css_post_id', function($id) {
+            if ($id === -1 || ($id > 0 && get_post($id))) { return $id; }
+            $posts = get_posts(['post_type'=>'custom_css', 'post_status'=>get_post_stati(),
+                'name'=>sanitize_title(get_stylesheet()), 'posts_per_page'=>1, 'fields'=>'ids',
+                'no_found_rows'=>true, 'update_post_meta_cache'=>false, 'update_post_term_cache'=>false]);
+            return $posts ? (int)$posts[0] : -1;
+        }, PHP_INT_MAX);
     }
     private static function browser_allowed_caps() {
         return ['exist','read','edit_posts','edit_pages','edit_published_posts','edit_published_pages','publish_posts','publish_pages',
