@@ -291,7 +291,11 @@ an older release, rehydrate referenced records with the documented downgrade com
 The background storage lane advances history indexing and retention every second. Bounded scalar
 and payload garbage collection continues at that cadence while sweep cursors or deletions remain,
 then waits 30 seconds between completed idle sweeps. Garbage-collection failures retain the shorter
-retry cadence. A completed execution-history backfill skips trigger-queue readiness queries;
+retry cadence. Each scalar table and the payload collector durably retain their own completion
+markers while other components finish. Sweeps that delete data run a clean follow-up before the
+idle pause, including to reclaim payload children orphaned behind the cursor. The next scheduled
+sweep resets the completed markers and checks newly unreferenced data.
+A completed execution-history backfill skips trigger-queue readiness queries;
 unfinished backfill waits for pending and inflight trigger deliveries to finish.
 
 The Admin Web **Add-ons** page can toggle `addon_loader.enabled_addon_ids` and

@@ -225,7 +225,7 @@ class JsonGateCursorRepository(JsonCursorRepository):
                 trigger_id=trigger_id,
                 trigger_type=trigger_type,
                 discovered=discovered,
-                event_ids=list(event_ids),
+                event_ids=event_ids[-20:],
                 polled_at=polled_at or datetime.now(UTC),
             )
         ])

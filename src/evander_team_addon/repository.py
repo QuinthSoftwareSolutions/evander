@@ -134,6 +134,8 @@ class TeamStateRepository:
         A projection remains a projection: it is never persisted as complete
         state. The store validates only the explicit bookkeeping rows. Stale
         snapshots are refreshed before the callback runs, with bounded retries.
+        Continued revision churn falls back to current rows under the writer
+        lock and a fresh snapshot, preserving already accepted queued prompts.
         """
         # Fail before committing if the supplied projection omitted these fields.
         if snapshot is not None:
@@ -147,12 +149,20 @@ class TeamStateRepository:
                     include_state=snapshot is None,
                 )
                 break
-            except TeamDispatchBookkeepingConflictError as exc:
-                if attempt == 2:
-                    raise TeamStateConflictError(
-                        expected_revision=exc.expected_revision, current_revision=exc.current_revision,
-                    ) from exc
+            except TeamDispatchBookkeepingConflictError:
                 assert snapshot is not None
+                if attempt == 2:
+                    _, state = self.store.update_dispatch_bookkeeping(
+                        mutator,
+                        dispatch_ids=dispatch_ids,
+                        state_collections=(
+                            sorted(snapshot._loaded_collections)
+                            if isinstance(snapshot, TeamStateReadProjection)
+                            else None
+                        ),
+                    )
+                    assert state is not None
+                    return state
                 snapshot = (self.read_projection(collections=sorted(snapshot._loaded_collections))
                             if isinstance(snapshot, TeamStateReadProjection) else self.read())
         if snapshot is None:

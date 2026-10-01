@@ -504,6 +504,14 @@ class TeamsInboxStore:
             self._compact_notifications(connection)
             return cursor.rowcount > 0
 
+    def compact_notifications(self, *, now: datetime, limit: int = 100) -> bool:
+        """Remove at most limit rows per terminal state; report possible remaining work."""
+
+        if not 1 <= limit <= 1000:
+            raise ValueError("notification compaction limit must be between 1 and 1000")
+        with self._lock, self._connect() as connection:
+            return self._compact_notifications(connection, now=now, limit=limit)
+
     def has_ready_notifications(self, *, now: datetime) -> bool:
         """Check readiness without acquiring leases or preparing ingestion configuration."""
 
@@ -1154,16 +1162,35 @@ class TeamsInboxStore:
             (cutoff, cutoff),
         )
 
-    def _compact_notifications(self, connection: sqlite3.Connection) -> None:
-        now = datetime.now(timezone.utc)
-        connection.execute(
-            "DELETE FROM teams_inbox_notification_queue WHERE state = 'completed' AND completed_at < ?",
-            (self._datetime_to_storage(now - _COMPLETED_NOTIFICATION_RETENTION),),
-        )
-        connection.execute(
-            "DELETE FROM teams_inbox_notification_queue WHERE state = 'failed' AND completed_at < ?",
-            (self._datetime_to_storage(now - _FAILED_NOTIFICATION_RETENTION),),
-        )
+    def _compact_notifications(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        now: datetime | None = None,
+        limit: int | None = None,
+    ) -> bool:
+        now = now or datetime.now(timezone.utc)
+        more_work = False
+        for state, retention in (
+            ("completed", _COMPLETED_NOTIFICATION_RETENTION),
+            ("failed", _FAILED_NOTIFICATION_RETENTION),
+        ):
+            cutoff = self._datetime_to_storage(now - retention)
+            if limit is None:
+                connection.execute(
+                    "DELETE FROM teams_inbox_notification_queue WHERE state = ? AND completed_at < ?",
+                    (state, cutoff),
+                )
+            else:
+                deleted = connection.execute(
+                    """DELETE FROM teams_inbox_notification_queue WHERE idempotency_key IN (
+                           SELECT idempotency_key FROM teams_inbox_notification_queue
+                           WHERE state = ? AND completed_at < ? ORDER BY completed_at LIMIT ?
+                       )""",
+                    (state, cutoff, limit),
+                ).rowcount
+                more_work = more_work or deleted == limit
+        return more_work
 
     def _update_notification_queue(self, entry: TeamsNotificationQueueEntry) -> None:
         with self._lock, self._connect() as connection:

@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from threading import RLock
+from time import monotonic
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import quote, unquote
@@ -93,6 +94,8 @@ from evander.workflow.runtime_config import (
 from evander.workflow.node_state import workflow_node_is_enabled
 
 logger = logging.getLogger(__name__)
+_NOTIFICATION_COMPACTION_INTERVAL_SECONDS = 3600.0
+_NOTIFICATION_COMPACTION_RETRY_SECONDS = 60.0
 _ATTACHMENT_SECRET_KEYS = {
     "authorization",
     "token",
@@ -239,6 +242,9 @@ class TeamsIngestWorker:
             config.runtime_dir / "teams-inbox-store.db"
         )
         self._notification_store = self.store if isinstance(self.store, TeamsInboxStore) else None
+        self._notification_compaction_lock = RLock()
+        self._notification_compaction_clock = monotonic
+        self._next_notification_compaction_at = 0.0
         self._subscription_reconciler = (
             TeamsSubscriptionReconciler(
                 store=self._notification_store,
@@ -403,6 +409,7 @@ class TeamsIngestWorker:
 
         self._reset_cycle_metrics()
         now = datetime.now(UTC)
+        self._compact_notification_queue_if_due(now=now)
         if self._notification_store is None or not self._notification_store.has_ready_notifications(
             now=now
         ):
@@ -422,6 +429,23 @@ class TeamsIngestWorker:
             )
         finally:
             self._notify_effect_orchestrator_if_needed(trigger_snapshot=trigger_snapshot)
+
+    def _compact_notification_queue_if_due(self, *, now: datetime) -> None:
+        store = self._notification_store
+        if store is None:
+            return
+        with self._notification_compaction_lock:
+            if self._notification_compaction_clock() < self._next_notification_compaction_at:
+                return
+            interval = _NOTIFICATION_COMPACTION_RETRY_SECONDS
+            try:
+                if not store.compact_notifications(now=now):
+                    interval = _NOTIFICATION_COMPACTION_INTERVAL_SECONDS
+            except Exception:
+                logger.warning(
+                    "Failed to compact Teams notification queue; retrying later", exc_info=True
+                )
+            self._next_notification_compaction_at = self._notification_compaction_clock() + interval
 
     def _log_start(self) -> None:
         logger.info(

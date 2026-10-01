@@ -89,6 +89,7 @@ class DispatchBookkeepingStoreMixin:
         dispatch_ids: Sequence[str],
         expected_revision: int | None = None,
         include_state: bool = True,
+        state_collections: Sequence[str] | None = None,
     ) -> tuple[TeamDispatchBookkeepingScope, TeamState | None]:
         """Update at most 50 existing dispatches without loading unrelated history.
 
@@ -102,6 +103,7 @@ class DispatchBookkeepingStoreMixin:
         The global revision check, current-row read, mutation and metadata write
         share one SQLite writer transaction, including across processes. A caller
         with a snapshot can patch its result only when that revision still matches.
+        A fresh result may retain the caller's read projection collection set.
         """
         ids = tuple(sorted(set(dispatch_ids)))
         if not ids or len(ids) > 50:
@@ -267,5 +269,11 @@ class DispatchBookkeepingStoreMixin:
                             (str(SCHEMA_VERSION), "state_schema_version"),
                         ),
                     )
-                state = self._read_state(connection) if include_state else None
+                state = None
+                if include_state:
+                    state = (
+                        self._read_projection(connection, collections=state_collections)
+                        if state_collections is not None
+                        else self._read_state(connection)
+                    )
                 return scope, state

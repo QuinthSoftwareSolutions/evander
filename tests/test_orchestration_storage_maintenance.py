@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from concurrent.futures import Future
 from contextlib import contextmanager
@@ -485,3 +486,180 @@ def test_operational_gc_continues_past_referenced_prefix_before_becoming_idle(tm
         )
     assert run_storage_maintenance(_config(path)).garbage_collection_pending is True
     assert run_storage_maintenance(_config(path)).garbage_collection_pending is False
+
+
+def _seed_offset_gc_sweep(path, *, other_component):
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(path) as connection:
+        for execution_id in ("current", "legacy"):
+            execution_history.archive_execution_record(
+                connection, kind="effect", record={
+                    "execution_id": execution_id, "event_id": "event",
+                    "effect_id": "effect", "effect_type": "effect:test",
+                    "status": "succeeded", "started_at": datetime.now(UTC),
+                    "input_payload": {}, "outputs": {},
+                },
+            )
+        connection.execute("DELETE FROM workflow_history_index_jobs")
+        connection.execute("INSERT INTO workflow_history_index_state VALUES ('effect:current','active')")
+        connection.executemany(
+            "INSERT INTO workflow_history_index_values VALUES (?,?,?,?,?,?,?,?,?)",
+            [("effect:current", "active", "output", f"/{i}", "string", None, "value", None, None)
+             for i in range(100)],
+        )
+        metadata = {
+            "last_retention_date": {"date": datetime.now(UTC).date().isoformat()},
+            "execution_history_backfill": {"completed": True},
+        }
+        if other_component == "legacy":
+            connection.executemany(
+                "INSERT INTO workflow_node_execution_history_values VALUES (?,?,?,?,?,?,?,?)",
+                [("effect:legacy", "output", f"/{i}", "string", None, "value", None, None)
+                 for i in range(300)],
+            )
+            metadata["history_scalar_gc_cursor"] = {"current": 0, "legacy": 100}
+        else:
+            connection.executemany(
+                "INSERT INTO workflow_operational_blobs VALUES (?, 'zlib-json-v1', ?, 1)",
+                [(f"{i:064x}", b"unused") for i in range(300)],
+            )
+            connection.executemany(
+                "INSERT INTO workflow_operational_record_refs VALUES ('effect','retained',?)",
+                [(f"{i:064x}",) for i in range(300)],
+            )
+            metadata["operational_payload_gc_cursor"] = {"after": f"{99:064x}"}
+        connection.executemany(
+            "INSERT INTO orchestration_metadata VALUES (?,?)",
+            [(key, json.dumps(value)) for key, value in metadata.items()],
+        )
+
+
+def _read_gc_state(path, key):
+    with connect_orchestration_db_read_only(path) as connection:
+        return json.loads(connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key=?", (key,)
+        ).fetchone()[0])
+
+
+@pytest.mark.parametrize("other_component", ["legacy", "payload"])
+def test_offset_gc_sweeps_resume_durable_component_completion(tmp_path, other_component):
+    from evander.repositories.sqlite_runtime import close_sqlite_runtimes
+
+    path = tmp_path / "orchestration.db"
+    _seed_offset_gc_sweep(path, other_component=other_component)
+    assert run_storage_maintenance(_config(path)).garbage_collection_pending is True
+    assert run_storage_maintenance(_config(path)).garbage_collection_pending is True
+    state = _read_gc_state(path, "history_scalar_gc_cursor")
+    assert state["current_completed"] is True
+    assert state["current"] == 0
+    # Reopening the store must retain the completed component while its peer
+    # finishes, rather than restarting a sweep at a different phase offset.
+    close_sqlite_runtimes(path)
+    assert run_storage_maintenance(_config(path)).garbage_collection_pending is False
+    assert _read_gc_state(path, "history_scalar_gc_cursor")["current_completed"] is True
+    with connect_orchestration_db_read_only(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM workflow_history_index_values").fetchone()[0] == 100
+        table = ("workflow_node_execution_history_values" if other_component == "legacy"
+                 else "workflow_operational_blobs")
+        assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 300
+
+
+def test_completed_real_gc_sweep_waits_then_collects_new_garbage(tmp_path, monkeypatch):
+    now = [10.0]
+    calls = []
+
+    class ImmediateExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, function, config, *, run_garbage_collection):
+            calls.append((now[0], run_garbage_collection))
+            future = Future()
+            future.set_result(function(config, run_garbage_collection=run_garbage_collection))
+            return future
+
+        def shutdown(self, *, wait):
+            pass
+
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    monkeypatch.setattr(wal_maintenance, "ThreadPoolExecutor", ImmediateExecutor)
+    lane = wal_maintenance.OrchestrationWalCheckpointMaintenance(clock=lambda: now[0])
+    config = _config(path)
+    try:
+        lane.run_if_due(config)
+        assert lane.run_if_due(config).garbage_collection_pending is False
+        with connect_orchestration_db(path) as connection:
+            connection.execute("INSERT INTO workflow_operational_blobs VALUES ('orphan','zlib-json-v1',X'',0)")
+        for moment in (11.0, 39.0):
+            now[0] = moment
+            lane.run_if_due(config)
+        with connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM workflow_operational_blobs").fetchone()[0] == 1
+        now[0] = 40.0
+        lane.run_if_due(config)
+        assert lane.run_if_due(config).garbage_collection_pending is True
+        with connect_orchestration_db_read_only(path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM workflow_operational_blobs").fetchone()[0] == 0
+        now[0] = 41.0
+        lane.run_if_due(config)
+        assert lane.run_if_due(config).garbage_collection_pending is False
+        assert calls == [(10.0, True), (11.0, False), (39.0, False), (40.0, True), (41.0, True)]
+    finally:
+        lane.close()
+
+
+def test_payload_gc_remembers_earlier_parent_deletion_for_followup_sweep(tmp_path):
+    path = tmp_path / "orchestration.db"
+    _seed_offset_gc_sweep(path, other_component="payload")
+    with connect_orchestration_db(path) as connection:
+        connection.execute(
+            "DELETE FROM workflow_operational_record_refs WHERE sha256 IN (?,?)",
+            (f"{0:064x}", f"{199:064x}"),
+        )
+        connection.execute(
+            "INSERT INTO workflow_operational_blob_edges VALUES (?,?)",
+            (f"{199:064x}", f"{0:064x}"),
+        )
+    for _ in range(3):
+        assert run_storage_maintenance(_config(path)).garbage_collection_pending is True
+    # The parent was deleted before the clean tail window. Its earlier child
+    # remains behind the cursor and must be reclaimed before the idle pause.
+    with connect_orchestration_db_read_only(path) as connection:
+        assert connection.execute("SELECT 1 FROM workflow_operational_blobs WHERE sha256=?", (f"{0:064x}",)).fetchone()
+        assert connection.execute("SELECT 1 FROM workflow_operational_blobs WHERE sha256=?", (f"{199:064x}",)).fetchone() is None
+    assert run_storage_maintenance(_config(path)).garbage_collection_pending is True
+    with connect_orchestration_db_read_only(path) as connection:
+        assert connection.execute("SELECT 1 FROM workflow_operational_blobs WHERE sha256=?", (f"{0:064x}",)).fetchone() is None
+    for _ in range(8):
+        if run_storage_maintenance(_config(path)).garbage_collection_pending is False:
+            break
+    else:
+        pytest.fail("A clean follow-up sweep must finish")
+    with connect_orchestration_db_read_only(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM workflow_operational_blobs").fetchone()[0] == 298
+
+
+@pytest.mark.parametrize("error", [sqlite3.OperationalError("database is locked"), RuntimeError("GC failed")])
+def test_failed_gc_sweep_restart_rolls_back_completion_reset(tmp_path, monkeypatch, error):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    assert run_storage_maintenance(_config(path)).garbage_collection_pending is False
+    before = _read_gc_state(path, "history_scalar_gc_cursor")
+    with connect_orchestration_db(path) as connection:
+        connection.execute("INSERT INTO workflow_operational_blobs VALUES ('orphan','zlib-json-v1',X'',0)")
+    original = execution_history.collect_superseded_history_values
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(execution_history, "collect_superseded_history_values", fail)
+    failed = run_storage_maintenance(_config(path))
+    assert failed.garbage_collection_pending is True
+    assert (failed.skipped_reason == "storage_busy") == isinstance(error, sqlite3.OperationalError)
+    assert _read_gc_state(path, "history_scalar_gc_cursor") == before
+    monkeypatch.setattr(execution_history, "collect_superseded_history_values", original)
+    assert run_storage_maintenance(_config(path)).garbage_collection_pending is True
+    assert run_storage_maintenance(_config(path)).garbage_collection_pending is False
+    with connect_orchestration_db_read_only(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM workflow_operational_blobs").fetchone()[0] == 0

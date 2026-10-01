@@ -107,12 +107,54 @@ def write_teams_ingest_worker_config(
     )
 
 
-def test_empty_notification_queue_skips_workflow_and_session_preparation(
+def test_idle_notification_queue_compacts_terminal_rows_without_workflow_preparation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from evander.messaging import teams_ingest
+
     worker = build_teams_ingest_worker(
         GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
     )
+    origin = datetime.now(UTC)
+    wall_now = [origin + timedelta(days=31)]
+    monotonic_now = [10.0]
+    for key, state, completed_at in (
+        ("completed-expired", "completed", origin),
+        ("failed-expired", "failed", origin),
+        ("completed-at-cutoff", "completed", wall_now[0] - timedelta(days=7)),
+        ("failed-at-cutoff", "failed", wall_now[0] - timedelta(days=30)),
+        ("retry", "retry", None),
+        ("leased", "leased", None),
+    ):
+        worker.store.enqueue_notification(TeamsNotificationQueueEntry(
+            idempotency_key=key,
+            notification_kind="message",
+            subscription_id="subscription",
+            tenant_id="tenant",
+            resource="chats/chat/messages/message",
+            received_at=origin,
+            next_attempt_at=wall_now[0] + timedelta(days=90),
+            state=state,
+            completed_at=completed_at,
+            leased_until=wall_now[0] + timedelta(days=90) if state == "leased" else None,
+        ))
+
+    class WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is UTC
+            return wall_now[0]
+
+    monkeypatch.setattr(teams_ingest, "datetime", WallClock)
+    monkeypatch.setattr(worker, "_notification_compaction_clock", lambda: monotonic_now[0])
+    compaction_calls = []
+    compact = worker.store.compact_notifications
+
+    def track_compaction(**kwargs):
+        compaction_calls.append(kwargs["now"])
+        return compact(**kwargs)
+
+    monkeypatch.setattr(worker.store, "compact_notifications", track_compaction)
 
     def unexpected_preparation(**_kwargs):
         raise AssertionError("an idle notification worker must not prepare workflow/session state")
@@ -123,6 +165,116 @@ def test_empty_notification_queue_skips_workflow_and_session_preparation(
     )
 
     assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert {row[0] for row in connection.execute(
+            "SELECT idempotency_key FROM teams_inbox_notification_queue"
+        )} == {"completed-at-cutoff", "failed-at-cutoff", "retry", "leased"}
+
+    # Wall-clock changes affect retention cutoffs, never the monotonic schedule.
+    wall_now[0] += timedelta(days=7)
+    monotonic_now[0] += 3599.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(compaction_calls) == 1
+    monotonic_now[0] += 1.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(compaction_calls) == 2
+    with worker.store._connect() as connection:
+        assert {row[0]: row[1] for row in connection.execute(
+            "SELECT idempotency_key, state FROM teams_inbox_notification_queue"
+        )} == {"retry": "retry", "leased": "leased"}
+    for _ in range(3):
+        assert worker.process_notification_queue_once() == 0
+    assert len(compaction_calls) == 2
+
+
+def test_idle_notification_compaction_retries_failure_without_per_pass_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.messaging import teams_ingest
+
+    worker = build_teams_ingest_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
+    )
+    origin = datetime.now(UTC)
+    worker.store.enqueue_notification(TeamsNotificationQueueEntry(
+        idempotency_key="expired", notification_kind="message", subscription_id="subscription",
+        tenant_id="tenant", resource="resource", received_at=origin, next_attempt_at=origin,
+        state="completed", completed_at=origin,
+    ))
+
+    class WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return origin + timedelta(days=8)
+
+    monkeypatch.setattr(teams_ingest, "datetime", WallClock)
+    monotonic_now = [10.0]
+    monkeypatch.setattr(worker, "_notification_compaction_clock", lambda: monotonic_now[0])
+    compact = worker.store.compact_notifications
+    calls = []
+
+    def fail_once(**kwargs):
+        calls.append(kwargs["now"])
+        if len(calls) == 1:
+            raise OSError("notification storage is temporarily unavailable")
+        return compact(**kwargs)
+
+    monkeypatch.setattr(worker.store, "compact_notifications", fail_once)
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 1
+    monotonic_now[0] += 59.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(calls) == 1
+    monotonic_now[0] += 1.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(calls) == 2
+    with worker.store._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 0
+    monotonic_now[0] += 3599.0
+    assert worker.process_notification_queue_once() == 0
+    assert len(calls) == 2
+
+
+def test_idle_notification_compaction_resumes_bounded_slices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.messaging import teams_ingest
+
+    worker = build_teams_ingest_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"), project_dir=tmp_path
+    )
+    origin = datetime.now(UTC)
+    wall_now = origin + timedelta(days=31)
+    for state in ("completed", "failed"):
+        for number in range(101):
+            worker.store.enqueue_notification(TeamsNotificationQueueEntry(
+                idempotency_key=f"{state}-{number}", notification_kind="message",
+                subscription_id="subscription", tenant_id="tenant", resource="resource",
+                received_at=origin, next_attempt_at=origin, state=state, completed_at=origin,
+            ))
+
+    class WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return wall_now
+
+    monkeypatch.setattr(teams_ingest, "datetime", WallClock)
+    monotonic_now = [10.0]
+    monkeypatch.setattr(worker, "_notification_compaction_clock", lambda: monotonic_now[0])
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert dict(connection.execute(
+            "SELECT state, COUNT(*) FROM teams_inbox_notification_queue GROUP BY state"
+        )) == {"completed": 1, "failed": 1}
+    monotonic_now[0] += 59.0
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 2
+    monotonic_now[0] += 1.0
+    assert worker.process_notification_queue_once() == 0
+    with worker.store._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM teams_inbox_notification_queue").fetchone()[0] == 0
 
 
 def test_teams_workflow_cache_keeps_cursors_fresh_and_adopts_valid_config_edits(

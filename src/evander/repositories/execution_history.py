@@ -613,8 +613,14 @@ def run_pending_history_indexing(
     return {"indexed_values": len(prepared.rows), "completed": int(prepared.exhausted)}
 
 
-def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: int = 100) -> int:
-    """Scan bounded candidate windows, preserving progress through live values."""
+def collect_superseded_history_values(
+    connection: sqlite3.Connection, *, limit: int = 100, hold_completed: bool = False
+) -> int:
+    """Scan bounded candidate windows, preserving progress through live values.
+
+    Maintenance can hold completed components until it resets the shared sweep.
+    The default keeps the standalone collector's repeating-sweep behavior.
+    """
     if not 1 <= limit <= 10_000:
         raise ValueError("limit must be between 1 and 10000")
     limit = min(limit, 100)
@@ -624,7 +630,9 @@ def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: 
         "SELECT value_json FROM orchestration_metadata WHERE key='history_scalar_gc_cursor'"
     ).fetchone()
     previous = json_loads_object(row[0]) if row else {}
-    progress = dict(previous)
+    progress = dict(previous) if hold_completed else {
+        name: previous[name] for name in ("current", "legacy") if name in previous
+    }
     deleted = 0
     tables = (
         (
@@ -646,6 +654,10 @@ def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: 
         ),
     )
     for name, table, orphan in tables:
+        completed_key = f"{name}_completed"
+        deleted_key = f"{name}_deleted_in_sweep"
+        if hold_completed and progress.get(completed_key) is True:
+            continue
         candidates = [
             item[0]
             for item in connection.execute(
@@ -653,14 +665,23 @@ def collect_superseded_history_values(connection: sqlite3.Connection, *, limit: 
                 (int(progress.get(name, 0)), limit),
             ).fetchall()
         ]
+        component_deleted = 0
         if candidates:
             placeholders = ",".join("?" for _ in candidates)
             cursor = connection.execute(
                 f"DELETE FROM {table} AS v WHERE rowid IN ({placeholders}) AND {orphan}",
                 candidates,
             )
-            deleted += cursor.rowcount
+            component_deleted = cursor.rowcount
+            deleted += component_deleted
         progress[name] = candidates[-1] if len(candidates) == limit else 0
+        if hold_completed:
+            deleted_in_sweep = bool(progress.get(deleted_key) or component_deleted)
+            exhausted = len(candidates) < limit
+            # A completed component waits for its peers. A sweep that deleted
+            # values gets one clean follow-up before it can become idle.
+            progress[completed_key] = exhausted and not deleted_in_sweep
+            progress[deleted_key] = deleted_in_sweep and not exhausted
     if progress != previous and (row is not None or any(progress.values())):
         connection.execute(
             """INSERT INTO orchestration_metadata VALUES ('history_scalar_gc_cursor',?)

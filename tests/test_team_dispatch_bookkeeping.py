@@ -3,9 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from multiprocessing import get_context
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
+from evander.effects.providers.base import EffectRuntimeContext
+from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
 from evander_team_addon.models import (
     AgentContextClearingPolicy,
     TeamDispatchMcpCapabilityReceipt,
@@ -15,16 +18,20 @@ from evander_team_addon.models import (
     TeamIdempotencyRecord,
     TeamOutboxRecord,
 )
+from evander_team_addon.provider_completion import TeamAgentPromptCompletionFinalizeHook
+from evander_team_addon.provider_schemas import TeamWakeDueAgentsEffectDefinition
+from evander_team_addon.provider_wake import TeamWakeDueAgentsEffectProvider
 from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.runtime_service import (
     AgentDispatchNativeThreadReceipt,
     TeamRuntimeService,
 )
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.sqlite_dispatch_bookkeeping import TeamDispatchBookkeepingConflictError
-from evander_team_addon.sqlite_store import TeamStateReadProjection
+from evander_team_addon.sqlite_store import TeamStateReadProjection, TeamStateSqliteStore
 
-from team_runtime_support import _seed_team
+from team_runtime_support import FakeFileCopier, FakeResumer, FakeSessionStore, _seed_team
 
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -301,6 +308,170 @@ def test_stale_revision_prevents_callback_and_snapshot_refresh_preserves_concurr
     assert updated.projects["project"].name == "Concurrent edit"
     assert updated.revision == snapshot.revision + 2
     assert updated == repo.read()
+
+
+def _race_bookkeeping_revisions(repo, monkeypatch, *, mutate_current=None):
+    """Commit through another repository in each snapshot-to-writer gap."""
+    other = TeamStateRepository(repo.runtime_dir)
+    original = TeamStateSqliteStore.update_dispatch_bookkeeping
+    attempts = []
+
+    def racing_update(store, updater, **kwargs):
+        attempts.append(kwargs.get("expected_revision"))
+
+        def concurrent_edit(state):
+            state.projects["project"].name = f"Concurrent edit {len(attempts)}"
+            if mutate_current is not None:
+                mutate_current(state, len(attempts))
+
+        other.update(concurrent_edit)
+        return original(store, updater, **kwargs)
+
+    monkeypatch.setattr(TeamStateSqliteStore, "update_dispatch_bookkeeping", racing_update)
+    return attempts
+
+
+@pytest.mark.parametrize("projected", [False, True])
+@pytest.mark.parametrize("change_marker", [False, True])
+def test_exhausted_snapshot_retries_return_fresh_state_and_run_callback_once(
+    tmp_path, monkeypatch, projected, change_marker,
+):
+    repo, _runtime, baseline, dispatch_id = _reserved(tmp_path)
+    snapshot = (
+        repo.read_projection(collections=(*COLLECTIONS, "projects")) if projected else baseline
+    )
+    if projected:
+        monkeypatch.setattr(repo.store, "_read_state", _no_full_state)
+    attempts = _race_bookkeeping_revisions(repo, monkeypatch)
+    callbacks = []
+
+    def mutate(scope):
+        callbacks.append(scope.revision)
+        if change_marker:
+            scope.dispatches[dispatch_id].queued_at = NOW
+
+    updated = repo.update_dispatch_bookkeeping(
+        mutate, dispatch_ids=[dispatch_id], snapshot=snapshot,
+    )
+
+    assert len(attempts) == 4 and attempts[-1] is None
+    assert callbacks == [baseline.revision + 4]
+    assert updated.revision == baseline.revision + 4 + int(change_marker)
+    assert updated.projects["project"].name == "Concurrent edit 4"
+    assert snapshot.projects["project"].name == "Project"
+    assert snapshot.dispatches[dispatch_id].queued_at is None
+    persisted = TeamStateRepository(tmp_path).read()
+    assert updated.dispatches == persisted.dispatches
+    assert updated.agent_runtimes == persisted.agent_runtimes
+    if projected:
+        assert isinstance(updated, TeamStateReadProjection)
+        assert updated._loaded_collections == snapshot._loaded_collections
+        with pytest.raises(ValueError, match="did not load"):
+            updated.memories
+        with pytest.raises(ValueError, match="projections cannot be persisted"):
+            repo.store.commit_prepared_state_with_command_transaction(
+                previous_payload=persisted.model_dump(mode="json"),
+                candidate=updated,
+                command_writer=lambda _tx: None,
+            )
+    else:
+        assert updated == persisted
+
+
+def test_exhausted_snapshot_retry_fallback_still_rejects_lost_dispatch_owner(
+    tmp_path, monkeypatch,
+):
+    repo, runtime, snapshot, dispatch_id = _reserved(tmp_path)
+
+    def release_owner(state, attempt):
+        if attempt == 4:
+            state.agent_runtimes["backend"].active_dispatch_id = None
+
+    attempts = _race_bookkeeping_revisions(repo, monkeypatch, mutate_current=release_owner)
+    with pytest.raises(ValueError, match="no longer owns"):
+        runtime.mark_agent_dispatch_queued(
+            agent_id="backend", dispatch_id=dispatch_id, now=NOW, state=snapshot,
+        )
+    persisted = repo.read()
+    assert len(attempts) == 4
+    assert persisted.revision == snapshot.revision + 4
+    assert persisted.dispatches[dispatch_id].queued_at is None
+    assert persisted.agent_runtimes["backend"].active_dispatch_id is None
+
+
+@pytest.mark.parametrize("chat_message", [False, True])
+def test_revision_churn_preserves_accepted_queued_ordinary_and_chat_prompts(
+    tmp_path, monkeypatch, chat_message,
+):
+    repo = _seed_team(tmp_path)
+    message_id = None
+    if chat_message:
+        chat = TeamChatService(repo)
+        state, conversation, _created = chat.create_or_get_conversation(
+            agent_id="backend", operator_user_id="operator@example.com",
+            expected_revision=repo.read_revision(),
+        )
+        state, message = chat.record_operator_chat_message(
+            conversation_id=conversation.id, body="Handle this queued operator request.",
+            created_by="operator:operator@example.com", expected_revision=state.revision,
+        )
+        message_id = message.id
+        chat.queue_chat_message_dispatch(
+            message_id=message.id, dispatch_id=f"team-chat:{message.id}",
+        )
+    queue = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+
+    def persist_accepted_prompt(kwargs):
+        queue.put(
+            QueuedAgentPromptRecord(
+                queue_key="accepted-team-prompt", target=kwargs["target"],
+                session_id=kwargs["target"], vm_name="vm-backend", prompt=kwargs["prompt"],
+                dispatch_id=kwargs["dispatch_id"], effect_id="wake",
+            ),
+            count_retry=False,
+        )
+
+    resumer = FakeResumer(
+        {"success": True, "queued": True, "queue_key": "accepted-team-prompt"},
+        on_resume=persist_accepted_prompt,
+    )
+    sessions = FakeSessionStore()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake", display_name="Wake", type="effect:team:wake-due-agents",
+            run_global_maintenance=False, limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)}, agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(), session_lookup=sessions,
+            session_metadata_updater=sessions,
+        ),
+    )
+    attempts = _race_bookkeeping_revisions(repo, monkeypatch)
+    result = provider.execute()
+    # Another wake cycle must keep the durable reservation instead of submitting twice.
+    repeated = provider.execute()
+    state = repo.read()
+    accepted = queue.read_all()
+    assert len(attempts) == 4
+    assert result["success"] and repeated["success"]
+    assert result["retry_event_ids"] == repeated["retry_event_ids"] == []
+    assert result["transient_conflicts"] == repeated["transient_conflicts"] == []
+    assert len(resumer.calls) == len(accepted) == len(state.dispatches) == 1
+    record = accepted["accepted-team-prompt"]
+    assert record.coalesced_count == 1
+    dispatch = state.dispatches[record.dispatch_id]
+    assert dispatch.status == TeamDispatchStatus.PREPARING
+    assert dispatch.queued_at is not None
+    assert state.agent_runtimes["backend"].active_dispatch_id == dispatch.id
+    worker = SimpleNamespace(config=SimpleNamespace(runtime_dir=tmp_path))
+    assert TeamAgentPromptCompletionFinalizeHook().validate_queued_prompt(
+        worker=worker, record=record,
+    )
+    if message_id is not None:
+        assert state.conversation_messages[message_id].status == "dispatching"
+        assert state.conversation_messages[message_id].error is None
 
 
 def test_newer_receipt_cannot_restore_invalidated_lineage_or_old_session(tmp_path):

@@ -21,6 +21,30 @@ from evander.repositories.sqlite_runtime import is_storage_busy
 logger = logging.getLogger(__name__)
 
 
+def _restart_completed_gc_sweeps(connection) -> None:
+    """Start a new sweep only after every independently paced component finished."""
+    connection.execute("BEGIN IMMEDIATE")
+    rows = connection.execute(
+        "SELECT key,value_json FROM orchestration_metadata "
+        "WHERE key IN ('history_scalar_gc_cursor','operational_payload_gc_cursor')"
+    ).fetchall()
+    metadata = {row[0]: json_loads_object(row[1]) for row in rows}
+    history = metadata.get("history_scalar_gc_cursor", {})
+    payload = metadata.get("operational_payload_gc_cursor", {})
+    if (
+        history.get("current_completed") is True
+        and history.get("legacy_completed") is True
+        and payload.get("completed") is True
+    ):
+        connection.executemany(
+            "UPDATE orchestration_metadata SET value_json=? WHERE key=?",
+            [
+                ("{}", "history_scalar_gc_cursor"),
+                ("{}", "operational_payload_gc_cursor"),
+            ],
+        )
+
+
 def run_storage_maintenance(
     config, *, run_garbage_collection: bool = True
 ) -> OrchestrationWalCheckpointResult:
@@ -131,15 +155,20 @@ def run_storage_maintenance(
                         deadline_seconds=0.25,
                         operation="history_scalar_gc",
                     ) as connection:
-                        details = {"deleted": collect_superseded_history_values(connection)}
+                        _restart_completed_gc_sweeps(connection)
+                        details = {"deleted": collect_superseded_history_values(
+                            connection, hold_completed=True
+                        )}
                         row = connection.execute(
                             "SELECT value_json FROM orchestration_metadata "
                             "WHERE key='history_scalar_gc_cursor'"
                         ).fetchone()
-                        details["remaining"] = bool(row and any(json_loads_object(row[0]).values()))
-                    garbage_collection_phases[phase] = bool(
-                        details["deleted"] or details["remaining"]
-                    )
+                        state = json_loads_object(row[0]) if row else {}
+                        details["remaining"] = not (
+                            state.get("current_completed") is True
+                            and state.get("legacy_completed") is True
+                        )
+                    garbage_collection_phases[phase] = details["remaining"]
                 elif phase == "payload_gc":
                     from evander.repositories.operational_payloads import (
                         collect_unreferenced_payloads,
@@ -151,15 +180,17 @@ def run_storage_maintenance(
                         deadline_seconds=0.25,
                         operation="operational_payload_gc",
                     ) as connection:
-                        details = {"deleted": collect_unreferenced_payloads(connection, limit=100)}
+                        details = {"deleted": collect_unreferenced_payloads(
+                            connection, limit=100, hold_completed=True
+                        )}
                         row = connection.execute(
                             "SELECT value_json FROM orchestration_metadata "
                             "WHERE key='operational_payload_gc_cursor'"
                         ).fetchone()
-                        details["remaining"] = bool(row and json_loads_object(row[0]).get("after"))
-                    garbage_collection_phases[phase] = bool(
-                        details["deleted"] or details["remaining"]
-                    )
+                        details["remaining"] = not (
+                            row and json_loads_object(row[0]).get("completed") is True
+                        )
+                    garbage_collection_phases[phase] = details["remaining"]
                 else:
                     with connect_orchestration_db_read_only(path) as connection:
                         state = connection.execute(
@@ -201,7 +232,8 @@ def run_storage_maintenance(
                 result = replace(result, skipped_reason="storage_busy")
                 break
         if len(garbage_collection_phases) == 2:
-            # Deletions may orphan DAG children behind the cursor, requiring a new sweep.
+            # Completion latches survive another component's continuation and
+            # only become true after deletion follow-up sweeps finish.
             garbage_collection_pending = any(garbage_collection_phases.values())
         result = replace(result, garbage_collection_pending=garbage_collection_pending)
         try:
