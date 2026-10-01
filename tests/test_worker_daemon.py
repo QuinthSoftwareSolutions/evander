@@ -281,6 +281,66 @@ def test_worker_reference_refresh_preserves_files_that_conflict_with_new_tracked
     assert trusted_state_path.read_bytes() == trusted_state_before
 
 
+@pytest.mark.parametrize("update_existing", [False, True], ids=["reuse", "refresh"])
+def test_worker_reference_prepare_rejects_staged_additions_with_unborn_head(
+    tmp_path: Path,
+    update_existing: bool,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(*args: str, cwd: Path = source) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Worker Test")
+    (source / "README.md").write_text("trusted reference\n", encoding="utf-8")
+    git("add", "README.md")
+    git("commit", "-q", "-m", "initial reference")
+    commit_sha = git("rev-parse", "HEAD")
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    request = WorkerReferenceRepoPrepareRequest(
+        repo_source=str(source),
+        repo_name="repo",
+        source_ref="refs/heads/main",
+        commit_sha=commit_sha,
+        configuration_version="1",
+        update_existing=update_existing,
+    )
+    daemon.prepare_reference_repo("session-1", request)
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    checkout = paths.repo_root / "repo"
+    trusted_state_path = paths.root / "reference-repository-state" / "repo.json"
+    trusted_state_before = trusted_state_path.read_bytes()
+
+    git("checkout", "--quiet", "--orphan", "local", cwd=checkout)
+    staged_file = checkout / "local-staged.txt"
+    staged_file.write_text("staged local work\n", encoding="utf-8")
+    git("add", "local-staged.txt", cwd=checkout)
+
+    with pytest.raises(ValueError, match="checkout is dirty"):
+        daemon.prepare_reference_repo("session-1", request)
+
+    assert git("symbolic-ref", "HEAD", cwd=checkout) == "refs/heads/local"
+    with pytest.raises(subprocess.CalledProcessError):
+        git("rev-parse", "--verify", "HEAD", cwd=checkout)
+    assert git("diff", "--cached", "--name-status", cwd=checkout) == (
+        "A\tREADME.md\nA\tlocal-staged.txt"
+    )
+    assert staged_file.read_text(encoding="utf-8") == "staged local work\n"
+    assert (checkout / "README.md").read_text(encoding="utf-8") == "trusted reference\n"
+    assert trusted_state_path.read_bytes() == trusted_state_before
+
+
 def test_worker_reference_preparation_receipt_reuses_and_rechecks_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

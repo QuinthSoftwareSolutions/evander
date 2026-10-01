@@ -1585,6 +1585,18 @@ class WorkerDaemon(GitWorkspaceOperations):
             "GIT_INDEX_FILE": str(isolated_git_dir / "index"),
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(object_dir),
         }
+        checkout_index = git_dir / "index"
+        try:
+            checkout_index_stat = checkout_index.lstat()
+        except FileNotFoundError:
+            if expected_commit is not None:
+                return True
+        else:
+            if not stat.S_ISREG(checkout_index_stat.st_mode) or stat.S_ISLNK(
+                checkout_index_stat.st_mode
+            ):
+                return True
+        checkout_index_env = isolated_env | {"GIT_INDEX_FILE": str(checkout_index)}
         if expected_commit is not None:
             subprocess.run(
                 ["git", "update-ref", "HEAD", expected_commit],
@@ -1593,16 +1605,6 @@ class WorkerDaemon(GitWorkspaceOperations):
                 capture_output=True,
                 text=True,
             )
-            checkout_index = git_dir / "index"
-            try:
-                checkout_index_stat = checkout_index.lstat()
-            except FileNotFoundError:
-                return True
-            if not stat.S_ISREG(checkout_index_stat.st_mode) or stat.S_ISLNK(
-                checkout_index_stat.st_mode
-            ):
-                return True
-            checkout_index_env = isolated_env | {"GIT_INDEX_FILE": str(checkout_index)}
             checkout_index_check = subprocess.run(
                 ["git", "diff-index", "--cached", "--quiet", expected_commit, "--"],
                 env=checkout_index_env,
@@ -1628,6 +1630,16 @@ class WorkerDaemon(GitWorkspaceOperations):
                     text=True,
                 )
         else:
+            # Every checkout-index entry is a staged addition when HEAD is unborn.
+            checkout_index_check = subprocess.run(
+                ["git", "ls-files", "--stage", "-z"],
+                env=checkout_index_env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if checkout_index_check.returncode != 0 or checkout_index_check.stdout:
+                return True
             subprocess.run(
                 ["git", "update-ref", "-d", "HEAD"],
                 env=isolated_env,

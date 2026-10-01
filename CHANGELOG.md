@@ -7,6 +7,8 @@
   and staged change checks and trusted commit validation.
 - Reject checkout updates that would overwrite untracked or ignored local files,
   preserving the existing checkout and trusted state on a path conflict.
+- Reject staged additions in prepared reference checkouts with an unborn HEAD,
+  preserving the local branch, staged files, and trusted state.
 
 ## 2026-10-01 - Clarify control-plane transaction stages (0.76.2)
 
