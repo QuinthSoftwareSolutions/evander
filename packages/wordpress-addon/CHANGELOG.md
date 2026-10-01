@@ -1,5 +1,13 @@
 # WordPress Add-on changelog
 
+## 2026-10-01 - Workflow event bindings (0.1.2)
+
+- Bind the example workflow directly to the ready trigger's `site_id` and
+  `change_id` outputs so queued publication and recovery reach their executor.
+- Advertise the trigger's actual output fields in the workflow editor.
+- Compile the bundled example through the runtime loader and verify publication
+  and conditional recovery using the trigger's emitted payload.
+
 ## 2026-10-01 - Scoped block editor compatibility (0.1.1)
 
 - Ship companion 1.0.1: retain the locked recovery manifest when WordPress

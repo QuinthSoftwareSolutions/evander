@@ -216,9 +216,10 @@ def register_providers():
         register_node_output_schema(
             node_type=type_name,
             outputs={
-                "payload": {"type": "object"},
-                "event_id": {"type": "string"},
-                "occurred_at": {"type": "string"},
+                "site_id": {"type": "string"},
+                "change_id": {"type": "string"},
+                "revision": {"type": "integer"},
+                "state": {"type": "string"},
             }
             if kind == "trigger"
             else {

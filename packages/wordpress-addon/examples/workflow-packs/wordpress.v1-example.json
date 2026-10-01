@@ -5,6 +5,6 @@
   "ir": {"version":"v1","nodes":[
     {"node":{"id":"website-ready","display_name":"Website changes ready","type":"trigger:wordpress:change-ready","config":{}}},
     {"node":{"id":"website-execute","display_name":"Publish or recover website","type":"effect:wordpress:execute-change","config":{
-      "site_id":"${{website-ready.payload.site_id}}","change_id":"${{website-ready.payload.change_id}}"}}}
+      "site_id":"${{website-ready.site_id}}","change_id":"${{website-ready.change_id}}"}}}
   ],"edges":[{"source_id":"website-ready","target_id":"website-execute"}]}
 }

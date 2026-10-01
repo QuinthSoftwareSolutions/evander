@@ -78,6 +78,9 @@ explicit; adding the package never connects to or modifies an existing website.
    workflow configuration UI/API. Set its graph's directory to the site's directory
    and keep the existing trigger/effect workers running. Pending operations retry
    independently of a chat turn. Confirm this graph is enabled before granting edits.
+   For packs imported before add-on 0.1.2, update the execution node's `site_id` to
+   `${{website-ready.site_id}}` and `change_id` to `${{website-ready.change_id}}`
+   through the same UI/API using the current workflow revision.
 9. Grant the session `list_connectors`, `call_connector`, and the appropriate exact
    connector operations. Read-only grants can use `discover`, `inspect` and
    `change_status`; publication requires explicit write grants. Existing connector
