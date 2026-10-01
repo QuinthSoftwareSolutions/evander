@@ -8,11 +8,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import {
-  type CompactActivePanel,
-  type CompactCanvasMode,
-  type GraphNodeData,
-} from "./editorTypes";
+import { type CompactActivePanel, type CompactCanvasMode, type GraphNodeData, type SaveState } from "./editorTypes";
 
 type CompactPanelRenderersInputs = {
   compactCanvasMode: CompactCanvasMode;
@@ -26,6 +22,8 @@ type CompactPanelRenderersInputs = {
   undoWorkflowChange: () => void;
   canUndoWorkflowChanges: boolean;
   workflowMutationLocked: boolean;
+  saveDocument: () => Promise<void>;
+  saveState: SaveState;
   workflowRunReadLocked: boolean;
   createEntryCount: number;
   renderCreatePanelBody: (compact?: boolean) => ReactNode;
@@ -48,6 +46,8 @@ export function createCompactPanelRenderers({
   undoWorkflowChange,
   canUndoWorkflowChanges,
   workflowMutationLocked,
+  saveDocument,
+  saveState,
   workflowRunReadLocked,
   createEntryCount,
   renderCreatePanelBody,
@@ -107,7 +107,16 @@ export function createCompactPanelRenderers({
         {panelButton("inspector", "Inspector")}
         {panelButton("runs", "Runs", workflowRunReadLocked)}
         {panelButton("graphs", "Graphs")}
-        {panelButton("save", "Save")}
+        <button
+          type="button"
+          className={`compact-workflow-toolbar-button${hasUnsavedWorkflowChanges ? " dirty" : ""}`}
+          onClick={() => void saveDocument()}
+          disabled={workflowMutationLocked || saveState === "saving"}
+          aria-label="Save workflow"
+        >
+          {saveState === "saving" ? "Saving..." : "Save"}
+        </button>
+        {panelButton("save", "Checks")}
       </div>
     );
   }
@@ -119,7 +128,7 @@ export function createCompactPanelRenderers({
       inspector: "Inspector",
       runs: "Runs",
       graphs: "Graphs",
-      save: "Save",
+      save: "Workflow checks",
     };
     const contentByPanel: Record<Exclude<CompactActivePanel, null>, ReactNode> = {
       create: (

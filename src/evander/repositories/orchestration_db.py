@@ -14,6 +14,10 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from evander.repositories.maintenance_indexes import (
+    MAINTENANCE_INDEXES,
+    MaintenanceIndexesRequired,
+)
 from evander.repositories.sqlite_runtime import (
     DEFAULT_BUSY_TIMEOUT_MS,
     MAINTENANCE_TIMEOUT_MS,
@@ -564,27 +568,24 @@ def datetime_to_storage(value: datetime | None) -> str | None:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-_MAINTENANCE_INDEXES = {
-    "idx_workflow_history_input_blob": ("workflow_node_execution_history", "input_blob_sha256"),
-    "idx_workflow_history_output_blob": ("workflow_node_execution_history", "output_blob_sha256"),
-    "idx_internal_delivery_event": ("internal_event_deliveries", "internal_event_row_id"),
-}
-
-
 def _create_maintenance_indexes(connection: sqlite3.Connection) -> None:
-    for name, (table, column) in _MAINTENANCE_INDEXES.items():
-        connection.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({column})")
+    for index in MAINTENANCE_INDEXES:
+        row = connection.execute(
+            "SELECT tbl_name,sql FROM sqlite_master WHERE type='index' AND name=?", (index.name,)
+        ).fetchone()
+        if row is not None:
+            if row[0] != index.table or not index.matches_definition(row[1]):
+                raise ValueError(f"Maintenance index {index.name} does not match the expected schema")
+            continue
+        connection.execute(index.create_sql)
 
 
 def _maintenance_indexes_ready(connection: sqlite3.Connection) -> bool:
-    for name, (table, column) in _MAINTENANCE_INDEXES.items():
+    for index in MAINTENANCE_INDEXES:
         row = connection.execute(
-            "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?", (name,)
+            "SELECT tbl_name,sql FROM sqlite_master WHERE type='index' AND name=?", (index.name,)
         ).fetchone()
-        if row is None or row[0] != table:
-            return False
-        columns = [row[2] for row in connection.execute(f"PRAGMA index_info({name})")]
-        if columns != [column]:
+        if row is None or row[0] != index.table or not index.matches_definition(row[1]):
             return False
     return True
 
@@ -612,7 +613,7 @@ def orchestration_maintenance_index_status(path: Path | str) -> dict[str, Any]:
     oldest_at = _datetime_from_storage(oldest)
     return {
         "ready": ready,
-        "required_indexes": list(_MAINTENANCE_INDEXES),
+        "required_indexes": [index.name for index in MAINTENANCE_INDEXES],
         "database_bytes": db_path.stat().st_size,
         "wal_bytes": wal_bytes,
         "history_index_pending": pending,
@@ -937,9 +938,14 @@ def _run_orchestration_retention_slice(
     if phase == "sources":
         from evander.repositories.execution_history import prepare_records_for_retention
 
-        prepared_sources = prepare_records_for_retention(
-            path, cutoff=progress["cutoff"], batch_size=batch_size
-        )
+        try:
+            prepared_sources = prepare_records_for_retention(
+                path, cutoff=progress["cutoff"], batch_size=batch_size
+            )
+        except MaintenanceIndexesRequired:
+            return OrchestrationRetentionResult(
+                remaining=True, skipped_reason="maintenance_indexes_required"
+            )
     with connect_orchestration_db(
         path,
         busy_timeout_ms=busy_timeout_ms,

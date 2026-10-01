@@ -1179,7 +1179,7 @@ def test_retention_limits_source_bytes_and_prepares_outside_writer(tmp_path, mon
     assert batch.payload_bytes > execution_history.RETENTION_SOURCE_BYTES
 
 
-@pytest.mark.parametrize("change", ["status", "payload"])
+@pytest.mark.parametrize("change", ["status", "payload", "finished_at"])
 def test_retention_rechecks_source_after_unlocked_preparation(tmp_path, change):
     path = tmp_path / "orchestration.db"
     ensure_orchestration_schema(path)
@@ -1190,9 +1190,39 @@ def test_retention_rechecks_source_after_unlocked_preparation(tmp_path, change):
     with connect_orchestration_db(path) as connection:
         if change == "status":
             connection.execute("UPDATE effect_executions SET status='running' WHERE execution_id='changed'")
-        else:
+        elif change == "payload":
             connection.execute("UPDATE effect_executions SET payload_json=json_set(payload_json, '$.outputs.answer', 'updated') WHERE execution_id='changed'")
+        else:
+            connection.execute(
+                "UPDATE effect_executions SET finished_at=? WHERE execution_id='changed'",
+                (datetime_to_storage(datetime.now(UTC)),),
+            )
     with connect_orchestration_db(path) as connection:
+        safe = execution_history.archive_records_for_retention(connection, cutoff=cutoff, prepared=batch)
+        assert safe == []
+        assert connection.execute("SELECT COUNT(*) FROM workflow_node_execution_history").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM effect_executions").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("acknowledgement", ["cleared_at", "dismissed_at"])
+def test_retention_rechecks_failure_acknowledgement_after_preparation(tmp_path, acknowledgement):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    old = datetime.now(UTC) - timedelta(days=40)
+    record = _effect_record(execution_id="failed-changed", started_at=old)
+    _insert_legacy_effect(path, record.model_copy(update={"status": "failed"}))
+    cutoff = datetime_to_storage(datetime.now(UTC) - timedelta(days=30))
+    with connect_orchestration_db(path) as connection:
+        connection.execute(
+            f"UPDATE effect_executions SET {acknowledgement}=? WHERE execution_id='failed-changed'",
+            (datetime_to_storage(old),),
+        )
+    batch = execution_history.prepare_records_for_retention(path, cutoff=cutoff)
+    assert len(batch.sources) == 1
+    with connect_orchestration_db(path) as connection:
+        connection.execute(
+            f"UPDATE effect_executions SET {acknowledgement}=NULL WHERE execution_id='failed-changed'",
+        )
         safe = execution_history.archive_records_for_retention(connection, cutoff=cutoff, prepared=batch)
         assert safe == []
         assert connection.execute("SELECT COUNT(*) FROM workflow_node_execution_history").fetchone()[0] == 0

@@ -119,10 +119,19 @@ async function activity() {
     if (operation.url?.startsWith("https://miro.com/app/board/")) {
       const link = document.createElement("a"); link.textContent = "Open board"; link.href = operation.url; link.target = "_blank"; link.rel = "noopener noreferrer"; row.append(link);
     }
-    row.append(button("Details", () => { $("details").textContent = JSON.stringify(operation, null, 2); }));
+    const operationDetails = document.createElement("details");
+    const summary = document.createElement("summary"); summary.textContent = "Operation details";
+    const payload = document.createElement("pre"); payload.textContent = JSON.stringify(operation, null, 2);
+    operationDetails.append(summary, payload);
+    row.append(operationDetails);
     if (operation.status === "uncertain" || operation.status === "running") {
       const path = `${connectionPath()}/operations/${encodeURIComponent(operation.operation_id)}`;
-      row.append(button("Read back", async () => { $("details").textContent = JSON.stringify(await request(`${path}/reconcile`, {}), null, 2); await activity(); }, true));
+      row.append(button("Read back", async () => {
+        $("details").textContent = JSON.stringify(await request(`${path}/reconcile`, {}), null, 2);
+        await activity();
+        $("details").scrollIntoView({ block: "nearest" });
+        $("details").focus({ preventScroll: true });
+      }, true));
       for (const [label, outcome] of [["Mark applied", "applied"], ["Mark not applied", "not_applied"]]) {
         row.append(button(label, async () => {
           const evidence = window.prompt("Describe the Miro readback evidence for this outcome. This does not replay the operation.");

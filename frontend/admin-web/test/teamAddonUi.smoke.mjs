@@ -10104,6 +10104,38 @@ test("team add-on Workspace deduplicates runtime-backed tasks without crowding a
   await attentionList
     .getByText("Z final actionable signal", { exact: true })
     .waitFor({ state: "visible" });
+
+  await attentionList.locator("li", { hasText: "A runtime blocker for the task" })
+    .getByRole("button", { name: "Open task", exact: true }).click();
+  const board = page.locator("#team-task-board-page");
+  await board.waitFor({ state: "visible" });
+  await board.locator('[data-task-board-task-id="task-blocked"].task-board-task-selected')
+    .waitFor({ state: "visible" });
+  assert.equal(await board.locator("[data-task-board-team]").inputValue(), "team-beta");
+  assert.equal(await board.locator("[data-task-board-project]").inputValue(), "beta-project");
+});
+
+test("team add-on Workspace opens an inbox recipient directly in the agent inspector", { timeout: browserTestTimeout }, async (t) => {
+  const initialState = seededGitState();
+  initialState.tasks = {};
+  initialState.deliverables = {};
+  initialState.review_requests = {};
+  initialState.governance_agenda = {};
+  initialState.runtime_operations = { agents: [], attention: [] };
+  initialState.inbox = {
+    "status-example": {
+      id: "status-example", recipient_agent_id: "alpha-lead", item_type: "status_request",
+      priority: "high", state: "pending", payload: { question: "Report progress" },
+    },
+  };
+  const { port } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+  await waitForRevision(page, 4);
+  await openWorkspace(page);
+  await page.locator(".workspace-attention-item").getByRole("button", { name: "Open agent", exact: true }).click();
+  const inspector = page.locator(".people-agent-detail-panel");
+  await inspector.waitFor({ state: "visible" });
+  assert.match(await inspector.innerText(), /alpha-lead/);
 });
 
 test("team add-on Operations describes passive mail and failed recovery paths honestly", { timeout: browserTestTimeout }, async (t) => {

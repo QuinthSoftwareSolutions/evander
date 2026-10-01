@@ -740,9 +740,6 @@ from .provider_triggers import (
     _team_deliverable_created_payload as _team_deliverable_created_payload,
 )
 from .provider_triggers import (
-    _team_deliverable_trigger_matches as _team_deliverable_trigger_matches,
-)
-from .provider_triggers import (
     _team_payload_datetime as _team_payload_datetime,
 )
 from .provider_triggers import (

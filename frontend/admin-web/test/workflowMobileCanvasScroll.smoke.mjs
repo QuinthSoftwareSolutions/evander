@@ -628,7 +628,7 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
   await page.locator(".react-flow__node", { hasText: "Mobile notify" }).click();
   await page.waitForFunction(() => !document.querySelector(".pending-connection-layer line"));
 
-  await workflowTools.getByRole("button", { name: "Save", exact: true }).click();
+  await workflowTools.getByRole("button", { name: "Checks", exact: true }).click();
   const saveSheet = page.locator(".compact-workflow-sheet.panel-save");
   await assert.doesNotReject(() => saveSheet.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => saveSheet.getByText("Unsaved workflow changes").waitFor({ state: "visible" }));
@@ -638,12 +638,14 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
   );
   await saveSheet.getByRole("button", { name: "Validate" }).click();
   await validateRequest;
+  await saveSheet.getByRole("button", { name: "Close" }).click();
 
   const saveRequest = page.waitForRequest(
     (request) => request.url().includes("/api/workflow-editor/document") && request.method() === "PUT",
   );
-  await saveSheet.getByRole("button", { name: "Save workflow" }).click();
+  await workflowTools.getByRole("button", { name: "Save workflow", exact: true }).click();
   await saveRequest;
+  assert.equal(await saveSheet.isVisible(), false, "saving from the toolbar should not require opening a panel");
 
   assert.ok(validatedWorkflowPayload, "expected workflow validation request to be captured");
   assert.ok(savedWorkflowPayload, "expected workflow save request to be captured");

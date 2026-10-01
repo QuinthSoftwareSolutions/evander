@@ -125,7 +125,6 @@ export function createInspectorPanelRenderers({
         <div className="section-label">Inspector</div>
         <div className="inspector-summary">
           <div>{selectedNode.type}</div>
-          <div>{selectedNode.id}</div>
         </div>
         {selectedNodeDiagnostics.length > 0 ? (
           <div className="problems-panel">
@@ -266,7 +265,6 @@ export function createInspectorPanelRenderers({
                 <div className="section-label">Inspector</div>
                 <div className="inspector-summary">
                   <div>{selectedNode.type}</div>
-                  <div>{selectedNode.id}</div>
                 </div>
                 {selectedNodeDiagnostics.length > 0 ? (
                   <div className="problems-panel">

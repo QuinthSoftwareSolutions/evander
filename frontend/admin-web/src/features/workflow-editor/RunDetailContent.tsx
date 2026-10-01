@@ -73,13 +73,6 @@ export function renderRunDetailToolCallLink(link: WorkflowRunToolCallLink, scope
     <div className="run-detail-link-item" key={`${scope}-${link.tool_name}-${index}-${toolCallTarget ?? "missing"}`}>
       <strong>{scope === "run" ? "Run tool call" : "Tool call"} {link.tool_name}</strong>
       <span>{link.status ?? "status missing"}{link.decision ? ` / ${link.decision}` : ""}</span>
-      <span>Request {link.request_id ?? "missing"}</span>
-      <span>Correlation {link.correlation_id ?? "missing"}</span>
-      {link.approval_request_id ? <span>Approval request {link.approval_request_id}</span> : null}
-      {link.workflow_run_id ? <span>Run {link.workflow_run_id}</span> : null}
-      {link.trace_id ? <span>Trace {link.trace_id}</span> : null}
-      {link.session_id ? <span>Session {link.session_id}</span> : null}
-      {link.node_id ? <span>Node {link.node_id}</span> : null}
       <span>Args {argsSummary}</span>
       <span>Result {resultSummary}</span>
       {toolCallHash ? (
@@ -89,6 +82,18 @@ export function renderRunDetailToolCallLink(link: WorkflowRunToolCallLink, scope
           </button>
         </div>
       ) : null}
+      <details className="run-detail-link-identifiers">
+        <summary>Audit identifiers</summary>
+        <div className="run-detail-meta-grid">
+          <span>Request {link.request_id ?? "missing"}</span>
+          <span>Correlation {link.correlation_id ?? "missing"}</span>
+          {link.approval_request_id ? <span>Approval request {link.approval_request_id}</span> : null}
+          {link.workflow_run_id ? <span>Run {link.workflow_run_id}</span> : null}
+          {link.trace_id ? <span>Trace {link.trace_id}</span> : null}
+          {link.session_id ? <span>Session {link.session_id}</span> : null}
+          {link.node_id ? <span>Node {link.node_id}</span> : null}
+        </div>
+      </details>
     </div>
   );
 }
@@ -159,8 +164,10 @@ export function renderResolvedInputEditor(
   node: WorkflowRunNodeDetail,
   catalogEntry: WorkflowEditorNodeCatalogEntry | undefined,
 ) {
-  const fields = catalogEntry?.fields ?? [];
-  const knownFieldKeys = new Set(fields.map((field) => field.key));
+  const catalogFields = catalogEntry?.fields ?? [];
+  const fields = catalogFields.filter((field) => Object.prototype.hasOwnProperty.call(node.resolved_config, field.key));
+  const unrecordedFields = catalogFields.filter((field) => !Object.prototype.hasOwnProperty.call(node.resolved_config, field.key));
+  const knownFieldKeys = new Set(catalogFields.map((field) => field.key));
   const extraResolvedInputs = Object.fromEntries(
     Object.entries(node.resolved_config).filter(([key]) => !knownFieldKeys.has(key)),
   );
@@ -171,6 +178,14 @@ export function renderResolvedInputEditor(
         <div className="inspect-resolved-field-list">
           {fields.map((field) => renderReadOnlyResolvedField(field, node.resolved_config[field.key]))}
         </div>
+      ) : null}
+      {unrecordedFields.length > 0 ? (
+        <details className="run-detail-link-identifiers">
+          <summary>{unrecordedFields.length} {unrecordedFields.length === 1 ? "field" : "fields"} not recorded</summary>
+          <div className="run-detail-meta-grid">
+            {unrecordedFields.map((field) => <span key={field.key}>{field.label}</span>)}
+          </div>
+        </details>
       ) : null}
       {fields.length === 0 || objectHasData(extraResolvedInputs)
         ? renderRunDetailJson(

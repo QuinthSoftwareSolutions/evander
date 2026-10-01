@@ -791,16 +791,11 @@ export function HostDirectoriesPage({
                 ) : null}
               </article>
 
-              <article className="panel">
-                <div className="panel-header">
-                  <div>
-                    <h3>Host path health</h3>
-                    <p className="muted-text">
-                      Checks are run by the host and do not expose this root to agent sessions.
-                    </p>
-                  </div>
-                  <span className={`status-pill ${healthClass(selectedHealth)}`}>{healthLabel(selectedHealth)}</span>
-                </div>
+              {selectedHealth?.message || selectedHealth?.error ? (
+                <div className="callout warning-callout">{selectedHealth.message || selectedHealth.error}</div>
+              ) : null}
+              <details className="panel compact-disclosure">
+                <summary>Host path checks · {healthLabel(selectedHealth)}</summary>
                 <div className="detail-grid">
                   <div>
                     <span>Availability</span>
@@ -861,15 +856,12 @@ export function HostDirectoriesPage({
                     <strong>{selectedHealth?.error_class ?? "None"}</strong>
                   </div>
                 </div>
-                {selectedHealth?.message || selectedHealth?.error ? (
-                  <div className="callout warning-callout">{selectedHealth.message || selectedHealth.error}</div>
-                ) : null}
-              </article>
+              </details>
 
-              <article className="panel">
+              <details className="panel compact-disclosure" open={Boolean(quarantine?.entries.length)}>
+                <summary>Quarantine recovery · {quarantine ? `${quarantine.entries.length} entries` : "Loading…"}</summary>
                 <div className="panel-header">
                   <div>
-                    <h3>Quarantine recovery</h3>
                     <p className="muted-text">
                       Agent deletes are recoverable until an operator permanently purges them.
                     </p>
@@ -918,7 +910,7 @@ export function HostDirectoriesPage({
                   ) : null}
                   {!quarantine ? <div className="empty-state">Loading quarantine entries…</div> : null}
                 </div>
-              </article>
+              </details>
             </>
           ) : (
             <RecordPlaceholder>Select a host directory to view details</RecordPlaceholder>

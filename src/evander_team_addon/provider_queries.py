@@ -25,6 +25,11 @@ from .provider_events import (
 from .provider_projection import (
     _filtered_team_state_payload,
 )
+from .provider_query_projection import (
+    compact_team_state_payload,
+    query_projection_collections,
+    validate_record_fields,
+)
 from .provider_runtime import (
     _session_records_by_id,
     _session_repository_from_context,
@@ -58,33 +63,42 @@ class TeamStateQueryProvider(QueryProviderBase):
             "project_id",
             "agent_id",
             "include_records",
+            "record_fields",
         )
         if resolved_config:
             payload.update(dict(resolved_config))
-        state = TeamStateRepository(_runtime_dir(self.runtime_context)).read()
-        session_records = _session_records_by_id(
-            _session_repository_from_context(self.runtime_context)
-        )
         team_id = _optional_text(payload.get("team_id"))
         project_id = _optional_text(payload.get("project_id"))
         agent_id = _optional_text(payload.get("agent_id"))
-        filtered = _filtered_team_state_payload(
-            state,
-            team_id=team_id,
-            project_id=project_id,
-            agent_id=agent_id,
-            session_records=session_records,
-        )
+        record_fields = validate_record_fields(payload.get("record_fields"))
+        repository = TeamStateRepository(_runtime_dir(self.runtime_context))
+        if record_fields is None:
+            state = repository.read()
+            session_records = _session_records_by_id(
+                _session_repository_from_context(self.runtime_context)
+            )
+            filtered = _filtered_team_state_payload(
+                state, team_id=team_id, project_id=project_id, agent_id=agent_id,
+                session_records=session_records,
+            )
+        else:
+            state = repository.read_projection(
+                collections=sorted(query_projection_collections(record_fields, agent_id=agent_id))
+            )
+            filtered = compact_team_state_payload(
+                state, record_fields=record_fields, team_id=team_id,
+                project_id=project_id, agent_id=agent_id,
+            )
         return {
             "success": True,
             "revision": state.revision,
             "state": filtered,
-            "teams": filtered["teams"],
-            "projects": filtered["projects"],
-            "agents": filtered["agents"],
-            "cases": filtered["cases"],
-            "tasks": filtered["tasks"],
-            "external_source_evidence_snapshots": filtered["external_source_evidence_snapshots"],
+            "teams": filtered.get("teams", {}),
+            "projects": filtered.get("projects", {}),
+            "agents": filtered.get("agents", {}),
+            "cases": filtered.get("cases", {}),
+            "tasks": filtered.get("tasks", {}),
+            "external_source_evidence_snapshots": filtered.get("external_source_evidence_snapshots", {}),
         }
 
 

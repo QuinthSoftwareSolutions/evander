@@ -1,12 +1,59 @@
 # Changelog
 
-## 2026-10-01 - Enforce WordPress resource permissions (0.76.6)
+## 2026-10-02 - Enforce WordPress resource permissions (0.78.2)
 
 - Release WordPress Add-on 0.1.3 and companion 1.0.2 with object, operation,
   metadata and taxonomy authorization for inspection, publication and browser edits.
 - Reject ACF aliases of protected metadata and mismatched field references while
   preserving conditional restoration after editing permissions are revoked.
 - Core runtime behavior is unchanged; the add-on remains separately installed and enabled.
+
+## 2026-10-01 - Bound retention candidate searches with dedicated indexes (0.78.1)
+
+- Select the oldest eligible sources through five limited partial-index ranges,
+  avoiding backlog scans and sorts even when retention batches shrink to one row.
+- Calculate payload byte budgets through reachable blob lookups, avoiding a
+  scan of every stored blob for each selected source.
+- Defer source cleanup until the required index definitions are ready; preserve
+  eligibility rules, payload byte limits, and atomic history-before-source deletion.
+- Add an offline indexes-only maintenance mode that builds and validates deferred
+  indexes without converting payloads, with safe reruns after an interrupted build.
+
+## 2026-10-01 - Simplify operator workspaces (0.78.0)
+
+- Prioritize dashboard attention and capacity over release news, flatten service
+  health details, and open a failed service directly from its attention shortcut.
+- Separate session monitoring, model/access settings, and wake schedules, and
+  worker status/logs from settings while retaining unsaved drafts and revision checks.
+- Keep common agent actions visible with text labels and group secondary actions
+  into a named menu. Flatten approval review and VM setup panels, and disclose
+  secondary filters, audit history, and technical metadata.
+- Open records directly from audit, approval, artifact, and Team attention links;
+  resolve artifact keys with Enter and simplify archive and report inventories.
+- Search workflow node types directly on desktop and mobile, flatten node families,
+  prioritize current runs, save from the compact toolbar, and show selected pack
+  history changes inline.
+- Remove duplicate add-on and user inventories, label configuration/policy save
+  actions, search users and pricing rules, and prioritize repository and subscription
+  actions. Preserve privilege gates, approval requirements, and reset confirmations.
+- Show Miro operation details inline and disclose supporting Bokio evidence and
+  history while retaining visible approval payloads and warnings.
+
+## 2026-10-01 - Reduce control-plane polling and query payloads (0.77.0)
+
+- Select scoped Team deliverable identities before constructing event payloads,
+  skip full state hydration for idle and initial-baseline polls, and share task
+  assessment across pending events from the same SQLite read snapshot.
+- Add opt-in `record_fields` to `query:team:state` for compact task and case
+  results. Read only required state collections, preserve scope and assessment
+  dependencies, support nested workflow bindings with strict resolved-selector
+  validation, and retain the existing full response when selection is omitted.
+- Reuse one directory-bound HTTP client throughout ADO comment polling and
+  obtain complete work-item fields and relations through the existing batch,
+  removing individual detail requests while preserving comment cursors and retries.
+- Keep fast recovery passes without work at DEBUG, retain slow and active passes
+  at INFO, and avoid provider completion wrappers for inherited empty callbacks
+  while preserving custom lifecycle hooks.
 
 ## 2026-10-01 - Recover retention batch limits after successful cleanup (0.76.5)
 

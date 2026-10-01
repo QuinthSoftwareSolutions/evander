@@ -100,6 +100,8 @@ export function RepositoryIndexPanel({ repositoryId, privilegedUnlocked }: { rep
     <p>Search source and documentation, navigate symbols, and export an index for external tools.</p>
     {error && <p role="alert" className="error-message">{error}</p>}
     {form && <>
+      <details className="compact-disclosure">
+        <summary>Indexing settings{dirty ? " · Unsaved changes" : ""}</summary>
       <fieldset disabled={locked}>
         <label className="checkbox-row"><input type="checkbox" checked={form.enabled} onChange={e => update("enabled", e.target.checked)} /> Enable indexing</label>
         <div className="form-grid">
@@ -126,6 +128,7 @@ export function RepositoryIndexPanel({ repositoryId, privilegedUnlocked }: { rep
         <button className="admin-action-button" type="button" disabled={locked || !dirty} onClick={() => void act("save")}>Save indexing settings</button>
         <button className="admin-action-button" type="button" disabled={busy} onClick={() => void act("reload")}>Reload settings</button>
       </div>
+      </details>
       <label className="field-stack">Commit to index (empty uses tracked branch)<input value={commit} onChange={e => setCommit(e.target.value)} placeholder="Exact Git SHA" /></label>
       <div className="feature-toolbar">
         <button className="admin-action-button" type="button" disabled={locked || dirty || !status?.settings.enabled} onClick={() => void act("build")}>Build index</button>

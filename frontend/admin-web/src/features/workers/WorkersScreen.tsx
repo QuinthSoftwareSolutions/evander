@@ -5,7 +5,7 @@ import { useAdminUi } from "../admin/AdminContext";
 import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
 import { Tooltip } from "../admin/Tooltip";
-import { RefreshIcon, SaveIcon, StartIcon, StopIcon } from "../admin/PageActionIcons";
+import { StartIcon, StopIcon } from "../admin/PageActionIcons";
 import { JsonTextEditor, StringListEditor } from "../admin/StructuredPolicyInputs";
 import {
   encodeStringListDraftValue,
@@ -227,6 +227,7 @@ export function WorkersScreen() {
   const [detail, setDetail] = useState<WorkerDetail | null>(null);
   const [draft, setDraft] = useState<WorkerDraft>({});
   const [isDirty, setIsDirty] = useState(false);
+  const [selectedSection, setSelectedSection] = useState<"status" | "settings">("status");
   const [logText, setLogText] = useState("");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -429,7 +430,7 @@ export function WorkersScreen() {
     const commonProps = {
       "aria-label": field.label,
       title: field.tooltip || undefined,
-      disabled: saving || acting !== null || loading,
+      disabled: saving || acting !== null || loading || mutationLocked,
     };
     if (field.kind === "bool") {
       return (
@@ -522,7 +523,7 @@ export function WorkersScreen() {
               className="admin-action-button compact"
               type="button"
               onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
-              disabled={!selectedWorkerId || loading || acting !== null || saving}
+              disabled={loading || acting !== null || saving}
             >
               {loading ? "Refreshing..." : "Refresh"}
             </button>
@@ -621,58 +622,28 @@ export function WorkersScreen() {
               {selectedSummary?.running ? (
                 <Tooltip content="Stop the selected background worker service.">
                   <button
-                    className="admin-icon-button"
+                    className="admin-icon-button toolbar-labeled-action"
                     type="button"
                     onClick={() => void handleWorkerAction("stop")}
                     disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
                     aria-label={acting === "stop" ? "Stopping worker" : "Stop worker"}
                   >
-                    {acting === "stop" ? "…" : <StopIcon />}
+                    {acting === "stop" ? "Stopping…" : <><StopIcon /> Stop worker</>}
                   </button>
                 </Tooltip>
               ) : (
                 <Tooltip content="Start the selected background worker service.">
                   <button
-                    className="admin-icon-button"
+                    className="admin-icon-button toolbar-labeled-action"
                     type="button"
                     onClick={() => void handleWorkerAction("start")}
                     disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
                     aria-label={acting === "start" ? "Starting worker" : "Start worker"}
                   >
-                    {acting === "start" ? "…" : <StartIcon />}
+                    {acting === "start" ? "Starting…" : <><StartIcon /> Start worker</>}
                   </button>
                 </Tooltip>
               )}
-              <Tooltip content="Reload the selected worker summary, config, and recent log.">
-                <button
-                  className="admin-icon-button"
-                  type="button"
-                  onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
-                  disabled={!selectedWorkerId || loading || acting !== null || saving}
-                  aria-label={loading ? "Reloading worker" : "Reload worker"}
-                >
-                  {loading ? "…" : <RefreshIcon />}
-                </button>
-              </Tooltip>
-              <Tooltip content="Save the current worker-global settings back to the host config file.">
-                <button
-                  type="button"
-                  className="admin-icon-button primary"
-                  onClick={() => void handleSaveConfig()}
-                  disabled={
-                    !selectedWorkerId ||
-                    saving ||
-                    acting !== null ||
-                    loading ||
-                    !detail?.config_schema ||
-                    !isDirty ||
-                    mutationLocked
-                  }
-                  aria-label={saving ? "Saving worker settings" : "Save worker settings"}
-                >
-                  {saving ? "…" : <SaveIcon />}
-                </button>
-              </Tooltip>
             </div>
           </div>
 
@@ -685,7 +656,19 @@ export function WorkersScreen() {
           ) : null}
 
           {!selectedSummary ? <RecordPlaceholder>Select a worker to view details</RecordPlaceholder> : null}
-          <article className="panel detail-panel worker-overview-panel" hidden={!selectedSummary}>
+          {selectedSummary ? (
+            <nav className="inline-actions record-section-nav" aria-label="Worker sections">
+              <button type="button" className={selectedSection === "status" ? "primary" : ""}
+                aria-pressed={selectedSection === "status"} onClick={() => setSelectedSection("status")}>
+                Status and logs
+              </button>
+              <button type="button" className={selectedSection === "settings" ? "primary" : ""}
+                aria-pressed={selectedSection === "settings"} onClick={() => setSelectedSection("settings")}>
+                Settings{isDirty ? " · Unsaved" : ""}
+              </button>
+            </nav>
+          ) : null}
+          <article className="panel detail-panel worker-overview-panel" hidden={!selectedSummary || selectedSection !== "status"}>
             <div className="panel-header">
               <div>
                 <h3>Overview</h3>
@@ -735,7 +718,7 @@ export function WorkersScreen() {
             ) : null}
           </article>
 
-          <article className="panel" hidden={!selectedSummary}>
+          <article className="panel" hidden={!selectedSummary || selectedSection !== "settings"}>
             <div className="panel-header">
               <div>
                 <h3>Global settings</h3>
@@ -745,14 +728,17 @@ export function WorkersScreen() {
                 {detail?.config.path ?? ""}
                 {detail?.config.exists ? " · file exists" : " · using current defaults"}
               </span>
+              <button type="button" className="primary" onClick={() => void handleSaveConfig()}
+                disabled={!selectedWorkerId || saving || acting !== null || loading || !detail?.config_schema || !isDirty || mutationLocked}>
+                {saving ? "Saving…" : "Save settings"}
+              </button>
             </div>
             {detail?.config_schema ? (
               <div className="config-field-grid">
                 {detail.config_schema.fields.map((field) => (
-                  <div key={field.field_name} className="config-field-card">
+                  <div key={field.field_name} className="field-stack">
                     <div className="feature-list-title-row">
                       <strong>{field.label}</strong>
-                      <span className="panel-meta">{field.kind}</span>
                     </div>
                     {renderField(field)}
                     {field.tooltip ? <div className="panel-meta">{field.tooltip}</div> : null}
@@ -766,7 +752,7 @@ export function WorkersScreen() {
             )}
           </article>
 
-          <article className="panel" hidden={!selectedSummary}>
+          <article className="panel" hidden={!selectedSummary || selectedSection !== "status"}>
             <div className="panel-header">
               <div>
                 <h3>Recent log</h3>

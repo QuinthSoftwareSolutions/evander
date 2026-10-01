@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import (
-    Mapping,
-)
 from datetime import (
     UTC,
     datetime,
@@ -45,6 +42,7 @@ from .repository import (
     TeamStateRepository,
 )
 from .services.domain.task_assessment import (
+    TaskAssessmentService,
     task_payload_with_assessment,
 )
 
@@ -59,55 +57,51 @@ class TeamDeliverableCreatedTriggerProvider(TriggerProviderBase):
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
         now = datetime.now(UTC)
-        state = TeamStateRepository(_runtime_dir(self.runtime_context)).read()
-        deliverables: list[tuple[str, datetime, dict[str, Any]]] = []
-        for deliverable in state.deliverables.values():
-            payload = _team_deliverable_created_payload(state, deliverable.id)
-            if payload is None:
-                continue
-            if not _team_deliverable_trigger_matches(trigger, payload):
-                continue
-            occurred_at = _team_datetime_utc(deliverable.created_at)
-            deliverables.append((deliverable.id, occurred_at, payload))
-
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
         subscription = TriggerDeliverySubscription(
             trigger_type=trigger.type,
             trigger_id=trigger.id,
             directory_scope=_team_trigger_directory_scope(self.runtime_context),
         )
-        source_items = [
-            TriggerDeliverySourceItem(
-                source_item_id=deliverable_id,
-                source_occurred_at=occurred_at,
-            )
-            for deliverable_id, occurred_at, _payload in deliverables
-        ]
         delivery_store = self._delivery_store()
-        delivery_store.initialize_subscription_if_new(
-            subscription,
-            source_items,
-            now=now,
-        )
-        undelivered = {
-            item.source_item_id
-            for item in delivery_store.list_undelivered(subscription, source_items)
-        }
+        with repo.deliverable_trigger_snapshot(
+            team_id=_optional_text(trigger.team_id),
+            project_id=_optional_text(trigger.project_id),
+            producer_agent_id=_optional_text(trigger.producer_agent_id),
+        ) as snapshot:
+            source_items = [
+                TriggerDeliverySourceItem(deliverable_id, occurred_at)
+                for deliverable_id, occurred_at in snapshot.sources
+            ]
+            delivery_store.initialize_subscription_if_new(subscription, source_items, now=now)
+            undelivered = {
+                item.source_item_id
+                for item in delivery_store.list_undelivered(subscription, source_items)
+            }
+            if not undelivered:
+                return []
 
-        events: list[TriggerEvent] = []
-        for deliverable_id, occurred_at, payload in deliverables:
-            if deliverable_id not in undelivered:
-                continue
-            event_id = f"{trigger.id}:{deliverable_id}"
-            events.append(
-                TriggerEvent(
-                    event_id=event_id,
-                    trigger_id=trigger.id,
-                    trigger_type=trigger.type,
-                    occurred_at=occurred_at,
-                    payload=payload,
+            state = snapshot.read_state()
+            assessment_service = TaskAssessmentService(state)
+            events: list[TriggerEvent] = []
+            for deliverable_id, occurred_at in snapshot.sources:
+                if deliverable_id not in undelivered:
+                    continue
+                payload = _team_deliverable_created_payload(
+                    state, deliverable_id, assessment_service=assessment_service,
                 )
-            )
-        return events
+                if payload is None:
+                    continue
+                events.append(
+                    TriggerEvent(
+                        event_id=f"{trigger.id}:{deliverable_id}",
+                        trigger_id=trigger.id,
+                        trigger_type=trigger.type,
+                        occurred_at=occurred_at,
+                        payload=payload,
+                    )
+                )
+            return events
 
     def acknowledge_published_event(self, event: TriggerEvent) -> None:
         trigger = self._trigger()
@@ -147,20 +141,11 @@ def _team_trigger_directory_scope(context: Any) -> str:
     return directory_path or "root"
 
 
-def _team_deliverable_trigger_matches(
-    trigger: TeamDeliverableCreatedTriggerDefinition,
-    payload: Mapping[str, Any],
-) -> bool:
-    for field_name in ("team_id", "project_id", "producer_agent_id"):
-        expected = _optional_text(getattr(trigger, field_name, None))
-        if expected is not None and _optional_text(payload.get(field_name)) != expected:
-            return False
-    return True
-
-
 def _team_deliverable_created_payload(
     state: TeamState,
     deliverable_id: str,
+    *,
+    assessment_service: TaskAssessmentService | None = None,
 ) -> dict[str, Any] | None:
     deliverable = state.deliverables.get(deliverable_id)
     if deliverable is None:
@@ -169,7 +154,10 @@ def _team_deliverable_created_payload(
     project = state.projects.get(task.project_id) if task is not None else None
     team = state.teams.get(project.team_id) if project is not None else None
     deliverable_payload = deliverable.model_dump(mode="json")
-    task_payload = task_payload_with_assessment(state, task) if task is not None else None
+    task_payload = (
+        task_payload_with_assessment(state, task, assessment_service=assessment_service)
+        if task is not None else None
+    )
     project_payload = project.model_dump(mode="json") if project is not None else None
     team_payload = team.model_dump(mode="json") if team is not None else None
     return {

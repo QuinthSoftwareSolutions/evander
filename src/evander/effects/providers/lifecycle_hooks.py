@@ -19,7 +19,7 @@ from evander.effects.providers.agent_session import (
     gateway_url_with_session_context,
     safe_effect_execution_id,
 )
-from evander.effects.providers.base import EffectLifecycleHookBase
+from evander.effects.providers.base import EffectLifecycleHookBase, EffectProviderBase
 from evander.effects.providers.resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
     resume_thread_id_from_metadata,
@@ -2640,7 +2640,21 @@ def build_effect_lifecycle_hooks(*, provider_factory: Any) -> tuple[EffectLifecy
 
     for effect_type in provider_factory.registry.registered_types():
         provider_class = provider_factory.registry.resolve(effect_type)
-        hooks.append(ProviderCompletionLifecycleHook(provider_class))
+        # Most synchronous providers inherit both empty callbacks. Their custom
+        # lifecycle hooks still participate even without a completion wrapper.
+        if any(
+            _overrides_provider_callback(provider_class, name)
+            for name in ("reconcile_waiting", "on_completion_event")
+        ):
+            hooks.append(ProviderCompletionLifecycleHook(provider_class))
         for hook_class in provider_class.lifecycle_hooks():
             hooks.append(hook_class())
     return tuple(hooks)
+
+
+def _overrides_provider_callback(provider_class: type[Any], name: str) -> bool:
+    callback = getattr(provider_class, name, None)
+    if callback is None:
+        return False
+    default = getattr(EffectProviderBase, name)
+    return getattr(callback, "__func__", callback) is not getattr(default, "__func__", default)

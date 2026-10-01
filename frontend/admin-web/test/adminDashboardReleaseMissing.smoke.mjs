@@ -362,6 +362,11 @@ test("admin shell release and capacity panels show missing states without invent
       return;
     }
 
+    if (pathname === "/api/admin/reports/inference-costs") {
+      await route.fulfill(jsonResponse({ error: "Inference costs are unavailable on this host." }, 501));
+      return;
+    }
+
     if (pathname === "/api/workflow-editor/document") {
       await route.fulfill(jsonResponse(workflowDocumentResponse));
       return;

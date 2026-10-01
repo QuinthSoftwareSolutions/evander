@@ -373,6 +373,7 @@ test("admin shell sessions page surfaces wake ledger entries and retry controls"
     waitUntil: "domcontentloaded",
   });
 
+  await page.getByRole("button", { name: /^Wake schedules/ }).click();
   const ledgerSection = page.locator(".wake-ledger-section");
 
   await ensureSectionsExpanded(page);

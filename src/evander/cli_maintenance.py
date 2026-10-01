@@ -42,6 +42,9 @@ def migrate_orchestration_storage_command(
             "--downgrade", help="Rehydrate inline records before starting the previous release."
         ),
     ] = False,
+    indexes_only: Annotated[
+        bool, typer.Option("--indexes-only", help="Build maintenance indexes without converting rows."),
+    ] = False,
     verify: Annotated[
         bool, typer.Option("--verify", help="Read and verify every operational payload.")
     ] = False,
@@ -69,12 +72,27 @@ def migrate_orchestration_storage_command(
         raise typer.BadParameter("--apply requires --offline after stopping all database users")
     if downgrade and not apply_migration:
         raise typer.BadParameter("--downgrade requires --apply --offline")
+    if indexes_only and not apply_migration:
+        raise typer.BadParameter("--indexes-only requires --apply --offline")
+    if indexes_only and (downgrade or max_batches is not None):
+        raise typer.BadParameter("--indexes-only cannot be combined with --downgrade or --max-batches")
     try:
-        result = (
-            migrate_orchestration_storage(database, downgrade=downgrade, max_batches=max_batches)
-            if apply_migration
-            else check_orchestration_storage(database, verify=verify)
-        )
+        if indexes_only:
+            from evander.repositories.orchestration_db import build_orchestration_maintenance_indexes
+
+            if not database.is_file():
+                raise ValueError("Database does not exist")
+            indexes = build_orchestration_maintenance_indexes(database)
+            result = {
+                "database": str(database), "direction": "indexes_only",
+                "processed": 0, "batches": 0, "complete": indexes["ready"], "indexes": indexes,
+            }
+        else:
+            result = (
+                migrate_orchestration_storage(database, downgrade=downgrade, max_batches=max_batches)
+                if apply_migration
+                else check_orchestration_storage(database, verify=verify)
+            )
         if apply_migration and verify:
             result["verification"] = check_orchestration_storage(database, verify=True)
         if team_database is not None:

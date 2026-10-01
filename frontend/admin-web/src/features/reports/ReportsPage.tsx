@@ -670,9 +670,6 @@ export function ReportsPage() {
                         <th>Graph</th>
                         <th>Activity</th>
                         <th>Runs</th>
-                        <th>Trigger</th>
-                        <th>Gate</th>
-                        <th>Effect</th>
                         <th>Latest</th>
                       </tr>
                     </thead>
@@ -696,15 +693,12 @@ export function ReportsPage() {
                           </td>
                           <td>{graph.activity_count}</td>
                           <td>{graph.run_count}</td>
-                          <td>{graph.trigger_event_count}</td>
-                          <td>{graph.gate_execution_count}</td>
-                          <td>{graph.effect_execution_count}</td>
                           <td>{formatTimestamp(graph.latest_activity_at)}</td>
                         </tr>
                       ))}
                       {!loading && report?.graphs.length === 0 ? (
                         <tr>
-                          <td className="empty-state-cell" colSpan={7}>
+                          <td className="empty-state-cell" colSpan={4}>
                             No workflow graphs found.
                           </td>
                         </tr>
@@ -785,6 +779,9 @@ export function ReportsPage() {
                         <span>Nodes</span>
                         <strong>{selectedGraph.node_count}</strong>
                       </div>
+                      <div><span>Trigger events</span><strong>{selectedGraph.trigger_event_count}</strong></div>
+                      <div><span>Gate executions</span><strong>{selectedGraph.gate_execution_count}</strong></div>
+                      <div><span>Effect executions</span><strong>{selectedGraph.effect_execution_count}</strong></div>
                       <div>
                         <span>Latest</span>
                         <strong>{formatTimestamp(selectedGraph.latest_activity_at)}</strong>
@@ -911,12 +908,8 @@ export function ReportsPage() {
                         <th>Graph</th>
                         <th>Node</th>
                         <th>Count</th>
-                        <th>First seen</th>
                         <th>Last seen</th>
                         <th>Summary</th>
-                        <th>Sessions</th>
-                        <th>PRs</th>
-                        <th>ADO</th>
                         <th>Representative run</th>
                       </tr>
                     </thead>
@@ -953,12 +946,8 @@ export function ReportsPage() {
                               </div>
                             </td>
                             <td>{cluster.count}</td>
-                            <td>{formatTimestamp(cluster.first_seen_at)}</td>
                             <td>{formatTimestamp(cluster.last_seen_at)}</td>
                             <td>{truncateText(cluster.latest_error_summary ?? cluster.error_signature, 140)}</td>
-                            <td>{cluster.session_ids.length}</td>
-                            <td>{cluster.pr_ids.length}</td>
-                            <td>{cluster.ado_item_ids.length}</td>
                             <td>
                               {representativeHref && representativeExample ? (
                                 <a href={representativeHref}>{workflowFailureClusterRepresentativeRunLabel(representativeExample)}</a>
@@ -976,14 +965,14 @@ export function ReportsPage() {
                       })}
                       {failureClustersLoading && (failureClustersReport?.clusters.length ?? 0) === 0 ? (
                         <tr>
-                          <td className="empty-state-cell" colSpan={11}>
+                          <td className="empty-state-cell" colSpan={7}>
                             Loading failure clusters...
                           </td>
                         </tr>
                       ) : null}
                       {!failureClustersLoading && (failureClustersReport?.clusters.length ?? 0) === 0 ? (
                         <tr>
-                          <td className="empty-state-cell" colSpan={11}>
+                          <td className="empty-state-cell" colSpan={7}>
                             No workflow failure clusters found.
                           </td>
                         </tr>

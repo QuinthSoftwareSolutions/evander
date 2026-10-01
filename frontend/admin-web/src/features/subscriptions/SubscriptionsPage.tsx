@@ -297,7 +297,7 @@ export function SubscriptionsPage() {
         {notice ? <div className="callout" role="status">{notice}</div> : null}
         {!privilegedUnlocked ? <p className="callout warning-callout">Unlock privileged operations to create profiles, change account connections, or redeem resets.</p> : null}
 
-        <details className="subscription-create">
+        <details className="subscription-create" open={!loading && profiles.length === 0}>
           <summary>Create profile</summary>
           <div className="config-field-grid">
             <label className="field-stack">
@@ -327,7 +327,7 @@ export function SubscriptionsPage() {
             const resetCount = bankedResetCount(profile.rate_limits);
             const retryReset = Boolean(resetAttempts[resetAttemptKey(profile)]);
             return (
-              <details className="subscription-profile" key={profile.profile_id}>
+              <details className="subscription-profile" key={profile.profile_id} open={Boolean(login || profile.error)}>
                 <summary className="subscription-profile-summary">
                   <span>
                     <strong>{profile.display_name}</strong>
@@ -338,7 +338,16 @@ export function SubscriptionsPage() {
                       {!profile.enabled ? "Disabled" : profile.signed_in ? "Signed in" : "Signed out"}
                     </span>
                   </span>
-                  <span>{profile.email ?? profile.account_id ?? "Not signed in"}</span>
+                  <span>{profile.signed_in ? profile.email ?? profile.account_id ?? "Signed in" : (
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || !profile.enabled || busy !== null}
+                      onClick={(event) => { event.preventDefault(); event.stopPropagation(); void startLogin(profile); }}
+                    >
+                      {busy === `login:${profile.profile_id}` ? "Starting login…" : "Login"}
+                    </button>
+                  )}</span>
                   <span>{profile.plan_type ?? profile.account_type ?? "Unknown"}</span>
                   <span>
                     {profile.active_job_count ?? 0} active · {profile.queued_prompt_count ?? 0} queued
@@ -354,26 +363,52 @@ export function SubscriptionsPage() {
                   </span>
                 </summary>
                 <div className="subscription-profile-body">
+                  <div className="inline-actions compact-actions">
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || !profile.enabled || !profile.signed_in || !profile.available || !workerUrl || !profile.account_id || resetStorageError !== null || busy !== null || loading || (!retryReset && (resetCount === null || resetCount === 0))}
+                      onClick={() => void redeemReset(profile)}
+                    >
+                      {busy === `reset:${profile.profile_id}` ? "Redeeming…" : retryReset ? "Retry reset redemption" : "Redeem one reset"}
+                    </button>
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || busy !== null}
+                      onClick={() => void renameProfile(profile)}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || busy !== null}
+                      onClick={() => void patchProfile(profile, { enabled: !profile.enabled })}
+                    >
+                      {profile.enabled ? "Disable" : "Enable"}
+                    </button>
+                    {profile.signed_in ? <button
+                      className="admin-action-button compact"
+                      type="button"
+                      disabled={!privilegedUnlocked || !profile.enabled || busy !== null}
+                      onClick={() => void startLogin(profile)}
+                    >
+                      Reconnect account
+                    </button> : null}
+                    <button
+                      className="admin-action-button compact danger"
+                      type="button"
+                      disabled={!privilegedUnlocked || !profile.signed_in || busy !== null}
+                      onClick={() => void logout(profile)}
+                    >
+                      Logout
+                    </button>
+                  </div>
                   <dl className="property-grid">
-                    <div>
-                      <dt>Account</dt>
-                      <dd>{profile.email ?? profile.account_id ?? "Not signed in"}</dd>
-                    </div>
                     <div>
                       <dt>Pinned account id</dt>
                       <dd>{profile.pinned_account_id ?? "Unpinned"}</dd>
-                    </div>
-                    <div>
-                      <dt>Plan</dt>
-                      <dd>{profile.plan_type ?? profile.account_type ?? "Unknown"}</dd>
-                    </div>
-                    <div>
-                      <dt>Active jobs</dt>
-                      <dd>{profile.active_job_count ?? 0}</dd>
-                    </div>
-                    <div>
-                      <dt>Queued prompts</dt>
-                      <dd>{profile.queued_prompt_count ?? 0}</dd>
                     </div>
                     <div>
                       <dt>Last refresh</dt>
@@ -405,48 +440,7 @@ export function SubscriptionsPage() {
                       <pre className="log-view compact-log-view">{JSON.stringify(profile.usage, null, 2)}</pre>
                     </details>
                   ) : null}
-                  <div className="inline-actions compact-actions">
-                    <button
-                      className="admin-action-button compact"
-                      type="button"
-                      disabled={!privilegedUnlocked || !profile.enabled || !profile.signed_in || !profile.available || !workerUrl || !profile.account_id || resetStorageError !== null || busy !== null || loading || (!retryReset && (resetCount === null || resetCount === 0))}
-                      onClick={() => void redeemReset(profile)}
-                    >
-                      {busy === `reset:${profile.profile_id}` ? "Redeeming…" : retryReset ? "Retry reset redemption" : "Redeem one reset"}
-                    </button>
-                    <button
-                      className="admin-action-button compact"
-                      type="button"
-                      disabled={!privilegedUnlocked || busy !== null}
-                      onClick={() => void renameProfile(profile)}
-                    >
-                      Rename
-                    </button>
-                    <button
-                      className="admin-action-button compact"
-                      type="button"
-                      disabled={!privilegedUnlocked || busy !== null}
-                      onClick={() => void patchProfile(profile, { enabled: !profile.enabled })}
-                    >
-                      {profile.enabled ? "Disable" : "Enable"}
-                    </button>
-                    <button
-                      className="admin-action-button compact"
-                      type="button"
-                      disabled={!privilegedUnlocked || !profile.enabled || busy !== null}
-                      onClick={() => void startLogin(profile)}
-                    >
-                      Login
-                    </button>
-                    <button
-                      className="admin-action-button compact danger"
-                      type="button"
-                      disabled={!privilegedUnlocked || !profile.signed_in || busy !== null}
-                      onClick={() => void logout(profile)}
-                    >
-                      Logout
-                    </button>
-                  </div>
+
                 </div>
               </details>
             );

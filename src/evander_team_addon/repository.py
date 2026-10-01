@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from .sqlite_store import (
     TeamStateSqliteCommandTransaction,
     TeamStateSqliteStore,
     TeamStateReadProjection,
+    TeamDeliverableTriggerSnapshot,
 )
 from .lifecycle_candidates import LifecycleCandidatePage
 from .sqlite_dispatch_bookkeeping import (
@@ -59,6 +61,17 @@ class TeamStateRepository:
 
     def read(self) -> TeamState:
         return self.store.read_state()
+
+    def deliverable_trigger_snapshot(
+        self,
+        *,
+        team_id: str | None = None,
+        project_id: str | None = None,
+        producer_agent_id: str | None = None,
+    ) -> AbstractContextManager[TeamDeliverableTriggerSnapshot]:
+        return self.store.deliverable_trigger_snapshot(
+            team_id=team_id, project_id=project_id, producer_agent_id=producer_agent_id,
+        )
 
     def read_projection(self, *, collections: Sequence[str]) -> TeamStateReadProjection:
         """Return a read-only subset; it cannot be passed to generic state writes."""

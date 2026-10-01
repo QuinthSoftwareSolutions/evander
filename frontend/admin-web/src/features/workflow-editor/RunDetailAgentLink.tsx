@@ -64,10 +64,6 @@ export function RunDetailAgentLink({
     <div className="run-detail-link-item" key={`${agent.node_id}-${agent.session_id ?? "session-missing"}-${agent.execution_id ?? index}`}>
       <strong>Agent {agent.session_id ?? agent.vm_name ?? agent.node_id}</strong>
       <span>{agent.status ?? (agent.waiting ? "waiting" : agent.completed ? "completed" : "status missing")}</span>
-      {agent.node_type ? <span>Node type {agent.node_type}</span> : null}
-      {agent.dispatch_id ? <span>Dispatch {agent.dispatch_id}</span> : null}
-      {agent.thread_id ? <span>Thread {agent.thread_id}</span> : null}
-      {agent.execution_id ? <span>Execution {agent.execution_id}</span> : null}
       {sessionAvailable ? (
         <span>Session {agent.session_id ?? "missing"}</span>
       ) : (
@@ -99,6 +95,17 @@ export function RunDetailAgentLink({
           </button>
         ) : null}
       </div>
+      {agent.node_type || agent.dispatch_id || agent.thread_id || agent.execution_id ? (
+        <details className="run-detail-link-identifiers">
+          <summary>Execution identifiers</summary>
+          <div className="run-detail-meta-grid">
+            {agent.node_type ? <span>Node type {agent.node_type}</span> : null}
+            {agent.dispatch_id ? <span>Dispatch {agent.dispatch_id}</span> : null}
+            {agent.thread_id ? <span>Thread {agent.thread_id}</span> : null}
+            {agent.execution_id ? <span>Execution {agent.execution_id}</span> : null}
+          </div>
+        </details>
+      ) : null}
       {renderOperatorSteeringPanel(agent)}
     </div>
   );

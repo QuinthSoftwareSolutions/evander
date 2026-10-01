@@ -45,8 +45,6 @@ export function InspectedRunPanel({
         </span>
       </div>
       <div className="run-detail-meta-grid">
-        <span>Worker {runDetail.worker_id}</span>
-        <span>Trace {runDetail.trace_id ?? "missing"}</span>
         <span>Started {formatRuntimeTimestamp(runDetail.occurred_at)}</span>
         <span>Latest {formatRuntimeTimestamp(runDetail.latest_activity_at ?? runDetail.occurred_at)}</span>
         <span>{runDetail.graph.snapshot ? "Historical graph snapshot" : "Current graph fallback"}</span>
@@ -54,6 +52,13 @@ export function InspectedRunPanel({
           {inspectVisitedNodeIds.size} visited / {inspectDisplayNodeIds.size} shown
         </span>
       </div>
+      <details className="run-detail-link-identifiers">
+        <summary>Run identifiers</summary>
+        <div className="run-detail-meta-grid">
+          <span>Worker {runDetail.worker_id}</span>
+          <span>Trace {runDetail.trace_id ?? "missing"}</span>
+        </div>
+      </details>
       <div className="run-detail-availability">
         {availabilityItems.map(([label, value]) => (
           <span key={label} className={normalizeAvailabilityState(value) === "available" ? "" : "missing"}>
