@@ -25,6 +25,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("interrupt clears pending speech queue", InterruptClearsPendingSpeechQueue),
     ("graph join resolves url and chunks synthesized audio", GraphJoinResolvesUrlAndChunksSynthesizedAudio),
     ("realtime adapter streams audio and transcripts over websocket", RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket),
+    ("native speech and delegated results share response scheduling", NativeCallTests.NativeSpeechAndDelegationShareResponses),
+    ("native interruption waits for response completion", NativeCallTests.InterruptionWaitsForResponseCompletion),
     ("recording status failure prevents transcript persistence", RecordingStatusFailurePreventsTranscriptPersistence),
     ("leave marks meeting stopped and disposes live resources", LeaveMarksMeetingStoppedAndDisposesResources),
 };
@@ -282,6 +284,14 @@ static async Task RealtimeAdapterStreamsAudioAndTranscriptsOverWebSocket()
     AssertContains("\"type\":\"session.update\"", socket.SentMessages[0]);
     AssertContains("\"voice\":\"cedar\"", socket.SentMessages[0]);
     AssertContains("Represent the originating Evander agent.", socket.SentMessages[0]);
+    using (var update = JsonDocument.Parse(socket.SentMessages[0]))
+    {
+        var config = update.RootElement.GetProperty("session");
+        AssertEqual(JsonValueKind.Array, config.GetProperty("tools").ValueKind);
+        AssertEqual(0, config.GetProperty("tools").GetArrayLength());
+        AssertEqual(true, config.GetProperty("audio").GetProperty("input")
+            .GetProperty("turn_detection").GetProperty("create_response").GetBoolean());
+    }
 
     await session.PushAudioAsync(new byte[640], CancellationToken.None);
     var appendEvent = socket.SentMessages.Single(item => item.Contains("input_audio_buffer.append"));

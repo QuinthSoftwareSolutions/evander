@@ -87,14 +87,16 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
         private readonly ConcurrentDictionary<string, Task> queries = new();
         private readonly CancellationTokenSource receiveLoopCts = new();
         private readonly SemaphoreSlim sendLock = new(1, 1);
-        private readonly SemaphoreSlim queryResponseLock = new(1, 1);
+        private readonly SemaphoreSlim responseSignal = new(0, 1);
         private readonly object activeResponseLock = new();
         private Task? receiveLoopTask;
+        private Task? responseLoopTask;
         private string? activeResponseId;
         private string? activeOperationId;
         private bool activeResponseTranscriptCompleted;
         private bool responseCreatePending;
-        private volatile bool callerSpeaking;
+        private bool responseRequested;
+        private bool callerSpeaking;
         private bool disposed;
 
         public OpenAIRealtimeMeetingSpeechSession(
@@ -125,6 +127,8 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                 },
                 cancellationToken);
             await SendSessionUpdateAsync(cancellationToken);
+            if (queryOrigin is not null)
+                responseLoopTask = Task.Run(() => RunResponseLoopAsync(receiveLoopCts.Token), CancellationToken.None);
             receiveLoopTask = Task.Run(
                 () => RunReceiveLoopAsync(receiveLoopCts.Token),
                 CancellationToken.None);
@@ -231,11 +235,12 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                 // Best effort close; disposal should not hide the meeting stop path.
             }
 
-            if (receiveLoopTask is not null)
+            foreach (var loop in new[] { receiveLoopTask, responseLoopTask })
             {
+                if (loop is null) continue;
                 try
                 {
-                    await receiveLoopTask.WaitAsync(TimeSpan.FromSeconds(2));
+                    await loop.WaitAsync(TimeSpan.FromSeconds(2));
                 }
                 catch
                 {
@@ -248,7 +253,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             catch { /* Polling stops on hangup; accepted origin work remains durable. */ }
             receiveLoopCts.Dispose();
             sendLock.Dispose();
-            queryResponseLock.Dispose();
+            responseSignal.Dispose();
         }
 
         private async Task SendSessionUpdateAsync(CancellationToken cancellationToken)
@@ -261,7 +266,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                     ["type"] = "realtime",
                     ["model"] = settings.Model,
                     ["instructions"] = settings.Instructions,
-                    ["tools"] = queryOrigin is null ? null : new object[]
+                    ["tools"] = queryOrigin is null ? Array.Empty<object>() : new object[]
                     {
                         new
                         {
@@ -291,7 +296,8 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                             ["turn_detection"] = new Dictionary<string, object?>
                             {
                                 ["type"] = settings.TurnDetection,
-                                ["create_response"] = true,
+                                // Native calls schedule caller turns and tool replies together.
+                                ["create_response"] = queryOrigin is null,
                                 ["interrupt_response"] = true,
                             },
                         },
@@ -376,6 +382,8 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             {
                 case "response.created":
                     CaptureResponseId(root);
+                    if (queryOrigin is not null && callerSpeaking)
+                        await CancelActiveResponseAsync("response_started_during_speech", cancellationToken);
                     break;
                 case "response.output_audio.delta":
                 case "response.audio.delta":
@@ -390,11 +398,12 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                     await HandleInputTranscriptDoneAsync(root, cancellationToken);
                     break;
                 case "input_audio_buffer.speech_started":
-                    callerSpeaking = true;
+                    lock (activeResponseLock) callerSpeaking = true;
                     await CancelActiveResponseAsync("user_speech_started", cancellationToken);
                     break;
                 case "input_audio_buffer.speech_stopped":
-                    callerSpeaking = false;
+                    lock (activeResponseLock) callerSpeaking = false;
+                    if (queryOrigin is not null) RequestResponse();
                     break;
                 case "response.done":
                     await HandleResponseDoneAsync(root, cancellationToken);
@@ -513,6 +522,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                 activeOperationId = null;
                 activeResponseTranscriptCompleted = false;
                 responseCreatePending = false;
+                if (queryOrigin is not null) SignalResponseLoop();
             }
             if (response is { } value && value.TryGetProperty("output", out var output)
                 && output.ValueKind == JsonValueKind.Array)
@@ -555,23 +565,46 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                     ["type"] = "conversation.item.create",
                     ["item"] = new { type = "function_call_output", call_id = callId, output = result },
                 }, token);
-                await queryResponseLock.WaitAsync(token);
-                try
-                {
-                    // Concurrent tool results must not start overlapping server responses.
-                    while (callerSpeaking || ResponsePendingOrActive()) await Task.Delay(100, token);
-                    lock (activeResponseLock) responseCreatePending = true;
-                    await SendRealtimeEventAsync(new Dictionary<string, object?> { ["type"] = "response.create" }, token);
-                }
-                finally { queryResponseLock.Release(); }
+                RequestResponse();
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception ex) { await onError($"Origin query reply failed: {ex.GetType().Name}", CancellationToken.None); }
         }
 
-        private bool ResponsePendingOrActive()
+        private void RequestResponse()
         {
-            lock (activeResponseLock) return responseCreatePending || activeOperationId is not null;
+            lock (activeResponseLock)
+            {
+                responseRequested = true;
+                SignalResponseLoop();
+            }
+        }
+
+        // Called under activeResponseLock; the signal coalesces pending caller turns/tool results.
+        private void SignalResponseLoop()
+        {
+            if (responseSignal.CurrentCount == 0) responseSignal.Release();
+        }
+
+        private async Task RunResponseLoopAsync(CancellationToken token)
+        {
+            try
+            {
+                while (true)
+                {
+                    await responseSignal.WaitAsync(token);
+                    lock (activeResponseLock)
+                    {
+                        if (!responseRequested || callerSpeaking || responseCreatePending
+                            || activeOperationId is not null) continue;
+                        responseRequested = false;
+                        responseCreatePending = true;
+                    }
+                    await SendRealtimeEventAsync(new Dictionary<string, object?> { ["type"] = "response.create" }, token);
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch (Exception ex) { await onError($"Voice response failed: {ex.GetType().Name}", CancellationToken.None); }
         }
 
         private async Task CancelActiveResponseAsync(string reason, CancellationToken cancellationToken)
@@ -602,9 +635,14 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
 
             lock (activeResponseLock)
             {
-                activeResponseId = null;
-                activeOperationId = null;
-                activeResponseTranscriptCompleted = false;
+                // A native response still occupies the server conversation until response.done,
+                // even when VAD has cancelled it or response.created is still in flight.
+                if (queryOrigin is null)
+                {
+                    activeResponseId = null;
+                    activeOperationId = null;
+                    activeResponseTranscriptCompleted = false;
+                }
             }
         }
 

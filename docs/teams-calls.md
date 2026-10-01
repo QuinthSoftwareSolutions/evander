@@ -115,8 +115,10 @@ Reservations permit one call per assistant and four globally by default.
 The companion exposes only `query_origin_agent`. It delegates into the assistant's existing
 context and polls the durable query every second, with a 90-second query deadline. Replayed
 function events and retried query requests do not create duplicate work. Original tools,
-approvals, and prompt serialization still apply. Interrupting speech clears pending audio;
-hangup cancels voice polling while already accepted assistant work can continue.
+approvals, and prompt serialization still apply. The bridge schedules caller turns and delegated
+replies together while Realtime VAD detects speech and interrupts playback. Interrupting speech
+clears pending audio; a new reply waits for the previous response to finish cancelling. Hangup
+cancels voice polling while already accepted assistant work can continue.
 
 Transcript collection starts only after Graph accepts recording status. Raw audio files
 are not created. Durable transcripts use the existing voice privacy datasets; configure

@@ -11,6 +11,8 @@
 - Validate communications notification signing keys, audience, and tenant; update the Graph
   media SDK. Include local tests, app and environment templates, Windows service installation,
   and an activation runbook. Calling remains disabled by default.
+- Preserve valid Realtime session configuration for existing meetings and serialize native
+  caller turns with delegated replies, waiting for cancelled responses to finish before restarting.
 
 ## 2026-10-01 - Simplify operator workspaces (0.78.0)
 

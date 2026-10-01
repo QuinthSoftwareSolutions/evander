@@ -103,11 +103,13 @@ internal static class NativeCallTests
     public static async Task ConcurrentQueryResultsSerializeResponses()
     {
         var socket = new FakeRealtimeWebSocketClient();
+        var first = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var session = await Adapter(socket).StartAsync(new MeetingSpeechStartRequest(
             "voice-bound", null, new FakeMeetingAudioSession(), null, null, null,
             (_, _) => Task.CompletedTask, (_, _) => Task.CompletedTask,
             (_, _, _, _, _) => Task.CompletedTask,
-            (_, _, _, _) => Task.FromResult("confirmed")), CancellationToken.None);
+            (_, _, callId, token) => (callId == "function-1" ? first.Task : second.Task).WaitAsync(token)), CancellationToken.None);
         foreach (var callId in new[] { "function-1", "function-2" })
             socket.EnqueueIncoming(JsonSerializer.Serialize(new
             {
@@ -115,11 +117,92 @@ internal static class NativeCallTests
                 arguments = "{\"question\":\"Report\"}",
             }));
         int Responses() => socket.SentMessages.Count(message => message.Contains("response.create"));
+        first.SetResult("confirmed first");
+        await Until(() => Responses() == 1);
+        second.SetResult("confirmed second");
         await Until(() => socket.SentMessages.Count(message => message.Contains("function_call_output")) == 2);
         Check(Responses() == 1, "Concurrent tools started overlapping responses");
         socket.EnqueueIncoming("{\"type\":\"response.created\",\"response\":{\"id\":\"first-response\"}}");
         socket.EnqueueIncoming("{\"type\":\"response.done\",\"response\":{\"status\":\"completed\",\"output\":[]}}");
         await Until(() => Responses() == 2);
+    }
+
+    public static async Task NativeSpeechAndDelegationShareResponses()
+    {
+        var socket = new FakeRealtimeWebSocketClient();
+        var audio = new FakeMeetingAudioSession();
+        var result = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var turnProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var session = await Adapter(socket).StartAsync(new MeetingSpeechStartRequest(
+            "voice-bound", null, audio, null, null, null,
+            (_, _) => { turnProcessed.TrySetResult(); return Task.CompletedTask; },
+            (error, _) => throw new InvalidOperationException(error),
+            (_, _, _, _, _) => Task.CompletedTask,
+            (_, _, _, token) => { queried.SetResult(); return result.Task.WaitAsync(token); }), CancellationToken.None);
+        using (var update = JsonDocument.Parse(socket.SentMessages[0]))
+        {
+            var vad = update.RootElement.GetProperty("session").GetProperty("audio")
+                .GetProperty("input").GetProperty("turn_detection");
+            Check(!vad.GetProperty("create_response").GetBoolean(), "VAD can race delegated response creation");
+            Check(vad.GetProperty("interrupt_response").GetBoolean(), "VAD interruption was disabled");
+        }
+        int Responses() => socket.SentMessages.Count(message => message.Contains("response.create"));
+        socket.EnqueueIncoming("{\"type\":\"input_audio_buffer.speech_started\"}");
+        socket.EnqueueIncoming("{\"type\":\"input_audio_buffer.speech_stopped\"}");
+        await Until(() => Responses() == 1);
+        socket.EnqueueIncoming("{\"type\":\"response.created\",\"response\":{\"id\":\"tool-response\"}}");
+        socket.EnqueueIncoming("{\"type\":\"response.function_call_arguments.done\",\"name\":\"query_origin_agent\",\"call_id\":\"function-1\",\"arguments\":\"{\\\"question\\\":\\\"Report\\\",\\\"reason\\\":\\\"facts\\\"}\"}");
+        socket.EnqueueIncoming("{\"type\":\"response.done\",\"response\":{\"id\":\"tool-response\",\"status\":\"completed\",\"output\":[]}}");
+        await queried.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        socket.EnqueueIncoming("{\"type\":\"input_audio_buffer.speech_started\"}");
+        await Until(() => audio.ClearCount == 2);
+        result.SetResult("{\"status\":\"answered\",\"answer\":\"Prepared\"}");
+        await Until(() => socket.SentMessages.Any(message => message.Contains("function_call_output")));
+        Check(Responses() == 1, "Delegated result started speaking over the caller");
+        socket.EnqueueIncoming("{\"type\":\"input_audio_buffer.speech_stopped\"}");
+        socket.EnqueueIncoming("{\"type\":\"conversation.item.input_audio_transcription.completed\",\"transcript\":\"Thanks\"}");
+        await turnProcessed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await Until(() => Responses() == 2);
+        // No response.created acknowledgement: speech and the tool result must share
+        // one pending response, and shutdown must cancel any queued follow-up.
+        await session.DisposeAsync();
+        Check(Responses() == 2, "Caller turn and delegated result started overlapping responses");
+    }
+
+    public static async Task InterruptionWaitsForResponseCompletion()
+    {
+        foreach (var delayedCreation in new[] { false, true })
+        {
+            var socket = new FakeRealtimeWebSocketClient();
+            var audio = new FakeMeetingAudioSession();
+            var turnProcessed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var session = await Adapter(socket).StartAsync(new MeetingSpeechStartRequest(
+                "voice-bound", null, audio, null, null, null,
+                (_, _) => { turnProcessed.TrySetResult(); return Task.CompletedTask; },
+                (error, _) => throw new InvalidOperationException(error),
+                (_, _, _, _, _) => Task.CompletedTask,
+                (_, _, _, _) => Task.FromResult("confirmed")), CancellationToken.None);
+            int Responses() => socket.SentMessages.Count(message => message.Contains("response.create"));
+            socket.EnqueueIncoming("{\"type\":\"input_audio_buffer.speech_started\"}");
+            socket.EnqueueIncoming("{\"type\":\"input_audio_buffer.speech_stopped\"}");
+            await Until(() => Responses() == 1);
+            var created = "{\"type\":\"response.created\",\"response\":{\"id\":\"interrupted-response\"}}";
+            if (!delayedCreation) socket.EnqueueIncoming(created);
+            socket.EnqueueIncoming("{\"type\":\"input_audio_buffer.speech_started\"}");
+            await Until(() => audio.ClearCount == 2);
+            if (delayedCreation)
+            {
+                socket.EnqueueIncoming(created);
+                await Until(() => socket.SentMessages.Any(message => message.Contains("response.cancel")));
+            }
+            socket.EnqueueIncoming("{\"type\":\"input_audio_buffer.speech_stopped\"}");
+            socket.EnqueueIncoming("{\"type\":\"conversation.item.input_audio_transcription.completed\",\"transcript\":\"New question\"}");
+            await turnProcessed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Check(Responses() == 1, "Interruption released a response before cancellation completed");
+            socket.EnqueueIncoming("{\"type\":\"response.done\",\"response\":{\"id\":\"interrupted-response\",\"status\":\"cancelled\",\"output\":[]}}");
+            await Until(() => Responses() == 2);
+        }
     }
 
     public static async Task NativeLifecycleAndReplay()
