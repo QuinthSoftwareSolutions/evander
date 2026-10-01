@@ -1651,6 +1651,39 @@ set:
   `effect:agent:destroy` nodes.
 - `query:team:state` returns filtered add-on state for workflows or UI.
 
+`query:team:state` can opt into a compact read with `record_fields`, an object
+whose keys are `tasks` and/or `cases` and whose values are nonempty arrays of
+public record field names. For example, a reconciliation query can request:
+
+```json
+{
+  "type": "query:team:state",
+  "config": {
+    "team_id": "example-team",
+    "record_fields": {
+      "tasks": ["id", "state", "owner_agent_id", "case_id", "resolution_status"],
+      "cases": ["id", "status", "source", "source_ref", "task_ids"]
+    }
+  }
+}
+```
+
+The `state` object contains only the selected collections and fields. Existing
+top-level record-map outputs remain available, with unselected maps empty.
+Task and case model fields are supported; tasks also support `assessment`,
+`resolution_status`, `readiness`, `integration_ready`, `invalid_reason_codes`,
+`active_blocker_ids`, `inherited_blockers`, `child_task_ids`, `dependency_status`,
+`blocked_by_task_ids`, `subtask_counts`, `waiting_reason`,
+`assignment_wait_reason`, and `assignment_role_name`. Unknown collections or
+fields are rejected, including after resolving workflow output references.
+Scope intersections and reference filtering match the full query. Assessment
+fields still use global dependencies, even when dependency records fall outside
+the selected agent scope. The read loads only the collections required for
+scope and selected fields, without producing the full state and runtime views
+first. Omit `record_fields` for the existing full output. The legacy
+`include_records` option retains its existing behavior and does not select a
+compact read.
+
 These node types are add-on-owned. They are not present unless the add-on is
 loaded, and their workflow-editor catalog entries are registered by the add-on's
 provider registration rather than hard-coded into Evander core. The packaged

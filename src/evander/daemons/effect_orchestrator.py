@@ -1417,11 +1417,14 @@ class EffectOrchestratorWorker:
 
     def _log_phase_duration(self, phase: str, started_at: float, **details: Any) -> None:
         duration_seconds = time.perf_counter() - started_at
+        # Hook identity and scheduling context do not indicate recovery work.
+        context_fields = {"hook", "foreground_pending", "recovery_deferred_seconds"}
+        log = logger.info
         if duration_seconds < _PHASE_LOG_THRESHOLD_SECONDS and not any(
-            bool(value) for value in details.values()
+            bool(value) for key, value in details.items() if key not in context_fields
         ):
-            return
-        logger.info(
+            log = logger.debug
+        log(
             "Effect orchestrator phase completed phase=%s duration_ms=%.1f details=%s",
             phase,
             duration_seconds * 1000,

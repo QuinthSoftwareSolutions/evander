@@ -12,7 +12,7 @@ from evander.events.models import TriggerEvent
 from evander.events.provider_models import (
     AdoWorkItemCommentCreatedTriggerDefinition,
 )
-from evander.issues.service import IssueService
+from evander.issues.service import AdoCommentPollReader, IssueService
 from evander.models import AdoBacklogQueryRequest, AdoCurrentIterationBacklogRequest
 from evander.triggers.providers._cursor_state import TriggerCursorStore, merge_cursor_ids
 from evander.triggers.providers.base import TriggerProviderBase
@@ -43,6 +43,16 @@ class AdoWorkItemCommentCreatedTriggerProvider(TriggerProviderBase):
         trigger = self._trigger()
         issue_service = self._issue_service()
         directory_path = trigger.directory_path or self._context_directory_path()
+        with issue_service.ado_comment_poll(directory_path=directory_path) as reader:
+            return self._poll(trigger, reader, directory_path=directory_path)
+
+    def _poll(
+        self,
+        trigger: AdoWorkItemCommentCreatedTriggerDefinition,
+        issue_service: AdoCommentPollReader,
+        *,
+        directory_path: str,
+    ) -> list[TriggerEvent]:
         result = self._query_work_items(trigger, issue_service, directory_path=directory_path)
         items = result.get("items")
         if not isinstance(items, list):
@@ -159,7 +169,7 @@ class AdoWorkItemCommentCreatedTriggerProvider(TriggerProviderBase):
     def _query_work_items(
         self,
         trigger: AdoWorkItemCommentCreatedTriggerDefinition,
-        issue_service: IssueService,
+        issue_service: AdoCommentPollReader,
         *,
         directory_path: str,
     ) -> dict[str, Any]:
@@ -232,7 +242,7 @@ class AdoWorkItemCommentCreatedTriggerProvider(TriggerProviderBase):
 
     def _get_work_item_detail(
         self,
-        issue_service: IssueService,
+        issue_service: AdoCommentPollReader,
         *,
         directory_path: str,
         project: str | None,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Any
 
 from .model_common import (
@@ -36,8 +36,11 @@ from .model_tasks import (
 def task_payload_with_derived(
     state: TeamState, task: AgentTask, *, child_task_ids: Sequence[str] | None = None,
     assessment: TaskAssessment | None = None,
+    include_fields: Collection[str] | None = None,
 ) -> dict[str, Any]:
-    payload = task.model_dump(mode="json")
+    payload = task.model_dump(
+        mode="json", include=set(include_fields) if include_fields is not None else None,
+    )
     payload["child_task_ids"] = (
         state.child_task_ids(task.id) if child_task_ids is None else list(child_task_ids)
     )

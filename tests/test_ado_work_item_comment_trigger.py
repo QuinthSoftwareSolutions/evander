@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 
 from evander.events.provider_models import (
@@ -19,6 +20,10 @@ class _IssueServiceStub:
 
     def __init__(self, resolver: object) -> None:
         del resolver
+
+    def ado_comment_poll(self, *, directory_path: str):
+        del directory_path
+        return nullcontext(self)
 
     def query_remote_backlog_items(self, **kwargs: object) -> dict[str, object]:
         self.calls.append({"method": "query", **kwargs})
