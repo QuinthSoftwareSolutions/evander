@@ -14,6 +14,25 @@
 - Preserve valid Realtime session configuration for existing meetings and serialize native
   caller turns with delegated replies, waiting for cancelled responses to finish before restarting.
 
+## 2026-10-02 - Enforce WordPress resource permissions (0.78.2)
+
+- Release WordPress Add-on 0.1.3 and companion 1.0.2 with object, operation,
+  metadata and taxonomy authorization for inspection, publication and browser edits.
+- Reject ACF aliases of protected metadata and mismatched field references while
+  preserving conditional restoration after editing permissions are revoked.
+- Core runtime behavior is unchanged; the add-on remains separately installed and enabled.
+
+## 2026-10-01 - Bound retention candidate searches with dedicated indexes (0.78.1)
+
+- Select the oldest eligible sources through five limited partial-index ranges,
+  avoiding backlog scans and sorts even when retention batches shrink to one row.
+- Calculate payload byte budgets through reachable blob lookups, avoiding a
+  scan of every stored blob for each selected source.
+- Defer source cleanup until the required index definitions are ready; preserve
+  eligibility rules, payload byte limits, and atomic history-before-source deletion.
+- Add an offline indexes-only maintenance mode that builds and validates deferred
+  indexes without converting payloads, with safe reruns after an interrupted build.
+
 ## 2026-10-01 - Simplify operator workspaces (0.78.0)
 
 - Prioritize dashboard attention and capacity over release news, flatten service

@@ -13,6 +13,7 @@ import pytest
 from evander.orchestration import wal_maintenance
 from evander.orchestration.storage_maintenance import run_storage_maintenance
 from evander.repositories import execution_history
+from evander.repositories.maintenance_indexes import RETENTION_SOURCE_INDEXES
 from evander.repositories.orchestration_db import (
     OrchestrationWalCheckpointResult,
     build_orchestration_maintenance_indexes,
@@ -372,6 +373,52 @@ def test_legacy_missing_fk_indexes_defer_gc_until_explicit_offline_migration(tmp
             )
         ]
     assert not any("SCAN workflow_node_execution_history" in line for line in plan)
+
+
+@pytest.mark.parametrize("definition", [
+    None,
+    "CREATE INDEX idx_trigger_retention ON trigger_events(occurred_at,event_id) WHERE delivery_state='delivered'",
+    "CREATE INDEX idx_trigger_retention ON trigger_events(COALESCE(delivered_at,occurred_at),event_id)",
+    "CREATE INDEX idx_trigger_retention ON trigger_events(COALESCE(delivered_at,occurred_at),event_id) WHERE delivery_state='inflight'",
+])
+def test_source_retention_defers_missing_or_incorrect_indexes_without_fallback(
+    tmp_path, monkeypatch, definition,
+):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(path) as connection:
+        connection.execute("DROP INDEX idx_trigger_retention")
+        if definition:
+            connection.execute(definition)
+    # Restart/schema initialization must not silently scan existing tables.
+    ensure_orchestration_schema(path, force=True)
+    assert not orchestration_maintenance_index_status(path)["ready"]
+
+    def forbidden_hydration(*args, **kwargs):
+        pytest.fail("missing retention indexes must defer before reading source payloads")
+
+    monkeypatch.setattr(execution_history, "_source_payload_bytes", forbidden_hydration)
+    result = run_orchestration_retention_slice(
+        path, retention_days=30, compact_history_retention_days=365,
+    )
+    assert result.remaining and result.skipped_reason == "maintenance_indexes_required"
+    if definition:
+        with pytest.raises(ValueError, match="does not match"):
+            build_orchestration_maintenance_indexes(path)
+    else:
+        assert build_orchestration_maintenance_indexes(path)["ready"]
+
+
+@pytest.mark.parametrize("name", [source.index.name for source in RETENTION_SOURCE_INDEXES])
+def test_source_retention_requires_each_range_index(tmp_path, name):
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(path) as connection:
+        connection.execute(f"DROP INDEX {name}")
+    result = run_orchestration_retention_slice(
+        path, retention_days=30, compact_history_retention_days=365,
+    )
+    assert result.remaining and result.skipped_reason == "maintenance_indexes_required"
 
 
 def test_maintenance_yields_remaining_write_phases_to_foreground_writer(tmp_path, monkeypatch):

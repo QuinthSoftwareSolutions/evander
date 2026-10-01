@@ -1,5 +1,25 @@
 # WordPress Add-on changelog
 
+## 2026-10-01 - Resource authorization and ACF boundaries (0.1.3)
+
+- Ship companion 1.0.2: require WordPress object and operation permissions for
+  inspection and forward editing, including creation, publication, deletion,
+  author/type changes, taxonomy assignment and registered metadata authorization.
+  Include revision/attachment parent permissions and individual term policies.
+- Recheck permissions for snapshot replays, browser coverage and actual browser
+  writes. Permission failures roll back the entire publication transaction.
+  Retain early SQL enforcement while checking browser authorization after custom
+  post types and field definitions have registered.
+- Validate both ACF metadata keys, field definitions, references and value shapes;
+  reject protected attachment aliases regardless of case. Preserve absent values
+  and captured references during exact undo.
+- Respect native permissions for protected metadata; default design exceptions
+  cover edit locks and last-editor markers. Other protected builder keys require
+  explicit site approval, with registered and per-object policies still enforced.
+- Retain owner-bound, version-checked undo and safe status reconciliation after
+  editing permissions are removed. Exercise these boundaries against real
+  WordPress and MariaDB using synthetic accounts and optional field definitions.
+
 ## 2026-10-01 - Workflow event bindings (0.1.2)
 
 - Bind the example workflow directly to the ready trigger's `site_id` and
