@@ -302,8 +302,11 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Loading approval request...", { exact: true }).waitFor({ state: "visible" }));
   resolveApprovalDetailResponse();
-  await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: approvalRequest.human_summary }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Summary" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    page.waitForFunction(() => document.activeElement?.textContent === "Approve"),
+  );
   assert.equal(await page.getByRole("heading", { name: "Queue health" }).count(), 0);
   await assert.doesNotReject(() =>
     page.locator(".approval-review-summary p.muted-copy").filter({ hasText: "Intended effect:" }).waitFor({ state: "visible" }),
@@ -311,19 +314,9 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   await assert.doesNotReject(() =>
     page.locator(".approval-review-summary").getByText("Send the approved email payload to the recipient.", { exact: true }).waitFor({ state: "visible" }),
   );
-  await assert.doesNotReject(() =>
-    page.locator(".approval-review-summary p.muted-copy").filter({ hasText: "Arguments hash:" }).waitFor({ state: "visible" }),
-  );
-  await assert.doesNotReject(() =>
-    page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).waitFor({ state: "visible" }),
-  );
-  await page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).hover();
-  await assert.doesNotReject(() =>
-    page
-      .getByRole("tooltip")
-      .filter({ hasText: "compact fingerprint of the submitted arguments" })
-      .waitFor({ state: "visible" }),
-  );
+  const auditContext = page.locator("details").filter({ has: page.getByRole("heading", { name: "Audit context", exact: true }) });
+  await auditContext.locator("summary").click();
+  assert.match(await auditContext.innerText(), /digest-approval-1/);
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approval payload diagnostic" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() =>
     page
@@ -343,9 +336,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   await assert.doesNotReject(() => page.getByText("arguments.optional_field", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("arguments.trace_id", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByLabel("Approver").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() =>
-    page.waitForFunction(() => document.activeElement?.textContent === "Approve"),
-  );
+
   const approvalCard = page.locator(".approval-list-item").first();
   await assert.doesNotReject(() => approvalCard.waitFor({ state: "visible" }));
   const badgeLayout = await approvalCard.evaluate((element) => {
@@ -619,7 +610,7 @@ test("admin shell approvals detail uses signed-in approver and offers revoke for
   });
 
   await ensureSectionsExpanded(page);
-  await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: approvalRequest.human_summary }).waitFor({ state: "visible" }));
   assert.equal(await page.getByLabel("Approver").count(), 0);
   assert.equal(await page.getByLabel("Reason", { exact: true }).count(), 0);
   await assert.doesNotReject(() =>

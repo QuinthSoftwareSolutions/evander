@@ -415,7 +415,7 @@ export function createTeamWorkspaceController(peers) {
           <strong>${escapeHtml(item.title)}</strong>
           ${item.meta ? `<span>${escapeHtml(item.meta)}</span>` : ""}
         </div>
-        <button type="button" class="record-action" data-team-link-view="${escapeAttr(item.view)}">${escapeHtml(item.action)}</button>
+        <button type="button" class="record-action" data-team-link-view="${escapeAttr(item.view)}"${item.recordId ? ` data-team-link-record-kind="${escapeAttr(item.recordKind)}" data-team-link-record-id="${escapeAttr(item.recordId)}"` : ""}>${escapeHtml(item.action)}</button>
       </li>
     `;
   }
@@ -696,12 +696,16 @@ export function createTeamWorkspaceController(peers) {
       ),
     );
     runtimeAttention.forEach((row) => {
+      const taskId = text(row.task_id) || (row.links?.task_ids?.length === 1 ? text(row.links.task_ids[0]) : "");
+      const task = peers.app.state.tasks[taskId];
       items.push({
         title: row.title || row.id,
         meta: workspaceRuntimeAttentionMeta(row),
         severity: row.severity || "info",
-        view: "operations",
-        action: "Open operations",
+        view: task ? "task-board" : "operations",
+        action: task ? "Open task" : "Open operations",
+        recordKind: task ? "task" : "",
+        recordId: task ? taskId : "",
       });
     });
     costAttention.forEach((row) => items.push(row));
@@ -720,7 +724,9 @@ export function createTeamWorkspaceController(peers) {
         ].filter(Boolean).join(" - "),
         severity: task.state === "blocked" ? "warning" : "info",
         view: "task-board",
-        action: "Open board",
+        action: "Open task",
+        recordKind: "task",
+        recordId: task.id,
       });
     });
     pendingReviews.forEach((review) => {
@@ -748,7 +754,9 @@ export function createTeamWorkspaceController(peers) {
         ].filter(Boolean).join(" - "),
         severity: item.priority === "high" ? "warning" : "info",
         view: "people",
-        action: "Open teams",
+        action: "Open agent",
+        recordKind: "agent",
+        recordId: recipient?.id,
       });
     });
     pendingGovernanceAgenda.forEach((item) => {

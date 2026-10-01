@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchJson } from "../admin/api";
+import { configurationHash } from "../configuration/configurationNavigation";
 import type {CredentialsSnapshot} from "../configuration/CredentialsConfiguration";
 import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
 import { readAdminHashQuery } from "../admin/hash";
@@ -401,7 +402,9 @@ export function ConnectorsPage({
                 } catch {setError("Fix the configuration JSON before selecting a credential.");}
               }}><option value="">Select an approved credential</option>
                 {credentials?.directory_path === selectedDirectoryPath ? credentials.credentials.filter(c => c.local && c.status === "active" && c.bindings.some(b => b.profile_id === selected.auth_profile && b.connector_id === selected.connector_id)).map(c => <option key={c.id} value={c.id}>{c.label}</option>) : null}
-              </select><span>Manage values and approvals in Configuration → Access, approvals and audit → Credentials.</span>
+              </select><a href={configurationHash("access_approvals_audit", "credentials")} onClick={(event) => {
+                if (dirty && !window.confirm("Discard unsaved connector changes and manage credentials?")) event.preventDefault();
+              }}>Manage credentials and approvals</a>
             </label> : null}
             </article>
           ) : null}
@@ -414,8 +417,8 @@ export function ConnectorsPage({
               </div>
               <div className="detail-stack">
                 {Object.entries(selected.operations).map(([name, operation]) => (
-                  <div className="detail-block" key={name}>
-                    <div className="feature-list-title-row">
+                  <details className="compact-disclosure" key={name}>
+                    <summary className="feature-list-title-row">
                       <strong>{name}</strong>
                       <div className="status-pills">
                         <span
@@ -428,13 +431,10 @@ export function ConnectorsPage({
                           <span className="status-pill state-waiting">Approval</span>
                         ) : null}
                       </div>
-                    </div>
+                    </summary>
                     <p className="muted-text">{operation.description}</p>
-                    <details>
-                      <summary>Input schema</summary>
-                      <pre>{JSON.stringify(operation.input_schema, null, 2)}</pre>
-                    </details>
-                  </div>
+                    <pre aria-label={`${name} input schema`}>{JSON.stringify(operation.input_schema, null, 2)}</pre>
+                  </details>
                 ))}
               </div>
             </article>

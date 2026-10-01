@@ -501,6 +501,7 @@ test("admin shell agents page supports deep links, direct sidebar selection, and
   await assert.doesNotReject(() => page.getByRole("tooltip").filter({ hasText: "Agent id: agent-1" }).waitFor({ state: "visible" }));
   await assert.match(await page.getByRole("tooltip").filter({ hasText: "Agent id: agent-1" }).innerText(), /Prompt queue: 2 records \/ 4 prompts/);
   assert.match(await page.locator(".feature-toolbar-actions .status-pill").first().innerText(), /^running$/i);
+  await page.getByText("VM details", { exact: true }).click();
   await assert.match(await page.locator(".feature-content").innerText(), /VM template/i);
   await assert.match(await page.locator(".feature-content").innerText(), /VM image ref/i);
   await assert.match(await page.locator(".feature-content").innerText(), /dotnet-agent\.qcow2/);

@@ -344,16 +344,15 @@ export function McpToolsPage() {
                   : "Choose an MCP tool to configure directory policy."}
               </p>
             </div>
-            <div className="feature-toolbar-actions icon-actions">
+            <div className="feature-toolbar-actions">
               <Tooltip content="Save the local MCP tool policy for this directory.">
                 <button
                   type="button"
                   className="primary"
                   onClick={() => void save()}
                   disabled={busy || mutationLocked || !dirty}
-                  aria-label={busy ? "Saving MCP tool policy" : "Save MCP tool policy"}
                 >
-                  {busy ? "..." : <SaveIcon />}
+                  {busy ? "Saving…" : <><SaveIcon /> Save policy</>}
                 </button>
               </Tooltip>
             </div>
@@ -560,26 +559,16 @@ export function McpToolsPage() {
                     >
                       Clear local defaults
                     </button>
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => void save()}
-                      disabled={busy || mutationLocked || !dirty}
-                    >
-                      {busy ? "Saving..." : "Save policy"}
-                    </button>
                   </div>
                 </div>
               </article>
-              <article className="panel">
-                <details className="compact-disclosure">
+              <details className="panel compact-disclosure">
                   <summary className="compact-disclosure-summary feature-list-title-row">
                     <h3>Resolved JSON</h3>
                     <span className="panel-meta">{effectiveRule ? "Rule present" : "No effective rule"}</span>
                   </summary>
                   <pre className="log-view">{JSON.stringify(effectiveRule ?? {}, null, 2)}</pre>
-                </details>
-              </article>
+              </details>
             </div>
           ) : (
             <RecordPlaceholder>Select an MCP tool to view details</RecordPlaceholder>

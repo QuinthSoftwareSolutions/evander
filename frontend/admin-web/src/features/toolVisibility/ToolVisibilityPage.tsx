@@ -370,10 +370,9 @@ function computeCounts(response: ToolVisibilityResponse | null): ToolVisibilityC
 
 function SessionSummaryCard({ session }: { session: ToolVisibilitySessionContext }) {
   return (
-    <article className="panel section-panel">
+    <section>
       <div className="panel-header">
         <h3>Session context</h3>
-        <span className={`status-pill ${session.is_expired ? "state-failed" : "state-running"}`}>{session.is_expired ? "Expired" : "Active"}</span>
       </div>
       <dl className="property-grid">
         <div>
@@ -405,24 +404,17 @@ function SessionSummaryCard({ session }: { session: ToolVisibilitySessionContext
           <dd>{formatPolicyMetadata(session.policy_metadata)}</dd>
         </div>
       </dl>
-    </article>
+    </section>
   );
 }
 
 function BindingSummaryCard({ queryContext, binding }: { queryContext: ToolVisibilityQueryContext; binding: ToolVisibilityBindingContext }) {
   return (
-    <article className="panel section-panel">
+    <section>
       <div className="panel-header">
         <h3>Transport state</h3>
-        <span className={`status-pill ${stateClassForBinding(binding.state)}`}>{bindingStateLabel(binding.state)}</span>
       </div>
       <dl className="property-grid">
-        <div>
-          <dt>Manifest</dt>
-          <dd>
-            <span className={`status-pill ${stateClassForBinding(binding.manifest_state)}`}>{manifestStateLabel(binding.manifest_state)}</span>
-          </dd>
-        </div>
         <div>
           <dt>Transport</dt>
           <dd>{binding.transport_session_id ?? "None"}</dd>
@@ -449,48 +441,32 @@ function BindingSummaryCard({ queryContext, binding }: { queryContext: ToolVisib
         </div>
       </dl>
       <p className="feature-list-meta">{binding.message}</p>
-    </article>
+    </section>
   );
 }
 
-function CountsSummaryCard({ counts, filteredCount }: { counts: ToolVisibilityCounts; filteredCount: number }) {
+function CountsSummaryCard({ counts, filter, onSelect }: {
+  counts: ToolVisibilityCounts;
+  filter: VisibilityFilter;
+  onSelect: (filter: VisibilityFilter) => void;
+}) {
+  const filters: [VisibilityFilter, number][] = [
+    ["all", counts.total],
+    ["visible", counts.visible],
+    ["hidden_by_policy", counts.hidden_by_policy],
+    ["unavailable_to_session", counts.unavailable_to_session],
+    ["denied_at_execution", counts.denied_at_execution],
+    ["unknown", counts.unknown],
+  ];
   return (
-    <article className="panel section-panel">
-      <div className="panel-header">
-        <h3>Counts</h3>
-        <span className="panel-meta">{filteredCount} shown</span>
-      </div>
-      <dl className="property-grid">
-        <div>
-          <dt>Total</dt>
-          <dd>{counts.total}</dd>
-        </div>
-        <div>
-          <dt>Visible</dt>
-          <dd>{counts.visible}</dd>
-        </div>
-        <div>
-          <dt>Hidden by policy</dt>
-          <dd>{counts.hidden_by_policy}</dd>
-        </div>
-        <div>
-          <dt>Unavailable</dt>
-          <dd>{counts.unavailable_to_session}</dd>
-        </div>
-        <div>
-          <dt>Denied at execution</dt>
-          <dd>{counts.denied_at_execution}</dd>
-        </div>
-        <div>
-          <dt>Requires approval</dt>
-          <dd>{counts.requires_approval}</dd>
-        </div>
-        <div>
-          <dt>Unknown</dt>
-          <dd>{counts.unknown}</dd>
-        </div>
-      </dl>
-    </article>
+    <div className="inline-actions compact-actions tool-visibility-count-filters" aria-label="Filter tools by visibility">
+      {filters.filter(([value, count]) => count > 0 || value === filter).map(([value, count]) => (
+        <button key={value} type="button" aria-pressed={filter === value} onClick={() => onSelect(value)}>
+          {visibilityFilterLabel(value)} <strong>{count}</strong>
+        </button>
+      ))}
+      <span className="panel-meta">{counts.requires_approval} require approval</span>
+    </div>
   );
 }
 
@@ -716,9 +692,6 @@ export function ToolVisibilityPage() {
             <h1>Tool Visibility</h1>
             <p className="muted-text">Compare policy visibility, binding telemetry, and denied execution history.</p>
           </div>
-          <button type="button" onClick={() => void refresh()}>
-            Refresh
-          </button>
         </div>
         <div className="collection-toolbar">
           <label className="field-stack collection-search">
@@ -763,10 +736,17 @@ export function ToolVisibilityPage() {
         <div className="feature-toolbar">
           <div>
             <h2>{selectedSession?.session_id ?? "Select a session"}</h2>
-            <p className="muted-text">
-              Compare policy visibility, binding telemetry, and denied execution history without exposing raw tool
-              arguments or results.
-            </p>
+            {visibilityResponse ? <div className="status-pills">
+              <span className={`status-pill ${visibilityResponse.session_context.is_expired ? "state-failed" : "state-running"}`}>
+                {visibilityResponse.session_context.is_expired ? "Expired" : "Active"}
+              </span>
+              <span className={`status-pill ${stateClassForBinding(visibilityResponse.binding_context.state)}`}>
+                {bindingStateLabel(visibilityResponse.binding_context.state)}
+              </span>
+              <span className={`status-pill ${stateClassForBinding(visibilityResponse.binding_context.manifest_state)}`}>
+                {manifestStateLabel(visibilityResponse.binding_context.manifest_state)}
+              </span>
+            </div> : null}
           </div>
           <div className="feature-toolbar-actions">
             <span className="panel-meta">{counts.total} tools</span>
@@ -776,10 +756,7 @@ export function ToolVisibilityPage() {
           </div>
         </div>
 
-        <div className="callout warning-callout">
-          MCP clients can cache a tool manifest on the client side. If policy changes, reconnect or refresh the client
-          to pick up the latest manifest.
-        </div>
+        <p className="muted-text">Reconnect or refresh the MCP client after policy changes to update its cached tool list.</p>
         {notices.map((notice) => (
           <div key={`${notice.kind}:${notice.tool_name ?? "session"}`} className="callout warning-callout">
             {notice.message}
@@ -791,14 +768,18 @@ export function ToolVisibilityPage() {
 
         {visibilityResponse ? (
           <>
-            <div className="detail-grid tool-visibility-summary-grid">
-              <SessionSummaryCard session={visibilityResponse.session_context} />
-              <BindingSummaryCard
-                queryContext={visibilityResponse.query_context}
-                binding={visibilityResponse.binding_context}
-              />
-              <CountsSummaryCard counts={counts} filteredCount={filteredTools.length} />
-            </div>
+            <CountsSummaryCard counts={counts} filter={visibilityFilter} onSelect={setVisibilityFilter} />
+            {visibilityResponse.binding_context.message ? <p className="muted-text">{visibilityResponse.binding_context.message}</p> : null}
+            <details className="panel compact-disclosure">
+              <summary>Session and transport details</summary>
+              <div className="detail-grid">
+                <SessionSummaryCard session={visibilityResponse.session_context} />
+                <BindingSummaryCard
+                  queryContext={visibilityResponse.query_context}
+                  binding={visibilityResponse.binding_context}
+                />
+              </div>
+            </details>
 
             <div className="admin-grid two-column tool-visibility-grid">
               <article className="panel section-panel">
@@ -863,7 +844,9 @@ export function ToolVisibilityPage() {
                           onClick={() => setSelectedToolName(item.tool_name)}
                         >
                           <td>
-                            <strong>{item.label ?? item.tool_name}</strong>
+                            <button type="button" className="record-name" onClick={() => setSelectedToolName(item.tool_name)}>
+                              <strong>{item.label ?? item.tool_name}</strong>
+                            </button>
                             <div className="feature-list-meta">{item.tool_name}</div>
                           </td>
                           <td>

@@ -239,13 +239,13 @@ test("admin shell issues can be found by title and expose VM bootstrap labels an
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
   assert.equal(await issueSearch.inputValue(), "");
   await page.locator(".issues-page .feature-list-item").first().click();
-  await assert.doesNotReject(() => page.getByRole("button", { name: "Create VM" }).waitFor({ state: "visible" }));
-  await page.getByRole("button", { name: "Create VM" }).hover();
+  await assert.doesNotReject(() => page.getByRole("button", { name: "VM options" }).waitFor({ state: "visible" }));
+  await page.getByRole("button", { name: "VM options" }).hover();
   await assert.doesNotReject(() =>
-    page.getByRole("tooltip").getByText("Create a VM for the selected issue using the configured bootstrap options.", { exact: true }).waitFor({ state: "visible" }),
+    page.getByRole("tooltip").getByText("Choose model and optional toolchains before creating the issue VM.", { exact: true }).waitFor({ state: "visible" }),
   );
 
-  await page.getByRole("button", { name: "Create VM" }).click();
+  await page.getByRole("button", { name: "VM options" }).click();
   await assert.doesNotReject(() => page.getByText("Bootstrap .NET SDK", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("NuGet packages", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Playwright browsers", { exact: true }).waitFor({ state: "visible" }));

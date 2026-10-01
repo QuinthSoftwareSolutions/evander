@@ -204,6 +204,7 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
   const sidebar = page.locator(".approvals-page .feature-sidebar");
+  await sidebar.getByText("More filters", { exact: true }).click();
   assert.equal(await sidebar.getByLabel("Exclude sub-directories").isChecked(), false);
   await sidebar.getByText("Exclude sub-directories", { exact: true }).hover();
   await assert.doesNotReject(() =>

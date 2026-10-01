@@ -5,6 +5,8 @@ import { fetchJson, formatTimestamp } from "../admin/api";
 import { DownloadIcon, RefreshIcon, UploadIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { RecordInspector } from "../admin/RecordInspector";
+import { FilterDisclosure } from "../admin/FilterDisclosure";
+import { adminHash } from "../../adminRouting";
 
 type PublishedArtifact = {
   key: string;
@@ -100,11 +102,6 @@ function formatBytes(value: number | null | undefined): string {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
   if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
-}
-
-function shortSha(value: string | null | undefined): string {
-  const text = value?.trim() ?? "";
-  return text.length > 12 ? `${text.slice(0, 12)}…` : text || "n/a";
 }
 
 function compactArtifactKey(key: string): string {
@@ -484,6 +481,7 @@ export function ArtifactsPage() {
 
         <div className="sidebar-divider" />
 
+        <form onSubmit={event => { event.preventDefault(); void resolveKey(); }}>
         <label className="field-stack">
           <span>Key</span>
           <input
@@ -495,8 +493,7 @@ export function ArtifactsPage() {
         <div className="inline-actions artifact-lookup-actions">
           <button
             className="admin-action-button compact"
-            type="button"
-            onClick={() => void resolveKey()}
+            type="submit"
             disabled={lookupLoading}
           >
             {lookupLoading ? "Resolving..." : "Resolve key"}
@@ -505,8 +502,10 @@ export function ArtifactsPage() {
             Apply filters
           </button>
         </div>
+        </form>
         {lookupError ? <div className="callout error-callout">{lookupError}</div> : null}
 
+        <FilterDisclosure activeCount={[filters.publishedAfter, filters.publishedBefore, filters.limit !== String(DEFAULT_LIMIT)].filter(Boolean).length}>
         <label className="field-stack">
           <span>Published after</span>
           <input
@@ -534,6 +533,7 @@ export function ArtifactsPage() {
             onChange={(event) => setFilters((current) => ({ ...current, limit: event.target.value }))}
           />
         </label>
+        </FilterDisclosure>
       </section>
 
       <section className="feature-content">
@@ -578,8 +578,6 @@ export function ArtifactsPage() {
                     <th>Published</th>
                     <th>Session</th>
                     <th>Size</th>
-                    <th>Files</th>
-                    <th>SHA-256</th>
                     <th>Download</th>
                   </tr>
                 </thead>
@@ -603,8 +601,6 @@ export function ArtifactsPage() {
                       <td className="artifact-fixed-cell">{formatTimestamp(item.published_at)}</td>
                       <td>{item.session_id}</td>
                       <td className="artifact-fixed-cell">{formatBytes(item.byte_count)}</td>
-                      <td className="artifact-fixed-cell">{item.source_file_count}</td>
-                      <td className="artifact-fixed-cell" title={item.sha256 ?? undefined}>{shortSha(item.sha256)}</td>
                       <td>
                         <div className="feature-toolbar-actions icon-actions artifacts-download-cell">
                           <button
@@ -624,14 +620,14 @@ export function ArtifactsPage() {
                   ))}
                   {loading && items.length === 0 ? (
                     <tr>
-                      <td className="empty-state-cell" colSpan={7}>
+                      <td className="empty-state-cell" colSpan={5}>
                         Loading artifacts...
                       </td>
                     </tr>
                   ) : null}
                   {!loading && items.length === 0 ? (
                     <tr>
-                      <td className="empty-state-cell" colSpan={7}>
+                      <td className="empty-state-cell" colSpan={5}>
                         No artifacts matched the current filters.
                       </td>
                     </tr>
@@ -670,14 +666,6 @@ export function ArtifactsPage() {
                     <div className="mobile-record-row">
                       <span>Size</span>
                       <span>{formatBytes(item.byte_count)}</span>
-                    </div>
-                    <div className="mobile-record-row">
-                      <span>Files</span>
-                      <span>{item.source_file_count}</span>
-                    </div>
-                    <div className="mobile-record-row">
-                      <span>SHA-256</span>
-                      <span>{shortSha(item.sha256)}</span>
                     </div>
                   </button>
                   <div className="mobile-record-actions">
@@ -727,7 +715,7 @@ export function ArtifactsPage() {
                     </div>
                     <div>
                       <dt>Session</dt>
-                      <dd>{selectedArtifact.session_id}</dd>
+                      <dd><a href={adminHash("sessions", { session_id: selectedArtifact.session_id })}>{selectedArtifact.session_id}</a></dd>
                     </div>
                     <div>
                       <dt>Backend</dt>
@@ -754,10 +742,13 @@ export function ArtifactsPage() {
                       <dd className="artifact-sha">{selectedArtifact.sha256}</dd>
                     </div>
                   </dl>
+                  <details className="raw-json-panel">
+                  <summary>Metadata</summary>
                   <label className="field-stack artifact-metadata-field">
                     <span>Metadata</span>
                     <textarea readOnly value={JSON.stringify(selectedArtifact.metadata ?? {}, null, 2)} />
                   </label>
+                  </details>
                 </div>
               ) : (
                 <div className="empty-state">No artifact selected.</div>

@@ -16,6 +16,7 @@ import {
   formatJsonTextDraftValue,
   parseJsonTextDraftValue,
   parseStringListDraftValue,
+  validateRegexPattern,
 } from "../admin/structuredPolicyInputs";
 import {
   emptyModelPricingRuleDraft,
@@ -1275,11 +1276,18 @@ export function ConfigurationScreen() {
   const teamsAuthBusy = teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut;
   const teamsAuthDirectoryPath = normalizeDirectoryPath(selectedDirectoryPath);
   const activeModelPricingDraft = modelPricingDraft ?? modelPricingDraftFromCatalog(modelPricingCatalog?.catalog ?? null);
+  const modelPricingPatternError = activeModelPricingDraft.rules.flatMap((rule, ruleIndex) =>
+    parseStringListDraftValue(rule.modelPatternsText).flatMap((pattern, patternIndex) => {
+      const error = validateRegexPattern(pattern);
+      return error ? [`Pricing rule ${rule.id || ruleIndex + 1}, model pattern ${patternIndex + 1}: ${error}`] : [];
+    }),
+  )[0] ?? null;
   const modelPricingPanelBodyId = "model-pricing-catalog-panel-body";
   const modelPricingSaveDisabled =
     loading ||
     modelPricingSaving ||
     mutationLocked ||
+    Boolean(modelPricingPatternError) ||
     !modelPricingDirty ||
     !modelPricingCatalog?.editable ||
     !modelPricingDraftBaseRevision;
@@ -2785,19 +2793,18 @@ export function ConfigurationScreen() {
                 ?? "Inspect inherited defaults, adjust explicit overrides, and save when the selected area is ready."}
             </p>
           </div>
-          <div className="feature-toolbar-actions icon-actions">
+          {selectedSectionDefinition || isDirty ? <div className="feature-toolbar-actions">
             <Tooltip content={selectedTabHasGlobalFields ? "Save the current tab's settings." : "Save the current tab's explicit overrides for the selected directory."}>
               <button
                 type="button"
                 className="primary"
                 onClick={() => void handleSaveTab()}
                 disabled={saving || loading || saveBlockedByConfigMode || !selectedTabDefinition || !snapshot || !isDirty || mutationLocked}
-                aria-label={saving ? "Saving tab" : "Save tab"}
               >
-                {saving ? "…" : <SaveIcon />}
+                {saving ? "Saving…" : <><SaveIcon /> Save changes</>}
               </button>
             </Tooltip>
-          </div>
+          </div> : null}
         </div>
 
         {!state?.directory_scoped_config_enabled ? (
@@ -3022,22 +3029,9 @@ export function ConfigurationScreen() {
           ) : null}
           {selectedUtility === "model-pricing" && selectedTabDefinition?.key === MODEL_PRICING_CONFIGURATION_TAB_KEY ? (
             <article className="panel detail-panel configuration-summary-panel model-pricing-panel">
-              <div className="panel-header model-pricing-panel-toggle">
-                <div>
-                  <h3>Model pricing catalog</h3>
-                  <p className="muted-text">
-                    Host-global OpenAI pricing rules used for query-time model usage cost estimates.
-                  </p>
-                </div>
-                <div className="model-pricing-panel-toggle-meta">
-                  <span className="panel-meta">{modelPricingCatalog?.status ?? "loading"}</span>
-                  {modelPricingDirty ? (
-                    <span className="status-pill state-stale">Unsaved changes</span>
-                  ) : null}
-                </div>
-              </div>
                 <div id={modelPricingPanelBodyId} className="detail-stack compact-detail-stack">
                 <div className="inline-actions compact-actions">
+                  {modelPricingDirty ? <span className="status-pill state-stale">Unsaved changes</span> : null}
                   <button
                     type="button"
                     onClick={() => void loadModelPricingCatalog()}
@@ -3075,8 +3069,11 @@ export function ConfigurationScreen() {
                   </div>
                 ) : null}
                 {modelPricingError ? <div className="callout error-callout">{modelPricingError}</div> : null}
+                {modelPricingPatternError ? <div className="callout error-callout" role="alert">{modelPricingPatternError}</div> : null}
                 {modelPricingCatalog ? (
                   <>
+                <details className="compact-disclosure">
+                  <summary>Catalog details and sources · {activeModelPricingDraft.sources.length} sources</summary>
                 <div className="detail-grid">
                   <div><span>Revision</span><strong>{modelPricingCatalog.revision?.slice(0, 12) ?? "n/a"}</strong></div>
                   <div><span>Path source</span><strong>{pricingPathSourceLabel(modelPricingCatalog.path_source)}</strong></div>
@@ -3140,10 +3137,12 @@ export function ConfigurationScreen() {
                         <div className="inline-actions compact-actions model-pricing-source-row" key={`source-${index}`}>
                           <input
                             type="url"
+                            aria-label={`Pricing source ${index + 1}`}
                             value={source}
                             onChange={(event) => updateModelPricingSource(index, event.target.value)}
                             disabled={modelPricingSaving}
                           />
+                          {/^https?:\/\//i.test(source) ? <a href={source} target="_blank" rel="noreferrer">Open source</a> : null}
                           <button
                             type="button"
                             onClick={() => removeModelPricingSource(index)}
@@ -3159,6 +3158,7 @@ export function ConfigurationScreen() {
                   )}
                 </div>
 
+                </details>
                 <div className="detail-stack compact-detail-stack">
                   <div className="panel-header compact-panel-header">
                     <div>
@@ -3174,9 +3174,19 @@ export function ConfigurationScreen() {
                     </div>
                   </div>
                   {activeModelPricingDraft.rules.length ? (
-                  <div className="detail-stack compact-detail-stack">
-                    {activeModelPricingDraft.rules.map((rule, index) => (
-                      <div className="config-field-card model-pricing-rule-card" key={`${rule.id}-${index}`}>
+                  <RecordCollection
+                    key={`${selectedDirectoryPath}:${modelPricingCatalog.revision}`}
+                    label="Pricing rules"
+                    entries={activeModelPricingDraft.rules}
+                    name={(rule, index) => rule.id || `Rule ${index + 1}`}
+                    description={(rule) => parseStringListDraftValue(rule.modelsText).join(", ") || rule.modelPatternsText || "No models selected"}
+                    searchText={(rule) => `${rule.provider} ${rule.serviceTier} ${rule.modelPatternsText}`}
+                    category={(rule) => rule.provider}
+                    metadata={(rule) => <><span>Input {rule.inputRate || "—"}</span><span>Output {rule.outputRate || "—"}</span></>}
+                    isNew={(rule) => !rule.id.trim()}
+                  >
+                    {(rule, index) => (
+                      <div className="model-pricing-rule-card">
                         <div className="feature-list-title-row">
                           <strong>{rule.id || `Rule ${index + 1}`}</strong>
                           <div className="inline-actions compact-actions">
@@ -3255,6 +3265,9 @@ export function ConfigurationScreen() {
                             <RegexListEditor
                               values={parseStringListDraftValue(rule.modelPatternsText)}
                               onChange={(values) =>
+                                updateModelPricingRule(index, { modelPatternsText: values.join("\n") })
+                              }
+                              onInvalidDraftChange={(values) =>
                                 updateModelPricingRule(index, { modelPatternsText: values.join("\n") })
                               }
                               fieldLabel="Model patterns"
@@ -3343,28 +3356,14 @@ export function ConfigurationScreen() {
                           </label>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    )}
+                  </RecordCollection>
                 ) : (
                   <div className="empty-state">No pricing rules are configured.</div>
                 )}
                 </div>
 
-                {modelPricingCatalog.sources.length ? (
-                  <div className="detail-stack compact-detail-stack">
-                    <h4>Current source links</h4>
-                    <div className="teams-auth-link-list">
-                      {modelPricingCatalog.sources.map((source) => (
-                        <div key={source}>
-                          <span>OpenAI docs</span>
-                          <a className="teams-auth-uri" href={source} target="_blank" rel="noreferrer">
-                            {source}
-                          </a>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
+
                   </>
                 ) : null}
                 </div>
@@ -3388,7 +3387,6 @@ export function ConfigurationScreen() {
                       : "Enable overrides field-by-field to write only the values that should diverge from the parent directory."}
                   </p>
                 </div>
-                <span className="panel-meta">{section.fields.length} settings</span>
               </div> : null}
                 <div className="config-field-grid">
                   {section.fields.map((field) => {
@@ -3432,9 +3430,6 @@ export function ConfigurationScreen() {
                               <span className="config-field-tooltip-icon" aria-hidden="true">i</span>
                             </Tooltip>
                           </div>
-                          <Tooltip content={fieldIsGlobal ? "Runtime-global admin setting." : `Underlying config domain: ${field.source_domain}.`}>
-                            <span className="panel-meta">{field.source_domain}</span>
-                          </Tooltip>
                         </div>
                         {!fieldIsGlobal ? (
                           <div className="config-toggle-row">
@@ -3531,7 +3526,7 @@ export function ConfigurationScreen() {
             </article>
           );
         })() : null}
-        {selectedTabDefinition && selectedTabDefinition.sections.length === 0 ? (
+        {selectedTabDefinition && selectedTabDefinition.sections.length === 0 && !selectedUtility ? (
           <article className="panel">
             <div className="empty-state">This tab has no editable fields yet.</div>
           </article>

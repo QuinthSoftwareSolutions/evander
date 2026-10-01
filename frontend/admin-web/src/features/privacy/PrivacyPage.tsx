@@ -344,8 +344,8 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
         <ul>{state.readiness?.blockers?.map((blocker, index) => <li key={index}>{text(blocker)}</li>)}</ul>
         <p>Revision: <code>{state.revision}</code></p>
       </section>
-      <section className="panel">
-        <h3>Dataset coverage</h3>
+      <details className="panel" open={!state.coverage_complete}>
+        <summary>Dataset coverage · {state.inventory?.length ?? 0} datasets</summary>
         <div style={{ overflowX: "auto" }}><table>
           <thead><tr><th>Dataset</th><th>Status</th><th>Supported operations</th></tr></thead>
           <tbody>{state.inventory?.map((dataset) => <tr key={dataset.dataset_id}>
@@ -354,7 +354,7 @@ export function PrivacyPage({ selectedDirectoryPath, privilegedUnlocked }: {
             <td>{Object.entries(dataset.capabilities ?? {}).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "Manual / unsupported"}</td>
           </tr>)}</tbody>
         </table></div>
-      </section>
+      </details>
       <section className="panel">
         <h3>Operator action</h3>
         {!privilegedUnlocked ? <p>Unlock privileged operations before submitting. Authentication and scoped permissions are also required.</p> : null}

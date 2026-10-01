@@ -449,6 +449,34 @@ export function ManagedGitRepositoriesPage({
                 Register, inspect, and maintain host-owned repositories in the selected Admin directory.
               </p>
             </div>
+            {selectedRepository ? (
+                <div className="feature-toolbar-actions managed-git-action-buttons">
+                  <button
+                    type="button"
+                    className="admin-shell-button"
+                    onClick={() => void refreshRepository()}
+                    disabled={mutationsLocked || busyAction !== null}
+                  >
+                    {busyAction === "refresh" ? "Refreshing…" : "Refresh upstream"}
+                  </button>
+                  <button
+                    type="button"
+                    className="admin-shell-button admin-shell-button-muted"
+                    onClick={() => void runMaintenance()}
+                    disabled={mutationsLocked || busyAction !== null}
+                  >
+                    {busyAction === "maintenance" ? "Running maintenance…" : "Run maintenance"}
+                  </button>
+                  <button
+                    type="button"
+                    className="admin-action-button danger"
+                    onClick={() => void deleteRepository()}
+                    disabled={mutationsLocked || busyAction !== null}
+                  >
+                    {busyAction === "delete" ? "Deleting…" : "Delete repository"}
+                  </button>
+                </div>
+            ) : null}
           </div>
 
           {mutationsLocked ? (
@@ -463,7 +491,7 @@ export function ManagedGitRepositoriesPage({
             </div>
           ) : null}
 
-          <details className="panel managed-git-registration-panel">
+          <details className="panel managed-git-registration-panel" open={repositories.length === 0}>
             <summary>Register repository</summary>
             <div className="panel-header">
               <div>
@@ -516,14 +544,8 @@ export function ManagedGitRepositoriesPage({
 
           {selectedRepository ? (
             <>
-              <article className="panel detail-panel managed-git-detail-panel">
-                <div className="panel-heading">
-                  <div>
-                    <div className="section-label">Managed repository</div>
-                    <h2>{repositoryLabel(selectedRepository)}</h2>
-                  </div>
-                  <span className="status-pill state-running">{providerLabel(selectedRepository.provider)}</span>
-                </div>
+              <details className="panel managed-git-detail-panel">
+                <summary>Repository details · {providerLabel(selectedRepository.provider)}</summary>
                 <dl className="property-grid managed-git-property-grid">
                   <div>
                     <dt>Managed repository ID</dt>
@@ -590,59 +612,16 @@ export function ManagedGitRepositoriesPage({
                     <dd>{formatTimestamp(selectedRepository.maintenance_at)}</dd>
                   </div>
                 </dl>
-              </article>
+              </details>
 
               <RepositoryIndexPanel
                 key={selectedRepository.managed_repo_id}
                 repositoryId={selectedRepository.managed_repo_id}
                 privilegedUnlocked={privilegedUnlocked}
               />
-              <article className="panel managed-git-actions-panel">
-                <div className="panel-header">
-                  <div>
-                    <h3>Repository operations</h3>
-                    <p className="muted-text">
-                      Refresh is safe to repeat. Deletion is blocked while repository bindings remain.
-                    </p>
-                  </div>
-                </div>
-                <div className="feature-toolbar managed-git-action-buttons">
-                  <button
-                    type="button"
-                    className="admin-shell-button"
-                    onClick={() => void refreshRepository()}
-                    disabled={mutationsLocked || busyAction !== null}
-                  >
-                    {busyAction === "refresh" ? "Refreshing…" : "Refresh upstream"}
-                  </button>
-                  <button
-                    type="button"
-                    className="admin-shell-button admin-shell-button-muted"
-                    onClick={() => void runMaintenance()}
-                    disabled={mutationsLocked || busyAction !== null}
-                  >
-                    {busyAction === "maintenance" ? "Running maintenance…" : "Run maintenance"}
-                  </button>
-                  <button
-                    type="button"
-                    className="admin-action-button danger"
-                    onClick={() => void deleteRepository()}
-                    disabled={mutationsLocked || busyAction !== null}
-                  >
-                    {busyAction === "delete" ? "Deleting…" : "Delete repository"}
-                  </button>
-                </div>
-              </article>
-
-              <article className="panel managed-git-identity-panel">
-                <div className="panel-header">
-                  <div>
-                    <h3>Host commit identity</h3>
-                    <p className="muted-text">
-                      Used for future host-created commits; existing history and agent checkouts are unchanged.
-                    </p>
-                  </div>
-                </div>
+              <details className="panel managed-git-identity-panel">
+                <summary>Host commit identity · {hostCommitIdentity(selectedRepository)}</summary>
+                <p className="muted-text">Used for future host-created commits.</p>
                 <form className="managed-git-identity-form" onSubmit={(event) => void saveHostCommitIdentity(event)}>
                   <label className="field-stack">
                     <span>Name</span>
@@ -671,7 +650,7 @@ export function ManagedGitRepositoriesPage({
                     {busyAction === "identity" ? "Saving…" : "Save identity"}
                   </button>
                 </form>
-              </article>
+              </details>
 
               <article className="panel managed-git-bindings-panel">
                 <div className="panel-header">
