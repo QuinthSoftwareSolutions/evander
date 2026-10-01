@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -59,9 +60,14 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             request.AudioSession,
             request.OnFinalTranscript,
             request.OnError,
-            request.OnSpeechStatus);
-        await session.StartAsync(cancellationToken);
-        return session;
+            request.OnSpeechStatus,
+            request.QueryOriginAgent);
+        try
+        {
+            await session.StartAsync(cancellationToken);
+            return session;
+        }
+        catch { await session.DisposeAsync(); throw; }
     }
 
     private sealed class OpenAIRealtimeMeetingSpeechSession : IMeetingSpeechSession
@@ -77,13 +83,18 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
         private readonly Func<string, CancellationToken, Task> onFinalTranscript;
         private readonly Func<string, CancellationToken, Task> onError;
         private readonly SpeechStatusCallback onSpeechStatus;
+        private readonly Func<string, string, string, CancellationToken, Task<string>>? queryOrigin;
+        private readonly ConcurrentDictionary<string, Task> queries = new();
         private readonly CancellationTokenSource receiveLoopCts = new();
         private readonly SemaphoreSlim sendLock = new(1, 1);
+        private readonly SemaphoreSlim queryResponseLock = new(1, 1);
         private readonly object activeResponseLock = new();
         private Task? receiveLoopTask;
         private string? activeResponseId;
         private string? activeOperationId;
         private bool activeResponseTranscriptCompleted;
+        private bool responseCreatePending;
+        private volatile bool callerSpeaking;
         private bool disposed;
 
         public OpenAIRealtimeMeetingSpeechSession(
@@ -92,7 +103,8 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             IMeetingAudioSession audioSession,
             Func<string, CancellationToken, Task> onFinalTranscript,
             Func<string, CancellationToken, Task> onError,
-            SpeechStatusCallback onSpeechStatus)
+            SpeechStatusCallback onSpeechStatus,
+            Func<string, string, string, CancellationToken, Task<string>>? queryOrigin)
         {
             this.settings = settings;
             this.socket = socket;
@@ -100,6 +112,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             this.onFinalTranscript = onFinalTranscript;
             this.onError = onError;
             this.onSpeechStatus = onSpeechStatus;
+            this.queryOrigin = queryOrigin;
         }
 
         public async Task StartAsync(CancellationToken cancellationToken)
@@ -210,7 +223,8 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             receiveLoopCts.Cancel();
             try
             {
-                await socket.CloseAsync(CancellationToken.None);
+                using var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await socket.CloseAsync(closeTimeout.Token);
             }
             catch
             {
@@ -230,8 +244,11 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             }
 
             await socket.DisposeAsync();
+            try { await Task.WhenAll(queries.Values).WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch { /* Polling stops on hangup; accepted origin work remains durable. */ }
             receiveLoopCts.Dispose();
             sendLock.Dispose();
+            queryResponseLock.Dispose();
         }
 
         private async Task SendSessionUpdateAsync(CancellationToken cancellationToken)
@@ -244,6 +261,20 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                     ["type"] = "realtime",
                     ["model"] = settings.Model,
                     ["instructions"] = settings.Instructions,
+                    ["tools"] = queryOrigin is null ? null : new object[]
+                    {
+                        new
+                        {
+                            type = "function", name = "query_origin_agent",
+                            description = "Ask your original assistant for current memory, facts, or substantive actions. Never guess tool outcomes.",
+                            parameters = new
+                            {
+                                type = "object",
+                                properties = new { question = new { type = "string" }, reason = new { type = "string" } },
+                                required = new[] { "question", "reason" }, additionalProperties = false,
+                            },
+                        },
+                    },
                     ["audio"] = new Dictionary<string, object?>
                     {
                         ["input"] = new Dictionary<string, object?>
@@ -316,6 +347,8 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
 
                 if (message is null)
                 {
+                    if (queryOrigin is not null && !cancellationToken.IsCancellationRequested)
+                        await onError("OpenAI Realtime connection closed", CancellationToken.None);
                     return;
                 }
 
@@ -357,10 +390,21 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                     await HandleInputTranscriptDoneAsync(root, cancellationToken);
                     break;
                 case "input_audio_buffer.speech_started":
+                    callerSpeaking = true;
                     await CancelActiveResponseAsync("user_speech_started", cancellationToken);
+                    break;
+                case "input_audio_buffer.speech_stopped":
+                    callerSpeaking = false;
                     break;
                 case "response.done":
                     await HandleResponseDoneAsync(root, cancellationToken);
+                    break;
+                case "response.function_call_arguments.done":
+                    StartOriginQuery(root);
+                    break;
+                case "response.output_item.done":
+                    if (OptionalObject(root, "item") is { } item
+                        && OptionalString(item, "type") == "function_call") StartOriginQuery(item);
                     break;
                 case "error":
                     await onError(ParseError(root), cancellationToken);
@@ -377,6 +421,7 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
             lock (activeResponseLock)
             {
                 activeResponseId = responseId;
+                responseCreatePending = false;
                 activeOperationId ??= string.IsNullOrWhiteSpace(responseId)
                     ? $"speech-{Guid.NewGuid():N}"
                     : $"realtime-{responseId}";
@@ -467,18 +512,82 @@ public sealed class OpenAIRealtimeSpeechAdapter : IMeetingSpeechAdapter
                 activeResponseId = null;
                 activeOperationId = null;
                 activeResponseTranscriptCompleted = false;
+                responseCreatePending = false;
             }
+            if (response is { } value && value.TryGetProperty("output", out var output)
+                && output.ValueKind == JsonValueKind.Array)
+                foreach (var item in output.EnumerateArray())
+                    if (OptionalString(item, "type") == "function_call") StartOriginQuery(item);
+        }
+
+        private void StartOriginQuery(JsonElement item)
+        {
+            var callId = OptionalString(item, "call_id");
+            var name = OptionalString(item, "name");
+            var arguments = OptionalString(item, "arguments") ?? "{}";
+            if (string.IsNullOrWhiteSpace(callId) || !queries.TryAdd(callId, Task.CompletedTask)) return;
+            // Do not block the receive loop: caller audio and interruptions continue during delegation.
+            queries[callId] = RunOriginQueryAsync(callId, name, arguments, receiveLoopCts.Token);
+        }
+
+        private async Task RunOriginQueryAsync(string callId, string? name, string arguments, CancellationToken token)
+        {
+            string result;
+            try
+            {
+                if (queryOrigin is null || name != "query_origin_agent")
+                    throw new InvalidOperationException("Unknown voice tool.");
+                using var parsed = JsonDocument.Parse(arguments);
+                var question = OptionalString(parsed.RootElement, "question");
+                if (string.IsNullOrWhiteSpace(question)) throw new ArgumentException("question is required");
+                var reason = OptionalString(parsed.RootElement, "reason") ?? "";
+                result = await queryOrigin(question, reason, callId, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+            catch (Exception)
+            {
+                result = "{\"status\":\"failed\",\"message\":\"No assistant result confirmed. Do not claim work succeeded.\"}";
+            }
+            try
+            {
+                await SendRealtimeEventAsync(new Dictionary<string, object?>
+                {
+                    ["type"] = "conversation.item.create",
+                    ["item"] = new { type = "function_call_output", call_id = callId, output = result },
+                }, token);
+                await queryResponseLock.WaitAsync(token);
+                try
+                {
+                    // Concurrent tool results must not start overlapping server responses.
+                    while (callerSpeaking || ResponsePendingOrActive()) await Task.Delay(100, token);
+                    lock (activeResponseLock) responseCreatePending = true;
+                    await SendRealtimeEventAsync(new Dictionary<string, object?> { ["type"] = "response.create" }, token);
+                }
+                finally { queryResponseLock.Release(); }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch (Exception ex) { await onError($"Origin query reply failed: {ex.GetType().Name}", CancellationToken.None); }
+        }
+
+        private bool ResponsePendingOrActive()
+        {
+            lock (activeResponseLock) return responseCreatePending || activeOperationId is not null;
         }
 
         private async Task CancelActiveResponseAsync(string reason, CancellationToken cancellationToken)
         {
             var operationId = CurrentOperationId();
+            // Audio can still be queued after response.done has cleared the operation ID.
+            await audioSession.ClearPendingAudioAsync(cancellationToken);
             if (operationId is not null)
             {
-                await SendRealtimeEventAsync(
-                    new Dictionary<string, object?> { ["type"] = "response.cancel" },
-                    cancellationToken);
-                await audioSession.ClearPendingAudioAsync(cancellationToken);
+                string? responseId;
+                lock (activeResponseLock) responseId = activeResponseId;
+                // VAD's interrupt_response already cancels the server response on caller speech.
+                if (reason != "user_speech_started" && responseId is not null)
+                    await SendRealtimeEventAsync(
+                        new Dictionary<string, object?> { ["type"] = "response.cancel", ["response_id"] = responseId },
+                        cancellationToken);
                 await onSpeechStatus(
                     operationId,
                     "interrupted",

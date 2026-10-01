@@ -4,6 +4,7 @@ export type ConfigurationField = {
   label: string;
   kind: "bool" | "int" | "float" | "literal" | "text" | "multiline_text" | "string_list" | "json";
   options: string[];
+  assistant_options?: { session_id: string; directory_path: string; name: string }[];
   scope?: "directory" | "global";
   root_starts_editable: boolean;
   tooltip: string;

@@ -28,6 +28,10 @@ sources and reference their environment-variable names in provider configuration
 
 ### Related feature configuration
 
+Native Teams calls use root-only `teams_call_routes` and `teams_call_max_concurrency`, plus
+directory-scoped `teams_call_enabled` (false by default). See [Teams assistant calls](teams-calls.md)
+for the explicit map schema, authorization checks, and bridge credentials.
+
 Independent add-ons own their configuration guides. See the
 [WordPress Add-on configuration](../packages/wordpress-addon/docs/operations.md)
 and the [add-on project convention](addons.md#project-ownership).

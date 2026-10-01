@@ -6,6 +6,7 @@ from evander.admin.services.privacy_service import PrivacyAdminService
 from evander.classification.service import ClassificationService
 from evander.admin.services.credential_admin_service import CredentialAdminService
 from evander.admin.services.repository_index_service import RepositoryIndexService
+from evander.admin.services.teams_voice_service import TeamsVoiceService
 
 import os
 import fcntl
@@ -245,6 +246,7 @@ class AdminRuntimeComponents:
     session_admin: SessionAdminService
     wake_schedule_admin: WakeScheduleAdminService
     teams_admin: TeamsAdminService
+    teams_voice_service: TeamsVoiceService
     discord_webhook_admin: DiscordWebhookAdminService
     vm_inventory_admin: VmInventoryAdminService
     worker_control_admin: WorkerControlAdminService
@@ -833,6 +835,7 @@ def _build_admin_runtime_components(
         session_admin=session_admin,
         wake_schedule_admin=wake_schedule_admin,
         teams_admin=teams_admin,
+        teams_voice_service=runtime.teams_voice_service,
         discord_webhook_admin=discord_webhook_admin,
         vm_inventory_admin=vm_inventory_admin,
         worker_control_admin=worker_control_admin,

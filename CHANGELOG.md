@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-01 - Native Teams assistant calls (0.79.0)
+
+- Route incoming personal Teams audio calls through an explicit root tenant/user map,
+  independently authorize the selected existing assistant, and preserve admitted bindings
+  across configuration changes. Add revision-checked Admin Web route editing with assistant names.
+- Extend the Windows media bridge to answer calls and delegate realtime function queries
+  into the original assistant context, with interruption, idempotent queries, durable capacity
+  reservations, terminal reconciliation, and bridge-loss recovery.
+- Validate communications notification signing keys, audience, and tenant; update the Graph
+  media SDK. Include local tests, app and environment templates, Windows service installation,
+  and an activation runbook. Calling remains disabled by default.
+
 ## 2026-10-01 - Simplify operator workspaces (0.78.0)
 
 - Prioritize dashboard attention and capacity over release news, flatten service

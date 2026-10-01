@@ -1,7 +1,23 @@
 using TeamsMeetingMediaBridge;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Host.UseWindowsService(options => options.ServiceName = "EvanderTeamsMediaBridge");
 var bridgeOptions = BridgeOptions.FromConfiguration(builder.Configuration);
+var nativeCallsEnabled = bool.TryParse(builder.Configuration["Bridge:CallsEnabled"]
+    ?? Environment.GetEnvironmentVariable("TEAMS_CALLS_ENABLED"), out var enabled) && enabled;
+if (nativeCallsEnabled)
+{
+    if (bridgeOptions.AdapterMode != BridgeAdapterMode.Graph || bridgeOptions.SpeechMode != BridgeSpeechMode.OpenAIRealtime)
+        throw new InvalidOperationException("Native calls require Graph media and OpenAI Realtime speech.");
+    var controlPlaneUrl = builder.Configuration["VoiceController:BaseUrl"]
+        ?? Environment.GetEnvironmentVariable("VOICE_MEDIA_CONTROLLER_URL")
+        ?? throw new InvalidOperationException("VOICE_MEDIA_CONTROLLER_URL is required for native calls.");
+    var controllerToken = Environment.GetEnvironmentVariable("VOICE_MEDIA_CONTROLLER_TOKEN")
+        ?? throw new InvalidOperationException("VOICE_MEDIA_CONTROLLER_TOKEN is required for native calls.");
+    builder.Services.AddSingleton<IControlPlaneVoiceClient>(_ =>
+        new ControlPlaneVoiceClient(new HttpClient(), new Uri(controlPlaneUrl), controllerToken));
+    builder.Services.AddSingleton<NativeCallCoordinator>();
+}
 builder.Services.AddSingleton(bridgeOptions);
 
 if (bridgeOptions.AdapterMode == BridgeAdapterMode.Graph)
@@ -56,6 +72,8 @@ builder.Services.AddSingleton(sp =>
 var app = builder.Build();
 var bearerToken = Environment.GetEnvironmentVariable("TEAMS_BRIDGE_TOKEN")
     ?? Environment.GetEnvironmentVariable("TEAMS_MEETING_BRIDGE_TOKEN");
+if (bridgeOptions.AdapterMode == BridgeAdapterMode.Graph && string.IsNullOrWhiteSpace(bearerToken))
+    throw new InvalidOperationException("TEAMS_BRIDGE_TOKEN is required in Graph mode.");
 if (!string.IsNullOrWhiteSpace(bearerToken))
 {
     app.Use(async (context, next) =>
@@ -83,6 +101,14 @@ app.MapGet("/healthz", () => Results.Json(new { status = "ok" }));
 
 if (bridgeOptions.AdapterMode == BridgeAdapterMode.Graph)
 {
+    if (nativeCallsEnabled)
+    {
+        var coordinator = app.Services.GetRequiredService<NativeCallCoordinator>();
+        app.Services.GetRequiredService<GraphApplicationHostedMediaClient>().SetIncomingCallHandler(coordinator.HandleAsync);
+        app.MapGet("/calls/{voiceSessionId}", (string voiceSessionId) =>
+            coordinator.GetSnapshot(voiceSessionId) is { } snapshot
+                ? Results.Json(snapshot) : Results.NotFound());
+    }
     app.MapPost("/api/calls", async (
         HttpContext context,
         IGraphCallNotificationProcessor notificationProcessor,

@@ -290,6 +290,33 @@ class InboundPhoneRoute(BaseModel):
         return self
 
 
+class TeamsCallRoute(BaseModel):
+    """Explicit caller routing; Teams allowlists remain access policies."""
+
+    model_config = ConfigDict(extra="forbid")
+    tenant_id: str
+    caller_user_id: str
+    directory_path: str
+    origin_session_id: str = Field(min_length=1)
+
+    @field_validator("tenant_id", "caller_user_id", mode="before")
+    @classmethod
+    def normalize_identity(cls, value: object) -> str:
+        from uuid import UUID
+
+        return str(UUID(str(value).strip()))
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def normalize_directory(cls, value: object) -> str:
+        return _normalize_directory_path(value, field_name="directory_path")
+
+    @field_validator("origin_session_id", mode="before")
+    @classmethod
+    def normalize_session(cls, value: object) -> str:
+        return _normalize_required_text(value, field_name="origin_session_id")
+
+
 class GatewayConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
@@ -404,6 +431,9 @@ class GatewayConfig(BaseModel):
     didww_sip_bridge_token_env: str = Field(default="DIDWW_SIP_BRIDGE_TOKEN", min_length=1)
     didww_from_number: str | None = None
     inbound_phone_routes: list[InboundPhoneRoute] = Field(default_factory=list)
+    teams_call_enabled: bool = False
+    teams_call_routes: list[TeamsCallRoute] = Field(default_factory=list)
+    teams_call_max_concurrency: int = Field(default=4, ge=1, le=32)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
@@ -1142,6 +1172,13 @@ class GatewayConfig(BaseModel):
             raise ValueError(
                 f"Duplicate inbound_phone_routes ids are not allowed: {duplicate_list}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_teams_call_routes(self) -> GatewayConfig:
+        keys = [(route.tenant_id, route.caller_user_id) for route in self.teams_call_routes]
+        if len(keys) != len(set(keys)):
+            raise ValueError("teams_call_routes must contain one target per tenant/caller pair")
         return self
 
     @property

@@ -186,6 +186,12 @@ class RuntimeContext:
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
 
+    @property
+    def teams_voice_service(self):
+        from evander.admin.services.teams_voice_service import TeamsVoiceService
+
+        return TeamsVoiceService(self)
+
     def register_outbound_identity_resolver(
         self, source: str, resolver: OutboundIdentityResolver
     ) -> None:

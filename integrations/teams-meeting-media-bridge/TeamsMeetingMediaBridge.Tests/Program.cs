@@ -4,6 +4,16 @@ using TeamsMeetingMediaBridge;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
+    ("communications callback authentication", NativeCallTests.CommunicationsAuthentication),
+    ("realtime delegation permits interruption and deduplicates functions", NativeCallTests.RealtimeDelegationAndInterruption),
+    ("hangup stops query polling", NativeCallTests.HangupStopsQueryPolling),
+    ("concurrent delegated results serialize responses", NativeCallTests.ConcurrentQueryResultsSerializeResponses),
+    ("native call binding lifecycle and replay", NativeCallTests.NativeLifecycleAndReplay),
+    ("rejected calls never start speech", NativeCallTests.RejectedCallsNeverStartSpeech),
+    ("native recording failure prevents transcription", NativeCallTests.RecordingFailurePreventsNativeTranscription),
+    ("native playback failure releases and reconciles call", NativeCallTests.PlaybackFailureEndsNativeCall),
+    ("control plane retries preserve request identity", NativeCallTests.ControlPlaneRetryPreservesRequestId),
+    ("control plane preserves stored deadline and permanent denial", NativeCallTests.ControlPlaneHonorsStoredDeadlineAndPermanentDenial),
     ("adapter selection defaults to in-memory", AdapterSelectionDefaultsToInMemory),
     ("in-memory mode honors configured default voice", InMemoryModeHonorsConfiguredDefaultVoice),
     ("graph mode validates required config", GraphModeValidatesRequiredConfig),
@@ -671,12 +681,14 @@ internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
     private readonly object sync = new();
     private readonly Queue<string?> incoming = new();
     private readonly SemaphoreSlim incomingSignal = new(0);
+    private readonly List<string> sentMessages = [];
+    public bool StallClose, Disposed;
 
     public Uri? ConnectUri { get; private set; }
 
     public Dictionary<string, string> Headers { get; } = new(StringComparer.Ordinal);
 
-    public List<string> SentMessages { get; } = [];
+    public IReadOnlyList<string> SentMessages { get { lock (sync) return sentMessages.ToArray(); } }
 
     public Task ConnectAsync(
         Uri uri,
@@ -696,7 +708,7 @@ internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
     public Task SendTextAsync(string text, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        SentMessages.Add(text);
+        lock (sync) sentMessages.Add(text);
         return Task.CompletedTask;
     }
 
@@ -712,6 +724,7 @@ internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
     public Task CloseAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (StallClose) return Task.Delay(Timeout.Infinite, cancellationToken);
         lock (sync)
         {
             incoming.Enqueue(null);
@@ -733,6 +746,7 @@ internal sealed class FakeRealtimeWebSocketClient : IRealtimeWebSocketClient
 
     public ValueTask DisposeAsync()
     {
+        Disposed = true;
         incomingSignal.Dispose();
         return ValueTask.CompletedTask;
     }

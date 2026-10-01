@@ -113,12 +113,19 @@ class TeamsMeetingIngestWorker:
             )
             self._append_voice_transcript_events(binding, appended)
             events_ingested += len(appended)
+        calls_polled = 0
+        voice_service = getattr(self.runtime, "teams_voice_service", None)
+        if voice_service is not None:
+            calls_polled, call_errors = voice_service.supervise(directories=self.worker_config.directories)
+            meetings_polled += calls_polled
+            errors_recorded += call_errors
         return TeamsMeetingIngestCycleResult(
             meetings_polled=meetings_polled,
             events_ingested=events_ingested,
             errors_recorded=errors_recorded,
             next_sleep_seconds=compute_next_sleep_seconds(
-                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                poll_interval_seconds=(min(5.0, self.worker_config.poll_interval_seconds)
+                                       if calls_polled else self.worker_config.poll_interval_seconds),
                 jitter_seconds=self.worker_config.jitter_seconds,
             ),
         )

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { WebsiteLoginsConfiguration } from "./WebsiteLoginsConfiguration";
+import { TeamsCallRoutesEditor } from "./TeamsCallRoutesEditor";
 import { ClassificationConfiguration } from "../classification/ClassificationConfiguration";
 import { CredentialsConfiguration } from "./CredentialsConfiguration";
 import type { AdminResult } from "../admin/AdminContext";
@@ -2683,6 +2684,11 @@ export function ConfigurationScreen() {
   ) {
     const disabled = inheritedOrCleared || loading || saving || (!isGlobalField(field) && !state?.directory_scoped_config_enabled);
     const inputProps = { "aria-label": field.label };
+    if (field.field_name === "teams_call_routes") {
+      return <TeamsCallRoutesEditor value={String(fieldState.value)} disabled={disabled}
+        assistants={field.assistant_options ?? []}
+        onChange={(value) => updateFieldState(field.field_name, { include: true, clear: false, value })} />;
+    }
     if (field.kind === "bool") {
       return (
         <select

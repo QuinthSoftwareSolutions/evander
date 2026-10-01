@@ -81,6 +81,11 @@ public interface IMeetingAudioSession : IAsyncDisposable
     Task ClearPendingAudioAsync(CancellationToken cancellationToken);
 }
 
+public interface IPlaybackMonitoredAudioSession
+{
+    Task PlaybackCompletion { get; }
+}
+
 public sealed class InMemoryTeamsMediaAdapter : ITeamsMediaAdapter
 {
     private readonly object sync = new();

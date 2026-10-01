@@ -1011,6 +1011,12 @@ def _directory_config_field_metadata(
         "kind": kind,
         "options": list(options),
         "scope": "global" if source_domain == _ASSISTANT_SETTINGS_DOMAIN else "directory",
+        "assistant_options": [
+            {"session_id": session.session_id, "directory_path": session.directory_path,
+             "name": str(session.metadata.get("display_name") or session.metadata.get("name")
+                         or session.session_id)}
+            for session in service.runtime.session_repository.list_active_sessions()
+        ] if field_name == "teams_call_routes" else [],
         "root_starts_editable": (
             (source_domain == "pr_template" and field_name == "pr_template_markdown")
             or (source_domain == COMMUNICATION_TARGETS_DOMAIN and field_name == "targets")
@@ -1040,6 +1046,7 @@ def _directory_tab_metadata(
                         prefixes,
                     )
                     for source_domain, field_name in field_sources
+                    if directory_path == "root" or field_name not in {"teams_call_routes", "teams_call_max_concurrency"}
                 ],
             }
         )
@@ -1060,6 +1067,7 @@ def _directory_tab_metadata(
                         (),
                     )
                     for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
+                    if directory_path == "root" or field_name not in {"teams_call_routes", "teams_call_max_concurrency"}
                 ],
             }
         ]
