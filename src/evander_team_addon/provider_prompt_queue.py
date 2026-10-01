@@ -179,6 +179,7 @@ def _reconcile_team_queued_prompt_reservations(
                             agent_id=dispatch.agent_id,
                             dispatch_id=dispatch.id,
                             now=now,
+                            state=state,
                         )
                     except (RuntimeError, ValueError, TeamStateConflictError):
                         state = repo.read()
@@ -192,6 +193,7 @@ def _reconcile_team_queued_prompt_reservations(
                                     agent_id=dispatch.agent_id,
                                     dispatch_id=dispatch.id,
                                     now=now,
+                                    state=state,
                                 )
                             except (RuntimeError, ValueError, TeamStateConflictError):
                                 state = repo.read()

@@ -115,6 +115,7 @@
 
   roles:
     - role: host_prereqs
+    - role: system_log_rotation
     - role: apt_cache_relay
     - role: repo_checkout
     - role: python_env

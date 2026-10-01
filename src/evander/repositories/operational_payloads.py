@@ -378,8 +378,14 @@ def load_record_at_path(path: Path, payload: str | bytes) -> dict[str, Any]:
         return load_record(connection, payload)
 
 
-def collect_unreferenced_payloads(connection: sqlite3.Connection, *, limit: int = 100) -> int:
-    """Scan one bounded DAG window; later sweeps reclaim orphaned children."""
+def collect_unreferenced_payloads(
+    connection: sqlite3.Connection, *, limit: int = 100, hold_completed: bool = False
+) -> int:
+    """Scan one bounded DAG window; later sweeps reclaim orphaned children.
+
+    Maintenance can hold completion after a clean sweep until its next restart.
+    The default keeps the standalone collector's repeating-sweep behavior.
+    """
     if not 1 <= limit <= 10_000:
         raise ValueError("limit must be between 1 and 10000")
     limit = min(limit, 100)
@@ -388,12 +394,15 @@ def collect_unreferenced_payloads(connection: sqlite3.Connection, *, limit: int 
     row = connection.execute(
         "SELECT value_json FROM orchestration_metadata WHERE key='operational_payload_gc_cursor'"
     ).fetchone()
-    previous = json.loads(row[0]).get("after", "") if row else ""
+    previous = json.loads(row[0]) if row else {}
+    if hold_completed and previous.get("completed") is True:
+        return 0
+    progress = dict(previous) if hold_completed else {}
     candidates = [
         item[0]
         for item in connection.execute(
             "SELECT sha256 FROM workflow_operational_blobs WHERE sha256>? ORDER BY sha256 LIMIT ?",
-            (previous, limit),
+            (previous.get("after", ""), limit),
         ).fetchall()
     ]
     deleted = 0
@@ -408,10 +417,18 @@ def collect_unreferenced_payloads(connection: sqlite3.Connection, *, limit: int 
         )
         deleted = cursor.rowcount
     after = candidates[-1] if len(candidates) == limit else ""
-    if after != previous:
+    progress["after"] = after
+    if hold_completed:
+        deleted_in_sweep = bool(progress.get("deleted_in_sweep") or deleted)
+        exhausted = len(candidates) < limit
+        # Parents can sort after their children. Remember deletions across all
+        # windows and complete a clean follow-up sweep before becoming idle.
+        progress["completed"] = exhausted and not deleted_in_sweep
+        progress["deleted_in_sweep"] = deleted_in_sweep and not exhausted
+    if progress != previous and (row is not None or any(progress.values())):
         connection.execute(
             """INSERT INTO orchestration_metadata VALUES ('operational_payload_gc_cursor',?)
             ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
-            (json.dumps({"after": after}),),
+            (json.dumps(progress),),
         )
     return deleted

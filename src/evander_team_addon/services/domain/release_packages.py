@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 from ...git_naming import (
@@ -678,204 +679,804 @@ def _build_release_package(
     release-package endpoint so both enforce identical validation and branch naming.
     """
 
-    project_id = project.id
-    requested_deliverable_ids = _string_list(
-        request.get("deliverable_ids"),
-        "deliverable_ids",
-    )
-    if not requested_deliverable_ids:
-        result["errors"].append(
-            f"git release request for project {project_id} requires deliverable_ids"
-        )
-        return None
-    supersedes_release_package_id = _optional_text(request.get("supersedes_release_package_id"))
-    post_release_feedback_case_id = _optional_text(request.get("post_release_feedback_case_id"))
-    if post_release_feedback_case_id is not None and supersedes_release_package_id is None:
-        result["errors"].append("post_release_feedback_case_id requires a predecessor release")
-        return None
-    predecessor: ReleasePackage | None = None
-    configuration_retry = False
-    correction_deliverable_ids = list(requested_deliverable_ids)
-    historical_matches = (
-        _release_packages_for_deliverables(
-            state,
-            project_id=project_id,
-            deliverable_ids=requested_deliverable_ids,
-        )
-        if supersedes_release_package_id is None
-        else []
-    )
-    historical_root_ids = {
-        release_lineage_root_id(state, release) for release in historical_matches
-    }
-    if len(historical_root_ids) > 1:
-        result["error_code"] = "release_lineage_ambiguous"
-        result["release_lineage_root_ids"] = sorted(historical_root_ids)
-        result["historical_release_package_ids"] = [release.id for release in historical_matches]
-        result["errors"].append(
-            "release_lineage_ambiguous: this deliverable set exists in multiple "
-            "historical release lineages; an operator must select the canonical predecessor"
-        )
-        return None
-    historical_duplicate = historical_matches[0] if historical_matches else None
-    if supersedes_release_package_id is not None:
-        predecessor = state.release_packages.get(supersedes_release_package_id)
-        if predecessor is None:
-            result["errors"].append("superseded release package does not exist")
+    return _ReleasePackageBuilder(
+        state=state,
+        project=project,
+        request=request,
+        result=result,
+        projects_to_recalc=projects_to_recalc,
+        actor_agent_id=actor_agent_id,
+        team_id=team_id,
+    ).build()
+
+
+class _ReleasePackageBuilder:
+    """Build one release with validation and mutation stages in their required order."""
+
+    requested_deliverable_ids: list[str]
+    post_release_feedback_case_id: str | None
+    predecessor: ReleasePackage | None
+    configuration_retry: bool
+    correction_deliverable_ids: list[str]
+    deliverable_ids: list[str]
+    predecessor_candidate_branch: str | None
+    artifact_refs: list[str]
+    feature_branches: list[str]
+    feature_sources_by_task: dict[str, list[str]]
+    source_expected_commits: dict[str, str]
+    reviewed_commit_shas: list[str]
+    git_base_snapshots: set[tuple[str | None, str | None]]
+    needs_git_release: bool
+    release_git_base_branch: str | None
+    release_base_commit_sha: str | None
+    release_id: str
+    target_release_branch: str | None
+    target_canonical_branch: str | None
+    git: ProjectGitConfig | None
+    effective_team_id: str
+    canonical_base_commit_sha: str | None
+    promotion_ids: list[str]
+    release: ReleasePackage
+    now: datetime
+    is_candidate_correction_successor: bool
+
+    def __init__(
+        self,
+        *,
+        state: TeamState,
+        project: Project,
+        request: dict[str, Any],
+        result: dict[str, Any],
+        projects_to_recalc: set[str],
+        actor_agent_id: str,
+        team_id: str,
+    ) -> None:
+        self.state = state
+        self.project = project
+        self.request = request
+        self.result = result
+        self.projects_to_recalc = projects_to_recalc
+        self.actor_agent_id = actor_agent_id
+        self.team_id = team_id
+        self.project_id = project.id
+
+    def build(self) -> str | None:
+        if not self._select_lineage():
             return None
-    elif historical_duplicate is None:
-        ambiguous_task_ids = _ambiguous_exact_base_task_ids(
-            state,
-            requested_deliverable_ids,
-        )
-        if ambiguous_task_ids:
-            result["error_code"] = "release_lineage_ambiguous"
-            result["release_lineage_ambiguous_task_ids"] = ambiguous_task_ids
-            result["errors"].append(
-                "release_lineage_ambiguous: exact task provenance matches multiple "
-                "release candidates; an operator must select the canonical predecessor"
+        if not self._resolve_deliverables():
+            return None
+        if not self._validate_release_scope():
+            return None
+        if not self._collect_promotion_inputs():
+            return None
+        if not self._validate_git_inputs():
+            return None
+
+        self.release_id = _optional_text(self.request.get("id")) or f"release-{uuid4().hex}"
+        if self.release_id in self.state.release_packages:
+            self.result["errors"].append(
+                _duplicate_release_package_error(self.state.release_packages[self.release_id])
             )
             return None
-        lineage_root_ids = _release_lineage_roots_for_inputs(
-            state,
-            project_id=project_id,
-            deliverable_ids=requested_deliverable_ids,
-        )
-        if len(lineage_root_ids) > 1:
-            result["error_code"] = "release_lineage_ambiguous"
-            result["release_lineage_root_ids"] = sorted(lineage_root_ids)
-            result["errors"].append(
-                "release_lineage_ambiguous: release inputs belong to multiple "
-                "historical release lineages; an operator must select the canonical lineage"
-            )
+        existing_release_id = self._reuse_existing()
+        if existing_release_id is not None:
+            return existing_release_id
+
+        if not self._select_destination():
             return None
-        if lineage_root_ids:
-            lineage_root_id = next(iter(lineage_root_ids))
-            leaves = _release_lineage_leaves(state, lineage_root_id)
-            if len(leaves) != 1:
-                result["error_code"] = "release_lineage_forked"
-                result["release_lineage_root_id"] = lineage_root_id
-                result["release_lineage_frontier_ids"] = [release.id for release in leaves]
-                result["errors"].append(
-                    f"release_lineage_forked: lineage {lineage_root_id} has "
-                    f"{len(leaves)} frontiers; resolve the historical fork before publication"
+        self._create_package()
+        if not self._queue_promotions():
+            return None
+        self.projects_to_recalc.add(self.project_id)
+        return self.release_id
+
+    def _select_lineage(self) -> bool:
+        self.requested_deliverable_ids = _string_list(
+            self.request.get("deliverable_ids"),
+            "deliverable_ids",
+        )
+        if not self.requested_deliverable_ids:
+            self.result["errors"].append(
+                f"git release request for project {self.project_id} requires deliverable_ids"
+            )
+            return False
+        supersedes_release_package_id = _optional_text(
+            self.request.get("supersedes_release_package_id")
+        )
+        self.post_release_feedback_case_id = _optional_text(
+            self.request.get("post_release_feedback_case_id")
+        )
+        if self.post_release_feedback_case_id is not None and supersedes_release_package_id is None:
+            self.result["errors"].append(
+                "post_release_feedback_case_id requires a predecessor release"
+            )
+            return False
+        self.predecessor: ReleasePackage | None = None
+        self.configuration_retry = False
+        self.correction_deliverable_ids = list(self.requested_deliverable_ids)
+        historical_matches = (
+            _release_packages_for_deliverables(
+                self.state,
+                project_id=self.project_id,
+                deliverable_ids=self.requested_deliverable_ids,
+            )
+            if supersedes_release_package_id is None
+            else []
+        )
+        historical_root_ids = {
+            release_lineage_root_id(self.state, release) for release in historical_matches
+        }
+        if len(historical_root_ids) > 1:
+            self.result["error_code"] = "release_lineage_ambiguous"
+            self.result["release_lineage_root_ids"] = sorted(historical_root_ids)
+            self.result["historical_release_package_ids"] = [
+                release.id for release in historical_matches
+            ]
+            self.result["errors"].append(
+                "release_lineage_ambiguous: this deliverable set exists in multiple "
+                "historical release lineages; an operator must select the canonical predecessor"
+            )
+            return False
+        historical_duplicate = historical_matches[0] if historical_matches else None
+        if supersedes_release_package_id is not None:
+            self.predecessor = self.state.release_packages.get(supersedes_release_package_id)
+            if self.predecessor is None:
+                self.result["errors"].append("superseded release package does not exist")
+                return False
+        elif historical_duplicate is None:
+            ambiguous_task_ids = _ambiguous_exact_base_task_ids(
+                self.state,
+                self.requested_deliverable_ids,
+            )
+            if ambiguous_task_ids:
+                self.result["error_code"] = "release_lineage_ambiguous"
+                self.result["release_lineage_ambiguous_task_ids"] = ambiguous_task_ids
+                self.result["errors"].append(
+                    "release_lineage_ambiguous: exact task provenance matches multiple "
+                    "release candidates; an operator must select the canonical predecessor"
                 )
-                return None
-            predecessor = leaves[0]
-            result["release_lineage_auto_joined"] = True
-            result["release_lineage_root_id"] = lineage_root_id
-            result["inferred_predecessor_release_package_id"] = predecessor.id
+                return False
+            lineage_root_ids = _release_lineage_roots_for_inputs(
+                self.state,
+                project_id=self.project_id,
+                deliverable_ids=self.requested_deliverable_ids,
+            )
+            if len(lineage_root_ids) > 1:
+                self.result["error_code"] = "release_lineage_ambiguous"
+                self.result["release_lineage_root_ids"] = sorted(lineage_root_ids)
+                self.result["errors"].append(
+                    "release_lineage_ambiguous: release inputs belong to multiple "
+                    "historical release lineages; an operator must select the canonical lineage"
+                )
+                return False
+            if lineage_root_ids:
+                lineage_root_id = next(iter(lineage_root_ids))
+                leaves = _release_lineage_leaves(self.state, lineage_root_id)
+                if len(leaves) != 1:
+                    self.result["error_code"] = "release_lineage_forked"
+                    self.result["release_lineage_root_id"] = lineage_root_id
+                    self.result["release_lineage_frontier_ids"] = [release.id for release in leaves]
+                    self.result["errors"].append(
+                        f"release_lineage_forked: lineage {lineage_root_id} has "
+                        f"{len(leaves)} frontiers; resolve the historical fork before publication"
+                    )
+                    return False
+                self.predecessor = leaves[0]
+                self.result["release_lineage_auto_joined"] = True
+                self.result["release_lineage_root_id"] = lineage_root_id
+                self.result["inferred_predecessor_release_package_id"] = self.predecessor.id
+        return True
 
-    if predecessor is not None:
-        if predecessor.state == TeamRecordState.CANCELLED:
-            result["errors"].append("cancelled releases cannot have successor attempts; request a new release")
-            return None
-        lineage_root_id = release_lineage_root_id(state, predecessor)
-        waiting_task_ids = _lineage_waiting_task_ids(
-            state,
-            root_id=lineage_root_id,
-            requested_deliverable_ids=correction_deliverable_ids,
-        )
-        if waiting_task_ids:
-            result["error_code"] = "release_lineage_waiting_tasks"
-            result["release_lineage_waiting_task_ids"] = waiting_task_ids
-            result["errors"].append(
-                "release_lineage_waiting_tasks: successor creation is waiting for "
-                "lineage-bound tasks to settle: " + ", ".join(waiting_task_ids)
-            )
-            return None
-        correction_deliverable_ids = _settled_lineage_deliverable_ids(
-            state,
-            root_id=lineage_root_id,
-            predecessor=predecessor,
-            requested_deliverable_ids=correction_deliverable_ids,
-        )
-        matching_successors = _matching_direct_successors(
-            state,
-            predecessor=predecessor,
-            correction_deliverable_ids=correction_deliverable_ids,
-        )
-        if len(matching_successors) > 1:
-            result["error_code"] = "release_lineage_forked"
-            result["release_lineage_frontier_ids"] = [release.id for release in matching_successors]
-            result["errors"].append(
-                f"release_lineage_forked: predecessor {predecessor.id} has multiple "
-                "matching successors; resolve the historical fork before retrying"
-            )
-            return None
-        if matching_successors and _release_package_requires_recreation(matching_successors[0]):
-            original_predecessor = predecessor
-            predecessor = matching_successors[0]
-            result["requested_predecessor_release_package_id"] = original_predecessor.id
-            correction_deliverable_ids = _settled_lineage_deliverable_ids(
-                state,
+    def _resolve_deliverables(self) -> bool:
+        if self.predecessor is not None:
+            if self.predecessor.state == TeamRecordState.CANCELLED:
+                self.result["errors"].append(
+                    "cancelled releases cannot have successor attempts; request a new release"
+                )
+                return False
+            lineage_root_id = release_lineage_root_id(self.state, self.predecessor)
+            waiting_task_ids = _lineage_waiting_task_ids(
+                self.state,
                 root_id=lineage_root_id,
-                predecessor=predecessor,
-                requested_deliverable_ids=correction_deliverable_ids,
+                requested_deliverable_ids=self.correction_deliverable_ids,
             )
-        if _release_package_requires_recreation(predecessor):
-            configuration_retry = True
-            result["configuration_retry_predecessor_release_package_id"] = predecessor.id
-        successor_error = _successor_release_request_error(
-            state,
-            project_id=project_id,
-            predecessor=predecessor,
-            correction_deliverable_ids=correction_deliverable_ids,
-            post_release_feedback_case_id=(
-                None if configuration_retry else post_release_feedback_case_id
-            ),
-        )
-        if successor_error is not None:
-            result["errors"].append(successor_error)
-            return None
-        assert predecessor is not None
-        deliverable_ids = [
-            *predecessor.deliverable_ids,
-            *(
+            if waiting_task_ids:
+                self.result["error_code"] = "release_lineage_waiting_tasks"
+                self.result["release_lineage_waiting_task_ids"] = waiting_task_ids
+                self.result["errors"].append(
+                    "release_lineage_waiting_tasks: successor creation is waiting for "
+                    "lineage-bound tasks to settle: " + ", ".join(waiting_task_ids)
+                )
+                return False
+            self.correction_deliverable_ids = _settled_lineage_deliverable_ids(
+                self.state,
+                root_id=lineage_root_id,
+                predecessor=self.predecessor,
+                requested_deliverable_ids=self.correction_deliverable_ids,
+            )
+            matching_successors = _matching_direct_successors(
+                self.state,
+                predecessor=self.predecessor,
+                correction_deliverable_ids=self.correction_deliverable_ids,
+            )
+            if len(matching_successors) > 1:
+                self.result["error_code"] = "release_lineage_forked"
+                self.result["release_lineage_frontier_ids"] = [
+                    release.id for release in matching_successors
+                ]
+                self.result["errors"].append(
+                    f"release_lineage_forked: predecessor {self.predecessor.id} has multiple "
+                    "matching successors; resolve the historical fork before retrying"
+                )
+                return False
+            if matching_successors and _release_package_requires_recreation(matching_successors[0]):
+                original_predecessor = self.predecessor
+                self.predecessor = matching_successors[0]
+                self.result["requested_predecessor_release_package_id"] = original_predecessor.id
+                self.correction_deliverable_ids = _settled_lineage_deliverable_ids(
+                    self.state,
+                    root_id=lineage_root_id,
+                    predecessor=self.predecessor,
+                    requested_deliverable_ids=self.correction_deliverable_ids,
+                )
+            if _release_package_requires_recreation(self.predecessor):
+                self.configuration_retry = True
+                self.result["configuration_retry_predecessor_release_package_id"] = (
+                    self.predecessor.id
+                )
+            successor_error = _successor_release_request_error(
+                self.state,
+                project_id=self.project_id,
+                predecessor=self.predecessor,
+                correction_deliverable_ids=self.correction_deliverable_ids,
+                post_release_feedback_case_id=(
+                    None if self.configuration_retry else self.post_release_feedback_case_id
+                ),
+            )
+            if successor_error is not None:
+                self.result["errors"].append(successor_error)
+                return False
+            assert self.predecessor is not None
+            self.deliverable_ids = [
+                *self.predecessor.deliverable_ids,
+                *(
+                    deliverable_id
+                    for deliverable_id in self.correction_deliverable_ids
+                    if deliverable_id not in self.predecessor.deliverable_ids
+                ),
+            ]
+            self.result["predecessor_release_package_id"] = self.predecessor.id
+            self.result["correction_deliverable_ids"] = self.correction_deliverable_ids
+            if self.post_release_feedback_case_id is not None:
+                self.result["post_release_feedback_case_id"] = self.post_release_feedback_case_id
+        else:
+            self.deliverable_ids = self.requested_deliverable_ids
+            not_planned_ids = sorted(
                 deliverable_id
-                for deliverable_id in correction_deliverable_ids
-                if deliverable_id not in predecessor.deliverable_ids
+                for deliverable_id in self.deliverable_ids
+                if (
+                    (deliverable := self.state.deliverables.get(deliverable_id)) is not None
+                    and deliverable.initial_release_disposition is not None
+                    and deliverable.initial_release_disposition.state
+                    == InitialReleaseDispositionState.NOT_PLANNED
+                )
+            )
+            if not_planned_ids:
+                self.result["errors"].append(
+                    "initial release is marked not planned for: "
+                    + ", ".join(not_planned_ids)
+                    + "; reopen the initial release decision before requesting a package"
+                )
+                return False
+
+        self.predecessor_candidate_branch = (
+            _release_candidate_branch(self.predecessor) if self.predecessor is not None else None
+        )
+        return True
+
+    def _validate_release_scope(self) -> bool:
+        allowed_parent_task_ids = allowed_release_parent_task_ids(
+            self.state,
+            project_id=self.project_id,
+            predecessor_release_package_id=(
+                self.predecessor.id if self.predecessor is not None else None
             ),
-        ]
-        result["predecessor_release_package_id"] = predecessor.id
-        result["correction_deliverable_ids"] = correction_deliverable_ids
-        if post_release_feedback_case_id is not None:
-            result["post_release_feedback_case_id"] = post_release_feedback_case_id
-    else:
-        deliverable_ids = requested_deliverable_ids
-        not_planned_ids = sorted(
-            deliverable_id
-            for deliverable_id in deliverable_ids
+        )
+        try:
+            release_scope = require_release_scope(
+                self.state,
+                project_id=self.project_id,
+                deliverable_ids=self.deliverable_ids,
+                allowed_parent_task_ids=allowed_parent_task_ids,
+            )
+        except TaskAssessmentBoundaryError as exc:
+            self.result["errors"].append(exc.message)
+            self.result["task_assessment_error"] = {
+                "code": exc.code,
+                **exc.correction_context,
+            }
+            return False
+        self.result["source_deliverable_lineage"] = release_scope["source_lineage"]
+        preflight_git_base_branches: set[str] = set()
+        for deliverable_id in (
+            self.correction_deliverable_ids
+            if self.predecessor is not None
+            else self.deliverable_ids
+        ):
+            deliverable = self.state.deliverables.get(deliverable_id)
+            if deliverable is None:
+                continue
+            refs = deliverable.git_refs
+            if not any(
+                (
+                    refs.branch_context_id,
+                    refs.agent_branch,
+                    refs.review_branch,
+                    refs.feature_branch,
+                    refs.release_branch,
+                    refs.commit_sha,
+                )
+            ):
+                continue
+            if self.project.git is None:
+                self.result["errors"].append(
+                    f"project {self.project.id} has no git configuration for release promotion"
+                )
+                return False
+            try:
+                branch, _commit = self._release_input_git_base(deliverable)
+            except ValueError as exc:
+                self.result["errors"].append(str(exc))
+                return False
+            if branch is not None:
+                preflight_git_base_branches.add(branch)
+        if len(preflight_git_base_branches) > 1:
+            self.result["error_code"] = "mixed_git_base_branches"
+            self.result["errors"].append(
+                "mixed_git_base_branches: Git release inputs use incompatible task "
+                "base branches; create an explicit integration task on the selected "
+                "base and release only its accepted deliverable"
+            )
+            return False
+        return True
+
+    def _collect_promotion_inputs(self) -> bool:
+        self.artifact_refs: list[str] = []
+        self.feature_branches: list[str] = []
+        self.feature_sources_by_task: dict[str, list[str]] = {}
+        self.source_expected_commits: dict[str, str] = {}
+        if "verification_waivers" in self.request:
+            self.result.setdefault("warnings", []).append(
+                LEGACY_VERIFICATION_WAIVERS_IGNORED_WARNING
+            )
+        self.reviewed_commit_shas: list[str] = []
+        self.git_base_snapshots: set[tuple[str | None, str | None]] = set()
+        valid = True
+        promotion_deliverable_ids = set(
+            self.deliverable_ids
+            if self.predecessor is None or self.configuration_retry
+            else self.correction_deliverable_ids
+        )
+        for deliverable_id in self.deliverable_ids:
+            deliverable = self.state.deliverables.get(deliverable_id)
+            if deliverable is None:
+                self.result["errors"].append(
+                    f"git release request references missing deliverable {deliverable_id}"
+                )
+                valid = False
+                continue
+            task = self.state.tasks.get(deliverable.task_id)
+            if task is None or task.project_id != self.project_id:
+                self.result["errors"].append(
+                    f"deliverable {deliverable_id} does not belong to project {self.project_id}"
+                )
+                valid = False
+                continue
+            if deliverable.state != TeamRecordState.ACCEPTED:
+                self.result["errors"].append(
+                    f"deliverable {deliverable_id} is not accepted and cannot be released"
+                )
+                valid = False
+                continue
+            if deliverable.review_manifest is None:
+                _repair_deliverable_review_manifest_from_promotion_evidence(
+                    self.state,
+                    deliverable=deliverable,
+                    result=self.result,
+                )
+            if deliverable_id not in promotion_deliverable_ids:
+                for artifact_ref in deliverable.artifact_refs:
+                    self.artifact_refs = _append_unique(self.artifact_refs, artifact_ref)
+                continue
+            feature = deliverable.git_refs.feature_branch
+            if feature:
+                try:
+                    self.git_base_snapshots.add(self._release_input_git_base(deliverable))
+                except ValueError as exc:
+                    self.result["errors"].append(str(exc))
+                    valid = False
+                    continue
+                reviewed_commit_sha, review_error = _reviewed_commit_for_release(
+                    self.state,
+                    deliverable,
+                )
+                if review_error is not None:
+                    self.result["errors"].append(review_error)
+                    valid = False
+                    continue
+                self.reviewed_commit_shas = _append_unique(
+                    self.reviewed_commit_shas,
+                    reviewed_commit_sha,
+                )
+                try:
+                    feature = validate_branch_name(feature)
+                except ValueError as exc:
+                    self.result["errors"].append(
+                        f"deliverable {deliverable_id} has invalid feature branch for release: {exc}"
+                    )
+                    valid = False
+                    continue
+                if deliverable.git_refs.feature_commit_sha is None:
+                    self.result["errors"].append(
+                        f"deliverable {deliverable_id} has no immutable feature commit; "
+                        "reconsolidate it under the current release policy"
+                    )
+                    valid = False
+                    continue
+                self.feature_branches = _append_unique(self.feature_branches, feature)
+            else:
+                try:
+                    source_branch = _feature_promotion_source_branch_for_release(deliverable)
+                except ValueError as exc:
+                    self.result["errors"].append(
+                        f"deliverable {deliverable_id} has invalid Git refs for release: {exc}"
+                    )
+                    valid = False
+                    continue
+                if source_branch is not None:
+                    try:
+                        self.git_base_snapshots.add(self._release_input_git_base(deliverable))
+                    except ValueError as exc:
+                        self.result["errors"].append(str(exc))
+                        valid = False
+                        continue
+                    reviewed_commit_sha, review_error = _reviewed_commit_for_release(
+                        self.state,
+                        deliverable,
+                    )
+                    if review_error is not None:
+                        self.result["errors"].append(review_error)
+                        valid = False
+                        continue
+                    self.feature_sources_by_task[task.id] = _append_unique(
+                        self.feature_sources_by_task.get(task.id, []),
+                        source_branch,
+                    )
+                    previous_expected = self.source_expected_commits.get(source_branch)
+                    if previous_expected is not None and previous_expected != reviewed_commit_sha:
+                        self.result["errors"].append(
+                            f"source branch {source_branch} has multiple reviewed commits in one release"
+                        )
+                        valid = False
+                        continue
+                    self.source_expected_commits[source_branch] = reviewed_commit_sha
+                    self.reviewed_commit_shas = _append_unique(
+                        self.reviewed_commit_shas,
+                        reviewed_commit_sha,
+                    )
+                elif not deliverable.artifact_refs:
+                    self.result["errors"].append(
+                        f"deliverable {deliverable_id} has neither a feature branch, "
+                        "review branch, agent branch, nor artifact refs; Git release "
+                        "requests can auto-promote accepted deliverables from "
+                        "git_refs.review_branch or git_refs.agent_branch, or release "
+                        "artifact-only deliverables with artifact refs"
+                    )
+                    valid = False
+            for artifact_ref in deliverable.artifact_refs:
+                self.artifact_refs = _append_unique(self.artifact_refs, artifact_ref)
+        if not valid:
+            return False
+        return True
+
+    def _validate_git_inputs(self) -> bool:
+        self.needs_git_release = bool(self.feature_branches or self.feature_sources_by_task)
+        if self.project.git is not None and not self.needs_git_release:
+            self.result["error_code"] = "candidate_git_inputs_required"
+            self.result["errors"].append(
+                "candidate_git_inputs_required: Git-backed project "
+                f"{self.project.id} requires at least one accepted Git-backed deliverable "
+                "as a direct release input; artifact refs and source_deliverable_ids "
+                "are supporting evidence and cannot produce a pinned candidate. "
+                "Create an explicit integration task when accepted contributions use "
+                "different Git bases, then release its accepted Git-backed deliverable"
+            )
+            return False
+        self.release_git_base_branch: str | None = None
+        self.release_base_commit_sha: str | None = None
+        if self.needs_git_release:
+            base_branches = {
+                branch for branch, _commit in self.git_base_snapshots if branch is not None
+            }
+            base_commits = {
+                commit for _branch, commit in self.git_base_snapshots if commit is not None
+            }
             if (
-                (deliverable := state.deliverables.get(deliverable_id)) is not None
-                and deliverable.initial_release_disposition is not None
-                and deliverable.initial_release_disposition.state
-                == InitialReleaseDispositionState.NOT_PLANNED
+                len(base_branches) != 1
+                or len(base_commits) != 1
+                or len(self.git_base_snapshots) != 1
+            ):
+                self.result["error_code"] = "mixed_git_base_branches"
+                self.result["errors"].append(
+                    "mixed_git_base_branches: Git release inputs must share one "
+                    "authoritative task base branch and commit; create an explicit "
+                    "integration task on the selected base and release only its "
+                    "accepted deliverable"
+                )
+                return False
+            self.release_git_base_branch = next(iter(base_branches))
+            self.release_base_commit_sha = next(iter(base_commits))
+        if self.predecessor is not None and not self.needs_git_release:
+            self.result["errors"].append(
+                "successor release correction deliverables must include reviewed Git "
+                "content so a changed candidate can enter release gates"
+            )
+            return False
+        return True
+
+    def _reuse_existing(self) -> str | None:
+        duplicate = _release_package_for_deliverables(
+            self.state,
+            project_id=self.project_id,
+            deliverable_ids=self.deliverable_ids,
+        )
+        if duplicate is not None:
+            disposition_ids = mark_initial_release_requested(
+                self.state,
+                deliverable_ids=self.deliverable_ids,
+                release_package_id=duplicate.id,
+                decided_by_actor=(
+                    _optional_text(self.request.get("release_requested_by_actor"))
+                    or f"agent:{self.actor_agent_id}"
+                ),
+                now=utc_now(),
+            )
+            self.result["updated_initial_release_disposition_ids"] = disposition_ids
+            self.result["duplicate"] = True
+            self.result["created"] = False
+            self.result["existing_release_package_id"] = duplicate.id
+            self.result["release_package_id"] = duplicate.id
+            self.result.setdefault("next_action_hints", []).append(
+                _same_deliverable_release_package_hint(duplicate)
+            )
+            return duplicate.id
+        return None
+
+    def _select_destination(self) -> bool:
+        self.target_release_branch: str | None = None
+        self.target_canonical_branch: str | None = None
+        self.git = None
+        self.effective_team_id = self.team_id or self.project.team_id
+        if self.needs_git_release:
+            self.git = _project_git_or_error(self.project, self.result)
+            if self.git is None:
+                return False
+            if self.project.release_policy is None:
+                self.result["errors"].append(
+                    f"project {self.project.id} has no release policy; configure candidate "
+                    "verification and release review gates before requesting a Git release"
+                )
+                return False
+            self.target_release_branch = validate_branch_name(
+                _optional_text(self.request.get("release_branch"))
+                or release_branch(self.effective_team_id, self.release_id)
+            )
+            self.target_canonical_branch = validate_branch_name(
+                _optional_text(self.request.get("canonical_branch"))
+                or (self.predecessor.canonical_branch if self.predecessor is not None else None)
+                or canonical_release_branch(self.project, self.release_id)
+            )
+        self.canonical_base_commit_sha = self.release_base_commit_sha
+        if (
+            self.predecessor is not None
+            and self.target_canonical_branch == self.predecessor.canonical_branch
+        ):
+            if self.predecessor.state == TeamRecordState.ACCEPTED:
+                self.canonical_base_commit_sha = (
+                    self.predecessor.published_commit_sha
+                    or self.predecessor.approved_commit_sha
+                    or self.predecessor.candidate_commit_sha
+                )
+            else:
+                self.canonical_base_commit_sha = (
+                    self.predecessor.canonical_base_commit_sha or self.predecessor.base_commit_sha
+                )
+        return True
+
+    def _create_package(self) -> None:
+        self.promotion_ids: list[str] = []
+        self.now = utc_now()
+        self.is_candidate_correction_successor = (
+            self.predecessor is not None
+            and self.predecessor.state == TeamRecordState.REJECTED
+            and self.predecessor.gate_failure is not None
+            and (
+                (
+                    self.predecessor.gate_failure.stage == "human_review"
+                    and self.predecessor.gate_failure.kind == "changes_requested"
+                )
+                or (
+                    self.predecessor.gate_failure.stage == "verification"
+                    and self.predecessor.gate_failure.kind == "candidate"
+                )
+                or (
+                    self.predecessor.gate_failure.stage == "review"
+                    and self.predecessor.gate_failure.kind == "rejected"
+                )
+                or (
+                    self.predecessor.gate_failure.stage == "lineage"
+                    and self.predecessor.gate_failure.kind == "convergence"
+                    and self.predecessor.gate_failure.message.startswith(
+                        "release_lineage_waiting_tasks:"
+                    )
+                )
             )
         )
-        if not_planned_ids:
-            result["errors"].append(
-                "initial release is marked not planned for: "
-                + ", ".join(not_planned_ids)
-                + "; reopen the initial release decision before requesting a package"
+        if self.feature_sources_by_task and not self.is_candidate_correction_successor:
+            assert self.git is not None
+            for task_id, source_branches in self.feature_sources_by_task.items():
+                feature_promotion_id = f"promotion-{uuid4().hex}"
+                self.state.git_promotions[feature_promotion_id] = GitPromotionRecord(
+                    id=feature_promotion_id,
+                    project_id=self.project.id,
+                    release_package_id=self.release_id,
+                    task_id=task_id,
+                    actor_agent_id=self.actor_agent_id,
+                    source_branch=source_branches[0],
+                    target_branch=feature_branch(
+                        self.effective_team_id, task_id, self.actor_agent_id
+                    ),
+                    promotion_kind="feature",
+                    git_base_branch=self.release_git_base_branch,
+                    base_commit_sha=self.release_base_commit_sha,
+                )
+                self.promotion_ids.append(feature_promotion_id)
+        self.state.release_packages[self.release_id] = ReleasePackage(
+            id=self.release_id,
+            project_id=self.project.id,
+            owner_agent_id=self.actor_agent_id,
+            summary=_optional_text(self.request.get("summary")),
+            supersedes_release_package_id=(
+                self.predecessor.id if self.predecessor is not None else None
+            ),
+            lineage_root_release_package_id=(
+                release_lineage_root_id(self.state, self.predecessor)
+                if self.predecessor is not None
+                else self.release_id
+            ),
+            lineage_sequence=(
+                release_lineage_sequence(self.state, self.predecessor) + 1
+                if self.predecessor is not None
+                else 0
+            ),
+            deliverable_ids=self.deliverable_ids,
+            artifact_refs=self.artifact_refs,
+            feature_branches=self.feature_branches,
+            release_branch=self.target_release_branch,
+            canonical_branch=self.target_canonical_branch,
+            git_base_branch=(
+                self.predecessor_candidate_branch
+                if self.predecessor is not None and not self.configuration_retry
+                else self.release_git_base_branch
+            ),
+            base_commit_sha=(
+                self.predecessor.candidate_commit_sha
+                if self.predecessor is not None and not self.configuration_retry
+                else self.release_base_commit_sha
+            ),
+            canonical_base_commit_sha=self.canonical_base_commit_sha,
+            git_promotion_record_ids=self.promotion_ids,
+            policy_version=2,
+            # New packages never inherit or create verification waivers. Historical
+            # predecessor records remain available on those records for audit display.
+            verification_waivers=[],
+            scope_validation=(
+                ReleaseScopeValidation(
+                    state="pending",
+                    reviewed_commit_shas=self.reviewed_commit_shas,
+                )
+                if self.needs_git_release
+                else ReleaseScopeValidation(state="not_required")
+            ),
+            state=TeamRecordState.PENDING,
+            created_at=self.now,
+            updated_at=self.now,
+        )
+        ensure_release_work_lineage(self.state, self.state.release_packages[self.release_id])
+        disposition_ids = mark_initial_release_requested(
+            self.state,
+            deliverable_ids=self.deliverable_ids,
+            release_package_id=self.release_id,
+            decided_by_actor=(
+                _optional_text(self.request.get("release_requested_by_actor"))
+                or f"agent:{self.actor_agent_id}"
+            ),
+            now=self.now,
+        )
+        self.result["updated_initial_release_disposition_ids"] = disposition_ids
+        self.result["created"] = True
+        self.result["duplicate"] = False
+        self.result["release_package_id"] = self.release_id
+        self.release = self.state.release_packages[self.release_id]
+
+    def _queue_promotions(self) -> bool:
+        release = self.release
+        if self.is_candidate_correction_successor:
+            assert self.predecessor is not None
+            assert self.git is not None
+            aggregate = _create_correction_aggregate_promotion(
+                self.state,
+                release=release,
+                predecessor=self.predecessor,
+                correction_deliverable_ids=self.correction_deliverable_ids,
+                actor_agent_id=self.actor_agent_id,
+                result=self.result,
             )
-            return None
+            if aggregate is None:
+                self.state.release_packages.pop(self.release_id, None)
+                for promotion_id in self.promotion_ids:
+                    self.state.git_promotions.pop(promotion_id, None)
+                return False
+            self.promotion_ids = [aggregate.id]
+            release.git_promotion_record_ids = self.promotion_ids
+            self.result["git_promotion_event_ids"].append(aggregate.id)
+        elif self.feature_sources_by_task:
+            assert self.git is not None
+            for promotion_id in self.promotion_ids:
+                promotion = self.state.git_promotions[promotion_id]
+                assert promotion.task_id is not None
+                payload = {
+                    "promotion_id": promotion_id,
+                    "promotion_kind": "feature",
+                    "project_id": self.project.id,
+                    "release_package_id": self.release_id,
+                    "managed_repo_id": self.git.managed_repo_id,
+                    "base_branch": promotion.git_base_branch,
+                    "base_commit_sha": promotion.base_commit_sha,
+                    "source_branches": list(self.feature_sources_by_task[promotion.task_id]),
+                    "expected_source_commits": {
+                        branch: self.source_expected_commits[branch]
+                        for branch in self.feature_sources_by_task[promotion.task_id]
+                    },
+                    "target_branch": promotion.target_branch,
+                    "task_id": promotion.task_id,
+                    "commit_message": (f"Integrate accepted work for task {promotion.task_id}"),
+                }
+                payload.update(_managed_repo_fields(self.git))
+                _emit_git_promotion_event(
+                    self.result,
+                    promotion_id=promotion_id,
+                    payload=payload,
+                )
+            self.result["git_promotion_event_ids"].extend(self.promotion_ids)
+        elif self.feature_branches:
+            _queue_release_promotion_if_ready(
+                self.state,
+                release=self.state.release_packages[self.release_id],
+                actor_agent_id=self.actor_agent_id,
+                result=self.result,
+            )
+        return True
 
-    predecessor_candidate_branch = (
-        _release_candidate_branch(predecessor) if predecessor is not None else None
-    )
-
-    def _release_input_git_base(
-        deliverable: Deliverable,
-    ) -> tuple[str | None, str | None]:
-        if predecessor is None or configuration_retry:
+    def _release_input_git_base(self, deliverable: Deliverable) -> tuple[str | None, str | None]:
+        if self.predecessor is None or self.configuration_retry:
             return authoritative_deliverable_git_base(
-                state,
+                self.state,
                 deliverable=deliverable,
             )
         composed_correction_base = _candidate_correction_composition_base(
-            state,
-            predecessor=predecessor,
+            self.state,
+            predecessor=self.predecessor,
             deliverable=deliverable,
         )
         if composed_correction_base is not None:
@@ -887,26 +1488,26 @@ def _build_release_package(
             # comparison below instead of failing first in the generic
             # composition-root validator.
             branch, commit = authoritative_deliverable_git_base(
-                state,
+                self.state,
                 deliverable=deliverable,
                 use_dependency_composition_root=False,
             )
         downstream_recovery_base = _candidate_correction_downstream_recovery_base(
-            state,
-            predecessor=predecessor,
+            self.state,
+            predecessor=self.predecessor,
             deliverable=deliverable,
         )
         if downstream_recovery_base is not None:
             expected_branch, expected_commit = downstream_recovery_base
         else:
-            expected_branch = predecessor_candidate_branch
-            expected_commit = predecessor.candidate_commit_sha
+            expected_branch = self.predecessor_candidate_branch
+            expected_commit = self.predecessor.candidate_commit_sha
         if expected_branch is None or expected_commit is None:
             raise ValueError(
-                f"predecessor release {predecessor.id} has no exact rejected "
+                f"predecessor release {self.predecessor.id} has no exact rejected "
                 "candidate Git provenance"
             )
-        task = state.tasks.get(deliverable.task_id)
+        task = self.state.tasks.get(deliverable.task_id)
         if (
             task is not None
             and task.git_base_branch is not None
@@ -922,462 +1523,6 @@ def _build_release_package(
                 f"not match rejected candidate {expected_commit}"
             )
         return expected_branch, expected_commit
-
-    allowed_parent_task_ids = allowed_release_parent_task_ids(
-        state,
-        project_id=project_id,
-        predecessor_release_package_id=(predecessor.id if predecessor is not None else None),
-    )
-    try:
-        release_scope = require_release_scope(
-            state,
-            project_id=project_id,
-            deliverable_ids=deliverable_ids,
-            allowed_parent_task_ids=allowed_parent_task_ids,
-        )
-    except TaskAssessmentBoundaryError as exc:
-        result["errors"].append(exc.message)
-        result["task_assessment_error"] = {
-            "code": exc.code,
-            **exc.correction_context,
-        }
-        return None
-    result["source_deliverable_lineage"] = release_scope["source_lineage"]
-    preflight_git_base_branches: set[str] = set()
-    for deliverable_id in (
-        correction_deliverable_ids if predecessor is not None else deliverable_ids
-    ):
-        deliverable = state.deliverables.get(deliverable_id)
-        if deliverable is None:
-            continue
-        refs = deliverable.git_refs
-        if not any(
-            (
-                refs.branch_context_id,
-                refs.agent_branch,
-                refs.review_branch,
-                refs.feature_branch,
-                refs.release_branch,
-                refs.commit_sha,
-            )
-        ):
-            continue
-        if project.git is None:
-            result["errors"].append(
-                f"project {project.id} has no git configuration for release promotion"
-            )
-            return None
-        try:
-            branch, _commit = _release_input_git_base(deliverable)
-        except ValueError as exc:
-            result["errors"].append(str(exc))
-            return None
-        if branch is not None:
-            preflight_git_base_branches.add(branch)
-    if len(preflight_git_base_branches) > 1:
-        result["error_code"] = "mixed_git_base_branches"
-        result["errors"].append(
-            "mixed_git_base_branches: Git release inputs use incompatible task "
-            "base branches; create an explicit integration task on the selected "
-            "base and release only its accepted deliverable"
-        )
-        return None
-    artifact_refs: list[str] = []
-    feature_branches: list[str] = []
-    feature_sources_by_task: dict[str, list[str]] = {}
-    source_expected_commits: dict[str, str] = {}
-    if "verification_waivers" in request:
-        result.setdefault("warnings", []).append(
-            LEGACY_VERIFICATION_WAIVERS_IGNORED_WARNING
-        )
-    reviewed_commit_shas: list[str] = []
-    git_base_snapshots: set[tuple[str | None, str | None]] = set()
-    valid = True
-    promotion_deliverable_ids = set(
-        deliverable_ids
-        if predecessor is None or configuration_retry
-        else correction_deliverable_ids
-    )
-    for deliverable_id in deliverable_ids:
-        deliverable = state.deliverables.get(deliverable_id)
-        if deliverable is None:
-            result["errors"].append(
-                f"git release request references missing deliverable {deliverable_id}"
-            )
-            valid = False
-            continue
-        task = state.tasks.get(deliverable.task_id)
-        if task is None or task.project_id != project_id:
-            result["errors"].append(
-                f"deliverable {deliverable_id} does not belong to project {project_id}"
-            )
-            valid = False
-            continue
-        if deliverable.state != TeamRecordState.ACCEPTED:
-            result["errors"].append(
-                f"deliverable {deliverable_id} is not accepted and cannot be released"
-            )
-            valid = False
-            continue
-        if deliverable.review_manifest is None:
-            _repair_deliverable_review_manifest_from_promotion_evidence(
-                state,
-                deliverable=deliverable,
-                result=result,
-            )
-        if deliverable_id not in promotion_deliverable_ids:
-            for artifact_ref in deliverable.artifact_refs:
-                artifact_refs = _append_unique(artifact_refs, artifact_ref)
-            continue
-        feature = deliverable.git_refs.feature_branch
-        if feature:
-            try:
-                git_base_snapshots.add(_release_input_git_base(deliverable))
-            except ValueError as exc:
-                result["errors"].append(str(exc))
-                valid = False
-                continue
-            reviewed_commit_sha, review_error = _reviewed_commit_for_release(
-                state,
-                deliverable,
-            )
-            if review_error is not None:
-                result["errors"].append(review_error)
-                valid = False
-                continue
-            reviewed_commit_shas = _append_unique(
-                reviewed_commit_shas,
-                reviewed_commit_sha,
-            )
-            try:
-                feature = validate_branch_name(feature)
-            except ValueError as exc:
-                result["errors"].append(
-                    f"deliverable {deliverable_id} has invalid feature branch for release: {exc}"
-                )
-                valid = False
-                continue
-            if deliverable.git_refs.feature_commit_sha is None:
-                result["errors"].append(
-                    f"deliverable {deliverable_id} has no immutable feature commit; "
-                    "reconsolidate it under the current release policy"
-                )
-                valid = False
-                continue
-            feature_branches = _append_unique(feature_branches, feature)
-        else:
-            try:
-                source_branch = _feature_promotion_source_branch_for_release(deliverable)
-            except ValueError as exc:
-                result["errors"].append(
-                    f"deliverable {deliverable_id} has invalid Git refs for release: {exc}"
-                )
-                valid = False
-                continue
-            if source_branch is not None:
-                try:
-                    git_base_snapshots.add(_release_input_git_base(deliverable))
-                except ValueError as exc:
-                    result["errors"].append(str(exc))
-                    valid = False
-                    continue
-                reviewed_commit_sha, review_error = _reviewed_commit_for_release(
-                    state,
-                    deliverable,
-                )
-                if review_error is not None:
-                    result["errors"].append(review_error)
-                    valid = False
-                    continue
-                feature_sources_by_task[task.id] = _append_unique(
-                    feature_sources_by_task.get(task.id, []),
-                    source_branch,
-                )
-                previous_expected = source_expected_commits.get(source_branch)
-                if previous_expected is not None and previous_expected != reviewed_commit_sha:
-                    result["errors"].append(
-                        f"source branch {source_branch} has multiple reviewed commits in one release"
-                    )
-                    valid = False
-                    continue
-                source_expected_commits[source_branch] = reviewed_commit_sha
-                reviewed_commit_shas = _append_unique(
-                    reviewed_commit_shas,
-                    reviewed_commit_sha,
-                )
-            elif not deliverable.artifact_refs:
-                result["errors"].append(
-                    f"deliverable {deliverable_id} has neither a feature branch, "
-                    "review branch, agent branch, nor artifact refs; Git release "
-                    "requests can auto-promote accepted deliverables from "
-                    "git_refs.review_branch or git_refs.agent_branch, or release "
-                    "artifact-only deliverables with artifact refs"
-                )
-                valid = False
-        for artifact_ref in deliverable.artifact_refs:
-            artifact_refs = _append_unique(artifact_refs, artifact_ref)
-    if not valid:
-        return None
-    needs_git_release = bool(feature_branches or feature_sources_by_task)
-    if project.git is not None and not needs_git_release:
-        result["error_code"] = "candidate_git_inputs_required"
-        result["errors"].append(
-            "candidate_git_inputs_required: Git-backed project "
-            f"{project.id} requires at least one accepted Git-backed deliverable "
-            "as a direct release input; artifact refs and source_deliverable_ids "
-            "are supporting evidence and cannot produce a pinned candidate. "
-            "Create an explicit integration task when accepted contributions use "
-            "different Git bases, then release its accepted Git-backed deliverable"
-        )
-        return None
-    release_git_base_branch: str | None = None
-    release_base_commit_sha: str | None = None
-    if needs_git_release:
-        base_branches = {branch for branch, _commit in git_base_snapshots if branch is not None}
-        base_commits = {commit for _branch, commit in git_base_snapshots if commit is not None}
-        if len(base_branches) != 1 or len(base_commits) != 1 or len(git_base_snapshots) != 1:
-            result["error_code"] = "mixed_git_base_branches"
-            result["errors"].append(
-                "mixed_git_base_branches: Git release inputs must share one "
-                "authoritative task base branch and commit; create an explicit "
-                "integration task on the selected base and release only its "
-                "accepted deliverable"
-            )
-            return None
-        release_git_base_branch = next(iter(base_branches))
-        release_base_commit_sha = next(iter(base_commits))
-    if predecessor is not None and not needs_git_release:
-        result["errors"].append(
-            "successor release correction deliverables must include reviewed Git "
-            "content so a changed candidate can enter release gates"
-        )
-        return None
-    release_id = _optional_text(request.get("id")) or f"release-{uuid4().hex}"
-    if release_id in state.release_packages:
-        result["errors"].append(
-            _duplicate_release_package_error(state.release_packages[release_id])
-        )
-        return None
-    duplicate = _release_package_for_deliverables(
-        state,
-        project_id=project_id,
-        deliverable_ids=deliverable_ids,
-    )
-    if duplicate is not None:
-        disposition_ids = mark_initial_release_requested(
-            state,
-            deliverable_ids=deliverable_ids,
-            release_package_id=duplicate.id,
-            decided_by_actor=(
-                _optional_text(request.get("release_requested_by_actor"))
-                or f"agent:{actor_agent_id}"
-            ),
-            now=utc_now(),
-        )
-        result["updated_initial_release_disposition_ids"] = disposition_ids
-        result["duplicate"] = True
-        result["created"] = False
-        result["existing_release_package_id"] = duplicate.id
-        result["release_package_id"] = duplicate.id
-        result.setdefault("next_action_hints", []).append(
-            _same_deliverable_release_package_hint(duplicate)
-        )
-        return duplicate.id
-    target_release_branch: str | None = None
-    target_canonical_branch: str | None = None
-    git = None
-    effective_team_id = team_id or project.team_id
-    if needs_git_release:
-        git = _project_git_or_error(project, result)
-        if git is None:
-            return None
-        if project.release_policy is None:
-            result["errors"].append(
-                f"project {project.id} has no release policy; configure candidate "
-                "verification and release review gates before requesting a Git release"
-            )
-            return None
-        target_release_branch = validate_branch_name(
-            _optional_text(request.get("release_branch"))
-            or release_branch(effective_team_id, release_id)
-        )
-        target_canonical_branch = validate_branch_name(
-            _optional_text(request.get("canonical_branch"))
-            or (predecessor.canonical_branch if predecessor is not None else None)
-            or canonical_release_branch(project, release_id)
-        )
-    canonical_base_commit_sha = release_base_commit_sha
-    if predecessor is not None and target_canonical_branch == predecessor.canonical_branch:
-        if predecessor.state == TeamRecordState.ACCEPTED:
-            canonical_base_commit_sha = (
-                predecessor.published_commit_sha
-                or predecessor.approved_commit_sha
-                or predecessor.candidate_commit_sha
-            )
-        else:
-            canonical_base_commit_sha = (
-                predecessor.canonical_base_commit_sha or predecessor.base_commit_sha
-            )
-    promotion_ids: list[str] = []
-    now = utc_now()
-    is_candidate_correction_successor = (
-        predecessor is not None
-        and predecessor.state == TeamRecordState.REJECTED
-        and predecessor.gate_failure is not None
-        and (
-            (
-                predecessor.gate_failure.stage == "human_review"
-                and predecessor.gate_failure.kind == "changes_requested"
-            )
-            or (
-                predecessor.gate_failure.stage == "verification"
-                and predecessor.gate_failure.kind == "candidate"
-            )
-            or (
-                predecessor.gate_failure.stage == "review"
-                and predecessor.gate_failure.kind == "rejected"
-            )
-            or (
-                predecessor.gate_failure.stage == "lineage"
-                and predecessor.gate_failure.kind == "convergence"
-                and predecessor.gate_failure.message.startswith("release_lineage_waiting_tasks:")
-            )
-        )
-    )
-    if feature_sources_by_task and not is_candidate_correction_successor:
-        assert git is not None
-        for task_id, source_branches in feature_sources_by_task.items():
-            feature_promotion_id = f"promotion-{uuid4().hex}"
-            state.git_promotions[feature_promotion_id] = GitPromotionRecord(
-                id=feature_promotion_id,
-                project_id=project.id,
-                release_package_id=release_id,
-                task_id=task_id,
-                actor_agent_id=actor_agent_id,
-                source_branch=source_branches[0],
-                target_branch=feature_branch(effective_team_id, task_id, actor_agent_id),
-                promotion_kind="feature",
-                git_base_branch=release_git_base_branch,
-                base_commit_sha=release_base_commit_sha,
-            )
-            promotion_ids.append(feature_promotion_id)
-    state.release_packages[release_id] = ReleasePackage(
-        id=release_id,
-        project_id=project.id,
-        owner_agent_id=actor_agent_id,
-        summary=_optional_text(request.get("summary")),
-        supersedes_release_package_id=(predecessor.id if predecessor is not None else None),
-        lineage_root_release_package_id=(
-            release_lineage_root_id(state, predecessor) if predecessor is not None else release_id
-        ),
-        lineage_sequence=(
-            release_lineage_sequence(state, predecessor) + 1 if predecessor is not None else 0
-        ),
-        deliverable_ids=deliverable_ids,
-        artifact_refs=artifact_refs,
-        feature_branches=feature_branches,
-        release_branch=target_release_branch,
-        canonical_branch=target_canonical_branch,
-        git_base_branch=(
-            predecessor_candidate_branch
-            if predecessor is not None and not configuration_retry
-            else release_git_base_branch
-        ),
-        base_commit_sha=(
-            predecessor.candidate_commit_sha
-            if predecessor is not None and not configuration_retry
-            else release_base_commit_sha
-        ),
-        canonical_base_commit_sha=canonical_base_commit_sha,
-        git_promotion_record_ids=promotion_ids,
-        policy_version=2,
-        # New packages never inherit or create verification waivers. Historical
-        # predecessor records remain available on those records for audit display.
-        verification_waivers=[],
-        scope_validation=(
-            ReleaseScopeValidation(
-                state="pending",
-                reviewed_commit_shas=reviewed_commit_shas,
-            )
-            if needs_git_release
-            else ReleaseScopeValidation(state="not_required")
-        ),
-        state=TeamRecordState.PENDING,
-        created_at=now,
-        updated_at=now,
-    )
-    ensure_release_work_lineage(state, state.release_packages[release_id])
-    disposition_ids = mark_initial_release_requested(
-        state,
-        deliverable_ids=deliverable_ids,
-        release_package_id=release_id,
-        decided_by_actor=(
-            _optional_text(request.get("release_requested_by_actor")) or f"agent:{actor_agent_id}"
-        ),
-        now=now,
-    )
-    result["updated_initial_release_disposition_ids"] = disposition_ids
-    result["created"] = True
-    result["duplicate"] = False
-    result["release_package_id"] = release_id
-    release = state.release_packages[release_id]
-    if is_candidate_correction_successor:
-        assert predecessor is not None
-        assert git is not None
-        aggregate = _create_correction_aggregate_promotion(
-            state,
-            release=release,
-            predecessor=predecessor,
-            correction_deliverable_ids=correction_deliverable_ids,
-            actor_agent_id=actor_agent_id,
-            result=result,
-        )
-        if aggregate is None:
-            state.release_packages.pop(release_id, None)
-            for promotion_id in promotion_ids:
-                state.git_promotions.pop(promotion_id, None)
-            return None
-        promotion_ids = [aggregate.id]
-        release.git_promotion_record_ids = promotion_ids
-        result["git_promotion_event_ids"].append(aggregate.id)
-    elif feature_sources_by_task:
-        assert git is not None
-        for promotion_id in promotion_ids:
-            promotion = state.git_promotions[promotion_id]
-            assert promotion.task_id is not None
-            payload = {
-                "promotion_id": promotion_id,
-                "promotion_kind": "feature",
-                "project_id": project.id,
-                "release_package_id": release_id,
-                "managed_repo_id": git.managed_repo_id,
-                "base_branch": promotion.git_base_branch,
-                "base_commit_sha": promotion.base_commit_sha,
-                "source_branches": list(feature_sources_by_task[promotion.task_id]),
-                "expected_source_commits": {
-                    branch: source_expected_commits[branch]
-                    for branch in feature_sources_by_task[promotion.task_id]
-                },
-                "target_branch": promotion.target_branch,
-                "task_id": promotion.task_id,
-                "commit_message": (f"Integrate accepted work for task {promotion.task_id}"),
-            }
-            payload.update(_managed_repo_fields(git))
-            _emit_git_promotion_event(
-                result,
-                promotion_id=promotion_id,
-                payload=payload,
-            )
-        result["git_promotion_event_ids"].extend(promotion_ids)
-    elif feature_branches:
-        _queue_release_promotion_if_ready(
-            state,
-            release=state.release_packages[release_id],
-            actor_agent_id=actor_agent_id,
-            result=result,
-        )
-    projects_to_recalc.add(project_id)
-    return release_id
 
 
 def _candidate_correction_composition_base(

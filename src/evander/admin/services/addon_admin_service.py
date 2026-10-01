@@ -85,6 +85,9 @@ class AddonAdminService:
             pending_disable = loaded and not enabled
             has_mcp_tools = bool(registration and registration.mcp_tools is not None)
             has_connector_drivers = bool(registration and registration.connector_drivers)
+            has_website_session_adapters = bool(
+                registration and registration.website_session_adapters
+            )
             addons.append(
                 {
                     "candidate_key": candidate.source,
@@ -103,6 +106,7 @@ class AddonAdminService:
                     "has_admin_api": bool(registration and registration.admin_api_routes),
                     "has_mcp_tools": has_mcp_tools,
                     "has_connector_drivers": has_connector_drivers,
+                    "has_website_session_adapters": has_website_session_adapters,
                     "has_workflow_providers": bool(
                         registration and registration.workflow_providers
                     ),
@@ -119,7 +123,8 @@ class AddonAdminService:
                     "load_error": candidate.error,
                     "required_restart_services": list(
                         self._required_restart_services(
-                            has_mcp_tools=has_mcp_tools or has_connector_drivers
+                            has_mcp_tools=has_mcp_tools or has_connector_drivers,
+                            has_website_session_adapters=has_website_session_adapters,
                         )
                     ),
                 }
@@ -150,6 +155,7 @@ class AddonAdminService:
                     "has_admin_api": False,
                     "has_mcp_tools": False,
                     "has_connector_drivers": False,
+                    "has_website_session_adapters": False,
                     "has_workflow_providers": False,
                     "workflow_node_types": [],
                     "referenced_workflow_node_types": [],
@@ -166,6 +172,9 @@ class AddonAdminService:
             item["restart_required"] and (item["has_mcp_tools"] or item["has_connector_drivers"])
             for item in addons
         )
+        has_relay_change = any(
+            item["restart_required"] and item["has_website_session_adapters"] for item in addons
+        )
         return {
             "addon_loader": host_loader.model_dump(mode="json"),
             "worker_addon_loader": worker_loader.model_dump(mode="json"),
@@ -175,7 +184,10 @@ class AddonAdminService:
             "revision": self._revision(host_loader, worker_loader),
             "restart_required": restart_required,
             "required_restart_services": list(
-                self._required_restart_services(has_mcp_tools=has_gateway_change)
+                self._required_restart_services(
+                    has_mcp_tools=has_gateway_change,
+                    has_website_session_adapters=has_relay_change,
+                )
             )
             if restart_required
             else [],
@@ -658,7 +670,12 @@ class AddonAdminService:
         updated["workflow_packs"] = remaining
         return updated
 
-    def _required_restart_services(self, *, has_mcp_tools: bool) -> tuple[str, ...]:
+    def _required_restart_services(
+        self, *, has_mcp_tools: bool, has_website_session_adapters: bool = False
+    ) -> tuple[str, ...]:
+        services = _RESTART_SERVICES_BASE
         if has_mcp_tools:
-            return (*_RESTART_SERVICES_BASE, "evander-gateway")
-        return _RESTART_SERVICES_BASE
+            services += ("evander-gateway",)
+        if has_website_session_adapters:
+            services += ("evander-http-target-relay",)
+        return services

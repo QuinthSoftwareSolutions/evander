@@ -26,6 +26,7 @@ type InspectorPanelRenderersInputs = {
   inspectWorkflowRun: (eventId: string) => void;
   selectedNodeDiagnostics: WorkflowValidationDiagnostic[];
   renderSelectedTriggerToggle: () => ReactNode | null;
+  manualEventTriggerButton: ReactNode;
   inspectorDisplayName: string;
   setInspectorDisplayName: Dispatch<SetStateAction<string>>;
   stageInspectorDraft: (nextDraft?: Partial<InspectorDraftSnapshot>) => void;
@@ -63,6 +64,7 @@ export function createInspectorPanelRenderers({
   inspectWorkflowRun,
   selectedNodeDiagnostics,
   renderSelectedTriggerToggle,
+  manualEventTriggerButton,
   inspectorDisplayName,
   setInspectorDisplayName,
   stageInspectorDraft,
@@ -148,6 +150,7 @@ export function createInspectorPanelRenderers({
           Select downstream branch
         </button>
         {renderSelectedTriggerToggle()}
+        {manualEventTriggerButton}
         <div className="inspector-metadata-field">
           <span>Node ID</span>
           <code>{selectedNode.id}</code>
@@ -288,6 +291,7 @@ export function createInspectorPanelRenderers({
                   Select downstream branch
                 </button>
                 {renderSelectedTriggerToggle()}
+                {manualEventTriggerButton}
                 <div className="inspector-metadata-field">
                   <span>Node ID</span>
                   <code>{selectedNode.id}</code>

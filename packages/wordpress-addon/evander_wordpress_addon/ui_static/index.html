@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WordPress</title><link rel="stylesheet" href="wordpress.css">
+<body><main><nav><a href="/">Admin</a><a id="download" href="/api/addons/wordpress-addon/companion.zip">Download companion plugin</a></nav>
+<h1>WordPress</h1><p>Connect a website, verify recovery, and review published changes.</p>
+<label>Directory <input id="directory" value="root"></label><button id="reload">Load</button><p id="message" role="status"></p>
+<section><h2>Sites</h2><div id="sites"></div></section>
+<details><summary>Site configuration</summary><p>Use a configured WordPress connector. Save new sites disabled, test recovery, then enable them.</p>
+<textarea id="settings" aria-label="Site configuration" spellcheck="false"></textarea><button id="save">Save configuration</button></details>
+<section><h2>Change history</h2><div id="history"></div></section><dialog id="report"><button id="close">Close</button><p id="report-message" role="status"></p><div id="receipt"></div></dialog>
+</main><script type="module" src="wordpress.js"></script></body></html>

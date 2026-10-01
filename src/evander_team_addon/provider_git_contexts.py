@@ -28,6 +28,9 @@ from .git_naming import (
     validate_branch_name,
 )
 from .models import (
+    AgentTask,
+    DependencyCompositionRecovery,
+    TeamState,
     DependencyCompositionManifest,
     TeamGitPreparationAttemptState,
     TeamTaskKind,
@@ -73,6 +76,10 @@ from .repository import (
 from .services.admin_service import (
     TeamAdminService,
 )
+from .services.domain.correction_git_source import (
+    RejectedCandidateGitSource,
+    RejectedDeliverableContinuationGitSource,
+)
 from .services.domain.common import (
     _slug_id_part,
 )
@@ -113,281 +120,442 @@ def _create_project_repo_git_work_contexts(
                 "state_conflict_retry_count": 0,
             },
         )
-    rows: list[dict[str, Any]] = []
-    admin = TeamAdminService(
+    return _ProjectGitContextPreparation(
+        context,
         repo,
-        managed_git_admin=getattr(
-            getattr(context, "admin_service", None),
-            "managed_git_admin",
-            None,
-        ),
-    )
-    state_commit_attempt_count = 0
-    state_conflict_retry_count = 0
-    task_worktree_repo_name = _required_text(
-        project_repo.get("guest_repo_name"),
-        "guest_repo_name",
-    )
-    for task in _project_repo_context_tasks(
-        tasks,
-        project_id=project_id,
+        state=state,
         agent_id=agent_id,
-    ):
-        task_id = _required_text(task.get("id"), "task.id")
-        task_record = state.tasks.get(task_id)
-        if task_record is not None and task_record.task_kind == TeamTaskKind.COORDINATION:
-            continue
-        task_author = (
-            _resolved_project_git_identity(task_record.authored_by)
-            if task_record is not None and task_record.authored_by is not None
-            else dependency_merge_author_identity
+        session_id=session_id,
+        project_id=project_id,
+        project_repo=project_repo,
+        dispatch_id=dispatch_id,
+        tasks=tasks,
+        base_branch=base_branch,
+        dependency_merge_author_identity=dependency_merge_author_identity,
+    ).run()
+
+
+class _ProjectGitContextPreparation:
+    """Prepare one project's task contexts, sharing its state and retry metrics."""
+
+    rows: list[dict[str, Any]]
+    admin: TeamAdminService
+    state_commit_attempt_count: int
+    state_conflict_retry_count: int
+    task_worktree_repo_name: str
+
+    def __init__(
+        self,
+        context: Any,
+        repo: TeamStateRepository,
+        *,
+        state: TeamState,
+        agent_id: str,
+        session_id: str,
+        project_id: str,
+        project_repo: Mapping[str, Any],
+        dispatch_id: str,
+        tasks: object,
+        base_branch: str | None,
+        dependency_merge_author_identity: GitIdentity,
+    ) -> None:
+        self.context = context
+        self.repo = repo
+        self.state = state
+        self.agent_id = agent_id
+        self.session_id = session_id
+        self.project_id = project_id
+        self.project_repo = project_repo
+        self.dispatch_id = dispatch_id
+        self.tasks = tasks
+        self.base_branch = base_branch
+        self.dependency_merge_author_identity = dependency_merge_author_identity
+
+    def run(self) -> tuple[TeamState, list[dict[str, Any]], dict[str, int]]:
+        self.rows: list[dict[str, Any]] = []
+        self.admin = TeamAdminService(
+            self.repo,
+            managed_git_admin=getattr(
+                getattr(self.context, "admin_service", None),
+                "managed_git_admin",
+                None,
+            ),
         )
-        managed_repo_id = _required_text(
-            project_repo.get("managed_repo_id"),
+        self.state_commit_attempt_count = 0
+        self.state_conflict_retry_count = 0
+        self.task_worktree_repo_name = _required_text(
+            self.project_repo.get("guest_repo_name"),
+            "guest_repo_name",
+        )
+        for task in _project_repo_context_tasks(
+            self.tasks,
+            project_id=self.project_id,
+            agent_id=self.agent_id,
+        ):
+            _TaskGitContextPreparation(batch=self, task=task).run()
+        return (
+            self.state,
+            self.rows,
+            {
+                "state_commit_attempt_count": self.state_commit_attempt_count,
+                "state_conflict_retry_count": self.state_conflict_retry_count,
+            },
+        )
+
+
+class _TaskGitContextPreparation:
+    """Select provenance and commit one task context under the cleanup lock."""
+
+    task_id: str
+    task_record: AgentTask | None
+    task_author: GitIdentity
+    managed_repo_id: str
+    dependency_composition_mode: str
+    dependency_composition_recovery_id: str | None
+    resolved_dependency_branch: str | None
+    resolved_dependency_commit_sha: str | None
+    manual_dependency_git_sources: list[dict[str, str]]
+    composition_manifest_git_sources: list[dict[str, str]]
+    correction_source: RejectedCandidateGitSource | None
+    continuation_sources: tuple[RejectedDeliverableContinuationGitSource, ...]
+    continuation_identity_commit: str | None
+    dependency_recovery: DependencyCompositionRecovery | None
+    dependency_git_sources: list[dict[str, str]]
+    effective_base_branch: str | None
+    worktree_base_ref: str | None
+    prior_base_commit: str | None
+    pinned_base_commit: str | None
+    pinned_base_tree: str | None
+    composition_git_sources: list[dict[str, str]]
+    preparation_generation: str
+    candidate_identity_commit: str | None
+    agent_branch: str
+    worktree_name: str
+    directory_path: str
+    execution_backend: str
+    preparation_attempt_id: str
+    expected_worktree_path: str
+    use_preparation_receipt: bool
+    recovery_already_committed: bool
+    composition_result: dict[str, Any]
+    preparation_receipt_result: dict[str, Any]
+    worktree_path: str
+    base_commit: str
+    recorded_work_context_base_commit: str
+    dependency_composition_manifest: dict[str, Any] | None
+    context_id: str
+
+    def __init__(
+        self,
+        *,
+        batch: _ProjectGitContextPreparation,
+        task: Mapping[str, Any],
+    ) -> None:
+        self.batch = batch
+        self.task = task
+
+    def run(self) -> None:
+        if not self._initialize_task():
+            return
+        self._resolve_sources()
+        self._select_base_strategy()
+        self._plan_worktree()
+        self._reserve_attempt()
+        with team_task_worktree_cleanup_lock(
+            runtime_dir=_runtime_dir(self.batch.context),
+            session_id=self.batch.session_id,
+            repo_name=self.batch.task_worktree_repo_name,
+        ):
+            self._prepare_worktree()
+            self._record_receipt()
+            self._build_context_provenance()
+            self._commit_context()
+            self._finish_context()
+
+    def _select_base_strategy(self) -> None:
+        if self.dependency_recovery is not None:
+            self._use_manual_recovery_base()
+        elif self.continuation_sources:
+            self._use_rejected_deliverable_base()
+        elif self.correction_source is not None:
+            self._use_rejected_candidate_base()
+        else:
+            self._use_ordinary_base()
+
+    def _initialize_task(self) -> bool:
+        self.task_id = _required_text(self.task.get("id"), "task.id")
+        self.task_record = self.batch.state.tasks.get(self.task_id)
+        if self.task_record is not None and self.task_record.task_kind == TeamTaskKind.COORDINATION:
+            return False
+        self.task_author = (
+            _resolved_project_git_identity(self.task_record.authored_by)
+            if self.task_record is not None and self.task_record.authored_by is not None
+            else self.batch.dependency_merge_author_identity
+        )
+        self.managed_repo_id = _required_text(
+            self.batch.project_repo.get("managed_repo_id"),
             "managed_repo_id",
         )
-        dependency_composition_mode = "automatic"
-        dependency_composition_recovery_id: str | None = None
-        resolved_dependency_branch: str | None = None
-        resolved_dependency_commit_sha: str | None = None
-        manual_dependency_git_sources: list[dict[str, str]] = []
-        composition_manifest_git_sources: list[dict[str, str]] = []
-        correction_source = _verified_rejected_candidate_git_source(
-            context,
-            state=state,
-            task_id=task_id,
-            managed_repo_id=managed_repo_id,
+        return True
+
+    def _resolve_sources(self) -> None:
+        self.dependency_composition_mode = "automatic"
+        self.dependency_composition_recovery_id: str | None = None
+        self.resolved_dependency_branch: str | None = None
+        self.resolved_dependency_commit_sha: str | None = None
+        self.manual_dependency_git_sources: list[dict[str, str]] = []
+        self.composition_manifest_git_sources: list[dict[str, str]] = []
+        self.correction_source = _verified_rejected_candidate_git_source(
+            self.batch.context,
+            state=self.batch.state,
+            task_id=self.task_id,
+            managed_repo_id=self.managed_repo_id,
         )
-        continuation_sources = _verified_rejected_deliverable_continuation_git_sources(
-            context,
-            state=state,
-            task_id=task_id,
-            managed_repo_id=managed_repo_id,
+        self.continuation_sources = _verified_rejected_deliverable_continuation_git_sources(
+            self.batch.context,
+            state=self.batch.state,
+            task_id=self.task_id,
+            managed_repo_id=self.managed_repo_id,
         )
-        continuation_identity_commit = _rejected_deliverable_continuation_identity_commit(
-            continuation_sources
+        self.continuation_identity_commit = _rejected_deliverable_continuation_identity_commit(
+            self.continuation_sources
         )
-        dependency_recovery = recovery_for_task(
-            state,
-            recovery_task_id=task_id,
+        self.dependency_recovery = recovery_for_task(
+            self.batch.state,
+            recovery_task_id=self.task_id,
         )
-        if dependency_recovery is not None:
-            dependency_git_sources = [
-                source.model_dump(mode="json")
-                for source in dependency_recovery.dependency_git_sources
-            ]
-            effective_base_branch = dependency_recovery.base_branch
-            worktree_base_ref = dependency_recovery.base_commit_sha
-            prior_base_commit = dependency_recovery.base_commit_sha
-            pinned_base_commit = dependency_recovery.base_commit_sha
-            pinned_base_tree = dependency_recovery.base_tree_hash
-            composition_git_sources = dependency_git_sources
-            composition_manifest_git_sources = dependency_git_sources
-            manual_dependency_git_sources = dependency_git_sources
-            dependency_composition_mode = "manual_recovery"
-            dependency_composition_recovery_id = dependency_recovery.id
-        elif continuation_sources:
-            continuation_dependency_sources = [
-                _rejected_deliverable_continuation_dependency_source(
-                    task_id=task_id,
-                    source=source,
-                )
-                for source in continuation_sources
-            ]
-            dependency_git_sources = _merge_dependency_git_source_rows(
-                continuation_dependency_sources,
-                _project_repo_task_dependency_git_sources(
-                    context,
-                    state=state,
-                    task_id=task_id,
-                    managed_repo_id=managed_repo_id,
+
+    def _use_manual_recovery_base(self) -> None:
+        self.dependency_git_sources = [
+            source.model_dump(mode="json")
+            for source in self.dependency_recovery.dependency_git_sources
+        ]
+        self.effective_base_branch = self.dependency_recovery.base_branch
+        self.worktree_base_ref = self.dependency_recovery.base_commit_sha
+        self.prior_base_commit = self.dependency_recovery.base_commit_sha
+        self.pinned_base_commit = self.dependency_recovery.base_commit_sha
+        self.pinned_base_tree = self.dependency_recovery.base_tree_hash
+        self.composition_git_sources = self.dependency_git_sources
+        self.composition_manifest_git_sources = self.dependency_git_sources
+        self.manual_dependency_git_sources = self.dependency_git_sources
+        self.dependency_composition_mode = "manual_recovery"
+        self.dependency_composition_recovery_id = self.dependency_recovery.id
+
+    def _use_rejected_deliverable_base(self) -> None:
+        continuation_dependency_sources = [
+            _rejected_deliverable_continuation_dependency_source(
+                task_id=self.task_id,
+                source=source,
+            )
+            for source in self.continuation_sources
+        ]
+        self.dependency_git_sources = _merge_dependency_git_source_rows(
+            continuation_dependency_sources,
+            _project_repo_task_dependency_git_sources(
+                self.batch.context,
+                state=self.batch.state,
+                task_id=self.task_id,
+                managed_repo_id=self.managed_repo_id,
+            ),
+        )
+        self.effective_base_branch = (
+            _optional_text(self.task.get("git_base_branch")) or self.batch.base_branch
+        )
+        self.worktree_base_ref = self.effective_base_branch
+        self.pinned_base_commit = _optional_text(self.task.get("git_base_commit_sha"))
+        continuation_base_commits = {source.base_commit_sha for source in self.continuation_sources}
+        if len(continuation_base_commits) != 1:
+            raise DependencyGitPreparationError(
+                task_id=self.task_id,
+                message=(
+                    "unsuperseded rejected deliverables record different original "
+                    "Git bases: " + ", ".join(sorted(continuation_base_commits))
                 ),
             )
-            effective_base_branch = _optional_text(task.get("git_base_branch")) or base_branch
-            worktree_base_ref = effective_base_branch
-            pinned_base_commit = _optional_text(task.get("git_base_commit_sha"))
-            continuation_base_commits = {source.base_commit_sha for source in continuation_sources}
-            if len(continuation_base_commits) != 1:
+        continuation_base_commit = next(iter(continuation_base_commits))
+        if self.pinned_base_commit is not None and self.pinned_base_commit.casefold() != (
+            continuation_base_commit
+        ):
+            raise DependencyGitPreparationError(
+                task_id=self.task_id,
+                message=(
+                    "rejected deliverables "
+                    + ", ".join(source.deliverable_id for source in self.continuation_sources)
+                    + f" were prepared from {continuation_base_commit}, not task pin "
+                    f"{self.pinned_base_commit}"
+                ),
+            )
+        self.prior_base_commit = continuation_base_commit
+        self.pinned_base_tree = (
+            _managed_git_base_tree_hash(
+                self.batch.context,
+                task_id=self.task_id,
+                managed_repo_id=self.managed_repo_id,
+                directory_path=(
+                    _optional_text(
+                        getattr(
+                            getattr(
+                                self.batch.state.projects.get(self.batch.project_id), "git", None
+                            ),
+                            "directory_path",
+                            None,
+                        )
+                    )
+                    or "root"
+                ),
+                base_commit_sha=self.pinned_base_commit,
+                sources=continuation_dependency_sources,
+            )
+            if self.pinned_base_commit is not None
+            else None
+        )
+        # Treat the reviewed candidate as a distinct composition relationship:
+        # its immutable pin becomes an ancestor of the replacement branch,
+        # while the task's original base provenance remains unchanged.
+        self.composition_git_sources = self.dependency_git_sources
+        self.composition_manifest_git_sources = self.dependency_git_sources
+
+    def _use_rejected_candidate_base(self) -> None:
+        rejected_candidate_git_sources = [
+            source.model_dump(mode="json")
+            for source in self.correction_source.dependency_git_sources
+        ]
+        correction_task_git_sources = _project_repo_task_dependency_git_sources(
+            self.batch.context,
+            state=self.batch.state,
+            task_id=self.task_id,
+            managed_repo_id=self.managed_repo_id,
+        )
+        self.dependency_git_sources = _merge_dependency_git_source_rows(
+            rejected_candidate_git_sources,
+            correction_task_git_sources,
+        )
+        self.effective_base_branch = self.correction_source.release_branch
+        self.worktree_base_ref = self.effective_base_branch
+        self.prior_base_commit = self.correction_source.candidate_commit_sha
+        self.pinned_base_commit = self.correction_source.candidate_commit_sha
+        self.pinned_base_tree = self.correction_source.candidate_tree_hash
+        # The rejected candidate already contains its original release
+        # sources. Compose only newly accepted correction-task inputs on
+        # top of that immutable base, and attest those current inputs in
+        # the acceptance manifest.
+        self.composition_git_sources = correction_task_git_sources
+        self.composition_manifest_git_sources = correction_task_git_sources
+
+    def _use_ordinary_base(self) -> None:
+        self.dependency_git_sources = _project_repo_task_dependency_git_sources(
+            self.batch.context,
+            state=self.batch.state,
+            task_id=self.task_id,
+            managed_repo_id=self.managed_repo_id,
+        )
+        self.effective_base_branch = (
+            _optional_text(self.task.get("git_base_branch")) or self.batch.base_branch
+        )
+        self.worktree_base_ref = self.effective_base_branch
+        self.pinned_base_commit = _optional_text(self.task.get("git_base_commit_sha"))
+        self.pinned_base_tree = None
+        self.composition_git_sources = self.dependency_git_sources
+        self.composition_manifest_git_sources = self.dependency_git_sources
+        accepted_recovery = accepted_recovery_for_target(
+            self.batch.state,
+            target_task_id=self.task_id,
+            dependency_git_sources=self.dependency_git_sources,
+        )
+        if accepted_recovery is not None:
+            recovery_deliverable = self.batch.state.deliverables.get(
+                accepted_recovery.accepted_deliverable_id or ""
+            )
+            if recovery_deliverable is None:
                 raise DependencyGitPreparationError(
-                    task_id=task_id,
+                    task_id=self.task_id,
                     message=(
-                        "unsuperseded rejected deliverables record different original "
-                        "Git bases: " + ", ".join(sorted(continuation_base_commits))
+                        f"accepted dependency recovery {accepted_recovery.id} "
+                        "references a missing deliverable"
                     ),
                 )
-            continuation_base_commit = next(iter(continuation_base_commits))
-            if pinned_base_commit is not None and pinned_base_commit.casefold() != (
-                continuation_base_commit
+            self.resolved_dependency_branch = _optional_text(
+                recovery_deliverable.git_refs.agent_branch
+            )
+            self.resolved_dependency_commit_sha = _optional_text(
+                accepted_recovery.resolved_commit_sha
+            )
+            if (
+                self.resolved_dependency_branch is None
+                or self.resolved_dependency_commit_sha is None
             ):
                 raise DependencyGitPreparationError(
-                    task_id=task_id,
+                    task_id=self.task_id,
                     message=(
-                        "rejected deliverables "
-                        + ", ".join(source.deliverable_id for source in continuation_sources)
-                        + f" were prepared from {continuation_base_commit}, not task pin "
-                        f"{pinned_base_commit}"
+                        f"accepted dependency recovery {accepted_recovery.id} "
+                        "has incomplete resolved Git provenance"
                     ),
                 )
-            prior_base_commit = continuation_base_commit
-            pinned_base_tree = (
-                _managed_git_base_tree_hash(
-                    context,
-                    task_id=task_id,
-                    managed_repo_id=managed_repo_id,
-                    directory_path=(
-                        _optional_text(
-                            getattr(
-                                getattr(state.projects.get(project_id), "git", None),
-                                "directory_path",
-                                None,
-                            )
-                        )
-                        or "root"
-                    ),
-                    base_commit_sha=pinned_base_commit,
-                    sources=continuation_dependency_sources,
-                )
-                if pinned_base_commit is not None
-                else None
-            )
-            # Treat the reviewed candidate as a distinct composition relationship:
-            # its immutable pin becomes an ancestor of the replacement branch,
-            # while the task's original base provenance remains unchanged.
-            composition_git_sources = dependency_git_sources
-            composition_manifest_git_sources = dependency_git_sources
-        elif correction_source is not None:
-            rejected_candidate_git_sources = [
-                source.model_dump(mode="json")
-                for source in correction_source.dependency_git_sources
-            ]
-            correction_task_git_sources = _project_repo_task_dependency_git_sources(
-                context,
-                state=state,
-                task_id=task_id,
-                managed_repo_id=managed_repo_id,
-            )
-            dependency_git_sources = _merge_dependency_git_source_rows(
-                rejected_candidate_git_sources,
-                correction_task_git_sources,
-            )
-            effective_base_branch = correction_source.release_branch
-            worktree_base_ref = effective_base_branch
-            prior_base_commit = correction_source.candidate_commit_sha
-            pinned_base_commit = correction_source.candidate_commit_sha
-            pinned_base_tree = correction_source.candidate_tree_hash
-            # The rejected candidate already contains its original release
-            # sources. Compose only newly accepted correction-task inputs on
-            # top of that immutable base, and attest those current inputs in
-            # the acceptance manifest.
-            composition_git_sources = correction_task_git_sources
-            composition_manifest_git_sources = correction_task_git_sources
-        else:
-            dependency_git_sources = _project_repo_task_dependency_git_sources(
-                context,
-                state=state,
-                task_id=task_id,
-                managed_repo_id=managed_repo_id,
-            )
-            effective_base_branch = _optional_text(task.get("git_base_branch")) or base_branch
-            worktree_base_ref = effective_base_branch
-            pinned_base_commit = _optional_text(task.get("git_base_commit_sha"))
-            pinned_base_tree = None
-            composition_git_sources = dependency_git_sources
-            composition_manifest_git_sources = dependency_git_sources
-            accepted_recovery = accepted_recovery_for_target(
-                state,
-                target_task_id=task_id,
-                dependency_git_sources=dependency_git_sources,
-            )
-            if accepted_recovery is not None:
-                recovery_deliverable = state.deliverables.get(
-                    accepted_recovery.accepted_deliverable_id or ""
-                )
-                if recovery_deliverable is None:
-                    raise DependencyGitPreparationError(
-                        task_id=task_id,
-                        message=(
-                            f"accepted dependency recovery {accepted_recovery.id} "
-                            "references a missing deliverable"
-                        ),
-                    )
-                resolved_dependency_branch = _optional_text(
-                    recovery_deliverable.git_refs.agent_branch
-                )
-                resolved_dependency_commit_sha = _optional_text(
-                    accepted_recovery.resolved_commit_sha
-                )
-                if resolved_dependency_branch is None or resolved_dependency_commit_sha is None:
-                    raise DependencyGitPreparationError(
-                        task_id=task_id,
-                        message=(
-                            f"accepted dependency recovery {accepted_recovery.id} "
-                            "has incomplete resolved Git provenance"
-                        ),
-                    )
-                effective_base_branch = accepted_recovery.base_branch
-                worktree_base_ref = effective_base_branch
-                pinned_base_commit = accepted_recovery.base_commit_sha
-                pinned_base_tree = accepted_recovery.base_tree_hash
-                dependency_composition_mode = "adopt_resolved"
-                dependency_composition_recovery_id = accepted_recovery.id
-        preparation_generation = _project_repo_task_preparation_generation(
-            state,
-            task_id=task_id,
-            effective_base_branch=effective_base_branch,
+            self.effective_base_branch = accepted_recovery.base_branch
+            self.worktree_base_ref = self.effective_base_branch
+            self.pinned_base_commit = accepted_recovery.base_commit_sha
+            self.pinned_base_tree = accepted_recovery.base_tree_hash
+            self.dependency_composition_mode = "adopt_resolved"
+            self.dependency_composition_recovery_id = accepted_recovery.id
+
+    def _plan_worktree(self) -> None:
+        self.preparation_generation = _project_repo_task_preparation_generation(
+            self.batch.state,
+            task_id=self.task_id,
+            effective_base_branch=self.effective_base_branch,
         )
         # A failed automatic composition may already own a worktree and branch,
         # even though it never produced a preparation receipt. Give the reviewed
         # recovery its own stable identity on both backends, preserving that
         # checkout and keeping retries of the same recovery on the same branch.
-        candidate_identity_commit = (
-            continuation_identity_commit
-            if continuation_identity_commit is not None
-            else correction_source.candidate_commit_sha
-            if correction_source is not None
-            else resolved_dependency_commit_sha
+        self.candidate_identity_commit = (
+            self.continuation_identity_commit
+            if self.continuation_identity_commit is not None
+            else self.correction_source.candidate_commit_sha
+            if self.correction_source is not None
+            else self.resolved_dependency_commit_sha
         )
-        agent_branch = _project_repo_agent_branch(
-            session_id,
-            task_id=task_id,
-            preparation_generation=preparation_generation,
-            candidate_commit_sha=candidate_identity_commit,
+        self.agent_branch = _project_repo_agent_branch(
+            self.batch.session_id,
+            task_id=self.task_id,
+            preparation_generation=self.preparation_generation,
+            candidate_commit_sha=self.candidate_identity_commit,
         )
         try:
-            if dependency_recovery is None:
+            if self.dependency_recovery is None:
                 recorded_base_commit = _prior_project_repo_task_base_commit(
-                    state,
-                    agent_id=agent_id,
-                    task_id=task_id,
-                    agent_branch=agent_branch,
-                    base_branch=effective_base_branch,
-                    dependency_git_sources=dependency_git_sources,
-                    preparation_generation=preparation_generation,
-                    require_dependency_provenance_match=bool(continuation_sources),
+                    self.batch.state,
+                    agent_id=self.batch.agent_id,
+                    task_id=self.task_id,
+                    agent_branch=self.agent_branch,
+                    base_branch=self.effective_base_branch,
+                    dependency_git_sources=self.dependency_git_sources,
+                    preparation_generation=self.preparation_generation,
+                    require_dependency_provenance_match=bool(self.continuation_sources),
                 )
                 # The rejected-candidate pin remains the immutable composition
                 # root, while a retained correction resumes from its recorded
                 # composed base after the first preparation.
                 if recorded_base_commit is not None:
-                    prior_base_commit = recorded_base_commit
-                elif correction_source is None and not continuation_sources:
-                    prior_base_commit = None
+                    self.prior_base_commit = recorded_base_commit
+                elif self.correction_source is None and not self.continuation_sources:
+                    self.prior_base_commit = None
         except RuntimeError as exc:
-            if dependency_git_sources:
+            if self.dependency_git_sources:
                 raise DependencyGitPreparationError(
-                    task_id=task_id,
+                    task_id=self.task_id,
                     message=str(exc),
                 ) from None
             raise
-        worktree_name = _project_repo_task_worktree_name(
-            task_id=task_id,
-            preparation_generation=preparation_generation,
-            identity_commit=(candidate_identity_commit or pinned_base_commit),
+        self.worktree_name = _project_repo_task_worktree_name(
+            task_id=self.task_id,
+            preparation_generation=self.preparation_generation,
+            identity_commit=(self.candidate_identity_commit or self.pinned_base_commit),
         )
-        directory_path = (
+        self.directory_path = (
             _optional_text(
                 getattr(
-                    getattr(state.projects.get(project_id), "git", None),
+                    getattr(self.batch.state.projects.get(self.batch.project_id), "git", None),
                     "directory_path",
                     None,
                 )
@@ -395,376 +563,392 @@ def _create_project_repo_git_work_contexts(
             or "root"
         )
         selected_backend, _selected_config = selected_execution_backend_for_target(
-            context,
-            {"session_id": session_id},
-            directory_path=directory_path,
+            self.batch.context,
+            {"session_id": self.batch.session_id},
+            directory_path=self.directory_path,
         )
-        execution_backend = (
-            _optional_text(project_repo.get("execution_backend")) or selected_backend
+        self.execution_backend = (
+            _optional_text(self.batch.project_repo.get("execution_backend")) or selected_backend
         )
-        preparation_attempt_id = _project_repo_git_preparation_attempt_id(
-            agent_id=agent_id,
-            session_id=session_id,
-            task_id=task_id,
-            managed_repo_id=managed_repo_id,
-            branch=agent_branch,
-            preparation_generation=preparation_generation,
+        self.preparation_attempt_id = _project_repo_git_preparation_attempt_id(
+            agent_id=self.batch.agent_id,
+            session_id=self.batch.session_id,
+            task_id=self.task_id,
+            managed_repo_id=self.managed_repo_id,
+            branch=self.agent_branch,
+            preparation_generation=self.preparation_generation,
         )
-        expected_worktree_path = f"/home/agent/worktrees/{task_worktree_repo_name}/{worktree_name}"
-        state = _ensure_project_repo_git_preparation_attempt(
-            repo,
-            attempt_id=preparation_attempt_id,
-            agent_id=agent_id,
-            session_id=session_id,
-            task_id=task_id,
-            project_id=project_id,
-            dispatch_id=dispatch_id,
-            managed_repo_id=managed_repo_id,
-            directory_path=directory_path,
-            execution_backend=execution_backend,
-            worktree_path=expected_worktree_path,
-            branch=agent_branch,
-            base_ref=worktree_base_ref or "HEAD",
-            preparation_generation=preparation_generation,
+        self.expected_worktree_path = (
+            f"/home/agent/worktrees/{self.batch.task_worktree_repo_name}/{self.worktree_name}"
         )
-        preparation_attempt = state.git_preparation_attempts[preparation_attempt_id]
-        use_preparation_receipt = (
+
+    def _reserve_attempt(self) -> None:
+        self.batch.state = _ensure_project_repo_git_preparation_attempt(
+            self.batch.repo,
+            attempt_id=self.preparation_attempt_id,
+            agent_id=self.batch.agent_id,
+            session_id=self.batch.session_id,
+            task_id=self.task_id,
+            project_id=self.batch.project_id,
+            dispatch_id=self.batch.dispatch_id,
+            managed_repo_id=self.managed_repo_id,
+            directory_path=self.directory_path,
+            execution_backend=self.execution_backend,
+            worktree_path=self.expected_worktree_path,
+            branch=self.agent_branch,
+            base_ref=self.worktree_base_ref or "HEAD",
+            preparation_generation=self.preparation_generation,
+        )
+        preparation_attempt = self.batch.state.git_preparation_attempts[self.preparation_attempt_id]
+        self.use_preparation_receipt = (
             preparation_attempt.state != TeamGitPreparationAttemptState.COMMITTED
         )
         if (
             preparation_attempt.state == TeamGitPreparationAttemptState.PREPARED
-            and prior_base_commit is None
+            and self.prior_base_commit is None
         ):
-            prior_base_commit = preparation_attempt.base_commit_sha
-        recovery_already_committed = (
-            dependency_composition_mode == "adopt_resolved"
+            self.prior_base_commit = preparation_attempt.base_commit_sha
+        self.recovery_already_committed = (
+            self.dependency_composition_mode == "adopt_resolved"
             and preparation_attempt.state == TeamGitPreparationAttemptState.COMMITTED
-            and prior_base_commit == resolved_dependency_commit_sha
+            and self.prior_base_commit == self.resolved_dependency_commit_sha
         )
-        with team_task_worktree_cleanup_lock(
-            runtime_dir=_runtime_dir(context),
-            session_id=session_id,
-            repo_name=task_worktree_repo_name,
-        ):
-            composition_result: dict[str, Any] = {}
-            preparation_receipt_result: dict[str, Any] = {}
-            try:
-                worktree_path, base_commit = _prepare_project_repo_task_worktree(
-                    context,
-                    project_repo=project_repo,
-                    session_id=session_id,
-                    task_id=task_id,
-                    agent_branch=agent_branch,
-                    base_ref=worktree_base_ref or "HEAD",
-                    worktree_name=worktree_name,
-                    **({"required_git_recovery_protocol": 1} if any(
-                        row.task_id == task_id and row.preparation_retries or task_id in row.recovery_task_ids
-                        or task_id in row.evidence.get("consumer_successor_ids", {}).values()
-                        for row in state.git_recovery_incidents.values()) else {}),
-                    preparation_attempt_id=(
-                        preparation_attempt_id if use_preparation_receipt else None
-                    ),
-                    worktree_identity_commit=candidate_identity_commit,
-                    preparation_generation=preparation_generation,
-                    prior_base_commit=prior_base_commit,
-                    pinned_base_commit=pinned_base_commit,
-                    pinned_base_tree=pinned_base_tree,
-                    dependency_git_sources=composition_git_sources,
-                    # After adoption has committed, validate the retained task
-                    # checkout normally so later agent work is never reset to
-                    # the recovery candidate. Keep the recovery on the Team
-                    # context below, where it remains part of the provenance.
-                    dependency_composition_mode=(
-                        "automatic" if recovery_already_committed else dependency_composition_mode
-                    ),
-                    dependency_composition_recovery_id=(
-                        None if recovery_already_committed else dependency_composition_recovery_id
-                    ),
-                    resolved_dependency_branch=(
-                        None if recovery_already_committed else resolved_dependency_branch
-                    ),
-                    resolved_dependency_commit_sha=(
-                        None if recovery_already_committed else resolved_dependency_commit_sha
-                    ),
-                    dependency_merge_author_identity=task_author,
-                    task_author_identity=task_author,
-                    composition_result=composition_result,
-                    preparation_receipt_result=preparation_receipt_result,
-                )
-            except DependencyGitPreparationError as exc:
-                if exc.conflict is not None:
-                    project = state.projects.get(project_id)
-                    project_git = getattr(project, "git", None)
-                    exc.conflict.update(
-                        {
-                            "target_task_id": task_id,
-                            "project_id": project_id,
-                            "managed_repo_id": managed_repo_id,
-                            "base_branch": effective_base_branch or "HEAD",
-                            "directory_path": (
-                                _optional_text(getattr(project_git, "directory_path", None))
-                                or "root"
-                            ),
-                        }
+
+    def _prepare_worktree(self) -> None:
+        self.composition_result: dict[str, Any] = {}
+        self.preparation_receipt_result: dict[str, Any] = {}
+        try:
+            self.worktree_path, self.base_commit = _prepare_project_repo_task_worktree(
+                self.batch.context,
+                project_repo=self.batch.project_repo,
+                session_id=self.batch.session_id,
+                task_id=self.task_id,
+                agent_branch=self.agent_branch,
+                base_ref=self.worktree_base_ref or "HEAD",
+                worktree_name=self.worktree_name,
+                **(
+                    {"required_git_recovery_protocol": 1}
+                    if any(
+                        row.task_id == self.task_id
+                        and row.preparation_retries
+                        or self.task_id in row.recovery_task_ids
+                        or self.task_id in row.evidence.get("consumer_successor_ids", {}).values()
+                        for row in self.batch.state.git_recovery_incidents.values()
                     )
-                raise
-            composed_head_commit = _optional_text(composition_result.get("composed_commit_sha"))
-            task_base_commit_pin = _optional_text(task.get("git_base_commit_sha"))
-            recorded_work_context_base_commit = base_commit
-            if continuation_sources and pinned_base_commit is not None:
-                recorded_work_context_base_commit = pinned_base_commit
-            if task_base_commit_pin is not None:
-                recorded_work_context_base_commit = task_base_commit_pin
-            if resolved_dependency_commit_sha is not None:
-                # The task pin remains its required root; this context starts
-                # at the separately reviewed merge and must reuse that identity.
-                recorded_work_context_base_commit = resolved_dependency_commit_sha
-            prepared_head_commit = (
-                _optional_text(preparation_receipt_result.get("head_commit_sha"))
-                or composed_head_commit
-                or base_commit
-            )
-            if use_preparation_receipt:
-                preparation_receipt_result.setdefault(
-                    "request_fingerprint",
-                    "provider:"
-                    + hashlib.sha256(
-                        json.dumps(
-                            {
-                                "attempt_id": preparation_attempt_id,
-                                "worktree_path": worktree_path,
-                                "base_commit": base_commit,
-                                "head_commit": prepared_head_commit,
-                            },
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                    ).hexdigest(),
-                )
-                preparation_receipt_result.setdefault(
-                    "head_commit_sha",
-                    prepared_head_commit,
-                )
-                state = _record_project_repo_git_preparation_receipt(
-                    repo,
-                    attempt_id=preparation_attempt_id,
-                    receipt=preparation_receipt_result,
-                    # The preparation receipt describes the physical checkout.
-                    # A pinned provenance root can intentionally differ from
-                    # evander.baseCommit after dependency composition.
-                    base_commit_sha=base_commit,
-                    worktree_path=worktree_path,
-                )
-            dependency_composition_manifest = _build_dependency_composition_manifest(
-                context,
-                task_id=task_id,
-                managed_repo_id=managed_repo_id,
-                directory_path=(
-                    _optional_text(
-                        getattr(
-                            getattr(state.projects.get(project_id), "git", None),
-                            "directory_path",
-                            None,
-                        )
-                    )
-                    or "root"
+                    else {}
                 ),
-                base_branch=effective_base_branch or "HEAD",
-                dependency_git_sources=composition_manifest_git_sources,
-                composition_result=composition_result,
+                preparation_attempt_id=(
+                    self.preparation_attempt_id if self.use_preparation_receipt else None
+                ),
+                worktree_identity_commit=self.candidate_identity_commit,
+                preparation_generation=self.preparation_generation,
+                prior_base_commit=self.prior_base_commit,
+                pinned_base_commit=self.pinned_base_commit,
+                pinned_base_tree=self.pinned_base_tree,
+                dependency_git_sources=self.composition_git_sources,
+                # After adoption has committed, validate the retained task
+                # checkout normally so later agent work is never reset to
+                # the recovery candidate. Keep the recovery on the Team
+                # context below, where it remains part of the provenance.
+                dependency_composition_mode=(
+                    "automatic"
+                    if self.recovery_already_committed
+                    else self.dependency_composition_mode
+                ),
+                dependency_composition_recovery_id=(
+                    None
+                    if self.recovery_already_committed
+                    else self.dependency_composition_recovery_id
+                ),
+                resolved_dependency_branch=(
+                    None if self.recovery_already_committed else self.resolved_dependency_branch
+                ),
+                resolved_dependency_commit_sha=(
+                    None if self.recovery_already_committed else self.resolved_dependency_commit_sha
+                ),
+                dependency_merge_author_identity=self.task_author,
+                task_author_identity=self.task_author,
+                composition_result=self.composition_result,
+                preparation_receipt_result=self.preparation_receipt_result,
             )
-            context_id = _project_repo_git_work_context_id(
-                agent_id=agent_id,
-                task_id=task_id,
-                dispatch_id=dispatch_id,
+        except DependencyGitPreparationError as exc:
+            if exc.conflict is not None:
+                project = self.batch.state.projects.get(self.batch.project_id)
+                project_git = getattr(project, "git", None)
+                exc.conflict.update(
+                    {
+                        "target_task_id": self.task_id,
+                        "project_id": self.batch.project_id,
+                        "managed_repo_id": self.managed_repo_id,
+                        "base_branch": self.effective_base_branch or "HEAD",
+                        "directory_path": (
+                            _optional_text(getattr(project_git, "directory_path", None)) or "root"
+                        ),
+                    }
+                )
+            raise
+
+    def _record_receipt(self) -> None:
+        composed_head_commit = _optional_text(self.composition_result.get("composed_commit_sha"))
+        task_base_commit_pin = _optional_text(self.task.get("git_base_commit_sha"))
+        self.recorded_work_context_base_commit = self.base_commit
+        if self.continuation_sources and self.pinned_base_commit is not None:
+            self.recorded_work_context_base_commit = self.pinned_base_commit
+        if task_base_commit_pin is not None:
+            self.recorded_work_context_base_commit = task_base_commit_pin
+        if self.resolved_dependency_commit_sha is not None:
+            # The task pin remains its required root; this context starts
+            # at the separately reviewed merge and must reuse that identity.
+            self.recorded_work_context_base_commit = self.resolved_dependency_commit_sha
+        prepared_head_commit = (
+            _optional_text(self.preparation_receipt_result.get("head_commit_sha"))
+            or composed_head_commit
+            or self.base_commit
+        )
+        if self.use_preparation_receipt:
+            self.preparation_receipt_result.setdefault(
+                "request_fingerprint",
+                "provider:"
+                + hashlib.sha256(
+                    json.dumps(
+                        {
+                            "attempt_id": self.preparation_attempt_id,
+                            "worktree_path": self.worktree_path,
+                            "base_commit": self.base_commit,
+                            "head_commit": prepared_head_commit,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            )
+            self.preparation_receipt_result.setdefault(
+                "head_commit_sha",
+                prepared_head_commit,
+            )
+            self.batch.state = _record_project_repo_git_preparation_receipt(
+                self.batch.repo,
+                attempt_id=self.preparation_attempt_id,
+                receipt=self.preparation_receipt_result,
+                # The preparation receipt describes the physical checkout.
+                # A pinned provenance root can intentionally differ from
+                # evander.baseCommit after dependency composition.
+                base_commit_sha=self.base_commit,
+                worktree_path=self.worktree_path,
             )
 
-            def _validate_prepared_dependency_provenance(
-                current_state: Any,
-            ) -> None:
-                current_correction_source = _verified_rejected_candidate_git_source(
-                    context,
+    def _build_context_provenance(self) -> None:
+        self.dependency_composition_manifest = _build_dependency_composition_manifest(
+            self.batch.context,
+            task_id=self.task_id,
+            managed_repo_id=self.managed_repo_id,
+            directory_path=(
+                _optional_text(
+                    getattr(
+                        getattr(self.batch.state.projects.get(self.batch.project_id), "git", None),
+                        "directory_path",
+                        None,
+                    )
+                )
+                or "root"
+            ),
+            base_branch=self.effective_base_branch or "HEAD",
+            dependency_git_sources=self.composition_manifest_git_sources,
+            composition_result=self.composition_result,
+        )
+        self.context_id = _project_repo_git_work_context_id(
+            agent_id=self.batch.agent_id,
+            task_id=self.task_id,
+            dispatch_id=self.batch.dispatch_id,
+        )
+
+    def _validate_prepared_dependency_provenance(self, current_state: Any) -> None:
+        current_correction_source = _verified_rejected_candidate_git_source(
+            self.batch.context,
+            state=current_state,
+            task_id=self.task_id,
+            managed_repo_id=self.managed_repo_id,
+        )
+        current_continuation_sources = _verified_rejected_deliverable_continuation_git_sources(
+            self.batch.context,
+            state=current_state,
+            task_id=self.task_id,
+            managed_repo_id=self.managed_repo_id,
+        )
+        current_dependency_recovery = recovery_for_task(
+            current_state,
+            recovery_task_id=self.task_id,
+        )
+        if current_dependency_recovery is not None:
+            current_dependency_git_sources = [
+                source.model_dump(mode="json")
+                for source in current_dependency_recovery.dependency_git_sources
+            ]
+        elif current_continuation_sources:
+            current_dependency_git_sources = _merge_dependency_git_source_rows(
+                [
+                    _rejected_deliverable_continuation_dependency_source(
+                        task_id=self.task_id, source=source
+                    )
+                    for source in current_continuation_sources
+                ],
+                _project_repo_task_dependency_git_sources(
+                    self.batch.context,
                     state=current_state,
-                    task_id=task_id,
-                    managed_repo_id=managed_repo_id,
-                )
-                current_continuation_sources = (
-                    _verified_rejected_deliverable_continuation_git_sources(
-                        context,
-                        state=current_state,
-                        task_id=task_id,
-                        managed_repo_id=managed_repo_id,
-                    )
-                )
-                current_dependency_recovery = recovery_for_task(
-                    current_state,
-                    recovery_task_id=task_id,
-                )
-                current_dependency_git_sources = (
-                    [
-                        source.model_dump(mode="json")
-                        for source in current_dependency_recovery.dependency_git_sources
-                    ]
-                    if current_dependency_recovery is not None
-                    else _merge_dependency_git_source_rows(
-                        [
-                            _rejected_deliverable_continuation_dependency_source(
-                                task_id=task_id,
-                                source=source,
-                            )
-                            for source in current_continuation_sources
-                        ],
-                        _project_repo_task_dependency_git_sources(
-                            context,
-                            state=current_state,
-                            task_id=task_id,
-                            managed_repo_id=managed_repo_id,
-                        ),
-                    )
-                    if current_continuation_sources
-                    else _merge_dependency_git_source_rows(
-                        [
-                            source.model_dump(mode="json")
-                            for source in current_correction_source.dependency_git_sources
-                        ],
-                        _project_repo_task_dependency_git_sources(
-                            context,
-                            state=current_state,
-                            task_id=task_id,
-                            managed_repo_id=managed_repo_id,
-                        ),
-                    )
-                    if current_correction_source is not None
-                    else _project_repo_task_dependency_git_sources(
-                        context,
-                        state=current_state,
-                        task_id=task_id,
-                        managed_repo_id=managed_repo_id,
-                    )
-                )
-                if current_correction_source != correction_source:
-                    raise DependencyGitPreparationError(
-                        task_id=task_id,
-                        message=(
-                            f"task {task_id} rejected-candidate Git source changed "
-                            "during worktree preparation; no lease was granted"
-                        ),
-                    )
-                if current_continuation_sources != continuation_sources:
-                    raise DependencyGitPreparationError(
-                        task_id=task_id,
-                        message=(
-                            f"task {task_id} rejected-deliverable continuation source "
-                            "changed during worktree preparation; no lease was granted"
-                        ),
-                    )
-                if current_dependency_recovery != dependency_recovery:
-                    raise DependencyGitPreparationError(
-                        task_id=task_id,
-                        message=(
-                            f"task {task_id} dependency recovery changed during "
-                            "worktree preparation; no lease was granted"
-                        ),
-                    )
-                if current_dependency_git_sources != dependency_git_sources:
-                    raise DependencyGitPreparationError(
-                        task_id=task_id,
-                        message=(
-                            f"task {task_id} dependency Git state changed during "
-                            "worktree preparation; no lease was granted"
-                        ),
-                    )
-                current_preparation_generation = _project_repo_task_preparation_generation(
-                    current_state,
-                    task_id=task_id,
-                    effective_base_branch=effective_base_branch,
-                )
-                if current_preparation_generation != preparation_generation:
-                    raise DependencyGitPreparationError(
-                        task_id=task_id,
-                        message=(
-                            f"task {task_id} preparation generation changed during "
-                            f"worktree preparation from {preparation_generation} to "
-                            f"{current_preparation_generation}; no lease was granted"
-                        ),
-                    )
+                    task_id=self.task_id,
+                    managed_repo_id=self.managed_repo_id,
+                ),
+            )
+        elif current_correction_source is not None:
+            current_dependency_git_sources = _merge_dependency_git_source_rows(
+                [
+                    source.model_dump(mode="json")
+                    for source in current_correction_source.dependency_git_sources
+                ],
+                _project_repo_task_dependency_git_sources(
+                    self.batch.context,
+                    state=current_state,
+                    task_id=self.task_id,
+                    managed_repo_id=self.managed_repo_id,
+                ),
+            )
+        else:
+            current_dependency_git_sources = _project_repo_task_dependency_git_sources(
+                self.batch.context,
+                state=current_state,
+                task_id=self.task_id,
+                managed_repo_id=self.managed_repo_id,
+            )
+        if current_correction_source != self.correction_source:
+            raise DependencyGitPreparationError(
+                task_id=self.task_id,
+                message=(
+                    f"task {self.task_id} rejected-candidate Git source changed "
+                    "during worktree preparation; no lease was granted"
+                ),
+            )
+        if current_continuation_sources != self.continuation_sources:
+            raise DependencyGitPreparationError(
+                task_id=self.task_id,
+                message=(
+                    f"task {self.task_id} rejected-deliverable continuation source "
+                    "changed during worktree preparation; no lease was granted"
+                ),
+            )
+        if current_dependency_recovery != self.dependency_recovery:
+            raise DependencyGitPreparationError(
+                task_id=self.task_id,
+                message=(
+                    f"task {self.task_id} dependency recovery changed during "
+                    "worktree preparation; no lease was granted"
+                ),
+            )
+        if current_dependency_git_sources != self.dependency_git_sources:
+            raise DependencyGitPreparationError(
+                task_id=self.task_id,
+                message=(
+                    f"task {self.task_id} dependency Git state changed during "
+                    "worktree preparation; no lease was granted"
+                ),
+            )
+        current_preparation_generation = _project_repo_task_preparation_generation(
+            current_state,
+            task_id=self.task_id,
+            effective_base_branch=self.effective_base_branch,
+        )
+        if current_preparation_generation != self.preparation_generation:
+            raise DependencyGitPreparationError(
+                task_id=self.task_id,
+                message=(
+                    f"task {self.task_id} preparation generation changed during "
+                    f"worktree preparation from {self.preparation_generation} to "
+                    f"{current_preparation_generation}; no lease was granted"
+                ),
+            )
 
-            last_conflict: TeamStateConflictError | None = None
-            for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
-                state_commit_attempt_count += 1
-                state = repo.read()
-                runtime = state.agent_runtimes.get(agent_id)
-                if runtime is None or runtime.active_dispatch_id != dispatch_id:
-                    raise RuntimeError(
-                        f"dispatch {dispatch_id} no longer owns the wake lease for agent {agent_id}"
-                    )
-                _validate_prepared_dependency_provenance(state)
-                existing = state.git_work_contexts.get(context_id)
-                if existing is not None:
-                    _validate_project_repo_git_work_context(
-                        existing,
-                        agent_id=agent_id,
-                        task_id=task_id,
-                        dispatch_id=dispatch_id,
-                        agent_branch=agent_branch,
-                        base_branch=effective_base_branch,
-                        base_commit=recorded_work_context_base_commit,
-                        worktree_path=worktree_path,
-                        dependency_git_sources=dependency_git_sources,
-                        dependency_composition_recovery_id=(dependency_composition_recovery_id),
-                        manual_dependency_git_sources=manual_dependency_git_sources,
-                        dependency_composition_manifest=(dependency_composition_manifest),
-                        preparation_generation=task_git_work_context_generation(
-                            state,
-                            task_id,
-                        ),
-                    )
-                    break
-                try:
-                    state, context_id = admin.create_git_work_context_with_id(
-                        context_id=context_id,
-                        agent_id=agent_id,
-                        task_id=task_id,
-                        agent_branch=agent_branch,
-                        base_branch=effective_base_branch,
-                        base_commit=recorded_work_context_base_commit,
-                        dispatch_id=dispatch_id,
-                        worktree_path=worktree_path,
-                        expected_preparation_generation=preparation_generation,
+    def _commit_context(self) -> None:
+        last_conflict: TeamStateConflictError | None = None
+        for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
+            self.batch.state_commit_attempt_count += 1
+            self.batch.state = self.batch.repo.read()
+            runtime = self.batch.state.agent_runtimes.get(self.batch.agent_id)
+            if runtime is None or runtime.active_dispatch_id != self.batch.dispatch_id:
+                raise RuntimeError(
+                    f"dispatch {self.batch.dispatch_id} no longer owns the wake lease for agent {self.batch.agent_id}"
+                )
+            self._validate_prepared_dependency_provenance(self.batch.state)
+            existing = self.batch.state.git_work_contexts.get(self.context_id)
+            if existing is not None:
+                _validate_project_repo_git_work_context(
+                    existing,
+                    agent_id=self.batch.agent_id,
+                    task_id=self.task_id,
+                    dispatch_id=self.batch.dispatch_id,
+                    agent_branch=self.agent_branch,
+                    base_branch=self.effective_base_branch,
+                    base_commit=self.recorded_work_context_base_commit,
+                    worktree_path=self.worktree_path,
+                    dependency_git_sources=self.dependency_git_sources,
+                    dependency_composition_recovery_id=(self.dependency_composition_recovery_id),
+                    manual_dependency_git_sources=self.manual_dependency_git_sources,
+                    dependency_composition_manifest=(self.dependency_composition_manifest),
+                    preparation_generation=task_git_work_context_generation(
+                        self.batch.state,
+                        self.task_id,
+                    ),
+                )
+                break
+            try:
+                self.batch.state, self.context_id = (
+                    self.batch.admin.create_git_work_context_with_id(
+                        context_id=self.context_id,
+                        agent_id=self.batch.agent_id,
+                        task_id=self.task_id,
+                        agent_branch=self.agent_branch,
+                        base_branch=self.effective_base_branch,
+                        base_commit=self.recorded_work_context_base_commit,
+                        dispatch_id=self.batch.dispatch_id,
+                        worktree_path=self.worktree_path,
+                        expected_preparation_generation=self.preparation_generation,
                         preparation_attempt_id=(
-                            preparation_attempt_id if use_preparation_receipt else None
+                            self.preparation_attempt_id if self.use_preparation_receipt else None
                         ),
-                        dependency_git_sources=dependency_git_sources,
-                        dependency_composition_recovery_id=(dependency_composition_recovery_id),
-                        manual_dependency_git_sources=manual_dependency_git_sources,
-                        dependency_composition_manifest=(dependency_composition_manifest),
-                        resource_provenance_validator=(_validate_prepared_dependency_provenance),
+                        dependency_git_sources=self.dependency_git_sources,
+                        dependency_composition_recovery_id=(
+                            self.dependency_composition_recovery_id
+                        ),
+                        manual_dependency_git_sources=self.manual_dependency_git_sources,
+                        dependency_composition_manifest=(self.dependency_composition_manifest),
+                        resource_provenance_validator=(
+                            self._validate_prepared_dependency_provenance
+                        ),
                         expected_revision=None,
                     )
-                    break
-                except TeamStateConflictError as exc:
-                    last_conflict = exc
-                    state_conflict_retry_count += 1
-            else:
-                assert last_conflict is not None
-                raise last_conflict
-            from .services.domain.git_recovery import mark_preparation_resumed
-            if any(row.task_id == task_id and row.state in {"preparing", "awaiting_review"} for row in state.git_recovery_incidents.values()):
-                def _resumed(current):
-                    _validate_prepared_dependency_provenance(current)
-                    mark_preparation_resumed(current, task_id, context_id=context_id)
-                    return current
-                state = repo.update(_resumed)
-            context_model = state.git_work_contexts[context_id]
-            rows.append(_git_work_context_prompt_payload(context_model))
-    return (
-        state,
-        rows,
-        {
-            "state_commit_attempt_count": state_commit_attempt_count,
-            "state_conflict_retry_count": state_conflict_retry_count,
-        },
-    )
+                )
+                break
+            except TeamStateConflictError as exc:
+                last_conflict = exc
+                self.batch.state_conflict_retry_count += 1
+        else:
+            assert last_conflict is not None
+            raise last_conflict
+
+    def _finish_context(self) -> None:
+        from .services.domain.git_recovery import mark_preparation_resumed
+
+        if any(
+            row.task_id == self.task_id and row.state in {"preparing", "awaiting_review"}
+            for row in self.batch.state.git_recovery_incidents.values()
+        ):
+
+            def _resumed(current):
+                self._validate_prepared_dependency_provenance(current)
+                mark_preparation_resumed(current, self.task_id, context_id=self.context_id)
+                return current
+
+            self.batch.state = self.batch.repo.update(_resumed)
+        context_model = self.batch.state.git_work_contexts[self.context_id]
+        self.batch.rows.append(_git_work_context_prompt_payload(context_model))
 
 
 def _project_repo_git_work_context_id(

@@ -575,13 +575,24 @@ def test_expired_notification_lease_is_recoverable(tmp_path) -> None:
     )
     now = datetime.now(UTC)
 
+    assert store.has_ready_notifications(now=now) is True
     first = store.lease_notifications(now=now, lease_seconds=1)
     assert len(first) == 1
+    assert store.has_ready_notifications(now=now + timedelta(milliseconds=500)) is False
     assert store.lease_notifications(now=now + timedelta(milliseconds=500)) == []
+    assert store.has_ready_notifications(now=now + timedelta(seconds=1)) is True
     recovered = store.lease_notifications(now=now + timedelta(seconds=1))
 
     assert len(recovered) == 1
     assert recovered[0].attempt_count == 2
+    retry_at = now + timedelta(minutes=5)
+    store.retry_notification(recovered[0], next_attempt_at=retry_at, error="temporary failure")
+    assert store.has_ready_notifications(now=retry_at - timedelta(seconds=1)) is False
+    assert store.has_ready_notifications(now=retry_at) is True
+    retried = store.lease_notifications(now=retry_at)
+    assert len(retried) == 1
+    store.complete_notification(retried[0], completed_at=retry_at)
+    assert store.has_ready_notifications(now=retry_at + timedelta(minutes=5)) is False
 
 
 def test_admin_worker_status_uses_the_teams_worker_runtime_directory(tmp_path) -> None:

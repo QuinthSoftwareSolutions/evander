@@ -1172,7 +1172,7 @@ def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None
     config = TeamsIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.lock_path) == "/tmp/evander-runtime/teams-ingest.lock"
     assert config.directories == []
-    assert config.max_concurrent_target_polls == 1
+    assert config.max_concurrent_target_polls == 4
     assert config.publish_trigger_events_directly is True
     assert config.target_transient_backoff_initial_seconds == 5.0
     assert config.target_transient_backoff_max_seconds == 30.0

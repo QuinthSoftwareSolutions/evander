@@ -1,5 +1,9 @@
 # Operations
 
+For website design changes, use the optional [WordPress Add-on](../packages/wordpress-addon/docs/operations.md).
+Its setup verifies recovery before enabling writes, and its directory-scoped workflow
+resumes publication, live checks and conditional restore after a worker restart.
+
 Use this reference for setup, ongoing administration, and recovery. For a first deployment, begin
 with [host packages](#host-packages), the [bootstrap flow](#bootstrap-flow), and
 [systemd services](#systemd-services). For an existing deployment, start with
@@ -858,6 +862,15 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
   changes**, and leaving the workflow view or switching directories prompts for confirmation while
   any workflow changes remain unsaved.
+- To run an event workflow manually, select its `trigger:event` node and click
+  **Trigger manually** in the inspector. Save or discard any workflow changes first,
+  and enable and save the trigger if it is disabled. Enter a JSON object containing
+  the event payload; the dialog displays the saved event type and supplies event
+  metadata automatically. A configured correlation key is fixed; otherwise one may
+  be entered. **Trigger node** queues only the selected node and its downstream flow.
+  **Inspect run** opens the queued run when you have run-read access. This action
+  requires `workflow_runs.control` in the workflow's directory. Payload schemas and
+  generated forms are not available yet.
 - Admin Web and workflow API pack mutations write internal change history under
   `runtime/workflow-pack-history/`. `changes.jsonl` is the append-only ledger, and
   `snapshots/<change-id>/` stores before/after copies of the touched pack, layout, and trigger
@@ -3733,8 +3746,10 @@ For persistent read-only assistants, prefer
 effects. By default, the batch effect checks independent managed mirrors concurrently without
 an explicit upstream probe or refresh. It requires a cached branch commit before creating a missing
 worker checkout and otherwise leaves the checkout at its last trusted prepared commit, while still
-enforcing source identity, a clean working tree, detached HEAD, read-only configuration, and session
-access.
+enforcing source identity, unchanged tracked and staged files, detached HEAD, read-only
+configuration, and session access. Unrelated untracked files are preserved and do not block
+preparation. Checkout updates reject conflicting untracked paths, including ignored files,
+without overwriting local work.
 The worker keeps the trusted SHA outside the writable agent home and reports a structured conflict
 when a clean checkout has moved. On that mismatch path only, the control plane uses its local
 managed mirror to require `trusted commit <= checkout HEAD <= cached configured-branch tip`, where

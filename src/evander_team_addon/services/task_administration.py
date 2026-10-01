@@ -3,6 +3,7 @@ from __future__ import annotations
 from .domain.git_recovery import inherited_constraints
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -13,6 +14,8 @@ from ..repository import (
 )
 from ..models import (
     AgentTask,
+    Project,
+    ProjectGitIdentity,
     TeamBlocker,
     TeamBlockerEventType,
     TeamBlockerSourceKind,
@@ -329,457 +332,52 @@ class TeamTaskAdministration:
         created = False
         blocker_result: dict[str, Any] = {"events": []}
 
+        upsert_request = _TaskUpsertRequest(
+            task_id=normalized_task_id,
+            case_id=normalized_case_id,
+            title=normalized_title,
+            description=normalized_description,
+            owner_agent_id=normalized_owner_agent_id,
+            project_id=normalized_project_id,
+            parent_task_id=normalized_parent_task_id,
+            originating_task_id=normalized_originating_task_id,
+            authored_by=normalized_authored_by,
+            git_base_branch=normalized_git_base_branch,
+            git_base_commit_sha=normalized_git_base_commit_sha,
+            supplied_git_base_commit_sha=git_base_commit_sha,
+            dependency_task_ids=normalized_dependency_task_ids,
+            task_kind=normalized_task_kind,
+            outcome_contract=normalized_outcome_contract,
+            deliverable_contract=normalized_deliverable_contract,
+            integration_boundary=integration_boundary,
+            priority=priority,
+            initial_state=state,
+            created_by_agent_id=created_by_agent_id,
+            created_by_actor=created_by_actor,
+            work_item_attributions=work_item_attributions,
+            git_constraints=git_constraints,
+            edit_parent=set_parent_task_id or parent_task_id is not None,
+            edit_case=set_case_id or case_id is not None,
+            edit_authored_by=set_authored_by or authored_by is not None,
+            edit_git_base_branch=set_git_base_branch or git_base_branch is not None,
+            edit_outcome_contract=set_outcome_contract or outcome_contract is not None,
+            edit_deliverable_contract=(
+                set_deliverable_contract or deliverable_contract is not None
+            ),
+        )
+
         def _mutate(state_model: TeamState) -> TeamState:
             nonlocal created, effective_task_id
-            now = utc_now()
-            effective_outcome_contract = (
-                snapshot_task_outcome_contract(
-                    state_model,
-                    project_id=normalized_project_id,
-                    contract=normalized_outcome_contract,
-                )
-                if normalized_outcome_contract is not None
-                else None
+            application = _TaskUpsertApplication(
+                service=self,
+                state=state_model,
+                request=upsert_request,
+                blocker_result=blocker_result,
             )
-            if normalized_task_id is not None and normalized_task_id in state_model.tasks:
-                task = state_model.tasks[normalized_task_id]
-                if git_constraints is not None:
-                    from ..model_git_recovery import GitBaselineConstraints
-                    if GitBaselineConstraints.model_validate(git_constraints) != task.git_constraints:
-                        raise ValueError("Git baseline constraints are immutable; create reviewed successor work")
-                if task.project_id != normalized_project_id:
-                    raise ValueError(
-                        f"task {task.id} belongs to project {task.project_id}, "
-                        f"not {normalized_project_id}"
-                    )
-                if (
-                    normalized_originating_task_id is not None
-                    and normalized_originating_task_id != task.originating_task_id
-                ):
-                    raise ValueError(
-                        f"task {task.id} originating_task_id is immutable after creation"
-                    )
-                if (
-                    normalized_git_base_commit_sha is not None
-                    and normalized_git_base_commit_sha != task.git_base_commit_sha
-                ):
-                    raise ValueError(
-                        f"task {task.id} git_base_commit_sha is immutable after creation"
-                    )
-                proposed_task_kind = normalized_task_kind or task.task_kind
-                if proposed_task_kind != task.task_kind and TeamTaskKind.COORDINATION in {
-                    proposed_task_kind,
-                    task.task_kind,
-                }:
-                    raise ValueError(
-                        f"task {task.id} cannot change to or from coordination after creation; "
-                        "create a fresh task with the intended task_kind"
-                    )
-                proposed_parent_task_id = (
-                    normalized_parent_task_id
-                    if set_parent_task_id or parent_task_id is not None
-                    else task.parent_task_id
-                )
-                proposed_dependency_task_ids = (
-                    normalized_dependency_task_ids
-                    if normalized_dependency_task_ids is not None
-                    else list(task.dependency_task_ids)
-                )
-                deliverable_policy_request = (
-                    integration_boundary is not None
-                    or set_deliverable_contract
-                    or deliverable_contract is not None
-                )
-                proposed_integration_boundary = (
-                    integration_boundary
-                    if integration_boundary is not None
-                    else task.integration_boundary
-                )
-                if integration_boundary is False and not (
-                    set_deliverable_contract or deliverable_contract is not None
-                ):
-                    proposed_deliverable_contract = None
-                else:
-                    proposed_deliverable_contract = (
-                        normalized_deliverable_contract
-                        if set_deliverable_contract or deliverable_contract is not None
-                        else task.deliverable_contract
-                    )
-                if proposed_task_kind == TeamTaskKind.COORDINATION:
-                    if proposed_integration_boundary:
-                        raise ValueError("coordination task cannot be an integration boundary")
-                    if proposed_deliverable_contract is not None:
-                        raise ValueError("coordination task cannot define deliverable_contract")
-                    if normalized_outcome_contract is not None:
-                        raise ValueError("coordination task cannot define outcome_contract")
-                    if normalized_git_base_commit_sha is not None:
-                        raise ValueError("coordination task cannot pin a Git base commit")
-                coordination_handoff_error = _task_coordination_handoff_error(
-                    state_model,
-                    integration_boundary=proposed_integration_boundary,
-                    parent_task_id=proposed_parent_task_id,
-                    originating_task_id=task.originating_task_id,
-                    deliverable_contract=proposed_deliverable_contract,
-                )
-                if coordination_handoff_error is not None:
-                    raise ValueError(coordination_handoff_error)
-                deliverable_policy_edit = deliverable_policy_request and (
-                    proposed_integration_boundary != task.integration_boundary
-                    or proposed_deliverable_contract != task.deliverable_contract
-                )
-                transition_error = _task_integration_boundary_transition_error(
-                    state_model,
-                    task=task,
-                    proposed_integration_boundary=proposed_integration_boundary,
-                )
-                if transition_error is not None:
-                    raise ValueError(transition_error)
-                if task.mutation_policy is not None:
-                    locked_fields = set(task.mutation_policy.locked_fields)
-                    changed_locked_fields: list[str] = []
-                    if (
-                        "parent_task_id" in locked_fields
-                        and proposed_parent_task_id != task.parent_task_id
-                    ):
-                        changed_locked_fields.append("parent_task_id")
-                    if (
-                        "dependency_task_ids" in locked_fields
-                        and proposed_dependency_task_ids != task.dependency_task_ids
-                    ):
-                        changed_locked_fields.append("dependency_task_ids")
-                    if (
-                        "task_kind" in locked_fields
-                        and normalized_task_kind is not None
-                        and normalized_task_kind != task.task_kind
-                    ):
-                        changed_locked_fields.append("task_kind")
-                    if deliverable_policy_edit:
-                        if (
-                            "integration_boundary" in locked_fields
-                            and proposed_integration_boundary != task.integration_boundary
-                        ):
-                            changed_locked_fields.append("integration_boundary")
-                        if (
-                            "deliverable_contract" in locked_fields
-                            and proposed_deliverable_contract != task.deliverable_contract
-                        ):
-                            changed_locked_fields.append("deliverable_contract")
-                    if (
-                        "git_base_branch" in locked_fields
-                        and (set_git_base_branch or git_base_branch is not None)
-                        and normalized_git_base_branch != task.git_base_branch
-                    ):
-                        changed_locked_fields.append("git_base_branch")
-                    if changed_locked_fields:
-                        raise ValueError(
-                            f"task {task.id} mutation policy "
-                            f"{task.mutation_policy.policy_id} locks: "
-                            + ", ".join(changed_locked_fields)
-                        )
-                graph_error = _task_graph_edit_error(
-                    state_model,
-                    task_id=task.id,
-                    project_id=task.project_id,
-                    parent_task_id=proposed_parent_task_id,
-                    dependency_task_ids=proposed_dependency_task_ids,
-                )
-                if graph_error is not None:
-                    raise ValueError(graph_error)
-                if deliverable_policy_edit:
-                    if task.state not in _NON_TERMINAL_TASK_STATES:
-                        raise ValueError(
-                            f"terminal task {task.id} cannot change its "
-                            "integration deliverable contract"
-                        )
-                    if task.deliverable_ids:
-                        raise ValueError(
-                            f"task {task.id} cannot change its integration "
-                            "deliverable contract after a deliverable was submitted"
-                        )
-                    contract_error = _task_deliverable_contract_scope_error(
-                        state_model,
-                        task_id=task.id,
-                        project_id=task.project_id,
-                        dependency_task_ids=proposed_dependency_task_ids,
-                        integration_boundary=proposed_integration_boundary,
-                        deliverable_contract=proposed_deliverable_contract,
-                    )
-                    if contract_error is not None:
-                        raise ValueError(contract_error)
-                effective_task_id = task.id
-                created = False
-                task.priority = priority
-                task.title = normalized_title
-                task.description = normalized_description
-                case_link_changed = False
-                if set_parent_task_id or parent_task_id is not None:
-                    task.parent_task_id = normalized_parent_task_id
-                if set_case_id or case_id is not None:
-                    old_case_id = task.case_id
-                    task.case_id = normalized_case_id
-                    case_link_changed = old_case_id != task.case_id
-                    _sync_case_task_link(
-                        state_model,
-                        task=task,
-                        old_case_id=old_case_id,
-                        new_case_id=normalized_case_id,
-                        now=now,
-                    )
-                if normalized_dependency_task_ids is not None:
-                    task.dependency_task_ids = normalized_dependency_task_ids
-                if normalized_task_kind is not None:
-                    task.task_kind = normalized_task_kind
-                if set_outcome_contract or outcome_contract is not None:
-                    task.outcome_contract = effective_outcome_contract
-                if deliverable_policy_edit:
-                    task.integration_boundary = proposed_integration_boundary
-                    task.deliverable_contract = proposed_deliverable_contract
-                if set_authored_by or authored_by is not None:
-                    task.authored_by = normalized_authored_by
-                if set_git_base_branch or git_base_branch is not None:
-                    _set_task_git_base_branch(
-                        state_model,
-                        task=task,
-                        git_base_branch=normalized_git_base_branch,
-                        git_default_branch_resolver=(self._resolve_managed_git_default_branch),
-                    )
-                elif (
-                    case_link_changed
-                    and _correction_case_git_base_branch(
-                        state_model,
-                        case_id=task.case_id,
-                    )
-                    is not None
-                ):
-                    _set_task_git_base_branch(
-                        state_model,
-                        task=task,
-                        git_base_branch=None,
-                        git_default_branch_resolver=(self._resolve_managed_git_default_branch),
-                    )
-                task.updated_at = now
-                if task_state_can_wake_owner(task.state):
-                    _mark_agent_work_due(
-                        state_model,
-                        agent_id=task.owner_agent_id,
-                        now=now,
-                    )
-                else:
-                    _maybe_mark_idle_context_rotation_due(
-                        state_model,
-                        agent_id=task.owner_agent_id,
-                        now=now,
-                        result=blocker_result,
-                    )
-                return state_model
-            effective_task_id = normalized_task_id or _generated_id(
-                prefix="task",
-                labels=[normalized_project_id, normalized_title],
-                existing_ids=state_model.tasks,
-            )
-            created = True
-            _require_absent(state_model.tasks, effective_task_id, "task")
-            if normalized_originating_task_id is not None:
-                origin = _require_present(
-                    state_model.tasks,
-                    normalized_originating_task_id,
-                    "originating task",
-                )
-                origin_project = _require_present(
-                    state_model.projects,
-                    origin.project_id,
-                    "originating task project",
-                )
-                project = _require_present(
-                    state_model.projects,
-                    normalized_project_id,
-                    "project",
-                )
-                if (
-                    origin.project_id != normalized_project_id
-                    or origin_project.team_id != project.team_id
-                ):
-                    raise ValueError(
-                        f"originating task {origin.id} must belong to project "
-                        f"{normalized_project_id} and team {project.team_id}"
-                    )
-            graph_error = _task_graph_edit_error(
-                state_model,
-                task_id=effective_task_id,
-                project_id=normalized_project_id,
-                parent_task_id=normalized_parent_task_id,
-                dependency_task_ids=normalized_dependency_task_ids or [],
-            )
-            if graph_error is not None:
-                raise ValueError(graph_error)
-            effective_integration_boundary = bool(integration_boundary)
-            coordination_handoff_error = _task_coordination_handoff_error(
-                state_model,
-                integration_boundary=effective_integration_boundary,
-                parent_task_id=normalized_parent_task_id,
-                originating_task_id=normalized_originating_task_id,
-                deliverable_contract=normalized_deliverable_contract,
-            )
-            if coordination_handoff_error is not None:
-                raise ValueError(coordination_handoff_error)
-            contract_error = _task_deliverable_contract_scope_error(
-                state_model,
-                task_id=effective_task_id,
-                project_id=normalized_project_id,
-                dependency_task_ids=normalized_dependency_task_ids or [],
-                integration_boundary=effective_integration_boundary,
-                deliverable_contract=normalized_deliverable_contract,
-            )
-            if contract_error is not None:
-                raise ValueError(contract_error)
-            inherited_case_id = inherited_task_case_id(
-                state_model,
-                project_id=normalized_project_id,
-                case_id=normalized_case_id,
-                originating_task_id=normalized_originating_task_id,
-                parent_task_id=normalized_parent_task_id,
-            )
-            resolved_git_base_branch = _resolve_new_task_git_base_branch(
-                state_model,
-                project_id=normalized_project_id,
-                explicit_git_base_branch=normalized_git_base_branch,
-                parent_task_id=normalized_parent_task_id,
-                case_id=inherited_case_id,
-                git_default_branch_resolver=(self._resolve_managed_git_default_branch),
-            )
-            inherited_git_base_commit = inherited_task_git_base_commit(
-                state_model,
-                parent_task_id=normalized_parent_task_id,
-                git_base_branch=resolved_git_base_branch,
-            )
-            effective_git_base_commit_sha = (
-                normalized_git_base_commit_sha or inherited_git_base_commit
-            )
-            project = _require_present(
-                state_model.projects,
-                normalized_project_id,
-                "project",
-            )
-            if project.git is not None and (
-                normalized_git_base_commit_sha is not None
-                or (effective_integration_boundary and inherited_git_base_commit is None)
-            ):
-                if resolved_git_base_branch is None:
-                    raise ValueError(
-                        f"integration boundary task {effective_task_id} has no concrete "
-                        "Git base branch to pin"
-                    )
-                try:
-                    resolved_branch_commit = _normalized_task_git_base_commit(
-                        self._resolve_managed_git_branch_commit(
-                            managed_repo_id=project.git.managed_repo_id,
-                            directory_path=project.git.directory_path,
-                            branch=resolved_git_base_branch,
-                            required_ancestor_shas=(
-                                [effective_git_base_commit_sha]
-                                if effective_git_base_commit_sha is not None
-                                else None
-                            ),
-                        )
-                    )
-                except Exception as exc:
-                    raise ValueError(
-                        f"could not validate supplied Git base commit "
-                        f"{effective_git_base_commit_sha} against managed branch "
-                        f"{resolved_git_base_branch} for task {effective_task_id}: {exc}"
-                        if effective_git_base_commit_sha is not None
-                        else f"could not resolve immutable Git base commit for integration "
-                        f"boundary task {effective_task_id}: {exc}"
-                    ) from exc
-                if resolved_branch_commit is None:
-                    raise ValueError(
-                        f"managed branch {resolved_git_base_branch} has no commit against "
-                        f"which to validate supplied Git base commit "
-                        f"{effective_git_base_commit_sha} for task {effective_task_id}"
-                        if effective_git_base_commit_sha is not None
-                        else f"managed branch {resolved_git_base_branch} has no commit to pin "
-                        f"for integration boundary task {effective_task_id}"
-                    )
-                effective_git_base_commit_sha = (
-                    effective_git_base_commit_sha or resolved_branch_commit
-                )
-            state_model.tasks[effective_task_id] = AgentTask(
-                id=effective_task_id,
-                owner_agent_id=normalized_owner_agent_id,
-                project_id=normalized_project_id,
-                case_id=inherited_case_id,
-                priority=priority,
-                state=state,
-                state_entered_at=now,
-                title=normalized_title,
-                description=normalized_description,
-                created_by_agent_id=created_by_agent_id,
-                created_by_actor=created_by_actor,
-                parent_task_id=normalized_parent_task_id,
-                originating_task_id=normalized_originating_task_id,
-                work_item_attributions=work_item_attributions
-                if work_item_attributions is not None
-                else inherited_work_item_attributions(
-                    state_model,
-                    project_id=normalized_project_id,
-                    originating_task_id=normalized_originating_task_id,
-                    parent_task_id=normalized_parent_task_id,
-                ),
-                authored_by=inherited_task_author(
-                    state_model,
-                    project_id=normalized_project_id,
-                    authored_by=normalized_authored_by,
-                    originating_task_id=normalized_originating_task_id,
-                    parent_task_id=normalized_parent_task_id,
-                ),
-                git_base_branch=resolved_git_base_branch,
-                git_base_commit_sha=effective_git_base_commit_sha,
-                git_constraints=inherited_constraints(state_model, parent_task_id=normalized_parent_task_id, supplied_commit=git_base_commit_sha, requested=git_constraints),
-                dependency_task_ids=normalized_dependency_task_ids or [],
-                task_kind=normalized_task_kind or TeamTaskKind.SUPPORT,
-                outcome_contract=effective_outcome_contract,
-                integration_boundary=effective_integration_boundary,
-                deliverable_contract=normalized_deliverable_contract,
-                created_at=now,
-                updated_at=now,
-            )
-            ensure_task_work_lineage(state_model, state_model.tasks[effective_task_id])
-            if state == TeamTaskState.BLOCKED:
-                project = _require_present(
-                    state_model.projects,
-                    normalized_project_id,
-                    "project",
-                )
-                open_or_get_blocker(
-                    state_model,
-                    source_kind=TeamBlockerSourceKind.TASK,
-                    source_id=effective_task_id,
-                    summary=f"Task blocked: {normalized_title}",
-                    details=normalized_description,
-                    reporter_agent_id=normalized_owner_agent_id,
-                    team_id=project.team_id,
-                    project_id=project.id,
-                    task_id=effective_task_id,
-                    result=blocker_result,
-                    now=now,
-                )
-            if inherited_case_id is not None:
-                _link_task_to_case(
-                    state_model,
-                    task_id=effective_task_id,
-                    case_id=inherited_case_id,
-                    now=now,
-                )
-            if task_state_can_wake_owner(state):
-                _mark_agent_work_due(state_model, agent_id=normalized_owner_agent_id, now=now)
-            else:
-                _maybe_mark_idle_context_rotation_due(
-                    state_model,
-                    agent_id=normalized_owner_agent_id,
-                    now=now,
-                    result=blocker_result,
-                )
-            return state_model
+            updated_state = application.apply()
+            effective_task_id = application.effective_task_id
+            created = application.created
+            return updated_state
 
         state_model = self._repository.update_with_outbox(
             _mutate,
@@ -841,352 +439,38 @@ class TeamTaskAdministration:
         )
         blocker_result: dict[str, Any] = {"events": []}
 
-        def _mutate(state_model: TeamState) -> TeamState:
-            task = _require_present(state_model.tasks, normalized_task_id, "task")
-            preparation_generation_before = task_git_work_context_generation(
-                state_model,
-                task.id,
-            )
-            now = utc_now()
-            if task.owner_agent_id is None and state in {
-                TeamTaskState.IN_PROGRESS,
-                TeamTaskState.WAITING_FOR_REVIEW,
-                TeamTaskState.FINISHED,
-                TeamTaskState.ACCEPTED,
-            }:
-                raise ValueError("role task must be assigned before execution or completion")
-            previous_state = task.state
-            crosses_blocked_boundary = (
-                state is not None
-                and state != previous_state
-                and (state == TeamTaskState.BLOCKED or previous_state == TeamTaskState.BLOCKED)
-            )
-            if crosses_blocked_boundary and (
-                normalized_repair_reason is None or normalized_repair_actor is None
-            ):
-                raise ValueError(
-                    "direct task state edits into or out of blocked are disabled; "
-                    "use the reason-required operator repair endpoint"
-                )
-            if (
-                normalized_repair_reason is not None
-                or normalized_repair_actor is not None
-                or normalized_repair_reference_ids
-            ) and not crosses_blocked_boundary:
-                raise ValueError(
-                    "operator task-state repair requires a transition into or out of blocked"
-                )
-            if set_parent_task_id or normalized_dependency_task_ids is not None:
-                graph_error = _task_graph_edit_error(
-                    state_model,
-                    task_id=task.id,
-                    project_id=task.project_id,
-                    parent_task_id=(
-                        normalized_parent_task_id if set_parent_task_id else task.parent_task_id
-                    ),
-                    dependency_task_ids=(
-                        normalized_dependency_task_ids
-                        if normalized_dependency_task_ids is not None
-                        else list(task.dependency_task_ids)
-                    ),
-                )
-                if graph_error is not None:
-                    raise ValueError(graph_error)
-            deliverable_policy_edit = (
-                integration_boundary is not None
-                or set_deliverable_contract
-                or deliverable_contract is not None
-            )
-            if deliverable_policy_edit:
-                proposed_integration_boundary = (
-                    integration_boundary
-                    if integration_boundary is not None
-                    else task.integration_boundary
-                )
-                if integration_boundary is False and not (
-                    set_deliverable_contract or deliverable_contract is not None
-                ):
-                    proposed_deliverable_contract = None
-                else:
-                    proposed_deliverable_contract = (
-                        normalized_deliverable_contract
-                        if set_deliverable_contract or deliverable_contract is not None
-                        else task.deliverable_contract
-                    )
-                deliverable_policy_edit = (
-                    proposed_integration_boundary != task.integration_boundary
-                    or proposed_deliverable_contract != task.deliverable_contract
-                )
-                transition_error = _task_integration_boundary_transition_error(
-                    state_model,
-                    task=task,
-                    proposed_integration_boundary=proposed_integration_boundary,
-                )
-                if transition_error is not None:
-                    raise ValueError(transition_error)
-            if task.mutation_policy is not None:
-                locked_fields = set(task.mutation_policy.locked_fields)
-                changed_locked_fields: list[str] = []
-                if (
-                    set_parent_task_id
-                    and "parent_task_id" in locked_fields
-                    and normalized_parent_task_id != task.parent_task_id
-                ):
-                    changed_locked_fields.append("parent_task_id")
-                if (
-                    normalized_dependency_task_ids is not None
-                    and "dependency_task_ids" in locked_fields
-                    and normalized_dependency_task_ids != task.dependency_task_ids
-                ):
-                    changed_locked_fields.append("dependency_task_ids")
-                if (
-                    set_git_base_branch
-                    and "git_base_branch" in locked_fields
-                    and normalized_git_base_branch != task.git_base_branch
-                ):
-                    changed_locked_fields.append("git_base_branch")
-                if deliverable_policy_edit:
-                    if (
-                        "integration_boundary" in locked_fields
-                        and proposed_integration_boundary != task.integration_boundary
-                    ):
-                        changed_locked_fields.append("integration_boundary")
-                    if (
-                        "deliverable_contract" in locked_fields
-                        and proposed_deliverable_contract != task.deliverable_contract
-                    ):
-                        changed_locked_fields.append("deliverable_contract")
-                if changed_locked_fields:
-                    raise ValueError(
-                        f"task {task.id} mutation policy {task.mutation_policy.policy_id} "
-                        "locks: " + ", ".join(changed_locked_fields)
-                    )
-            if deliverable_policy_edit:
-                if task.state not in _NON_TERMINAL_TASK_STATES:
-                    raise ValueError(
-                        f"terminal task {task.id} cannot change its integration "
-                        "deliverable contract"
-                    )
-                if task.deliverable_ids:
-                    raise ValueError(
-                        f"task {task.id} cannot change its integration deliverable "
-                        "contract after a deliverable was submitted"
-                    )
-                proposed_dependency_task_ids = (
-                    normalized_dependency_task_ids
-                    if normalized_dependency_task_ids is not None
-                    else list(task.dependency_task_ids)
-                )
-                contract_error = _task_deliverable_contract_scope_error(
-                    state_model,
-                    task_id=task.id,
-                    project_id=task.project_id,
-                    dependency_task_ids=proposed_dependency_task_ids,
-                    integration_boundary=proposed_integration_boundary,
-                    deliverable_contract=proposed_deliverable_contract,
-                )
-                if contract_error is not None:
-                    raise ValueError(contract_error)
-            if state == TeamTaskState.FINISHED:
-                try:
-                    require_task_can_finish(
-                        state_model,
-                        task.id,
-                        dependency_task_ids=normalized_dependency_task_ids,
-                    )
-                except TaskAssessmentBoundaryError as exc:
-                    raise ValueError(exc.message) from None
-            elif state in {
-                TeamTaskState.ACCEPTED,
-                TeamTaskState.CANCELLED,
-            }:
-                raise ValueError(
-                    f"Admin task state {state.value} requires its dedicated "
-                    "acceptance or cancellation lifecycle"
-                )
-            if priority is not None:
-                task.priority = priority
-            if state is not None:
-                _set_task_state(task, state, now=now)
-                if task.state not in _NON_TERMINAL_TASK_STATES:
-                    finalize_active_git_work_contexts_for_task(
-                        state_model,
-                        task_id=task.id,
-                        now=now,
-                    )
-            if title is not None:
-                task.title = title
-            if description is not None:
-                task.description = description
-            case_link_changed = False
-            if set_case_id or case_id is not None:
-                old_case_id = task.case_id
-                task.case_id = normalized_case_id
-                case_link_changed = old_case_id != task.case_id
-                _sync_case_task_link(
-                    state_model,
-                    task=task,
-                    old_case_id=old_case_id,
-                    new_case_id=normalized_case_id,
-                    now=now,
-                )
-            if set_parent_task_id:
-                task.parent_task_id = normalized_parent_task_id
-            if normalized_dependency_task_ids is not None:
-                task.dependency_task_ids = normalized_dependency_task_ids
-            if deliverable_policy_edit:
-                task.integration_boundary = proposed_integration_boundary
-                task.deliverable_contract = proposed_deliverable_contract
-            if set_authored_by or authored_by is not None:
-                task.authored_by = normalized_authored_by
-            if set_git_base_branch:
-                _set_task_git_base_branch(
-                    state_model,
-                    task=task,
-                    git_base_branch=normalized_git_base_branch,
-                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
-                )
-            elif (
-                case_link_changed
-                and _correction_case_git_base_branch(
-                    state_model,
-                    case_id=task.case_id,
-                )
-                is not None
-            ):
-                _set_task_git_base_branch(
-                    state_model,
-                    task=task,
-                    git_base_branch=None,
-                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
-                )
-            changed_preparation_fields = [
-                field_name
-                for field_name, requested in (
-                    ("state", state is not None),
-                    ("title", title is not None),
-                    ("description", description is not None),
-                    ("case_id", set_case_id or case_id is not None),
-                    ("parent_task_id", set_parent_task_id),
-                    ("git_base_branch", set_git_base_branch),
-                    ("dependency_task_ids", normalized_dependency_task_ids is not None),
-                    ("integration_boundary", integration_boundary is not None),
-                    (
-                        "deliverable_contract",
-                        set_deliverable_contract or deliverable_contract is not None,
-                    ),
-                )
-                if requested
-            ]
-            invalidate_task_preparation_after_edit(
-                state_model,
-                task_id=task.id,
-                preparation_generation_before=preparation_generation_before,
-                changed_fields=changed_preparation_fields,
-                sender_agent_id=None,
-                result=blocker_result,
-                now=now,
-            )
-            task.updated_at = now
-            if previous_state != TeamTaskState.BLOCKED and task.state == TeamTaskState.BLOCKED:
-                project = _require_present(state_model.projects, task.project_id, "project")
-                blocker, created = open_or_get_blocker(
-                    state_model,
-                    source_kind=TeamBlockerSourceKind.TASK,
-                    source_id=task.id,
-                    summary=f"Task blocked: {task.title}",
-                    details=normalized_repair_reason or task.description,
-                    reason_code=(
-                        "operator_repair" if normalized_repair_reason is not None else "unspecified"
-                    ),
-                    reporter_agent_id=task.owner_agent_id,
-                    reporter_actor=normalized_repair_actor,
-                    team_id=project.team_id,
-                    project_id=project.id,
-                    task_id=task.id,
-                    affected_task_ids=[task.id],
-                    result=blocker_result,
-                    now=now,
-                )
-                if not created:
-                    append_blocker_event(
-                        state_model,
-                        blocker=blocker,
-                        event_type=TeamBlockerEventType.PROGRESS,
-                        note=normalized_repair_reason or task.description,
-                        reference_ids=normalized_repair_reference_ids,
-                        metadata={
-                            "operator_actor": normalized_repair_actor,
-                            "operator_repair": True,
-                        },
-                        now=now,
-                    )
-            elif previous_state == TeamTaskState.BLOCKED and task.state != TeamTaskState.BLOCKED:
-                active_blockers = active_blockers_for_source(
-                    state_model,
-                    source_kind=TeamBlockerSourceKind.TASK,
-                    source_id=task.id,
-                )
-                if not active_blockers:
-                    active_blockers = [
-                        _legacy_operator_repair_blocker(
-                            state_model,
-                            task=task,
-                            actor=normalized_repair_actor,
-                            reason=normalized_repair_reason,
-                            now=now,
-                        )
-                    ]
-                for blocker in active_blockers:
-                    resolve_blocker(
-                        state_model,
-                        blocker=blocker,
-                        actor_agent_id=None,
-                        dispatch_id=None,
-                        note=(normalized_repair_reason or f"Task moved to {task.state.value}."),
-                        reference_ids=[
-                            task.id,
-                            *normalized_repair_reference_ids,
-                        ],
-                        metadata={
-                            "operator_actor": normalized_repair_actor,
-                            "operator_repair": normalized_repair_reason is not None,
-                        },
-                        now=now,
-                    )
-            if task_state_can_wake_owner(task.state):
-                _mark_agent_work_due(
-                    state_model,
-                    agent_id=task.owner_agent_id,
-                    now=task.updated_at,
-                )
-            else:
-                _maybe_mark_idle_context_rotation_due(
-                    state_model,
-                    agent_id=task.owner_agent_id,
-                    now=task.updated_at,
-                    result=blocker_result,
-                )
-            if previous_state != task.state and task.state in {
-                TeamTaskState.ACCEPTED,
-                TeamTaskState.CANCELLED,
-                TeamTaskState.FINISHED,
-            }:
-                queue_parent_resolution_transitions(
-                    state_model,
-                    child_task_id=task.id,
-                    sender_agent_id=task.owner_agent_id,
-                    now=now,
-                )
-            from .domain.role_task_queue import append_role_queue_wake_events
+        edit_request = _TaskEditRequest(
+            task_id=normalized_task_id,
+            priority=priority,
+            new_state=state,
+            title=title,
+            description=description,
+            case_id=normalized_case_id,
+            parent_task_id=normalized_parent_task_id,
+            authored_by=normalized_authored_by,
+            git_base_branch=normalized_git_base_branch,
+            dependency_task_ids=normalized_dependency_task_ids,
+            integration_boundary=integration_boundary,
+            deliverable_contract=normalized_deliverable_contract,
+            repair_reason=normalized_repair_reason,
+            repair_actor=normalized_repair_actor,
+            repair_reference_ids=normalized_repair_reference_ids,
+            edit_case=set_case_id or case_id is not None,
+            edit_parent=set_parent_task_id,
+            edit_authored_by=set_authored_by or authored_by is not None,
+            edit_git_base_branch=set_git_base_branch,
+            edit_deliverable_contract=(
+                set_deliverable_contract or deliverable_contract is not None
+            ),
+        )
 
-            append_role_queue_wake_events(
-                state_model,
-                result=blocker_result,
-                now=now,
-                project_id=task.project_id,
-            )
-            return state_model
+        def _mutate(state_model: TeamState) -> TeamState:
+            return _AdministrativeTaskEdit(
+                service=self,
+                state=state_model,
+                request=edit_request,
+                blocker_result=blocker_result,
+            ).apply()
 
         return self._repository.update_with_outbox(
             _mutate,
@@ -1700,3 +984,994 @@ class TeamTaskAdministration:
             expected_revision=expected_revision,
         )
         return state, recovery_result
+
+
+@dataclass(frozen=True)
+class _TaskUpsertRequest:
+    task_id: str | None
+    case_id: str | None
+    title: str
+    description: str
+    owner_agent_id: str
+    project_id: str
+    parent_task_id: str | None
+    originating_task_id: str | None
+    authored_by: ProjectGitIdentity | None
+    git_base_branch: str | None
+    git_base_commit_sha: str | None
+    supplied_git_base_commit_sha: str | None
+    dependency_task_ids: list[str] | None
+    task_kind: TeamTaskKind | None
+    outcome_contract: TaskOutcomeContract | None
+    deliverable_contract: TaskDeliverableContract | None
+    integration_boundary: bool | None
+    priority: int
+    initial_state: TeamTaskState
+    created_by_agent_id: str | None
+    created_by_actor: str | None
+    work_item_attributions: object
+    git_constraints: Mapping[str, Any] | None
+    edit_parent: bool
+    edit_case: bool
+    edit_authored_by: bool
+    edit_git_base_branch: bool
+    edit_outcome_contract: bool
+    edit_deliverable_contract: bool
+
+
+class _TaskUpsertApplication:
+    """Apply one normalized task request inside the administration transaction."""
+
+    now: datetime
+    task: AgentTask
+    effective_task_id: str
+    created: bool
+    effective_outcome_contract: TaskOutcomeContract | None
+    proposed_parent_task_id: str | None
+    proposed_dependency_task_ids: list[str]
+    proposed_integration_boundary: bool
+    proposed_deliverable_contract: TaskDeliverableContract | None
+    deliverable_policy_edit: bool
+    effective_integration_boundary: bool
+    inherited_case_id: str | None
+    resolved_git_base_branch: str | None
+    inherited_git_base_commit: str | None
+    effective_git_base_commit_sha: str | None
+    project: Project
+
+    def __init__(
+        self,
+        *,
+        service: TeamTaskAdministration,
+        state: TeamState,
+        request: _TaskUpsertRequest,
+        blocker_result: dict[str, Any],
+    ) -> None:
+        self.service = service
+        self.state = state
+        self.request = request
+        self.blocker_result = blocker_result
+
+    def apply(self) -> TeamState:
+        self.now = utc_now()
+        self.effective_outcome_contract = (
+            snapshot_task_outcome_contract(
+                self.state,
+                project_id=self.request.project_id,
+                contract=self.request.outcome_contract,
+            )
+            if self.request.outcome_contract is not None
+            else None
+        )
+        if self.request.task_id is not None and self.request.task_id in self.state.tasks:
+            self.task = self.state.tasks[self.request.task_id]
+            self._prepare_existing_update()
+            self._validate_existing_policy()
+            self._validate_existing_graph()
+            self._update_existing()
+        else:
+            self._resolve_new_id()
+            self._validate_origin()
+            self._validate_new_scope()
+            self._resolve_new_provenance()
+            self._pin_git_base()
+            self._create_task()
+            self._open_initial_blocker()
+            self._link_case_and_wake()
+        return self.state
+
+    def _prepare_existing_update(self) -> None:
+        if self.request.git_constraints is not None:
+            from ..model_git_recovery import GitBaselineConstraints
+
+            if (
+                GitBaselineConstraints.model_validate(self.request.git_constraints)
+                != self.task.git_constraints
+            ):
+                raise ValueError(
+                    "Git baseline constraints are immutable; create reviewed successor work"
+                )
+        if self.task.project_id != self.request.project_id:
+            raise ValueError(
+                f"task {self.task.id} belongs to project {self.task.project_id}, "
+                f"not {self.request.project_id}"
+            )
+        if (
+            self.request.originating_task_id is not None
+            and self.request.originating_task_id != self.task.originating_task_id
+        ):
+            raise ValueError(f"task {self.task.id} originating_task_id is immutable after creation")
+        if (
+            self.request.git_base_commit_sha is not None
+            and self.request.git_base_commit_sha != self.task.git_base_commit_sha
+        ):
+            raise ValueError(f"task {self.task.id} git_base_commit_sha is immutable after creation")
+        proposed_task_kind = self.request.task_kind or self.task.task_kind
+        if proposed_task_kind != self.task.task_kind and TeamTaskKind.COORDINATION in {
+            proposed_task_kind,
+            self.task.task_kind,
+        }:
+            raise ValueError(
+                f"task {self.task.id} cannot change to or from coordination after creation; "
+                "create a fresh task with the intended task_kind"
+            )
+        self.proposed_parent_task_id = (
+            self.request.parent_task_id if self.request.edit_parent else self.task.parent_task_id
+        )
+        self.proposed_dependency_task_ids = (
+            self.request.dependency_task_ids
+            if self.request.dependency_task_ids is not None
+            else list(self.task.dependency_task_ids)
+        )
+        deliverable_policy_request = (
+            self.request.integration_boundary is not None or self.request.edit_deliverable_contract
+        )
+        self.proposed_integration_boundary = (
+            self.request.integration_boundary
+            if self.request.integration_boundary is not None
+            else self.task.integration_boundary
+        )
+        if self.request.integration_boundary is False and not self.request.edit_deliverable_contract:
+            self.proposed_deliverable_contract = None
+        else:
+            self.proposed_deliverable_contract = (
+                self.request.deliverable_contract
+                if self.request.edit_deliverable_contract
+                else self.task.deliverable_contract
+            )
+        if proposed_task_kind == TeamTaskKind.COORDINATION:
+            if self.proposed_integration_boundary:
+                raise ValueError("coordination task cannot be an integration boundary")
+            if self.proposed_deliverable_contract is not None:
+                raise ValueError("coordination task cannot define deliverable_contract")
+            if self.request.outcome_contract is not None:
+                raise ValueError("coordination task cannot define outcome_contract")
+            if self.request.git_base_commit_sha is not None:
+                raise ValueError("coordination task cannot pin a Git base commit")
+        coordination_handoff_error = _task_coordination_handoff_error(
+            self.state,
+            integration_boundary=self.proposed_integration_boundary,
+            parent_task_id=self.proposed_parent_task_id,
+            originating_task_id=self.task.originating_task_id,
+            deliverable_contract=self.proposed_deliverable_contract,
+        )
+        if coordination_handoff_error is not None:
+            raise ValueError(coordination_handoff_error)
+        self.deliverable_policy_edit = deliverable_policy_request and (
+            self.proposed_integration_boundary != self.task.integration_boundary
+            or self.proposed_deliverable_contract != self.task.deliverable_contract
+        )
+        transition_error = _task_integration_boundary_transition_error(
+            self.state,
+            task=self.task,
+            proposed_integration_boundary=self.proposed_integration_boundary,
+        )
+        if transition_error is not None:
+            raise ValueError(transition_error)
+
+    def _validate_existing_policy(self) -> None:
+        if self.task.mutation_policy is not None:
+            locked_fields = set(self.task.mutation_policy.locked_fields)
+            changed_locked_fields: list[str] = []
+            if (
+                "parent_task_id" in locked_fields
+                and self.proposed_parent_task_id != self.task.parent_task_id
+            ):
+                changed_locked_fields.append("parent_task_id")
+            if (
+                "dependency_task_ids" in locked_fields
+                and self.proposed_dependency_task_ids != self.task.dependency_task_ids
+            ):
+                changed_locked_fields.append("dependency_task_ids")
+            if (
+                "task_kind" in locked_fields
+                and self.request.task_kind is not None
+                and self.request.task_kind != self.task.task_kind
+            ):
+                changed_locked_fields.append("task_kind")
+            if self.deliverable_policy_edit:
+                if (
+                    "integration_boundary" in locked_fields
+                    and self.proposed_integration_boundary != self.task.integration_boundary
+                ):
+                    changed_locked_fields.append("integration_boundary")
+                if (
+                    "deliverable_contract" in locked_fields
+                    and self.proposed_deliverable_contract != self.task.deliverable_contract
+                ):
+                    changed_locked_fields.append("deliverable_contract")
+            if (
+                "git_base_branch" in locked_fields
+                and self.request.edit_git_base_branch
+                and self.request.git_base_branch != self.task.git_base_branch
+            ):
+                changed_locked_fields.append("git_base_branch")
+            if changed_locked_fields:
+                raise ValueError(
+                    f"task {self.task.id} mutation policy "
+                    f"{self.task.mutation_policy.policy_id} locks: "
+                    + ", ".join(changed_locked_fields)
+                )
+
+    def _validate_existing_graph(self) -> None:
+        graph_error = _task_graph_edit_error(
+            self.state,
+            task_id=self.task.id,
+            project_id=self.task.project_id,
+            parent_task_id=self.proposed_parent_task_id,
+            dependency_task_ids=self.proposed_dependency_task_ids,
+        )
+        if graph_error is not None:
+            raise ValueError(graph_error)
+        if self.deliverable_policy_edit:
+            if self.task.state not in _NON_TERMINAL_TASK_STATES:
+                raise ValueError(
+                    f"terminal task {self.task.id} cannot change its "
+                    "integration deliverable contract"
+                )
+            if self.task.deliverable_ids:
+                raise ValueError(
+                    f"task {self.task.id} cannot change its integration "
+                    "deliverable contract after a deliverable was submitted"
+                )
+            contract_error = _task_deliverable_contract_scope_error(
+                self.state,
+                task_id=self.task.id,
+                project_id=self.task.project_id,
+                dependency_task_ids=self.proposed_dependency_task_ids,
+                integration_boundary=self.proposed_integration_boundary,
+                deliverable_contract=self.proposed_deliverable_contract,
+            )
+            if contract_error is not None:
+                raise ValueError(contract_error)
+
+    def _update_existing(self) -> None:
+        self.effective_task_id = self.task.id
+        self.created = False
+        self.task.priority = self.request.priority
+        self.task.title = self.request.title
+        self.task.description = self.request.description
+        case_link_changed = False
+        if self.request.edit_parent:
+            self.task.parent_task_id = self.request.parent_task_id
+        if self.request.edit_case:
+            old_case_id = self.task.case_id
+            self.task.case_id = self.request.case_id
+            case_link_changed = old_case_id != self.task.case_id
+            _sync_case_task_link(
+                self.state,
+                task=self.task,
+                old_case_id=old_case_id,
+                new_case_id=self.request.case_id,
+                now=self.now,
+            )
+        if self.request.dependency_task_ids is not None:
+            self.task.dependency_task_ids = self.request.dependency_task_ids
+        if self.request.task_kind is not None:
+            self.task.task_kind = self.request.task_kind
+        if self.request.edit_outcome_contract:
+            self.task.outcome_contract = self.effective_outcome_contract
+        if self.deliverable_policy_edit:
+            self.task.integration_boundary = self.proposed_integration_boundary
+            self.task.deliverable_contract = self.proposed_deliverable_contract
+        if self.request.edit_authored_by:
+            self.task.authored_by = self.request.authored_by
+        if self.request.edit_git_base_branch:
+            _set_task_git_base_branch(
+                self.state,
+                task=self.task,
+                git_base_branch=self.request.git_base_branch,
+                git_default_branch_resolver=self.service._resolve_managed_git_default_branch,
+            )
+        elif (
+            case_link_changed
+            and _correction_case_git_base_branch(
+                self.state,
+                case_id=self.task.case_id,
+            )
+            is not None
+        ):
+            _set_task_git_base_branch(
+                self.state,
+                task=self.task,
+                git_base_branch=None,
+                git_default_branch_resolver=self.service._resolve_managed_git_default_branch,
+            )
+        self.task.updated_at = self.now
+        if task_state_can_wake_owner(self.task.state):
+            _mark_agent_work_due(
+                self.state,
+                agent_id=self.task.owner_agent_id,
+                now=self.now,
+            )
+        else:
+            _maybe_mark_idle_context_rotation_due(
+                self.state,
+                agent_id=self.task.owner_agent_id,
+                now=self.now,
+                result=self.blocker_result,
+            )
+
+    def _resolve_new_id(self) -> None:
+        self.effective_task_id = self.request.task_id or _generated_id(
+            prefix="task",
+            labels=[self.request.project_id, self.request.title],
+            existing_ids=self.state.tasks,
+        )
+        self.created = True
+        _require_absent(self.state.tasks, self.effective_task_id, "task")
+
+    def _validate_origin(self) -> None:
+        if self.request.originating_task_id is not None:
+            origin = _require_present(
+                self.state.tasks,
+                self.request.originating_task_id,
+                "originating task",
+            )
+            origin_project = _require_present(
+                self.state.projects,
+                origin.project_id,
+                "originating task project",
+            )
+            self.project = _require_present(
+                self.state.projects,
+                self.request.project_id,
+                "project",
+            )
+            if (
+                origin.project_id != self.request.project_id
+                or origin_project.team_id != self.project.team_id
+            ):
+                raise ValueError(
+                    f"originating task {origin.id} must belong to project "
+                    f"{self.request.project_id} and team {self.project.team_id}"
+                )
+
+    def _validate_new_scope(self) -> None:
+        graph_error = _task_graph_edit_error(
+            self.state,
+            task_id=self.effective_task_id,
+            project_id=self.request.project_id,
+            parent_task_id=self.request.parent_task_id,
+            dependency_task_ids=self.request.dependency_task_ids or [],
+        )
+        if graph_error is not None:
+            raise ValueError(graph_error)
+        self.effective_integration_boundary = bool(self.request.integration_boundary)
+        coordination_handoff_error = _task_coordination_handoff_error(
+            self.state,
+            integration_boundary=self.effective_integration_boundary,
+            parent_task_id=self.request.parent_task_id,
+            originating_task_id=self.request.originating_task_id,
+            deliverable_contract=self.request.deliverable_contract,
+        )
+        if coordination_handoff_error is not None:
+            raise ValueError(coordination_handoff_error)
+        contract_error = _task_deliverable_contract_scope_error(
+            self.state,
+            task_id=self.effective_task_id,
+            project_id=self.request.project_id,
+            dependency_task_ids=self.request.dependency_task_ids or [],
+            integration_boundary=self.effective_integration_boundary,
+            deliverable_contract=self.request.deliverable_contract,
+        )
+        if contract_error is not None:
+            raise ValueError(contract_error)
+
+    def _resolve_new_provenance(self) -> None:
+        self.inherited_case_id = inherited_task_case_id(
+            self.state,
+            project_id=self.request.project_id,
+            case_id=self.request.case_id,
+            originating_task_id=self.request.originating_task_id,
+            parent_task_id=self.request.parent_task_id,
+        )
+        self.resolved_git_base_branch = _resolve_new_task_git_base_branch(
+            self.state,
+            project_id=self.request.project_id,
+            explicit_git_base_branch=self.request.git_base_branch,
+            parent_task_id=self.request.parent_task_id,
+            case_id=self.inherited_case_id,
+            git_default_branch_resolver=self.service._resolve_managed_git_default_branch,
+        )
+        self.inherited_git_base_commit = inherited_task_git_base_commit(
+            self.state,
+            parent_task_id=self.request.parent_task_id,
+            git_base_branch=self.resolved_git_base_branch,
+        )
+        self.effective_git_base_commit_sha = (
+            self.request.git_base_commit_sha or self.inherited_git_base_commit
+        )
+        self.project = _require_present(
+            self.state.projects,
+            self.request.project_id,
+            "project",
+        )
+
+    def _pin_git_base(self) -> None:
+        if self.project.git is not None and (
+            self.request.git_base_commit_sha is not None
+            or (self.effective_integration_boundary and self.inherited_git_base_commit is None)
+        ):
+            if self.resolved_git_base_branch is None:
+                raise ValueError(
+                    f"integration boundary task {self.effective_task_id} has no concrete "
+                    "Git base branch to pin"
+                )
+            try:
+                resolved_branch_commit = _normalized_task_git_base_commit(
+                    self.service._resolve_managed_git_branch_commit(
+                        managed_repo_id=self.project.git.managed_repo_id,
+                        directory_path=self.project.git.directory_path,
+                        branch=self.resolved_git_base_branch,
+                        required_ancestor_shas=(
+                            [self.effective_git_base_commit_sha]
+                            if self.effective_git_base_commit_sha is not None
+                            else None
+                        ),
+                    )
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"could not validate supplied Git base commit "
+                    f"{self.effective_git_base_commit_sha} against managed branch "
+                    f"{self.resolved_git_base_branch} for task {self.effective_task_id}: {exc}"
+                    if self.effective_git_base_commit_sha is not None
+                    else f"could not resolve immutable Git base commit for integration "
+                    f"boundary task {self.effective_task_id}: {exc}"
+                ) from exc
+            if resolved_branch_commit is None:
+                raise ValueError(
+                    f"managed branch {self.resolved_git_base_branch} has no commit against "
+                    f"which to validate supplied Git base commit "
+                    f"{self.effective_git_base_commit_sha} for task {self.effective_task_id}"
+                    if self.effective_git_base_commit_sha is not None
+                    else f"managed branch {self.resolved_git_base_branch} has no commit to pin "
+                    f"for integration boundary task {self.effective_task_id}"
+                )
+            self.effective_git_base_commit_sha = (
+                self.effective_git_base_commit_sha or resolved_branch_commit
+            )
+
+    def _create_task(self) -> None:
+        self.state.tasks[self.effective_task_id] = AgentTask(
+            id=self.effective_task_id,
+            owner_agent_id=self.request.owner_agent_id,
+            project_id=self.request.project_id,
+            case_id=self.inherited_case_id,
+            priority=self.request.priority,
+            state=self.request.initial_state,
+            state_entered_at=self.now,
+            title=self.request.title,
+            description=self.request.description,
+            created_by_agent_id=self.request.created_by_agent_id,
+            created_by_actor=self.request.created_by_actor,
+            parent_task_id=self.request.parent_task_id,
+            originating_task_id=self.request.originating_task_id,
+            work_item_attributions=self.request.work_item_attributions
+            if self.request.work_item_attributions is not None
+            else inherited_work_item_attributions(
+                self.state,
+                project_id=self.request.project_id,
+                originating_task_id=self.request.originating_task_id,
+                parent_task_id=self.request.parent_task_id,
+            ),
+            authored_by=inherited_task_author(
+                self.state,
+                project_id=self.request.project_id,
+                authored_by=self.request.authored_by,
+                originating_task_id=self.request.originating_task_id,
+                parent_task_id=self.request.parent_task_id,
+            ),
+            git_base_branch=self.resolved_git_base_branch,
+            git_base_commit_sha=self.effective_git_base_commit_sha,
+            git_constraints=inherited_constraints(
+                self.state,
+                parent_task_id=self.request.parent_task_id,
+                supplied_commit=self.request.supplied_git_base_commit_sha,
+                requested=self.request.git_constraints,
+            ),
+            dependency_task_ids=self.request.dependency_task_ids or [],
+            task_kind=self.request.task_kind or TeamTaskKind.SUPPORT,
+            outcome_contract=self.effective_outcome_contract,
+            integration_boundary=self.effective_integration_boundary,
+            deliverable_contract=self.request.deliverable_contract,
+            created_at=self.now,
+            updated_at=self.now,
+        )
+        ensure_task_work_lineage(self.state, self.state.tasks[self.effective_task_id])
+
+    def _open_initial_blocker(self) -> None:
+        if self.request.initial_state == TeamTaskState.BLOCKED:
+            self.project = _require_present(
+                self.state.projects,
+                self.request.project_id,
+                "project",
+            )
+            open_or_get_blocker(
+                self.state,
+                source_kind=TeamBlockerSourceKind.TASK,
+                source_id=self.effective_task_id,
+                summary=f"Task blocked: {self.request.title}",
+                details=self.request.description,
+                reporter_agent_id=self.request.owner_agent_id,
+                team_id=self.project.team_id,
+                project_id=self.project.id,
+                task_id=self.effective_task_id,
+                result=self.blocker_result,
+                now=self.now,
+            )
+
+    def _link_case_and_wake(self) -> None:
+        if self.inherited_case_id is not None:
+            _link_task_to_case(
+                self.state,
+                task_id=self.effective_task_id,
+                case_id=self.inherited_case_id,
+                now=self.now,
+            )
+        if task_state_can_wake_owner(self.request.initial_state):
+            _mark_agent_work_due(self.state, agent_id=self.request.owner_agent_id, now=self.now)
+        else:
+            _maybe_mark_idle_context_rotation_due(
+                self.state,
+                agent_id=self.request.owner_agent_id,
+                now=self.now,
+                result=self.blocker_result,
+            )
+
+
+@dataclass(frozen=True)
+class _TaskEditRequest:
+    task_id: str
+    priority: int | None
+    new_state: TeamTaskState | None
+    title: str | None
+    description: str | None
+    case_id: str | None
+    parent_task_id: str | None
+    authored_by: ProjectGitIdentity | None
+    git_base_branch: str | None
+    dependency_task_ids: list[str] | None
+    integration_boundary: bool | None
+    deliverable_contract: TaskDeliverableContract | None
+    repair_reason: str | None
+    repair_actor: str | None
+    repair_reference_ids: list[str]
+    edit_case: bool
+    edit_parent: bool
+    edit_authored_by: bool
+    edit_git_base_branch: bool
+    edit_deliverable_contract: bool
+
+
+class _AdministrativeTaskEdit:
+    """Validate and apply one task edit inside its repository transaction."""
+
+    task: AgentTask
+    preparation_generation_before: str
+    now: datetime
+    previous_state: TeamTaskState
+    deliverable_policy_edit: bool
+    proposed_integration_boundary: bool
+    proposed_deliverable_contract: TaskDeliverableContract | None
+
+    def __init__(
+        self,
+        *,
+        service: TeamTaskAdministration,
+        state: TeamState,
+        request: _TaskEditRequest,
+        blocker_result: dict[str, Any],
+    ) -> None:
+        self.service = service
+        self.state = state
+        self.request = request
+        self.blocker_result = blocker_result
+
+    def apply(self) -> TeamState:
+        self._load_task()
+        self._validate_state_repair()
+        self._validate_graph()
+        self._prepare_delivery_policy()
+        self._validate_mutation_policy()
+        self._validate_delivery_scope()
+        self._validate_state_transition()
+        self._apply_edits()
+        self._invalidate_preparation()
+        self._apply_blocker_transition()
+        self._wake_related_work()
+        return self.state
+
+    def _load_task(self) -> None:
+        self.task = _require_present(self.state.tasks, self.request.task_id, "task")
+        self.preparation_generation_before = task_git_work_context_generation(
+            self.state,
+            self.task.id,
+        )
+        self.now = utc_now()
+
+    def _validate_state_repair(self) -> None:
+        if self.task.owner_agent_id is None and self.request.new_state in {
+            TeamTaskState.IN_PROGRESS,
+            TeamTaskState.WAITING_FOR_REVIEW,
+            TeamTaskState.FINISHED,
+            TeamTaskState.ACCEPTED,
+        }:
+            raise ValueError("role task must be assigned before execution or completion")
+        self.previous_state = self.task.state
+        crosses_blocked_boundary = (
+            self.request.new_state is not None
+            and self.request.new_state != self.previous_state
+            and (
+                self.request.new_state == TeamTaskState.BLOCKED
+                or self.previous_state == TeamTaskState.BLOCKED
+            )
+        )
+        if crosses_blocked_boundary and (
+            self.request.repair_reason is None or self.request.repair_actor is None
+        ):
+            raise ValueError(
+                "direct task state edits into or out of blocked are disabled; "
+                "use the reason-required operator repair endpoint"
+            )
+        if (
+            self.request.repair_reason is not None
+            or self.request.repair_actor is not None
+            or self.request.repair_reference_ids
+        ) and not crosses_blocked_boundary:
+            raise ValueError(
+                "operator task-state repair requires a transition into or out of blocked"
+            )
+
+    def _validate_graph(self) -> None:
+        if self.request.edit_parent or self.request.dependency_task_ids is not None:
+            graph_error = _task_graph_edit_error(
+                self.state,
+                task_id=self.task.id,
+                project_id=self.task.project_id,
+                parent_task_id=(
+                    self.request.parent_task_id
+                    if self.request.edit_parent
+                    else self.task.parent_task_id
+                ),
+                dependency_task_ids=(
+                    self.request.dependency_task_ids
+                    if self.request.dependency_task_ids is not None
+                    else list(self.task.dependency_task_ids)
+                ),
+            )
+            if graph_error is not None:
+                raise ValueError(graph_error)
+
+    def _prepare_delivery_policy(self) -> None:
+        self.deliverable_policy_edit = (
+            self.request.integration_boundary is not None or self.request.edit_deliverable_contract
+        )
+        if self.deliverable_policy_edit:
+            self.proposed_integration_boundary = (
+                self.request.integration_boundary
+                if self.request.integration_boundary is not None
+                else self.task.integration_boundary
+            )
+            if (
+                self.request.integration_boundary is False
+                and not self.request.edit_deliverable_contract
+            ):
+                self.proposed_deliverable_contract = None
+            else:
+                self.proposed_deliverable_contract = (
+                    self.request.deliverable_contract
+                    if self.request.edit_deliverable_contract
+                    else self.task.deliverable_contract
+                )
+            self.deliverable_policy_edit = (
+                self.proposed_integration_boundary != self.task.integration_boundary
+                or self.proposed_deliverable_contract != self.task.deliverable_contract
+            )
+            transition_error = _task_integration_boundary_transition_error(
+                self.state,
+                task=self.task,
+                proposed_integration_boundary=self.proposed_integration_boundary,
+            )
+            if transition_error is not None:
+                raise ValueError(transition_error)
+
+    def _validate_mutation_policy(self) -> None:
+        if self.task.mutation_policy is not None:
+            locked_fields = set(self.task.mutation_policy.locked_fields)
+            changed_locked_fields: list[str] = []
+            if (
+                self.request.edit_parent
+                and "parent_task_id" in locked_fields
+                and self.request.parent_task_id != self.task.parent_task_id
+            ):
+                changed_locked_fields.append("parent_task_id")
+            if (
+                self.request.dependency_task_ids is not None
+                and "dependency_task_ids" in locked_fields
+                and self.request.dependency_task_ids != self.task.dependency_task_ids
+            ):
+                changed_locked_fields.append("dependency_task_ids")
+            if (
+                self.request.edit_git_base_branch
+                and "git_base_branch" in locked_fields
+                and self.request.git_base_branch != self.task.git_base_branch
+            ):
+                changed_locked_fields.append("git_base_branch")
+            if self.deliverable_policy_edit:
+                if (
+                    "integration_boundary" in locked_fields
+                    and self.proposed_integration_boundary != self.task.integration_boundary
+                ):
+                    changed_locked_fields.append("integration_boundary")
+                if (
+                    "deliverable_contract" in locked_fields
+                    and self.proposed_deliverable_contract != self.task.deliverable_contract
+                ):
+                    changed_locked_fields.append("deliverable_contract")
+            if changed_locked_fields:
+                raise ValueError(
+                    f"task {self.task.id} mutation policy {self.task.mutation_policy.policy_id} "
+                    "locks: " + ", ".join(changed_locked_fields)
+                )
+
+    def _validate_delivery_scope(self) -> None:
+        if self.deliverable_policy_edit:
+            if self.task.state not in _NON_TERMINAL_TASK_STATES:
+                raise ValueError(
+                    f"terminal task {self.task.id} cannot change its integration "
+                    "deliverable contract"
+                )
+            if self.task.deliverable_ids:
+                raise ValueError(
+                    f"task {self.task.id} cannot change its integration deliverable "
+                    "contract after a deliverable was submitted"
+                )
+            proposed_dependency_task_ids = (
+                self.request.dependency_task_ids
+                if self.request.dependency_task_ids is not None
+                else list(self.task.dependency_task_ids)
+            )
+            contract_error = _task_deliverable_contract_scope_error(
+                self.state,
+                task_id=self.task.id,
+                project_id=self.task.project_id,
+                dependency_task_ids=proposed_dependency_task_ids,
+                integration_boundary=self.proposed_integration_boundary,
+                deliverable_contract=self.proposed_deliverable_contract,
+            )
+            if contract_error is not None:
+                raise ValueError(contract_error)
+
+    def _validate_state_transition(self) -> None:
+        if self.request.new_state == TeamTaskState.FINISHED:
+            try:
+                require_task_can_finish(
+                    self.state,
+                    self.task.id,
+                    dependency_task_ids=self.request.dependency_task_ids,
+                )
+            except TaskAssessmentBoundaryError as exc:
+                raise ValueError(exc.message) from None
+        elif self.request.new_state in {
+            TeamTaskState.ACCEPTED,
+            TeamTaskState.CANCELLED,
+        }:
+            raise ValueError(
+                f"Admin task state {self.request.new_state.value} requires its dedicated "
+                "acceptance or cancellation lifecycle"
+            )
+
+    def _apply_edits(self) -> None:
+        if self.request.priority is not None:
+            self.task.priority = self.request.priority
+        if self.request.new_state is not None:
+            _set_task_state(self.task, self.request.new_state, now=self.now)
+            if self.task.state not in _NON_TERMINAL_TASK_STATES:
+                finalize_active_git_work_contexts_for_task(
+                    self.state,
+                    task_id=self.task.id,
+                    now=self.now,
+                )
+        if self.request.title is not None:
+            self.task.title = self.request.title
+        if self.request.description is not None:
+            self.task.description = self.request.description
+        case_link_changed = False
+        if self.request.edit_case:
+            old_case_id = self.task.case_id
+            self.task.case_id = self.request.case_id
+            case_link_changed = old_case_id != self.task.case_id
+            _sync_case_task_link(
+                self.state,
+                task=self.task,
+                old_case_id=old_case_id,
+                new_case_id=self.request.case_id,
+                now=self.now,
+            )
+        if self.request.edit_parent:
+            self.task.parent_task_id = self.request.parent_task_id
+        if self.request.dependency_task_ids is not None:
+            self.task.dependency_task_ids = self.request.dependency_task_ids
+        if self.deliverable_policy_edit:
+            self.task.integration_boundary = self.proposed_integration_boundary
+            self.task.deliverable_contract = self.proposed_deliverable_contract
+        if self.request.edit_authored_by:
+            self.task.authored_by = self.request.authored_by
+        if self.request.edit_git_base_branch:
+            _set_task_git_base_branch(
+                self.state,
+                task=self.task,
+                git_base_branch=self.request.git_base_branch,
+                git_default_branch_resolver=self.service._resolve_managed_git_default_branch,
+            )
+        elif (
+            case_link_changed
+            and _correction_case_git_base_branch(
+                self.state,
+                case_id=self.task.case_id,
+            )
+            is not None
+        ):
+            _set_task_git_base_branch(
+                self.state,
+                task=self.task,
+                git_base_branch=None,
+                git_default_branch_resolver=self.service._resolve_managed_git_default_branch,
+            )
+
+    def _invalidate_preparation(self) -> None:
+        changed_preparation_fields = [
+            field_name
+            for field_name, requested in (
+                ("state", self.request.new_state is not None),
+                ("title", self.request.title is not None),
+                ("description", self.request.description is not None),
+                ("case_id", self.request.edit_case),
+                ("parent_task_id", self.request.edit_parent),
+                ("git_base_branch", self.request.edit_git_base_branch),
+                ("dependency_task_ids", self.request.dependency_task_ids is not None),
+                ("integration_boundary", self.request.integration_boundary is not None),
+                ("deliverable_contract", self.request.edit_deliverable_contract),
+            )
+            if requested
+        ]
+        invalidate_task_preparation_after_edit(
+            self.state,
+            task_id=self.task.id,
+            preparation_generation_before=self.preparation_generation_before,
+            changed_fields=changed_preparation_fields,
+            sender_agent_id=None,
+            result=self.blocker_result,
+            now=self.now,
+        )
+        self.task.updated_at = self.now
+
+    def _apply_blocker_transition(self) -> None:
+        if (
+            self.previous_state != TeamTaskState.BLOCKED
+            and self.task.state == TeamTaskState.BLOCKED
+        ):
+            project = _require_present(self.state.projects, self.task.project_id, "project")
+            blocker, created = open_or_get_blocker(
+                self.state,
+                source_kind=TeamBlockerSourceKind.TASK,
+                source_id=self.task.id,
+                summary=f"Task blocked: {self.task.title}",
+                details=self.request.repair_reason or self.task.description,
+                reason_code=(
+                    "operator_repair" if self.request.repair_reason is not None else "unspecified"
+                ),
+                reporter_agent_id=self.task.owner_agent_id,
+                reporter_actor=self.request.repair_actor,
+                team_id=project.team_id,
+                project_id=project.id,
+                task_id=self.task.id,
+                affected_task_ids=[self.task.id],
+                result=self.blocker_result,
+                now=self.now,
+            )
+            if not created:
+                append_blocker_event(
+                    self.state,
+                    blocker=blocker,
+                    event_type=TeamBlockerEventType.PROGRESS,
+                    note=self.request.repair_reason or self.task.description,
+                    reference_ids=self.request.repair_reference_ids,
+                    metadata={
+                        "operator_actor": self.request.repair_actor,
+                        "operator_repair": True,
+                    },
+                    now=self.now,
+                )
+        elif (
+            self.previous_state == TeamTaskState.BLOCKED
+            and self.task.state != TeamTaskState.BLOCKED
+        ):
+            active_blockers = active_blockers_for_source(
+                self.state,
+                source_kind=TeamBlockerSourceKind.TASK,
+                source_id=self.task.id,
+            )
+            if not active_blockers:
+                active_blockers = [
+                    _legacy_operator_repair_blocker(
+                        self.state,
+                        task=self.task,
+                        actor=self.request.repair_actor,
+                        reason=self.request.repair_reason,
+                        now=self.now,
+                    )
+                ]
+            for blocker in active_blockers:
+                resolve_blocker(
+                    self.state,
+                    blocker=blocker,
+                    actor_agent_id=None,
+                    dispatch_id=None,
+                    note=(self.request.repair_reason or f"Task moved to {self.task.state.value}."),
+                    reference_ids=[
+                        self.task.id,
+                        *self.request.repair_reference_ids,
+                    ],
+                    metadata={
+                        "operator_actor": self.request.repair_actor,
+                        "operator_repair": self.request.repair_reason is not None,
+                    },
+                    now=self.now,
+                )
+
+    def _wake_related_work(self) -> None:
+        if task_state_can_wake_owner(self.task.state):
+            _mark_agent_work_due(
+                self.state,
+                agent_id=self.task.owner_agent_id,
+                now=self.task.updated_at,
+            )
+        else:
+            _maybe_mark_idle_context_rotation_due(
+                self.state,
+                agent_id=self.task.owner_agent_id,
+                now=self.task.updated_at,
+                result=self.blocker_result,
+            )
+        if self.previous_state != self.task.state and self.task.state in {
+            TeamTaskState.ACCEPTED,
+            TeamTaskState.CANCELLED,
+            TeamTaskState.FINISHED,
+        }:
+            queue_parent_resolution_transitions(
+                self.state,
+                child_task_id=self.task.id,
+                sender_agent_id=self.task.owner_agent_id,
+                now=self.now,
+            )
+        from .domain.role_task_queue import append_role_queue_wake_events
+
+        append_role_queue_wake_events(
+            self.state,
+            result=self.blocker_result,
+            now=self.now,
+            project_id=self.task.project_id,
+        )

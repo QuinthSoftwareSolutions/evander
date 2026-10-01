@@ -27,6 +27,8 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from evander.credentials.sanitize import reject_reflected_credentials
+from evander.credentials.store import CredentialError
 from evander.http_transport import _PinnedAddressAsyncHTTPTransport
 from evander.models import DirectoryPath
 from evander.session_auth import verify_mcp_session_proof_token
@@ -70,15 +72,18 @@ class WebsiteStorageBinding(BaseModel):
 class ManagedWebsiteSessionProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True
+    adapter: str = Field(default="json", pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    adapter_config: dict[str, JsonValue] = Field(default_factory=dict, max_length=32)
     browser_origin: str
     login_url: str
     credential_source: Literal["environment", "stored"] = "environment"
     credential_ref: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
-    credential_fields: dict[str, str] = Field(min_length=1, max_length=32)
+    credential_fields: dict[str, str] = Field(default_factory=dict, max_length=32)
     public_credential_fields: set[str] = Field(default_factory=set)
     static_fields: dict[str, JsonValue] = Field(default_factory=dict, max_length=32)
     local_storage: dict[str, WebsiteStorageBinding] = Field(default_factory=dict, max_length=64)
     session_storage: dict[str, WebsiteStorageBinding] = Field(default_factory=dict, max_length=64)
+    cookies_response_pointer: str | None = None
     jwt_response_pointer: str | None = None
     expires_in_response_pointer: str | None = None
     max_age_seconds: int = Field(default=3600, ge=60, le=86400)
@@ -93,9 +98,11 @@ class ManagedWebsiteSessionProfile(BaseModel):
             raise ValueError("browser_origin must be an origin without a path or query")
         self.browser_origin = origin
         website_origin(self.login_url)
-        if urlsplit(self.login_url).query:
+        if self.adapter == "json" and urlsplit(self.login_url).query:
             raise ValueError("login_url must not contain query parameters")
-        if not self.local_storage and not self.session_storage:
+        if self.adapter == "json" and not self.credential_fields:
+            raise ValueError("JSON logins require credential fields")
+        if self.adapter == "json" and not self.local_storage and not self.session_storage and self.cookies_response_pointer is None:
             raise ValueError("at least one storage binding is required")
         if self.credential_fields.keys() & self.static_fields.keys():
             raise ValueError("static fields cannot replace credentials")
@@ -105,7 +112,7 @@ class ManagedWebsiteSessionProfile(BaseModel):
             raise ValueError("credentials must reference environment variable names")
         if self.jwt_response_pointer is not None and self.expires_in_response_pointer is not None:
             raise ValueError("choose one response expiry source")
-        for pointer in (self.jwt_response_pointer, self.expires_in_response_pointer):
+        for pointer in (self.jwt_response_pointer, self.expires_in_response_pointer, self.cookies_response_pointer):
             if pointer is not None:
                 WebsiteStorageBinding.validate_pointer(pointer)
         if self.renew_before_seconds * 2 >= self.max_age_seconds:
@@ -230,15 +237,24 @@ class ManagedWebsiteSessionService:
         self, resolver: ProviderConfigResolver, *,
         transport_factory: Callable[[str], httpx.AsyncBaseTransport | Awaitable[httpx.AsyncBaseTransport]] = _public_transport,
         clock: Callable[[], float] = time.time,
+        adapters: dict[str, Any] | None = None,
     ) -> None:
         self.resolver = resolver
         self.transport_factory = transport_factory
         self.clock = clock
+        self._adapters = adapters
         # Duplicate callers share a login without blocking other session/target pairs.
         # Weak entries disappear when the last caller releases its lock.
         self._locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
         self._cache: OrderedDict[tuple[str, str], tuple[str, dict[str, Any]]] = OrderedDict()
         self._failures: OrderedDict[str, float] = OrderedDict()
+
+    @property
+    def adapters(self) -> dict[str, Any]:
+        # Ordinary JSON logins do not depend on optional add-on imports.
+        if self._adapters is None:
+            self._adapters = website_session_adapters(self.resolver)
+        return self._adapters
 
     def _grant(self, sid: str, alias: str, proof: str | None):
         try:
@@ -263,7 +279,13 @@ class ManagedWebsiteSessionService:
                     continue
             if website_origin(profile.login_url) not in allowed:
                 raise WebsiteSessionError("website_login_origin_not_granted", 403)
-            credentials = self.credentials(session.directory_path, profile_id, profile)
+            if profile.adapter == "json":
+                credentials = self.credentials(session.directory_path, profile_id, profile)
+            else:
+                adapter = self.adapters.get(profile.adapter)
+                if adapter is None:
+                    raise WebsiteSessionError("website_login_adapter_unavailable", 403)
+                credentials = adapter.grant_context(session, profile)
             fingerprint = hashlib.sha256(json.dumps([
                 session.directory_path, profile_id, profile.model_dump(mode="json"), credentials,
                 session.expires_at.isoformat(), session.created_at.isoformat(),
@@ -302,7 +324,11 @@ class ManagedWebsiteSessionService:
             if self._failures.get(fingerprint, 0) > self.clock():
                 raise WebsiteSessionError("website_login_retry_later", 503)
             try:
-                state = await self._login(profile, credentials)
+                state = (await self._login(profile, credentials) if profile.adapter == "json" else
+                         await self.adapters[profile.adapter].login(sid, profile, credentials, session_expiry))
+                if profile.adapter != "json" or profile.cookies_response_pointer is not None:
+                    state = validate_browser_state(state, profile.browser_origin, self.clock(),
+                        min(session_expiry, self.clock() + profile.max_age_seconds))
                 # A revocation or credential/config change during login must prevent delivery.
                 if self._grant(sid, alias, proof)[2] != fingerprint:
                     raise WebsiteSessionError("website_session_changed", 409)
@@ -366,22 +392,18 @@ class ManagedWebsiteSessionService:
             if not math.isfinite(expiry) or expiry <= self.clock() + profile.renew_before_seconds:
                 raise WebsiteSessionError("website_login_expiry_too_short")
 
+            def check_secret(candidate, *, include_public=False):
+                secrets = tuple(secret for field, secret in credentials.items()
+                                if include_public or field not in profile.public_credential_fields)
+                try:
+                    reject_reflected_credentials(candidate, secrets)
+                except CredentialError:
+                    raise WebsiteSessionError("website_login_unsafe_response") from None
+
             def render(bindings):
                 result = {}
                 for key, binding in bindings.items():
                     value = _pointer(data, binding.response_pointer)
-                    def check_secret(candidate):
-                        if isinstance(candidate, str):
-                            for field, secret in credentials.items():
-                                if field not in profile.public_credential_fields and secret in candidate:
-                                    raise WebsiteSessionError("website_login_unsafe_response")
-                        elif isinstance(candidate, dict):
-                            for k, v in candidate.items():
-                                check_secret(k)
-                                check_secret(v)
-                        elif isinstance(candidate, list):
-                            for item in candidate:
-                                check_secret(item)
                     check_secret(value)
                     if binding.encoding == "string" and not isinstance(value, str):
                         raise ValueError("string storage binding requires a string")
@@ -395,14 +417,11 @@ class ManagedWebsiteSessionService:
             rendered = json.dumps([local, temporary], ensure_ascii=False)
             if len(rendered.encode("utf-8")) > 1048576:
                 raise WebsiteSessionError("website_login_response_limit")
-            for field, value in credentials.items():
-                if field not in profile.public_credential_fields and (
-                    value in rendered or json.dumps(value, ensure_ascii=False)[1:-1] in rendered
-                    or any(value in text for text in [*local.values(), *temporary.values()])
-                ):
-                    raise WebsiteSessionError("website_login_unsafe_response")
+            check_secret([local, temporary])
+            cookies = _pointer(data, profile.cookies_response_pointer) if profile.cookies_response_pointer is not None else []
+            check_secret(cookies, include_public=True)
             return {"origin": profile.browser_origin, "expiresAt": expiry,
-                    "storageState": {"cookies": [], "origins": [{"origin": profile.browser_origin,
+                    "storageState": {"cookies": cookies, "origins": [{"origin": profile.browser_origin,
                         "localStorage": [{"name": k, "value": v} for k, v in local.items()]}]},
                     "sessionStorage": temporary}
         except WebsiteSessionError:
@@ -412,3 +431,53 @@ class ManagedWebsiteSessionService:
         except Exception:
             # Deliberately discard upstream exception chains (URLs, bodies, credentials).
             raise WebsiteSessionError("website_login_failed") from None
+
+
+def website_session_adapters(resolver):
+    """Load only enabled add-on login adapters; no domain imports in the relay."""
+    from evander.addons import load_addons
+    if getattr(getattr(resolver, "config", None), "addon_loader", None) is None:
+        return {}
+    catalog = load_addons(resolver.config.addon_loader, base_dir=resolver.config.runtime_dir.parent)
+    adapters = {}
+    for registration in catalog.registrations:
+        for name, factory in registration.website_session_adapters.items():
+            if name == "json" or name in adapters:
+                raise ValueError("Duplicate managed website login adapter")
+            adapters[name] = factory(resolver)
+    return adapters
+
+
+def validate_browser_state(state, origin, now, expiry_limit):
+    """Restrict temporary cookies/storage to the granted HTTPS origin and TTL."""
+    try:
+        if state["origin"] != origin:
+            raise ValueError
+        expiry = min(float(state["expiresAt"]), expiry_limit)
+        if not math.isfinite(expiry) or expiry <= now:
+            raise ValueError
+        storage = state["storageState"]
+        host = urlsplit(origin).hostname
+        cookies = storage.get("cookies", [])
+        if not isinstance(cookies, list) or len(cookies) > 64:
+            raise ValueError
+        for cookie in cookies:
+            if (cookie.get("domain", "").lstrip(".") != host or not cookie.get("secure")
+                    or not isinstance(cookie.get("name"), str) or not isinstance(cookie.get("value"), str)
+                    or not cookie.get("path", "").startswith("/")
+                    or cookie.get("sameSite") not in {"Strict", "Lax", "None"}):
+                raise ValueError
+            raw_expiry = float(cookie.get("expires", expiry))
+            if not math.isfinite(raw_expiry):
+                raise ValueError
+            cookie["expires"] = min(raw_expiry, expiry)
+            if not math.isfinite(cookie["expires"]) or cookie["expires"] <= now:
+                raise ValueError
+        if any(item.get("origin") != origin for item in storage.get("origins", [])):
+            raise ValueError
+        if len(json.dumps(state, ensure_ascii=False).encode()) > 1048576:
+            raise ValueError
+        state["expiresAt"] = expiry
+        return state
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise WebsiteSessionError("website_login_unsafe_response") from None

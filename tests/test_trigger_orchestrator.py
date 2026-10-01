@@ -33,6 +33,7 @@ from evander.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptS
 from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from evander.models import SessionManifest
 from evander.repositories.session_manifests import JsonSessionManifestRepository
+from evander.repositories.orchestration import JsonGateCursorRepository
 from evander.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from evander.triggers.providers.base import TriggerRuntimeContext
 from evander.triggers.providers.event import EventTriggerProvider
@@ -258,6 +259,124 @@ def test_trigger_orchestrator_skips_disabled_triggers(tmp_path: Path) -> None:
     assert build_calls == []
     assert worker.event_queue.list_pending() == []
     assert wake_calls == []
+
+
+def test_empty_trigger_polls_share_one_durable_cursor_write(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config({
+        "runtime_dir": runtime_dir,
+        "triggers": [
+            {"id": f"cron-{i}", "display_name": f"Cron {i}",
+             "type": "trigger:cron", "expression": "* * * * *"}
+            for i in range(32)
+        ],
+    })
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider([])
+    writes = []
+    original_write = worker.cursor_repository._write_payload
+
+    def write(payload):
+        writes.append(payload)
+        original_write(payload)
+
+    monkeypatch.setattr(worker.cursor_repository, "_write_payload", write)
+    result = worker.run_once()
+
+    assert result.configured_triggers == 32
+    assert result.events_discovered == result.events_published == 0
+    assert len(writes) == 1
+    reopened = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
+    for i in range(32):
+        state = reopened.get_trigger_state(f"cron-{i}")
+        assert state["last_discovered_count"] == 0
+        assert state["last_event_ids"] == []
+        assert state["last_polled_at"]
+
+
+def test_published_cursor_is_durable_before_next_provider_and_empty_batch(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config({
+        "runtime_dir": runtime_dir,
+        "triggers": [
+            {"id": name, "display_name": name, "type": "trigger:cron",
+             "expression": "* * * * *"}
+            for name in ("publishing", "empty", "failed")
+        ],
+    })
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    event = TriggerEvent(
+        event_id="event-durable", trigger_id="publishing", trigger_type="trigger:cron",
+        occurred_at=datetime.now(UTC), payload={"kind": "tick"},
+    )
+    reopened = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
+
+    class CheckingProvider:
+        def poll(self):
+            assert reopened.get_trigger_state("publishing")["last_event_id"] == "event-durable"
+            assert worker.event_queue.contains("event-durable")
+            return []
+
+    class FailingProvider:
+        def poll(self):
+            raise RuntimeError("provider unavailable")
+
+    providers = {"publishing": _StaticProvider([event]), "empty": CheckingProvider(),
+                 "failed": FailingProvider()}
+    worker.provider_factory.build = lambda trigger, **_: providers[trigger.id]
+    writes = []
+    original_write = worker.cursor_repository._write_payload
+
+    def write(payload):
+        writes.append(payload)
+        original_write(payload)
+
+    monkeypatch.setattr(worker.cursor_repository, "_write_payload", write)
+    result = worker.run_once()
+
+    assert result.events_published == 1
+    assert len(writes) == 2
+    assert reopened.get_trigger_state("publishing")["last_event_id"] == "event-durable"
+    assert reopened.get_trigger_state("empty")["last_discovered_count"] == 0
+    assert reopened.get_trigger_state("failed") is None
+
+
+def test_empty_cursor_flush_failure_preserves_publish_busy_retry(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config({
+        "runtime_dir": runtime_dir,
+        "triggers": [
+            {"id": name, "display_name": name, "type": "trigger:cron",
+             "expression": "* * * * *"}
+            for name in ("empty", "publishing")
+        ],
+    })
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)
+    event = TriggerEvent(
+        event_id="event-busy", trigger_id="publishing", trigger_type="trigger:cron",
+        occurred_at=datetime.now(UTC), payload={},
+    )
+    worker.provider_factory.build = lambda trigger, **_: _StaticProvider(
+        [event] if trigger.id == "publishing" else []
+    )
+
+    def publish_busy(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    def flush_failed(polls):
+        assert [poll.trigger_id for poll in polls] == ["empty"]
+        raise OSError("cursor storage unavailable")
+
+    monkeypatch.setattr(worker.event_queue, "publish_result", publish_busy)
+    monkeypatch.setattr(worker.cursor_repository, "record_trigger_polls", flush_failed)
+    result = worker.run_once()
+    assert result.events_published == 0
+    assert result.next_sleep_seconds > 0
+    assert worker._cycle_storage_retry.retry_at > time.monotonic()
+    assert not worker.event_queue.contains("event-busy")
 
 
 def test_trigger_orchestrator_passes_graph_directory_to_trigger_provider(

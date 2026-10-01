@@ -1,11 +1,147 @@
 # Changelog
 
-## 2026-09-30 - Reload worker code during deployment (0.74.1)
+## 2026-10-01 - Reload worker code during deployment (0.76.4)
 
 - Restart container worker daemons when their running revision differs from the deployed
   checkout, including retries after an interrupted deployment.
 - Verify the running revision and Codex Fast mode support before accepting a worker
   deployment, preventing stale request schemas from rejecting new turn fields.
+
+## 2026-10-01 - Preserve untracked files during reference preparation (0.76.3)
+
+- Allow persistent reference repositories to be reused or refreshed with unrelated
+  untracked files, including generated database sidecars, while retaining tracked
+  and staged change checks and trusted commit validation.
+- Reject checkout updates that would overwrite untracked or ignored local files,
+  preserving the existing checkout and trusted state on a path conflict.
+- Reject staged additions in prepared reference checkouts with an unborn HEAD,
+  preserving the local branch, staged files, and trusted state.
+
+## 2026-10-01 - Clarify control-plane transaction stages (0.76.2)
+
+- Apply Team agent action batches through named stages with invocation-local
+  progress and project-recalculation state, preserving stage order, partial-error
+  handling, transactional events, and dispatch completion.
+- Split ordinary dispatch leasing into eligibility, work selection, wake timing,
+  lineage selection, reservation, and payload phases while retaining role
+  allocation recovery, manager fallback order, and revision-conflict retries.
+- Build release packages through explicit lineage, provenance, input, destination,
+  persistence, and promotion stages shared by agent and operator requests, keeping
+  duplicate reuse and correction failure cleanup in their established order.
+- Separate task-update validation, edits, preparation invalidation, and response
+  projection, removing unreachable direct blocker-transition handling while
+  preserving blocker reassignment events and command response fields.
+- Apply administrative task upserts through a typed request with explicit edit
+  flags and separate existing-task and new-task stages, preserving graph policy,
+  inherited provenance, immutable Git base checks, and transactional wake events.
+- Dispatch wake reservations through separate repository, capability, artifact,
+  prompt, delivery, and recovery stages with fresh state for each lease, retaining
+  queue activation rules and durable failure and conflict retries.
+- Project scoped Team state through ordered membership, work, delivery, dispatch,
+  assessment, and reference-closure stages, removing a superseded task projection
+  while retaining scope intersections and globally derived task assessments.
+- Consolidate agent role updates so explicit role clearing uses a defined value:
+  teamless agents may clear it, while team members receive the existing validation
+  error with their attempted edits rolled back.
+- Prepare task Git contexts through named base-selection, worktree, receipt,
+  provenance, and commit stages, making recovery strategy priority explicit while
+  retaining cleanup locks, durable receipts, and state-conflict retry metrics.
+- Collect case-history evidence through ordered scope, source, note, artifact,
+  review, conversation, and temporal-annotation phases, preserving record and
+  warning order and removing an unused review-ID accumulator.
+- Apply administrative task edits through a typed request and ordered graph,
+  contract, lifecycle, preparation, blocker-repair, and wake stages, preserving
+  explicit clears and revision-checked transactional events.
+- Separate Teams credential migration inspection, import, reference switching,
+  and source retirement, retaining one maintenance lock and the encrypted backup
+  boundary so interrupted migrations reuse durable imports safely.
+- Apply administrative agent edits through a typed request and named team,
+  project, role, session, context-policy, and reporting stages, retaining explicit
+  clear rules, membership validation, the patchable clock, and wake-event outbox.
+- Build workflow failure reports through explicit metadata, activity, clustering,
+  classification, and pagination phases, preserving one SQLite read transaction,
+  state priority, newest-first examples, and the operational-payload loader seam.
+- Create libvirt VMs through named session, policy, setup, and recovery stages.
+  Check setup exit status for both privileged-helper and subprocess execution so
+  helper failures report failure and retain only recoverable VM or session state.
+- Build workflow run searches through separate event selection, activity grouping,
+  session enrichment, filtering, and pagination stages, retaining SQLite counts,
+  bounded record hydration, shared-trace sessions, and the patchable report clock.
+- Replay queued prompts through explicit batch and VM delivery stages, retaining
+  container-first dispatch, maintenance budgets, claim order, and queue replacement
+  guards. Keep delivery claims and pending steering when a waiting receipt fails.
+- Plan manager fallback through separate team eligibility, lineage selection,
+  authority, scope, reservation, and runtime stages. Replace positional work tuples
+  with named fields while retaining full work fingerprints and wake suppression.
+- Execute release verification through explicit run recovery, workspace, command,
+  evidence, persistence, and cleanup stages. Keep generation checks, single-flight
+  execution, infrastructure precedence, and cleanup of partial setup in their order.
+- Separate release-state validation into ordered package checks for ownership,
+  cohorts, inputs, verification, reviews, and frozen evidence. Report missing runs
+  and reviews as validation errors and continue collecting later diagnostics.
+
+- Refactor the standalone Team UI into feature controllers with local state,
+  rendering, and action handlers. Keep the entry point focused on composition,
+  preserve delegated event order and mutation guards, and remove unused legacy
+  renderers. Verify module publication and exercise the actual controllers.
+- Extract Team copying and template materialization into typed requests and
+  ordered application stages. Keep revision checks and managed repository binding
+  locks in the admin facade, retaining configuration selection, ID allocation,
+  reporting links, cost budgets, and atomic graph creation.
+
+## 2026-10-01 - Reduce control-plane polling and bookkeeping cost (0.76.1)
+
+- Reuse revision-aware compiled workflow configuration in polling consumers and skip
+  expensive Teams notification preparation when no queue item is ready, while retaining
+  bounded periodic cleanup of expired terminal notifications.
+- Batch empty trigger cursor telemetry while preserving immediate published-event
+  checkpoints and storage-busy retry classification, and copy only the retained event ID tail.
+- Update existing Team dispatch receipts and runtime bookkeeping through bounded,
+  revision-checked transactions without reconstructing unrelated historical state;
+  preserve accepted queued prompts when unrelated revision changes exhaust snapshot retries.
+- Skip completed history-backfill queue probes, use indexed pending/inflight checks,
+  and space completed garbage-collection sweeps while history and retention progress.
+  Persist each collector's completion independently and finish deletion follow-up sweeps
+  before the idle pause.
+- Default Teams fallback polling to four concurrent targets and defer background
+  timeout retries to durable per-target backoff, preserving interactive retry behavior.
+
+## 2026-09-30 - Independent add-on projects and website login adapters (0.76.0)
+
+- Establish self-contained, independently installed add-on projects under `packages/`.
+  Include their tests in repository collection and document ownership for future add-ons.
+  [WordPress 0.1.0](packages/wordpress-addon/CHANGELOG.md) is the first project;
+  installing core alone does not install it or grant the relay credential-key access.
+- Add generic website-session adapter registration, adapter-managed profile editing
+  and adapter-aware restart metadata, with ordinary JSON profiles remaining the default.
+- Supply trusted connector drivers with host services and callbacks that recheck current
+  session, tool, argument and connector policy before durable host operations.
+- Provide host-only connector authentication snapshots and reject reflected raw or encoded
+  managed credentials before returning protocol responses or persisting results.
+- Support optional temporary cookies in generic JSON logins while retaining existing
+  JSON-login storage limits and positional add-on registration compatibility.
+- Reject encoded host credentials in JSON-login cookies and storage through the
+  shared credential sanitizer, preserving explicitly public storage identifiers.
+  Check composite Basic/JWT values without buffering complete decoded artifacts.
+- Discover website adapters only when needed so unrelated add-on imports cannot interrupt
+  ordinary logins. Align frozen installation metadata with this release without changing
+  dependency versions.
+
+## 2026-09-30 - Manually trigger workflow event nodes (0.75.0)
+
+- Run a saved, enabled `trigger:event` node from its inspector with a JSON-object
+  payload and optional correlation key, without broadcasting to other listeners.
+- Check workflow run-control permissions and saved revisions, record the operator,
+  and deduplicate retries before showing the queued run in existing run history.
+- Preserve accepted attempts across workflow revision changes and compare retry
+  payloads as canonical JSON, keeping boolean and numeric values distinct.
+
+## 2026-09-30 - Bound control-plane system log storage (0.74.1)
+
+- Manage daily rsyslog rotation in Ansible with 28 archives and delayed compression,
+  preserving about four weeks of system log history while reducing uncompressed storage.
+- Validate and back up the rotation policy before replacement without forcing rotation
+  or restarting the logging service.
 
 ## 2026-09-30 - Configure Codex Fast mode per session and prompt (0.74.0)
 

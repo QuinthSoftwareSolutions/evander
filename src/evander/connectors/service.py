@@ -113,6 +113,9 @@ class ConnectorService:
         environ: Mapping[str, str] | None = None,
         auth_transport: httpx.AsyncBaseTransport | None = None,
         credential_store: CredentialStore | None = None,
+        session_authorizer: Any | None = None,
+        session_argument_authorizer: Any | None = None,
+        host_services: Mapping[str, Any] | None = None,
     ) -> None:
         self.credentials = credential_store or CredentialStore(runtime_dir)
         self.runtime_dir = runtime_dir
@@ -123,6 +126,53 @@ class ConnectorService:
         self.auth_transport = auth_transport
         self._oauth_tokens: dict[tuple[str, str], _OAuthToken] = {}
         self._oauth_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self.session_authorizer = session_authorizer
+        self.session_argument_authorizer = session_argument_authorizer
+        self.host_services = dict(host_services or {})
+
+    def authorize_current(self, session_id, connector_id, operation_name, arguments):
+        """Recheck grants and policy between steps of a durable host operation."""
+        from datetime import UTC, datetime
+        session = (self.session_authorizer(session_id) if self.session_authorizer else
+                   self.provider_config.get_session_manifest(session_id))
+        if session.expires_at <= datetime.now(UTC):
+            raise ConnectorPolicyError("Connector session has expired")
+        if self.session_argument_authorizer is None:
+            raise ConnectorPolicyError("Current connector argument policy is unavailable")
+        self.session_argument_authorizer(
+            session,
+            "call_connector",
+            {
+                "session_id": session.session_id,
+                "connector_id": normalize_connector_id(connector_id),
+                "operation": normalize_connector_operation(operation_name),
+                "arguments": arguments,
+            },
+        )
+        return self.require_operation(session, connector_id, operation_name, arguments)
+
+    async def host_auth(self, directory_path, connector_id):
+        """Resolve a configured binding for trusted domain code, never an MCP result."""
+        connector, headers, _ = await self.host_auth_material(directory_path, connector_id)
+        return connector, headers
+
+    async def host_auth_material(self, directory_path, connector_id):
+        """Keep request headers and their secret snapshot inside the host boundary."""
+        config = self.provider_config.resolve_connectors_for_directory(directory_path)
+        connector = config.connectors.get(connector_id)
+        if connector is None or connector.disabled:
+            raise ConnectorPolicyError("Host connector binding is unavailable")
+        context_token = _MANAGED_VALUES.set(())
+        try:
+            headers = await self._auth_headers(
+                directory_path=directory_path,
+                config=config,
+                connector=connector,
+                capture_sensitive_values=True,
+            )
+            return connector, headers, _MANAGED_VALUES.get()
+        finally:
+            _MANAGED_VALUES.reset(context_token)
 
     def config_for_session(self, session: SessionManifest) -> ConnectorDirectoryConfig:
         return self.provider_config.resolve_connectors_for_directory(session.directory_path)
@@ -261,6 +311,9 @@ class ConnectorService:
             artifact_store=self.artifact_store_factory(),
             auth_headers=auth_headers,
             sensitive_values=_MANAGED_VALUES.get(),
+            host_service=self,
+            authorize=lambda: self.authorize_current(session.session_id,
+                normalized_id, normalized_operation, arguments),
         )
         driver = self.registry.require(connector.driver)
         try:
@@ -300,6 +353,8 @@ class ConnectorService:
                         connector=connector,
                     ),
                     sensitive_values=_MANAGED_VALUES.get(),
+                    host_service=self,
+                    authorize=context.authorize,
                 )
                 result = await driver.invoke(
                     context=retry_context,
@@ -350,6 +405,7 @@ class ConnectorService:
         directory_path: str,
         config: ConnectorDirectoryConfig,
         connector: ConnectorDefinition,
+        capture_sensitive_values: bool = False,
     ) -> dict[str, str]:
         if connector.auth_profile is None:
             return {}
@@ -384,24 +440,41 @@ class ConnectorService:
                 _MANAGED_VALUES.set((*_MANAGED_VALUES.get(), encoded))
                 return {"Authorization": "Basic " + encoded}
         if profile.type == "bearer_env":
-            return {"Authorization": f"Bearer {self._secret(profile.token_env)}"}
+            token = self._secret(profile.token_env)
+            if capture_sensitive_values:
+                _MANAGED_VALUES.set((token,))
+            return {"Authorization": f"Bearer {token}"}
         if profile.type == "api_key_header_env":
-            return {str(profile.header_name): self._secret(profile.token_env)}
+            token = self._secret(profile.token_env)
+            if capture_sensitive_values:
+                _MANAGED_VALUES.set((token,))
+            return {str(profile.header_name): token}
         if profile.type == "basic_env":
-            raw = f"{self._secret(profile.username_env)}:{self._secret(profile.password_env)}"
-            return {"Authorization": f"Basic {base64.b64encode(raw.encode()).decode()}"}
+            username = self._secret(profile.username_env)
+            password = self._secret(profile.password_env)
+            encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+            if capture_sensitive_values:
+                _MANAGED_VALUES.set((username if password == "X" else password, encoded))
+            return {"Authorization": f"Basic {encoded}"}
+        if capture_sensitive_values and managed is None:
+            managed = {
+                "client_id": self._secret(profile.client_id_env),
+                "client_secret": self._secret(profile.client_secret_env),
+            }
+            _MANAGED_VALUES.set((managed["client_secret"],))
         token = await self._oauth_token(
             directory_path=directory_path,
             profile_id=str(connector.auth_profile),
             profile=profile,
             managed=managed,
-            credential_revision=metadata["revision"] if managed is not None else None,
+            credential_revision=metadata["revision"] if profile.credential_ref else None,
         )
-        if managed is not None:
+        if profile.credential_ref:
             # A rotation/disable during token acquisition invalidates the result.
             if self.credentials.metadata(profile.credential_ref)["revision"] != metadata["revision"]:
                 self._oauth_tokens.pop((directory_path, str(connector.auth_profile)), None)
                 raise ConnectorPolicyError("Managed connector credentials changed")
+        if managed is not None:
             _MANAGED_VALUES.set((*_MANAGED_VALUES.get(), token))
         return {"Authorization": f"Bearer {token}"}
 

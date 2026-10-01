@@ -61,6 +61,17 @@ def test_load_addons_defaults_to_empty_catalog(tmp_path: Path, monkeypatch) -> N
     assert catalog.loaded_addons == ()
 
 
+def test_registration_preserves_legacy_positional_identity_resolver() -> None:
+    resolver = lambda context: "synthetic-identity"
+    registration = AddonRegistration(
+        "legacy-addon", "Legacy Add-on", None, (), (), None, (), None, {}, resolver,
+        {"source": "legacy"},
+    )
+    assert registration.outbound_identity_resolver is resolver
+    assert registration.metadata == {"source": "legacy"}
+    assert registration.website_session_adapters == {}
+
+
 def test_bundled_team_addon_packaging_contract_is_declared() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 

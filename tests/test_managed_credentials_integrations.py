@@ -193,6 +193,67 @@ def test_managed_connector_field_aware_checks_still_reject_secrets(custody, mode
             assert secret.encode() not in path.read_bytes()
 
 
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize(
+    "protocol", ["basic", "bearer", "api_key_header", "oauth-secret", "oauth-token"]
+)
+def test_host_auth_material_captures_private_values_and_allows_public_ids(
+    custody, managed, protocol
+):
+    from evander.credentials.sanitize import reject_reflected_credentials
+
+    secret, public = "synthetic-host-credential", "public-designer"
+    if protocol == "basic":
+        auth = {"type": "basic_env", "username_env": "WP_USER", "password_env": "WP_PASSWORD"}
+        values = {"username": public, "password": secret}
+        environ = {"WP_USER": public, "WP_PASSWORD": secret}
+    elif protocol.startswith("oauth"):
+        auth = {
+            "type": "oauth2_client_credentials",
+            "token_url": "https://login.example.test/token",
+            "client_id_env": "WP_CLIENT",
+            "client_secret_env": "WP_SECRET",
+        }
+        values = {"client_id": public, "client_secret": secret}
+        environ = {"WP_CLIENT": public, "WP_SECRET": secret}
+    else:
+        auth = {"type": protocol + "_env", "token_env": "WP_TOKEN"}
+        if protocol == "api_key_header":
+            auth["header_name"] = "X-API-Key"
+        values, environ = {"token": secret}, {"WP_TOKEN": secret}
+    if managed:
+        config, _ = managed_connector(custody, auth=auth, values=values)
+    else:
+        config = _config(auth_profile="documents")
+        config.auth_profiles["documents"] = ConnectorAuthProfile.model_validate(auth)
+    token_requests = []
+
+    def token(request):
+        token_requests.append(request)
+        return httpx.Response(
+            200, json={"access_token": "synthetic-derived-token", "expires_in": 3600}
+        )
+
+    service = _service(
+        custody.runtime_dir, config, environ=environ, auth_transport=httpx.MockTransport(token)
+    )
+    response = {"value": "synthetic-derived-token" if protocol == "oauth-token" else secret}
+
+    async def exercise():
+        _, headers, sensitive = await service.host_auth_material("root/team", "documents")
+        assert headers
+        with pytest.raises(CredentialError):
+            reject_reflected_credentials(response, sensitive)
+        reject_reflected_credentials({"value": public}, sensitive)
+        _, _, cached_sensitive = await service.host_auth_material("root/team", "documents")
+        with pytest.raises(CredentialError):
+            reject_reflected_credentials(response, cached_sensitive)
+        if protocol.startswith("oauth"):
+            assert len(token_requests) == 1, "Cached OAuth tokens still need their secret snapshot"
+
+    asyncio.run(exercise())
+
+
 def test_oauth_cache_observes_credential_revision_and_disable(custody):
     config, record = managed_connector(
         custody,
@@ -803,6 +864,35 @@ def legacy_teams_source(admin):
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(json.dumps({"identity-a": teams_values().model_dump(mode="json")}))
     return source
+
+
+def test_teams_migration_backup_failure_preserves_source_and_references_for_retry(
+    admin, monkeypatch
+):
+    import evander.credentials.migration as migration
+
+    source = legacy_teams_source(admin)
+    before = source.read_bytes()
+
+    def fail_backup(*args):
+        raise OSError("synthetic backup failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(migration, "encrypted_backup", fail_backup)
+        with pytest.raises(OSError, match="synthetic backup failure"):
+            migrate_teams(admin, apply=True, maintenance=True)
+
+    config = admin.runtime.provider_config.resolve_for_directory("root")
+    assert not config.teams_delegated_credential_ref
+    assert source.read_bytes() == before
+    imported = admin.credential_admin.store.list_metadata()
+    assert len(imported) == 1
+
+    result = migrate_teams(admin, apply=True, maintenance=True)
+    config = admin.runtime.provider_config.resolve_for_directory("root")
+    assert result["applied"] and not source.exists()
+    assert config.teams_delegated_credential_ref == imported[0]["id"]
+    assert len(admin.credential_admin.store.list_metadata()) == 1
 
 
 def test_teams_migration_resumes_after_interrupted_config_switch(admin, monkeypatch):

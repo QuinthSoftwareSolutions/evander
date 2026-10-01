@@ -28,6 +28,10 @@ sources and reference their environment-variable names in provider configuration
 
 ### Related feature configuration
 
+Independent add-ons own their configuration guides. See the
+[WordPress Add-on configuration](../packages/wordpress-addon/docs/operations.md)
+and the [add-on project convention](addons.md#project-ownership).
+
 Project release policies support `reintegration`, `verification_max_generations`,
 `verification_log_retention_days` and opt-in per-command `result_protocol`,
 `allow_baseline_exceptions`, and `command_failure_action`. See
@@ -283,6 +287,16 @@ Readers accept both layouts. The explicit
 converts existing rows in resumable offline batches and creates deferred maintenance indexes.
 Startup performs schema readiness checks without rewriting all retained records. Before running
 an older release, rehydrate referenced records with the documented downgrade command.
+
+The background storage lane advances history indexing and retention every second. Bounded scalar
+and payload garbage collection continues at that cadence while sweep cursors or deletions remain,
+then waits 30 seconds between completed idle sweeps. Garbage-collection failures retain the shorter
+retry cadence. Each scalar table and the payload collector durably retain their own completion
+markers while other components finish. Sweeps that delete data run a clean follow-up before the
+idle pause, including to reclaim payload children orphaned behind the cursor. The next scheduled
+sweep resets the completed markers and checks newly unreferenced data.
+A completed execution-history backfill skips trigger-queue readiness queries;
+unfinished backfill waits for pending and inflight trigger deliveries to finish.
 
 The Admin Web **Add-ons** page can toggle `addon_loader.enabled_addon_ids` and
 keeps host and trigger-orchestrator add-on loader settings aligned. Changes are
@@ -557,6 +571,25 @@ cursors in `runtime/trigger-cursors-remote-issues.json`; the comment trigger sto
 `trigger:event` consumes durable internal workflow events. The Admin Web HTTP ingress publishes
 caller-supplied event names under the reserved `external.` prefix, so a POST with
 `event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
+
+The editor's **Trigger manually** action queues only the selected saved, enabled
+`trigger:event` node, using its configured event type without adding a prefix. It
+uses the normal event envelope (`payload` contains the entered JSON object) and
+does not publish to other event listeners. The session-authenticated endpoint is
+`POST /api/workflow-editor/nodes/{node_id}/trigger`; its body requires
+`expected_revision`, a JSON-object `payload`, and a non-empty `request_id` (up to
+128 characters), with optional `workflow_pack` and `correlation_key`. It checks
+`workflow_runs.control` in the saved workflow directory and returns HTTP 202 with
+`event_id` and `trace_id`. Retries with the same operator, node, and request ID
+reuse the queued event; use a new request ID for an intentional new run. A fixed
+trigger correlation key is used automatically and conflicting values are rejected.
+Accepted attempts are resolved before checking the current workflow revision, so
+an unchanged retry can recover its original run after a save or lost response.
+Retry payload comparison ignores object-key order and distinguishes booleans from
+numbers; changing the payload while reusing a request ID is rejected.
+Execution uses the existing runtime configuration behavior; the revision check
+does not pin downstream execution to a snapshot. Event catalog entries currently
+provide names and descriptions rather than payload validation schemas.
 
 `trigger:agent:artifact-staged` consumes only the durable event written by a successful agent
 `stage_artifact` gateway call. It can filter on one exact relative `artifact_path` or a
@@ -954,7 +987,9 @@ checkout and the checkout is an ancestor of the cached configured-branch tip. A 
 explicitly advances the worker trust record, allowing an assistant-requested fetch or pull to
 survive even if the control-plane cache has since advanced farther along the same branch. Divergent
 or arbitrary local commits remain rejected. Preparation still validates the repository source,
-clean working tree, detached read-only configuration, and session access. If both the worker
+unchanged tracked and staged files, detached read-only configuration, and session access.
+Unrelated untracked files are preserved and do not block reuse or refresh. A checkout update
+fails if it would overwrite a local untracked file, including an ignored file. If both the worker
 checkout and a cached managed-mirror commit are missing, preparation fails clearly instead of
 silently initializing the mirror from upstream. Materializing a missing worker checkout still uses
 the managed Git read endpoint and therefore its normal freshness enforcement; after that mandatory
@@ -2649,14 +2684,18 @@ and user lookup. Retryable failure of one target does not delay healthy targets.
 initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and
 `target_backoff_max_seconds` (default `900`) in `config/teams-ingest/config.json`; the older
 `backoff_seconds` remains reserved for worker-wide configuration or store failures.
-Timeouts, transport failures, and Graph `5xx` responses instead use the shorter
+Background Graph polls hand a timed-out request directly to durable target backoff, without
+retrying the request inside the worker cycle. Interactive Teams requests retain their configured
+retry behavior. Timeouts, transport failures, and Graph `5xx` responses use the shorter
 `target_transient_backoff_initial_seconds` (default `5`) and
 `target_transient_backoff_max_seconds` (default `30`) progression. Graph `429` responses honor
 `Retry-After`, while authentication and other non-transient failures retain the longer cooldown.
 `max_concurrent_target_polls` in that same worker configuration bounds concurrent channel and chat
-polls across the worker (range `1`–`32`, default `1`). Directory selection, sender resolution, and
-direct-chat discovery remain serial; directories are processed one at a time, so the configured
-limit is global to the worker cycle. Choose a limit that fits the deployment's Graph quota and workload; restart
+polls across the worker (range `1`–`32`, default `4`). Completed target polls are ingested and wake
+the trigger worker while slower targets are still running. An explicit value of `1` selects serial
+polling. Directory selection, sender resolution, and direct-chat discovery remain serial;
+directories are processed one at a time, so the configured limit is global to the worker cycle.
+Choose a limit that fits the deployment's Graph quota and workload; restart
 `evander-teams-ingest.service` after changing this worker setting.
 
 `publish_trigger_events_directly` defaults to `true`. Each Teams ingest cycle captures one compiled

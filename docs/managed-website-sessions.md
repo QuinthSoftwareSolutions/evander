@@ -1,10 +1,18 @@
 # Managed website sessions
 
+Enabled add-ons can supply additional login adapters. All adapters use the same
+session proof, target origin, directory policy and broker expiry checks. Their
+configuration and credential bindings are owned by the add-on; see the
+[WordPress adapter](../packages/wordpress-addon/docs/operations.md#browser-and-builder-editing).
+Generic JSON profiles can map temporary cookies with `cookies_response_pointer`;
+exported cookies must be secure, scoped to the granted host and expire within the
+broker's lifetime.
+
 An operator can grant an assistant authenticated browser access to a website without
 putting the website password in its VM or container. The existing HTTP target relay
 logs in on the host and returns selected temporary browser storage. This initial
-adapter supports HTTPS JSON POST logins with JSON responses and local/session storage;
-interactive SSO, MFA, and cookie-based login flows need a different adapter.
+JSON adapter supports HTTPS POST logins with JSON responses and temporary storage/cookies;
+interactive SSO and MFA need a different adapter.
 
 In Admin Web, select the directory and open **Configuration → Access, approvals &
 audit → Website logins**. Directory owners can inspect profiles; editing, credential

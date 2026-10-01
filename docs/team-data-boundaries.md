@@ -15,13 +15,19 @@ narrower modules directly.
 | Dispatch, journal, outbox, and ephemeral assignment records | `model_dispatch` |
 | Conversations, attachments, chat ingress, and work lineage | `model_chat` |
 | Release packages, verification, and human review | `model_releases` |
-| Aggregate state and cross-collection validation | `model_state` |
+| Aggregate state and cross-collection validation | `model_state`, `model_release_validation` |
 | Relationship queries and wake fingerprints | `model_queries`, `model_work_fingerprints` |
 | Read payloads | `state_projections`, `activity_projections`, `runtime_projections`, `attention_projections`, `release_projections` |
 
 Read projections depend on model definitions. Aggregate validators import their
 relationship queries inside the methods that need them, so the aggregate and
 query modules do not require partially initialized module objects.
+
+`model_state` retains aggregate validation order. `model_release_validation`
+checks each release's ownership, cohort, predecessor, deliverables, waivers,
+verification runs, reviews, current run count, and frozen manifest in order.
+Missing run or review references append diagnostics before continuing with the
+remaining records. Its aggregate type import is used only for type checking.
 
 `TeamStateSqliteStore` continues to own connection lifetime, locking, snapshot
 reads, revision checks, state validation, and transaction boundaries. The domain

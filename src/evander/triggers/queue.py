@@ -156,6 +156,14 @@ class SqliteTriggerEventQueue:
             ).fetchone()
         return row is not None
 
+    def get_by_idempotency_key(self, idempotency_key: str) -> TriggerQueueRecord | None:
+        normalized_key = _normalize_idempotency_key(idempotency_key)
+        if normalized_key is None:
+            return None
+        with storage_lock(self._lock), connect_orchestration_db_read_only(self.path) as connection:
+            connection.execute("BEGIN")
+            return self._fetch_record_by_idempotency_key(connection, normalized_key)
+
     def list_pending(
         self,
         *,
