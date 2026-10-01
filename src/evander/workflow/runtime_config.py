@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
@@ -123,7 +124,7 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         self,
         *,
         project_dir: Path,
-        initial_config: TriggerOrchestratorWorkerGlobalConfig,
+        initial_config: TriggerOrchestratorWorkerGlobalConfig | None = None,
         base_config: GatewayConfig | None = None,
     ) -> None:
         self._path = _worker_global_config_path(project_dir)
@@ -132,8 +133,8 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         self._base_config = base_config or GatewayConfig(
             runtime_dir=Path(self._base_payload.get("runtime_dir") or "runtime")
         )
-        self._current_config = initial_config
         self._last_fingerprint = self._compute_fingerprint()
+        self._current_config = initial_config or self._load_from_path()
 
     def get_latest(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
         return self._reload(force=False)
@@ -158,7 +159,8 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
             return self._current_config, False
 
         changed = next_config != self._current_config
-        self._current_config = next_config
+        if changed:
+            self._current_config = next_config
         self._last_fingerprint = fingerprint
         return self._current_config, changed
 
@@ -171,6 +173,7 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         runtime_dir = Path(self._base_payload.get("runtime_dir") or "runtime")
         communication_targets_path = communication_targets_db_path(runtime_dir)
         fingerprints.extend(_sqlite_fingerprints(communication_targets_path))
+        fingerprints.extend(_sqlite_fingerprints(self._base_config.directories_store_path))
 
         for pack_path in self._workflow_pack_paths():
             pack_fingerprint = _file_fingerprint(pack_path)
@@ -226,6 +229,29 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
             except Exception:
                 continue
         return paths
+
+
+class TriggerOrchestratorWorkerGlobalConfigCache:
+    """Lazily compile workflow configuration and check its dependencies on every read.
+
+    Callers must treat the returned configuration as read-only. Runtime cursors, directory
+    provider settings and communication policies are deliberately outside this cache.
+    """
+
+    def __init__(self, *, project_dir: Path, base_config: GatewayConfig) -> None:
+        self._project_dir = project_dir
+        self._base_config = base_config
+        self._reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None
+        self._lock = RLock()
+
+    def get_latest(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        with self._lock:
+            if self._reloader is None:
+                self._reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
+                    project_dir=self._project_dir,
+                    base_config=self._base_config,
+                )
+            return self._reloader.get_latest()[0]
 
 
 def _compile_worker_global_config(
@@ -425,9 +451,11 @@ def _file_fingerprint(path: Path) -> tuple[int, int, int, str] | None:
 
 def _sqlite_fingerprints(path: Path) -> list[tuple[int, int, int, str]]:
     fingerprints: list[tuple[int, int, int, str]] = []
-    for candidate in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
+    # Shared memory contains reader locks and WAL indexes, not committed policy data.
+    # Reading a store may change it; only the database and WAL invalidate compilation.
+    for candidate in (path, path.with_name(f"{path.name}-wal")):
         fingerprint = _file_fingerprint(candidate)
-        if fingerprint is None:
+        if fingerprint is None or (candidate != path and fingerprint[2] == 0):
             fingerprints.append((0, 0, 0, f"missing:{candidate}"))
         else:
             fingerprints.append(fingerprint)

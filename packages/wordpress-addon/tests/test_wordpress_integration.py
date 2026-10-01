@@ -207,6 +207,70 @@ def prepare(client, resources):
     return id, captured
 
 
+@pytest.mark.parametrize("existing_styles", [False, True])
+def test_real_block_editor_load_save_and_undo_keep_scope(wordpress, existing_styles):
+    client, data, wp = wordpress
+    theme = docker("exec", wp, "php", "-r", "require '/var/www/html/wp-load.php'; echo get_stylesheet();")
+    # A fresh block theme triggers both lazy global-styles creation and an
+    # uncached custom-CSS lookup in the real wp-admin editor request.
+    setup = """
+require '/var/www/html/wp-load.php';
+wp_set_current_user(get_user_by('login','designer')->ID);
+switch_theme('twentytwentyfive');
+$css=wp_insert_post(['post_type'=>'custom_css','post_status'=>'publish',
+    'post_name'=>'twentytwentyfive','post_content'=>'.fixture-css { color: rgb(12, 34, 56); }']);
+remove_theme_mod('custom_css_post_id');
+"""
+    if existing_styles:
+        setup += "WP_Theme_JSON_Resolver::get_user_global_styles_post_id();"
+    setup += "echo wp_json_encode(['css'=>$css,'styles'=>get_posts(['post_type'=>'wp_global_styles','fields'=>'ids','posts_per_page'=>-1])]);"
+    initialized = json.loads(docker("exec", wp, "php", "-r", setup))
+    assert bool(initialized["styles"]) == existing_styles
+    key = "post:" + str(data["post"])
+    keys = [key, "meta:" + str(data["post"]) + ":_edit_lock", "meta:" + str(data["post"]) + ":_edit_last"]
+    originals = {address: inspect(client, address) for address in keys}
+    option = inspect(client, "option:theme_mods_twentytwentyfive")
+    css = inspect(client, "post:" + str(initialized["css"]))
+    styles = {"post:" + str(id): inspect(client, "post:" + str(id)) for id in initialized["styles"]}
+    other = inspect(client, "post:" + str(data["other"]))
+    try:
+        id, snapshot = prepare(client, {address: {} if address == key else originals[address]["value"] for address in keys})
+        ticket = call(client, "browser/ticket", {"change_id": id, "fence": 100,
+            "expires_at": int(time.time() + 900)}).json()["ticket"]
+        cookies = call(client, "browser/redeem", {"ticket": ticket}).json()["storageState"]["cookies"]
+        cookie = "; ".join(row["name"] + "=" + row["value"] for row in cookies
+                           if row["path"] == "/" or row["path"].endswith("/wp-admin"))
+        with ContainerClient(wp, headers={"Cookie": cookie}) as browser:
+            editor = browser.request("GET", "/wp-admin/post.php?post=" + str(data["post"]) + "&action=edit")
+            assert editor.status_code == 200, editor.text[-1000:]
+            assert "rgb(12, 34, 56)" in editor.text, "Existing custom CSS must still reach the editor"
+            assert inspect(client, keys[1])["value"], "The covered edit lock must be saved, not suppressed"
+            nonce = browser.request("GET", "/wp-admin/admin-ajax.php?action=rest-nonce").text
+        with ContainerClient(wp, headers={"Cookie": cookie, "X-WP-Nonce": nonce}) as browser:
+            saved = browser.post("/index.php?rest_route=/wp/v2/pages/" + str(data["post"]),
+                json={"title": "Block editor saved", "content": "<!-- wp:paragraph --><p>Covered content.</p><!-- /wp:paragraph -->"})
+            assert saved.status_code == 200, saved.text
+            assert inspect(client, key)["value"]["post_title"] == "Block editor saved"
+            assert browser.post("/index.php?rest_route=/wp/v2/pages/" + str(data["other"]),
+                json={"title": "Uncovered editor write"}).status_code == 409
+            assert browser.request("GET", "/wp-admin/options.php").status_code == 403
+        assert inspect(client, "post:" + str(data["other"])) == other
+        assert inspect(client, "option:theme_mods_twentytwentyfive") == option
+        assert inspect(client, css["key"]) == css
+        assert all(inspect(client, address) == before for address, before in styles.items())
+        count = docker("exec", wp, "php", "-r", "require '/var/www/html/wp-load.php'; global $wpdb; echo $wpdb->get_var(\"SELECT COUNT(*) FROM $wpdb->posts WHERE post_type='wp_global_styles'\");")
+        assert int(count) == len(styles), "Editor loading must not create an untracked styles record"
+        assert call(client, "close", {"change_id": id}).status_code == 200
+        restored = call(client, "restore", {"change_id": id, "fence": 100, "snapshot": snapshot})
+        assert restored.status_code == 200, restored.text
+        assert all(inspect(client, address) == before for address, before in originals.items())
+        # Normal operator requests retain WordPress's initialization behavior.
+        normal = docker("exec", wp, "php", "-r", "require '/var/www/html/wp-load.php'; wp_set_current_user(get_user_by('login','designer')->ID); echo WP_Theme_JSON_Resolver::get_user_global_styles_post_id();")
+        assert int(normal) > 0
+    finally:
+        docker("exec", wp, "php", "-r", "require '/var/www/html/wp-load.php'; foreach (get_posts(['post_type'=>'wp_global_styles','post_status'=>'any','posts_per_page'=>-1]) as $post) { wp_delete_post($post->ID,true); } wp_delete_post(" + str(initialized["css"]) + ",true); switch_theme('" + theme + "');")
+
+
 def test_real_wp_protocol_atomic_apply_replay_and_undo_preserve_other_record(wordpress):
     client, data, wp = wordpress
     discovered = call(client, "discover")

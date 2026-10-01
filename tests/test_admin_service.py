@@ -9184,7 +9184,7 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
     )
     assert read_result.config["directories"] == []
     assert read_result.config["backoff_seconds"] == 60.0
-    assert read_result.config["max_concurrent_target_polls"] == 1
+    assert read_result.config["max_concurrent_target_polls"] == 4
     assert read_result.config["publish_trigger_events_directly"] is True
     assert read_result.config["target_transient_backoff_initial_seconds"] == 5.0
     assert read_result.config["target_transient_backoff_max_seconds"] == 30.0

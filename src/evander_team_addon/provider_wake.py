@@ -765,6 +765,7 @@ class _WakeDispatch:
                 agent_id=self.agent["id"],
                 dispatch_id=self.lease["dispatch_id"],
                 granted_tool_names=self.tool_grant_result["requested_tools"],
+                state=self.batch.state,
             )
             self.lease = {
                 **self.lease,
@@ -911,6 +912,7 @@ class _WakeDispatch:
             self.batch.state = TeamRuntimeService(self.batch.repo).mark_agent_dispatch_queued(
                 agent_id=self.agent["id"],
                 dispatch_id=self.lease["dispatch_id"],
+                state=self.batch.state,
             )
             self.batch.dispatches.append(
                 {

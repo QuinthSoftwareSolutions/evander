@@ -314,7 +314,8 @@ def test_storage_maintenance_does_not_block_inflight_effects(tmp_path, monkeypat
     entered, release = Event(), Event()
     threads = []
 
-    def maintenance(_config):
+    def maintenance(_config, *, run_garbage_collection):
+        assert run_garbage_collection is True
         threads.append(get_ident())
         entered.set()
         assert release.wait(5)

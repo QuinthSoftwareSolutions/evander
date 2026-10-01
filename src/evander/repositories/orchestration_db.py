@@ -77,6 +77,8 @@ class OrchestrationWalCheckpointResult:
     error: str | None = None
     history_index_pending: int = 0
     history_index_oldest_age_seconds: float | None = None
+    # None means collection was skipped; false means both bounded sweeps are idle.
+    garbage_collection_pending: bool | None = None
 
 
 @contextmanager

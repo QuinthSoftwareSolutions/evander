@@ -268,6 +268,38 @@ def test_effect_cursor_repository_records_last_processed_event(tmp_path: Path) -
     }
 
 
+def test_published_cursor_checkpoints_copy_only_the_retained_event_tail(tmp_path: Path) -> None:
+    class CountedEventIds(list[str]):
+        copied_elements = 0
+
+        def __iter__(self):
+            for value in super().__iter__():
+                self.copied_elements += 1
+                yield value
+
+        def __getitem__(self, index):
+            value = super().__getitem__(index)
+            if isinstance(index, slice):
+                self.copied_elements += len(value)
+            return value
+
+    path = tmp_path / "trigger-cursors.json"
+    repository = JsonGateCursorRepository(path)
+    event_ids = CountedEventIds()
+    for number in range(1_000):
+        event_ids.append(f"event-{number}")
+        repository.record_trigger_poll(
+            trigger_id="catch-up", trigger_type="trigger:teams:new-message",
+            discovered=number + 1, event_ids=event_ids,
+        )
+
+    assert event_ids.copied_elements <= 20_000
+    state = JsonGateCursorRepository(path).get_trigger_state("catch-up")
+    assert state["last_discovered_count"] == 1_000
+    assert state["last_event_ids"] == [f"event-{number}" for number in range(980, 1_000)]
+    assert state["last_event_id"] == "event-999"
+
+
 def test_execution_repository_supports_semantic_idempotency_and_gate_queries(
     tmp_path: Path,
 ) -> None:

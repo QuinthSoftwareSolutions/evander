@@ -103,6 +103,7 @@ from .sqlite_codec import (
 from .sqlite_deliverables import (
     DeliverableStoreMixin,
 )
+from .sqlite_dispatch_bookkeeping import DispatchBookkeepingStoreMixin
 from .sqlite_git import (
     GitStoreMixin,
 )
@@ -297,6 +298,7 @@ def _require_complete_state(state: TeamState) -> None:
 
 
 class TeamStateSqliteStore(
+    DispatchBookkeepingStoreMixin,
     CommandJournalStoreMixin,
     OrganizationStoreMixin,
     TaskStoreMixin,
@@ -342,15 +344,34 @@ class TeamStateSqliteStore(
     def read_projection(self, *, collections: Sequence[str]) -> TeamStateReadProjection:
         """Read only the collections needed by a read-only API projection."""
 
-        selected = frozenset(collections)
-        unknown = selected - _STATE_COLLECTION_FIELDS
-        if unknown:
-            raise ValueError(f"Unknown Team projection collections: {sorted(unknown)!r}")
+        selected = self._projection_collections(collections)
         # WAL readers can take a consistent snapshot without waiting for the
         # process-local writer lock or resetting the journal mode.
         with self._read_connection() as connection:
             connection.execute("BEGIN")
             payload = self._read_state_payload(connection, collections=selected)
+        return self._projection_from_payload(payload, selected=selected)
+
+    def _read_projection(
+        self, connection: sqlite3.Connection, *, collections: Sequence[str]
+    ) -> TeamStateReadProjection:
+        """Read a fresh projection from the caller's existing transaction."""
+        selected = self._projection_collections(collections)
+        payload = self._read_state_payload(connection, collections=selected)
+        return self._projection_from_payload(payload, selected=selected)
+
+    @staticmethod
+    def _projection_collections(collections: Sequence[str]) -> frozenset[str]:
+        selected = frozenset(collections)
+        unknown = selected - _STATE_COLLECTION_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown Team projection collections: {sorted(unknown)!r}")
+        return selected
+
+    @staticmethod
+    def _projection_from_payload(
+        payload: Mapping[str, Any], *, selected: frozenset[str]
+    ) -> TeamStateReadProjection:
         validated = {
             name: _STATE_FIELD_ADAPTERS[name].validate_python(value)
             for name, value in payload.items()
