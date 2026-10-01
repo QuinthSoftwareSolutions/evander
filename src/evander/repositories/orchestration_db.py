@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from evander.repositories.sqlite_runtime import (
@@ -812,7 +813,7 @@ def run_orchestration_retention_slice(
     time_budget_seconds: float = 0.25,
     busy_timeout_ms: int = MAINTENANCE_TIMEOUT_MS,
 ) -> OrchestrationRetentionResult:
-    """Resume bounded maintenance, shrinking work after a transaction deadline."""
+    """Resume bounded maintenance, adapting work to transaction deadlines."""
     if retention_days < 0 or compact_history_retention_days < 0:
         raise ValueError("retention days must be non-negative")
     if not 1 <= batch_size <= 10_000:
@@ -830,6 +831,7 @@ def run_orchestration_retention_slice(
             compact_history_retention_days=compact_history_retention_days,
             batch_size=effective_batch, index_batch_size=index_batch,
             time_budget_seconds=time_budget_seconds, busy_timeout_ms=busy_timeout_ms,
+            batch_size_limit=batch_size, batch_limits_json=row[0] if row else None,
         )
     except SqliteOperationDeadlineExceeded as error:
         # Lock contention is not evidence that a deletion batch is too large.
@@ -899,6 +901,8 @@ def _run_orchestration_retention_slice(
     index_batch_size: int = 10000,
     time_budget_seconds: float = 0.25,
     busy_timeout_ms: int = MAINTENANCE_TIMEOUT_MS,
+    batch_size_limit: int = 100,
+    batch_limits_json: str | None = None,
 ) -> OrchestrationRetentionResult:
     """Commit at most one bounded retention batch and durably retain its phase.
 
@@ -906,6 +910,7 @@ def _run_orchestration_retention_slice(
     existing policy; missing legacy FK indexes defer deletion rather than scan
     large child tables while holding the only writer lock.
     """
+    started = monotonic()
     now = datetime.now(UTC)
     today = now.date().isoformat()
     counts: dict[str, Any] = {}
@@ -1064,6 +1069,33 @@ def _run_orchestration_retention_slice(
                    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""",
                 (json_dumps({"date": progress["date"]}),),
             )
+        # Recover only limits fully exercised with time to spare. Empty or
+        # deferred phases do not establish that a larger batch is affordable.
+        if (
+            batch_limits_json is not None
+            and not waiting_for_history
+            and monotonic() - started < time_budget_seconds / 2
+        ):
+            limits = json_loads_object(batch_limits_json)
+            recovered = dict(limits)
+            records_deleted = sum(
+                count for name, count in counts.items() if name != "compact_index_rows_deleted"
+            )
+            if records_deleted >= batch_size and batch_size < batch_size_limit:
+                recovered["records"] = min(batch_size_limit, batch_size * 2)
+            if (
+                counts.get("compact_index_rows_deleted", 0) >= index_batch_size
+                and index_batch_size < 10000
+            ):
+                recovered["index_rows"] = min(10000, index_batch_size * 2)
+            if recovered != limits:
+                # Commit recovery with the cleanup it measured; never overwrite
+                # a reduction persisted by another worker since the initial read.
+                connection.execute(
+                    """UPDATE orchestration_metadata SET value_json=?
+                       WHERE key='retention_batch_limits' AND value_json=?""",
+                    (json_dumps(recovered), batch_limits_json),
+                )
     return OrchestrationRetentionResult(
         **counts,
         remaining=remaining,
