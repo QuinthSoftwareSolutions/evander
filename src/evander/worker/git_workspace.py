@@ -304,12 +304,12 @@ class GitWorkspaceOperations:
                 f"reference repo {request.repo_name} is missing and no cached commit is "
                 "available; set refresh_upstream=true"
             )
-        has_user_changes = self._reference_repo_has_user_changes(
+        has_tracked_changes = self._reference_repo_has_tracked_changes(
             paths=paths,
             target_dir=target_dir,
             expected_commit=current_commit,
         )
-        if has_user_changes:
+        if has_tracked_changes:
             raise ValueError(
                 f"reference repo checkout is dirty and cannot be prepared: {request.repo_name}"
             )
@@ -389,6 +389,7 @@ class GitWorkspaceOperations:
                     str(target_dir),
                     "checkout",
                     "--quiet",
+                    "--no-overwrite-ignore",
                     "--detach",
                     expected_commit,
                 ],
@@ -409,6 +410,7 @@ class GitWorkspaceOperations:
                         str(target_dir),
                         "checkout",
                         "--quiet",
+                        "--no-overwrite-ignore",
                         "--detach",
                         expected_commit,
                     ],

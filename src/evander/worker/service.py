@@ -1315,7 +1315,7 @@ class WorkerDaemon(GitWorkspaceOperations):
         # host-owned Git directory rather than its guest-owned configuration.
         # In particular, `git status` can invoke a configured clean/process
         # filter while comparing against the index.
-        if self._reference_repo_has_user_changes(
+        if self._reference_repo_has_tracked_changes(
             paths=paths,
             target_dir=target_dir,
             expected_commit=expected_commit,
@@ -1546,14 +1546,17 @@ class WorkerDaemon(GitWorkspaceOperations):
             label="reference repo trusted state",
         )
 
-    def _reference_repo_has_user_changes(
+    def _reference_repo_has_tracked_changes(
         self,
         *,
         paths: WorkerSessionPaths,
         target_dir: Path,
         expected_commit: str | None,
     ) -> bool:
-        """Return whether a guest checkout differs from a trusted tree.
+        """Return whether tracked files in a guest checkout differ from a trusted tree.
+
+        Untracked files do not prevent reuse. When preparation changes the
+        checkout, Git rejects conflicting local paths without overwriting them.
 
         The check deliberately does not run Git against the checkout's own
         Git directory.  Both its local and per-worktree configuration are
@@ -1640,16 +1643,13 @@ class WorkerDaemon(GitWorkspaceOperations):
                 text=True,
             )
         completed = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             env=isolated_env,
             check=True,
             capture_output=True,
             text=True,
         )
-        return any(
-            line and not (line.startswith("?? ") and line[3:].startswith((".evander/", ".git/")))
-            for line in completed.stdout.splitlines()
-        )
+        return bool(completed.stdout.strip())
 
     @staticmethod
     def _is_prepared_reference_checkout(

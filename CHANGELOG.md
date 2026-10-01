@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-01 - Preserve untracked files during reference preparation (0.76.3)
+
+- Allow persistent reference repositories to be reused or refreshed with unrelated
+  untracked files, including generated database sidecars, while retaining tracked
+  and staged change checks and trusted commit validation.
+- Reject checkout updates that would overwrite untracked or ignored local files,
+  preserving the existing checkout and trusted state on a path conflict.
+
 ## 2026-10-01 - Clarify control-plane transaction stages (0.76.2)
 
 - Apply Team agent action batches through named stages with invocation-local

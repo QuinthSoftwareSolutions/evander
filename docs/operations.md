@@ -3746,8 +3746,10 @@ For persistent read-only assistants, prefer
 effects. By default, the batch effect checks independent managed mirrors concurrently without
 an explicit upstream probe or refresh. It requires a cached branch commit before creating a missing
 worker checkout and otherwise leaves the checkout at its last trusted prepared commit, while still
-enforcing source identity, a clean working tree, detached HEAD, read-only configuration, and session
-access.
+enforcing source identity, unchanged tracked and staged files, detached HEAD, read-only
+configuration, and session access. Unrelated untracked files are preserved and do not block
+preparation. Checkout updates reject conflicting untracked paths, including ignored files,
+without overwriting local work.
 The worker keeps the trusted SHA outside the writable agent home and reports a structured conflict
 when a clean checkout has moved. On that mismatch path only, the control plane uses its local
 managed mirror to require `trusted commit <= checkout HEAD <= cached configured-branch tip`, where
