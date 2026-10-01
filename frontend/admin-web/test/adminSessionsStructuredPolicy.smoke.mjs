@@ -287,6 +287,10 @@ test("sessions structured policy round-trips allowed tools, contacts, metadata, 
     );
   }
 
+  await page.getByRole("button", { name: /^Model and access/ }).click();
+  for (const section of ["Contacts and communication", "Web access", "File transfer", "Cost category and metadata"]) {
+    await page.getByText(section, { exact: true }).click();
+  }
   const saveButton = page.getByRole("button", { name: "Save changes" });
   const contactsSection = page.getByText("Contacts", { exact: true }).first().locator("..");
   const contactAccessMode = contactsSection.getByRole("radiogroup", { name: "Contact access" });

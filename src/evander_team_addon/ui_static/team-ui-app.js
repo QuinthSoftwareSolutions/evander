@@ -86,7 +86,14 @@ export function createTeamAppController(peers) {
         return;
       }
       event.preventDefault();
+      if (button.dataset.teamLinkRecordKind === "task" && button.dataset.teamLinkRecordId) {
+        peers.board.openTaskBoardTask(button.dataset.teamLinkRecordId);
+        return;
+      }
       setTeamView(button.dataset.teamView || button.dataset.teamLinkView || defaultTeamView);
+      if (button.dataset.teamLinkRecordKind === "agent" && button.dataset.teamLinkRecordId) {
+        peers.people.selectTeamRecord("agent", button.dataset.teamLinkRecordId);
+      }
     });
     updateTeamViewTabs();
   }

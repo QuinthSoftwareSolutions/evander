@@ -6,6 +6,8 @@ import { RefreshIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import { RecordInspector } from "../admin/RecordInspector";
+import { FilterDisclosure } from "../admin/FilterDisclosure";
+import { adminHash } from "../../adminRouting";
 
 type AdminSectionTab =
   | "agents"
@@ -91,6 +93,7 @@ type ToolCallRelation = {
   tab: AdminSectionTab;
   value: string;
   tooltip: string;
+  routeKey?: string;
 };
 
 type ApprovalPayloadDifferenceEntry = {
@@ -432,7 +435,7 @@ function toolCallFiltersFromHash(): ToolCallFilters {
 
 function relationLinks(item: ToolCallItem): ToolCallRelation[] {
   const links: ToolCallRelation[] = [];
-  const pushLink = (tab: AdminSectionTab, label: string, value: string | null | undefined) => {
+  const pushLink = (tab: AdminSectionTab, label: string, value: string | null | undefined, routeKey?: string) => {
     if (!value) {
       return;
     }
@@ -444,14 +447,15 @@ function relationLinks(item: ToolCallItem): ToolCallRelation[] {
       label,
       value,
       tooltip: `${label}: ${value}`,
+      routeKey,
     });
   };
 
   pushLink("sessions", "Session", stringField(item, "session_id"));
   pushLink("approvals", "Approval", stringField(item, "approval_request_id"));
-  pushLink("workflow", "Workflow run", stringField(item, "workflow_run_id", "trace_id"));
-  pushLink("agents", "Agent", stringField(item, "agent_id", "agent_session_id"));
-  pushLink("vms", "VM", stringField(item, "vm_id", "vm_name"));
+  pushLink("workflow", "Workflow run", stringField(item, "workflow_run_id", "trace_id"), stringField(item, "workflow_run_id") ? "run_id" : "trace_id");
+  pushLink("agents", "Agent", stringField(item, "agent_id", "agent_session_id"), stringField(item, "agent_id") ? "agent_id" : "session_id");
+  pushLink("vms", "VM", stringField(item, "vm_name", "vm_id"));
 
   const relatedLinks = item.related_links;
   if (Array.isArray(relatedLinks)) {
@@ -480,7 +484,7 @@ function relationLinks(item: ToolCallItem): ToolCallRelation[] {
       const value = typeof rawLink.value === "string" ? rawLink.value : typeof rawLink.id === "string" ? rawLink.id : "";
       const label = typeof rawLink.label === "string" ? rawLink.label : tabLabel(tab);
       if (value) {
-        pushLink(tab, label, value);
+        pushLink(tab, label, value, kindValue === "workflow_trace" ? "trace_id" : undefined);
       }
     }
   }
@@ -874,8 +878,13 @@ export function ToolCallsPage() {
     });
   }, [filters.query, items, selectedCallKey]);
 
-  function navigateToTab(tab: AdminSectionTab) {
-    window.location.hash = tab;
+  function navigateToRelation(link: ToolCallRelation) {
+    const routeKeys: Partial<Record<AdminSectionTab, string>> = {
+      sessions: "session_id", approvals: "request_id", workflow: "run_id",
+      agents: "agent_id", vms: "vm_name", workers: "worker_id", issues: "issue_id", "tool-calls": "q",
+    };
+    const key = link.routeKey ?? routeKeys[link.tab];
+    window.location.hash = adminHash(link.tab, key ? { [key]: link.value } : {});
   }
 
   return (
@@ -915,22 +924,6 @@ export function ToolCallsPage() {
           />
         </label>
         <label className="field-stack">
-          <span>Session</span>
-          <input
-            value={filters.sessionId}
-            onChange={(event) => setFilters((current) => ({ ...current, sessionId: event.target.value }))}
-            placeholder="session-123"
-          />
-        </label>
-        <label className="field-stack">
-          <span>Tool</span>
-          <input
-            value={filters.toolName}
-            onChange={(event) => setFilters((current) => ({ ...current, toolName: event.target.value }))}
-            placeholder="prompt_agent"
-          />
-        </label>
-        <label className="field-stack">
           <span>Status</span>
           <select
             value={filters.status}
@@ -944,6 +937,16 @@ export function ToolCallsPage() {
             <option value="denied">Denied</option>
             <option value="error">Error</option>
           </select>
+        </label>
+        <FilterDisclosure activeCount={[filters.sessionId, filters.toolName, filters.createdAfter, filters.createdBefore,
+          !filters.directOnly, filters.limit !== String(DEFAULT_LIMIT)].filter(Boolean).length}>
+        <label className="field-stack">
+          <span>Session</span>
+          <input value={filters.sessionId} onChange={event => setFilters(current => ({ ...current, sessionId: event.target.value }))} placeholder="session-123" />
+        </label>
+        <label className="field-stack">
+          <span>Tool</span>
+          <input value={filters.toolName} onChange={event => setFilters(current => ({ ...current, toolName: event.target.value }))} placeholder="prompt_agent" />
         </label>
         <label className="checkbox-row">
           <input
@@ -980,6 +983,13 @@ export function ToolCallsPage() {
             placeholder={String(DEFAULT_LIMIT)}
           />
         </label>
+        </FilterDisclosure>
+        {filters.query || filters.sessionId || filters.toolName || filters.status !== "all" || filters.createdAfter || filters.createdBefore || !filters.directOnly || filters.limit !== String(DEFAULT_LIMIT) ? (
+          <button type="button" onClick={() => {
+            window.history.replaceState(null, "", adminHash("tool-calls"));
+            setFilters(toolCallFiltersFromHash());
+          }}>Clear filters</button>
+        ) : null}
       </section>
 
       <section className="feature-content">
@@ -1018,13 +1028,10 @@ export function ToolCallsPage() {
                     <thead>
                       <tr>
                         <th>Timestamp</th>
+                        <th>Tool</th>
                         <th>Status</th>
                         <th>Duration</th>
                         <th>Session</th>
-                        <th>Role / actor</th>
-                        <th>Directory</th>
-                        <th>Tool</th>
-                        <th>Request / correlation</th>
                         <th>Error</th>
                       </tr>
                     </thead>
@@ -1043,6 +1050,7 @@ export function ToolCallsPage() {
                             }}
                           >
                             <td>{formatTimestamp(item.created_at)}</td>
+                            <td><button type="button" className="record-name">{item.tool_name}</button></td>
                             <td>
                               <span className={`status-pill ${statusClass(itemStatus)}`}>
                                 {statusLabel(itemStatus)}
@@ -1050,26 +1058,13 @@ export function ToolCallsPage() {
                             </td>
                             <td>{formatDurationMs(item.duration_ms)}</td>
                             <td>{stringField(item, "session_id") ?? "None"}</td>
-                            <td>{normalizeActor(item)}</td>
-                            <td>{stringField(item, "directory_path") ?? "root"}</td>
-                            <td>
-                              <button type="button" className="record-name">
-                                {item.tool_name}
-                              </button>
-                            </td>
-                            <td>
-                              <div>{normalizeRequestId(stringField(item, "request_id"))}</div>
-                              <div className="panel-meta">
-                                {normalizeRequestId(stringField(item, "correlation_id"))}
-                              </div>
-                            </td>
                             <td>{truncateText(stringField(item, "error_summary", "error"), 88)}</td>
                           </tr>
                         );
                       })}
                       {!loading && items.length === 0 ? (
                         <tr>
-                          <td className="empty-state-cell" colSpan={9}>
+                          <td className="empty-state-cell" colSpan={6}>
                             No tool calls matched the current filters.
                           </td>
                         </tr>
@@ -1161,7 +1156,7 @@ export function ToolCallsPage() {
                           <button
                             className="admin-action-button compact"
                             type="button"
-                            onClick={() => navigateToTab(link.tab)}
+                            onClick={() => navigateToRelation(link)}
                           >
                             {relationButtonLabel(link)}
                           </button>
@@ -1255,7 +1250,7 @@ export function ToolCallsPage() {
                     />
                   </div>
 
-                  <details className="raw-json-panel" open>
+                  <details className="raw-json-panel">
                     <summary>Normalized metadata</summary>
                     <p className="field-description">
                       The fields below are the structured values surfaced by the audit log and the UI.

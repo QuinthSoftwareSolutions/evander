@@ -176,6 +176,7 @@ export function UsersPage() {
   const [contacts, setContacts] = useState<AdminContactSummary[]>([]);
   const [selectedLogin, setSelectedLogin] = useState<string | null>(() => readAdminHashQuery().get("login"));
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(() => readAdminHashQuery().get("group_id"));
+  const [search, setSearch] = useState("");
   const [creatingUser, setCreatingUser] = useState(false);
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [form, setForm] = useState<UserFormState>(EMPTY_FORM);
@@ -208,6 +209,14 @@ export function UsersPage() {
         }),
       ),
     [groups],
+  );
+
+  const searchTerm = search.toLowerCase().trim();
+  const visibleUsers = sortedUsers.filter((user) =>
+    `${user.login} ${user.display_name ?? ""} ${(user.group_assignments ?? []).map((assignment) => assignment.group_id).join(" ")}`.toLowerCase().includes(searchTerm),
+  );
+  const visibleGroups = sortedGroups.filter((group) =>
+    `${group.group_id} ${group.display_name}`.toLowerCase().includes(searchTerm),
   );
 
   const groupsById = useMemo(
@@ -644,9 +653,13 @@ export function UsersPage() {
               Groups
             </button>
           </div>
+          <label className="field-stack">
+            <span>{isUsersMode ? "Find user" : "Find group"}</span>
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, login, or group" />
+          </label>
           {isUsersMode ? (
             <div className="feature-list user-list">
-              {sortedUsers.map((user) => (
+              {visibleUsers.map((user) => (
                 <button
                   key={user.login}
                   type="button"
@@ -672,13 +685,13 @@ export function UsersPage() {
               {canManageUsers && loading && users.length === 0 ? (
                 <div className="empty-state">Loading users...</div>
               ) : null}
-              {canManageUsers && !loading && users.length === 0 ? (
-                <div className="empty-state">No users are configured.</div>
+              {canManageUsers && !loading && visibleUsers.length === 0 ? (
+                <div className="empty-state">{users.length ? "No users match this search." : "No users are configured."}</div>
               ) : null}
             </div>
           ) : (
             <div className="feature-list user-list">
-              {sortedGroups.map((group) => (
+              {visibleGroups.map((group) => (
                 <button
                   key={group.group_id}
                   type="button"
@@ -703,8 +716,8 @@ export function UsersPage() {
               {canManageUsers && loading && groups.length === 0 ? (
                 <div className="empty-state">Loading groups...</div>
               ) : null}
-              {canManageUsers && !loading && groups.length === 0 ? (
-                <div className="empty-state">No groups are configured.</div>
+              {canManageUsers && !loading && visibleGroups.length === 0 ? (
+                <div className="empty-state">{groups.length ? "No groups match this search." : "No groups are configured."}</div>
               ) : null}
             </div>
           )}
@@ -741,24 +754,27 @@ export function UsersPage() {
                     </p>
                     <p className="muted-text">Directory: {selectedDirectoryPath}</p>
                   </div>
-                  {selectedUser ? (
-                    <div className="feature-toolbar-actions">
-                      <button
-                        type="button"
-                        className="admin-action-button danger compact"
-                        onClick={() => void deleteUser(selectedUser.login)}
-                        disabled={actionDisabled}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ) : null}
+                  <div className="feature-toolbar-actions">
+                    <button
+                      type="button"
+                      className="admin-action-button primary compact"
+                      onClick={() => void saveUser()}
+                      disabled={actionDisabled}
+                    >
+                      {saving ? "Saving..." : "Save"}
+                    </button>
+                    {selectedUser ? <button
+                      type="button"
+                      className="admin-action-button danger compact"
+                      onClick={() => void deleteUser(selectedUser.login)}
+                      disabled={actionDisabled}
+                    >Delete</button> : null}
+                  </div>
                 </div>
 
                 <article className="panel">
                   <div className="panel-header">
                     <h3>{selectedUser ? "Edit user" : "Add user"}</h3>
-                    <span className="panel-meta">{currentUserId}</span>
                   </div>
                   <div className="config-field-grid">
                     <label className="field-stack">
@@ -807,16 +823,6 @@ export function UsersPage() {
                         ))}
                       </select>
                     </label>
-                  </div>
-                  <div className="inline-actions">
-                    <button
-                      type="button"
-                      className="admin-action-button primary compact"
-                      onClick={() => void saveUser()}
-                      disabled={actionDisabled}
-                    >
-                      {saving ? "Saving..." : "Save"}
-                    </button>
                   </div>
                 </article>
 
@@ -989,103 +995,14 @@ export function UsersPage() {
                   ) : null}
                 </article>
 
-                <article className="panel">
-                  <div className="panel-header">
-                    <h3>User records</h3>
-                    <span className="panel-meta">{users.length} total</span>
-                  </div>
-                  <div className="table-wrap mobile-paired-table">
-                    <table className="admin-table">
-                      <thead>
-                        <tr>
-                          <th>Login</th>
-                          <th>Groups</th>
-                          <th>Display name</th>
-                          <th>Contact</th>
-                          <th>Password</th>
-                          <th>Last login</th>
-                          <th>Updated</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedUsers.map((user) => (
-                          <tr
-                            key={user.login}
-                            className={selectedLogin === user.login ? "selected" : ""}
-                            onClick={() => setSelectedLogin(user.login)}
-                          >
-                            <td>{user.login}</td>
-                            <td>
-                              {(user.group_assignments ?? []).map((assignment) => assignment.group_id).join(", ") ||
-                                "None"}
-                            </td>
-                            <td>{user.display_name || "None"}</td>
-                            <td>{user.contact ? user.contact.name : "None"}</td>
-                            <td>{user.local_password_enabled ? "Set" : "None"}</td>
-                            <td>{formatTimestamp(user.last_login_at)}</td>
-                            <td>{formatTimestamp(user.updated_at)}</td>
-                          </tr>
-                        ))}
-                        {sortedUsers.length === 0 ? (
-                          <tr>
-                            <td className="empty-state-cell" colSpan={7}>
-                              No user records.
-                            </td>
-                          </tr>
-                        ) : null}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className="mobile-record-list users-mobile-record-list" aria-label="User records">
-                    {sortedUsers.map((user) => (
-                      <button
-                        key={user.login}
-                        type="button"
-                        className={`mobile-record-card${selectedLogin === user.login ? " selected" : ""}`}
-                        aria-pressed={selectedLogin === user.login}
-                        onClick={() => setSelectedLogin(user.login)}
-                      >
-                        <div className="mobile-record-title-row">
-                          <strong>{userLabel(user)}</strong>
-                        </div>
-                        <div className="mobile-record-row">
-                          <span>Login</span>
-                          <span>{user.login}</span>
-                        </div>
-                        <div className="mobile-record-row">
-                          <span>Display</span>
-                          <span>{user.display_name || "None"}</span>
-                        </div>
-                        <div className="mobile-record-row">
-                          <span>Groups</span>
-                          <span>
-                            {(user.group_assignments ?? []).map((assignment) => assignment.group_id).join(", ") ||
-                              "None"}
-                          </span>
-                        </div>
-                        <div className="mobile-record-row">
-                          <span>Contact</span>
-                          <span>{user.contact ? user.contact.name : "None"}</span>
-                        </div>
-                        <div className="mobile-record-row">
-                          <span>Password</span>
-                          <span>{user.local_password_enabled ? "Set" : "None"}</span>
-                        </div>
-                        <div className="mobile-record-row">
-                          <span>Last login</span>
-                          <span>{formatTimestamp(user.last_login_at)}</span>
-                        </div>
-                        <div className="mobile-record-row">
-                          <span>Updated</span>
-                          <span>{formatTimestamp(user.updated_at)}</span>
-                        </div>
-                      </button>
-                    ))}
-                    {sortedUsers.length === 0 ? (
-                      <div className="empty-state mobile-record-empty">No user records.</div>
-                    ) : null}
-                  </div>
-                </article>
+                {selectedUser ? <details className="panel compact-disclosure">
+                  <summary>User activity and authentication</summary>
+                  <dl className="property-grid">
+                    <div><dt>Local password</dt><dd>{selectedUser.local_password_enabled ? "Set" : "None"}</dd></div>
+                    <div><dt>Last login</dt><dd>{formatTimestamp(selectedUser.last_login_at)}</dd></div>
+                    <div><dt>Updated</dt><dd>{formatTimestamp(selectedUser.updated_at)}</dd></div>
+                  </dl>
+                </details> : null}
               </>
             ) : null}
           </div>

@@ -386,6 +386,7 @@ export function VmsPage() {
                   <label className="field-stack">
                     <span>VM name</span>
                     <input
+                      autoFocus
                       value={createVmForm.vmName}
                       onChange={(event) => setCreateVmForm((current) => ({ ...current, vmName: event.target.value }))}
                       placeholder="lab-vm-1"
@@ -410,12 +411,9 @@ export function VmsPage() {
                     />
                   </label>
                 </div>
-                <div className="feature-grid">
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Bootstrap options</h3>
-                    </div>
-                    <div className="panel-body">
+                <div className="field-stack">
+                  <strong>Optional toolchains</strong>
+                  <div className="config-field-grid">
                       <label className="checkbox-row">
                         <input
                           type="checkbox"
@@ -468,8 +466,7 @@ export function VmsPage() {
                           />
                         </label>
                       ) : null}
-                    </div>
-                  </article>
+                  </div>
                 </div>
                 <div className="inline-actions">
                   <button
@@ -498,7 +495,9 @@ export function VmsPage() {
                   <dl className="property-grid">
                     <div>
                       <dt>Sessions</dt>
-                      <dd>{selectedVm.session_ids.length > 0 ? selectedVm.session_ids.join(", ") : "None"}</dd>
+                      <dd>{selectedVm.session_ids.length > 0 ? selectedVm.session_ids.map((sessionId, index) => (
+                        <span key={sessionId}>{index ? ", " : ""}<a href={`#sessions?${new URLSearchParams({ session_id: sessionId })}`}>{sessionId}</a></span>
+                      )) : "None"}</dd>
                     </div>
                     <div>
                       <dt>Directories</dt>
@@ -524,11 +523,11 @@ export function VmsPage() {
                 </article>
 
                 {Object.keys(selectedVm.labels).length > 0 ? (
-                  <article className="panel compact-panel">
-                    <div className="panel-header">
+                  <details className="panel compact-disclosure">
+                    <summary className="panel-header compact-disclosure-summary">
                       <h3>Labels</h3>
                       <span className="panel-meta">{Object.keys(selectedVm.labels).length} entries</span>
-                    </div>
+                    </summary>
                     <dl className="property-grid vm-label-grid">
                       {Object.entries(selectedVm.labels)
                         .sort(([leftKey], [rightKey]) =>
@@ -541,7 +540,7 @@ export function VmsPage() {
                           </div>
                         ))}
                     </dl>
-                  </article>
+                  </details>
                 ) : null}
               </div>
 
@@ -557,9 +556,9 @@ export function VmsPage() {
                 </details>
               ) : null}
             </>
-          ) : (
+          ) : !showCreateVm ? (
             <RecordPlaceholder>Select a VM to view details</RecordPlaceholder>
-          )}
+          ) : null}
         </section>
       </div>
     </RecordWorkspace>

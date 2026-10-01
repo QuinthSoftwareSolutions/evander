@@ -44,12 +44,13 @@ test("populated session rows stay readable and filter controls stay aligned", { 
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${fixture.url}/#tool-calls`);
+  await page.getByText("More filters", { exact: true }).click();
   const checkbox = page.getByRole("checkbox", { name: "Direct directory only" });
   await checkbox.waitFor();
-  const control = await page.getByRole("combobox", { name: "Status", exact: true }).boundingBox();
+  const control = await page.getByRole("textbox", { name: "Tool", exact: true }).boundingBox();
   const check = await checkbox.boundingBox();
   assert.ok(Math.abs(check.y + check.height / 2 - control.y - control.height / 2) <= 3,
-    "checkbox aligns with the adjacent filter input");
+    `checkbox aligns with the adjacent filter input: checkbox=${JSON.stringify(check)}, control=${JSON.stringify(control)}`);
 
   await page.goto(`${fixture.url}/#configuration`);
   const search = page.getByPlaceholder("Find setting");

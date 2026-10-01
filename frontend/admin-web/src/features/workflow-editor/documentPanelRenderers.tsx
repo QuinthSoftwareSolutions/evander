@@ -118,24 +118,44 @@ export function createDocumentPanelRenderers({
           subgroups: groupWorkflowNodeCatalogEntries(entries, group.kind),
         };
       })
-      .filter((group) => !compact || group.entries.length > 0);
+      .filter((group) => group.entries.length > 0);
+
+    const renderNodeButton = (entry: WorkflowEditorNodeCatalogEntry) => (
+      <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
+        <button
+          type="button"
+          draggable={!workflowMutationLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
+          onDragStart={(event) => startNodeTypeDrag(event, entry)}
+          onClick={() => {
+            addNode(entry.kind, entry.type);
+            if (compact) setCompactActivePanel(null);
+          }}
+          disabled={workflowMutationLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
+        >
+          {entry.label}
+        </button>
+      </Tooltip>
+    );
 
     return (
       <>
-        {compact ? (
-          <label className="compact-workflow-search">
-            <span>Search nodes</span>
-            <input
-              value={compactCreateSearch}
-              onChange={(event) => setCompactCreateSearch(event.target.value)}
-              placeholder="Trigger, gate, effect, query"
-            />
-          </label>
-        ) : null}
-        {compact && groups.length === 0 ? (
+        <label className="inspector-label workflow-node-search">
+          <span>Search nodes</span>
+          <input
+            type="search"
+            value={compactCreateSearch}
+            onChange={(event) => setCompactCreateSearch(event.target.value)}
+            placeholder="Trigger, gate, effect, query"
+          />
+        </label>
+        {groups.length === 0 ? (
           <div className="empty-state">No matching nodes.</div>
         ) : null}
-        {groups.map((group) => {
+        {normalizedSearch ? (
+          <div className="create-group-actions workflow-node-search-results">
+            {groups.flatMap((group) => group.entries).map(renderNodeButton)}
+          </div>
+        ) : groups.map((group) => {
           const hasTutorialAllowedNodeType = group.entries.some((entry) =>
             tutorialAllowsNodeType(entry.kind, entry.type),
           );
@@ -143,7 +163,7 @@ export function createDocumentPanelRenderers({
             <details
               key={group.kind}
               className="create-group"
-              open={compact || hasTutorialAllowedNodeType}
+              open={hasTutorialAllowedNodeType || undefined}
             >
               <summary className="create-group-summary">
                 <Tooltip content={group.description}>
@@ -151,45 +171,23 @@ export function createDocumentPanelRenderers({
                 </Tooltip>
                 <span className="create-group-count">{group.entries.length}</span>
               </summary>
-              <p className="create-group-description">{group.description}</p>
               <div className="create-subgroups">
-                {group.subgroups.map((subgroup) => {
-                  const subgroupHasTutorialAllowedNodeType = subgroup.entries.some((entry) =>
-                    tutorialAllowsNodeType(entry.kind, entry.type),
-                  );
-                  return (
-                    <details
+                {group.subgroups.map((subgroup) => (
+                    <section
                       key={subgroup.key}
-                      className="create-subgroup"
-                      open={compact || subgroupHasTutorialAllowedNodeType || undefined}
+                      className="workflow-node-family"
                     >
-                      <summary className="create-subgroup-summary">
+                      <div className="create-subgroup-summary">
                         <Tooltip content={subgroup.description}>
                           <span>{subgroup.label}</span>
                         </Tooltip>
                         <span className="create-subgroup-count">{subgroup.entries.length}</span>
-                      </summary>
-                      <div className="create-group-actions create-subgroup-actions">
-                        {subgroup.entries.map((entry) => (
-                          <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
-                            <button
-                              type="button"
-                              draggable={!workflowMutationLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
-                              onDragStart={(event) => startNodeTypeDrag(event, entry)}
-                              onClick={() => {
-                                addNode(entry.kind, entry.type);
-                                if (compact) setCompactActivePanel(null);
-                              }}
-                              disabled={workflowMutationLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
-                            >
-                              {entry.label}
-                            </button>
-                          </Tooltip>
-                        ))}
                       </div>
-                    </details>
-                  );
-                })}
+                      <div className="create-group-actions create-subgroup-actions">
+                        {subgroup.entries.map(renderNodeButton)}
+                      </div>
+                    </section>
+                ))}
               </div>
             </details>
           );
@@ -405,73 +403,20 @@ export function createDocumentPanelRenderers({
   }
 
   function renderDesktopCreatePanel() {
-    return (<details
-              className="sidebar-section collapsible-sidebar-section"
-              open={isTutorialMode && tutorialCurrentRequiredAction()?.kind === "add-node"}
-            >
-              <summary className="collapsible-sidebar-summary">
-                <span className="section-label">Create</span>
-                <span className="collapsible-sidebar-meta">
-                  {createEntryCount} {createEntryCount === 1 ? "node" : "nodes"}
-                </span>
-              </summary>
-              {createEntriesByKind.map((group) => {
-                const hasTutorialAllowedNodeType = group.entries.some((entry) =>
-                  tutorialAllowsNodeType(entry.kind, entry.type),
-                );
-                return (
-                  <details
-                    key={group.kind}
-                    className="create-group"
-                    open={hasTutorialAllowedNodeType}
-                  >
-                    <summary className="create-group-summary">
-                      <Tooltip content={group.description}>
-                        <span>{group.label}</span>
-                      </Tooltip>
-                      <span className="create-group-count">{group.entries.length}</span>
-                    </summary>
-                    <p className="create-group-description">{group.description}</p>
-                    <div className="create-subgroups">
-                      {group.subgroups.map((subgroup) => {
-                        const subgroupHasTutorialAllowedNodeType = subgroup.entries.some((entry) =>
-                          tutorialAllowsNodeType(entry.kind, entry.type),
-                        );
-                        return (
-                          <details
-                            key={subgroup.key}
-                            className="create-subgroup"
-                            open={subgroupHasTutorialAllowedNodeType || undefined}
-                          >
-                            <summary className="create-subgroup-summary">
-                              <Tooltip content={subgroup.description}>
-                                <span>{subgroup.label}</span>
-                              </Tooltip>
-                              <span className="create-subgroup-count">{subgroup.entries.length}</span>
-                            </summary>
-                            <div className="create-group-actions create-subgroup-actions">
-                              {subgroup.entries.map((entry) => (
-                                <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
-                                  <button
-                                    type="button"
-                                    draggable={!workflowMutationLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
-                                    onDragStart={(event) => startNodeTypeDrag(event, entry)}
-                                    onClick={() => addNode(entry.kind, entry.type)}
-                                    disabled={workflowMutationLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
-                                  >
-                                    {entry.label}
-                                  </button>
-                                </Tooltip>
-                              ))}
-                            </div>
-                          </details>
-                        );
-                      })}
-                    </div>
-                  </details>
-                );
-              })}
-            </details>);
+    return (
+      <details
+        className="sidebar-section collapsible-sidebar-section workflow-create-section"
+        open={!isTutorialMode || tutorialCurrentRequiredAction()?.kind === "add-node"}
+      >
+        <summary className="collapsible-sidebar-summary">
+          <span className="section-label">Create</span>
+          <span className="collapsible-sidebar-meta">
+            {createEntryCount} {createEntryCount === 1 ? "node" : "nodes"}
+          </span>
+        </summary>
+        {renderCreatePanelBody()}
+      </details>
+    );
   }
 
   function renderDesktopSourceFilesPanel() {

@@ -200,11 +200,11 @@ function appendProperty(grid, label, value) {
   grid.append(item);
 }
 
-function appendJsonSection(parent, title, value, extraClass = "") {
+function appendJsonSection(parent, title, value, extraClass = "", expanded = false) {
   if (value == null) return;
-  const section = document.createElement("section");
+  const section = document.createElement(expanded ? "section" : "details");
   section.className = `detail-section ${extraClass}`.trim();
-  const heading = document.createElement("h3");
+  const heading = document.createElement(expanded ? "h3" : "summary");
   heading.textContent = title;
   const pre = document.createElement("pre");
   pre.textContent = JSON.stringify(value, null, 2);
@@ -336,7 +336,7 @@ function renderActionDetail() {
   }
   if (controls.childElementCount) els.actionDetail.append(controls);
 
-  appendJsonSection(els.actionDetail, "Prepared payload", action.payload || {});
+  appendJsonSection(els.actionDetail, "Prepared payload", action.payload || {}, "", true);
   if (evidenceIds.length) {
     appendJsonSection(els.actionDetail, "Managed evidence IDs", evidenceIds);
   }
@@ -344,13 +344,13 @@ function renderActionDetail() {
   appendJsonSection(els.actionDetail, "Evidence result", action.evidence_result, "success-section");
   appendJsonSection(els.actionDetail, "Failure details", action.error, "error-section");
 
-  const historySection = document.createElement("section");
+  const historySection = document.createElement("details");
   historySection.className = "detail-section";
-  const historyHeading = document.createElement("h3");
-  historyHeading.textContent = "History";
+  const historyHeading = document.createElement("summary");
   const timeline = document.createElement("ol");
   timeline.className = "timeline";
   const history = Array.isArray(action.history) ? action.history : [];
+  historyHeading.textContent = `History (${history.length})`;
   for (const entry of history) {
     const item = document.createElement("li");
     const line = document.createElement("div");

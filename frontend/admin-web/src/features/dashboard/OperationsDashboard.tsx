@@ -1052,19 +1052,6 @@ function DashboardBlock({
   if (title === "Admin state" || title === "Deployment") {
     return null;
   }
-  if (title === "Workers") {
-    return (
-      <DashboardCollapsibleBlock
-        title={title}
-        state={state}
-        missingFallback={missingFallback}
-        summary={summary}
-        actions={actions}
-      >
-        {children}
-      </DashboardCollapsibleBlock>
-    );
-  }
   return (
     <section className={`dashboard-block dashboard-block-${dashboardBlockSlug(title)}`}>
       <div className="dashboard-block-header">
@@ -1082,55 +1069,6 @@ function DashboardBlock({
       {state.error && !state.data ? <div className="callout error-callout">{state.error}</div> : null}
       {showChildren ? children : null}
     </section>
-  );
-}
-
-function DashboardCollapsibleBlock({
-  title,
-  state,
-  missingFallback,
-  summary,
-  actions,
-  defaultOpen = false,
-  children,
-}: {
-  title: string;
-  state: RemoteState<unknown>;
-  missingFallback: string;
-  summary?: string | null;
-  actions?: ReactNode;
-  defaultOpen?: boolean;
-  children: ReactNode;
-}) {
-  const tone = statusTone(state);
-  const showChildren = !state.loading && !state.error && !state.missing && state.data !== null;
-  return (
-    <details className={`dashboard-block dashboard-block-${dashboardBlockSlug(title)} dashboard-block-collapsible`} open={defaultOpen}>
-      <summary className="dashboard-block-summary">
-        <div className="dashboard-block-header">
-          <div className="dashboard-block-copy">
-            <div className="dashboard-block-title-row">
-              <div className="eyebrow">{title}</div>
-              <span className={`status-pill ${stateClassName(tone)}`}>{statusLabel(state)}</span>
-            </div>
-            <p>{remoteMessage(state, missingFallback, summary)}</p>
-          </div>
-          <div className="dashboard-block-actions">
-            {actions}
-            <span className="dashboard-panel-expand-control dashboard-block-expand-control" aria-hidden="true">
-              <span className="dashboard-panel-expand-text-closed">+</span>
-              <span className="dashboard-panel-expand-text-open">-</span>
-            </span>
-          </div>
-        </div>
-      </summary>
-      <div className="dashboard-block-collapsible-body">
-        {state.loading && !state.data ? <div className="empty-state">Loading...</div> : null}
-        {!state.loading && !state.error && state.missing && !state.data ? <div className="empty-state">{state.missing}</div> : null}
-        {state.error && !state.data ? <div className="callout error-callout">{state.error}</div> : null}
-        {showChildren ? children : null}
-      </div>
-    </details>
   );
 }
 
@@ -2248,11 +2186,6 @@ export function OperationsDashboard() {
           >
             <DashboardIcon name="refresh" />
           </button>
-          <TabButton tab="workflow" label="Open workflow" />
-          <TabButton tab="approvals" label="Open approvals" />
-          <TabButton tab="sessions" label="Open sessions" />
-          <TabButton tab="tool-calls" label="Open tool calls" />
-          <TabButton tab="configuration" label="Open config" />
         </div>
       </div>
 
@@ -2275,20 +2208,12 @@ export function OperationsDashboard() {
           <button key={metric.label} type="button" onClick={() => openTab(metric.tab)}>
             <span>{metric.label}</span>
             <strong>{metric.value ?? (metric.remote.loading ? "…" : "Unavailable")}</strong>
-            {metric.remote.error || metric.remote.missing ? <small>Partial data</small> : null}
+            {metric.remote.error || (metric.remote.missing && metric.remote.data === null) ? <small>Partial data</small> : null}
           </button>
         ))}
       </div>
       <div className="dashboard-panel-grid">
-        <div className="dashboard-panel-column dashboard-panel-column-primary">
-          <ProductContextPanel
-            releaseInfo={releaseInfo}
-            releaseInfoState={state.releaseInfo}
-            onLoadNewsEntry={loadNewsEntry}
-          />
-        </div>
-
-        <div className="dashboard-panel-column dashboard-panel-column-secondary">
+        <div className="dashboard-panel-column dashboard-panel-column-primary dashboard-panel-column-secondary">
           <section className="dashboard-attention" aria-label="Needs attention">
             <h2>Needs attention</h2>
             {approvals?.health.pending ? (
@@ -2301,7 +2226,10 @@ export function OperationsDashboard() {
               </button>
             ) : null}
             {workers.filter((worker) => worker.failed).length ? (
-              <button type="button" onClick={() => openTab("workers")}>
+              <button type="button" onClick={() => {
+                const failedWorkers = workers.filter(worker => worker.failed);
+                openTab("workers", failedWorkers.length === 1 ? { worker_id: failedWorkers[0].worker_id } : {});
+              }}>
                 <span>
                   <strong>{workers.filter((worker) => worker.failed).length} failed services</strong>
                   <small>Inspect service health and logs</small>
@@ -2313,11 +2241,13 @@ export function OperationsDashboard() {
             capacityHealth?.control_plane.disk.health === "critical" ? (
               <button
                 type="button"
-                onClick={() =>
-                  document
-                    .querySelector<HTMLDetailsElement>(".dashboard-panel-column-secondary > .dashboard-panel")
-                    ?.setAttribute("open", "")
-                }
+                onClick={() => {
+                  const panel = document.querySelector<HTMLDetailsElement>(".dashboard-panel-column-secondary > .dashboard-panel");
+                  if (panel) {
+                    panel.open = true;
+                    panel.scrollIntoView({ block: "start", behavior: "smooth" });
+                  }
+                }}
               >
                 <span>
                   <strong>Control-plane storage {capacityHealth.control_plane.disk.health}</strong>
@@ -2326,7 +2256,7 @@ export function OperationsDashboard() {
                 <span aria-hidden="true">↓</span>
               </button>
             ) : null}
-            {[state.approvals, state.workers, state.capacityHealth].some((remote) => remote.error || remote.missing) ? (
+            {[state.approvals, state.workers, state.capacityHealth].some((remote) => remote.error || (remote.missing && remote.data === null)) ? (
               <p className="callout warning-callout">
                 Some attention sources are unavailable. Review the status details below.
               </p>
@@ -3030,6 +2960,13 @@ export function OperationsDashboard() {
               ) : null}
             </DashboardBlock>
           </DashboardPanel>
+        </div>
+        <div className="dashboard-panel-column dashboard-panel-column-news">
+          <ProductContextPanel
+            releaseInfo={releaseInfo}
+            releaseInfoState={state.releaseInfo}
+            onLoadNewsEntry={loadNewsEntry}
+          />
         </div>
       </div>
     </div>

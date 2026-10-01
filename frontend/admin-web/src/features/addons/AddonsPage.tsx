@@ -253,6 +253,16 @@ export function AddonsPage() {
               </p>
             </div>
             <div className="feature-toolbar-actions">
+              {selectedAddon ? <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  aria-label={`Enable ${selectedAddon.display_name}`}
+                  checked={Boolean(selectedAddon.addon_id && draftEnabledSet.has(selectedAddon.addon_id))}
+                  disabled={mutationLocked || !selectedAddon.configurable || saving}
+                  onChange={() => toggleAddon(selectedAddon)}
+                />
+                <span>Enabled</span>
+              </label> : null}
               <button
                 type="button"
                 onClick={() => setDraftEnabledIds(state?.explicit_enabled_addon_ids ?? [])}
@@ -304,39 +314,10 @@ export function AddonsPage() {
             </div>
           ) : null}
 
+          {selectedAddon?.load_error ? <div className="callout warning-callout">{selectedAddon.load_error}</div> : null}
           {!selectedAddon ? <RecordPlaceholder>Select an add-on to view details</RecordPlaceholder> : null}
           <div className="detail-grid addons-detail-grid">
-            <article className="panel">
-              <div className="panel-header">
-                <h3>Enablement</h3>
-                {dirty ? (
-                  <span className="status-pill state-pending">Unsaved changes</span>
-                ) : (
-                  <span className="status-pill state-idle">Current</span>
-                )}
-              </div>
-              <div className="form-grid">
-                {state?.addons.map((addon) => {
-                  const draftEnabled = addon.addon_id ? draftEnabledSet.has(addon.addon_id) : false;
-                  return (
-                    <label key={addon.candidate_key} className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={draftEnabled}
-                        disabled={mutationLocked || !addon.configurable || saving}
-                        onChange={() => toggleAddon(addon)}
-                      />
-                      <span>
-                        <strong>{addon.display_name}</strong>
-                        <span className="muted-text"> {addon.addon_id ?? addon.source}</span>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </article>
-
-            <article className="panel">
+            {dirty || state?.restart_required ? <article className="panel">
               <div className="panel-header">
                 <h3>Restart impact</h3>
                 <span className={`status-pill ${dirty || state?.restart_required ? "state-waiting" : "state-running"}`}>
@@ -354,21 +335,11 @@ export function AddonsPage() {
                   <span className="status-pill state-running">None</span>
                 ) : null}
               </div>
-            </article>
+            </article> : state ? <p className="muted-text">Enablement is in sync with running services.</p> : null}
 
             {selectedAddon ? (
-              <article className="panel">
-                <div className="panel-header">
-                  <h3>Selected add-on</h3>
-                  <span
-                    className={`status-pill ${statusClass(selectedAddon, selectedAddon.addon_id ? draftEnabledSet.has(selectedAddon.addon_id) : false)}`}
-                  >
-                    {statusLabel(
-                      selectedAddon,
-                      selectedAddon.addon_id ? draftEnabledSet.has(selectedAddon.addon_id) : false,
-                    )}
-                  </span>
-                </div>
+              <details className="panel compact-disclosure">
+                <summary>Add-on source details</summary>
                 <dl className="metadata-grid">
                   <div>
                     <dt>ID</dt>
@@ -387,10 +358,7 @@ export function AddonsPage() {
                     <dd>{selectedAddon.entry_point_name ?? "n/a"}</dd>
                   </div>
                 </dl>
-                {selectedAddon.load_error ? (
-                  <div className="callout warning-callout">{selectedAddon.load_error}</div>
-                ) : null}
-              </article>
+              </details>
             ) : null}
 
             {selectedAddon ? (

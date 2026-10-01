@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { RecordPlaceholder, RecordWorkspace } from "../admin/RecordWorkspace";
+import { FilterDisclosure } from "../admin/FilterDisclosure";
 import { Tooltip } from "../admin/Tooltip";
 import { hashQueryParam } from "../../adminRouting";
 
@@ -340,8 +341,8 @@ function ApprovalPayloadDiagnosticSection({
   attemptedSummary: unknown;
 }) {
   return (
-    <section className="panel approval-payload-diagnostic">
-      <div className="panel-header">
+    <details className="panel compact-disclosure approval-payload-diagnostic" open={diagnostic.payloadMatch === false}>
+      <summary className="panel-header compact-disclosure-summary">
         <div>
           <h3>Approval payload diagnostic</h3>
           <p className="field-description">
@@ -349,7 +350,7 @@ function ApprovalPayloadDiagnosticSection({
           </p>
         </div>
         <span className={`status-pill ${diagnosticMatchClass(diagnostic.payloadMatch)}`}>{diagnosticMatchLabel(diagnostic.payloadMatch)}</span>
-      </div>
+      </summary>
 
       <dl className="property-grid approval-payload-diagnostic-grid">
         <div>
@@ -412,7 +413,7 @@ function ApprovalPayloadDiagnosticSection({
         {renderDiagnosticBucket("Missing fields", diagnostic.differences.missing, "No missing fields were reported.")}
         {renderDiagnosticBucket("Extra fields", diagnostic.differences.extra, "No extra fields were reported.")}
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -689,15 +690,7 @@ export function ApprovalsScreen() {
               <option value="expired">Expired</option>
             </select>
           </label>
-          <div className="panel section-panel">
-            <div className="feature-list-title-row">
-              <strong>Directory scope</strong>
-              <span className="panel-meta">{selectedDirectoryPath}</span>
-            </div>
-            <div className="feature-list-meta">
-              {filters.directOnly ? "Child directories excluded" : "Child directories included"}
-            </div>
-          </div>
+          <FilterDisclosure activeCount={[filters.directOnly, filters.sessionId.trim(), filters.vmId.trim(), filters.toolName.trim(), filters.minAgeMinutes.trim()].filter(Boolean).length}>
           <label className="checkbox-row">
             <input
               type="checkbox"
@@ -750,6 +743,12 @@ export function ApprovalsScreen() {
               placeholder="5"
             />
           </label>
+          </FilterDisclosure>
+          {filters.directOnly || filters.sessionId || filters.vmId || filters.toolName || filters.minAgeMinutes ? (
+            <button type="button" onClick={() => setFilters((current) => ({
+              ...current, directOnly: false, sessionId: "", vmId: "", toolName: "", minAgeMinutes: "",
+            }))}>Clear filters</button>
+          ) : null}
           <div className="feature-list">
             {items.map((item) => (
               <button
@@ -790,7 +789,7 @@ export function ApprovalsScreen() {
         <section className="feature-content">
           <div className="feature-toolbar">
             <div>
-              <h2>{detail ? detail.request.request_id : "Select a request"}</h2>
+              <h2>{detail ? detail.request.human_summary : "Select a request"}</h2>
               <p className="muted-text">Review payload context, record decisions, and keep the reason trail intact.</p>
             </div>
             <div className="feature-toolbar-actions">
@@ -801,57 +800,11 @@ export function ApprovalsScreen() {
           {error ? <div className="callout error-callout">{error}</div> : null}
           {statusMessage ? <div className="callout success-callout">{statusMessage}</div> : null}
 
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Review</h3>
-              <span className="panel-meta">
-                {detailLoading ? "Loading..." : detail ? detail.request.request_id : "Nothing selected"}
-              </span>
-            </div>
-            {detailLoading && selectedId && !detail ? (
+          {detailLoading && selectedId && !detail ? (
               <div className="empty-state">Loading approval request...</div>
             ) : detail ? (
               <div className="stack-layout">
-                <dl className="property-grid">
-                  <div>
-                    <dt>Status</dt>
-                    <dd>{detail.request.status}</dd>
-                  </div>
-                  <div>
-                    <dt>Tool</dt>
-                    <dd>
-                      <Tooltip content={`Requested tool/action: ${displayToolName(detail.request)}`}>
-                        {displayToolName(detail.request)}
-                      </Tooltip>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Session</dt>
-                    <dd>{detail.request.session_id}</dd>
-                  </div>
-                  <div>
-                    <dt>VM</dt>
-                    <dd>{detail.request.vm_id ?? "n/a"}</dd>
-                  </div>
-                  <div>
-                    <dt>Created</dt>
-                    <dd>{formatTimestamp(detail.request.created_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Age</dt>
-                    <dd>{formatRelativeSeconds(detail.age_seconds)}</dd>
-                  </div>
-                  <div>
-                    <dt>Expires</dt>
-                    <dd>{formatTimestamp(detail.request.expires_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Expires in</dt>
-                    <dd>{formatRelativeSeconds(detail.expires_in_seconds)}</dd>
-                  </div>
-                </dl>
-
-                <section className="approval-review-summary">
+                <section className="panel approval-review-summary">
                   <div className="panel-header approval-review-summary-header">
                     <h3>Summary</h3>
                     <span className="panel-meta">{detail.request.directory_path}</span>
@@ -874,24 +827,56 @@ export function ApprovalsScreen() {
                         </Tooltip>
                       </p>
                     ) : null}
-                    <p className="muted-copy">
-                      Directory:{" "}
-                      <Tooltip content={`Directory scope for this approval request: ${detail.request.directory_path}`}>
-                        <span>{detail.request.directory_path}</span>
-                      </Tooltip>
-                    </p>
-                    <p className="muted-copy">
-                      Arguments hash:{" "}
-                      <Tooltip
-                        content={`Arguments hash: ${detail.request.payload_digest}. A digest is a compact fingerprint of the submitted arguments, not the full secret payload.`}
-                      >
-                        <span>{detail.request.payload_digest}</span>
-                      </Tooltip>
-                    </p>
                   </div>
                 </section>
 
-                <div className="feature-grid">
+                <article className="panel">
+                <dl className="property-grid">
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{detail.request.status}</dd>
+                  </div>
+                  <div>
+                    <dt>Tool</dt>
+                    <dd>
+                      <Tooltip content={`Requested tool/action: ${displayToolName(detail.request)}`}>
+                        {displayToolName(detail.request)}
+                      </Tooltip>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Session</dt>
+                    <dd><a href={`#sessions?${new URLSearchParams({ session_id: detail.request.session_id })}`}>{detail.request.session_id}</a></dd>
+                  </div>
+                  <div>
+                    <dt>VM</dt>
+                    <dd>{detail.request.vm_id ? <a href={`#vms?${new URLSearchParams({ vm_name: detail.request.vm_id })}`}>{detail.request.vm_id}</a> : "None"}</dd>
+                  </div>
+                  <div>
+                    <dt>Created</dt>
+                    <dd>{formatTimestamp(detail.request.created_at)}</dd>
+                  </div>
+                  <div>
+                    <dt>Age</dt>
+                    <dd>{formatRelativeSeconds(detail.age_seconds)}</dd>
+                  </div>
+                  <div>
+                    <dt>Expires</dt>
+                    <dd>{formatTimestamp(detail.request.expires_at)}</dd>
+                  </div>
+                  <div>
+                    <dt>Expires in</dt>
+                    <dd>{formatRelativeSeconds(detail.expires_in_seconds)}</dd>
+                  </div>
+                </dl>
+
+                </article>
+                  <article className="panel">
+                    <div className="panel-header">
+                      <h3>Redacted payload</h3>
+                    </div>
+                    <pre className="log-view">{JSON.stringify(detail.redacted_payload, null, 2)}</pre>
+                  </article>
                   <article className="panel">
                     <div className="panel-header">
                       <h3>Decision</h3>
@@ -986,13 +971,6 @@ export function ApprovalsScreen() {
                     </div>
                   </article>
 
-                  <article className="panel">
-                    <div className="panel-header">
-                      <h3>Redacted payload</h3>
-                    </div>
-                    <pre className="log-view">{JSON.stringify(detail.redacted_payload, null, 2)}</pre>
-                  </article>
-                </div>
 
                 {approvalDiagnostic ? (
                   <ApprovalPayloadDiagnosticSection
@@ -1012,10 +990,11 @@ export function ApprovalsScreen() {
                   />
                 ) : null}
 
-                <article className="panel">
-                  <div className="panel-header">
+                <details className="panel compact-disclosure">
+                  <summary className="panel-header compact-disclosure-summary">
                     <h3>Decision history</h3>
-                  </div>
+                    <span className="panel-meta">{detail.request.decision_history.length} decisions</span>
+                  </summary>
                   {detail.request.decision_history.length > 0 ? (
                     <div className="history-list">
                       {detail.request.decision_history.map((entry, index) => (
@@ -1030,23 +1009,24 @@ export function ApprovalsScreen() {
                   ) : (
                     <div className="empty-state">No decision has been recorded yet.</div>
                   )}
-                </article>
+                </details>
 
-                <article className="panel">
-                  <div className="panel-header">
+                <details className="panel compact-disclosure">
+                  <summary className="panel-header compact-disclosure-summary">
                     <h3>Audit context</h3>
-                  </div>
+                    <span className="panel-meta">{detail.audit_context.length} entries</span>
+                  </summary>
+                  <p className="muted-copy">Request ID: {detail.request.request_id} · Arguments hash: {detail.request.payload_digest}</p>
                   {detail.audit_context.length > 0 ? (
                     <pre className="log-view">{JSON.stringify(detail.audit_context, null, 2)}</pre>
                   ) : (
                     <div className="empty-state">No matching audit entries were found.</div>
                   )}
-                </article>
+                </details>
               </div>
             ) : (
               <RecordPlaceholder>Select an approval to view details</RecordPlaceholder>
             )}
-          </article>
         </section>
       </div>
     </RecordWorkspace>

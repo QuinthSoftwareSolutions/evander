@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-01 - Simplify operator workspaces (0.78.0)
+
+- Prioritize dashboard attention and capacity over release news, flatten service
+  health details, and open a failed service directly from its attention shortcut.
+- Separate session monitoring, model/access settings, and wake schedules, and
+  worker status/logs from settings while retaining unsaved drafts and revision checks.
+- Keep common agent actions visible with text labels and group secondary actions
+  into a named menu. Flatten approval review and VM setup panels, and disclose
+  secondary filters, audit history, and technical metadata.
+- Open records directly from audit, approval, artifact, and Team attention links;
+  resolve artifact keys with Enter and simplify archive and report inventories.
+- Search workflow node types directly on desktop and mobile, flatten node families,
+  prioritize current runs, save from the compact toolbar, and show selected pack
+  history changes inline.
+- Remove duplicate add-on and user inventories, label configuration/policy save
+  actions, search users and pricing rules, and prioritize repository and subscription
+  actions. Preserve privilege gates, approval requirements, and reset confirmations.
+- Show Miro operation details inline and disclose supporting Bokio evidence and
+  history while retaining visible approval payloads and warnings.
+
 ## 2026-10-01 - Reduce control-plane polling and query payloads (0.77.0)
 
 - Select scoped Team deliverable identities before constructing event payloads,

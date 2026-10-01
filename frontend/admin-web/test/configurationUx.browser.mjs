@@ -1,0 +1,235 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
+import { browserHookTimeout, browserTestTimeout, suiteBrowser, withTimeout } from "./support/browserHarness.mjs";
+
+const browser = suiteBrowser();
+
+async function fixture(t, component, feature, routeHandler, hash = "") {
+  const html = `<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div><script type="module">
+    import React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { AdminUiContext } from '/src/features/admin/AdminContext.tsx';
+    import { ${component} } from '/src/features/${feature}/${component}.tsx';
+    import '/src/styles.css';
+    document.documentElement.dataset.adminDesign = '';
+    function Fixture() {
+      const [unlocked, setUnlocked] = React.useState(false);
+      const context = { authMode: 'local_password', canManageUsers: true, currentUserId: 'operator',
+        directoryScopedConfigEnabled: true, directoryTree: null, selectedDirectoryPath: 'root', privilegedUnlocked: unlocked };
+      return React.createElement(React.Fragment, null,
+        React.createElement('button', { onClick: () => setUnlocked(true) }, 'Unlock operations'),
+        React.createElement(AdminUiContext.Provider, { value: context },
+          React.createElement(${component}, { selectedDirectoryPath: 'root', privilegedUnlocked: unlocked })));
+    }
+    createRoot(document.getElementById('root')).render(React.createElement(Fixture));
+  </script></body></html>`;
+  const server = await createServer({
+    root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "error", server: { host: "127.0.0.1", port: 0 },
+    plugins: [{ name: "configuration-ux-fixture", configureServer(vite) {
+      vite.middlewares.use("/configuration-ux", async (_request, response) => {
+        response.setHeader("Content-Type", "text/html");
+        response.end(await vite.transformIndexHtml("/configuration-ux", html));
+      });
+    } }],
+  });
+  t.after(() => server.close(), { timeout: browserHookTimeout });
+  await withTimeout(server.listen(), 15_000, "Configuration UX fixture did not start");
+  const context = await browser.newContext(t);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/api/**", routeHandler);
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/configuration-ux${hash}`);
+  return { page, errors };
+}
+
+function addon(id, enabled) {
+  return { candidate_key: id, addon_id: id, display_name: `${id} extension`, source: `example_${id}`, source_type: "module",
+    entry_point_name: null, enabled, loaded: enabled, configurable: true, load_error: null,
+    has_admin_ui: false, has_admin_api: false, has_mcp_tools: false, has_connector_drivers: false, has_workflow_providers: false,
+    workflow_node_types: [], referenced_workflow_node_types: [], required_restart_services: ["evander-admin-web"] };
+}
+
+test("selected add-on enablement preserves other drafts and saves with its revision", { timeout: browserTestTimeout }, async (t) => {
+  let state = { addons: [addon("alpha", false), addon("beta", true)], explicit_enabled_addon_ids: ["beta"],
+    loaded_addon_ids: ["beta"], revision: "addons-1", restart_required: false, required_restart_services: [],
+    catalog_error: null, workflow_reference_error: null, config_mismatch: false };
+  const writes = [];
+  let finishLoading;
+  const loadingGate = new Promise((resolve) => { finishLoading = resolve; });
+  const { page, errors } = await fixture(t, "AddonsPage", "addons", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") await loadingGate;
+    if (request.method() === "PUT") {
+      writes.push(request.postDataJSON());
+      state = { ...state, explicit_enabled_addon_ids: request.postDataJSON().enabled_addon_ids, revision: "addons-2", restart_required: true,
+        required_restart_services: ["evander-admin-web"] };
+    }
+    await route.fulfill({ json: state });
+  }, "#addons?addon=alpha");
+  await page.getByRole("heading", { name: "Add-ons", exact: true }).waitFor();
+  assert.equal(await page.getByText("Enablement is in sync with running services.", { exact: true }).count(), 0);
+  finishLoading();
+  const enableAlpha = page.getByRole("checkbox", { name: "Enable alpha extension", exact: true });
+  await enableAlpha.waitFor();
+  assert.equal(await enableAlpha.isDisabled(), true);
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await enableAlpha.check();
+  await page.locator(".addon-list-item").filter({ hasText: "beta extension" }).click();
+  await page.getByRole("checkbox", { name: "Enable beta extension", exact: true }).uncheck();
+  await page.locator(".addon-list-item").filter({ hasText: "alpha extension" }).click();
+  assert.equal(await enableAlpha.isChecked(), true);
+  await page.getByRole("button", { name: "Save enablement", exact: true }).click();
+  await page.getByText("Saved add-on enablement.", { exact: false }).waitFor();
+  assert.deepEqual(writes, [{ enabled_addon_ids: ["alpha"], expected_revision: "addons-1" }]);
+  await page.getByRole("heading", { name: "Restart impact", exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+function user(login, displayName) {
+  return { login, display_name: displayName, contact_id: null, contact: null, local_password_enabled: true,
+    group_assignments: [], workflow_grants: [], effective_permissions: [], created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z", last_login_at: null };
+}
+
+test("user search retains the selected draft and the single save includes access assignments", { timeout: browserTestTimeout }, async (t) => {
+  let selected = user("alpha@example.test", "Alpha Operator");
+  const other = user("beta@example.test", "Beta Operator");
+  const writes = [];
+  const { page, errors } = await fixture(t, "UsersPage", "users", async (route) => {
+    const request = route.request();
+    if (request.method() === "PATCH") {
+      const data = request.postDataJSON();
+      writes.push(data);
+      selected = { ...selected, ...data };
+      return route.fulfill({ json: { user: selected } });
+    }
+    return route.fulfill({ json: { directory_path: "root", directory_scoped_config_enabled: true, contacts: [],
+      groups: [{ group_id: "reviewers", display_name: "Reviewers", is_required: false, permissions: ["workflows.read"] }],
+      permission_catalog: ["workflows.read", "workflows.write"], users: [selected, other] } });
+  }, "#users?login=alpha%40example.test");
+  await page.getByLabel("Display name", { exact: true }).fill("Alpha Reviewer");
+  await page.getByLabel("Find user", { exact: true }).fill("beta");
+  assert.equal(await page.locator(".user-list-item").count(), 1);
+  assert.match(await page.locator(".user-list-item").innerText(), /Beta Operator/);
+  assert.equal(await page.getByLabel("Display name", { exact: true }).inputValue(), "Alpha Reviewer");
+  await page.getByLabel("Find user", { exact: true }).fill("");
+  await page.getByRole("button", { name: "Add group", exact: true }).click();
+  await page.getByRole("button", { name: "Add grant", exact: true }).click();
+  await page.getByLabel("Workflow permission", { exact: true }).selectOption("workflows.write");
+  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 1);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByText("Saved alpha@example.test.", { exact: true }).waitFor();
+  assert.deepEqual(writes, [{ login: "alpha@example.test", display_name: "Alpha Reviewer",
+    group_assignments: [{ group_id: "reviewers", directory_path: "root" }],
+    workflow_grants: [{ permission: "workflows.write", directory_path: "root" }] }]);
+  assert.deepEqual(errors, []);
+});
+
+test("host health warnings and incomplete quarantine recovery stay visible with collapsed diagnostics", { timeout: browserTestTimeout }, async (t) => {
+  const definition = { display_name: "Shared inbox", description: "Operator files", root: "/srv/example/inbox",
+    capabilities: ["list", "import", "delete"], delete_requires_approval: true, disabled: false,
+    max_import_bytes: 1048576, max_import_entries: 100, max_watch_entries: 1000 };
+  let entries = [{ recovery_id: "recovery-1", original_path: "report.csv", kind: "file", size: 128,
+    recovery_status: "missing_payload", restore_available: false, purge_available: true }];
+  const writes = [];
+  const { page, errors } = await fixture(t, "HostDirectoriesPage", "hostDirectories", async (route) => {
+    const request = route.request();
+    const endpoint = new URL(request.url());
+    assert.equal(endpoint.searchParams.get("directory_path"), "root");
+    if (request.method() === "DELETE") {
+      writes.push(endpoint.pathname);
+      entries = [];
+      return route.fulfill({ json: {} });
+    }
+    if (endpoint.pathname.endsWith("/quarantine")) return route.fulfill({ json: { directory_path: "root", directory_id: "inbox", entries } });
+    return route.fulfill({ json: { directory_path: "root", revision: "directories-1", config: { host_directories: { inbox: definition } },
+      effective_config: { host_directories: { inbox: definition } }, provenance: {}, host_directories: [{ ...definition, directory_id: "inbox",
+        defined_here: true, health: { available: false, status: "unavailable", error: "Host path requires attention." } }] } });
+  }, "#host-directories?directory_id=inbox");
+  await page.getByText("Host path requires attention.", { exact: true }).waitFor();
+  const diagnostic = page.locator("details").filter({ has: page.getByText("Host path checks", { exact: false }) });
+  assert.equal(await diagnostic.getAttribute("open"), null);
+  await page.getByText("Recovery record needs attention:", { exact: false }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Restore", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Purge permanently", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: "Restore", exact: true }).isDisabled(), true);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Purge permanently", exact: true }).click();
+  await page.getByText("Purged report.csv.", { exact: true }).waitFor();
+  assert.deepEqual(writes, ["/api/admin/host-directories/inbox/quarantine/recovery-1/purge"]);
+  assert.deepEqual(errors, []);
+});
+
+test("pricing rule search preserves incomplete patterns, blocks invalid saves, and edits its source record", { timeout: browserTestTimeout }, async (t) => {
+  const rule = (id, model, input) => ({ id, provider: "openai", models: [model], model_patterns: [],
+    effective_from: null, effective_to: null, currency: "usd", rates_per_1m_tokens: { input, cached_input: null, output: "3" },
+    batch_multiplier: null, service_tier: null, long_context: null });
+  let catalog = { version: "1", currency: "usd", description: null, sources: [],
+    rules: [rule("zeta", "model-zeta", "1"), rule("alpha", "model-alpha", "2")] };
+  let revision = "pricing-1";
+  const writes = [];
+  const status = () => ({ status: "ok", path: "/tmp/example-pricing.json", path_source: "default", env_var: "EVANDER_MODEL_PRICING_PATH",
+    ...catalog, catalog, rule_count: catalog.rules.length, revision, editable: true, write_requires_privileged_unlock: true, error: null, error_class: null });
+  const { page, errors } = await fixture(t, "ConfigurationScreen", "configuration", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/configuration/model-pricing") {
+      if (request.method() === "PUT") {
+        const payload = request.postDataJSON();
+        writes.push(payload);
+        catalog = payload.catalog;
+        revision = "pricing-2";
+      }
+      return route.fulfill({ json: status() });
+    }
+    return route.fulfill({ json: { directory_scoped_config_enabled: true, selected_directory_path: "root",
+      selected_directory: { path: "root", parent_path: null, can_create: false, can_delete: false },
+      tabs: [{ key: "models_assistant_knowledge", title: "Models, Assistant & Knowledge", help_text: null, underlying_domains: [], sections: [] }],
+      tab_snapshots: { models_assistant_knowledge: { key: "models_assistant_knowledge", revision: "config-1", raw: { exists: false, config: {} },
+        effective: { config: {}, payload: {}, validation_diagnostics: [], errors: [] }, parent_defaults: { directory_path: null, config: {}, payload: {} } } },
+      directory_overrides: { field_count: 0, domain_count: 0, exists: false, overrides: {}, errors: [], payload: {} } } });
+  }, "#configuration?config_tab=models_assistant_knowledge&config_section=model-pricing");
+  const search = page.getByRole("searchbox", { name: "Search pricing rules", exact: true });
+  await search.waitFor();
+  assert.equal(await page.getByLabel("Rule id", { exact: true }).count(), 0);
+  await search.fill("model-alpha");
+  await page.locator(".record-collection-summary").filter({ hasText: "alpha" }).click();
+  await page.getByLabel("Input rate", { exact: true }).fill("9");
+  await page.getByRole("button", { name: "Unlock operations", exact: true }).click();
+  await page.getByRole("button", { name: "Add pattern", exact: true }).click();
+  await page.getByRole("textbox", { name: /^Pattern/ }).fill("^model(");
+  const save = page.getByRole("button", { name: "Save pricing", exact: true });
+  assert.equal(await save.isDisabled(), true);
+  await page.getByRole("alert").filter({ hasText: "Pricing rule alpha, model pattern 1" }).waitFor();
+  await page.locator(".record-collection-summary").filter({ hasText: "alpha" }).click();
+  assert.equal(await page.getByRole("textbox", { name: /^Pattern/ }).count(), 0);
+  assert.equal(await save.isDisabled(), true);
+  await search.fill("model-zeta");
+  await page.locator(".record-collection-summary").filter({ hasText: "zeta" }).click();
+  await page.getByRole("alert").filter({ hasText: "Pricing rule alpha, model pattern 1" }).waitFor();
+  assert.equal(await save.isDisabled(), true);
+  await search.fill("model-alpha");
+  await page.locator(".record-collection-summary").filter({ hasText: "alpha" }).click();
+  assert.equal(await page.getByRole("textbox", { name: /^Pattern/ }).inputValue(), "^model(");
+  assert.equal(writes.length, 0);
+  await page.getByRole("textbox", { name: /^Pattern/ }).fill("^model-alpha$");
+  assert.equal(await save.isDisabled(), false);
+  await page.getByRole("button", { name: "Duplicate", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('input[aria-label="Search pricing rules"]').value === "");
+  assert.equal(await search.inputValue(), "");
+  assert.equal(await page.getByLabel("Input rate", { exact: true }).inputValue(), "9");
+  await page.getByLabel("Rule id", { exact: true }).fill("alpha-copy-custom");
+  await page.getByRole("button", { name: "Save pricing", exact: true }).click();
+  await page.getByText("Saved model pricing catalog.", { exact: true }).waitFor();
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].expected_revision, "pricing-1");
+  assert.deepEqual(writes[0].catalog.rules.map((entry) => [entry.id, entry.models, entry.rates_per_1m_tokens.input]), [
+    ["zeta", ["model-zeta"], "1"], ["alpha", ["model-alpha"], "9"], ["alpha-copy-custom", ["model-alpha"], "9"],
+  ]);
+  assert.deepEqual(writes[0].catalog.rules.map((entry) => entry.model_patterns), [[], ["^model-alpha$"], ["^model-alpha$"]]);
+  assert.deepEqual(errors, []);
+});

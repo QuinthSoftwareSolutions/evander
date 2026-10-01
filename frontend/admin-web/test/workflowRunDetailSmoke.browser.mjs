@@ -611,6 +611,10 @@ test("workflow editor inspects a stored workflow run detail", { timeout: browser
     if (pathname === "/api/workflow-editor/run-detail") {
       detailRequests.push(`${pathname}${url.search}`);
       assert.equal(url.searchParams.get("event_id"), "evt-run-1");
+      if (detailRequests.length === 1) {
+        await route.fulfill(jsonResponse({ error: "Stored run detail is temporarily unavailable." }, 503));
+        return;
+      }
       await route.fulfill(jsonResponse(runDetail));
       return;
     }
@@ -657,6 +661,10 @@ test("workflow editor inspects a stored workflow run detail", { timeout: browser
   assert.equal(await currentRunCard.getByRole("button", { name: "Dismiss run" }).count(), 0);
   await assert.doesNotReject(() => currentRunCard.getByRole("button", { name: "Clear run" }).waitFor({ state: "visible" }));
   await page.locator(".runtime-run-card").getByRole("button", { name: "Inspect" }).click();
+  await page.getByRole("alert").filter({ hasText: "Stored run detail is temporarily unavailable." }).waitFor({ state: "visible" });
+  assert.equal(await page.locator(".workflow-run-history-search").evaluate(element => element.open), false);
+  assert.equal(await page.getByText("Inspected run", { exact: true }).count(), 0);
+  await page.locator(".runtime-run-card").getByRole("button", { name: "Inspect" }).click();
 
   await assert.doesNotReject(() => page.getByText("Inspected run").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Historical graph snapshot").waitFor({ state: "visible" }));
@@ -698,6 +706,11 @@ test("workflow editor inspects a stored workflow run detail", { timeout: browser
   await assert.doesNotReject(() => page.getByText("Artifact comm_1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Run-level tool calls").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Tool call audit" }).waitFor({ state: "visible" }));
+  const nodeToolCall = page.locator(".inspect-node-panel .run-detail-link-item").filter({ hasText: "Tool call prompt_agent" });
+  assert.equal(await nodeToolCall.getByText("Request tool-req-1", { exact: true }).isVisible(), false);
+  assert.equal(await nodeToolCall.getByText("Result Queued agent prompt", { exact: true }).isVisible(), true);
+  await nodeToolCall.getByText("Audit identifiers", { exact: true }).click();
+  assert.equal(await nodeToolCall.getByText("Request tool-req-1", { exact: true }).isVisible(), true);
   await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Session" }).first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Agent" }).first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Logs" }).first().waitFor({ state: "visible" }));
@@ -715,8 +728,12 @@ test("workflow editor inspects a stored workflow run detail", { timeout: browser
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Tool Calls", exact: true }).waitFor({ state: "visible" }));
   assert.equal(await page.evaluate(() => window.location.hash), "#tool-calls?q=tool-req-1");
 
-  assert.deepEqual(detailRequests, ["/api/workflow-editor/run-detail?event_id=evt-run-1"]);
+  assert.deepEqual(detailRequests, [
+    "/api/workflow-editor/run-detail?event_id=evt-run-1",
+    "/api/workflow-editor/run-detail?event_id=evt-run-1",
+  ]);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(notFoundResponses, []);
-  assert.deepEqual(consoleErrors, []);
+  assert.equal(consoleErrors.length, 1);
+  assert.match(consoleErrors[0], /503/);
 });

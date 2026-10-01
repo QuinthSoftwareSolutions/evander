@@ -366,3 +366,15 @@
     padding: 16px;
   }
 }
+[data-admin-design] .workflow-node-search {
+  margin-bottom: 12px;
+}
+[data-admin-design] .workflow-node-family > .create-subgroup-summary {
+  cursor: default;
+}
+[data-admin-design] :is(.workflow-run-history-search, .run-detail-link-identifiers) > summary {
+  cursor: pointer;
+  color: var(--ui-accent);
+  font-size: 12px;
+  padding-block: 8px;
+}

@@ -396,12 +396,43 @@ export function SkillsPage() {
 
           {!selectedSkill ? <RecordPlaceholder>Select a skill to view details</RecordPlaceholder> : null}
           <div className="detail-grid skills-detail-grid">
-            <details className="panel skill-upload-panel">
+            {selectedSkill ? <article className="panel">
+              {selectedSkill ? (
+                <div className="field-stack">
+                  <textarea
+                    className="skill-editor"
+                    aria-label="Skill content"
+                    rows={18}
+                    value={editContent}
+                    onChange={(event) => setEditContent(event.target.value)}
+                  />
+                  <div className="inline-actions compact-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => void handleReplace()}
+                      disabled={mutationLocked || busy !== null || !editContent.trim() || editContent === selectedSkill.content}
+                    >
+                      {busy === "replace" ? "Saving..." : "Save changes"}
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => void handleDelete()}
+                      disabled={mutationLocked || busy !== null}
+                    >
+                      {busy === "delete" ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty-state">Select a skill to preview or edit.</div>
+              )}
+            </article> : null}
+
+            <details className="panel skill-upload-panel" open={!loading && items.length === 0}>
               <summary>Upload skill</summary>
-              <div className="panel-header">
-                <h3>Upload</h3>
-                <span className="panel-meta">{uploadFileName || "Markdown"}</span>
-              </div>
+              {uploadFileName ? <p className="muted-text">{uploadFileName}</p> : null}
               <form className="form-grid" onSubmit={(event) => void handleUpload(event)}>
                 <label className="field-stack">
                   <span>Name</span>
@@ -430,7 +461,7 @@ export function SkillsPage() {
                 <label className="field-stack field-span-2">
                   <span>Content</span>
                   <textarea
-                    rows={10}
+                    rows={6}
                     value={uploadContent}
                     onChange={(event) => setUploadContent(event.target.value)}
                   />
@@ -447,42 +478,7 @@ export function SkillsPage() {
               </form>
             </details>
 
-            {selectedSkill ? <article className="panel">
-              <div className="panel-header">
-                <h3>Edit</h3>
-                <span className="panel-meta">{selectedSkill?.name ?? "None selected"}</span>
-              </div>
-              {selectedSkill ? (
-                <div className="field-stack">
-                  <textarea
-                    className="skill-editor"
-                    rows={18}
-                    value={editContent}
-                    onChange={(event) => setEditContent(event.target.value)}
-                  />
-                  <div className="inline-actions compact-actions">
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => void handleReplace()}
-                      disabled={mutationLocked || busy !== null || !editContent.trim()}
-                    >
-                      {busy === "replace" ? "Saving..." : "Replace"}
-                    </button>
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => void handleDelete()}
-                      disabled={mutationLocked || busy !== null}
-                    >
-                      {busy === "delete" ? "Deleting..." : "Delete"}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="empty-state">Select a skill to preview or edit.</div>
-              )}
-            </article> : null}
+
           </div>
         </section>
       </div>

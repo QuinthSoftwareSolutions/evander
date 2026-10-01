@@ -814,6 +814,7 @@ export function SessionsScreen() {
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [catalog, setCatalog] = useState<SessionCatalogResponse | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("active");
+  const [selectedSection, setSelectedSection] = useState<"overview" | "access" | "schedules">("overview");
   const [sessionFilter, setSessionFilter] = useState("");
   const [renewExtension, setRenewExtension] = useState("1d");
   const [showRenewModal, setShowRenewModal] = useState(false);
@@ -1763,7 +1764,10 @@ export function SessionsScreen() {
       setStatus(`${!item.enabled ? "Enabled" : "Disabled"} wake schedule ${item.request_id}.`);
       setError(null);
       const refreshed = await refreshSelectedSessionDetail(item.session_id);
-      bindWakeSchedule(item.request_id, refreshed.wake_schedules);
+      if (editingWakeRequestId === item.request_id) {
+        const updated = refreshed.wake_schedules.find((schedule) => schedule.request_id === item.request_id);
+        setWakeEnabled(updated?.enabled ?? !item.enabled);
+      }
       await refreshSelectedSessionLedger(item.session_id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -1991,10 +1995,25 @@ export function SessionsScreen() {
           </div>
 
           {error ? <div className="callout error-callout">{error}</div> : null}
+          {detailError ? <div className="callout error-callout" role="alert">{detailError}</div> : null}
           {status ? <div className="callout success-callout">{status}</div> : null}
           {selectedSession ? (
             <div className="stack-layout">
-              <article className="panel">
+              <nav className="inline-actions record-section-nav" aria-label="Session sections">
+                <button type="button" className={selectedSection === "overview" ? "primary" : ""}
+                  aria-pressed={selectedSection === "overview"} onClick={() => setSelectedSection("overview")}>
+                  Overview
+                </button>
+                <button type="button" className={selectedSection === "access" ? "primary" : ""}
+                  aria-pressed={selectedSection === "access"} onClick={() => setSelectedSection("access")}>
+                  Model and access{modelDirty || toolsDirty || policyDirty ? " · Unsaved" : ""}
+                </button>
+                <button type="button" className={selectedSection === "schedules" ? "primary" : ""}
+                  aria-pressed={selectedSection === "schedules"} onClick={() => setSelectedSection("schedules")}>
+                  Wake schedules{visibleWakeScheduleItems.length ? ` (${visibleWakeScheduleItems.length})` : ""}
+                </button>
+              </nav>
+              <article className="panel" hidden={selectedSection !== "overview"}>
                 <div className="panel-header">
                   <h3>Session overview</h3>
                 </div>
@@ -2002,7 +2021,7 @@ export function SessionsScreen() {
                   <dl className="property-grid">
                     <div>
                       <dt>VM</dt>
-                      <dd>{selectedSession.vm_id ?? "None"}</dd>
+                      <dd>{selectedSession.vm_id ? <a href={`#vms?${new URLSearchParams({ vm_name: selectedSession.vm_id })}`}>{selectedSession.vm_id}</a> : "None"}</dd>
                     </div>
                     <div>
                       <dt>Issue</dt>
@@ -2072,8 +2091,7 @@ export function SessionsScreen() {
                   </dl>
                 </div>
               </article>
-              <article className="panel">
-                <details className="compact-disclosure session-repository-access">
+              <details className="panel compact-disclosure session-repository-access" hidden={selectedSection !== "access"}>
                   <summary className="compact-disclosure-summary feature-list-title-row">
                     <h3>Repository access</h3>
                     <span className="panel-meta">{(detail?.git_grants ?? []).length} grants</span>
@@ -2178,10 +2196,9 @@ export function SessionsScreen() {
                       checkout files in place.
                     </p>
                   </div>
-                </details>
-              </article>
+              </details>
               {selectedSession.container_lifecycle ? (
-                <article className="panel">
+                <article className="panel" hidden={selectedSection !== "overview"}>
                   <div className="panel-header">
                     <h3>Container lifecycle</h3>
                     <span className={`status-pill state-${lifecycleClass(selectedSession)}`}>
@@ -2225,10 +2242,22 @@ export function SessionsScreen() {
                   </div>
                 </article>
               ) : null}
-              <div className="feature-grid">
-                <article className="panel">
+              <div className="stack-layout">
+                <article className="panel" hidden={selectedSection !== "access"}>
                   <div className="panel-header">
                     <h3>Model and access</h3>
+                    <div className="feature-toolbar-actions session-panel-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        onClick={() => void saveSessionSettings()}
+                        disabled={
+                          busy === "settings" || mutationLocked || (!modelDirty && !toolsDirty && !policyDirty)
+                        }
+                      >
+                        {busy === "settings" ? "Saving..." : "Save changes"}
+                      </button>
+                    </div>
                     <span className="panel-meta">
                       {policyBoundSessionId !== selectedSessionId
                         ? "Loading"
@@ -2397,6 +2426,9 @@ export function SessionsScreen() {
                           })}
                         </div>
                       </div>
+                      <details className="compact-disclosure" open={Boolean(connectorGrantsError)}>
+                        <summary className="compact-disclosure-summary">Integrations and host access</summary>
+                        <div className="stack-layout">
                       <div className="field-stack">
                         <span>Allowed scripts</span>
                         <p className="field-description">
@@ -2447,6 +2479,11 @@ export function SessionsScreen() {
                           disabled={mutationLocked}
                         />
                       </div>
+                      </div>
+                      </details>
+                      <details className="compact-disclosure" open={undefined}>
+                        <summary className="compact-disclosure-summary">Contacts and communication</summary>
+                        <div className="stack-layout">
                       <div className="field-stack">
                         <span>Approval notifications</span>
                         <p className="field-description">
@@ -2589,6 +2626,11 @@ export function SessionsScreen() {
                           ) : null}
                         </div>
                       ) : null}
+                      </div>
+                      </details>
+                      <details className="compact-disclosure" open={Boolean(httpTargetsError || policyDraft.httpTargetsSourceError)}>
+                        <summary className="compact-disclosure-summary">Web access</summary>
+                        <div className="stack-layout">
                       <label className="checkbox-row">
                         <input
                           type="checkbox"
@@ -2619,6 +2661,11 @@ export function SessionsScreen() {
                           disabled={mutationLocked}
                         />
                       </div>
+                      </div>
+                      </details>
+                      <details className="compact-disclosure" open={undefined}>
+                        <summary className="compact-disclosure-summary">File transfer</summary>
+                        <div className="stack-layout">
                       <div className="field-stack session-communication-files">
                         <span>Communication files</span>
                         <div className="session-communication-file-toggles">
@@ -2726,6 +2773,11 @@ export function SessionsScreen() {
                           validateItem={(value) => validateLeadingDotExtensionValue(value)}
                         />
                       </div>
+                      </div>
+                      </details>
+                      <details className="compact-disclosure" open={Boolean(policyMetadataError)}>
+                        <summary className="compact-disclosure-summary">Cost category and metadata</summary>
+                        <div className="stack-layout">
                       <CostCategoryInput value={policyDraft.costCategory} directoryPath={selectedSession.directory_path}
                         disabled={mutationLocked} onChange={(costCategory) => updatePolicyDraft({ costCategory })} />
                       <p className="field-description">Applies to newly submitted prompts. Earlier costs keep their category.</p>
@@ -2754,18 +2806,9 @@ export function SessionsScreen() {
                           emptyState="No metadata rows are configured."
                         />
                       </div>
-                      <div className="feature-toolbar-actions session-panel-actions">
-                        <button
-                          type="button"
-                          className="primary"
-                          onClick={() => void saveSessionSettings()}
-                          disabled={
-                            busy === "settings" || mutationLocked || (!modelDirty && !toolsDirty && !policyDirty)
-                          }
-                        >
-                          {busy === "settings" ? "Saving..." : "Save changes"}
-                        </button>
                       </div>
+                      </details>
+
                     </div>
                   ) : (
                     <p className="muted-text" role="status">
@@ -2773,7 +2816,7 @@ export function SessionsScreen() {
                     </p>
                   )}
                 </article>
-                <article className="panel">
+                <article className="panel" hidden={selectedSection !== "schedules"}>
                   <div className="panel-header">
                     <h3>Wake schedules</h3>
                     <div className="feature-toolbar-actions session-wake-actions">
@@ -2803,18 +2846,52 @@ export function SessionsScreen() {
                       >
                         Create new
                       </button>
-                      {selectedWakeSchedule && canToggleWakeScheduleEnabled(selectedWakeSchedule) ? (
-                        <button
-                          type="button"
-                          onClick={() => void toggleWakeScheduleEnabled(selectedWakeSchedule)}
-                          disabled={busy === `wake-toggle-${selectedWakeSchedule.request_id}` || mutationLocked}
-                        >
-                          {selectedWakeSchedule.enabled ? "Disable selected" : "Enable selected"}
-                        </button>
-                      ) : null}
+
                     </div>
                   </div>
                   <div className="panel-body">
+                    <div className="feature-list compact-list">
+                      {detailLoading && selectedSessionId ? (
+                        <div className="empty-state">Loading wake schedules...</div>
+                      ) : null}
+                      {!detailLoading &&
+                        visibleWakeScheduleItems.map((item) => (
+                          <div key={item.request_id} className={`feature-list-item${editingWakeRequestId === item.request_id ? " selected" : ""}`}>
+                            <button type="button" className="text-button" onClick={() => bindWakeSchedule(item.request_id)}
+                              aria-label={`Edit wake schedule ${item.request_id}`}>
+
+                            <div className="feature-list-title-row">
+                              <strong>
+                                {item.schedule_kind === "cron" ? item.cron : formatTimestamp(item.resume_at)}
+                              </strong>
+                              <span
+                                className={`status-pill state-${item.status === "cancelled" ? "idle" : item.enabled ? "running" : "idle"}`}
+                              >
+                                {item.status === "cancelled" ? "Cancelled" : item.enabled ? "Enabled" : "Disabled"}
+                              </span>
+                            </div>
+                            <div className="feature-list-meta">{item.prompt}</div>
+                            <div className="feature-list-meta">{item.resume_mode}</div>
+                            </button>
+                            {canToggleWakeScheduleEnabled(item) ? (
+                              <button type="button" onClick={() => void toggleWakeScheduleEnabled(item)}
+                                disabled={busy !== null || mutationLocked}
+                                aria-label={`${item.enabled ? "Disable" : "Enable"} wake schedule ${item.request_id}`}>
+                                {busy === `wake-toggle-${item.request_id}` ? "Updating…" : item.enabled ? "Disable" : "Enable"}
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                      {!detailLoading && detail?.wake_schedules.length === 0 ? (
+                        <div className="empty-state">No wake schedules configured.</div>
+                      ) : null}
+                      {!detailLoading &&
+                      (detail?.wake_schedules.length ?? 0) > 0 &&
+                      visibleWakeScheduleItems.length === 0 ? (
+                        <div className="empty-state">Past one-time schedules hidden.</div>
+                      ) : null}
+                    </div>
+                    <h4>{editingWakeRequestId ? "Edit schedule" : "New schedule"}</h4>
                     <label className="field-stack">
                       <span>Prompt</span>
                       <textarea
@@ -2915,41 +2992,6 @@ export function SessionsScreen() {
                             ? "Deleting..."
                             : "Delete selected"}
                         </button>
-                      ) : null}
-                    </div>
-                    <div className="feature-list compact-list">
-                      {detailLoading && selectedSessionId ? (
-                        <div className="empty-state">Loading wake schedules...</div>
-                      ) : null}
-                      {!detailLoading &&
-                        visibleWakeScheduleItems.map((item) => (
-                          <button
-                            key={item.request_id}
-                            type="button"
-                            className={`feature-list-item${editingWakeRequestId === item.request_id ? " selected" : ""}`}
-                            onClick={() => bindWakeSchedule(item.request_id)}
-                          >
-                            <div className="feature-list-title-row">
-                              <strong>
-                                {item.schedule_kind === "cron" ? item.cron : formatTimestamp(item.resume_at)}
-                              </strong>
-                              <span
-                                className={`status-pill state-${item.status === "cancelled" ? "idle" : item.enabled ? "running" : "idle"}`}
-                              >
-                                {item.status === "cancelled" ? "Cancelled" : item.enabled ? "Enabled" : "Disabled"}
-                              </span>
-                            </div>
-                            <div className="feature-list-meta">{item.prompt}</div>
-                            <div className="feature-list-meta">{item.resume_mode}</div>
-                          </button>
-                        ))}
-                      {!detailLoading && detail?.wake_schedules.length === 0 ? (
-                        <div className="empty-state">No wake schedules configured.</div>
-                      ) : null}
-                      {!detailLoading &&
-                      (detail?.wake_schedules.length ?? 0) > 0 &&
-                      visibleWakeScheduleItems.length === 0 ? (
-                        <div className="empty-state">Past one-time schedules hidden.</div>
                       ) : null}
                     </div>
                     <div className="wake-ledger-section">
@@ -3059,17 +3101,15 @@ export function SessionsScreen() {
                   </div>
                 </article>
               </div>
-              <article className="panel">
-                <details className="compact-disclosure">
+              <details className="panel compact-disclosure" hidden={selectedSection !== "overview"}>
                   <summary className="compact-disclosure-summary feature-list-title-row">
                     <h3>Session detail</h3>
                     <span className="panel-meta">{detailError ? "Unavailable" : "Live summary"}</span>
                   </summary>
                   <pre className="log-view">
-                    {detailError ? detailError : JSON.stringify(detail?.summary_json ?? selectedSession, null, 2)}
+                    {JSON.stringify(detail?.summary_json ?? selectedSession, null, 2)}
                   </pre>
-                </details>
-              </article>
+              </details>
               <RenewSessionModal
                 open={showRenewModal}
                 sessionId={selectedSession.session_id}

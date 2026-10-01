@@ -1705,23 +1705,37 @@ export function createTeamBoardController(peers) {
     return `<div class="task-board-card-blockers">${blockers.join("")}</div>`;
   }
 
-  function openCandidateCorrectionRecoveryTask(taskId) {
+  function openTaskBoardTask(taskId, { unavailableMessage = "This task is unavailable in the current scope." } = {}) {
     const task = peers.app.state.tasks?.[text(taskId)];
     const project = peers.app.state.projects?.[text(task?.project_id)];
-    if (!task || !project) {
-      peers.app.setStatus("The verified replacement task is not visible in the current scope.", "warning");
+    if (!task || !project || !peers.app.isVisibleProject(project)) {
+      peers.app.setStatus(unavailableMessage, "warning");
       return;
     }
     resetTaskBoardProjectState();
     selectedTaskBoardTeamId = text(project.team_id);
     selectedTaskBoardProjectId = text(project.id);
     selectedTaskBoardTaskId = text(task.id);
+    persistCaseBoardLocation();
     if (terminalTaskStates.has(text(task.state))) {
       taskBoardShowCompleted = true;
     }
     prepareSelectedTaskBoardTaskForDisplay();
+    const refreshBoard = peers.app.hasLoadedView("task-board");
     peers.app.setTeamView("task-board");
-    window.requestAnimationFrame(() => focusSelectedTaskBoardTask());
+    void peers.app.loadView("task-board", { force: refreshBoard, preserveForms: true })
+      .then(() => {
+        if (peers.app.activeTeamView === "task-board" && selectedTaskBoardTaskId === text(task.id)) {
+          prepareSelectedTaskBoardTaskForDisplay();
+          renderTaskBoard();
+          focusSelectedTaskBoardTask();
+        }
+      })
+      .catch((error) => peers.app.setStatus(error.message || "The task board could not be loaded.", "error"));
+  }
+
+  function openCandidateCorrectionRecoveryTask(taskId) {
+    openTaskBoardTask(taskId, { unavailableMessage: "The verified replacement task is not visible in the current scope." });
   }
 
   return {
@@ -1729,6 +1743,7 @@ export function createTeamBoardController(peers) {
     bindTaskBoardSelectors,
     dateInputLocalBoundary,
     openCandidateCorrectionRecoveryTask,
+    openTaskBoardTask,
     renderTaskBoard,
     get selectedTaskBoardProjectId() { return selectedTaskBoardProjectId; },
     get selectedTaskBoardTeamId() { return selectedTaskBoardTeamId; },

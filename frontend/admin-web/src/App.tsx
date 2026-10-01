@@ -3065,6 +3065,8 @@ export default function App() {
     undoWorkflowChange,
     canUndoWorkflowChanges,
     workflowMutationLocked,
+    saveDocument,
+    saveState,
     workflowRunReadLocked,
     createEntryCount,
     renderCreatePanelBody,

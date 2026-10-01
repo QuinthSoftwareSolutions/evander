@@ -287,6 +287,7 @@ test("workers page supports compact navigation, non-overlapping polling, and act
   await page.locator(".worker-list-item").filter({ hasText: "Trigger Orchestrator" }).click();
   await page.locator(".worker-list-item.selected").waitFor({ state: "visible" });
 
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const pollingControl = page.getByRole("combobox", { name: "Enable polling", exact: true });
   await pollingControl.waitFor();
   assert.deepEqual(await pollingControl.locator("option").allTextContents(), ["No", "Yes"]);
@@ -331,12 +332,13 @@ test("workers page supports compact navigation, non-overlapping polling, and act
   await page.getByRole("button", { name: "Clear filters" }).click();
   await page.getByRole("button", { name: "Stopped Worker, inactive" }).click();
   await page.getByRole("heading", { name: "Stopped Worker", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Status and logs", exact: true }).click();
   const overview = page.locator(".worker-overview-panel");
   assert.match(await overview.innerText(), /Unit file\s+disabled/i);
   assert.match(await overview.innerText(), /Detail\s+Disabled by operator policy\./i);
 
   // A slow poll must finish before the next polling delay begins.
-  await page.getByRole("button", { name: "Reload worker", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Reload log", exact: true }).waitFor({ state: "visible" });
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
   const slowPoll = blockNextLog();
   await page.clock.runFor(5000);
@@ -368,7 +370,7 @@ test("workers page supports compact navigation, non-overlapping polling, and act
   // Completing an in-flight request after unmount must not recreate a timer.
   await page.evaluate(() => { window.location.hash = "#workers"; });
   await page.locator(".worker-list-item").filter({ hasText: "Trigger Orchestrator" }).click();
-  await page.getByRole("button", { name: "Reload worker", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Reload log", exact: true }).waitFor({ state: "visible" });
   const unmountedPoll = blockNextLog();
   await page.clock.runFor(5000);
   await unmountedPoll.entered;
