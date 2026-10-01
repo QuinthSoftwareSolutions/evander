@@ -12,6 +12,8 @@ from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from heapq import merge
+from itertools import islice
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,9 +22,15 @@ from evander.approval_diagnostics import (
     DEFAULT_SENSITIVE_PAYLOAD_MARKERS,
 )
 from evander.models import DirectoryPath
+from evander.repositories.maintenance_indexes import (
+    RETENTION_SOURCE_INDEXES,
+    MaintenanceIndexesRequired,
+    retention_predicate,
+)
 from evander.repositories.operational_payloads import FORMAT_KEY, load_record
 from evander.repositories.orchestration_db import (
     WORKFLOW_REPORT_READ_DEADLINE_SECONDS,
+    _maintenance_indexes_ready,
     connect_orchestration_db,
     connect_orchestration_db_read_only,
     datetime_to_storage,
@@ -804,17 +812,20 @@ class PreparedRetentionBatch:
     payload_bytes: int
 
 
-def _retention_predicate(kind: str) -> str:
-    if kind in {"trigger", "transport"}:
-        comparison = "LIKE" if kind == "trigger" else "NOT LIKE"
-        return (
-            f"delivery_state='delivered' AND trigger_type {comparison} 'trigger:%' "
-            "AND COALESCE(delivered_at,occurred_at) < :cutoff"
-        )
-    return """((status IN ('succeeded','skipped','dropped')
-                AND COALESCE(finished_at,started_at) < :cutoff)
-        OR (status='failed' AND (dismissed_at IS NOT NULL OR cleared_at IS NOT NULL)
-            AND COALESCE(dismissed_at,cleared_at,finished_at,started_at) < :cutoff))"""
+def _retention_candidates(connection, *, cutoff, batch_size):
+    if not _maintenance_indexes_ready(connection):
+        raise MaintenanceIndexesRequired("Maintenance indexes must be built offline before retention")
+    streams = [
+        connection.execute(
+            source.selection_sql, {"cutoff": cutoff, "limit": batch_size}
+        ).fetchall()
+        for source in RETENTION_SOURCE_INDEXES
+    ]
+    # Each range yields at most N metadata rows. The union's oldest N must be
+    # among these prefixes; hydrate payloads only after the bounded merge.
+    return list(islice(merge(
+        *streams, key=lambda row: (row["eligibility_at"], row["source_id"], row["execution_kind"])
+    ), batch_size))
 
 
 def _source_payload_bytes(connection, *, kind, source_id):
@@ -824,6 +835,8 @@ def _source_payload_bytes(connection, *, kind, source_id):
         (source_id,),
     ).fetchone()[0]
     if kind != "transport":
+        # Drive lookups from reachable keys. Reordering this join can make
+        # SQLite scan every stored blob even when this source has no references.
         size += connection.execute(
             """WITH RECURSIVE reachable(sha256) AS (
             SELECT sha256 FROM workflow_operational_record_refs
@@ -831,7 +844,7 @@ def _source_payload_bytes(connection, *, kind, source_id):
             UNION SELECT e.child_sha256 FROM workflow_operational_blob_edges e
             JOIN reachable r ON e.parent_sha256=r.sha256)
             SELECT COALESCE(SUM(b.original_bytes),0) FROM reachable r
-            JOIN workflow_operational_blobs b ON b.sha256=r.sha256""",
+            CROSS JOIN workflow_operational_blobs b ON b.sha256=r.sha256""",
             (kind, source_id),
         ).fetchone()[0]
     return size
@@ -842,17 +855,7 @@ def _read_retention_sources(connection, *, cutoff, batch_size, max_payload_bytes
         raise ValueError("batch_size must be between 1 and 10000")
     if max_payload_bytes < 1:
         raise ValueError("max_payload_bytes must be positive")
-    selections = []
-    for kind, (table, key) in _RETENTION_SOURCE_TABLES.items():
-        timestamp = "occurred_at" if kind in {"trigger", "transport"} else "started_at"
-        selections.append(
-            f"SELECT '{kind}' execution_kind,{key} source_id,"
-            f"{timestamp} sort_at FROM {table} WHERE {_retention_predicate(kind)}"
-        )
-    candidates = connection.execute(
-        " UNION ALL ".join(selections) + " ORDER BY sort_at,execution_kind,source_id LIMIT :limit",
-        {"cutoff": cutoff, "limit": batch_size},
-    ).fetchall()
+    candidates = _retention_candidates(connection, cutoff=cutoff, batch_size=batch_size)
     selected = []
     total_bytes = 0
     for candidate in candidates:
@@ -939,7 +942,7 @@ def archive_records_for_retention(
         table, key = _RETENTION_SOURCE_TABLES[source.kind]
         current = connection.execute(
             f"SELECT 1 FROM {table} WHERE {key}=:id AND payload_json=:payload "
-            f"AND {_retention_predicate(source.kind)}",
+            f"AND {retention_predicate(source.kind)}",
             {"id": source.source_id, "payload": source.payload_json, "cutoff": cutoff},
         ).fetchone()
         if current is None:

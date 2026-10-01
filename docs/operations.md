@@ -336,6 +336,30 @@ cursor, so an interrupted invocation resumes. Existing maintenance index constru
 the conversion batches and is not limited by `--max-batches`. Use a representative database copy
 to measure this step before scheduling the outage.
 
+To build only deferred maintenance indexes, use:
+
+```bash
+evander-cli migrate-orchestration-storage --database runtime/orchestration.db --indexes-only --apply --offline
+```
+
+Stop every database user and take a verified consistent backup first, as above. This mode builds
+and validates indexes without rewriting operational payloads or retention progress. Its JSON
+result reports `direction: "indexes_only"`, zero processed rows, and `complete: true` when all
+required indexes are ready. It cannot be combined with `--downgrade` or `--max-batches`; completed
+indexes survive an interrupted build and rerunning skips them. Rehearse the build on a representative
+copy to measure the outage, then checkpoint the WAL and check readiness before restarting all
+database users on the same release. A mismatched existing index definition fails validation rather
+than replacing it automatically.
+
+Source retention uses five partial expression indexes for delivered events, completed effects and
+gates, and acknowledged failed effects and gates. Each range yields at most the effective record
+batch limit; the merged batch selects the oldest eligibility timestamps, breaking ties by source
+ID and execution kind. Payload byte accounting looks up only each source's reachable blobs. The
+existing payload byte cap, history indexing requirement, and transactional
+eligibility recheck still apply. Fresh databases create these indexes during initialization; existing
+databases defer source cleanup with `maintenance_indexes_required` until the offline build succeeds.
+Adding these indexes does not require payload conversion, a history rebuild, or `VACUUM`.
+
 For rollback to a release that only understands inline operational records, keep all database users
 stopped and run the **new release's CLI** before starting the old executable:
 
